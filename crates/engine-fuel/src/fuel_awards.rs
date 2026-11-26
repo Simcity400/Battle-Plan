@@ -937,6 +937,32 @@ impl StoredName {
         address: usize,
         header: [u8; msvc_string::STRIDE],
     ) -> Result<Self, &'static str> {
+        let len_u64 = u64::from_le_bytes(
+            header[msvc_string::LENGTH..msvc_string::LENGTH + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let cap_u64 = u64::from_le_bytes(
+            header[msvc_string::CAPACITY..msvc_string::CAPACITY + 8]
+                .try_into()
+                .unwrap(),
+        );
+        if cap_u64 == msvc_string::INLINE_CAPACITY && len_u64 <= msvc_string::INLINE_CAPACITY {
+            let len = len_u64 as usize;
+            if header[len] != 0 {
+                return Err("string terminator unreadable or invalid");
+            }
+            let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); EAGER_NAME_BYTES];
+            // SAFETY: `len + 1 <= 16 <= EAGER_NAME_BYTES`, and `header` is initialized.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    header.as_ptr(),
+                    bytes.as_mut_ptr().cast::<u8>(),
+                    len + 1,
+                );
+            }
+            return Ok(Self::Loaded { bytes, len });
+        }
         if let Some((source, span)) = msvc_string::heap_span(&header)
             && span <= EAGER_NAME_BYTES
         {

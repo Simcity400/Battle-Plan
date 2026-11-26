@@ -66,11 +66,40 @@ static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 std::thread_local! {
     static DEPTH: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
 }
+const VARIABLES_BLOOM_WORDS: usize = 64;
+const VARIABLES_BLOOM_MASK: usize = VARIABLES_BLOOM_WORDS * 64 - 1;
 static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marks_only();
+static VARIABLES_BLOOM: [AtomicU64; VARIABLES_BLOOM_WORDS] =
+    [const { AtomicU64::new(0) }; VARIABLES_BLOOM_WORDS];
 static VARIABLES_FORWARDED: AtomicBool = AtomicBool::new(false);
 static VARIABLES_UNOBSERVED: AtomicBool = AtomicBool::new(false);
+#[inline(always)]
+fn variables_bloom_bits(at: usize) -> (usize, u64, usize, u64) {
+    let mut hash = (at as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    hash ^= hash >> 32;
+    let first = (hash as usize) & VARIABLES_BLOOM_MASK;
+    let second = ((hash >> 12) as usize) & VARIABLES_BLOOM_MASK;
+    (
+        first >> 6,
+        1_u64 << (first & 63),
+        second >> 6,
+        1_u64 << (second & 63),
+    )
+}
+#[inline(always)]
+fn variables_bloom_contains(at: usize) -> bool {
+    let (w0, m0, w1, m1) = variables_bloom_bits(at);
+    (VARIABLES_BLOOM[w0].load(Ordering::Relaxed) & m0 != 0)
+        && (VARIABLES_BLOOM[w1].load(Ordering::Relaxed) & m1 != 0)
+}
+fn register_variable_watch(at: usize) -> Option<((u64, u64), bool)> {
+    let (w0, m0, w1, m1) = variables_bloom_bits(at);
+    VARIABLES_BLOOM[w0].fetch_or(m0, Ordering::SeqCst);
+    VARIABLES_BLOOM[w1].fetch_or(m1, Ordering::SeqCst);
+    VARIABLES_WATCH.register(at)
+}
 pub fn variable_write(at: usize) -> Notification<'static> {
-    VARIABLES_WATCH.notify(at)
+    VARIABLES_WATCH.notify_if(at, || variables_bloom_contains(at))
 }
 pub fn variables_uncertified() {
     VARIABLES_UNOBSERVED.store(true, Ordering::SeqCst);
@@ -252,7 +281,11 @@ pub unsafe fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, in
             renewed[domain] = renew[domain];
         }
     }
-    VARIABLES_WATCH.boundary(invalidate);
+    if VARIABLES_WATCH.boundary(invalidate).renewed() && VARIABLES_WATCH.active() == 0 {
+        for word in &VARIABLES_BLOOM {
+            word.store(0, Ordering::SeqCst);
+        }
+    }
     if RESET_WATCH
         .boundary(invalidate || renew[3].is_some())
         .renewed()

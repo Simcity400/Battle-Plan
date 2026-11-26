@@ -118,12 +118,37 @@ pub fn roots(
     })
 }
 
+#[derive(Clone, Copy)]
+pub struct SeedVtables {
+    primary: Option<u64>,
+    secondary: Option<u64>,
+}
+
+impl SeedVtables {
+    pub fn resolve(base: usize) -> Self {
+        Self {
+            primary: engine_sites::at(base, carmy::VTABLE_RVA).map(|at| at as u64),
+            secondary: engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA).map(|at| at as u64),
+        }
+    }
+}
+
 pub fn validate_seed(base: usize, seed: &carmy::DivisionSeed) -> Result<(), &'static str> {
+    validate_seed_with(SeedVtables::resolve(base), seed)
+}
+
+#[inline]
+pub fn validate_seed_with(
+    vtables: SeedVtables,
+    seed: &carmy::DivisionSeed,
+) -> Result<(), &'static str> {
+    let primary = vtables.primary.ok_or("unit history site withheld")?;
+    let secondary = vtables.secondary.ok_or("unit history site withheld")?;
     if seed.division == 0
         || seed.handle != Some(seed.division)
         || seed.class != Some(0)
-        || seed.primary_vtable != Some(site(base, carmy::VTABLE_RVA)? as u64)
-        || seed.secondary_vtable != Some(site(base, carmy::SECONDARY_VTABLE_RVA)? as u64)
+        || seed.primary_vtable != Some(primary)
+        || seed.secondary_vtable != Some(secondary)
     {
         return Err("unit history division identity unavailable");
     }

@@ -28,6 +28,7 @@ pub struct Store {
     baseline: Option<u64>,
     next: Vec<Held>,
     sorted: Vec<(u64, usize)>,
+    shared: Option<Arc<crate::division_experience::DivisionIndex>>,
     sorted_ready: bool,
     held_sorted: bool,
     unique: bool,
@@ -197,6 +198,12 @@ impl Store {
             self.held
                 .binary_search_by_key(&seed.division, |held| held.division)
                 .ok()
+        } else if let Some(shared) = &self.shared {
+            shared
+                .sorted
+                .binary_search_by_key(&seed.division, |entry| entry.0)
+                .ok()
+                .map(|at| shared.sorted[at].1 as usize)
         } else if self.sorted_ready {
             self.sorted
                 .binary_search_by_key(&seed.division, |entry| entry.0)
@@ -288,6 +295,7 @@ impl Store {
         self.baseline = None;
         self.next.clear();
         self.sorted.clear();
+        self.shared = None;
         self.sorted_ready = false;
         self.held_sorted = false;
         self.unique = false;
@@ -331,6 +339,24 @@ impl Store {
         prepared: Option<Certificates>,
         taken: Option<&crate::observations::Taken>,
     ) -> Result<(), &'static str> {
+        self.observe_prepared_with_vtables(
+            memory,
+            base,
+            unit_history::SeedVtables::resolve(base),
+            seed,
+            prepared,
+            taken,
+        )
+    }
+    pub(super) fn observe_prepared_with_vtables(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        vtables: unit_history::SeedVtables,
+        seed: &DivisionSeed,
+        prepared: Option<Certificates>,
+        taken: Option<&crate::observations::Taken>,
+    ) -> Result<(), &'static str> {
         let index = self.next.len();
         let guess = index.checked_add_signed(self.shift);
         let held_at = if guess.is_some_and(|at| {
@@ -345,6 +371,12 @@ impl Store {
             self.held
                 .binary_search_by_key(&seed.division, |held| held.division)
                 .ok()
+        } else if let Some(shared) = &self.shared {
+            shared
+                .sorted
+                .binary_search_by_key(&seed.division, |entry| entry.0)
+                .ok()
+                .map(|at| shared.sorted[at].1 as usize)
         } else {
             if !self.sorted_ready {
                 self.sorted.clear();
@@ -375,7 +407,7 @@ impl Store {
         let mut held = held_at
             .map(|at| self.held[at])
             .filter(|held| held.army == seed.pointer);
-        let identity = unit_history::validate_seed(base, seed);
+        let identity = unit_history::validate_seed_with(vtables, seed);
         let history_address = seed
             .pointer
             .checked_add(unit_history::DIVISION_HISTORY)
@@ -594,6 +626,12 @@ impl Store {
         Ok(())
     }
     pub fn finish(&mut self) -> Result<Arc<HistorySnapshot>, &'static str> {
+        self.finish_with_index(None)
+    }
+    pub fn finish_with_index(
+        &mut self,
+        shared: Option<&Arc<crate::division_experience::DivisionIndex>>,
+    ) -> Result<Arc<HistorySnapshot>, &'static str> {
         self.defer_edits = false;
         let mut pending = std::mem::take(&mut self.pending);
         let result = (|| {
@@ -635,31 +673,47 @@ impl Store {
             }
         }
         std::mem::swap(&mut self.held, &mut self.next);
-        self.baseline = crate::division_experience::next_baseline();
         self.next.clear();
         self.sorted.clear();
-        self.held_sorted = self
-            .held
-            .windows(2)
-            .all(|pair| pair[0].division < pair[1].division);
-        if self.held_sorted {
-            self.sorted_ready = true;
-            self.unique = true;
-        } else if allocation::advisory(|| allocation::reserve(&mut self.sorted, self.held.len()))
-            .is_ok()
+        self.shared = None;
+        if let Some(shared) = shared
+            && self.held.len() == shared.divisions.len()
+            && self
+                .held
+                .iter()
+                .zip(&shared.divisions)
+                .all(|(held, &division)| held.division == division)
         {
-            self.sorted.extend(
-                self.held
-                    .iter()
-                    .enumerate()
-                    .map(|(at, held)| (held.division, at)),
-            );
-            self.sorted.sort_unstable();
-            self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+            self.baseline = Some(shared.baseline);
+            self.held_sorted = shared.held_sorted;
+            self.unique = shared.unique;
             self.sorted_ready = true;
+            self.shared = Some(Arc::clone(shared));
         } else {
-            self.sorted_ready = false;
-            self.unique = false;
+            self.baseline = crate::division_experience::next_baseline();
+            self.held_sorted = self
+                .held
+                .windows(2)
+                .all(|pair| pair[0].division < pair[1].division);
+            if self.held_sorted {
+                self.sorted_ready = true;
+                self.unique = true;
+            } else if allocation::advisory(|| allocation::reserve(&mut self.sorted, self.held.len()))
+                .is_ok()
+            {
+                self.sorted.extend(
+                    self.held
+                        .iter()
+                        .enumerate()
+                        .map(|(at, held)| (held.division, at)),
+                );
+                self.sorted.sort_unstable();
+                self.unique = self.sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+                self.sorted_ready = true;
+            } else {
+                self.sorted_ready = false;
+                self.unique = false;
+            }
         }
         changes::entry_demand(self.binding_count);
         self.rows.finish()

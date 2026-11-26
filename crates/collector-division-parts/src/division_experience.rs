@@ -1,5 +1,8 @@
 use engine_native::carmy::{self, DivisionSeed};
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering::Relaxed},
+};
 
 #[cfg(test)]
 mod oracle;
@@ -85,6 +88,79 @@ impl Order {
 }
 
 #[derive(Clone, Copy)]
+pub struct Vtables {
+    primary: Option<u64>,
+    secondary: Option<u64>,
+}
+
+impl Vtables {
+    pub fn resolve(base: usize) -> Self {
+        Self {
+            primary: engine_sites::at(base, carmy::VTABLE_RVA).map(|at| at as u64),
+            secondary: engine_sites::at(base, carmy::SECONDARY_VTABLE_RVA).map(|at| at as u64),
+        }
+    }
+}
+
+pub struct DivisionIndex {
+    pub baseline: u64,
+    pub divisions: Vec<u64>,
+    pub sorted: Vec<(u64, u32)>,
+    pub held_sorted: bool,
+    pub unique: bool,
+}
+
+impl DivisionIndex {
+    pub fn for_seeds(prev: Option<&Arc<Self>>, seeds: &[DivisionSeed]) -> Option<Arc<Self>> {
+        u32::try_from(seeds.len()).ok()?;
+        if let Some(prev) = prev
+            && prev.divisions.len() == seeds.len()
+            && prev
+                .divisions
+                .iter()
+                .zip(seeds)
+                .all(|(&division, seed)| division == seed.division)
+        {
+            return Some(Arc::clone(prev));
+        }
+        let baseline = next_baseline()?;
+        let mut divisions = Vec::new();
+        let mut sorted = Vec::new();
+        engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut divisions, seeds.len())?;
+            engine_allocation::reserve(&mut sorted, seeds.len())
+        })
+        .ok()?;
+        divisions.extend(seeds.iter().map(|seed| seed.division));
+        let held_sorted = divisions.windows(2).all(|pair| pair[0] < pair[1]);
+        sorted.extend(
+            divisions
+                .iter()
+                .enumerate()
+                .map(|(at, &division)| (division, at as u32)),
+        );
+        if !held_sorted {
+            sorted.sort_unstable();
+        }
+        let unique = held_sorted || sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
+        engine_allocation::advisory(|| engine_allocation::allocation_attempt()).ok()?;
+        Some(Arc::new(Self {
+            baseline,
+            divisions,
+            sorted,
+            held_sorted,
+            unique,
+        }))
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.divisions.capacity() * std::mem::size_of::<u64>()
+            + self.sorted.capacity() * std::mem::size_of::<(u64, u32)>()
+    }
+}
+
+#[derive(Clone, Copy)]
 struct Held<T> {
     division: u64,
     army: usize,
@@ -92,19 +168,23 @@ struct Held<T> {
     value: T,
     current: bool,
 }
-fn is_vtable(base: usize, key: engine_sites::Rva, seen: Option<u64>) -> bool {
-    engine_sites::at(base, key).is_some_and(|vtable| seen == Some(vtable as u64))
-}
-fn identity(base: usize, seed: &DivisionSeed) -> Result<(), &'static str> {
+#[inline]
+fn identity_with(vtables: Vtables, seed: &DivisionSeed) -> Result<(), &'static str> {
     if seed.division == 0
         || seed.handle != Some(seed.division)
         || seed.class != Some(0)
-        || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
-        || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
+        || vtables.primary.is_none_or(|v| seed.primary_vtable != Some(v))
+        || vtables
+            .secondary
+            .is_none_or(|v| seed.secondary_vtable != Some(v))
     {
         return Err("division experience census identity unavailable");
     }
     Ok(())
+}
+#[cfg(test)]
+fn identity(base: usize, seed: &DivisionSeed) -> Result<(), &'static str> {
+    identity_with(Vtables::resolve(base), seed)
 }
 
 #[derive(Default)]
@@ -113,6 +193,7 @@ pub struct Store<T = i64> {
     baseline: Option<u64>,
     next: Vec<Held<T>>,
     sorted: Vec<(u64, usize)>,
+    shared: Option<Arc<DivisionIndex>>,
     sorted_ready: bool,
     held_sorted: bool,
     unique: bool,
@@ -146,6 +227,7 @@ impl<T: Clone> Store<T> {
         self.baseline = None;
         self.next.clear();
         self.sorted.clear();
+        self.shared = None;
         self.sorted_ready = false;
         self.held_sorted = false;
         self.unique = false;
@@ -154,6 +236,7 @@ impl<T: Clone> Store<T> {
         (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held<T>>()
             + self.sorted.capacity() * std::mem::size_of::<(u64, usize)>()
     }
+    #[cfg(test)]
     pub fn observe_with(
         &mut self,
         base: usize,
@@ -161,7 +244,16 @@ impl<T: Clone> Store<T> {
         certificate: Option<(u64, u64)>,
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Result<T, &'static str> {
-        identity(base, seed)?;
+        self.observe_with_vtables(Vtables::resolve(base), seed, certificate, read)
+    }
+    pub fn observe_with_vtables(
+        &mut self,
+        vtables: Vtables,
+        seed: &DivisionSeed,
+        certificate: Option<(u64, u64)>,
+        read: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Result<T, &'static str> {
+        identity_with(vtables, seed)?;
         let certificate =
             certificate.ok_or("division experience writer certificate unavailable")?;
         let at = self.locate(seed.division)?;
@@ -194,6 +286,12 @@ impl<T: Clone> Store<T> {
             self.held
                 .binary_search_by_key(&division, |held| held.division)
                 .ok()
+        } else if let Some(shared) = &self.shared {
+            shared
+                .sorted
+                .binary_search_by_key(&division, |entry| entry.0)
+                .ok()
+                .map(|at| shared.sorted[at].1 as usize)
         } else {
             if !self.sorted_ready {
                 self.sorted.clear();
@@ -257,6 +355,7 @@ impl<T: Clone> Store<T> {
         quiet.then_some((at, held.certificate))
     }
 
+    #[cfg(test)]
     pub fn keep(
         &mut self,
         base: usize,
@@ -264,7 +363,16 @@ impl<T: Clone> Store<T> {
         at: usize,
         touched: bool,
     ) -> Result<T, &'static str> {
-        identity(base, seed)?;
+        self.keep_with_vtables(Vtables::resolve(base), seed, at, touched)
+    }
+    pub fn keep_with_vtables(
+        &mut self,
+        vtables: Vtables,
+        seed: &DivisionSeed,
+        at: usize,
+        touched: bool,
+    ) -> Result<T, &'static str> {
+        identity_with(vtables, seed)?;
         let held = self.held[at].clone();
         self.push(seed, held.certificate, held.value.clone(), held.current && !touched)?;
         Ok(held.value)
@@ -279,12 +387,7 @@ impl<T: Clone> Store<T> {
         order: &mut Order,
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Option<Result<T, &'static str>> {
-        if seed.division == 0
-            || seed.handle != Some(seed.division)
-            || seed.class != Some(0)
-            || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
-            || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
-        {
+        if identity(base, seed).is_err() {
             return None;
         }
         let certificate = certificate?;
@@ -336,6 +439,18 @@ impl<T: Clone> Store<T> {
                     held.division
                 })
                 .ok()
+        } else if let Some(shared) = &self.shared {
+            shared
+                .sorted
+                .binary_search_by_key(&division, |entry| {
+                    #[cfg(test)]
+                    {
+                        order.probes += 1;
+                    }
+                    entry.0
+                })
+                .ok()
+                .map(|at| shared.sorted[at].1 as usize)
         } else if self.sorted_ready {
             self.sorted
                 .binary_search_by_key(&division, |entry| {
@@ -445,30 +560,58 @@ impl<T: Clone> Store<T> {
         order: &mut Order,
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Option<Result<T, &'static str>> {
+        self.prefetch_value_with_vtables(Vtables::resolve(base), index, seed, certificate, order, read)
+    }
+
+    pub(super) fn prefetch_value_with_vtables(
+        &self,
+        vtables: Vtables,
+        index: usize,
+        seed: &DivisionSeed,
+        certificate: Option<(u64, u64)>,
+        order: &mut Order,
+        read: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Option<Result<T, &'static str>> {
         let certificate = certificate?;
         if let Some(held) = self.prefetch_held(index, seed, certificate, order) {
             return Some(Ok(held.value.clone()));
         }
-        if seed.division == 0
-            || seed.handle != Some(seed.division)
-            || seed.class != Some(0)
-            || !is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
-            || !is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
-        {
+        if identity_with(vtables, seed).is_err() {
             return None;
         }
         Some(read())
     }
 
+    #[cfg(test)]
     pub fn finish(&mut self, complete: bool) {
+        self.finish_with_index(complete, None);
+    }
+
+    pub fn finish_with_index(&mut self, complete: bool, shared: Option<&Arc<DivisionIndex>>) {
         if !complete {
             self.forget();
             return;
         }
         std::mem::swap(&mut self.held, &mut self.next);
-        self.baseline = next_baseline();
         self.next.clear();
         self.sorted.clear();
+        self.shared = None;
+        if let Some(shared) = shared
+            && self.held.len() == shared.divisions.len()
+            && self
+                .held
+                .iter()
+                .zip(&shared.divisions)
+                .all(|(held, &division)| held.division == division)
+        {
+            self.baseline = Some(shared.baseline);
+            self.held_sorted = shared.held_sorted;
+            self.unique = shared.unique;
+            self.sorted_ready = true;
+            self.shared = Some(Arc::clone(shared));
+            return;
+        }
+        self.baseline = next_baseline();
         self.held_sorted = self
             .held
             .windows(2)

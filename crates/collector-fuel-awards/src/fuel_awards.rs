@@ -728,6 +728,7 @@ struct ThreadState {
     pending: Option<Pending>,
     batch: PendingBatch,
     registry: native::Registry,
+    registry_stamp: (usize, u64),
 }
 
 thread_local! {
@@ -1664,7 +1665,11 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 };
                 THREAD_STATE.with(|state| {
                     let state = &mut *state.borrow_mut();
-                    state.registry = native::Registry::default();
+                    let reg_stamp = (base, next.stamp.0);
+                    if state.registry_stamp != reg_stamp {
+                        state.registry = native::Registry::default();
+                        state.registry_stamp = reg_stamp;
+                    }
                     let old = state.pending.replace(next);
                     if let Some(prev) = old {
                         flush_batch_orphans(

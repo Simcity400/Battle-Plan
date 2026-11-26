@@ -670,7 +670,6 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                 }
                 let _reads = read_accounting::table(TableId::AirTheatreMembers);
                 source.mask.set(0);
-                let started = qpc();
                 job.memberships[membership_len] = match admitted.group_handle {
                     Some(group) => WingMembershipRead {
                         value: engine_native_air::cair_wing::WingMembership {
@@ -679,17 +678,21 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
                         },
                         error: None,
                     },
-                    None => match engine_native_air::cair_wing::read_wing_membership(
-                        &source, pointer, row,
-                    ) {
-                        Ok(value) => WingMembershipRead { value, error: None },
-                        Err(reason) => WingMembershipRead {
-                            error: Some(reason),
-                            ..Default::default()
-                        },
-                    },
+                    None => {
+                        let started = qpc();
+                        let read = match engine_native_air::cair_wing::read_wing_membership(
+                            &source, pointer, row,
+                        ) {
+                            Ok(value) => WingMembershipRead { value, error: None },
+                            Err(reason) => WingMembershipRead {
+                                error: Some(reason),
+                                ..Default::default()
+                            },
+                        };
+                        membership_ticks += elapsed(started);
+                        read
+                    }
                 };
-                membership_ticks += elapsed(started);
                 membership_len += 1;
                 source_len += usize::from(admitted.naval);
             }

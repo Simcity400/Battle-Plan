@@ -2416,17 +2416,19 @@ impl StatusPacket {
         &mut self,
         memory: &impl Memory,
         base: usize,
+        acclimatization_vtable: Option<u64>,
         seed: &DivisionSeed,
         unit: usize,
         first: Option<&[u8]>,
     ) {
-        let (camouflage, weather_factor) = match acclimatization_winner(memory, base, seed, first) {
-            Ok((object, winner)) => (
-                self.read_camouflage(memory, base, &object, winner),
-                weather_factor(memory, &object, winner, &mut self.category_factors),
-            ),
-            Err(reason) => (Err(reason), Err(reason)),
-        };
+        let (camouflage, weather_factor) =
+            match acclimatization_winner_with_vtable(memory, acclimatization_vtable, seed, first) {
+                Ok((object, winner)) => (
+                    self.read_camouflage(memory, base, &object, winner),
+                    weather_factor(memory, &object, winner, &mut self.category_factors),
+                ),
+                Err(reason) => (Err(reason), Err(reason)),
+            };
         self.units[unit].camouflage = camouflage.ok();
         self.units[unit].weather_factor = weather_factor.ok();
     }
@@ -2543,6 +2545,7 @@ impl StatusPacket {
             let mut batch = engine_native_parts::csub_unit_definition::MaximaBatch::new();
             let mut selected = [SelectedMaxima::default(); 64];
             let identity = engine_sites::at(base, VTABLE_RVA).map(|at| at as u64);
+            let mut last_country: Option<(u32, usize)> = None;
             for (index, seed) in seeds[..count].iter().enumerate() {
                 if index.is_multiple_of(64) {
                     let end = (index + 64).min(count);
@@ -2595,9 +2598,18 @@ impl StatusPacket {
                         seed.roster_owner
                             .ok_or("division presentation field unreadable")?
                     };
-                    let country = countries.resolve(raw_country)?;
                     self.units[unit].threshold =
-                        self.country_threshold(memory, base, country.pointer)?;
+                        if let Some((cached_raw, cached_threshold)) = last_country
+                            && cached_raw == raw_country
+                        {
+                            cached_threshold
+                        } else {
+                            let country = countries.resolve(raw_country)?;
+                            let threshold =
+                                self.country_threshold(memory, base, country.pointer)?;
+                            last_country = Some((raw_country, threshold));
+                            threshold
+                        };
 
                     let group = seed
                         .orders_group
@@ -2728,6 +2740,9 @@ impl StatusPacket {
         let result = prepared.and_then(|(count, countries)| {
             let admitted = &seeds[..self.units.len()];
             if !admitted.is_empty() {
+                let acclimatization_vtable =
+                    engine_sites::at(base, engine_native_parts::acclimatization_data::VTABLE_RVA)
+                        .map(|at| at as u64);
                 let entries = entries
                     .as_deref_mut()
                     .expect("admitted packet has entry scratch");
@@ -2785,7 +2800,14 @@ impl StatusPacket {
                         .model_number
                         .ok_or("division presentation field unreadable")?;
                     if !defer_children {
-                        self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
+                        self.capture_camouflage(
+                            memory,
+                            base,
+                            acclimatization_vtable,
+                            seed,
+                            unit,
+                            entries.first(unit % 64),
+                        );
                     }
                     self.units[unit].training = self.training_known(
                         memory,
@@ -3072,14 +3094,17 @@ impl AcclimatizationBatch {
             acclimatization_entry as entry,
         };
         self.lengths.fill(0);
+        let Some(expected_vtable) = engine_sites::at(base, data::VTABLE_RVA).map(|at| at as u64)
+        else {
+            self.copied = 0;
+            return;
+        };
         let mut addresses = [0_usize; 64];
         for (index, seed) in seeds.iter().enumerate() {
             let Some(object) = seed.acclimatization else {
                 continue;
             };
-            if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
-                != engine_sites::at(base, data::VTABLE_RVA).map(|at| at as u64)
-            {
+            if u64::from_le_bytes(object[..8].try_into().unwrap()) != expected_vtable {
                 continue;
             }
             if let Some(array) = Array::from_header(
@@ -3110,9 +3135,22 @@ impl AcclimatizationBatch {
     }
 }
 
+#[cfg(test)]
 fn acclimatization_winner(
     memory: &impl Memory,
     base: usize,
+    seed: &DivisionSeed,
+    gathered_first: Option<&[u8]>,
+) -> Result<AcclimatizationWinner, &'static str> {
+    let expected_vtable =
+        engine_sites::at(base, engine_native_parts::acclimatization_data::VTABLE_RVA)
+            .map(|p| p as u64);
+    acclimatization_winner_with_vtable(memory, expected_vtable, seed, gathered_first)
+}
+
+fn acclimatization_winner_with_vtable(
+    memory: &impl Memory,
+    expected_vtable: Option<u64>,
     seed: &DivisionSeed,
     gathered_first: Option<&[u8]>,
 ) -> Result<AcclimatizationWinner, &'static str> {
@@ -3123,9 +3161,7 @@ fn acclimatization_winner(
     let object = seed
         .acclimatization
         .ok_or("division presentation field unreadable")?;
-    if Some(u64::from_le_bytes(object[..8].try_into().unwrap()))
-        != engine_sites::at(base, data::VTABLE_RVA).map(|p| p as u64)
-    {
+    if Some(u64::from_le_bytes(object[..8].try_into().unwrap())) != expected_vtable {
         return Err("division acclimatization identity mismatch");
     }
     let entries = Array::from_header(

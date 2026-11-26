@@ -571,6 +571,7 @@ impl WatchRegistry {
     pub fn touch(&self, receiver: usize) {
         let admit = self.enter();
         if receiver != 0
+            && self.registered.load(Acquire) != 0
             && let Some(table) = self.table()
             && let Lookup::Watched(index, sequence) = table.find_read(receiver)
         {
@@ -585,6 +586,41 @@ impl WatchRegistry {
     }
 
     #[inline]
+    pub fn touch_if(&self, receiver: usize, should_mark: impl FnOnce() -> bool) -> bool {
+        if receiver == 0 {
+            return false;
+        }
+        let admit = self.admit(false);
+        let mut marked = false;
+        if self.registered.load(Acquire) != 0
+            && let Some(table) = self.table()
+            && let Lookup::Watched(index, sequence) = table.find_read(receiver)
+        {
+            let mark = table.mark_of(index);
+            let already_marked = !self.sequences
+                && mark.is_some_and(|(word, bit)| (word.load(Relaxed) & bit) != 0);
+            if !already_marked && should_mark() {
+                if !self.synchronous && matches!(admit, Admission::Slot(..)) {
+                    if !self.dirty.0.load(Relaxed) {
+                        self.dirty.0.store(true, Relaxed);
+                    }
+                } else {
+                    self.bump_revision_slow();
+                }
+                if self.sequences {
+                    self.increment(sequence);
+                }
+                if let Some((word, bit)) = mark {
+                    mark_slot(word, bit);
+                }
+                marked = true;
+            }
+        }
+        self.leave(admit);
+        marked
+    }
+
+    #[inline]
     pub fn touch_every(&self) {
         self.bump_revision();
         self.new_epoch();
@@ -593,7 +629,10 @@ impl WatchRegistry {
     #[inline]
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
         let admit = self.enter();
-        let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
+        let (sequence, mark) = match (receiver != 0 && self.registered.load(Acquire) != 0)
+            .then(|| self.table())
+            .flatten()
+        {
             Some(table) => match table.find_read(receiver) {
                 Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
                 _ => (None, None),
@@ -617,10 +656,46 @@ impl WatchRegistry {
     }
 
     #[inline]
+    pub fn notify_if(
+        &self,
+        receiver: usize,
+        may_watch: impl FnOnce() -> bool,
+    ) -> Notification<'_> {
+        let admit = self.enter();
+        let (sequence, mark) =
+            match (receiver != 0 && self.registered.load(Acquire) != 0 && may_watch())
+                .then(|| self.table())
+                .flatten()
+            {
+                Some(table) => match table.find_read(receiver) {
+                    Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
+                    _ => (None, None),
+                },
+                None => (None, None),
+            };
+        if self.sequences
+            && let Some(sequence) = sequence
+        {
+            self.increment(sequence);
+        }
+        if let Some((word, bit)) = mark {
+            mark_slot(word, bit);
+        }
+        Notification {
+            registry: self,
+            mark,
+            every: false,
+            admit,
+        }
+    }
+
+    #[inline]
     pub fn notify_pair(&self, first: usize, second: usize) -> NotificationPair<'_> {
         let admit = self.enter();
         let mut marks = [None, None];
-        if let Some(table) = self.table() {
+        if self.registered.load(Acquire) != 0
+            && let Some(table) = self.table()
+        {
             for (slot, receiver) in [first, second].into_iter().enumerate() {
                 if receiver == 0 || (slot == 1 && receiver == first) {
                     continue;
@@ -739,7 +814,7 @@ impl WatchRegistry {
         let (sequence, fresh) = match self.table()?.find_or_register(receiver) {
             Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(_, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (sequence, true)
             }
             Lookup::Unwatched | Lookup::Full => return None,
@@ -794,7 +869,7 @@ impl WatchRegistry {
         let (index, sequence, fresh) = match lookup {
             Lookup::Watched(index, sequence) => (index, sequence, false),
             Lookup::Registered(index, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (index, sequence, true)
             }
             Lookup::Unwatched => return None,
@@ -821,7 +896,7 @@ impl WatchRegistry {
         let (sequence, fresh) = match self.table()?.find_or_register(receiver) {
             Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(_, sequence) => {
-                self.registered.fetch_add(1, Relaxed);
+                self.registered.fetch_add(1, SeqCst);
                 (sequence, true)
             }
             Lookup::Unwatched => return None,

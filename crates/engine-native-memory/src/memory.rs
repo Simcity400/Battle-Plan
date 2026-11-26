@@ -591,11 +591,7 @@ pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
     if address == 0 || address.checked_add(len).is_none() {
         return None;
     }
-    if len == 4 {
-        memory.read_scalar(address)
-    } else {
-        copy_scalar(memory, address)
-    }
+    memory.read_scalar(address)
 }
 
 #[inline(always)]
@@ -840,23 +836,54 @@ unsafe fn guarded_copy(destination: *mut u8, address: usize, len: usize) -> bool
 impl Memory for LiveMemory {
     #[inline(always)]
     fn read_scalar<T: Raw>(&self, address: usize) -> Option<T> {
-        if size_of::<T>() != 4 {
-            return copy_scalar(self, address);
+        let len = size_of::<T>();
+        if len == 0 {
+            return Some(T::ZERO);
         }
-        if address == 0 || address.checked_add(4).is_none() || !is_canonical_range(address, 4) {
+        if address == 0 || address.checked_add(len).is_none() || !is_canonical_range(address, len) {
             return None;
         }
         unsafe extern "C" {
+            fn seh_guarded_read1(src: *const u8) -> u32;
+            fn seh_guarded_read2(src: *const u8) -> u32;
             fn seh_guarded_read4(src: *const u8) -> u64;
         }
-        // SAFETY: C guards exactly the admitted four-byte foreign source. Its
-        // upper word is one on success and zero on failure, independently of
-        // every possible lower-word value. Failed loads publish no value.
-        let packed = unsafe { seh_guarded_read4(address as *const u8) };
-        if packed >> 32 == 0 {
-            return None;
+        match len {
+            1 => {
+                // SAFETY: C guards the admitted single-byte foreign source; bit 8 is one on success and zero on failure.
+                let packed = unsafe { seh_guarded_read1(address as *const u8) };
+                if packed >> 8 == 0 {
+                    return None;
+                }
+                scalar_from_bytes(&[packed as u8])
+            }
+            2 => {
+                // SAFETY: C guards the admitted two-byte foreign source; bit 16 is one on success and zero on failure.
+                let packed = unsafe { seh_guarded_read2(address as *const u8) };
+                if packed >> 16 == 0 {
+                    return None;
+                }
+                scalar_from_bytes(&(packed as u16).to_ne_bytes())
+            }
+            4 => {
+                // SAFETY: C guards exactly the admitted four-byte foreign source. Its
+                // upper word is one on success and zero on failure, independently of
+                // every possible lower-word value. Failed loads publish no value.
+                let packed = unsafe { seh_guarded_read4(address as *const u8) };
+                if packed >> 32 == 0 {
+                    return None;
+                }
+                scalar_from_bytes(&(packed as u32).to_ne_bytes())
+            }
+            _ => {
+                let mut value = MaybeUninit::<T>::uninit();
+                // SAFETY: Raw is sealed to padding-free, all-bit-pattern types; guarded_copy writes all `len` bytes when it returns true.
+                unsafe {
+                    guarded_copy(value.as_mut_ptr().cast::<u8>(), address, len)
+                        .then(|| value.assume_init())
+                }
+            }
         }
-        scalar_from_bytes(&(packed as u32).to_ne_bytes())
     }
 
     fn execute_read_plan(

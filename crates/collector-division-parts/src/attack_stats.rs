@@ -165,13 +165,21 @@ pub struct KeptName<'a> {
 #[derive(Default)]
 struct Locator {
     order: Vec<(u64, u32)>,
+    shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
     shift: isize,
 }
 
 impl Locator {
     fn clear(&mut self) {
         self.order.clear();
+        self.shared = None;
         self.shift = 0;
+    }
+
+    fn order_slice(&self) -> &[(u64, u32)] {
+        self.shared
+            .as_deref()
+            .map_or(self.order.as_slice(), |shared| shared.sorted.as_slice())
     }
 
     fn locate(&mut self, divisions: &[u64], index: usize, division: u64) -> Option<usize> {
@@ -183,11 +191,31 @@ impl Locator {
         if !self.index(divisions) {
             return None;
         }
-        Self::find(&self.order, &mut self.shift, divisions, index, division)
+        let order = self
+            .shared
+            .as_deref()
+            .map_or(self.order.as_slice(), |shared| shared.sorted.as_slice());
+        Self::find(order, &mut self.shift, divisions, index, division)
+    }
+
+    fn index_with(
+        &mut self,
+        divisions: &[u64],
+        shared: Option<&std::sync::Arc<crate::division_experience::DivisionIndex>>,
+    ) -> bool {
+        if let Some(shared) = shared
+            && divisions == shared.divisions.as_slice()
+        {
+            self.order.clear();
+            self.shared = Some(std::sync::Arc::clone(shared));
+            return true;
+        }
+        self.shared = None;
+        self.index(divisions)
     }
 
     fn index(&mut self, divisions: &[u64]) -> bool {
-        if !self.order.is_empty() || divisions.is_empty() {
+        if self.shared.is_some() || !self.order.is_empty() || divisions.is_empty() {
             return true;
         }
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, divisions.len()))
@@ -236,6 +264,7 @@ pub struct ArmyStatStore {
     pub history: crate::division_history::Store,
     pub sources: crate::panel_sources::Store,
     pub observations: crate::observations::HourObservations,
+    shared_index: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
     epoch: Option<u64>,
     held: Vec<Held>,
     divisions: Vec<u64>,
@@ -305,11 +334,12 @@ impl ArmyStatStore {
         if !self.daily {
             return;
         }
+        let vtables = crate::division_experience::Vtables::resolve(base);
         let stored = complete
             && self.supply.begin(seeds.len()).is_ok()
             && seeds.iter().zip(samples).all(|(seed, sample)| {
                 self.supply
-                    .observe_with(base, seed, DAILY_SUPPLY_SAMPLE, || {
+                    .observe_with_vtables(vtables, seed, DAILY_SUPPLY_SAMPLE, || {
                         sample
                             .clone()
                             .ok_or("division supply daily sample unavailable")
@@ -317,7 +347,8 @@ impl ArmyStatStore {
                     .is_ok()
             })
             && samples.len() == seeds.len();
-        self.supply.finish(stored);
+        self.supply
+            .finish_with_index(stored, self.shared_index.as_ref());
     }
     pub fn new() -> Self {
         Self {
@@ -330,6 +361,7 @@ impl ArmyStatStore {
             history: Default::default(),
             sources: Default::default(),
             observations: Default::default(),
+            shared_index: None,
             epoch: None,
             held: Vec::new(),
             divisions: Vec::new(),
@@ -358,6 +390,7 @@ impl ArmyStatStore {
         self.history.forget();
         self.sources.forget();
         self.observations.forget();
+        self.shared_index = None;
         self.epoch = None;
         self.divisions.clear();
         self.name_divisions.clear();
@@ -388,6 +421,10 @@ impl ArmyStatStore {
             + self.history.allocated_bytes()
             + self.sources.allocated_bytes()
             + self.observations.allocated_bytes()
+            + self
+                .shared_index
+                .as_deref()
+                .map_or(0, crate::division_experience::DivisionIndex::allocated_bytes)
             + (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
             + (self.divisions.capacity() + self.name_divisions.capacity()) * 8
             + (self.locator.order.capacity() + self.name_locator.order.capacity()) * 16
@@ -410,7 +447,7 @@ impl ArmyStatStore {
 
     pub fn find_held_name(&self, shift: &mut isize, index: usize, division: u64) -> Option<usize> {
         Locator::find(
-            &self.name_locator.order,
+            self.name_locator.order_slice(),
             shift,
             &self.name_divisions,
             index,
@@ -575,8 +612,9 @@ impl ArmyStatStore {
             .extend(self.held.iter().map(|held| held.division));
         self.name_divisions
             .extend(self.names.iter().map(|held| held.division));
-        self.locator.index(&self.divisions);
-        self.name_locator.index(&self.name_divisions);
+        let shared = self.shared_index.as_ref();
+        self.locator.index_with(&self.divisions, shared);
+        self.name_locator.index_with(&self.name_divisions, shared);
         self.compact_slabs();
         self.epoch = epoch;
     }
@@ -586,7 +624,13 @@ impl ArmyStatStore {
             && (!self.observations.is_taken()
                 || (self.observations.armies.epoch() == self.epoch
                     && !self.observations.armies.touched(seed.pointer)))
-            && Locator::find(&self.locator.order, shift, &self.divisions, index, seed.division)
+            && Locator::find(
+                self.locator.order_slice(),
+                shift,
+                &self.divisions,
+                index,
+                seed.division,
+            )
                 .is_some_and(|at| {
                     let held = &self.held[at];
                     held.army == seed.pointer
@@ -611,10 +655,12 @@ pub struct Captured {
     pub sources: Option<Result<std::sync::Arc<crate::panel_sources::SourceSnapshot>, &'static str>>,
     pub selected_sources: Vec<(u64, Option<[u64; 3]>)>,
     selected_order: Vec<(u64, u32)>,
+    selected_shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
     pub history:
         Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
     rows: Vec<Row>,
     order: Vec<(u64, u32)>,
+    order_shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
     slabs: Vec<std::sync::Arc<TerrainSlab>>,
     terrain: Vec<i64>,
     movement: Vec<i64>,
@@ -640,6 +686,7 @@ impl Captured {
     pub fn reset(&mut self) {
         self.rows.clear();
         self.order.clear();
+        self.order_shared = None;
         self.slabs.clear();
         self.terrain.clear();
         self.movement.clear();
@@ -841,6 +888,8 @@ impl Captured {
         };
         self.certify_ticks[0] = crate::clock::qpc().saturating_sub(begin).max(0) as u64;
         let ordered_begin = crate::clock::qpc();
+        let vtables = crate::division_experience::Vtables::resolve(base);
+        let history_vtables = engine_native_land::unit_history::SeedVtables::resolve(base);
         for (index, seed) in seeds.iter().enumerate() {
             use collector_observers::unit_history_changes as history_changes;
             let prepared = prepared(index);
@@ -853,8 +902,8 @@ impl Captured {
                     |receiver| store.officer.quiet(seed, receiver, &observations.history),
                 );
                 let value = match quiet {
-                    Some((at, _)) => store.officer.keep(
-                        base,
+                    Some((at, _)) => store.officer.keep_with_vtables(
+                        vtables,
                         seed,
                         at,
                         receiver.is_some_and(|receiver| observations.history.touched(receiver)),
@@ -864,7 +913,7 @@ impl Captured {
                             Some(p) => p.officer_certificate,
                             None => receiver.and_then(history_changes::sequence),
                         };
-                        store.officer.observe_with(base, seed, certificate, || {
+                        store.officer.observe_with_vtables(vtables, seed, certificate, || {
                             prepared
                                 .filter(|p| {
                                     certificate.is_some() && p.officer_certificate == certificate
@@ -903,14 +952,14 @@ impl Captured {
                     .filter(|_| prepared.is_none_or(|p| !p.acquired[3]))
                     .and_then(|_| store.career.quiet(seed, seed.pointer, &observations.history));
                 let value = match quiet {
-                    Some((at, _)) => store.career.keep(base, seed, at, false),
+                    Some((at, _)) => store.career.keep_with_vtables(vtables, seed, at, false),
                     None => {
                         let certificate = match prepared.filter(|p| p.acquired[3]) {
                             Some(p) => p.career_certificate,
                             None => experience_certificate
                                 .and_then(|_| history_changes::sequence(seed.pointer)),
                         };
-                        store.career.observe_with(base, seed, certificate, || {
+                        store.career.observe_with_vtables(vtables, seed, certificate, || {
                             prepared
                                 .filter(|p| {
                                     certificate.is_some() && p.career_certificate == certificate
@@ -935,13 +984,13 @@ impl Captured {
                     })
                     .flatten();
                 let value = match quiet {
-                    Some((at, _)) => store.progression.keep(base, seed, at, false),
+                    Some((at, _)) => store.progression.keep_with_vtables(vtables, seed, at, false),
                     None => {
                         let certificate = match prepared.filter(|p| p.acquired[1]) {
                             Some(p) => p.progression_certificate,
                             None => changes.progression_sequence(seed.pointer),
                         };
-                        store.progression.observe_with(base, seed, certificate, || {
+                        store.progression.observe_with_vtables(vtables, seed, certificate, || {
                             prepared
                                 .filter(|p| {
                                     certificate.is_some()
@@ -961,9 +1010,10 @@ impl Captured {
                 let _reads = collector_memory::read_accounting::table(
                     replay_data::rows::TableId::DivisionHistory,
                 );
-                history_result = store.history.observe_prepared(
+                history_result = store.history.observe_prepared_with_vtables(
                     memory,
                     base,
+                    history_vtables,
                     seed,
                     prepared.and_then(|p| p.history),
                     Some(&store.observations.history),
@@ -972,13 +1022,13 @@ impl Captured {
             if experience_ready {
                 let certificate = experience_certificate;
                 let value = match experience_quiet {
-                    Some((at, _)) => store.experience.keep(
-                        base,
+                    Some((at, _)) => store.experience.keep_with_vtables(
+                        vtables,
                         seed,
                         at,
                         store.observations.experience.touched(seed.pointer),
                     ),
-                    None => store.experience.observe_with(base, seed, certificate, || {
+                    None => store.experience.observe_with_vtables(vtables, seed, certificate, || {
                         prepared
                             .filter(|p| {
                                 certificate.is_some() && p.experience_certificate == certificate
@@ -1020,29 +1070,39 @@ impl Captured {
         }
         self.certify_ticks[1] = crate::clock::qpc().saturating_sub(ordered_begin).max(0) as u64;
         let begin = crate::clock::qpc();
+        let complete = matches!(outcome, Outcome::Rows { .. });
+        if complete {
+            store.shared_index = crate::division_experience::DivisionIndex::for_seeds(
+                store.shared_index.as_ref(),
+                seeds,
+            );
+        } else {
+            store.shared_index = None;
+        }
+        let shared = store.shared_index.as_ref();
         store
             .experience
-            .finish(matches!(outcome, Outcome::Rows { .. }) && experience_ready);
+            .finish_with_index(complete && experience_ready, shared);
         if !self.scalars_deferred {
             store
                 .progression
-                .finish(matches!(outcome, Outcome::Rows { .. }) && progression_ready);
+                .finish_with_index(complete && progression_ready, shared);
             store
                 .officer
-                .finish(matches!(outcome, Outcome::Rows { .. }) && officer_ready);
+                .finish_with_index(complete && officer_ready, shared);
             store
                 .career
-                .finish(matches!(outcome, Outcome::Rows { .. }) && career_ready);
+                .finish_with_index(complete && career_ready, shared);
         }
         if defer_owned {
-            self.history_finish = Some(if matches!(outcome, Outcome::Rows { .. }) {
+            self.history_finish = Some(if complete {
                 history_result
             } else {
                 Err("complete division history census unavailable")
             });
         } else {
-            self.history = Some(if matches!(outcome, Outcome::Rows { .. }) {
-                history_result.and_then(|()| store.history.finish())
+            self.history = Some(if complete {
+                history_result.and_then(|()| store.history.finish_with_index(shared))
             } else {
                 Err("complete division history census unavailable")
             });
@@ -1065,8 +1125,10 @@ impl Captured {
         prepared: impl Fn(usize) -> Option<&'a PreparedDivision>,
     ) {
         use collector_observers::unit_history_changes as history_changes;
+        let shared = store.shared_index.as_ref();
         if std::mem::take(&mut self.scalars_deferred) {
             let seeds = &seeds[..outcome.len().min(seeds.len())];
+            let vtables = crate::division_experience::Vtables::resolve(base);
             let progression_ready = store
                 .progression
                 .begin(seeds.len())
@@ -1089,7 +1151,7 @@ impl Captured {
                     self.officer.push(
                         store
                             .officer
-                            .observe_with(base, seed, p.officer_certificate, || {
+                            .observe_with_vtables(vtables, seed, p.officer_certificate, || {
                                 p.officer.expect("owned officer operand")
                             })
                             .map_err(|_| history_changes::refused())
@@ -1100,7 +1162,7 @@ impl Captured {
                     self.career.push(
                         store
                             .career
-                            .observe_with(base, seed, p.career_certificate, || {
+                            .observe_with_vtables(vtables, seed, p.career_certificate, || {
                                 p.career.expect("owned career operand")
                             })
                             .map_err(|_| history_changes::refused())
@@ -1111,7 +1173,7 @@ impl Captured {
                     self.pending_templates.push(
                         store
                             .progression
-                            .observe_with(base, seed, p.progression_certificate, || {
+                            .observe_with_vtables(vtables, seed, p.progression_certificate, || {
                                 p.progression.expect("owned progression operand")
                             })
                             .map_err(army_stat_changes::progression_refused)
@@ -1120,12 +1182,18 @@ impl Captured {
                 }
             }
             let complete = matches!(outcome, Outcome::Rows { .. });
-            store.progression.finish(complete && progression_ready);
-            store.officer.finish(complete && officer_ready);
-            store.career.finish(complete && career_ready);
+            store
+                .progression
+                .finish_with_index(complete && progression_ready, shared);
+            store
+                .officer
+                .finish_with_index(complete && officer_ready, shared);
+            store
+                .career
+                .finish_with_index(complete && career_ready, shared);
         }
         if let Some(result) = self.history_finish.take() {
-            self.history = Some(result.and_then(|()| store.history.finish()));
+            self.history = Some(result.and_then(|()| store.history.finish_with_index(shared)));
             if !matches!(self.history, Some(Ok(_))) {
                 store.history.forget();
             }
@@ -1390,8 +1458,22 @@ impl Captured {
             }
         }
         self.order.clear();
-        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, self.rows.len()))
-            .is_ok()
+        self.order_shared = None;
+        if let Some(shared) = store
+            .as_deref()
+            .and_then(|store| store.shared_index.as_ref())
+            && self.rows.len() == shared.divisions.len()
+            && self
+                .rows
+                .iter()
+                .zip(&shared.divisions)
+                .all(|(row, &division)| row.division == division)
+        {
+            self.order_shared = Some(std::sync::Arc::clone(shared));
+        } else if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.order, self.rows.len())
+        })
+        .is_ok()
         {
             self.order.extend(
                 self.rows
@@ -1417,6 +1499,20 @@ impl Captured {
         army_stat_changes::record(&counts, complete.then_some(seeds.len()));
     }
 
+    fn order_slice(&self) -> &[(u64, u32)] {
+        self.order_shared
+            .as_deref()
+            .map_or(self.order.as_slice(), |shared| shared.sorted.as_slice())
+    }
+
+    fn selected_order_slice(&self) -> &[(u64, u32)] {
+        self.selected_shared
+            .as_deref()
+            .map_or(self.selected_order.as_slice(), |shared| {
+                shared.sorted.as_slice()
+            })
+    }
+
     pub fn pending_template(&self, division: u64) -> Option<u64> {
         self.row(division)?.pending_template
     }
@@ -1430,6 +1526,18 @@ impl Captured {
 
     pub fn index_selected_sources(&mut self) {
         self.selected_order.clear();
+        self.selected_shared = None;
+        if let Some(shared) = &self.order_shared
+            && self.selected_sources.len() == shared.divisions.len()
+            && self
+                .selected_sources
+                .iter()
+                .zip(&shared.divisions)
+                .all(|(&(division, _), &expected)| division == expected)
+        {
+            self.selected_shared = Some(std::sync::Arc::clone(shared));
+            return;
+        }
         if engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.selected_order, self.selected_sources.len())
         })
@@ -1449,23 +1557,24 @@ impl Captured {
     pub fn clear_selected_sources(&mut self) {
         self.selected_sources.clear();
         self.selected_order.clear();
+        self.selected_shared = None;
     }
     fn indexed_sources(&self) -> bool {
-        self.selected_order.len() == self.selected_sources.len()
+        self.selected_order_slice().len() == self.selected_sources.len()
     }
     pub fn panel_source(&self, division: u64) -> Option<[u64; 3]> {
-        if !self.indexed_sources() {
+        let selected_order = self.selected_order_slice();
+        if selected_order.len() != self.selected_sources.len() {
             return self
                 .selected_sources
                 .binary_search_by_key(&division, |row| row.0)
                 .ok()
                 .and_then(|at| self.selected_sources[at].1);
         }
-        let at = self
-            .selected_order
+        let at = selected_order
             .binary_search_by_key(&division, |entry| entry.0)
             .ok()?;
-        self.selected_sources[self.selected_order[at].1 as usize].1
+        self.selected_sources[selected_order[at].1 as usize].1
     }
     fn panel_source_at(&self, position: usize, division: u64) -> Option<[u64; 3]> {
         match self.selected_sources.get(position) {
@@ -1485,7 +1594,7 @@ impl Captured {
         let row = self
             .rows
             .get(position)
-            .filter(|row| row.division == division && self.order.len() == self.rows.len())
+            .filter(|row| row.division == division && self.order_slice().len() == self.rows.len())
             .or_else(|| self.row(division));
         RowView {
             captured: self,
@@ -1496,17 +1605,18 @@ impl Captured {
     }
 
     fn row(&self, division: u64) -> Option<&Row> {
-        if self.order.len() != self.rows.len() {
+        let order = self.order_slice();
+        if order.len() != self.rows.len() {
             return self
                 .rows
                 .binary_search_by_key(&division, |row| row.division)
                 .ok()
                 .map(|at| &self.rows[at]);
         }
-        self.order
+        order
             .binary_search_by_key(&division, |entry| entry.0)
             .ok()
-            .map(|at| &self.rows[self.order[at].1 as usize])
+            .map(|at| &self.rows[order[at].1 as usize])
     }
 
     pub fn view(&self, division: u64) -> RowView<'_> {
@@ -1546,6 +1656,15 @@ impl Captured {
     }
 
     pub fn has_unique_divisions(&self, rows: &[engine_native::carmy::StatusRow]) -> bool {
+        if let Some(shared) = &self.order_shared {
+            return shared.unique
+                && self.rows.len() == rows.len()
+                && self
+                    .rows
+                    .iter()
+                    .zip(rows)
+                    .all(|(a, r)| a.division == r.division);
+        }
         self.order.len() == rows.len()
             && self.rows.len() == rows.len()
             && self

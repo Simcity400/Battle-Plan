@@ -212,6 +212,11 @@ pub(super) struct Reader<'a, M: Memory> {
     receiver_handle: Option<u64>,
     certified: Option<Censuses<'a>>,
     stat_view: cship::GatheredObject<3>,
+    ship_vtable: Option<u64>,
+    stat_vtable: Option<u64>,
+    fleet_vtable: Option<u64>,
+    navy_leader_vtable: Option<u64>,
+    character_vtable: Option<u64>,
 }
 
 fn field<T: engine_native_memory::memory::Raw>(
@@ -226,12 +231,20 @@ fn field<T: engine_native_memory::memory::Raw>(
     read(memory, address).ok_or("fresh task-force operand unreadable")
 }
 
-fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
-    let expected = engine_sites::at(base, rva).ok_or("fresh task-force module overflow")? as u64;
+fn auth_expected(
+    memory: &impl Memory,
+    expected: Option<u64>,
+    pointer: usize,
+) -> Result<(), &'static str> {
+    let expected = expected.ok_or("fresh task-force module overflow")?;
     if field::<u64>(memory, pointer, 0)? != expected {
         return Err("fresh task-force source identity mismatch");
     }
     Ok(())
+}
+
+fn auth(memory: &impl Memory, base: usize, pointer: usize, rva: Rva) -> Result<(), &'static str> {
+    auth_expected(memory, engine_sites::at(base, rva).map(|v| v as u64), pointer)
 }
 
 const ROSTER_SHIP: [(usize, usize); 4] = [
@@ -297,12 +310,11 @@ impl<'a> RosterShip<'a> {
     fn admit(
         &self,
         memory: &impl Memory,
-        base: usize,
+        expected_vtable: Option<u64>,
         task: usize,
         parent_mismatch: &'static str,
     ) -> Result<(), &'static str> {
-        let expected = engine_sites::at(base, cship::VTABLE_RVA)
-            .ok_or("fresh task-force module overflow")? as u64;
+        let expected = expected_vtable.ok_or("fresh task-force module overflow")?;
         if self.get::<u64>(memory, 0)? != expected {
             return Err("fresh task-force source identity mismatch");
         }
@@ -353,6 +365,16 @@ impl<'a, M: Memory> Reader<'a, M> {
             receiver_handle: None,
             certified: None,
             stat_view: cship::GatheredObject::gather(memory, 0, STAT_FIELDS),
+            ship_vtable: engine_sites::at(base, cship::VTABLE_RVA).map(|v| v as u64),
+            stat_vtable: engine_sites::at(base, csub_unit_definition::VTABLE_RVA).map(|v| v as u64),
+            fleet_vtable: engine_sites::at(base, cfleet::VTABLE_RVA).map(|v| v as u64),
+            navy_leader_vtable: engine_sites::at(
+                base,
+                engine_native_parts::cnavy_leader::VTABLE_RVA,
+            )
+            .map(|v| v as u64),
+            character_vtable: engine_sites::at(base, crate::ccharacter::VTABLE_RVA)
+                .map(|v| v as u64),
         }
     }
 
@@ -762,7 +784,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let mut leader_certificate = Some((0, 0));
         let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
         let fleet_memory = fleet_fields.memory(self.memory);
-        auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
+        auth_expected(&fleet_memory, self.fleet_vtable, fleet)?;
         let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
         let leader = self.references.resolve(self.memory, reference)?;
         if let Some(leader) = leader {
@@ -772,12 +794,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                 .and_then(|(_, _, leaders)| leaders(leader));
             let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
             let leader_memory = leader_fields.memory(self.memory);
-            auth(
-                &leader_memory,
-                self.base,
-                leader,
-                engine_native_parts::cnavy_leader::VTABLE_RVA,
-            )?;
+            auth_expected(&leader_memory, self.navy_leader_vtable, leader)?;
             if field::<u64>(&leader_memory, leader, 8)? != reference {
                 return Err("fresh task-force fleet leader reference mismatch");
             }
@@ -938,7 +955,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let mut visit = |reader: &mut Self, ordinal, ship: &RosterShip<'_>| {
             ship.admit(
                 reader.memory,
-                reader.base,
+                reader.ship_vtable,
                 task,
                 "fresh task-force ship parent mismatch",
             )?;
@@ -1023,12 +1040,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         let Some(character) = self.references.resolve(self.memory, reference)? else {
             return Ok(());
         };
-        auth(
-            self.memory,
-            self.base,
-            character,
-            crate::ccharacter::VTABLE_RVA,
-        )?;
+        auth_expected(self.memory, self.character_vtable, character)?;
         if field::<u64>(self.memory, character, 8)? != reference {
             return Err("fresh task-force commander character mismatch");
         }
@@ -1049,12 +1061,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         if field::<i32>(self.memory, leader, mission::UNIT_LEADER_KIND)? != 2 {
             return Ok(());
         }
-        auth(
-            self.memory,
-            self.base,
-            leader,
-            engine_native_parts::cnavy_leader::VTABLE_RVA,
-        )?;
+        auth_expected(self.memory, self.navy_leader_vtable, leader)?;
         for offset in mission::UNIT_LEADER_SOURCES {
             let source = field::<u64>(self.memory, leader, offset)? as usize;
             sum(
@@ -1190,12 +1197,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     fn stats(&mut self, task: usize) -> Result<usize, &'static str> {
         let stats = field::<u64>(self.memory, task, cunit::STAT_BLOCK)? as usize;
         self.stat_view = gather(self.memory, stats, STAT_FIELDS);
-        auth(
-            &self.stat_view.memory(self.memory),
-            self.base,
-            stats,
-            csub_unit_definition::VTABLE_RVA,
-        )?;
+        auth_expected(&self.stat_view.memory(self.memory), self.stat_vtable, stats)?;
         Ok(stats)
     }
 
@@ -1226,7 +1228,7 @@ impl<'a, M: Memory> Reader<'a, M> {
                             let ship = RosterShip::gather(self.memory, ship);
                             ship.admit(
                                 self.memory,
-                                self.base,
+                                self.ship_vtable,
                                 task,
                                 "risk original ship parent mismatch",
                             )?;

@@ -107,6 +107,26 @@ int seh_guarded_copy4(unsigned char *dst, const unsigned char *src) {
     }
 }
 
+uint32_t seh_guarded_read1(const unsigned char *src) {
+    __try {
+        return 0x100u | (uint32_t)(*src);
+    } __except (copy_fault(GetExceptionInformation(), src, 1, src)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 0;
+    }
+}
+
+uint32_t seh_guarded_read2(const unsigned char *src) {
+    __try {
+        uint16_t value;
+        memcpy(&value, src, 2);
+        return 0x10000u | (uint32_t)value;
+    } __except (copy_fault(GetExceptionInformation(), src, 2, src)
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 0;
+    }
+}
+
 uint64_t seh_guarded_read4(const unsigned char *src) {
     __try {
         uint32_t value;
@@ -368,20 +388,25 @@ static __forceinline void hint_record_fields(const uintptr_t *pointers,
                                              size_t row,
                                              const RecordField *fields,
                                              size_t count) {
-    uintptr_t pointer = 0;
-    int have_pointer = 0;
+    if (count == 0) {
+        return;
+    }
+    uintptr_t pointer = record_pointer(pointers, base, stride, row);
+    uintptr_t last_line = 0;
     for (size_t index = 0; index < count; ++index) {
         const RecordField *field = &fields[index];
         if (field->len != 0) {
-            if (!have_pointer) {
-                pointer = record_pointer(pointers, base, stride, row);
-                have_pointer = 1;
-            }
             uintptr_t first = pointer + field->source_offset;
+            uintptr_t first_line = first >> 6;
+            if (first_line != last_line) {
+                _mm_prefetch((const char *)first, _MM_HINT_T0);
+                last_line = first_line;
+            }
             uintptr_t last = first + field->len - 1;
-            _mm_prefetch((const char *)first, _MM_HINT_T0);
-            if ((first >> 6) != (last >> 6)) {
+            uintptr_t end_line = last >> 6;
+            if (end_line != last_line) {
                 _mm_prefetch((const char *)last, _MM_HINT_T0);
+                last_line = end_line;
             }
         }
     }
@@ -592,18 +617,13 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                     hinted_fields += count;
                     ++hinted_rows;
                 }
-                uintptr_t pointer = 0;
-                int have_pointer = 0;
                 unsigned char *target = destination + row * row_stride;
                 size_t remaining = validated_field_count - index;
                 size_t row_fields = remaining < field_count ? remaining : field_count;
+                uintptr_t pointer = record_pointer(pointers, source_base, source_stride, row);
                 for (size_t field_index = 0; field_index < row_fields; ++field_index) {
                     const RecordField *field = &fields[field_index];
                     if (field->len != 0) {
-                        if (!have_pointer) {
-                            pointer = record_pointer(pointers, source_base, source_stride, row);
-                            have_pointer = 1;
-                        }
                         uintptr_t address = pointer + field->source_offset;
                         copy_bytes(target + field->destination_offset,
                                    (const unsigned char *)address, field->len);

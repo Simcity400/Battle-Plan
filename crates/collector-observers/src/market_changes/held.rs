@@ -637,8 +637,7 @@ pub fn seed_contract(memory: &impl Memory, base: usize, pointer: usize, id: u64,
     }
     let result = read_contract(memory, base, pointer, false).and_then(|row| {
         let at = pointer + market::CONTRACT_VARIABLES;
-        VARIABLES_WATCH
-            .register(at)
+        super::register_variable_watch(at)
             .ok_or("market contract variable certificate unavailable")?;
         state
             .variable_owners
@@ -1016,8 +1015,7 @@ fn acquire_admissions(state: &mut State, memory: &impl Memory, base: usize) {
             }
             if key.2 == 1 {
                 let at = pointer + market::CONTRACT_VARIABLES;
-                VARIABLES_WATCH
-                    .register(at)
+                super::register_variable_watch(at)
                     .ok_or("market new contract variable certificate unavailable")?;
                 state.variable_owners.insert(at, key);
             }
