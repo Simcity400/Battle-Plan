@@ -158,7 +158,7 @@ pub fn source_with_content(
             revision: "1".into(),
         },
         "memory.battleplan".into(),
-        std::sync::Arc::new(with_facts(&options, &identity, input)),
+        std::sync::Arc::new(with_facts(&options, &identity, input).into_timelines(&Default::default()).unwrap()),
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap();
