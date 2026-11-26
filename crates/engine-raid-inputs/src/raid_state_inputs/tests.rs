@@ -807,8 +807,9 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     m.0.remove(&0x4300_3000);
     let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
     let only_two = Selection {
-        states: &|state| state == 2,
+        states: Some(&|state| state == 2),
         countries: &|_| false,
+        extra_inputs: &|_| false,
         any_country: false,
     };
     let read = walk(&m, 0, GS, &mut buffers, only_two);
@@ -824,16 +825,18 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     assert_eq!(buffers.inputs[0].state, 2);
     let m = fixture();
     let country = Selection {
-        states: &|_| false,
+        states: None,
         countries: &|country| country == 1,
+        extra_inputs: &|_| false,
         any_country: true,
     };
     let read = walk(&m, 0, GS, &mut buffers, country);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [0, 0, 0, 2]);
     assert_eq!(buffers.overrides[0].country, 1);
     let one = Selection {
-        states: &|state| state == 1,
+        states: Some(&|state| state == 1),
         countries: &|_| false,
+        extra_inputs: &|_| false,
         any_country: false,
     };
     let read = walk(&m, 0, GS, &mut buffers, one);
@@ -862,6 +865,15 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         ),
         alone
     );
+    let full_inputs = buffers.inputs[..2].to_vec();
+    let mixed = Selection {
+        extra_inputs: &|state| state == 1,
+        ..only_two
+    };
+    let read = walk(&m, 0, GS, &mut buffers, mixed);
+    assert_eq!(read.outcomes, [2, 0, 0, 0].map(|len| Outcome::Rows { len }));
+    assert_eq!(buffers.inputs[..2], full_inputs);
+    assert!(buffers.read_countries.is_empty());
     let read = walk(&m, 0, GS, &mut buffers, only_two);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
     assert!(buffers.read_countries.is_empty());
@@ -885,6 +897,20 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
             reason: "state vtable mismatch"
         }
     );
+    let mut damaged = fixture();
+    damaged.0.remove(&(STATE_A + cstate::DYNAMIC_MODIFIERS));
+    damaged.0.remove(&(STATE_A + cstate::RESOURCE_POOL));
+    damaged.0.remove(&(RESOURCES + ccountry_resources::BUILDING_RESOURCE_OVERRIDES));
+    let input_only = Selection {
+        states: None,
+        extra_inputs: &|state| state == 1,
+        countries: &|_| false,
+        any_country: false,
+    };
+    let read = walk(&damaged, 0, GS, &mut buffers, input_only);
+    assert_eq!(read.outcomes, [1, 0, 0, 0].map(|len| Outcome::Rows { len }));
+    assert_eq!(buffers.inputs[0], alone.0);
+    assert!(buffers.read_countries.is_empty());
 }
 
 #[test]

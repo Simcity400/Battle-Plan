@@ -319,6 +319,25 @@ impl SliceSelection {
         self.daily = true;
     }
 
+    pub fn extend_reads(&mut self, scheduled: &Self, extra: impl Fn(u32) -> bool) {
+        self.reset_hooked(scheduled.hour, scheduled.force_full);
+        self.census = scheduled.census;
+        self.scan_ticks = scheduled.scan_ticks;
+        self.scanned = scheduled.scanned;
+        for &owner in scheduled.seen.as_slice() {
+            if !self.seen.insert(owner) {
+                self.out_of_range += 1;
+                self.force_full = true;
+            }
+            if scheduled.contains(owner) || extra(owner) {
+                self.select(owner);
+            }
+        }
+        for &owner in scheduled.marked.as_slice() {
+            self.mark(owner);
+        }
+    }
+
     pub fn reads_any(&self) -> bool {
         self.force_full
             || !self.early.is_empty()

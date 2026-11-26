@@ -78,13 +78,15 @@ pub struct Captured {
     built: native::Capacity,
     census: Vec<u32>,
     states: SliceSelection,
+    scheduled: SliceSelection,
     countries: SliceSelection,
 }
 
 impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.outcomes = [super::failed_capture(TABLES[0], hour, force_full, reason); N];
-        self.states.reset(hour, force_full);
+        self.states.reset_hooked(hour, force_full);
+        self.scheduled.reset(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
     pub fn vacant() -> Self {
@@ -99,6 +101,7 @@ impl Captured {
             built: native::Capacity::zero(),
             census: Vec::new(),
             states: SliceSelection::new(),
+            scheduled: SliceSelection::new(),
             countries: SliceSelection::new(),
         }
     }
@@ -116,6 +119,7 @@ impl Captured {
             built: capacity.walk,
             census: owned_vec(vec(capacity.walk.states)),
             states: SliceSelection::new(),
+            scheduled: SliceSelection::new(),
             countries: SliceSelection::new(),
         }
     }
@@ -167,12 +171,21 @@ impl Captured {
     }
 
     pub fn reset_selections(&mut self, hour: i32, force_full: bool) {
-        self.states.reset(hour, force_full);
+        self.states.reset_hooked(hour, force_full);
+        self.scheduled.reset(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
 
     pub fn state_selection(&self) -> &SliceSelection {
         &self.states
+    }
+
+    pub fn table_selection(&self, table: TableId) -> &SliceSelection {
+        if table == TableId::StateResourceInputs {
+            &self.states
+        } else {
+            &self.scheduled
+        }
     }
 
     pub fn country_selection(&self) -> &SliceSelection {
@@ -218,7 +231,8 @@ impl Captured {
         self.buffers.recruitment_enabled =
             stores.is_none() && cfg!(any(test, feature = "test-support"));
         let full = force_full || stores.is_none();
-        self.states.reset(hour, full);
+        self.states.reset_hooked(hour, full);
+        self.scheduled.reset(hour, full);
         self.countries.reset_hooked(hour, full);
         if !should_walk(TABLES[0], hour, force_full) {
             self.outcomes = [Outcome::Unavailable {
@@ -237,7 +251,7 @@ impl Captured {
             let states = scan_census.is_ok();
             for &state in &self.census {
                 let origin = stores.states.held(state);
-                self.states.scan_drifting(
+                self.scheduled.scan_drifting(
                     stores.states,
                     state,
                     Some(origin.unwrap_or(0)),
@@ -245,11 +259,11 @@ impl Captured {
                 );
             }
             stores.states.finish_scan();
-            self.states.finish_pass(stores.states, states);
+            self.scheduled.finish_pass(stores.states, states);
             if states {
                 ids[0] = self.census.iter().max().map(|&id| id as usize + 1);
             }
-            self.states.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
+            self.scheduled.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
             let scan = qpc();
             let reader = ccountry::Reader::new(memory, base, game_state).ok();
             let countries = match reader.as_ref() {
@@ -277,10 +291,11 @@ impl Captured {
             }
             self.countries.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
             let changes = stores.changes;
-            let states = &mut self.states;
+            let states = &mut self.scheduled;
             let epoch = changes.take(Family::States, &mut |id| states.mark(id as u32));
             self.buffers.recruitment_enabled = epoch.is_some();
             states.certify(stores.states, epoch);
+            self.states.extend_reads(states, |state| stores.states.held(state) == Some(1));
             let mut resolved = true;
             let countries = &mut self.countries;
             let epoch = changes.take(Family::Countries, &mut |raw| match reader
@@ -294,14 +309,18 @@ impl Captured {
         }
         let (states, countries) = (&self.states, &self.countries);
         let (any_state, any_country) = (states.reads_any(), countries.reads_any());
+        let any_scheduled = self.scheduled.reads_any();
+        let scheduled = |state| self.scheduled.contains(state);
         let select = native::Selection {
-            states: &|state| states.contains(state),
+            states: any_scheduled.then_some(&scheduled),
+            extra_inputs: &|state| states.contains(state),
             countries: &|country| countries.contains(country),
             any_country,
         };
         let walk = if !any_state && !any_country {
             self.buffers.read_countries.clear();
             native::Walk {
+                detail_ticks: [0; 3],
                 outcomes: [Outcome::Rows { len: 0 }; 4],
                 token_bytes: 0,
                 required: native::Capacity::zero(),
@@ -325,7 +344,7 @@ impl Captured {
             native::state_census(memory, game_state, &mut self.census)
         };
         let cores = match census {
-            Ok(()) if !any_state => Outcome::Rows { len: 0 },
+            Ok(()) if !any_scheduled => Outcome::Rows { len: 0 },
             Err(error) => {
                 crate::allocation::observe(&error);
                 Outcome::Unavailable {
@@ -341,7 +360,7 @@ impl Captured {
                 base,
                 game_state,
                 &self.census,
-                &|state| states.contains(state),
+                &|state| self.scheduled.contains(state),
                 &mut self.cores,
                 &mut self.core_links,
                 &mut self.core_required,
@@ -357,11 +376,12 @@ impl Captured {
         if scanned {
             self.record_counts(ids);
         }
+        let [resources, modifiers, overrides] = walk.detail_ticks;
         [
-            walked,
-            0,
-            0,
-            0,
+            walked.saturating_sub(resources + modifiers + overrides),
+            resources,
+            modifiers,
+            overrides,
             qpc().saturating_sub(cores_started).max(0) as u64,
         ]
     }
@@ -626,7 +646,18 @@ mod tests {
         assert_eq!((marked.states, marked.countries), (vec![], vec![2]));
         states.hold(1, 1);
         assert_eq!(read!(&watches, 25).states, [1]);
-        assert!(read!(&watches, 26).states.is_empty());
+        let off_slot = read!(&watches, 26);
+        assert_eq!(off_slot.states, [1]);
+        for table in [
+            TableId::StateResources,
+            TableId::StateDynamicModifiers,
+            TableId::StateCores,
+        ] {
+            assert!(!captured.table_selection(table).contains(1), "{table:?}");
+        }
+        assert!(captured.table_selection(TableId::StateResourceInputs).contains(1));
+        assert_eq!(off_slot.outcomes[1..], [Outcome::Rows { len: 0 }; 4]);
+        states.hold(1, 0);
         watches.boundary(true);
         let invalidated = read!(&watches, 27);
         assert!(invalidated.full);

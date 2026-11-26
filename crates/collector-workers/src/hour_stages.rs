@@ -107,12 +107,14 @@ pub enum Part {
     VariantsSetup,
     ScoresRailsWait,
     RaidStateWait,
+    RaidStateDispatch,
+    RaidStateHandoff,
     IntelResidualWait,
     OrdinaryNaviesWait,
     PresentationSpeedTermsWait,
 }
 
-const PARTS: [&str; 24] = [
+const PARTS: [&str; 26] = [
     "settle_sources",
     "settle_certify",
     "settle_daily",
@@ -134,6 +136,8 @@ const PARTS: [&str; 24] = [
     "variants_setup",
     "scores_rails_wait",
     "raid_state_wait",
+    "raid_state_dispatch",
+    "raid_state_handoff",
     "intel_residual_wait",
     "ordinary_navies_wait",
     "presentation_speed_terms_wait",
