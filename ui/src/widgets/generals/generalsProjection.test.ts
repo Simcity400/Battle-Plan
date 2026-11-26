@@ -133,11 +133,28 @@ test('a commander is named as at the hour, the portrait is the art cache’s, an
   assert.equal(generalsProjection.nextChange!(readView, OPTIONS), 250);
 });
 
-test('battle counts from a partly recorded battle log are partial; the win rate splits won against lost', () => {
-  const model = generalsProjection.project(view(reply([leader('1', land)], 50)), OPTIONS);
-  const cells = model.rows[0]!.cells;
+test('battle counts from a partly recorded battle log are partial and withhold win rate and its rank; exact logs split won against lost', () => {
+  const exact = generalsProjection.project(view(reply([leader('1', land)], 150)), OPTIONS);
+  const exactCells = exact.rows[0]!.cells;
+  assert.equal(exactCells.won!.value.kind, 'known');
+  assert.deepEqual([exactCells.winRate!.value, exactCells.winRate!.secondaryValue], [{ kind: 'known', value: 3 }, { kind: 'known', value: 1 }]);
+  assert.deepEqual(exactCells.winRate!.sortValue, { kind: 'known', value: 75 });
+
+  const partial = generalsProjection.project(view(reply([leader('2', land, { won: 4, lost: 0 })], 50)), OPTIONS);
+  const cells = partial.rows[0]!.cells;
   assert.equal(cells.won!.value.kind, 'partial');
-  assert.deepEqual([cells.winRate!.value, cells.winRate!.secondaryValue], [{ kind: 'known', value: 3 }, { kind: 'known', value: 1 }]);
+  assert.equal(cells.lost!.value.kind, 'partial');
+  assert.equal(cells.winRate!.value.kind, 'notRecorded', 'partial battle counts withhold the derived win rate');
+  assert.equal(cells.winRate!.secondaryValue?.kind, 'notRecorded');
+  assert.equal(cells.winRate!.sortValue?.kind, 'notRecorded', 'partial battle counts withhold the win rate rank');
+
+  const mixedModel = {
+    ...exact,
+    rows: [partial.rows[0]!, exact.rows[0]!],
+  };
+  const byWinRate = tableDefaults(COLUMNS, { ...TABLE_BASE, sort: { column: 'winRate', direction: 'descending' } });
+  const ranked = resolveTableRows(mixedModel, byWinRate).filter(row => row.kind === 'data');
+  assert.deepEqual(ranked.map(row => row.key), ['1', '2'], 'exact win rate ranks ahead of withheld partial win rate');
 });
 
 test('the read asks only for the countries the filter ever passes', () => {
