@@ -29,12 +29,16 @@ export function airParams(mode: AirModeSettings) {
 export function airPercent(score: number, total: number): string { return total > 0 ? `${Math.round(score * 100 / total)}%` : '—'; }
 export const airScore = (score: number, scale: number): string => formatAmount(rescale(BigInt(Math.trunc(score)), scale, 2), 2);
 
-export function factionNamer(factions: readonly FactionGroup[], own: ReadonlyMap<string, string>, hour: number | null) {
-  const byId = new Map(factions.map(faction => [faction.id, faction]));
+export function factionNamer(dated: readonly FactionGroup[], campaign: readonly FactionGroup[], own: ReadonlyMap<string, string>, at: number | 'not-recorded' | null) {
+  const datedById = new Map(dated.map(faction => [faction.id, faction]));
+  const campaignById = new Map(campaign.map(faction => [faction.id, faction]));
   return (id: string) => {
-    const faction = byId.get(id);
-    if (!faction) return own.get(id) ?? `Faction ${id}`;
-    return factionNameAt(faction, hour ?? undefined, own.get(id)).name ?? 'Name not recorded';
+    const mine = own.get(id);
+    if (mine) return mine;
+    if (at === null) return campaignById.get(id)?.name ?? `Faction ${id}`;
+    const faction = datedById.get(id);
+    if (at === 'not-recorded' || !faction) return 'Name not recorded';
+    return factionNameAt(faction, at).name ?? 'Name not recorded';
   };
 }
 

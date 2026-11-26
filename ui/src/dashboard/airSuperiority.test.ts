@@ -24,15 +24,19 @@ test('a reply naming a side it does not hold is refused', () => {
   assert.throws(() => validateAirSuperiority({ ...reply, scale: 0 }));
 });
 
-test('a side chooser names each faction as it was named at the widget\'s hour, and says when no name is recorded then', () => {
+test('a side chooser names each faction as its branch named it at the widget\'s hour, and says when no name is recorded then', () => {
   const run = (firstHour: number, lastHour: number, name: string | null) => ({ firstHour, lastHour, name, reason: name ? null : 'Not recorded', token: null });
-  const league: FactionGroup = { id: '7', name: 'New League', nameReason: null, names: [run(10, 20, 'Old League'), run(21, 46, null), run(47, 99, 'New League')],
-    recordedName: 'New League', firstHour: 10, lastHour: 99, members: [], leaders: [], incomplete: [] };
-  const named = (hour: number | null) => factionNamer([league], new Map(), hour)('7');
-  assert.equal(named(15), 'Old League');
+  const group = (names: FactionGroup['names'], name: string): FactionGroup => ({ id: '7', name, nameReason: null, names,
+    recordedName: name, firstHour: 10, lastHour: 99, members: [], leaders: [], incomplete: [] });
+  const branch = group([run(10, 20, 'Old League'), run(21, 46, null), run(47, 99, 'New League')], 'New League');
+  const campaign = group([run(10, 99, 'Other Branch League')], 'Other Branch League');
+  const named = (at: number | 'not-recorded' | null, own = new Map<string, string>()) => factionNamer([branch], [campaign], own, at)('7');
+  assert.equal(named(15), 'Old League', 'the name the widget\'s own branch recorded at the hour');
   assert.equal(named(30), 'Name not recorded', 'an hour with no recorded name never shows a later rename');
   assert.equal(named(60), 'New League');
-  assert.equal(named(null), 'New League', 'outside the recording the chooser keeps the campaign-wide name');
-  assert.equal(factionNamer([league], new Map([['7', 'My allies']]), 15)('7'), 'My allies', "the user's own name for a faction wins");
-  assert.deepEqual(factionNameChanges([league]), [10, 21, 47, 100]);
+  assert.equal(named('not-recorded'), 'Name not recorded', 'a gap in the recording is not the campaign\'s latest name');
+  assert.equal(named(null), 'Other Branch League', 'outside the recording the chooser keeps the campaign-wide name');
+  assert.equal(factionNamer([], [campaign], new Map(), 60)('7'), 'Name not recorded', 'a faction the branch does not hold is not named from elsewhere');
+  assert.equal(named(15, new Map([['7', 'My allies']])), 'My allies', "the user's own name for a faction wins");
+  assert.deepEqual(factionNameChanges([branch]), [10, 21, 47, 100]);
 });
