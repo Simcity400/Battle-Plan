@@ -1,3 +1,4 @@
+import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -225,4 +226,14 @@ test('an empty timeline says why: the chart left its active regions out, the hou
   assert.deepEqual(body({ kind: 'none' }), ['No air activity at this date.', 'empty']);
   const pinnedOnly = projectAirTimeline(view(50, reply(50, { rankMissing: 'Air scores were read only in part at this hour, so the most active regions are not known' })), OPTIONS);
   assert.ok(pinnedOnly.warnings?.includes('Air scores were read only in part at this hour, so the most active regions are not known'), 'beside the picks, an unranked hour is said, not hidden');
+});
+
+test('a hundred played hours share the air history and grow only the last run', () => {
+  const data = reply(240, { dayHours: 120, days: [119, null, 240] });
+  const at = (hour: number) => projectAirTimeline(view(hour, { ...structuredClone(data), lastHour: hour, days: [119, null, hour] }), OPTIONS);
+  assertRunCounts(240, hour => at(hour).rows[0]!.runs);
+  const prior = at(275);
+  const corrected = reply(275, { dayHours: 120, days: [119, null, 275], rows: [{ ...data.rows[0]!, cells: [[3, null]] }] });
+  assert.equal(projectAirTimeline(view(275, corrected), OPTIONS).inspect!(0, 270)?.missingReason, 'Not recorded on this day');
+  assert.equal(prior.inspect!(0, 270)?.items?.[0]?.label, 'Contested');
 });

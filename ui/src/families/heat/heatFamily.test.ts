@@ -16,7 +16,7 @@ import {
 import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
 import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
-import { hitHeatLanes, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
+import { hitHeatLanes, LanePixels, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
 import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure } from '../laneRuntime.fixture.ts';
 import { createLaneView } from '../laneRuntime.ts';
@@ -563,4 +563,17 @@ test('K5: heat lanes crosshair line and hover date tab share one hour-to-pixel t
   assert.ok(crosshairMove, 'crosshair line is drawn at hourToLaneX(12)');
   const tabText = fake.ops.find(op => op.op === 'fillText' && Number(op.args[2]) > layout.plotTop + layout.plotHeight && Math.abs(Number(op.args[1]) - expectedX) < 1);
   assert.ok(tabText, `hover date tab should centre at ${expectedX}px to match the crosshair`);
+});
+
+test('a warm heat lane keeps its spans until its runs or horizontal layout change', () => {
+  const cells = [{ kind: 'clear' }, { kind: 'missing', reason: 'Absent' }] as const;
+  const runs = cells.map((cell, hour) => ({ cell, firstHour: hour, lastHour: hour, readHour: hour }));
+  const pixels = new LanePixels();
+  const spans = projectLaneRunsToPixels(runs, 0, 1, 1, 0, 100, pixels);
+  const first = spans[0];
+  assert.equal(projectLaneRunsToPixels(runs, 0, 1, 1, 0, 100, pixels), spans);
+  assert.equal(projectLaneRunsToPixels(runs, 0, 1, 1, 12, 200, pixels)[0], first);
+  assert.deepEqual([first!.x, first!.width], [12, 100]);
+  assert.equal(projectLaneRunsToPixels(runs, 0, 1, 0, 12, 200, pixels).length, 1);
+  assert.deepEqual(projectLaneRunsToPixels([], 0, 1, 1, 12, 200, pixels), []);
 });
