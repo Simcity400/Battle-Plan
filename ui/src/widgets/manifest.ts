@@ -13,6 +13,7 @@ import {
   type NativeWidgetEntry,
 } from '../families/manifest.ts';
 import { FAMILY_VIEWS } from './familyManifest.ts';
+import type { ProjectionKey } from '../draw/laneMessages';
 
 export { DEFAULT_VIEW, FAMILY_VIEWS };
 
@@ -101,6 +102,17 @@ const EMPTY_FAMILY: readonly FamilyViewEntry[] = [];
 
 export function familyViewsForKind(kind: string): readonly FamilyViewEntry[] {
   return familyByKind.get(kind) ?? EMPTY_FAMILY;
+}
+
+export function laneModules(kinds: Iterable<string>): { readonly families: string[]; readonly projections: ProjectionKey[] } {
+  const families = new Set<string>();
+  const projections = new Map<string, ProjectionKey>();
+  for (const kind of new Set(kinds)) for (const entry of familyViewsForKind(kind)) {
+    families.add(entry.family);
+    const view = normalizeView(entry.view);
+    projections.set(`${entry.family}\u0000${kind}\u0000${view}`, [entry.family, kind, view]);
+  }
+  return { families: [...families], projections: [...projections.values()] };
 }
 
 export function manifestFamilyView(kind: string, view?: string): FamilyViewEntry | undefined {

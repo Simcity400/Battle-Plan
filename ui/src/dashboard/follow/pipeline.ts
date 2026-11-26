@@ -7,7 +7,7 @@ import { Page, type PageMessage, type PageSurface, type RebindChange, type Widge
 import type { Channel } from './facts';
 import type { Binding, Dated, Supply } from '../../draw/lane';
 import { PayloadSender } from './payloads.ts';
-import type { FromLane, ToLane } from '../../draw/laneMessages';
+import type { FromLane, ProjectionKey, ToLane } from '../../draw/laneMessages';
 import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
@@ -97,12 +97,16 @@ export class Pipeline {
   private stopPublish: (() => void) | null = null;
   private stopClock: (() => void) | null = null;
   private rate: number;
+  private prepareAsk = 0;
+  private preparedAt: number[];
+  private readonly preparedWaiters = new Set<() => void>();
 
   constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
     this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
+    this.preparedAt = Array.from({ length: count }, () => 0);
     this.costLoads = Array.from({ length: count }, () => 0);
     this.nextSub = Array.from({ length: count }, () => 1);
     this.payloads = host.lanes.map(lane => new PayloadSender(message => lane.postMessage(message)));
@@ -119,6 +123,20 @@ export class Pipeline {
 
   get lanes() { return this.host.lanes.length; }
 
+  prepare(families: readonly string[], projections: readonly ProjectionKey[]) {
+    if (this.closed) return;
+    const ask = ++this.prepareAsk;
+    for (const lane of this.host.lanes) lane.postMessage({ type: 'prepare', ask, families, projections });
+  }
+
+  prepared(): boolean {
+    return this.closed || this.preparedAt.every(ask => ask >= this.prepareAsk);
+  }
+
+  whenPrepared(): Promise<void> {
+    return this.prepared() ? Promise.resolve() : new Promise(resolve => { this.preparedWaiters.add(resolve); });
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
@@ -132,6 +150,8 @@ export class Pipeline {
     this.page.dispose();
     perfLog?.dropGeneration(this.generation);
     this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
+    for (const resolve of this.preparedWaiters) resolve();
+    this.preparedWaiters.clear();
     this.dateWatchers.clear(); this.placed.clear(); this.kindCost.clear();
     this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
   }
@@ -265,6 +285,11 @@ export class Pipeline {
 
   private receive(lane: number, message: FromLane) {
     if (this.closed) return;
+    if (message.type === 'prepared') {
+      this.preparedAt[lane] = Math.max(this.preparedAt[lane] ?? 0, message.ask);
+      if (this.prepared()) { const waiters = [...this.preparedWaiters]; this.preparedWaiters.clear(); for (const resolve of waiters) resolve(); }
+      return;
+    }
     if (message.type === 'failure') {
       const routes = new Set<number>();
       for (const widget of this.widgets.values()) if (message.lane === -1 || widget.lane === lane) routes.add(this.page.widgets.get(widget.id)!.route);

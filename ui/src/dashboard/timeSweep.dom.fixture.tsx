@@ -12,6 +12,8 @@ import { PHASES } from '../engine/frame';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
 import { loadEveryWidgetModule } from './widgetModules.fixture.ts';
+import { pipelineOf } from './follow/useFollowed.ts';
+import { laneModules } from '../widgets/manifest';
 import { MeasuredWidget } from './widgetPerf';
 import { measureWith } from '../shell/perf';
 import type { PerfRecorder } from '../shell/perf';
@@ -116,6 +118,7 @@ function cases(): Case[] {
 
 let root: Root | null = null;
 let mounted: Case[] = [];
+let pipeline: ReturnType<typeof pipelineOf> | null = null;
 const spec = (item: Case): WidgetSpec => {
   const made = createWidget(item.kind, 'main', item.id);
   return { ...made, time: TIMES[item.mode], options: { ...made.options, ...(item.show ? { show: item.show } : {}) } };
@@ -152,9 +155,11 @@ function read(item: Case) {
 Object.assign(window, { timeSweep: {
   cases: () => cases(),
   requests: () => requests.splice(0),
+  prepared: () => pipeline?.prepared() ?? false,
+  async whenPrepared() { await pipeline?.whenPrepared(); await settle(); return Object.fromEntries(mounted.map(item => [item.id, read(item)])); },
   asked: () => asked.splice(0),
   preload: () => loadEveryWidgetModule(),
-  async mount(ids: string[], replies: Replies, axis: number) {
+  async mount(ids: string[], replies: Replies, axis: number, prepared = true) {
     const runtime = makeRuntime(replies);
     root?.unmount();
     document.body.replaceChildren();
@@ -162,11 +167,15 @@ Object.assign(window, { timeSweep: {
     clock.seek(axis);
     const byId = new Map(cases().map(item => [item.id, item]));
     mounted = ids.map(id => byId.get(id)!).filter(Boolean);
+    const needs = laneModules(mounted.map(item => item.kind));
+    pipeline = pipelineOf(clock, runtime.client);
+    pipeline.prepare(needs.families, needs.projections);
     const host = document.body.appendChild(document.createElement('div'));
     root = createRoot(host);
     root.render(<>{mounted.map(item => <section key={item.id} id={item.id} style={{ width: 640, height: 420, overflow: 'hidden', position: 'relative' }}>
       <MeasuredWidget.Provider value={item.id}><WidgetBody widget={spec(item)} runtime={runtime} /></MeasuredWidget.Provider>
     </section>)}</>);
+    if (prepared) await pipeline.whenPrepared();
     await settle();
     return Object.fromEntries(mounted.map(item => [item.id, read(item)]));
   },

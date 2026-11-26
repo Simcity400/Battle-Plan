@@ -66,6 +66,7 @@ export interface LaneView {
   next?(scene: Scene, hour: number, state?: Map<string, unknown>): number | null;
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
   unmount?(widget: number, state: Map<string, unknown>): void;
+  prepare?(): Promise<void>;
 }
 
 export interface Presented<B extends Bitmap> {

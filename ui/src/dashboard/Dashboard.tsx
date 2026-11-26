@@ -25,6 +25,8 @@ import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { laneModules } from '../widgets/manifest';
+import { usePipeline } from './follow/useFollowed.ts';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
 import type { CountryChoice } from './mapPicker';
@@ -608,6 +610,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const bound = bindTracks(paged, sourceMap, selectedBranches);
     return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
   }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime, laneClient]);
+
+  const laneKinds = [...new Set(preparedPages.flatMap(entry => entry.template.widgets.map(widget => widget.kind)))].sort().join(' ');
+  const laneNeeds = useMemo(() => laneModules(laneKinds.split(' ')), [laneKinds]);
+  const pipeline = usePipeline(laneNeeds.families.length ? clock : null, client);
+  useEffect(() => { pipeline?.prepare(laneNeeds.families, laneNeeds.projections); }, [pipeline, laneNeeds]);
 
   const [discarding, setDiscarding] = useState(false);
   const openSave = () => {

@@ -1,5 +1,5 @@
 import { Lane, type Bitmapped, type LaneHost, type LaneView } from './lane.ts';
-import type { FromLane, FromPull, ToLane, ToPull } from './laneMessages';
+import type { FromLane, FromPull, ProjectionKey, ToLane, ToPull } from './laneMessages';
 
 export interface WakeChannel {
   readonly port1: { onmessage: ((ev: MessageEvent) => unknown) | null };
@@ -135,6 +135,7 @@ export function cropSurfaces<B extends { close(): void } = ImageBitmap>(
 
 export interface LaneSide {
   views(kind: string, wake: (widget: number) => void): LaneView;
+  prepare?(projections: readonly ProjectionKey[]): Promise<void>;
   crop: LaneHost<ImageBitmap>['crop'];
   later(run: () => void): void;
   schedule?: LaneHost<ImageBitmap>['schedule'];
@@ -143,7 +144,7 @@ export interface LaneSide {
 }
 
 export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]) => void, side: LaneSide): (message: ToLane) => void {
-  let lane: Lane<ImageBitmap> | null = null, rate = 1;
+  let lane: Lane<ImageBitmap> | null = null, rate = 1, index = -1;
   const views = new Map<string, LaneView>();
   const viewOf = (kind: string) => {
     let held = views.get(kind);
@@ -178,8 +179,14 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
     return made;
   };
   return m => {
-    if (m.type === 'init') { rate = m.rate; lane = start(m.lane, m.lanes, m.port); return; }
+    if (m.type === 'init') { rate = m.rate; index = m.lane; lane = start(m.lane, m.lanes, m.port); return; }
     if (m.type === 'options') { rate = m.rate; return; }
+    if (m.type === 'prepare') {
+      const ask = m.ask;
+      void Promise.all([...m.families.map(kind => viewOf(kind).prepare?.()), side.prepare?.(m.projections)])
+        .then(() => post({ type: 'prepared', lane: index, ask }));
+      return;
+    }
     if (!lane) return;
     switch (m.type) {
       case 'follow': lane.follow(m.sub, m.channel, m.product); break;

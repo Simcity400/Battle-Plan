@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
+const held = { pattern: null as RegExp | null, requests: [] as (() => void)[] };
+const HOLD = { name: 'hold-modules', configureServer(server: { middlewares: { use(handle: (request: { url?: string }, response: unknown, next: () => void) => void): void } }) {
+  server.middlewares.use((request, _response, next) => { if (held.pattern?.test(request.url ?? '')) held.requests.push(next); else next(); });
+} };
+
 type Mode = 'follow' | 'pin inside' | 'pin gap' | 'pin outside' | 'range';
 interface Case { id: string; mode: Mode; scope: 'moment' | 'history' }
 interface Read { main: string[]; drawn: boolean; drill: string[]; shown?: number | null; crash: string | null }
@@ -64,3 +69,20 @@ test('every widget, through the real host on a track aligned 900 hours later wit
     assert.ok(cases.length > 500, `every widget in every supported time mode, with its breakdowns: ${cases.length}`);
     assert.deepEqual([...new Set(found)].slice(0, 60), []);
   }, 1_500_000)));
+
+test('a lane worker still loading the code two widgets need keeps the pipeline unprepared and the widgets loading, and once it has loaded it the widgets with nothing to read show their empty state', () =>
+  withNativePage('time-sweep-held', '/ui/src/dashboard/timeSweep.dom.fixture.tsx', page => page.stage('held modules', async () => {
+    const act = <T,>(expression: string) => page.evaluate<T>(`window.timeSweep.${expression}`);
+    await act('preload()');
+    held.pattern = /\/ui\/src\/widgets\/(faction-upgrades\/factionUpgradesProjection|occupation-reserve-manpower\/occupationReserveBreakdownProjection)\.ts/;
+    const ids = ['faction-upgrades|follow|main', 'occupation-reserve-manpower|follow|breakdown'];
+    const before = await act<Record<string, Read>>(`mount(${JSON.stringify(ids)}, 'failing', 100, false)`);
+    assert.equal(await act<boolean>('prepared()'), false, 'the workers have not loaded the projections they were asked for');
+    assert.deepEqual(ids.map(id => before[id]!.main.map(state => state.split(':')[0])), [['loading'], ['loading']]);
+    assert.ok(held.requests.length > 0, 'a worker asked for a held module');
+    held.pattern = null;
+    for (const next of held.requests.splice(0)) next();
+    const after = await act<Record<string, Read>>('whenPrepared()');
+    assert.equal(await act<boolean>('prepared()'), true);
+    assert.deepEqual(ids.map(id => after[id]!.main), [['empty: This country is in no faction at this date.'], ['empty: Choose a holder: click its bar in the race.']]);
+  }, 300_000), [HOLD]));
