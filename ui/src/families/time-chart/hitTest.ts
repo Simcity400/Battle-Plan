@@ -243,7 +243,7 @@ function formatExactFigure(value: number, model: TimeChartModel, format: ChartVa
     }
     const decimals = model.yAxis.exactDecimals ?? model.yAxis.decimals ?? 0;
     const absWhole = (raw < 0n ? -raw : raw) / denominator;
-    if (decimals > 0 && (format === 'number' || absWhole < 1000n)) {
+    if (decimals > 0 && (format === 'number' || absWhole < 1000n || model.yAxis.exactDecimals !== undefined)) {
       return formatRational(raw, denominator, { maxDecimals: decimals });
     }
     return formatRational(raw, denominator, { maxDecimals: 0 });
@@ -257,7 +257,7 @@ function formatExactFigure(value: number, model: TimeChartModel, format: ChartVa
     return formatScalar(value, { decimals: 0, maxDecimals: 2, signed: true });
   }
   const decimals = model.yAxis.exactDecimals ?? model.yAxis.decimals ?? 0;
-  if (decimals > 0 && Math.abs(value) < 1000) {
+  if (decimals > 0 && (Math.abs(value) < 1000 || model.yAxis.exactDecimals !== undefined)) {
     return formatScalar(value, { decimals: 0, maxDecimals: decimals });
   }
   return formatScalar(value, 'integer');

@@ -153,7 +153,8 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       }
       const top = options.top !== null;
       if (top) {
-        const refused = readView.refused('main');
+        const answered = readView.answer('main');
+        const refused = readView.refused('main') ?? (answered?.kind === 'notRecorded' ? answered.reason : undefined);
         if (refused) {
           return {
             kind: spec.kind,
@@ -205,7 +206,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const lines: CountryLine[] = [];
       const readings: [string, HeadReading | null][] = [];
       const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
-      const recorded = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, spec.format === 'number' ? options.decimals : null);
+      const recorded = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format === 'percent' ? 'percent' : 'number', spec.format === 'percent' ? null : options.decimals);
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;

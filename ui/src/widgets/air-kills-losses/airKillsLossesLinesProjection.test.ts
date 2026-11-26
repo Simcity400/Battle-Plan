@@ -244,7 +244,7 @@ test('hover detail scopes requests and rows to dated eligible slots and preserve
 test('a country chosen by its tag is one line, joined to its head row by tag or slot, never two', () => {
   const model = airKillsLossesLinesProjection.project(createBoundedReadView({ hour: displayedHour(200), panels: new Map([['head', airReply({ hour: 200 })]]) }),
     makeOptions({ top: null, tags: ['GER'], membership: null }));
-  assert.deepEqual(model.series.map(s => s.id.replace(/ /g, '|')), ['GER|dealt', 'GER|taken']);
+  assert.deepEqual(model.series.map(s => s.id.replace(/\u0000/g, '|')), ['GER|dealt', 'GER|taken']);
   assert.equal(model.series[0]!.headValue, 450);
   assert.equal(model.summaryText, 'Loss totals include corrections.', 'a description is plain text beside the title');
   assert.equal(model.note, undefined, 'the partial-data note is kept for losses no country is recorded for');

@@ -105,13 +105,15 @@ export function headReading(
   const bounded = readView.series(name)?.get(key.part === undefined ? key.tag : keyId({ tag: key.tag, part: key.part }));
   const places = bounded?.decimals ?? decimals;
   const answer = readView.answer(name);
+  const column = key.reading ?? 0;
   if (answer) {
     if (answer.kind === 'notRecorded') return { missing: answer.reason };
     const row = key.part === undefined
       ? answerRowOf(answer, key.tag)
       : followedRow(answer, { tag: key.tag, part: key.part }, key.partBits ?? 0);
     if (row >= 0) {
-      const at = row * answer.columns;
+      if (column >= answer.columns) return { missing: NOT_READ_AT_HOUR };
+      const at = row * answer.columns + column;
       if (row >= answer.rows || cellState(answer, at) !== CELL.value) {
         return { missing: rowReason(answer, row) ?? NOT_READ_AT_HOUR };
       }
@@ -131,7 +133,7 @@ export function headReading(
     if (!state.run) return { missing: state.missing ?? NOT_READ_AT_HOUR };
     return scaledReading(BigInt(state.run.valueRaw), panel?.decimals ?? places, scale) ?? { missing: NOT_READ_AT_HOUR };
   }
-  const head = bounded?.headValue;
+  const head = column === 0 ? bounded?.headValue : undefined;
   if (!head) return null;
   if (head.kind === 'notRecorded' || head.kind === 'notApplicable') return { missing: head.reason };
   if (typeof head.value === 'bigint') {

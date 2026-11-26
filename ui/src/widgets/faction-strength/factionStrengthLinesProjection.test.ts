@@ -4,7 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { tilesOf } from '../../dashboard/tiles/tile.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
-import { compileFollowPlan } from '../../families/broker.ts';
+import { compileFollowPlan, readPlanExact } from '../../families/broker.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { FactionTotalsAtReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
@@ -323,6 +323,39 @@ test('an unread faction roster says so, never "No factions", and a Top N it coul
     factionStrengthLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
   assert.equal(model.empty?.kind, 'unavailable');
   assert.match(model.empty?.message ?? '', /not recorded/);
+});
+
+test('an aggregate group reads its dated head for the exact audit, and its hover keeps the one group row', async () => {
+  const group = makeCtx({ options: { measure: 'factories', count: 'free' }, countries: { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: true } });
+  const asked: string[] = [];
+  const client = { product: async (request: { product: string }) => { asked.push(request.product); return { data: {} }; } } as never;
+  const exact = await readPlanExact(factionStrengthLinesDeclaration.sources(group, { following: false, staticSpan: null }), 300,
+    { client, following: false, timeMode: 'pin', branch: { firstHour: 100, lastHour: 600 }, window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
+  assert.ok(exact, 'an exact read exists');
+  assert.ok(asked.includes('faction-totals-at'));
+
+  const faction = makeCtx({ options: { measure: 'factories', count: 'free' }, countries: { kind: 'group', group: { type: 'faction', id: '10' }, membership: 'hour', aggregate: true },
+    factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 600 }] });
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['main', { decimals: 0, states: [{ country: '10', hour: 300, run: { valueRaw: '410' }, missing: null }] }]]),
+    hovers: new Map([['hover', { hour: displayedHour(200), data: {
+      hour: 200, kind: 'country-factories', measure: 'free7', missing: null, warnings: [],
+      rows: [{ id: 'group', members: ['GER'], memberCountries: [7], total: 300, missing: null }],
+    } satisfies FactionTotalsAtReply }]]),
+    identity: fakeIdentity({}),
+  });
+  const model = factionStrengthLinesProjection.project(view, factionStrengthLinesDeclaration.projectionOptions(faction, { extent: [100, 600], surface: '#111111' }));
+  assert.ok(model.hoverDetail?.items.some(item => item.value === '300'), 'the group row is shown, never "No members"');
+});
+
+test('an unread roster at the displayed hour is said beside the earlier factions\' lines', () => {
+  const base = makeCtx({ options: { measure: 'factories', count: 'free' }, factions: [{ id: '10', tag: 'GER', firstHour: 100, lastHour: 200 }] });
+  const ctx = { ...base, countries: { ...base.countries, factionUnobserved: [[250, 600]] } } as unknown as FamilyPlanContext;
+  const model = factionStrengthLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), identity: fakeIdentity({}) }),
+    factionStrengthLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
+  assert.deepEqual(model.series.map(s => s.id), ['10'], 'the earlier faction keeps its line');
+  assert.ok(model.warnings?.some(text => /not recorded/.test(text)), 'and the unread roster is said');
 });
 
 test('a shared faction colour is found under the identity the colour editor saved it under', () => {

@@ -456,7 +456,7 @@ export function layoutTimeChart(
   } else if (model.yAxis.fixed) {
     yLo = model.yAxis.fixed[0];
     yHi = model.yAxis.fixed[1];
-  } else if (fullPercent) {
+  } else if (fullPercent && !logShown) {
     yLo = 0;
     yHi = dataMin <= dataMax && dataMax > 100 ? Math.ceil(dataMax / 25) * 25 : 100;
   } else if (logShown) {

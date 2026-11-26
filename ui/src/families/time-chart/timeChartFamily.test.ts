@@ -223,6 +223,10 @@ describe('percent axes', () => {
     assert.deepEqual(layoutTimeChart(model(60), 600, 220, FONT, measure).yDomain, [0, 100]);
     assert.ok(layoutTimeChart(model(120), 600, 220, FONT, measure).yDomain[1] >= 120, 'a share of 120% stays on the axis');
   });
+  it('draws a log percent axis from its lowest recorded value, never from zero', () => {
+    const layout = layoutTimeChart(model(60, { log: true }), 600, 220, FONT, measure);
+    assert.ok(layout.yDomain[0] > 0 && Number.isFinite(layout.toY(60)), `log domain ${layout.yDomain}`);
+  });
   it('honours the axis bounds the settings give', () => {
     assert.deepEqual(layoutTimeChart(model(60, { min: 20, max: 80 }), 600, 220, FONT, measure).yDomain, [20, 80]);
   });
@@ -1277,6 +1281,27 @@ describe('several countries, one measure', () => {
     assert.deepEqual(model.auditRows?.map(row => row.value), ['10.25'], 'the audit compares the recorded figure');
   });
 
+  it('says a refused head ranking with its reason, and never reads a second measure from a one-column answer', () => {
+    const options = { tags: [], top: 2, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
+    const refusedAnswer = parseFollowed(message(hour, [{ id: 1, answer: { notRecorded: 'Navy size was not read for a contender' } }])).answers[0]!.answer;
+    const refused = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', lines]]), answers: new Map([['main', refusedAnswer]]) }), options);
+    assert.deepEqual(refused.empty, { message: 'Navy size was not read for a contender', kind: 'unavailable' }, 'never the older tile ranking');
+    const one = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n], columns: 1, values: [9000n], names: ['A09'] } }])).answers[0]!.answer;
+    const view = createBoundedReadView({ hour, series: new Map([['main', new Map([['A09', lines.get('A09')!]])]]), answers: new Map([['main', one]]) });
+    assert.deepEqual(headReading(view, 'main', { tag: 'A09', reading: 1 }, 0), { missing: 'Not recorded at this hour' }, 'the second reading is missing until evidence holding it arrives');
+    assert.equal(headValueOf(headReading(view, 'main', { tag: 'A09' }, 0)), 9000);
+  });
+
+  it('audits a compact measure at its full recorded figure, and honours a declared precision at every magnitude', () => {
+    const army = createBoundedReadView({ hour, panels: new Map([['main', { decimals: 0, states: [{ country: 'A07', hour, run: { valueRaw: '12399' }, missing: null }] }]]) });
+    const audited = armyLinesProjection.project(army, { tags: ['A07'], top: null, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(audited.auditRows?.map(row => row.value), ['12,399'], 'never 12.4K, which a reading of 12,350 would share');
+    const big = { ...audited, yAxis: { format: 'number' as const, decimals: 0, exactDecimals: 5 },
+      series: [{ ...audited.series[0]!, exact: { hour: base + 10, value: 1000.25 } }] };
+    const layout = layoutTimeChart(big, 600, 220, FONT, measure);
+    assert.equal(deriveTimeChartTooltip(big, layout, `plot:${base + 10}`)?.payload?.items?.find(item => item.value !== undefined)?.value, '1,000.25');
+  });
+
   it('orders and audits a top by the dated head ranking, not by an older tile ranking, so it agrees with the exact read', () => {
     const stale = new Map(['A01', 'A02', 'A03'].map(tag => [tag, lines.get(tag)!]));
     const answer = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n, 3n], columns: 1, values: [9000n, 3000n], names: ['A09', 'A03'] } }])).answers[0]!.answer;
@@ -1885,9 +1910,9 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       }]]),
     }), { tags: ['GER'], top: null, decimals: 5, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
     assert.equal(armyModel.series[0]!.endLabel?.value, '9.99T');
-    assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9.99T');
+    assert.equal(armyModel.auditRows?.find(r => r.row === 'GER')?.value, '9,999,999,999,999.99999', 'the audit compares the recorded figure, not the label');
     const armyHover = deriveTimeChartTooltip(armyModel, layoutTimeChart(armyModel, 600, 260, FONT, measure), `plot:${hoverAt}`);
-    assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999');
+    assert.equal(armyHover?.payload?.items?.[0]?.value, '9,999,999,999,999.99999', 'the hover keeps the recorded precision at any magnitude');
   });
 });
 

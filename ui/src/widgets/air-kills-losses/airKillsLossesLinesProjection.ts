@@ -331,8 +331,8 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       const takenValue = present && row ? rawToPlot(row.taken) : null;
 
       if (present && row) {
-        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, formatAirCompact(row.dealt)));
-        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, formatAirCompact(row.taken)));
+        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, formatAirExact(row.dealt)));
+        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, formatAirExact(row.taken)));
       } else if (present && head) {
         auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, 'This country is not present at this date.'));
         auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, 'This country is not present at this date.'));

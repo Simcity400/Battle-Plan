@@ -219,7 +219,7 @@ function buildHoverDetail(
     };
   }
   const plottedIds = new Set(plotted);
-  const rows = reply.rows.filter(row => plottedIds.has(row.id));
+  const rows = options.aggregated ? reply.rows : reply.rows.filter(row => plottedIds.has(row.id));
   if (!rows.length) {
     return {
       hour: hover.hour,
@@ -350,23 +350,21 @@ export function factionTotalsLinesSources(
       },
     });
   }
-  entries.push(
-    {
-      name: 'head',
-      ...common,
-      read: {
-        shape: 'point',
-        channel: 'panel',
-        coverage,
-        product: 'faction-totals-at',
-        followQuery: { panel: 'faction-totals-at', ...atParams },
-        params: atParams,
-        validate: validateFactionTotalsAt,
-      },
+  const headEntry: SourceEntry = {
+    name: 'head',
+    ...common,
+    read: {
+      shape: 'point',
+      channel: 'panel',
+      coverage,
+      product: 'faction-totals-at',
+      followQuery: { panel: 'faction-totals-at', ...atParams },
+      params: atParams,
+      validate: validateFactionTotalsAt,
     },
-    hoverEntry,
-  );
-  return { owner, entries };
+  };
+  entries.push(headEntry, hoverEntry);
+  return { owner, exactEntry: headEntry, entries };
 }
 
 export function factionTotalsLinesOptions(
@@ -559,6 +557,7 @@ function projectDirectTiles(
     gaps,
     hoverDetail,
     ...(options.note ? { summaryText: options.note } : {}),
+    ...(rosterUnread ? { warnings: [ROSTER_UNREAD] } : {}),
     auditRows,
   };
 }
