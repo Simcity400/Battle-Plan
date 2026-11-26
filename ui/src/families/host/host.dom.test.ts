@@ -151,6 +151,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       pageDownActive: { key: string | null; rowIndex: string | null };
       foldedLoaded: boolean;
       foldedArrived: boolean;
+      foldedBindSettled: boolean;
       foldedActive: { key: string | null; rowIndex: string | null };
       playCommits: number;
       playBinds: number;
@@ -174,8 +175,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.deepEqual(deep.endUpActive, { key: 'R1998', rowIndex: '2000' }, 'End then ArrowUp focuses R1998, not R0');
     assert.equal(deep.pageDownArrived, true, 'PageDown from the bottom visible row crosses the overscan slice');
     assert.deepEqual(deep.pageDownActive, { key: `R${deep.expectedPageDown}`, rowIndex: String(deep.expectedPageDown + 2) }, 'PageDown lands a full viewport down');
-    assert.deepEqual([deep.foldedLoaded, deep.foldedArrived], [true, true], 'End on a final window with a folded run settles once loaded');
-    assert.deepEqual(deep.foldedActive, { key: 'R1994', rowIndex: '1996' }, 'End focuses the last navigable row in the folded final window');
+    assert.deepEqual([deep.foldedLoaded, deep.foldedArrived, deep.foldedBindSettled], [true, true, true], 'End on a final window with a long folded run settles and survives the subsequent bind');
+    assert.equal(deep.foldedActive.key, 'R1999', 'End keeps focus on the final row R1999 after revealing it above the viewport');
     assert.ok(deep.playPaints > 0, 'playback repaints the deep log in the lane');
     assert.deepEqual([deep.playCommits, deep.playBinds], [0, 0], 'played hours cause no React render and no rebind');
   }));

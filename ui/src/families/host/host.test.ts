@@ -1871,6 +1871,7 @@ test('R4-S3 host: ordinal bounds, gap skipping, key directions and held mirror f
   const narrowSlice: FamilyNavTuple[] = Array.from({ length: 9 }, (_, i) => [`R${615 + i}`, `Row ${615 + i}`, 615 + i, -1, '', null, (615 + i) * 36, 36]);
   assert.deepEqual(tablePageSteps(pageTable, narrowSlice, 619, 20 * 36), { down: 19, up: 19 }, 'PageDown and PageUp cross past the four overscan rows using viewport height and absolute row geometry');
   assert.deepEqual(tablePageSteps(pageTable, [], 1999, 20 * 36), { down: 1, up: 19 }, 'PageUp from a pending End ordinal uses viewport height even when nav is empty');
+  assert.deepEqual(tablePageSteps({ count: 2000, totalHeight: 2000 * 36 + 44 }, [], 610, 20 * 36, 36), { down: 19, up: 19 }, 'configured row height avoids 44px footer skew when every row is loading');
   assert.deepEqual(tablePageSteps({ count: 10, totalHeight: 414, extents }, [], 0, 144), { down: 2, up: 1 }, 'variable extents account for taller rows in page steps');
 
   const foldedNav: FamilyNavTuple[] = Array.from({ length: 5 }, (_, i) => [`R${1990 + i}`, `Row ${1990 + i}`, 1990 + i, -1, '', null, (1990 + i) * 36, 36]);

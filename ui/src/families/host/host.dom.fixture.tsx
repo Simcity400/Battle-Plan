@@ -300,7 +300,7 @@ const DEEP_LOG_COLUMNS: readonly TableColumnSpec[] = [
 const DEEP_LOG_SETTINGS = tableSettingsOf(undefined, DEEP_LOG_COLUMNS, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
 const DEEP_LOG_OPTIONS = {};
 let deepLogHeldRanges: Array<readonly [number, number]> = [];
-let deepLogFoldEnd = 0;
+let deepLogFoldRun: readonly [number, number] | null = null;
 let deepLogCommits = 0;
 
 const deepLogProjection = registerFamilyProjection({
@@ -312,14 +312,17 @@ const deepLogProjection = registerFamilyProjection({
     const count = Math.max(0, Math.min(DEEP_LOG_TOTAL - first, win.count));
     const slots: TableModelSlot[] = [];
     const rows: TableRow[] = [];
-    const foldStart = deepLogFoldEnd > 1 ? DEEP_LOG_TOTAL - deepLogFoldEnd : DEEP_LOG_TOTAL;
+    let foldedEmitted = false;
     for (let i = 0; i < count; i++) {
       const ord = first + i;
       const held = deepLogHeldRanges.some(([lo, hi]) => ord >= lo && ord <= hi);
       if (held) {
         slots.push({ kind: 'loading', key: `loading:${ord}` });
       } else {
-        if (ord > foldStart) continue;
+        if (deepLogFoldRun && ord >= deepLogFoldRun[0] && ord <= deepLogFoldRun[1]) {
+          if (foldedEmitted) continue;
+          foldedEmitted = true;
+        }
         const row: TableRow = {
           key: `R${ord}`,
           name: `Row ${ord}`,
@@ -1246,14 +1249,21 @@ window.hostDom = {
     await scrollToRow(610);
     rowEl(610)!.focus();
     await frames(2);
-    deepLogFoldEnd = 6;
+    deepLogFoldRun = [DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 2];
     deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
     const foldedLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    const foldedGenBefore = pipeline.binding(pipeD);
     releasePages();
-    const foldedArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 6}`, 2000);
+    const foldedArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 1}`, 2000);
+    const foldedBindSettled = await until(() => {
+      const gen = pipeline.binding(pipeD);
+      const view = pipeline.view(pipeD);
+      return gen > foldedGenBefore && view?.installedBinding === gen;
+    }, 2000);
+    await frames(4);
     const foldedActive = activeInfo();
-    deepLogFoldEnd = 0;
+    deepLogFoldRun = null;
 
     await scrollToRow(610);
     rowEl(610)!.focus();
@@ -1277,7 +1287,7 @@ window.hostDom = {
     await frames(2);
 
     deepLogHeldRanges = [];
-    deepLogFoldEnd = 0;
+    deepLogFoldRun = null;
     currentState = { ...currentState, deepLogMounted: false, deepLogPaged: undefined };
     renderApp();
     await frames(2);
@@ -1308,6 +1318,7 @@ window.hostDom = {
       pageDownActive,
       foldedLoaded,
       foldedArrived,
+      foldedBindSettled,
       foldedActive,
       playCommits,
       playBinds,

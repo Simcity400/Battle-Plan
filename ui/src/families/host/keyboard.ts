@@ -45,10 +45,23 @@ export function nearestDataOrdinal(
   return at >= 0 && at < totalCount ? at : null;
 }
 
+function tableRowHeight(
+  table: TableOrdinalMetrics,
+  nav: readonly FamilyNavTuple[],
+  fallbackRowHeight?: number,
+): number {
+  if (table.extents) return table.extents.rowHeight;
+  const sampleHeight = nav[0]?.[7];
+  if (sampleHeight && sampleHeight > 0) return sampleHeight;
+  if (fallbackRowHeight && fallbackRowHeight > 0) return fallbackRowHeight;
+  return table.count > 0 ? table.totalHeight / table.count : 0;
+}
+
 export function tableOrdinalBounds(
   table: TableOrdinalMetrics,
   nav: readonly FamilyNavTuple[],
   ordinal: number,
+  fallbackRowHeight?: number,
 ): { readonly top: number; readonly height: number } | null {
   if (table.count <= 0 || ordinal < 0 || ordinal >= table.count) return null;
   if (table.extents) {
@@ -56,8 +69,7 @@ export function tableOrdinalBounds(
     const height = extentTop(table.extents, table.extents.rowHeight, ordinal + 1) - top;
     return { top, height };
   }
-  const sampleHeight = nav[0]?.[7];
-  const rowHeight = sampleHeight && sampleHeight > 0 ? sampleHeight : table.totalHeight / table.count;
+  const rowHeight = tableRowHeight(table, nav, fallbackRowHeight);
   if (!(rowHeight > 0)) return null;
   return { top: ordinal * rowHeight, height: rowHeight };
 }
@@ -67,13 +79,11 @@ export function tablePageSteps(
   nav: readonly FamilyNavTuple[],
   currentOrdinal: number,
   viewportHeight: number,
+  fallbackRowHeight?: number,
 ): FamilyPageSteps {
   const count = table.count;
   if (count <= 1 || viewportHeight <= 0) return { down: 1, up: 1 };
-  const sampleHeight = nav[0]?.[7];
-  const rowHeight = table.extents
-    ? table.extents.rowHeight
-    : (sampleHeight && sampleHeight > 0 ? sampleHeight : table.totalHeight / count);
+  const rowHeight = tableRowHeight(table, nav, fallbackRowHeight);
   if (!(rowHeight > 0)) return { down: 1, up: 1 };
   const at = Math.max(0, Math.min(count - 1, currentOrdinal));
   const extents = table.extents ?? null;

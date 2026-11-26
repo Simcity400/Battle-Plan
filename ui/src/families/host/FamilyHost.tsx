@@ -27,6 +27,7 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { PagedRows } from '../table/rowSource.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, type TableDensity } from '../table/settings.ts';
 import {
   familyBinding,
   familyInspectToken,
@@ -136,6 +137,13 @@ function revealGridAxis(index: number, cellSize: number, scroll: number, span: n
   if (start < scroll) return start;
   if (end > scroll + span) return Math.max(0, end - span);
   return scroll;
+}
+
+function configuredTableRowHeight(fields: Readonly<Record<string, unknown>>, settings: unknown): number | undefined {
+  const density = (settings as { readonly density?: TableDensity } | undefined)?.density;
+  if (!density) return undefined;
+  const media = (fields.meta as { readonly rowHeightMode?: string } | undefined)?.rowHeightMode === 'media';
+  return (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[density];
 }
 
 function listboxItems(mirror: MirrorModel, selectedKey: string | null): readonly ListboxMirrorItem[] {
@@ -324,6 +332,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
   const windowRef = useRef<ReportedRowWindow | null>(null);
   const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
+  const anchoredWindowRef = useRef<FamilyRowWindow | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
@@ -602,7 +611,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
-    const asked = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
+    const asked = anchoredWindowRef.current ?? requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
     const held = requestedWindowRef.current;
     const rowWindow = sameRowWindow(held, asked) ? held : asked;
 
@@ -778,10 +787,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return moved;
   }, []);
 
-  const focusRowByKey = useCallback((key: string) => {
+  const focusRowByKey = useCallback((key: string, keepAnchor = false) => {
     const entry = navNow().find(item => item[0] === key);
     if (!entry) return;
     pendingOrdinalRef.current = null;
+    if (!keepAnchor) anchoredWindowRef.current = null;
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
@@ -813,11 +823,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       record.picture.actionKeys,
     );
     if (entry) {
+      const keepAnchor = entry[2] < target && requestedWindowRef.current !== null;
+      anchoredWindowRef.current = keepAnchor ? requestedWindowRef.current : null;
       pendingOrdinalRef.current = null;
-      focusRowByKey(entry[0]);
+      focusRowByKey(entry[0], keepAnchor);
       return;
     }
-    const bounds = tableOrdinalBounds(table, record.nav, target);
+    anchoredWindowRef.current = null;
+    const bounds = tableOrdinalBounds(table, record.nav, target, configuredTableRowHeight(fields, latestRef.current.settings));
     if (!bounds) return;
     pendingOrdinalRef.current = target;
     const node = bodyRef.current;
@@ -852,6 +865,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
     pendingOrdinalRef.current = null;
+    anchoredWindowRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;
     lastMirrorObjRef.current = null;
@@ -1037,24 +1051,34 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
         zoomWindow: vp.zoomWindow,
       };
-      const installedUpdate = reconcileInstalledRowWindow(
-        windowRef.current,
-        requestedWindowRef.current,
-        activeAdapter,
-        cur.plan,
-        installedViewport,
-        cur.settings,
-        fields,
-        installed.hour,
-      );
-      requestedWindowRef.current = installedUpdate.requested;
-      if (!installedUpdate.requested) {
-        windowRef.current = null;
-      } else if (installedUpdate.report) {
-        windowRef.current = installedUpdate.report;
-        cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
+      const anchored = anchoredWindowRef.current;
+      if (anchored) {
+        requestedWindowRef.current = anchored;
+        const report = nextReportedRowWindow(windowRef.current, anchored, installed.hour, cur.plan);
+        if (report) {
+          windowRef.current = report;
+          cur.onWindowChange?.(report.window, report.hour);
+        }
+      } else {
+        const installedUpdate = reconcileInstalledRowWindow(
+          windowRef.current,
+          requestedWindowRef.current,
+          activeAdapter,
+          cur.plan,
+          installedViewport,
+          cur.settings,
+          fields,
+          installed.hour,
+        );
+        requestedWindowRef.current = installedUpdate.requested;
+        if (!installedUpdate.requested) {
+          windowRef.current = null;
+        } else if (installedUpdate.report) {
+          windowRef.current = installedUpdate.report;
+          cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
+        }
+        if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
       }
-      if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
 
       if (activeAdapter.chromeState) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
@@ -1089,6 +1113,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
             record.picture.actionKeys,
           );
           if (entry) {
+            if (entry[2] < pendingOrdinal && requestedWindowRef.current) {
+              anchoredWindowRef.current = requestedWindowRef.current;
+            }
             pendingOrdinalRef.current = null;
             focusedKeyRef.current = entry[0];
             lastFocusNavRef.current = record.nav;
@@ -1253,6 +1280,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           const top = Math.floor(node.scrollTop);
           if (left === viewportRef.current.scrollLeft && top === viewportRef.current.scrollTop) return;
           pendingOrdinalRef.current = null;
+          anchoredWindowRef.current = null;
           viewportRef.current.scrollLeft = left;
           viewportRef.current.scrollTop = top;
           showViewRef.current();
@@ -1264,6 +1292,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     return () => {
       pendingOrdinalRef.current = null;
+      anchoredWindowRef.current = null;
       resolveInstalledRef.current = () => recordRef.current?.picture ?? null;
       describe(null);
       if (onScroll) node.removeEventListener('scroll', onScroll);
@@ -1297,6 +1326,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       vp.width = fit.width;
       vp.height = fit.height;
       vp.dpr = fit.dpr;
+      anchoredWindowRef.current = null;
       if (latestRef.current.hasChrome) setChromeWidth(fit.width);
       notifyViewportChange();
       bindRef.current();
@@ -1319,6 +1349,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   useLayoutEffect(() => {
     pendingOrdinalRef.current = null;
+    anchoredWindowRef.current = null;
   }, [plan, declaration, view, options, settings]);
 
   useLayoutEffect(() => {
@@ -1470,7 +1501,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         : {}),
       focusedKey,
       pageStep: pagedTable
-        ? tablePageSteps(table, keyNav, currentOrdinal, rowViewportHeight)
+        ? tablePageSteps(table, keyNav, currentOrdinal, rowViewportHeight, configuredTableRowHeight(fields, latestRef.current.settings))
         : navPageSteps(keyNav, focusedKey, rowViewportHeight),
       blocked,
       typeaheadRef,
