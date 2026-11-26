@@ -10,7 +10,7 @@ use replay_lanes::lanes::{Cell, Keys, Step};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io};
 
-const KEYS_PER_READ: usize = 1024;
+const KEYS_PER_READ: usize = 8192;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 

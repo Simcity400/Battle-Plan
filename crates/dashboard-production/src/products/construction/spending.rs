@@ -52,10 +52,10 @@ pub(crate) fn identity_keys(slot: u32, id: u32) -> (u128, u128) {
 
 pub(crate) type Delta = (i32, Option<i128>);
 
-pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
+pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32, absence_read: bool) -> Vec<Delta> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
-    let mut unread = false;
+    let mut unread = !absence_read;
     let mut lost = false;
     for &(hour, cell) in steps {
         match cell {
@@ -122,9 +122,11 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
             let history = dashboard_query::cost::storage(|| {
                 replay_lanes::lanes::history(recording, stretch.run, TableId::ConstructionSpend, &[total], Keys::Range(low, high), read_from, stretch.last)
             })?;
+            let absence_read = read_from == stretch.first
+                || history.statuses.iter().any(|held| held.first <= read_from && read_from <= held.last && replay_recording::columnar_frames::complete(held.status));
             for (key, steps) in &history.keys {
                 let cells: Vec<(i32, Option<Cell>)> = steps.iter().map(|step| (step.hour, step.cells.as_ref().map(|cells| cells[0]))).collect();
-                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, stretch.first));
+                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, stretch.first, absence_read));
             }
         }
     }
@@ -252,11 +254,13 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             if !seen.insert(line.id) {
                 continue;
             }
-            if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
+            let Some(owner) = line.country.filter(|_| !(line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown))) else {
                 kept.push((line, false));
-            } else if match country {
-                Country::Slot(slot) => links.slot_at(line.country, line.first_read) == Some(*slot),
-                Country::Tag(_) => names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
+                continue;
+            };
+            if match country {
+                Country::Slot(slot) => links.slot_at(owner, line.first_read) == Some(*slot),
+                Country::Tag(_) => names.tag_at(&links, owner, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
             } {
                 kept.push((line, true));
             }

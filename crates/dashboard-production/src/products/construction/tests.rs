@@ -227,16 +227,18 @@ fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulte
 
 #[test]
 fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_unknown() {
-    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50);
+    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50, true);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);
-    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50), [(55, Some(30))]);
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50, true), [(55, Some(30))]);
     assert_eq!(
-        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 50),
+        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 50, true),
         [(60, None)],
         "an unread total before the holding starts leaves its first total unknown, never credited from zero"
     );
-    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 50), [(60, Some(50))]);
-    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90);
+    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 50, true), [(60, Some(50))]);
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50, false), [(55, None)], "absence before the window is a zero only where a complete read proves it");
+    assert_eq!(deltas(&[(49, Some(Cell::Number(10))), (55, Some(Cell::Number(30)))], 50, false), [(55, Some(20))], "a total read before the window is its baseline");
+    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90, true);
     assert_eq!(second, [(90, Some(20)), (95, None)]);
     let steps = totals([first, second].concat());
     let shown: Vec<(i32, Option<&str>)> = steps.iter().map(|step| (step.known_at, step.total_raw.as_deref())).collect();
@@ -261,6 +263,8 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     let values: HashMap<usize, i64> = HashMap::from([(col::KIND, 0), (col::COUNTRY, 7), (col::BUILDING_TYPE, 300), (col::TARGET_STATE, 12), (col::FIRST_READ, 90), (col::REPAIRED, 1), (col::OUTPUT_REASON, i64::from(P::OUTPUT_LINKED)), (col::OUTPUT_SINCE, 90), (col::OBSERVED_SINCE_CREATION, 0)]);
     let line = line_of(5, 90, 140, &|column| values.get(&column).copied());
     assert!(line.repair_work && !line.new_work && line.before_observation && line.had_output);
+    assert_eq!(line.country, Some(7));
+    assert_eq!(line_of(5, 90, 140, &|column| (column != col::COUNTRY).then(|| values.get(&column).copied()).flatten()).country, None, "an unread owner stays unknown, never country 0");
     let none = TagHolderRow::NONE;
     assert_eq!(leaf_keys(&line), [(true, false, 300, 12, none)]);
     let linked = Some(P::OUTPUT_LINKED);
@@ -358,4 +362,23 @@ mod recorded {
         let unheld = recording(false);
         assert!(!super::super::recorded(&dashboard_base::queries::query(&unheld, 1).unwrap()).unwrap(), "queues never available are not recorded");
     }
+}
+
+#[test]
+fn a_project_split_at_an_unread_tail_joins_to_the_levels_of_one_window() {
+    let unread = |hour| step_with_unrecorded(hour, &census(2, 2, 0, 0, &[]), &[col::BUILT]);
+    let first = vec![step(100, &census(2, 3, 1, 0, &[])), unread(140)];
+    let second = vec![step(150, &census(2, 1, 3, 0, &[]))];
+    let whole: Vec<Step> = first.iter().chain(&second).cloned().collect();
+    let project = |steps: &[Step], to: i32| match assemble(5, steps, to, &[], &|_| None, &tag) {
+        Assembled::Project(project) => *project,
+        _ => panic!("named"),
+    };
+    let joined = super::log::join_project(project(&first, 149), project(&second, 199));
+    let alone = project(&whole, 199);
+    let shown = |project: &super::log::ConstructionProject| project.built.iter().map(|levels| (levels.known_at, levels.count, levels.carried)).collect::<Vec<_>>();
+    assert_eq!(shown(&alone), [(100, 1, true), (150, 2, false)], "one window: the rise across the unread span is known at its first read");
+    assert_eq!(shown(&joined), shown(&alone), "two windows split at the unread tail join to the same levels");
+    assert!(joined.built.iter().all(|levels| levels.hour.is_none()), "no rise is given an hour it was not read at");
+    assert_eq!(joined.built_unread, alone.built_unread);
 }
