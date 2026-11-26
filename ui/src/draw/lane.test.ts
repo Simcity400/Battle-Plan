@@ -39,7 +39,7 @@ function panels(records: PanelRow[], seek = 0): Uint8Array {
 
 interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c: number } }
 
-function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop']; clock?: () => number; earlyBuffer?: number } = {}) {
+function rig(views: Record<string, LaneView> = {}, extra: Partial<Pick<LaneHost<Fake>, 'budget' | 'crop' | 'clock' | 'earlyBuffer' | 'served'>> = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
   const subFailures: [number, string][] = [], widgetFailures: [number, string][] = [];
@@ -2435,7 +2435,47 @@ test('hand-over after a slow serve preserves pointer-after-ack, refusal-then-ins
   }
 });
 
-test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve exact replaced by speculative installs hour 20 on Page', async () => {
+test('an older kept-content refusal in the same batch preserves the newer installed picture', async () => {
+  const { lane, mount, presented, hits } = rig({ probe: {
+    paint: ({ hour }) => ({ surfaces: [], fields: {}, motion: false, hit: () => String(hour) }),
+  } });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([10, 20].map(hour => ({ id: 3, hour, kind: 'data', stepped: true, data: { hour } }))));
+  const frame: FrameRequest = { type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] };
+  lane.frame(frame);
+  await flush();
+  const older = presented.at(-1)!.entries[0]!;
+  const next = { ...frame, serial: 2, now: 20, target: 20 };
+  lane.frame(next);
+  await flush();
+  const newer = presented.at(-1)!.entries[0]!;
+  assert.ok(newer.id > older.id);
+
+  lane.frame({ ...next, serial: 3, installed: [{ widget: 1, binding: 1, id: newer.id }], refused: [{ widget: 1, id: older.id, reason: 'kept content' }] });
+  lane.frame({ ...next, serial: 4 });
+  await flush();
+  lane.pointer(1, 0, [0, 0]);
+  assert.deepEqual(hits, ['20']);
+});
+
+test('an exact target queued before a speculative tick is served first', async () => {
+  const served: [number, boolean][] = [];
+  const { lane, mount, presented } = rig({ probe: {
+    paint: () => ({ surfaces: [], fields: { v: { value: 100, content: 'shared' } }, motion: false }),
+  } }, { served: ({ target, exact }) => served.push([target, exact]) });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([10, 11].map(hour => ({ id: 3, hour, kind: 'data', stepped: true, data: { hour } }))));
+  const frame: FrameRequest = { type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 24, installed: [], refused: [], inspect: [] };
+  lane.frame(frame);
+  lane.frame({ ...frame, serial: 2, now: 11, target: 12, exact: false });
+  await flush();
+  assert.deepEqual(served, [[10, true], [12, false]]);
+  assert.deepEqual(presented.flatMap(p => p.entries.map(e => [e.h, e.fields.v])), [[11, 100]]);
+});
+
+test('mid-serve ack FIFO flushes at serve completion before wake, and resuming during crop installs hour 20 on Page', async () => {
   const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
   {

@@ -256,6 +256,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly acks: { installed: readonly Ack[]; refused: readonly Refusal[] }[] = [];
   private ackMs = 0;
   private request: FrameRequest | null = null;
+  private pendingExact: FrameRequest | null = null;
   private lastExact: FrameRequest | null = null;
   private serving = false;
   private working = false;
@@ -1381,11 +1382,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const bare: FrameRequest = { ...request, installed: [], refused: [] };
     this.request = bare;
     this.lastExact = request.exact ? bare : null;
+    if (request.exact) this.pendingExact = bare;
+    else if (this.pendingExact?.seek === request.seek) this.pendingExact.now = request.now;
     this.schedule();
   }
 
   private wake() {
-    if (!this.request && this.lastExact) this.request = { ...this.lastExact, installed: [], refused: [] };
+    if (!this.request) this.request = this.lastExact;
     this.schedule();
   }
 
@@ -1409,7 +1412,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private pendingRequest(): FrameRequest | null {
-    return this.request;
+    return this.pendingExact ?? this.request;
   }
 
   private finishRun() {
@@ -1419,8 +1422,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private async run() {
-    const request = this.request;
-    this.request = null;
+    const request = this.pendingRequest();
+    this.pendingExact = null;
+    if (request === this.request) this.request = null;
     const ackMs = this.ackMs;
     this.ackMs = 0;
     const began = this.time() - ackMs;
@@ -1468,7 +1472,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(refusal.widget);
       if (!widget) continue;
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
-      if (!owner || owner.sent.binding !== widget.binding.generation) {
+      if (!owner || owner.sent.binding !== widget.binding.generation || (widget.installed && refusal.id < widget.installed.id)) {
         for (const sub of widget.subs) this.schedulePrune(sub);
         this.syncWindowTracking(widget);
         continue;
