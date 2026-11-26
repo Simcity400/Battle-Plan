@@ -569,23 +569,32 @@ fn named(naming: &mut Naming<'_, '_>, runs: Vec<(i32, i32, u64, bool)>, how: Nam
         .collect()
 }
 
-fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: &AtomicBool) -> io::Result<HashMap<u64, Vec<i32>>> {
+fn coverage_edges(statuses: &[lanes::StatusRun], edges: &mut Vec<(i32, bool)>) {
+    let mut before: Option<bool> = None;
+    for run in statuses {
+        let whole = replay_recording::columnar_frames::complete(run.status);
+        edges.push((run.first, whole && before == Some(false)));
+        before = Some(whole);
+    }
+}
+
+fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: &AtomicBool) -> io::Result<HashMap<u64, Vec<(i32, bool)>>> {
     let mut ids: Vec<u128> = lanes.values().flat_map(|lane| lane.runs.iter().map(|run| u128::from(run.2 >> 32))).collect();
     ids.sort_unstable();
     ids.dedup();
-    let mut out: HashMap<u64, Vec<i32>> = HashMap::new();
+    let mut out: HashMap<u64, Vec<(i32, bool)>> = HashMap::new();
     if ids.is_empty() {
         return Ok(out);
     }
     let field = dashboard_declare::field;
     let columns = [field(TableId::ProjectPrograms, "owner")?, field(TableId::ProjectPrograms, "active_project")?];
-    let mut coverage: Vec<i32> = Vec::new();
+    let mut coverage: Vec<(i32, bool)> = Vec::new();
     let mut projects: BTreeMap<u128, BTreeSet<u64>> = BTreeMap::new();
     for (_, _, _, _, held, statuses) in histories(query, TableId::ProjectPrograms, &columns, Keys::These(&ids), cancelled)? {
-        coverage.extend(statuses.iter().map(|run| run.first));
+        coverage_edges(&statuses, &mut coverage);
         for (key, steps) in held {
             for (first, _, cells) in &steps {
-                out.entry(key as u64).or_default().push(*first);
+                out.entry(key as u64).or_default().push((*first, false));
                 let cells = cells.as_deref().unwrap_or_default();
                 if let (Some(owner), Some(active)) = (number(cells.first()), number(cells.get(1))) {
                     projects.entry(u128::from(owner as u32) << 32 | u128::from(active as u32)).or_default().insert(key as u64);
@@ -597,18 +606,18 @@ fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: 
         let keys: Vec<u128> = projects.keys().copied().collect();
         let columns = [field(TableId::Projects, "definition_id")?, field(TableId::Projects, "program_reference")?];
         for (_, _, _, _, held, statuses) in histories(query, TableId::Projects, &columns, Keys::These(&keys), cancelled)? {
-            coverage.extend(statuses.iter().map(|run| run.first));
+            coverage_edges(&statuses, &mut coverage);
             for (key, steps) in held {
                 for programme in projects.get(&key).into_iter().flatten() {
-                    out.entry(*programme).or_default().extend(steps.iter().map(|step| step.0));
+                    out.entry(*programme).or_default().extend(steps.iter().map(|step| (step.0, false)));
                 }
             }
         }
     }
     for hours in out.values_mut() {
         hours.extend(&coverage);
-        hours.sort_unstable();
-        hours.dedup();
+        hours.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        hours.dedup_by_key(|edge| edge.0);
     }
     Ok(out)
 }
@@ -626,20 +635,20 @@ fn merge_unchanged(runs: Vec<FactionSelectionRun>) -> Vec<FactionSelectionRun> {
     out
 }
 
-fn split_programmes(lanes: BTreeMap<u32, Lane>, changes: &HashMap<u64, Vec<i32>>) -> BTreeMap<u32, Lane> {
+fn split_programmes(lanes: BTreeMap<u32, Lane>, changes: &HashMap<u64, Vec<(i32, bool)>>) -> BTreeMap<u32, Lane> {
     lanes
         .into_iter()
         .map(|(slot, lane)| {
             let mut runs = Vec::with_capacity(lane.runs.len());
             for (first, last, value, starts) in lane.runs {
-                let mut from = first;
-                for &cut in changes.get(&(value >> 32)).map_or(&[][..], Vec::as_slice) {
+                let (mut from, mut opens) = (first, starts);
+                for &(cut, restart) in changes.get(&(value >> 32)).map_or(&[][..], Vec::as_slice) {
                     if cut > from && cut <= last {
-                        runs.push((from, cut - 1, value, starts && from == first));
-                        from = cut;
+                        runs.push((from, cut - 1, value, opens));
+                        (from, opens) = (cut, restart);
                     }
                 }
-                runs.push((from, last, value, starts && from == first));
+                runs.push((from, last, value, opens));
             }
             (slot, Lane { runs })
         })
@@ -936,8 +945,8 @@ mod witnessed_tests {
     fn a_programme_run_is_named_again_where_its_programme_changes_project() {
         let reference = 5u64 << 32 | 3;
         let lanes = BTreeMap::from([(0u32, Lane { runs: vec![(100, 200, reference, true)] })]);
-        let changes = HashMap::from([(5u64, vec![90, 150])]);
-        assert_eq!(split_programmes(lanes, &changes)[&0].runs, [(100, 149, reference, true), (150, 200, reference, false)]);
+        let changes = HashMap::from([(5u64, vec![(90, false), (150, false), (180, true)])]);
+        assert_eq!(split_programmes(lanes, &changes)[&0].runs, [(100, 149, reference, true), (150, 179, reference, false), (180, 200, reference, true)], "a run read again after its coverage returns starts a segment, so its date is not recorded");
     }
 
     #[test]

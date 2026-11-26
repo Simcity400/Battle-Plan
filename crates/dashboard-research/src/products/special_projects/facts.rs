@@ -291,6 +291,7 @@ impl Facts {
             let held = hour.held;
             let named = hour.reads.iter().find(|read| (read.row.owner, read.row.local) == (owner, local) && read.read <= stamp && completed(read.row)).map(|read| (read.row.definition, read.read));
             let evidence = self.evidence.entry((country.0, country.1, owner, local)).or_default();
+            let kept = evidence.entries.len();
             evidence.read(
                 stamp,
                 entries,
@@ -298,7 +299,7 @@ impl Facts {
                 |earlier| held(owner, earlier, stamp),
                 named,
             );
-            for definition in evidence.entries.iter().filter(|kept| kept.read == stamp).filter_map(|kept| kept.definition) {
+            for definition in evidence.entries[kept..].iter().filter_map(|kept| kept.definition) {
                 earliest(&mut self.first_definitions, definition, stamp);
             }
         }

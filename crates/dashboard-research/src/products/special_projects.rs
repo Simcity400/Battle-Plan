@@ -223,7 +223,7 @@ pub struct ProjectsShown {
     pub undated: u32,
 }
 
-pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPresentation], available: &[HourSpan], hour: i32) -> ProjectsShown {
+pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPresentation], available: &[HourSpan], hour: i32, completed_since: &[Option<i32>]) -> ProjectsShown {
     let mut shown = ProjectsShown { through: Some(hour), ..ProjectsShown::default() };
     if !available.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour) {
         return shown;
@@ -244,16 +244,16 @@ pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPrese
                 while first > 0 && project.statuses[first - 1].state == ProjectState::Completed && project.statuses[first - 1].last_hour.saturating_add(1) == project.statuses[first].first_hour {
                     first -= 1;
                 }
-                let completed = &project.statuses[first];
+                let since = completed_since.get(index).copied().flatten().unwrap_or(project.statuses[first].first_hour);
                 let attempt = first
                     .checked_sub(1)
                     .map(|before| &project.statuses[before])
-                    .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last_hour.saturating_add(1) == completed.first_hour);
+                    .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last_hour.saturating_add(1) == since);
                 let date = attempt.and_then(|before| {
                     project
                         .entries
                         .iter()
-                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= completed.first_hour && entry.read_hour <= hour)
+                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= since && entry.read_hour <= hour)
                         .map(|entry| entry.date)
                         .max()
                 });
@@ -1115,15 +1115,21 @@ struct Current<'f> {
 
 fn current_pick<'f>(project: &'f facts::Project, evidence: &'f facts::Evidence, hour: i32) -> Option<Current<'f>> {
     let shown = shown_runs(&project.runs, hour)?;
-    let (start, at) = (*shown.start(), *shown.end());
+    let at = *shown.end();
     let displayed = &project.runs[at];
     if displayed.state != ProjectState::Completed {
         return Some(Current { project, runs: project.runs[shown].iter().collect(), block_first: None, marker: None });
     }
-    let first = if project.runs[start].state == ProjectState::Completed { start } else { start + 1 };
+    let mut first = at;
+    while first > 0 && project.runs[first - 1].state == ProjectState::Completed && project.runs[first - 1].last.saturating_add(1) == project.runs[first].first {
+        first -= 1;
+    }
     let completed = project.runs[first].first;
-    let before = (start < first).then(|| &project.runs[start]);
-    let marker = before.filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last.saturating_add(1) == completed).and_then(|before| {
+    let before = first
+        .checked_sub(1)
+        .map(|before| &project.runs[before])
+        .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last.saturating_add(1) == completed);
+    let marker = before.and_then(|before| {
         evidence
             .entries
             .iter()
@@ -1246,11 +1252,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         for pick in &chosen {
             let project = pick.project;
             let runs: Vec<facts::Run> = pick.runs.iter().map(|&run| run.clone()).collect();
-            let mut held = record(project.country, project.owner, project.local, project.first, &runs, &pick.marker.into_iter().collect::<Vec<_>>(), &[], &mut naming);
-            if let (Some(first), Some(shown)) = (pick.block_first, held.statuses.last_mut()) {
-                shown.first_hour = first;
-            }
-            projects.push(held);
+            projects.push(record(project.country, project.owner, project.local, project.first, &runs, &pick.marker.into_iter().collect::<Vec<_>>(), &[], &mut naming));
         }
     } else {
         for project in &facts.projects {
@@ -1300,7 +1302,10 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         warnings,
     };
     let reply = match follow.through() {
-        Some(hour) => SpecialProjectsReply { shown: shown_at(&reply.projects, &reply.presentations, &reply.available, hour), ..reply },
+        Some(hour) => {
+            let since: Vec<Option<i32>> = chosen.iter().map(|pick| pick.block_first).collect();
+            SpecialProjectsReply { shown: shown_at(&reply.projects, &reply.presentations, &reply.available, hour, &since), ..reply }
+        }
         None => reply,
     };
     dashboard_base::products::check_reply_budget(&reply)?;

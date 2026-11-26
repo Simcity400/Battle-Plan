@@ -77,12 +77,25 @@ pub(crate) struct CardShape {
     pub undated: u32,
 }
 
-fn token_counts(segment: &crate::products::focus::Segment) -> HashMap<&str, u32> {
-    let mut counts: HashMap<&str, u32> = HashMap::new();
-    for entry in &segment.order.completed {
-        *counts.entry(entry.token.as_str()).or_default() += 1;
+struct Listed<'s> {
+    tokens: HashMap<&'s str, (u32, u32)>,
+    entries: std::collections::HashSet<(u32, &'s str)>,
+}
+
+impl<'s> Listed<'s> {
+    fn of(segment: &'s crate::products::focus::Segment) -> Self {
+        let mut tokens: HashMap<&str, (u32, u32)> = HashMap::new();
+        let mut entries = std::collections::HashSet::new();
+        for entry in &segment.order.completed {
+            tokens.entry(entry.token.as_str()).and_modify(|held| held.0 += 1).or_insert((1, entry.ordinal));
+            entries.insert((entry.ordinal, entry.token.as_str()));
+        }
+        Self { tokens, entries }
     }
-    counts
+
+    fn unique(&self, token: &str) -> Option<u32> {
+        self.tokens.get(token).filter(|held| held.0 == 1).map(|held| held.1)
+    }
 }
 
 fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i32> {
@@ -97,13 +110,12 @@ fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i
         if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first {
             break;
         }
-        let (before, after) = (token_counts(earlier), token_counts(later));
+        let (before, after) = (Listed::of(earlier), Listed::of(later));
         alive = alive
             .into_iter()
-            .filter_map(|(shown, ordinal, token)| {
-                let unique = before.get(token) == Some(&1) && after.get(token) == Some(&1);
-                let found = earlier.order.completed.iter().find(|entry| entry.token == token && (unique || entry.ordinal == ordinal))?;
-                Some((shown, found.ordinal, token))
+            .filter_map(|(shown, ordinal, token)| match (before.unique(token), after.unique(token)) {
+                (Some(earlier_ordinal), Some(_)) => Some((shown, earlier_ordinal, token)),
+                _ => before.entries.contains(&(ordinal, token)).then_some((shown, ordinal, token)),
             })
             .collect();
         for &(shown, _, _) in &alive {

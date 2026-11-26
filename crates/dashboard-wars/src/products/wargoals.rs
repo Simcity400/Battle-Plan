@@ -201,7 +201,13 @@ fn removed_names(source: &Source, branch: u64, cat: Option<&Catalogue>, dates: &
     for incarnation in dates.removed() {
         let hour = incarnation.last_seen;
         let removed = incarnation.removed.unwrap_or(hour);
-        let Some(slot) = query.holders.slot_at(country, hour) else { continue };
+        let Some(slot) = query.holders.slot_at(country, hour) else {
+            let unresolved = query.holders.at(country, hour).is_some_and(|run| run.holder == dashboard_query::identity::Holder::Unresolved);
+            if let Some(why) = query.holders.not_known(country, hour).or_else(|| unresolved.then(|| "Who held the country at a removed war goal's last hour was not recorded".to_owned())) {
+                unattributed.push((removed, why));
+            }
+            continue;
+        };
         let frame = match frames.get(&hour) {
             Some(frame) => Arc::clone(frame),
             None => match dashboard_base::products::at_hour::frame(&query, hour, &reads, "War goals") {
@@ -371,6 +377,7 @@ fn reply(
             for goal in &mut reply.goals {
                 goal.granted_missing = Some(why.clone());
             }
+            reply.removed_unread = Some(why.clone());
             reply.warnings.push(why.clone());
         }
     }
