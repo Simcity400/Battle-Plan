@@ -188,12 +188,15 @@ fn the_hour_on_screen_is_the_hosts_drawn_hour() {
 #[test]
 fn a_branch_change_lets_the_reader_go_and_opens_one_on_the_clocks_branch() {
     let (side, _gate) = side("spine branch");
+    let entry = Arc::downgrade(side.entry());
     let mut viewer = viewer(side, 2);
     map(&mut viewer).anchor(2, false, 0.0, true);
     shown(map(&mut viewer), 2);
+    viewer.head_rows.end_frame(viewer.playhead_map.as_ref().map(|side| side.views()));
     let other = Playhead { branch: BRANCH + 1, hour: 5, fraction: 0.0 };
     viewer.anchor_playback(other, false, 0.0, true, None, Instant::now(), LAST);
     assert!(viewer.playhead_map.is_none(), "the reader of branch {BRANCH} is let go");
+    assert!(entry.upgrade().is_none(), "the map's click reader releases the closed playhead");
     assert!(!viewer.playhead_opened, "the next frame opens a reader at the clock");
     assert_eq!(viewer.playhead.map(|clock| (clock.branch, clock.hour)), Some((BRANCH + 1, 5)));
 }
