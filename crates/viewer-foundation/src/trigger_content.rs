@@ -1,6 +1,6 @@
 
 use crate::movement_timing::MovementContent;
-use dashboard_text::triggers::{ContentFacts, LeaderRoles};
+use dashboard_text::triggers::{ContentFacts, LeaderRoles, SurrenderLimits};
 use content_reader_key_names::buildings::Buildings;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct TriggerContent {
     pub terrain: Option<Arc<MovementContent>>,
     pub resource_bonuses: [i64; 2],
     pub leader_roles: Result<Arc<LeaderRoles>, String>,
+    pub surrender_limits: Result<SurrenderLimits, String>,
     pub invasion_prepare_days: Result<i32, String>,
     pub script_constants: Result<content_reader_politics::script_constants::Constants, String>,
 }
@@ -46,6 +47,7 @@ impl TriggerContent {
             buildings: Ok(&self.buildings),
             resource_bonuses: Ok(self.resource_bonuses),
             leader_roles: self.leader_roles.as_deref().map_err(String::as_str),
+            surrender_limits: self.surrender_limits.as_ref().copied().map_err(String::as_str),
             invasion_prepare_days: self
                 .invasion_prepare_days
                 .as_ref()

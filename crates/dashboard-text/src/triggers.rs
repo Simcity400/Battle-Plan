@@ -30,6 +30,7 @@ mod tests;
 mod variables;
 pub mod world;
 
+pub use dashboard_query::surrender::SurrenderLimits;
 pub use eval::{Combat, Evaluator, VariableSession};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
 pub use variables::{Store, Temps};

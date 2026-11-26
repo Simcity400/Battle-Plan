@@ -1,23 +1,58 @@
 use content_reader_defines::defines::Defines;
-use replay_data::rows::{CapitulationRow, CountryGameScoreInputRow, Recorded};
+use replay_data::rows::{CapitulationRow, CountryGameScoreInputRow, Recorded, TableId};
 
 const ONE: i64 = 100_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DerivedProgress(pub i64);
 
-fn required<T: Copy>(input: &Recorded<Option<T>>, name: &str) -> Result<T, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurrenderLimits {
+    base: i64,
+    minimum: i64,
+    reduction: i64,
+    no_cores: i64,
+}
+
+impl SurrenderLimits {
+    pub fn read(defines: &Defines) -> Result<Self, String> {
+        let define = |name| {
+            defines
+                .fixed5("NCountry", name)
+                .map_err(|error| error.to_string())
+        };
+        Ok(Self {
+            base: define("BASE_SURRENDER_LIMIT")?,
+            minimum: define("MIN_SURRENDER_LIMIT")?,
+            reduction: define("SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION")?,
+            no_cores: define("SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES")?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct MissingInput {
+    pub table: TableId,
+    pub field: &'static str,
+    pub message: String,
+}
+
+fn required<T: Copy>(input: &Recorded<Option<T>>, name: &'static str) -> Result<T, MissingInput> {
     match input {
         Recorded::Value(Some(value)) => Ok(*value),
-        _ => Err(format!("Capitulation.{name} not recorded")),
+        _ => Err(MissingInput {
+            table: TableId::Capitulation,
+            field: name,
+            message: format!("Capitulation.{name} not recorded"),
+        }),
     }
 }
 
 pub fn progress(
     row: &CapitulationRow,
     country: &CountryGameScoreInputRow,
-    defines: &Defines,
-) -> Result<DerivedProgress, String> {
+    limits: SurrenderLimits,
+) -> Result<DerivedProgress, MissingInput> {
     let core = required(&row.cached_total_core_weight, "cached_total_core_weight")?;
     let held_core = required(&row.cached_held_core_weight, "cached_held_core_weight")?;
     let total = required(
@@ -38,21 +73,20 @@ pub fn progress(
         "max_surrender_limit_offset",
     )?;
     let collaboration = required(&row.selected_collaboration, "selected_collaboration")?;
-    let controlled = country.land_count.ok_or_else(|| {
-        format!(
+    let controlled = country.land_count.ok_or_else(|| MissingInput {
+        table: TableId::CountryGameScoreInputs,
+        field: "land_count",
+        message: format!(
             "CountryGameScoreInputs.land_count not recorded ({})",
             String::from_utf8_lossy(&country.land_error)
-        )
+        ),
     })?;
-    let define = |name| {
-        defines
-            .fixed5("NCountry", name)
-            .map_err(|error| error.to_string())
-    };
-    let base = define("BASE_SURRENDER_LIMIT")?;
-    let minimum = define("MIN_SURRENDER_LIMIT")?;
-    let reduction = define("SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION")?;
-    let no_cores = define("SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES")?;
+    let SurrenderLimits {
+        base,
+        minimum,
+        reduction,
+        no_cores,
+    } = limits;
     if controlled == 0 {
         return Ok(DerivedProgress(ONE));
     }
@@ -100,6 +134,7 @@ mod tests {
             SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES = 0.625 } }"#,
             )
             .unwrap();
+        let limits = SurrenderLimits::read(&defines).unwrap();
         let mut inputs = CapitulationRow {
             cached_held_core_weight: Some(81).into(),
             cached_total_core_weight: Some(100).into(),
@@ -116,29 +151,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            progress(&inputs, &territory, &defines),
+            progress(&inputs, &territory, limits),
             Ok(DerivedProgress(35_514))
         );
         inputs.cached_total_core_weight = Some(0).into();
         assert_eq!(
-            progress(&inputs, &territory, &defines),
+            progress(&inputs, &territory, limits),
             Ok(DerivedProgress(87_272))
         );
         inputs.forced_surrender_limit_modifier = Some(-80_000).into();
         assert_eq!(
-            progress(&inputs, &territory, &defines),
+            progress(&inputs, &territory, limits),
             Ok(DerivedProgress(ONE))
         );
         inputs.forced_surrender_limit_modifier = Some(0).into();
         territory.land_count = Some(0);
         assert_eq!(
-            progress(&inputs, &territory, &defines),
+            progress(&inputs, &territory, limits),
             Ok(DerivedProgress(ONE))
         );
         for missing in [Recorded::NotRecorded, Recorded::Value(None)] {
             inputs.cached_held_territory_weight = missing;
             assert_eq!(
-                progress(&inputs, &territory, &defines).unwrap_err(),
+                progress(&inputs, &territory, limits).unwrap_err().message,
                 "Capitulation.cached_held_territory_weight not recorded"
             );
         }

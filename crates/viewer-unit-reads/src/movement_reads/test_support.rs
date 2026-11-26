@@ -86,6 +86,7 @@ pub fn unnamed_assets() -> MovementFixture {
             terrain: None,
             resource_bonuses: [15_000, 20_000],
             leader_roles: Ok(Arc::new(LeaderRoles::new(Default::default()))),
+            surrender_limits: Err("fixture has no surrender defines".into()),
             invasion_prepare_days: Ok(60),
             script_constants: Err("the test has no script constants".into()),
         },

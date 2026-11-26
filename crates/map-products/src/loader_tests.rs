@@ -230,6 +230,7 @@ fn previous_inputs(
         terrain: movement.ok().map(Arc::new),
         resource_bonuses,
         leader_roles,
+        surrender_limits: dashboard_text::triggers::SurrenderLimits::read(&defines),
         invasion_prepare_days,
         script_constants,
     };

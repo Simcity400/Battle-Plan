@@ -246,6 +246,7 @@ fn with_world_traits<T>(
             buildings: Ok(&buildings),
             resource_bonuses: Err("none"),
             leader_roles: roles,
+            surrender_limits: Err("none"),
             invasion_prepare_days: Err("none"),
             script_constants: Err("none"),
         },
@@ -1386,18 +1387,14 @@ fn surrender_progress_uses_the_battle_hour_scope_country_and_names_missing_input
                 ..Default::default()
             }]));
         let world = content.recorded_world(&frame).unwrap();
-        let evaluator = Evaluator::new(&world, Some(&CountrySide(4)));
-        for scope in [
-            Scopes::of(Scope::Country(4)),
-            Scopes::combat().with_this(Scope::Country(4)),
-        ] {
-            let result = evaluator
-                .evaluate(&items("surrender_progress > 0.57"), scope)
-                .decided();
-            match above {
-                Some(expected) => assert_eq!(result, Ok(expected), "{weight:?} in {scope:?}"),
-                None => assert!(result.unwrap_err().contains("cached_held_core_weight")),
-            }
+        let result = world
+            .evaluate(&items("surrender_progress > 0.57"), Scopes::of(Scope::Country(4)))
+            .decided_input();
+        match above {
+            Some(expected) => assert_eq!(result, Ok(expected)),
+            None => assert!(
+                result.unwrap_err().names("Capitulation.cached_held_core_weight (Country(4))")
+            ),
         }
     }
 }

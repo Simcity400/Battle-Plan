@@ -4316,7 +4316,7 @@ mod tests {
             if format < DIVISION_DAMAGE_FORMAT {
                 fewer.push((TableId::LandCombatEdges, 8));
             }
-            if format < SURRENDER_INPUTS_FORMAT && format >= MAP_MODE_INPUTS_FORMAT {
+            if format < SURRENDER_INPUTS_FORMAT {
                 fewer.push((TableId::Capitulation, 7));
             }
             if format < LEADER_VISIBILITY_FORMAT {

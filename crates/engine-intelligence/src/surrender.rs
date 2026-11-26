@@ -159,3 +159,67 @@ impl Hour {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_occupation::{pdx_robin_hood_bucket as bucket, pdx_robin_hood_table as table};
+
+    #[test]
+    fn selected_collaboration_distinguishes_an_absent_pair_from_invalid_evidence() {
+        let mut world = ccountry::synthetic::World::new(0, 3, TOTAL_TERRITORY_WEIGHT + 4);
+        let owner = world.object(1);
+        let status = world.alloc(status::OWNER + 8);
+        let relation_map = status + RELATIONS_BY_TARGET;
+        let buckets = world.alloc(2 * bucket::STRIDE);
+        let pair = world.alloc(relation::PROGRESS + 8);
+        let hour = Hour {
+            weights: true,
+            collaboration: true,
+            keys: [None; 3],
+            definitions: Default::default(),
+        };
+        let sample = |hour: &Hour, world: &ccountry::synthetic::World| {
+            let memory = world.memory();
+            let countries = ccountry::Reader::new(&memory, 0, world.game_state()).unwrap();
+            hour.country(&memory, 0, Some(&countries), countries.resolve(1).unwrap())
+        };
+        world.u32(owner + HELD_CORE_WEIGHT, 27);
+        let inputs = sample(&hour, &world);
+        assert_eq!(inputs.held_core, Some(27));
+        assert_eq!(inputs.modifiers, [None; 3]);
+        assert_eq!(inputs.collaboration, Some(0));
+        world.u32(owner + ccountry::SURRENDER_TARGET, 2);
+        world.u64(owner + ccountry::COLLABORATION_STATUS, status as u64);
+        world.u64(status, status::VTABLE_RVA.0 as u64);
+        world.u64(status + status::OWNER, owner as u64);
+        assert_eq!(sample(&hour, &world).collaboration, Some(0));
+        world.u64(relation_map + table::DATA, buckets as u64);
+        world.u32(relation_map + table::SIZE, 1);
+        world.u32(relation_map + table::CAPACITY_OR_MASK, 1);
+        world.put(buckets + bucket::DISTANCE_PLUS_ONE, &[1]);
+        world.u32(buckets + bucket::KEY, 2);
+        world.u64(buckets + bucket::VALUE, pair as u64);
+        world.u64(pair, relation::VTABLE_RVA.0 as u64);
+        world.u32(pair + relation::TARGET_COUNTRY, 2);
+        world.u64(pair + relation::PROGRESS, 38_000);
+        assert_eq!(sample(&hour, &world).collaboration, Some(38_000));
+        world.u32(pair + relation::TARGET_COUNTRY, 3);
+        assert_eq!(sample(&hour, &world).collaboration, None);
+        world.u32(pair + relation::TARGET_COUNTRY, 2);
+        world.u64(status + status::OWNER, world.object(2) as u64);
+        assert_eq!(sample(&hour, &world).collaboration, None);
+        world.u64(status + status::OWNER, owner as u64);
+        world.u64(status, 0);
+        assert_eq!(sample(&hour, &world).collaboration, None);
+        world.u32(owner + ccountry::SURRENDER_TARGET, 0);
+        let unverified = Hour {
+            weights: false,
+            collaboration: false,
+            ..hour
+        };
+        let inputs = sample(&unverified, &world);
+        assert_eq!(inputs.collaboration, None);
+        assert_eq!(inputs.held_core, None);
+    }
+}

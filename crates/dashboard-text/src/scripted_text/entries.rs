@@ -313,6 +313,7 @@ impl EnvironmentInputs {
             buildings: self.buildings.as_ref().map_err(String::as_str),
             resource_bonuses: self.bonuses.as_ref().copied().map_err(String::as_str),
             leader_roles: self.roles.as_ref().map_err(String::as_str),
+            surrender_limits: environment.surrender_limits(),
             invasion_prepare_days: self.invasion_days.as_ref().copied().map_err(String::as_str),
             script_constants: self.constants.as_ref().map_err(String::as_str),
             character_traits: self

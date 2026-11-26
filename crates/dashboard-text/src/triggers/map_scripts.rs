@@ -665,7 +665,12 @@ impl Evaluator<'_, '_> {
                         "controlled province count not recorded for the country",
                     )
                 })?;
-        Ok(dashboard_query::surrender::progress(&inputs, &territory, world.recorded_defines()?)?.0)
+        let limits = world.surrender_limits.map_err(Failure::from)?;
+        dashboard_query::surrender::progress(&inputs, &territory, limits)
+            .map(|progress| progress.0)
+            .map_err(|error| {
+                Failure::input(error.table, error.field, Some(Store::Country(slot)), error.message)
+            })
     }
 
     pub(super) fn country_stability_inputs(
