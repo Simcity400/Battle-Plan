@@ -315,12 +315,9 @@ fn project_histories(
     from: i32,
     to: i32,
 ) -> io::Result<(History, History)> {
-    let read = |columns: &[usize]| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, columns, Keys::These(keys), from, to);
-    let (projects, outputs) = dashboard_query::cost::storage(|| rayon::join(
-        || read(&col::ALL[..col::CONSTRUCTION_RAW]),
-        || read(&col::ALL[col::CONSTRUCTION_RAW..]),
-    ));
-    let (projects, outputs) = (projects?, outputs?);
+    let read = |columns: &[usize]| dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, columns, Keys::These(keys), from, to));
+    let projects = read(&col::ALL[..col::CONSTRUCTION_RAW])?;
+    let outputs = read(&col::ALL[col::CONSTRUCTION_RAW..])?;
     dashboard_base::products::at_hour::count_rows(|| {
         [&projects, &outputs].into_iter()
             .flat_map(|history| &history.keys)
