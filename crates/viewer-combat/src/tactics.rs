@@ -4007,8 +4007,8 @@ mod tests {
         write(
             "mod",
             "common/defines/surrender.lua",
-            "NDefines = { NCountry = { BASE_SURRENDER_LIMIT = 0.5, MIN_SURRENDER_LIMIT = 0.1,
-            SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION = 0.25, SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES = 1 } }",
+            "NDefines = { NCountry = { BASE_SURRENDER_LIMIT = 0.78125, MIN_SURRENDER_LIMIT = 0.15625,
+            SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION = 0.34375, SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES = 0.84375 } }",
         );
         let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
@@ -4338,9 +4338,9 @@ mod tests {
         assert_eq!(weigh_country("ARMS_FACTORY = 5"), Ok(100_000));
         assert_eq!(weigh_country("mod_mill = 3"), Ok(100_000));
         assert_eq!(weigh("GER = { Mod_Mill < 4 }"), Ok(100_000));
-        assert_eq!(weigh("GER = { surrender_progress > 0.49 }"), Ok(100_000));
-        assert_eq!(weigh("GER = { surrender_progress > 0.50 }"), Ok(0));
-        let missing = weigh_at(6, "GER = { surrender_progress > 0.49 }").unwrap_err();
+        assert_eq!(weigh("GER = { surrender_progress > 0.31999 }"), Ok(100_000));
+        assert_eq!(weigh("GER = { surrender_progress > 0.32 }"), Ok(0));
+        let missing = weigh_at(6, "GER = { surrender_progress > 0.31999 }").unwrap_err();
         assert!(missing.contains("selected_collaboration"), "{missing}");
         assert_eq!(weigh("64 = { arms_factory = 3 }"), Ok(100_000));
         assert_eq!(weigh("65 = { mod_mill = 4 }"), Ok(100_000));
