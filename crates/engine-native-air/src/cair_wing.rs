@@ -335,6 +335,7 @@ pub struct Admitted {
     pub sources: bool,
     pub naval: bool,
     pub name_header: Option<[u8; msvc_string::STRIDE]>,
+    pub crew: Option<[i32; 2]>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -681,14 +682,14 @@ const ROW_SPANS: [(usize, usize); 15] = [
     (0, 8),
     (SECONDARY, 16),
     (POOL, 8),
-    (PLANE_COUNT, 4),
+    (PLANE_COUNT, 8),
     (BASE_OVERRIDE, 8),
     (MISSION + air_mission::ENABLED_MASK, 4),
     (MISSION + air_mission::REGION, 8),
     (MISSION + air_mission::ACTIVE, 1),
     (ELIGIBILITY_VETO, 1),
     (ELIGIBILITY_COUNTER, 8),
-    (COUNTRY_OVERRIDE, 4),
+    (COUNTRY_OVERRIDE, 8),
     (BASE_RANGE, 8),
     (ACE_REFERENCE, 8),
     (ATTACHED_ORDERS_GROUP, 8),
@@ -952,6 +953,7 @@ fn walk_projected(
                                     sources: source_needs,
                                     naval: naval_needs,
                                     name_header: fields.name,
+                                    crew: fields.crew,
                                 },
                             );
                             if map_needs {
@@ -1209,6 +1211,7 @@ struct RowFields {
     ace: [u8; 8],
     group: [u8; 8],
     name: Option<[u8; msvc_string::STRIDE]>,
+    crew: Option<[i32; 2]>,
 }
 
 impl RowFields {
@@ -1217,23 +1220,29 @@ impl RowFields {
             let at = ROW_FIELDS[field].destination_offset;
             record[at..at + N].try_into().unwrap()
         }
+        let planes_and_manpower: [u8; 8] = take(record, 3);
+        let country_and_exile: [u8; 8] = take(record, 10);
         Self {
             completed: ROW_FIELDS.len() - 1,
             primary: take(record, 0),
             secondary_and_handle: take(record, 1),
             pool: take(record, 2),
-            planes: take(record, 3),
+            planes: planes_and_manpower[..4].try_into().unwrap(),
             base_override: take(record, 4),
             mask: take(record, 5),
             region: take(record, 6),
             active: take(record, 7),
             veto: take(record, 8),
             eligibility: take(record, 9),
-            country_override: take(record, 10),
+            country_override: country_and_exile[..4].try_into().unwrap(),
             base_range: take(record, 11),
             ace: take(record, 12),
             group: take(record, 13),
             name: Some(take(record, 14)),
+            crew: Some([
+                i32::from_le_bytes(planes_and_manpower[4..8].try_into().unwrap()),
+                i32::from_le_bytes(country_and_exile[4..8].try_into().unwrap()),
+            ]),
         }
     }
 }
@@ -1385,6 +1394,7 @@ impl<M: Memory> Reader<'_, M> {
             ace,
             group,
             name: _,
+            crew: _,
         } = *fields;
         let leaf = (|| {
             let expected_primary =

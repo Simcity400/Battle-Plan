@@ -418,4 +418,4 @@ pub const ROLES: [Role; ROLE_COUNT] = [
     Role::AirSupply,
     Role::ScriptVariables,
 ];
-pub const MAX_JOBS: usize = 235;
+pub const MAX_JOBS: usize = 249;

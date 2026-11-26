@@ -191,6 +191,7 @@ pub(super) fn walk_projected(
                                         sources: source_needs,
                                         naval: naval_needs,
                                         name_header: None,
+                                        crew: None,
                                     },
                                 );
                                 if map_needs {

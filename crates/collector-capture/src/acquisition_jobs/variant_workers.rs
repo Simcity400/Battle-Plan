@@ -22,6 +22,11 @@ pub enum Work {
         game_state: usize,
         countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     },
+    Stability {
+        part: collector_stability::country_stability::StabilityPart,
+        game_state: usize,
+        countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    },
     TemplateWalk(collector_division_templates::extended::division_templates::WalkPart),
     NaviesBegin(Box<super::NaviesBeginPart>),
     SpeedTermsEntries {
@@ -38,6 +43,7 @@ impl Work {
         match self {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
+            Self::Stability { .. } => Role::Stability,
             Self::TemplateWalk(_) => Role::Templates,
             Self::NaviesBegin(_) => Role::OrdinaryNavies,
             Self::SpeedTermsEntries { .. } | Self::SpeedTermsAux { .. } => {
@@ -71,6 +77,14 @@ impl Work {
                 } else {
                     part.capture(memory, base, *game_state);
                 }
+            }
+            Self::Stability {
+                part,
+                game_state,
+                countries,
+            } => {
+                let roster = countries.roster_view(memory);
+                part.capture(&roster, base, *game_state);
             }
             Self::TemplateWalk(part) => part.capture(
                 memory,
@@ -429,6 +443,29 @@ impl Dispatch {
             part
         }))
         .map_err(|_| "project worker result allocation failed")
+    }
+    pub(super) fn stability(
+        &self,
+        parts: Vec<collector_stability::country_stability::StabilityPart>,
+        memory: &impl engine_native_memory::Memory,
+        base: usize,
+        game_state: usize,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
+    ) -> Result<Vec<collector_stability::country_stability::StabilityPart>, &'static str> {
+        let parts = engine_allocation::collect_vec(parts.into_iter().map(|part| Work::Stability {
+            part,
+            game_state,
+            countries: engine_allocation::SharedBox::clone(countries),
+        }))
+        .map_err(|_| "stability worker allocation failed")?;
+        let parts = self.acquire_work(parts, memory, base)?;
+        engine_allocation::collect_vec(parts.into_iter().map(|part| {
+            let Work::Stability { part, .. } = part else {
+                unreachable!()
+            };
+            part
+        }))
+        .map_err(|_| "stability worker result allocation failed")
     }
     pub(crate) fn template_walk(
         &self,

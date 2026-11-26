@@ -3,7 +3,7 @@ use engine_allocation as allocation;
 
 pub const WING_PACK_N: usize = 2;
 pub const WING_PARTS: usize = collector_workers::acquisition::MAX_WORKERS;
-const PART_COST: u64 = 384;
+const PART_COST: u64 = 192;
 
 #[derive(Debug)]
 pub struct AirWingJob {
@@ -54,6 +54,7 @@ pub struct AirWingJob {
     pub carry: (collector_observers::wing_changes::Counts, usize),
     pub owner_costs: Vec<(u32, u32)>,
     pub cost: u32,
+    pub map_pointers: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +137,7 @@ impl Default for AirWingJob {
             carry: Default::default(),
             owner_costs: Vec::new(),
             cost: 0,
+            map_pointers: Vec::new(),
         }
     }
 }
@@ -180,6 +182,7 @@ impl AirWingJob {
                 + self.game_score.allocated_bytes() as u64,
             auxiliary_vectors: vector_bytes(&self.sources)
                 + vector_bytes(&self.owner_costs)
+                + vector_bytes(&self.map_pointers)
                 + vector_bytes(&self.identities)
                 + vector_bytes(&self.naval_memberships)
                 + self.transport.allocated_bytes() as u64
@@ -230,6 +233,7 @@ impl AirWingJob {
         self.carry = Default::default();
         self.owner_costs.clear();
         self.cost = 0;
+        self.map_pointers.clear();
     }
     pub fn grow_for_next(&self) -> bool {
         self.transport.required_map_capacity > 0
@@ -494,6 +498,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     let map_rows = engine_native_memory::walk::Buffer::Growing(&mut job.map_rows);
     let sources = engine_native_memory::walk::Buffer::Growing(&mut job.sources);
     let raid_token = collector_observers::wing_changes::map_quiet();
+    let crew_token = collector_observers::crew_changes::quiet();
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
         ctx.base,
@@ -506,10 +511,18 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         |pointer, pool, row, admitted| {
             cost.set(cost.get().saturating_add(1));
             if admitted.map {
-                let crew =
-                    crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet);
+                let crew = if crew_token.is_some() {
+                    admitted.crew.or_else(|| {
+                        crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
+                    })
+                } else {
+                    None
+                };
                 row.acquired_manpower = crew.map(|value| value[0]);
                 row.exile_country = crew.map(|value| value[1]);
+                if allocation::advisory(|| allocation::reserve(&mut job.map_pointers, 1)).is_ok() {
+                    job.map_pointers.push(pointer);
+                }
                 map_len += 1;
                 row.name = {
                     match cair_wing::capture_name_growing(
@@ -657,6 +670,17 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         },
     );
     job.map_flags.finish();
+    if crew_token.is_some() && collector_observers::crew_changes::quiet() != crew_token {
+        let len = walked.shared.map.len().min(job.map_rows.len());
+        let aligned = job.map_pointers.len() == map_len && job.map_pointers.len() >= len;
+        for i in 0..len {
+            let crew = aligned.then(|| job.map_pointers[i]).and_then(|pointer| {
+                crate::crew::wing(memory, pointer, collector_observers::crew_changes::quiet)
+            });
+            job.map_rows[i].acquired_manpower = crew.map(|value| value[0]);
+            job.map_rows[i].exile_country = crew.map(|value| value[1]);
+        }
+    }
 
     job.census = walked;
     job.equipment_outcome = equipment;
@@ -960,18 +984,25 @@ pub fn part_starts(
     let count = total.div_ceil(PART_COST).clamp(1, WING_PARTS as u64);
     let mut starts = [0; WING_PARTS - 1];
     let mut filled = 0;
-    let mut start = |slot: u32| {
+    let mut start = |slot: u32| -> bool {
         if slot > 0 && (filled == 0 || slot > starts[filled - 1]) {
             starts[filled] = slot;
             filled += 1;
+            true
+        } else {
+            false
         }
     };
     let (mut part, mut offset, mut holder) = (1, 0, None);
     for job in jobs() {
         for &(slot, before) in &job.owner_costs {
+            let mut split_after = false;
             while part < count && offset + u64::from(before) > total * part / count {
-                if let Some(slot) = holder {
-                    start(slot);
+                if let Some(prev_slot) = holder
+                    && !start(prev_slot)
+                    && !split_after
+                {
+                    split_after = start(slot);
                 }
                 part += 1;
             }

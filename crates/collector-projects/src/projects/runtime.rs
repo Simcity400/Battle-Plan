@@ -68,6 +68,7 @@ struct Held {
     pending_stamp: Option<(u64, u64)>,
     iterations: i32,
     runtime_serial: u64,
+    quiet_token: Option<(u64, u64)>,
 }
 
 impl Held {
@@ -204,7 +205,34 @@ impl Runtime {
         selection: Option<&SliceSelection>,
         defer: bool,
     ) {
-        let mut reader = project_variable_changes::stamp_reader();
+        let quiet_before = (!force)
+            .then(project_variable_changes::global_quiet)
+            .flatten();
+        if !self.read_pass(memory, base, rows, force, defer, quiet_before) {
+            for row in rows {
+                if let Some(held) = self.held.get_mut(&(row.owner, row.local_id)) {
+                    held.quiet_token = None;
+                }
+            }
+            self.read_pass(memory, base, rows, force, defer, None);
+        }
+        if full_census {
+            self.finish_census(rows, selection);
+        }
+    }
+
+    fn read_pass(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        rows: &[nproject_cproject::Row],
+        force: bool,
+        defer: bool,
+        quiet_before: Option<(u64, u64)>,
+    ) -> bool {
+        let mut reader: Option<project_variable_changes::StampReader> = None;
+        let mut skipped_quiet = false;
+        let mut stamped_quiet = false;
         for row in rows {
             let key = (row.owner, row.local_id);
             let held = if let Some(held) = self.held.get_mut(&key) {
@@ -223,15 +251,28 @@ impl Runtime {
                 && held.pending_known
                 && held.variables_known
                 && row.state.iterations == held.iterations
-                && let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES)
-                && let Some(r) = reader.as_ref()
-                && let Some((stamp, pending_stamp)) = r.stamps(store, row.owner, row.local_id)
-                && stamp.is_some()
-                && stamp == held.stamp
-                && pending_stamp.is_some()
-                && pending_stamp == held.pending_stamp
             {
-                continue;
+                if quiet_before.is_some() && held.quiet_token == quiet_before {
+                    skipped_quiet = true;
+                    continue;
+                }
+                if reader.is_none() {
+                    reader = project_variable_changes::stamp_reader();
+                }
+                if let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES)
+                    && let Some(r) = reader.as_ref()
+                    && let Some((stamp, pending_stamp)) = r.stamps(store, row.owner, row.local_id)
+                    && stamp.is_some()
+                    && stamp == held.stamp
+                    && pending_stamp.is_some()
+                    && pending_stamp == held.pending_stamp
+                {
+                    if quiet_before.is_some() {
+                        held.quiet_token = quiet_before;
+                        stamped_quiet = true;
+                    }
+                    continue;
+                }
             }
             self.heap_bytes -= held.allocated_bytes();
             let prev_state = (
@@ -250,6 +291,7 @@ impl Runtime {
                         ..Default::default()
                     };
                 }
+                held.quiet_token = None;
                 let Some(store) = pointer.checked_add(nproject_cproject::VARIABLES) else {
                     held.variables_known = false;
                     held.pending_known = false;
@@ -391,6 +433,15 @@ impl Runtime {
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
             })();
+            if quiet_before.is_some()
+                && held.pending_known
+                && held.variables_known
+                && held.stamp.is_some()
+                && held.pending_stamp.is_some()
+            {
+                held.quiet_token = quiet_before;
+                stamped_quiet = true;
+            }
             if held.runtime_serial == 0
                 || prev_state
                     != (
@@ -407,9 +458,20 @@ impl Runtime {
             self.heap_bytes += held.allocated_bytes();
         }
         drop(reader);
-        if full_census {
-            self.finish_census(rows, selection);
+        if (skipped_quiet || stamped_quiet)
+            && project_variable_changes::global_quiet() != quiet_before
+        {
+            if !skipped_quiet {
+                for row in rows {
+                    if let Some(held) = self.held.get_mut(&(row.owner, row.local_id)) {
+                        held.quiet_token = None;
+                    }
+                }
+                return true;
+            }
+            return false;
         }
+        true
     }
 
     pub(super) fn finish_census(

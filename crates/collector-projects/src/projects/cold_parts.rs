@@ -216,7 +216,7 @@ pub(super) fn capture(
     dispatch: Option<ProjectDispatch<'_>>,
     pool: &mut Vec<ProjectPart>,
 ) -> Option<Acquired> {
-    let dispatch = dispatch.filter(|dispatch| dispatch.lanes > 1 && read.len() >= 32)?;
+    let dispatch = dispatch.filter(|dispatch| dispatch.lanes > 1 && read.len() >= 8)?;
     let parts = engine_allocation::advisory(|| {
         let owners = engine_allocation::collect_vec(
             read.chunk_by(|a, b| a.0 == b.0).map(|group| group[0].0),

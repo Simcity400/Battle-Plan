@@ -14,7 +14,10 @@ use replay_data::{
     rows::CountryStabilityLineRow, rows::TableId, rows::tables,
 };
 use replay_frame::frame::TableView;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 static BATCH_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
@@ -75,6 +78,170 @@ impl Capacities {
     }
 }
 
+pub struct StabilityDispatch<'a> {
+    pub lanes: usize,
+    pub acquire: &'a mut dyn FnMut(Vec<StabilityPart>) -> Result<Vec<StabilityPart>, &'static str>,
+}
+
+pub struct StabilityPart {
+    ordinal: usize,
+    countries: Vec<engine_native_memory::country_identity::Country>,
+    context: Option<Arc<native::Context>>,
+    memo: native::Memo,
+    scratch: native::Scratch,
+    inputs: Vec<native::InputRow>,
+    lines: Vec<native::LineRow>,
+    bytes: Vec<u8>,
+    bytes_len: usize,
+    bytes_required: usize,
+    lines_outcome: Outcome,
+    unread: Vec<u32>,
+    error: Option<&'static str>,
+    phase_ticks: [u64; 4],
+    acquired: bool,
+}
+
+impl StabilityPart {
+    fn new(demand: native::Demand) -> Self {
+        Self {
+            ordinal: 0,
+            countries: Vec::new(),
+            context: None,
+            memo: native::Memo::default(),
+            scratch: native::Scratch::with_demand(demand)
+                .map_err(crate::allocation::io)
+                .unwrap_or_else(|_| native::Scratch::vacant()),
+            inputs: Vec::new(),
+            lines: Vec::new(),
+            bytes: Vec::new(),
+            bytes_len: 0,
+            bytes_required: 0,
+            lines_outcome: Outcome::Rows { len: 0 },
+            unread: Vec::new(),
+            error: None,
+            phase_ticks: [0; 4],
+            acquired: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.countries.clear();
+        self.context = None;
+        self.memo.clear();
+        self.inputs.clear();
+        self.lines.clear();
+        self.bytes_len = 0;
+        self.bytes_required = 0;
+        self.lines_outcome = Outcome::Rows { len: 0 };
+        self.unread.clear();
+        self.error = None;
+        self.phase_ticks = [0; 4];
+        self.acquired = false;
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.countries.capacity() * size_of::<engine_native_memory::country_identity::Country>()
+            + self.memo.allocated_bytes()
+            + self.scratch.allocated_bytes()
+            + self.inputs.capacity() * size_of::<native::InputRow>()
+            + self.lines.capacity() * size_of::<native::LineRow>()
+            + self.bytes.capacity()
+            + self.unread.capacity() * size_of::<u32>()
+    }
+
+    pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        let _reads = crate::read_accounting::table(TABLES[0]);
+        let started = qpc();
+        let mut timing = native::WalkTiming::new(started);
+        self.acquired = false;
+        self.error = None;
+        self.memo.clear();
+        self.inputs.clear();
+        self.lines.clear();
+        self.bytes_len = 0;
+        self.bytes_required = 0;
+        self.lines_outcome = Outcome::Rows { len: 0 };
+        self.unread.clear();
+        let Some(context) = self.context.as_deref() else {
+            self.error = Some("stability partition missing context");
+            self.phase_ticks = timing.finish_at(qpc());
+            return;
+        };
+        let countries = match ccountry::Reader::new(memory, base, game_state) {
+            Ok(countries) => countries,
+            Err(reason) => {
+                self.error = Some(reason);
+                self.phase_ticks = timing.finish_at(qpc());
+                return;
+            }
+        };
+        if engine_allocation::reserve(&mut self.inputs, self.countries.len()).is_err() {
+            self.error = Some("stability input storage allocation failed");
+            self.phase_ticks = timing.finish_at(qpc());
+            return;
+        }
+        let mut lines = Outcome::Rows { len: 0 };
+        for &country in &self.countries {
+            let mut input = native::InputRow::default();
+            let start = lines.len();
+            let walk = native::walk_country_memo_timed(
+                memory,
+                base,
+                &countries,
+                country,
+                context,
+                &mut self.memo,
+                &mut self.scratch,
+                &mut input,
+                &mut self.lines,
+                &mut self.bytes,
+                start,
+                self.bytes_len,
+                &mut timing,
+            );
+            let fallbacks = self.scratch.batch_fallbacks();
+            if fallbacks != 0 {
+                BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
+            }
+            let walk = match walk {
+                Ok(walk) => walk,
+                Err(reason) => {
+                    self.error = Some(reason);
+                    self.phase_ticks = timing.finish_at(qpc());
+                    return;
+                }
+            };
+            let offset = self.bytes_len;
+            self.bytes_required = self
+                .bytes_required
+                .max(offset.saturating_add(walk.required_bytes));
+            self.bytes_len += walk.bytes_len;
+            lines = match combine(lines, walk.lines) {
+                Ok(lines) => lines,
+                Err(reason) => {
+                    self.error = Some(reason);
+                    self.phase_ticks = timing.finish_at(qpc());
+                    return;
+                }
+            };
+            if !matches!(walk.lines, Outcome::Rows { .. }) {
+                if self.unread.len() == self.unread.capacity()
+                    && engine_allocation::reserve(&mut self.unread, 1).is_err()
+                {
+                    self.error = Some("stability unread allocation failed");
+                    self.phase_ticks = timing.finish_at(qpc());
+                    return;
+                }
+                self.unread.push(country.id);
+            }
+            self.inputs.push(input);
+        }
+        self.lines_outcome = lines;
+        self.phase_ticks = timing.finish_at(qpc());
+        self.acquired = true;
+    }
+}
+
 pub struct Captured {
     inputs: CaptureRows<native::InputRow>,
     lines: CaptureRows<native::LineRow>,
@@ -84,8 +251,11 @@ pub struct Captured {
     selection: SliceSelection,
     changed: Changed,
     keys: Option<native::Keys>,
-    context: Option<native::Context>,
+    context: Option<Arc<native::Context>>,
     phase_ticks: [u64; 4],
+    demand: native::Demand,
+    parts: Vec<StabilityPart>,
+    selected_countries: Vec<engine_native_memory::country_identity::Country>,
 }
 
 impl Captured {
@@ -109,6 +279,9 @@ impl Captured {
             keys: None,
             context: None,
             phase_ticks: [0; 4],
+            demand: native::Demand::default(),
+            parts: Vec::new(),
+            selected_countries: Vec::new(),
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -125,6 +298,9 @@ impl Captured {
             keys: None,
             context: None,
             phase_ticks: [0; 4],
+            demand: capacity.demand,
+            parts: Vec::new(),
+            selected_countries: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
@@ -145,6 +321,13 @@ impl Captured {
                 .context
                 .as_ref()
                 .map_or(0, |context| context.language.capacity())
+            + self
+                .parts
+                .iter()
+                .map(StabilityPart::allocated_bytes)
+                .sum::<usize>()
+            + self.selected_countries.capacity()
+                * size_of::<engine_native_memory::country_identity::Country>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.inputs.grow(&mut capacity.inputs);
@@ -179,7 +362,7 @@ impl Captured {
         force_full: bool,
         fingerprints: Option<&mut SliceFingerprints>,
     ) -> [u64; N] {
-        self.capture_changed(
+        self.capture_changed_partitioned(
             memory,
             base,
             game_state,
@@ -187,6 +370,33 @@ impl Captured {
             force_full,
             fingerprints,
             &changes::Observer,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands travel beside fingerprints and worker dispatch"
+    )]
+    pub fn capture_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        dispatch: Option<StabilityDispatch<'_>>,
+    ) -> [u64; N] {
+        self.capture_changed_partitioned(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            &changes::Observer,
+            dispatch,
         )
     }
 
@@ -204,6 +414,33 @@ impl Captured {
         fingerprints: Option<&mut SliceFingerprints>,
         changes: &dyn Changes,
     ) -> [u64; N] {
+        self.capture_changed_partitioned(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            changes,
+            None,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hourly capture operands travel beside fingerprints, change source and worker dispatch"
+    )]
+    pub fn capture_changed_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        changes: &dyn Changes,
+        dispatch: Option<StabilityDispatch<'_>>,
+    ) -> [u64; N] {
         self.reset();
         self.selection.reset(hour, force_full);
         if !should_walk(TABLES[0], hour, force_full) {
@@ -217,16 +454,31 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         let mut timing = native::WalkTiming::new(started);
-        let result = self.walk(memory, base, game_state, fingerprints, changes, &mut timing);
+        let result = self.walk(
+            memory,
+            base,
+            game_state,
+            fingerprints,
+            changes,
+            dispatch,
+            &mut timing,
+        );
         if let Err(reason) = result {
             self.inputs.outcome = Outcome::Unavailable { reason };
             self.lines.outcome = Outcome::Unavailable { reason };
         }
         let ended = qpc();
-        self.phase_ticks = timing.finish_at(ended);
+        let serial_ticks = timing.finish_at(ended);
+        for (dst, src) in self.phase_ticks.iter_mut().zip(serial_ticks) {
+            *dst = dst.saturating_add(src);
+        }
         [ended.saturating_sub(started).max(0) as u64, 0]
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "walk carries memory, game state, fingerprints, change source, worker dispatch and timing"
+    )]
     fn walk(
         &mut self,
         memory: &impl Memory,
@@ -234,6 +486,7 @@ impl Captured {
         game_state: usize,
         mut fingerprints: Option<&mut SliceFingerprints>,
         changes: &dyn Changes,
+        dispatch: Option<StabilityDispatch<'_>>,
         timing: &mut native::WalkTiming,
     ) -> Result<(), &'static str> {
         let cached = match self.keys {
@@ -288,9 +541,7 @@ impl Captured {
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
         context.manpower_enabled = manpower_observed;
-        let mut read = 0_u64;
-        let mut inputs = 0;
-        let mut lines = Outcome::Rows { len: 0 };
+        self.selected_countries.clear();
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -298,6 +549,209 @@ impl Captured {
             if !self.selection.contains(country.id) {
                 continue;
             }
+            if self.selected_countries.len() == self.selected_countries.capacity() {
+                engine_allocation::reserve(&mut self.selected_countries, 1)
+                    .map_err(|_| "stability country selection allocation failed")?;
+            }
+            self.selected_countries.push(country);
+        }
+        if let Some(dispatch) = dispatch.filter(|d| d.lanes > 1 && self.selected_countries.len() >= 8) {
+            let context = Arc::new(context);
+            let count = dispatch.lanes.min(self.selected_countries.len() / 2);
+            let width = self.selected_countries.len().div_ceil(count);
+            let prepared = engine_allocation::advisory(|| {
+                let mut parts = engine_allocation::vec(count).ok()?;
+                for (ordinal, chunk) in self.selected_countries.chunks(width).enumerate() {
+                    let mut part = self
+                        .parts
+                        .pop()
+                        .unwrap_or_else(|| StabilityPart::new(self.demand));
+                    part.reset();
+                    part.ordinal = ordinal;
+                    part.context = Some(Arc::clone(&context));
+                    engine_allocation::reserve(&mut part.countries, chunk.len()).ok()?;
+                    part.countries.extend_from_slice(chunk);
+                    parts.push(part);
+                }
+                Some(parts)
+            });
+            if let Some(parts) = prepared {
+                let expected = parts.len();
+                let mut returned = (dispatch.acquire)(parts)?;
+                returned.sort_unstable_by_key(|part| part.ordinal);
+                let result = (|| -> Result<(), &'static str> {
+                    if returned.len() != expected
+                        || returned
+                            .iter()
+                            .enumerate()
+                            .any(|(i, part)| part.ordinal != i || !part.acquired)
+                    {
+                        if let Some(reason) = returned.iter().find_map(|part| part.error) {
+                            return Err(reason);
+                        }
+                        return Err("stability partition acquisition incomplete");
+                    }
+                    if let Some(reason) = returned.iter().find_map(|part| part.error) {
+                        return Err(reason);
+                    }
+                    let total_inputs: usize = returned.iter().map(|part| part.inputs.len()).sum();
+                    let total_lines: usize =
+                        returned.iter().map(|part| part.lines_outcome.len()).sum();
+                    let total_bytes: usize = returned.iter().map(|part| part.bytes_len).sum();
+                    if self.inputs.rows.len() < total_inputs {
+                        engine_allocation::resize_default(&mut self.inputs.rows, total_inputs)
+                            .map_err(|_| "stability input storage allocation failed")?;
+                    }
+                    if self.lines.rows.len() < total_lines {
+                        engine_allocation::resize_default(&mut self.lines.rows, total_lines)
+                            .map_err(|_| "stability line storage allocation failed")?;
+                    }
+                    if self.bytes.first.len() < total_bytes {
+                        engine_allocation::resize_default(&mut self.bytes.first, total_bytes)
+                            .map_err(|_| "stability byte storage allocation failed")?;
+                    }
+                    let mut input_at = 0_usize;
+                    let mut line_at = 0_usize;
+                    let mut byte_at = 0_usize;
+                    let mut lines = Outcome::Rows { len: 0 };
+                    for part in &returned {
+                        let n_inputs = part.inputs.len();
+                        self.inputs.rows[input_at..input_at + n_inputs]
+                            .copy_from_slice(&part.inputs);
+                        input_at += n_inputs;
+                        let n_lines = part.lines_outcome.len();
+                        for (dst, src) in self.lines.rows[line_at..line_at + n_lines]
+                            .iter_mut()
+                            .zip(&part.lines[..n_lines])
+                        {
+                            *dst = native::LineRow {
+                                identity: native::Span {
+                                    start: src.identity.start + byte_at,
+                                    len: src.identity.len,
+                                },
+                                text: native::Span {
+                                    start: src.text.start + byte_at,
+                                    len: src.text.len,
+                                },
+                                ..*src
+                            };
+                        }
+                        line_at += n_lines;
+                        self.bytes.first[byte_at..byte_at + part.bytes_len]
+                            .copy_from_slice(&part.bytes[..part.bytes_len]);
+                        self.bytes.required = self
+                            .bytes
+                            .required
+                            .max(byte_at.saturating_add(part.bytes_required));
+                        byte_at += part.bytes_len;
+                        lines = combine(lines, part.lines_outcome)?;
+                        if let Some(fingerprints) = fingerprints.as_deref_mut() {
+                            for &id in &part.unread {
+                                self.changed.unread(fingerprints, id);
+                            }
+                        }
+                        for (dst, src) in self.phase_ticks.iter_mut().zip(part.phase_ticks) {
+                            *dst = dst.saturating_add(src);
+                        }
+                    }
+                    self.bytes.len = byte_at;
+                    self.inputs.outcome = Outcome::Rows { len: input_at };
+                    self.lines.outcome = lines;
+                    self.context = Some(context);
+                    if fingerprints.is_some() {
+                        changes::record(
+                            Table::Stability,
+                            &changes::Counts {
+                                marked: self.changed.marked() as u64,
+                                read: input_at as u64,
+                                full: !self.changed.certified,
+                            },
+                            ids,
+                        );
+                    }
+                    Ok(())
+                })();
+                for mut part in returned {
+                    part.reset();
+                    if self.parts.len() < self.parts.capacity()
+                        || engine_allocation::reserve(&mut self.parts, 1).is_ok()
+                    {
+                        self.parts.push(part);
+                    }
+                }
+                return result;
+            }
+            let mut read = 0_u64;
+            let mut inputs = 0;
+            let mut lines = Outcome::Rows { len: 0 };
+            for &country in &self.selected_countries {
+                let mut input = native::InputRow::default();
+                let start = lines.len();
+                let walk = native::walk_country_memo_timed(
+                    memory,
+                    base,
+                    &countries,
+                    country,
+                    &context,
+                    &mut self.memo,
+                    &mut self.scratch,
+                    &mut input,
+                    &mut self.lines.rows,
+                    &mut self.bytes.first,
+                    start,
+                    self.bytes.len,
+                    timing,
+                );
+                let fallbacks = self.scratch.batch_fallbacks();
+                if fallbacks != 0 {
+                    BATCH_FALLBACKS.fetch_add(fallbacks, Ordering::Relaxed);
+                }
+                let walk = walk?;
+                let offset = self.bytes.len;
+                self.bytes.required = self
+                    .bytes
+                    .required
+                    .max(offset.saturating_add(walk.required_bytes));
+                self.bytes.len += walk.bytes_len;
+                lines = combine(lines, walk.lines)?;
+                read += 1;
+                if let Some(fingerprints) = fingerprints.as_deref_mut()
+                    && !matches!(walk.lines, Outcome::Rows { .. })
+                {
+                    self.changed.unread(fingerprints, country.id);
+                }
+                if self.inputs.rows.len() <= inputs {
+                    engine_allocation::resize_default(
+                        &mut self.inputs.rows,
+                        inputs
+                            .checked_add(1)
+                            .ok_or("stability input count overflow")?,
+                    )
+                    .map_err(|_| "stability input storage allocation failed")?;
+                }
+                self.inputs.rows[inputs] = input;
+                inputs += 1;
+            }
+            self.inputs.outcome = Outcome::Rows { len: inputs };
+            self.lines.outcome = lines;
+            self.context = Some(context);
+            if fingerprints.is_some() {
+                changes::record(
+                    Table::Stability,
+                    &changes::Counts {
+                        marked: self.changed.marked() as u64,
+                        read,
+                        full: !self.changed.certified,
+                    },
+                    ids,
+                );
+            }
+            return Ok(());
+        }
+        let mut read = 0_u64;
+        let mut inputs = 0;
+        let mut lines = Outcome::Rows { len: 0 };
+        for &country in &self.selected_countries {
             let mut input = native::InputRow::default();
             let start = lines.len();
             let walk = native::walk_country_memo_timed(
@@ -347,7 +801,7 @@ impl Captured {
         }
         self.inputs.outcome = Outcome::Rows { len: inputs };
         self.lines.outcome = lines;
-        self.context = Some(context);
+        self.context = Some(Arc::new(context));
         if fingerprints.is_some() {
             changes::record(
                 Table::Stability,

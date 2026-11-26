@@ -73,7 +73,28 @@ struct Entry {
 }
 static OWNERS: RwLock<Option<FastMap<usize, Entry>>> = RwLock::new(None);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_CHANGE: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn global_quiet() -> Option<(u64, u64)> {
+    if !ENABLED.load(Ordering::Acquire)
+        || !PROJECT_HOOKS.load(Ordering::Acquire)
+        || GLOBAL_ACTIVE.load(Ordering::SeqCst) != 0
+    {
+        return None;
+    }
+    FLIGHT.quiet_epoch()?;
+    let change = GLOBAL_CHANGE.load(Ordering::SeqCst);
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    if GLOBAL_ACTIVE.load(Ordering::SeqCst) != 0
+        || GLOBAL_CHANGE.load(Ordering::SeqCst) != change
+        || FLIGHT.quiet_epoch().is_none()
+    {
+        return None;
+    }
+    Some((epoch, change))
+}
 
 pub fn enabled(value: bool) {
     ENABLED.store(value, Ordering::SeqCst);
@@ -122,6 +143,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
             entry.owner = owner;
             entry.id = id;
             entry.revision.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
         }
         if entry.active.load(Ordering::SeqCst) != 0 {
             return None;
@@ -152,7 +174,9 @@ impl Drop for Write {
             .and_then(|entries| entries.get(&self.store))
         {
             entry.revision.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             entry.active.fetch_sub(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -177,8 +201,10 @@ fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
     match OWNERS.try_read() {
         Ok(entries) => {
             if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
+                GLOBAL_ACTIVE.fetch_add(1, Ordering::SeqCst);
                 entry.active.fetch_add(1, Ordering::SeqCst);
                 entry.revision.fetch_add(1, Ordering::SeqCst);
+                GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
                 let marks = country_input_changes::project_variables_written(Some(entry.owner));
                 Write {
                     _flight: flight,
@@ -198,6 +224,7 @@ fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
         }
         Err(_) => {
             EPOCH.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             Write {
                 _flight: flight,
                 entries: None,
@@ -210,6 +237,7 @@ fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
 
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
+    GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
     drop(country_input_changes::project_variables_written(None));
 }
 
@@ -275,6 +303,7 @@ static PROJECT_HOOKS: AtomicBool = AtomicBool::new(false);
 pub fn project_hooks_enabled(value: bool) {
     PROJECT_HOOKS.store(value, Ordering::SeqCst);
     EPOCH.fetch_add(1, Ordering::SeqCst);
+    GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
 }
 pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
     if !PROJECT_HOOKS.load(Ordering::SeqCst) {
@@ -302,7 +331,9 @@ impl Drop for ProjectWrite {
             .and_then(|entries| entries.get(&self.store))
         {
             entry.pending_revision.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             entry.pending_active.fetch_sub(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -321,8 +352,10 @@ pub fn writing_project(project: usize) -> ProjectWrite {
     match OWNERS.try_read() {
         Ok(entries) => {
             if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
+                GLOBAL_ACTIVE.fetch_add(1, Ordering::SeqCst);
                 entry.pending_active.fetch_add(1, Ordering::SeqCst);
                 entry.pending_revision.fetch_add(1, Ordering::SeqCst);
+                GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
                 ProjectWrite {
                     _flight: flight,
                     entries: Some(entries),
@@ -339,6 +372,7 @@ pub fn writing_project(project: usize) -> ProjectWrite {
         }
         Err(_) => {
             EPOCH.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             ProjectWrite {
                 _flight: flight,
                 entries: None,
