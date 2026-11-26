@@ -67,12 +67,7 @@ interface FeedPageInfo {
 
 function parsedOptionOrdinal(event: EventFeedRow, choice: ScriptEdge | null): number | null {
   if (choice && typeof choice.option === 'number' && Number.isInteger(choice.option)) return choice.option;
-  if (event.kind === 'eventOptionSelected' && event.cause?.notes.length) {
-    for (const note of event.cause.notes) {
-      const match = /Selected native option ordinal:\s*(-?\d+)/.exec(note);
-      if (match) return Number(match[1]);
-    }
-  }
+  if (event.kind === 'eventOptionSelected' && typeof event.cause?.selectedOption === 'number') return event.cause.selectedOption;
   return null;
 }
 

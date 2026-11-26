@@ -193,6 +193,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     }
     const boundary = newIdentityBoundary();
     let nextAwaitingChange = Infinity;
+    const readAt = source.at ?? hour;
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
@@ -208,18 +209,18 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
         const card = choiceCard(occ);
         const resolved = choiceAt(
           card,
-          hour,
+          readAt,
           options.breaks,
         );
         if (!resolved) return null;
         const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved);
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
         const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
-        if (open) {
+        if (open && !source.frozen) {
           const startHour = resolved.card.first.row.hour;
-          const elapsed = Math.max(0, daysBetween(startHour, hour));
+          const elapsed = Math.max(0, daysBetween(startHour, readAt));
           const nextDay = startHour + (elapsed + 1) * 24;
-          if (nextDay > hour && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
+          if (nextDay > readAt && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
         return buildChoiceRow(readView, resolved, page, options.artwork, boundary);
       },

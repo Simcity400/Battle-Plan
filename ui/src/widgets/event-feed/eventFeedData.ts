@@ -39,7 +39,8 @@ const cause = (row: Record<string, unknown>): boolean => {
   if (value === undefined) return true;
   return CAUSED_KINDS.has(row.kind as string) && object(value) && text(value.how) && text(value.within) && text(value.conference) && text(value.reason)
     && (value.state === null || (int(value.state) && value.state > 0)) && (value.ally === null || opaqueTag(value.ally))
-    && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string');
+    && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
+    && (value.selectedOption === undefined || int(value.selectedOption)) && typeof value.targetRecorded === 'boolean';
 };
 
 const decisionState = (row: Record<string, unknown>): boolean => {

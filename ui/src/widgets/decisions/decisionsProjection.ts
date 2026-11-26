@@ -179,7 +179,7 @@ function buildDecisionRow(
   ];
   if (card.target) {
     countryEntries.push({ tag: card.target });
-  } else if (participants[1] === null && card.occurrence.edges.some(e => e.row.cause?.notes.some(n => n.includes('target')))) {
+  } else if (participants[1] === null && card.occurrence.edges.some(e => e.row.cause?.targetRecorded === true)) {
     countryEntries.push({ tag: null, missingLabel: 'Target country not recorded' });
   }
 
