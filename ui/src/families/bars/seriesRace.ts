@@ -8,7 +8,7 @@ import type { DeclaredProjectionExtra } from '../host/DeclaredFamilyWidget.tsx';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, valueFromRawBigInt, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
-import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment } from './model.ts';
+import { countryRowPresentation, type BarsDataRow, type CountryRowPresentation, type BarsModel, type BarsSegment } from './model.ts';
 
 const ALL_POPULATION_TOP = 10_000;
 
@@ -88,7 +88,8 @@ export function rankRowKey(row: SeriesRankRow): string {
 
 function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: SeriesRankRow, decimals: number, config: SeriesRaceProjectConfig): BarsDataRow {
   const key = rankRowKey(rankRow);
-  const pres = countryRowPresentation(readView, key);
+  const named = countryRowPresentation(readView, key);
+  const pres: CountryRowPresentation = rankRow.unnamed ? { label: 'Name not recorded', labelMissing: true, labelLoading: false, media: named.media } : named;
   const state = rankRow.readings[0]!;
   const { value, numeric } = scaleValue(
     valueFromRawBigInt(state.run?.valueRaw ?? null, { kind: 'notRecorded', reason: state.missing ?? 'Not recorded at this hour' }),
@@ -102,7 +103,7 @@ function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: Ser
       : { label: config.valueLabel, value: formatted.exact ?? formatted.text };
   const parts = numeric !== null && config.parts ? config.parts(reply, rankRow) : null;
   const identity = readView.who('country', key);
-  const tag = identity.tag?.status === 'ready' ? identity.tag.value : typeof rankRow.country === 'string' ? rankRow.country : null;
+  const tag = rankRow.unnamed ? null : identity.tag?.status === 'ready' ? identity.tag.value : typeof rankRow.country === 'string' ? rankRow.country : null;
   return {
     kind: 'data',
     key,
@@ -117,7 +118,7 @@ function makeRow(readView: BoundedReadView, reply: SeriesRankReply, rankRow: Ser
     tooltip: {
       title: pres.labelMissing ? 'Name not recorded' : pres.label,
       hour: readView.hour,
-      items: [item, ...(parts?.items ?? [])],
+      items: [...(rankRow.unnamed ? [{ label: 'Country', missingReason: rankRow.unnamed }] : []), item, ...(parts?.items ?? [])],
       ...(config.note ? { note: config.note } : {}),
     },
     meta: { tag: tag ?? key, key },

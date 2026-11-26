@@ -1759,7 +1759,11 @@ traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, command
 observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
 export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
 export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number]>, warnings: Array<string>, };
-export type RegionalWeatherParams = { branchId: string, firstHour: number, lastHour: number,
+export type RegionalWeatherParams = { branchId: string,
+/**
+ * The window's first hour; with `windowDays`, left out: the window is that many days ending with the last hour's day.
+ */
+firstHour?: number, windowDays?: number, lastHour: number,
 /**
  * The most columns the days fold into: the view's pixel columns.
  */
@@ -1772,11 +1776,23 @@ modifier: string | null,
  * Decimal region ids; every region without.
  */
 regions: Array<string> | null, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
-export type RegionalWeatherReply = { firstHour: number, lastHour: number, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>,
+export type RegionalWeatherReply = { firstHour: number, lastHour: number,
+/**
+ * The last hour through which nothing this reply shows changes: read beside the reply, never among its rows.
+ */
+validThrough: number, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>,
 /**
  * `available`, or why no temperature is shown.
  */
-temperature: string, columns: RegionalWeatherColumns, legend: Array<WeatherLegendItem>, extrema?: [string, string], gaps: Array<HourSpan>, warnings: Array<string>, };
+temperature: string, columns: RegionalWeatherColumns, legend: Array<WeatherLegendItem>, extrema?: [string, string], gaps: Array<HourSpan>,
+/**
+ * Why the most active regions are not a proven rank at the asked hour: the hour's weather, or a region's, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null,
+/**
+ * Why no region is listed in the ranked view; set only when no region is listed.
+ */
+empty: NoRegions | null, activeUnlisted: ActiveRegions, warnings: Array<string>, };
 export type RegionalWeatherShow = "conditions" | "modifier" | "temperature";
 export type RegionalWeatherChoice = { id: string, name: string, };
 export type RegionalWeatherColumns = {
@@ -3307,7 +3323,11 @@ types: Array<ProducedType>,
 mostDelivered: string | null, warnings: Array<string>, };
 export type ProducedType = { key: string, name: string | null, domain: Domain | null, };
 export type Domain = "land" | "air" | "naval";
-export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean, };
+export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean,
+/**
+ * A Range's first hour: a total counts the deliveries from it on.
+ */
+fromHour?: number, };
 export type ProducedAtReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
@@ -3339,7 +3359,11 @@ export type ProducedCount = "units" | "ic";
 export type ProducedMeasure = "total" | "day" | "week" | "month";
 export type ProducedUnknown = "notRecorded" | "unitsInexact" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "typeNotRecorded" | "windowIncomplete" | "observationRestarted" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "outOfRange";
 export type EquipmentProducedRaceParams = { branchId: string, hour: number, countries: Array<CountryRef>, group?: GroupSelection, top?: number, count: ProducedCount, measure: ProducedMeasure, types: Array<string>, refits: boolean, fromHour?: number, };
-export type EquipmentProducedRaceRow = { country: CountryRef, tag: string, value: number | null, unknown: ProducedUnknown | null, };
+export type EquipmentProducedRaceRow = { country: CountryRef,
+/**
+ * The country the total was read for: the slot a ranking counted, or the country a selection asked for. A detail of the row asks for the same.
+ */
+counted: CountryRef, tag: string, value: number | null, unknown: ProducedUnknown | null, };
 export type EquipmentProducedRaceReply = { branchId: string, hour: number, firstHour: number, lastHour: number, count: ProducedCount, measure: ProducedMeasure, decimals: number, types: Array<string>, rows: Array<EquipmentProducedRaceRow>, readHour: number | null, observationHour: number | null, missing: string | null, warnings: Array<string>, };
 export type PowerSpendingBreakdownParams = { branchId: string, country: CountryRef, currency: SpendCurrency,
 /**
@@ -6241,7 +6265,11 @@ export type AirForceAtParams = { branchId: string, countries: Array<CountryRef>,
  * The group whose members at the hour are the rows; never with countries or a top.
  */
 group?: GroupSelection, measure: AirForceMeasure, ownership: AirForceOwnership, };
-export type ForceAtReply = { parts: Array<ForcePart>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
+export type ForceAtReply = { parts: Array<ForcePart>,
+/**
+ * Each part's position in the recorded content's own list (unit groups, ship classes or roles, aircraft archetypes), in `parts` order; none where the content does not classify the part.
+ */
+ordinals: Array<number | null>, rows: Array<ForceAtRow>, missing: string | null, warnings: Array<string>, };
 export type AirForceMeasure = "planes" | "wings";
 export type AirForceOwnership = "roster" | "effective";
 export type AirForceAtParamsAtHour = AirForceAtParams & { hour: number };
@@ -6331,7 +6359,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "doctrines": { "hour": "read" },
   "equipment-designs": { "hour": "read" },
   "equipment-losses": { "hour": "end" },
-  "equipment-produced-at": { "hour": "read" },
+  "equipment-produced-at": { "hour": "read", "fromHour": "start" },
   "equipment-produced-race": { "hour": "read", "fromHour": "start" },
   "equipment-produced-types": {},
   "equipment-stockpile-lines": { "hour": "read", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
@@ -6503,7 +6531,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "doctrines": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-designs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "landSource": "leaf" },
-  "equipment-produced-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
+  "equipment-produced-at": { "branchId": "leaf", "country": "any", "fromHour": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
   "equipment-produced-race": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf" },
   "equipment-produced-types": { "branchId": "leaf", "refits": "leaf" },
   "equipment-stockpile-lines": { "branchId": "leaf", "family": "node", "family.country": "any", "family.included": "node", "family.included[]": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "hour": "leaf", "top": "leaf" },
@@ -6575,7 +6603,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "raid-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "raidTypes": "node", "raidTypes[]": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
   "raid-tally": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "metric": "leaf", "top": "leaf" },
   "raid-tally-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "top": "leaf" },
-  "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf" },
+  "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf", "windowDays": "leaf" },
   "research": { "branchId": "leaf", "country": "any" },
   "research-breakdown": { "branchId": "leaf", "country": "any", "parts": "node", "parts[]": "node", "parts[].firstObservedHour": "leaf", "parts[].lastHour": "leaf", "parts[].slot": "leaf", "parts[].started": "leaf" },
   "research-history": { "branchId": "leaf", "country": "any", "folders": "node", "folders[]": "leaf", "hour": "leaf" },
@@ -6675,7 +6703,7 @@ export type RequestParams<E, B> = {
   "doctrines": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-designs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-losses": { readonly [key: string]: unknown; readonly "hour"?: B | null };
-  "equipment-produced-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "equipment-produced-at": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: E | null };
   "equipment-produced-race": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: E | null };
   "equipment-produced-types": {};
   "equipment-stockpile-lines": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };

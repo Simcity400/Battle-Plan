@@ -42,6 +42,7 @@ test('army-size race and mix split battalion unit groups from army-at and withho
       { key: 'group:infantry', name: 'Infantry', unresolved: false },
       { key: 'group:armor', name: 'Armor', unresolved: false },
     ],
+    ordinals: [0, 1],
     rows: [
       { country: 'GER', slot: null, tag: 'GER', total: 200, missing: null, values: [150, 50], partsMissing: null },
       { country: 'SOV', slot: null, tag: 'SOV', total: 180, missing: null, values: [null, null], partsMissing: 'Part breakdown unavailable' },

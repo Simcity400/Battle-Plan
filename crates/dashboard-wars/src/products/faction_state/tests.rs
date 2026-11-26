@@ -331,3 +331,22 @@ fn faction_pools_orders_resources_tracks_quiet_hours_and_resolves_slot_membershi
     let absent_panel = exact_panel::<FactionPools>(&source, &load, &json!({ "branchId": "1", "faction": OTHER.to_string(), "pool": "doctrine" })).unwrap();
     assert_eq!((absent_panel.exact().unwrap().cold)(100, &false.into()).unwrap()["status"], "factionAbsent");
 }
+
+#[test]
+fn an_unlinked_roster_entry_leaves_membership_unknown_and_an_unknown_unlock_is_never_an_empty_pool() {
+    use super::pools::{FactionPoolKind, FactionPoolStatus, blank, build_manpower, pooled_faction};
+    let members = [FactionMemberRow { country: 9, faction: FACTION, ordinal: 0 }];
+    let links = [CountryLinkRow { id: 7, canonical_slot: 3 }];
+    assert!(matches!(pooled_faction(&members, &links, 3), Err((FactionPoolStatus::MembershipNotRecorded, _))), "the unlinked entry could be slot 3's membership");
+    let linked = [CountryLinkRow { id: 7, canonical_slot: 3 }, CountryLinkRow { id: 9, canonical_slot: 4 }];
+    assert_eq!(pooled_faction(&members, &linked, 3), Ok(None), "every entry resolves to another country: slot 3 is in no faction");
+    assert_eq!(pooled_faction(&members, &linked, 4), Ok(Some(FACTION)));
+
+    let mut unread = frame();
+    set(&mut unread, TableId::FactionManpower, TableRows::FactionManpower(Vec::new()));
+    *unread.tables[TableId::FactionUnlocks.index()] = TableView::Unavailable { reason: "unlocks unread".into() };
+    let mut reply = blank(FactionPoolKind::Manpower, FactionPoolStatus::Ok, None, Some(FACTION));
+    build_manpower(&unread, FACTION, &mut reply);
+    assert_eq!(reply.status, FactionPoolStatus::PoolNotRecorded, "a locked pool and an unlocked empty one look alike without the unlock");
+    assert!(reply.manpower.is_empty() && reply.manpower_total.is_none());
+}

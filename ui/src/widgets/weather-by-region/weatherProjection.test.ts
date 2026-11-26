@@ -4,7 +4,7 @@ import { createBoundedReadView } from '../../families/boundedView.ts';
 import { projectLaneRunsToPixels } from '../../families/heat/lanesLayout.ts';
 import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { RegionalWeatherReply } from '../../generated/dashboard';
-import { projectWeather } from './weatherProjection.ts';
+import { projectWeather, weatherProjection } from './weatherProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -12,6 +12,7 @@ function reply(lastHour: number, extra: Partial<RegionalWeatherReply> = {}): Reg
   return {
     firstHour: 0,
     lastHour,
+    validThrough: lastHour,
     dayHours: 24,
     regions: [{ id: '5', name: 'Southern England' }, { id: '6', name: 'Scotland' }],
     flags: [{ id: 'light_rain', name: 'Light rain' }, { id: 'heavy_rain', name: 'Heavy rain' }],
@@ -38,6 +39,9 @@ function reply(lastHour: number, extra: Partial<RegionalWeatherReply> = {}): Reg
     },
     legend: [],
     gaps: [],
+    rankMissing: null,
+    empty: null,
+    activeUnlisted: { ids: [], missing: null },
     warnings: [],
     ...extra,
   };
@@ -162,4 +166,19 @@ test('conditions take their colour from the identity register, and an unknown on
   const registered = new Set((['light_rain', 'heavy_rain', 'snow', 'sandstorm'] as const).map(token => identityColour(SURFACE, 'weather', token, 0)));
   assert.equal(registered.size, 4);
   for (let ordinal = 0; ordinal < 12; ordinal++) assert.ok(!registered.has(identityColour(SURFACE, 'weather', 'mod_acid_rain', ordinal)), 'a mod condition gets its own colour');
+});
+
+test('a reply held through its last unchanged hour draws to the displayed hour, and a rank not known at the hour says why', () => {
+  const held = projectWeather(view(55, reply(50, { validThrough: 59 })), OPTIONS);
+  assert.equal(held.lastHour, 55, 'the held reply reaches the displayed hour, not its own read hour');
+  assert.equal(held.rows[0]!.runs.at(-1)!.lastHour, 55);
+  assert.ok(held.inspect?.(0, 54), 'the drawn hours inspect');
+  const unread = projectWeather(view(50, reply(50, { columns: { ...reply(50).columns, regions: [] }, rankMissing: 'Weather was not recorded at this hour, so the most active regions are not known', empty: { kind: 'unread', reason: 'Weather was not recorded at this hour, so the most active regions are not known' } })), OPTIONS);
+  assert.equal(unread.emptyKind, 'unavailable', 'an unknown rank is never "no weather"');
+});
+
+test('a held weather reply asks to project again each hour until its last unchanged hour', () => {
+  const held = reply(50, { validThrough: 59 });
+  assert.equal(weatherProjection.nextChange?.(view(55, held), OPTIONS), 56);
+  assert.equal(weatherProjection.nextChange?.(view(59, held), OPTIONS), Infinity);
 });

@@ -324,7 +324,7 @@ fn validate_at(params: &NavalLossesAtParams) -> Result<(), &'static str> {
 }
 
 #[expect(clippy::too_many_arguments, reason = "the hour, its stretch and the selection the bounds prove")]
-fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, attribution: u8, kinds: &[u8], chosen: Option<&[u128]>) -> io::Result<(i32, i32)> {
+fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, attribution: u8, kinds: &[u8], countries: Option<&[Country]>) -> io::Result<(i32, i32)> {
     let recording = query.replay.recording();
     let mut lo = stretch_first;
     let mut hi = stretch_last;
@@ -354,18 +354,15 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
             clamp(runs, &mut lo, &mut hi);
         }
     }
-    let owners: BTreeSet<u128> = match chosen {
-        Some(chosen) => chosen.iter().copied().collect(),
-        None => query
-            .holders
-            .tags
-            .values()
-            .flatten()
-            .filter_map(|held| match held.holder {
-                Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
-                Holder::Unresolved => None,
-            })
-            .collect(),
+    let statuses: Runs = read::statuses(recording, run, TABLE, lo, hi)?.into_iter().map(|status| (status.first, status.last, Some(i64::from(replay_recording::columnar_frames::complete(status.status))))).collect();
+    clamp(&statuses, &mut lo, &mut hi);
+    let found = |holder: Holder| match holder {
+        Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
+        Holder::Unresolved => None,
+    };
+    let owners: BTreeSet<u128> = match countries {
+        Some(countries) => countries.iter().filter_map(|country| found(query.holders.at(country, hour)?.holder)).collect(),
+        None => query.holders.tags.values().flatten().filter_map(|held| found(held.holder)).collect(),
     };
     let mut keys: Vec<u128> = owners.iter().flat_map(|&owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind))).collect();
     keys.sort_unstable();
@@ -375,20 +372,47 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
             clamp(runs, &mut lo, &mut hi);
         }
     }
-    for runs in query.holders.tags.values() {
-        let index = runs.partition_point(|run| run.last < hour);
-        if let Some(held) = runs.get(index) {
-            if held.first <= hour {
-                lo = lo.max(held.first);
-                hi = hi.min(held.last);
-            } else {
-                hi = hi.min(held.first.saturating_sub(1));
-                if index > 0 {
-                    lo = lo.max(runs[index - 1].last.saturating_add(1));
-                }
+    if let Some(countries) = countries {
+        let mut slots = BTreeSet::new();
+        for country in countries {
+            let held = query.holders.at(country, hour);
+            let (first, last) = held.map_or((hour, hour), |run| (run.first, run.last));
+            lo = lo.max(first);
+            hi = hi.min(last);
+            if let Some(Holder::Found { slot, .. }) = held.map(|run| run.holder) {
+                slots.insert(slot);
             }
-        } else if let Some(last) = runs.last() {
-            lo = lo.max(last.last.saturating_add(1));
+        }
+        for run in query.holders.tags.values().flatten() {
+            let Holder::Found { slot, .. } = run.holder else { continue };
+            if !slots.contains(&slot) {
+                continue;
+            }
+            if run.first <= hour && hour <= run.last {
+                lo = lo.max(run.first);
+                hi = hi.min(run.last);
+            } else if run.last < hour {
+                lo = lo.max(run.last.saturating_add(1));
+            } else {
+                hi = hi.min(run.first.saturating_sub(1));
+            }
+        }
+    } else {
+        for runs in query.holders.tags.values() {
+            let index = runs.partition_point(|run| run.last < hour);
+            if let Some(held) = runs.get(index) {
+                if held.first <= hour {
+                    lo = lo.max(held.first);
+                    hi = hi.min(held.last);
+                } else {
+                    hi = hi.min(held.first.saturating_sub(1));
+                    if index > 0 {
+                        lo = lo.max(runs[index - 1].last.saturating_add(1));
+                    }
+                }
+            } else if let Some(last) = runs.last() {
+                lo = lo.max(last.last.saturating_add(1));
+            }
         }
     }
     for &(first, last, _) in &query.holders.unknown {
@@ -426,9 +450,19 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
         NavalPeriod::Month => (month_start(hour) - 1).clamp(stretch.first, hour),
     };
     let counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
-    let missing_baseline = kinds.iter().any(|&kind| counts.baseline(kind, hour).is_none());
-    let bounds = |chosen: Option<&[u128]>, window: Option<(i32, i32)>| -> io::Result<(i32, i32)> {
-        let (first, last) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, attribution, kinds, chosen)?;
+    let missing_baseline = kinds.iter().all(|&kind| counts.baseline(kind, hour).is_none());
+    let kind_missing: Vec<Option<String>> = kinds
+        .iter()
+        .map(|&kind| {
+            counts.baseline(kind, hour).is_none().then(|| match (missing_baseline, kind == Row::SHIPS) {
+                (true, _) => MISSING_BASELINE.to_owned(),
+                (false, true) => "Ships sunk are not known at this hour: their losses were not read whole after the counting began".to_owned(),
+                (false, false) => "Convoys sunk are not known at this hour: their losses were not read whole after the counting began".to_owned(),
+            })
+        })
+        .collect();
+    let bounds = |countries: Option<&[Country]>, window: Option<(i32, i32)>| -> io::Result<(i32, i32)> {
+        let (first, last) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, attribution, kinds, countries)?;
         Ok(window.map_or((first, last), |(from, until)| (first.max(from).min(hour), last.min(until).max(hour))))
     };
     let mut window = None;
@@ -445,49 +479,78 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
         }
     };
     let ranked = params.top.is_some() || (countries.is_empty() && params.group.is_none());
+    let (first_hour, last_hour) = bounds((!ranked).then_some(countries.as_slice()), window)?;
+    let mut warnings = Vec::new();
+    if missing_baseline && ranked {
+        return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(MISSING_BASELINE.into()), warnings });
+    }
     let chosen: Option<Vec<u128>> = (!ranked).then(|| {
-        countries
+        let mut keys: Vec<u128> = countries
             .iter()
             .filter_map(|country| match query.holders.at(country, hour)?.holder {
                 Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
                 Holder::Unresolved => None,
             })
-            .collect()
+            .flat_map(|owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind)))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
     });
-    let (first_hour, last_hour) = bounds(chosen.as_deref(), window)?;
-    let mut warnings = Vec::new();
-    if missing_baseline && ranked {
-        return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(MISSING_BASELINE.into()), warnings });
-    }
-    let at_hour = |at: i32| -> io::Result<HashMap<u128, i64>> {
-        let snapshots = read::at(recording, stretch.run, &[read::Read { table: TABLE, columns: Some(&[TOTAL][..]), keys: read::Keys::All }], at)?;
+    let at_hour = |at: i32| -> io::Result<Option<HashMap<u128, Option<i64>>>> {
+        let keys = chosen.as_deref().map_or(read::Keys::All, read::Keys::These);
+        let snapshots = read::at(recording, stretch.run, &[read::Read { table: TABLE, columns: Some(&[TOTAL][..]), keys }], at)?;
         let snapshot = snapshots.first().ok_or_else(|| invalid("Naval loss totals were not read"))?;
+        if !replay_recording::columnar_frames::complete(snapshot.status) {
+            return Ok(None);
+        }
         let view = snapshot.view();
-        Ok(snapshot.rows.iter().filter_map(|&(key, slot)| Some((key, view.number(TOTAL, slot)?))).collect())
+        Ok(Some(snapshot.rows.iter().map(|&(key, slot)| (key, view.number(TOTAL, slot))).collect()))
     };
+    let held = |snapshot: &HashMap<u128, Option<i64>>, key: u128| snapshot.get(&key).copied().unwrap_or(Some(0));
     let now = at_hour(hour)?;
     let bases = month_bases(&counts, kinds, hour, params.period);
-    let mut before: HashMap<i32, HashMap<u128, i64>> = HashMap::new();
+    let mut before: HashMap<i32, Option<HashMap<u128, Option<i64>>>> = HashMap::new();
     for &base in bases.iter().flatten() {
         if base < hour && base >= stretch.first && !before.contains_key(&base) {
             before.insert(base, at_hour(base)?);
         }
     }
-    let part_values = |owner: u128| -> (Option<i64>, Vec<Option<i64>>) {
+    let part_values = |owner: u128| -> (Option<i64>, Vec<Option<i64>>, Option<String>) {
+        let mut why = None;
         let values: Vec<Option<i64>> = kinds
             .iter()
             .zip(&bases)
-            .map(|(&kind, base)| {
+            .zip(&kind_missing)
+            .map(|((&kind, base), missing)| {
+                let key = Row::holder_key(owner, attribution, kind);
+                if let Some(reason) = missing {
+                    why.get_or_insert_with(|| reason.clone());
+                    return None;
+                }
                 if base.is_some_and(|base| base >= hour) {
                     return Some(0);
                 }
-                let key = Row::holder_key(owner, attribution, kind);
-                let prev = base.and_then(|base| before.get(&base)).map_or(0, |before| before.get(&key).copied().unwrap_or(0));
-                now.get(&key).copied().unwrap_or(0).checked_sub(prev)
+                let prev = match base {
+                    None => Some(0),
+                    Some(base) => match before.get(&base) {
+                        Some(Some(before)) if counts.baseline(kind, *base).is_some() => held(before, key),
+                        _ => None,
+                    },
+                };
+                let Some(prev) = prev else {
+                    why.get_or_insert_with(|| "The month's opening count was not recorded".to_owned());
+                    return None;
+                };
+                let Some(closing) = now.as_ref().and_then(|now| held(now, key)) else {
+                    why.get_or_insert_with(|| "Naval loss totals were not read whole at this hour".to_owned());
+                    return None;
+                };
+                closing.checked_sub(prev)
             })
             .collect();
         let total = values.iter().try_fold(0i64, |sum, value| sum.checked_add((*value)?));
-        (total, values)
+        (total, values, why)
     };
     let mut used_keys = Vec::new();
     let mut rows: Vec<ForceAtRow> = Vec::new();
@@ -497,8 +560,8 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
         for (tag, runs) in &query.holders.tags {
             if let Some(Holder::Found { slot, id }) = runs.iter().find(|held| held.first <= hour && hour <= held.last).map(|held| held.holder) {
                 let owner = Key::Holder.of(slot, id);
-                let (total, values) = part_values(owner);
-                if params.top.is_some() && total.is_none_or(|value| value <= 0) {
+                let (total, values, why) = part_values(owner);
+                if params.top.is_some() && total.is_some_and(|value| value <= 0) {
                     continue;
                 }
                 for &kind in kinds {
@@ -510,14 +573,27 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                     tag: tag.clone(),
                     total,
                     reference_total: None,
-                    missing: None,
+                    missing: total.is_none().then(|| why.unwrap_or_else(|| "Naval losses could not be computed at this hour".into())),
                     values,
                     parts_missing: None,
                 });
             }
         }
         rows.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.tag.cmp(&b.tag)));
+        if unresolved && params.top.is_none() {
+            warnings.push("Some countries could not be resolved at this hour: their naval losses are not listed.".into());
+        }
         if let Some(limit) = params.top {
+            if let Some(reason) = rows.iter().find_map(|row| row.missing.clone()) {
+                return Ok(NavalLossesAtReply {
+                    first_hour,
+                    last_hour,
+                    parts: reply_parts,
+                    rows: Vec::new(),
+                    missing: Some(format!("The top {limit} naval losses are not known: {reason}.")),
+                    warnings,
+                });
+            }
             if unresolved {
                 return Ok(NavalLossesAtReply {
                     first_hour,
@@ -559,19 +635,9 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             }
             let tag = query.holders.name(country, hour);
             match run.holder {
-                Holder::Found { slot, .. } if missing_baseline => rows.push(ForceAtRow {
-                    country: country.clone(),
-                    slot: Some(slot),
-                    tag,
-                    total: None,
-                    reference_total: None,
-                    missing: Some(MISSING_BASELINE.into()),
-                    values: vec![None; kinds.len()],
-                    parts_missing: None,
-                }),
                 Holder::Found { slot, id } => {
                     let owner = Key::Holder.of(slot, id);
-                    let (total, values) = part_values(owner);
+                    let (total, values, why) = part_values(owner);
                     for &kind in kinds {
                         used_keys.push(Row::holder_key(owner, attribution, kind));
                     }
@@ -581,7 +647,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                         tag,
                         total,
                         reference_total: None,
-                        missing: total.is_none().then(|| "Naval losses could not be computed at this hour".into()),
+                        missing: total.is_none().then(|| why.unwrap_or_else(|| "Naval losses could not be computed at this hour".into())),
                         values,
                         parts_missing: None,
                     });

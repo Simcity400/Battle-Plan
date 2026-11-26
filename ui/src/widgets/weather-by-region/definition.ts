@@ -10,7 +10,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'show', section: 'options', label: 'Show', kind: 'choice', default: 'conditions', choices: SHOWS },
   { key: 'modifier', section: 'options', label: 'Modifier', kind: 'content-choice', automatic: 'First recorded modifier', default: '',
     visibleWhen: o => o.show === 'modifiers' },
-  regionPickerControl({ automatic: 'Most active this week' }),
+  regionPickerControl({ automatic: 'Most active at this hour' }),
 ];
 export const definition = {
   kind: 'weather-by-region', version: 1, title: 'Weather by region', icon: 'cloud', category: 'Air',

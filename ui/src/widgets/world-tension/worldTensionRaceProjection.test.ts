@@ -50,6 +50,7 @@ test('world-tension race keeps the product order, keys each row by its recorded 
       rows: [
         { country: 'GER', slot: 7, readings: [reading('GER', 500, '4525000')] },
         { country: 'JAP', slot: 31, readings: [reading('JAP', 500, '1800000')] },
+        { country: 9, slot: 12, unnamed: 'The country holding this slot is not resolved at this hour', readings: [reading('GER', 500, '900000')] },
       ],
     }]]),
     identity,
@@ -60,7 +61,10 @@ test('world-tension race keeps the product order, keys each row by its recorded 
   assert.deepEqual(rows.map(r => [r.key, r.label, r.numeric, formatBarsValueField(r.value!).text]), [
     [countryKey(7), 'German Reich', 45.25, '45.25%'],
     [countryKey(31), 'Imperial Japan', 18, '18%'],
+    [countryKey(12), 'Name not recorded', 9, '9%'],
   ]);
+  assert.equal(rows[2]!.labelMissing, true, 'a row whose country is not named at the hour keeps its place and says so');
+  assert.deepEqual(rows[2]!.tooltip?.items?.[0], { label: 'Country', missingReason: 'The country holding this slot is not resolved at this hour' });
   assert.throws(() => view.who('country', 'GER', displayedHour(501)), FutureDataError);
 });
 

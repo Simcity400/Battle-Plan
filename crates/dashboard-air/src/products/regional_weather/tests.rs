@@ -87,8 +87,24 @@ fn weather_acceptance_current_day_at_midnight_terminal_split_since_and_scoped_ex
     let temp_measures = vec![("temp".to_owned(), temps)];
     assert_eq!(visible_extrema(&[1], &temp_measures, Show::Temperature), Some(["600000".into(), "600000".into()]), "unselected region 2 never pollutes extrema");
 
-    let ranked = rank_regions(&[1, 2], &midnight, &measures, Show::Conditions, &[2], &HashSet::new(), Some(1));
-    assert_eq!(ranked, vec![(2, true), (1, false)], "pinned regions come first followed by automatic rank");
+    let rank = |days: &[Day], measures: &[(String, Daily)], show, whole| rank_at_hour(&[1, 2], days, measures, show, whole);
+    assert_eq!(rank(&midnight, &measures, Show::Conditions, true), HourRank { ranked: vec![2], missing: None }, "the hour's reading decides: region 1 rained all week but is clear at the hour");
+    let snow: Daily = [(1, vec![Some(0), Some(0), Some(0), Some(0), Some(1)])].into();
+    let both = vec![measures[0].clone(), ("blizzard".to_owned(), snow)];
+    assert_eq!(rank(&midnight, &both, Show::Conditions, true).ranked, vec![1, 2], "a blizzard outranks light rain");
+    let unread: Daily = [(1, vec![Some(1), Some(1), Some(1), Some(1), None]), (2, vec![Some(1); 5])].into();
+    let part = rank(&midnight, &[("light_rain".to_owned(), unread)], Show::Conditions, true);
+    assert_eq!((part.ranked, part.missing.is_some()), (vec![2], true), "a region not read at the hour leaves the rank unproven; the witnessed active region stays known");
+    assert!(rank(&midnight, &measures, Show::Conditions, false).missing.is_some(), "a part read ranks nothing, even when every region it reached is known");
+    assert!(rank(&gapped, &measures, Show::Conditions, true).missing.is_some(), "no reading at the hour ranks nothing");
+    let earlier = days(2160 - 4 * DAY, 2165, &[(0, 2160 - 4 * DAY, 2163)], &[(2160 - 4 * DAY, 2163)]);
+    assert!(rank(&earlier, &measures, Show::Conditions, true).missing.is_some(), "a reading earlier in the day than the hour does not rank the hour");
+    assert_eq!(rank(&midnight, &temp_measures_at(&midnight), Show::Temperature, true).ranked, vec![2, 1], "the largest magnitude at the hour first");
     let legend = visible_legend(&[1], &midnight[4..5], &[("light_rain".to_owned(), [(1, vec![Some(0)]), (2, vec![Some(1)])].into())], Show::Conditions, &choices);
     assert_eq!(legend.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), vec!["clear"], "off-chart region 2 rain does not enter legend");
+}
+
+fn temp_measures_at(days: &[Day]) -> Vec<(String, Daily)> {
+    let at = |value| { let mut values = vec![None; days.len()]; values[days.len() - 1] = Some(value); values };
+    vec![("temp".to_owned(), [(1, at(-200_000)), (2, at(900_000))].into())]
 }

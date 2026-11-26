@@ -128,6 +128,7 @@ pub(crate) fn validate_selection(branch_id: &str, tags: &[Country], top: Option<
 pub(crate) struct Named {
     pub(crate) parts: Vec<ForcePart>,
     pub(crate) of: HashMap<u128, usize>,
+    pub(crate) order: BTreeMap<String, u32>,
 }
 
 impl Named {
@@ -139,7 +140,19 @@ impl Named {
         let parts: Vec<ForcePart> = keys.into_values().collect();
         let at: HashMap<&str, usize> = parts.iter().enumerate().map(|(index, part)| (part.key.as_str(), index)).collect();
         let of = resolved.iter().map(|(part, named)| (*part, at[named.key.as_str()])).collect();
-        Self { parts, of }
+        Self { parts, of, order: BTreeMap::new() }
+    }
+
+    pub(crate) fn in_content_order(mut self, keys: impl IntoIterator<Item = String>) -> Self {
+        for key in keys {
+            let next = self.order.len() as u32;
+            self.order.entry(key).or_insert(next);
+        }
+        self
+    }
+
+    pub(crate) fn ordinals(&self) -> Vec<Option<u32>> {
+        self.parts.iter().map(|part| self.order.get(&part.key).copied()).collect()
     }
 }
 

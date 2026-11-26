@@ -111,6 +111,7 @@ test('army-size breakdown projects stacked unit groups, distinct unresolved keys
       { key: 'group:alpha_inf', name: 'Alpha Line', unresolved: false },
       { key: 'unknown:mod_unit_a', name: 'Unit group name unavailable', unresolved: true },
     ],
+    ordinals: [0, null],
     rows: [{
       country: 7,
       slot: 7,
@@ -176,6 +177,7 @@ test('army-size breakdown projects stacked unit groups, distinct unresolved keys
 
   const partialHover: ForceAtReply = {
     parts: [],
+    ordinals: [],
     rows: [{ country: 7, slot: 7, tag: 'ZZZ', total: 8, values: [], missing: null, partsMissing: 'Battalion unit groups were not recorded at these hours' }],
     missing: null,
     warnings: [],

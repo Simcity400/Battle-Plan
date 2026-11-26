@@ -5,6 +5,8 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
 import { projectForceAtMix } from './forceAtMix.ts';
+import { validateNavalLossesAtReply } from './forceAtRace.ts';
+import { CATEGORY_LIMIT, categoricalPalette, colour, reservedGrey } from '../../charts/palette.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -32,6 +34,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
       { key: 'ships', name: 'Ships', unresolved: false },
       { key: 'convoys', name: 'Convoys', unresolved: false },
     ],
+    ordinals: [0, 1],
     rows: [
       { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
       { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
@@ -71,4 +74,41 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
     { label: 'Ships', value: '12' },
     { label: 'Convoys', value: '20' },
   ], 'each witnessed count is still shown');
+});
+
+test('a part takes the palette colour at its content ordinal, so a new part moves no colour; one the content does not order is neutral', () => {
+  const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map(), identity: fakeIdentity({}) });
+  const DARK = '#1e1e1e', LIGHT = '#ffffff';
+  const project = (parts: ForceAtReply['parts'], ordinals: ForceAtReply['ordinals'], values: number[], surface = DARK) => projectForceAtMix(view, {
+    parts, ordinals, rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: values.reduce((a, b) => a + b, 0), missing: null, values, partsMissing: null }], missing: null, warnings: [],
+  }, { surface, top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Parts (colour test)', emptyMessage: 'None.' });
+  const colours = (model: ReturnType<typeof project>) => new Map(model.legend?.map(item => [item.key, item.color]));
+  const ships = { key: 'ships', name: 'Ships', unresolved: false };
+  const convoys = { key: 'convoys', name: 'Convoys', unresolved: false };
+  const both = colours(project([ships, convoys], [0, 1], [2, 3]));
+  const added = colours(project([{ key: 'aaa', name: 'New kind', unresolved: false }, ships, convoys], [2, 0, 1], [1, 2, 3]));
+  assert.deepEqual([added.get('ships'), added.get('convoys')], [both.get('ships'), both.get('convoys')], 'a part appearing later moves no colour on screen');
+  assert.notEqual(added.get('aaa'), added.get('ships'));
+  const naval = (parts: ForceAtReply['parts']) => validateNavalLossesAtReply({ firstHour: 0, lastHour: 1, parts, rows: [], missing: null, warnings: [] }).ordinals;
+  assert.deepEqual([naval([ships, convoys]), naval([convoys])], [[0, 1], [1]], 'convoys alone keep the place they hold beside ships');
+  const unordered = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1]));
+  assert.equal(unordered.get('mystery'), reservedGrey(DARK), 'a part without an ordinal is drawn in the neutral colour, never guessed');
+  const past = colours(project([ships], [CATEGORY_LIMIT], [1]));
+  assert.ok(!categoricalPalette(DARK).includes(past.get('ships')!), 'a part past the palette takes its generated extension');
+  const light = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1], LIGHT));
+  assert.deepEqual([light.get('ships'), light.get('mystery')], [colour(LIGHT, 0), reservedGrey(LIGHT)], 'the colours are solved against the theme the widget is drawn on');
+});
+
+test('a total not known beside a known part keeps the known part in its tooltip (ships known, convoys not)', () => {
+  const reply: ForceAtReply = {
+    parts: [{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }],
+    ordinals: [0, 1],
+    rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: null, missing: 'Convoys sunk are not known at this hour', values: [3, null], partsMissing: null }],
+    missing: null,
+    warnings: [],
+  };
+  const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
+  const model = projectForceAtMix(view, reply, { surface: '#1e1e1e', top: null, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys', emptyMessage: 'None.' });
+  const row = model.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.deepEqual(row.tooltip?.items?.slice(1), [{ label: 'Ships', value: '3' }, { label: 'Convoys', missingReason: 'Not recorded at this hour' }]);
 });

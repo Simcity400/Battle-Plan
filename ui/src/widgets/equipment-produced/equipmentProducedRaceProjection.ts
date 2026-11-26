@@ -11,10 +11,12 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatDateOnly, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
 import type {
+  CountryRef,
   EquipmentProducedRaceReply,
   EquipmentProducedRaceRow,
   GroupSelection,
   ProducedCount,
+  ProducedAtReply,
   ProducedMeasure,
   ProducedTypesReply,
   ProducedUnknown,
@@ -23,6 +25,17 @@ import type {
 export interface EquipmentProducedRowMeta {
   readonly tag: string;
   readonly key: string;
+  readonly counted: string;
+}
+
+export function detailCountry(meta: EquipmentProducedRowMeta): CountryRef {
+  return countryFromKey(meta.counted);
+}
+
+export function detailEmptyText(reply: Pick<ProducedAtReply, 'models' | 'icTotal'>, hour: number): string | null {
+  if (reply.models.length) return null;
+  const reason = reply.icTotal.reason;
+  return reason !== null ? UNKNOWN_WORDS[reason] : `Nothing delivered at ${formatDateOnly(hour)}.`;
 }
 
 export interface EquipmentProducedRaceOptions {
@@ -190,12 +203,13 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
     }
 
     const scale = 10 ** reply.decimals;
+    const measureLabel = options.measure === 'total' && reply.observationHour !== null ? `Since ${formatDateOnly(reply.observationHour)}` : options.measureLabel;
     const rows: BarsDataRow[] = [];
     for (const item of reply.rows as readonly EquipmentProducedRaceRow[]) {
       const key = countryKey(item.country);
       const pres = countryRowPresentation(readView, key);
       const subjectTag = item.tag;
-      const meta: EquipmentProducedRowMeta = { tag: subjectTag, key };
+      const meta: EquipmentProducedRowMeta = { tag: subjectTag, key, counted: countryKey(item.counted) };
       const value = item.value === null
         ? notRecorded(item.unknown ? UNKNOWN_WORDS[item.unknown] : 'Not recorded at this hour')
         : reply.decimals === 0
@@ -204,8 +218,8 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
       const numeric = item.value === null ? null : (reply.decimals === 0 ? item.value : item.value / scale);
       const tooltipItems: TooltipListItem[] = [
         value.kind === 'notRecorded'
-          ? { label: options.measureLabel, missingReason: value.reason }
-          : { label: options.measureLabel, value: formatScalar(numeric ?? 0, valueFormat) },
+          ? { label: measureLabel, missingReason: value.reason }
+          : { label: measureLabel, value: formatScalar(numeric ?? 0, valueFormat) },
       ];
       if (reply.readHour !== null) {
         tooltipItems.push({ label: 'Read on', value: formatDateOnly(reply.readHour) });
@@ -221,7 +235,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
         labelMissing: pres.labelMissing, ...(pres.labelLoading ? { labelLoading: true } : {}),
         media: pres.media,
         ...(pres.color ? { color: pres.color } : {}),
-        value: { value, format: valueFormat, label: options.measureLabel },
+        value: { value, format: valueFormat, label: measureLabel },
         numeric,
         tooltip: {
           title: pres.labelMissing ? 'Name not recorded' : pres.label,

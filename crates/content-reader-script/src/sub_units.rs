@@ -57,6 +57,16 @@ impl SubUnits {
             .map(|(spelling, _)| spelling.as_slice())
     }
 
+    pub fn in_content_order(&self) -> impl Iterator<Item = &[u8]> {
+        let mut units: Vec<_> = self.indices.values().collect();
+        units.sort_unstable_by_key(|(_, index)| *index);
+        units.into_iter().map(|(spelling, _)| spelling.as_slice())
+    }
+
+    pub fn naval(&self, name: &[u8]) -> Result<bool, String> {
+        self.category(name).map(|categories| categories & engine_executable::native_values::equipment_type::SHIP_MASK != 0)
+    }
+
     pub fn categories(&self) -> &BTreeSet<Vec<u8>> {
         &self.categories
     }
@@ -446,4 +456,27 @@ impl SubUnits {
 
 pub fn identity(name: &[u8]) -> Vec<u8> {
     name.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod naval_tests {
+    use super::*;
+
+    #[test]
+    fn a_sub_unit_is_naval_by_its_type_categories_not_its_map_icon() {
+        crate::test_game::enter();
+        let mut units = SubUnits::default();
+        units.read(
+            b"sub_units = { line = { type = { infantry } map_icon_category = ship } escort = { type = { screen_ship } map_icon_category = infantry } diver = { type = { submarine } } plain = { } }",
+            "common/units/base.txt",
+        );
+        assert_eq!(units.naval(b"line"), Ok(false), "the map icon is presentation; the type decides");
+        assert_eq!(units.naval(b"ESCORT"), Ok(true), "names are matched as the game matches them");
+        assert_eq!(units.naval(b"diver"), Ok(true));
+        assert_eq!(units.naval(b"plain"), Ok(false));
+        assert!(units.naval(b"absent").is_err());
+        assert_eq!(units.in_content_order().collect::<Vec<_>>(), [&b"line"[..], b"escort", b"diver", b"plain"], "the content's own order, not the alphabet");
+        units.read(b"sub_units = { line = { type = { capital_ship } } }", "common/units/mod_override.txt");
+        assert_eq!(units.naval(b"line"), Ok(true), "a mod's later definition replaces the earlier one");
+    }
 }

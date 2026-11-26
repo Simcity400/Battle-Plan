@@ -1,6 +1,7 @@
 use super::{
     AirForceMeasure, AirForceOwnership, Content, ForcePart, Named, NavyGrouping, NavyMeasure, NavyOwnership, UNRESOLVED, equipment, split, unidentified, validate_selection, variant_part,
 };
+use content_reader_key_names::unit_leader::AirWings as _;
 use content_reader_script::sub_units::{SubUnit, SubUnits};
 use dashboard_base::{
     Source,
@@ -91,6 +92,8 @@ pub struct ForceAtRow {
 #[serde(rename_all = "camelCase")]
 pub struct ForceAtReply {
     pub parts: Vec<ForcePart>,
+    #[doc = " Each part's position in the recorded content's own list (unit groups, ship classes or roles, aircraft archetypes), in `parts` order; none where the content does not classify the part."]
+    pub ordinals: Vec<Option<u32>>,
     pub rows: Vec<ForceAtRow>,
     pub missing: Option<String>,
     pub warnings: Vec<String>,
@@ -383,7 +386,41 @@ fn name_air_planes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Conte
         })
         .collect();
     warnings.extend(notes);
-    Named::group(resolved)
+    Named::group(resolved).in_content_order(aircraft(units.as_deref(), content, warnings))
+}
+
+fn sub_units(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<SubUnits>> {
+    content.catalogue.as_ref().and_then(|catalogue| {
+        match catalogue
+            .content
+            .layers
+            .derived::<catalogue::CachedResult<SubUnits>>()
+            .get_or_init(|| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers))
+        {
+            Ok(units) => {
+                warnings.extend(units.warnings().iter().cloned());
+                Some(units)
+            }
+            Err(error) => {
+                warnings.push(format!("Sub-unit content is unavailable: {error}"));
+                None
+            }
+        }
+    })
+}
+
+fn aircraft(equipment: Option<&content_reader_key_names::equipment::Database>, content: &Content, warnings: &mut Vec<String>) -> Vec<String> {
+    let (Some(units), Some(equipment)) = (sub_units(content, warnings).filter(|units| units.gap().is_none()), equipment) else { return Vec::new() };
+    units
+        .in_content_order()
+        .filter(|unit| units.air_wing_sizes(unit, equipment).is_ok_and(|sizes| sizes.iter().any(|&size| size != 0)))
+        .filter_map(|unit| {
+            let required = units.air_wing(unit).ok()?.first_requirement.as_ref()?;
+            let at = equipment.get(required)?;
+            let archetype = if equipment.equipment[at].is_archetype { at } else { equipment.equipment[at].archetype? };
+            equipment.equipment[archetype].name_str().ok().map(str::to_owned)
+        })
+        .collect()
 }
 
 fn name_air_wings(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Content, warnings: &mut Vec<String>) -> Named {
@@ -429,29 +466,14 @@ fn name_air_wings(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Conten
         resolved.insert(part, named);
     }
     warnings.extend(notes);
-    Named::group(resolved)
+    Named::group(resolved).in_content_order(aircraft(units.as_deref(), content, warnings))
 }
 
 fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Content, grouping: NavyGrouping, warnings: &mut Vec<String>) -> Named {
     let spelled = frame_literals(frame);
-    let units: Option<Arc<SubUnits>> = content.catalogue.as_ref().and_then(|catalogue| {
-        match catalogue
-            .content
-            .layers
-            .derived::<catalogue::CachedResult<SubUnits>>()
-            .get_or_init(|| content_reader_key_names::unit_leader::sub_units(&catalogue.content.layers))
-        {
-            Ok(units) => {
-                warnings.extend(units.warnings().iter().cloned());
-                Some(units)
-            }
-            Err(error) => {
-                warnings.push(format!("Ship class content is unavailable: {error}"));
-                None
-            }
-        }
-    });
+    let units = sub_units(content, warnings);
     let mut resolved = BTreeMap::new();
+    let mut unplaced = BTreeSet::new();
     for &part in parts {
         let token = part as u32;
         let spelling = spelled.get(&token);
@@ -489,9 +511,26 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
                 }
             }
         };
+        if let (Some(spelling), Some(units)) = (spelling, units.as_deref()) {
+            let why = match units.naval(spelling.as_bytes()) {
+                Ok(true) => None,
+                Ok(false) => Some("its recorded type is not a naval category".to_owned()),
+                Err(why) => Some(why),
+            };
+            if let Some(why) = why {
+                unplaced.insert(format!("{spelling}: {why}; its part is drawn in the neutral colour."));
+            }
+        }
         resolved.insert(part, named);
     }
-    Named::group(resolved)
+    let order = units.as_deref().filter(|units| units.gap().is_none()).into_iter().flat_map(|units| {
+        units.in_content_order().filter(|unit| units.naval(unit) == Ok(true)).filter_map(|unit| match grouping {
+            NavyGrouping::Class => std::str::from_utf8(unit).ok().map(|unit| format!("class:{unit}")),
+            NavyGrouping::Type => units.category(unit).ok().map(|mask| format!("type:{mask}")),
+        })
+    });
+    warnings.extend(unplaced);
+    Named::group(resolved).in_content_order(order.collect::<Vec<_>>())
 }
 
 pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &HashMap<u32, Vec<(u128, Option<i64>)>>, parts_error: Option<String>) -> (Vec<ForcePart>, Vec<ForceAtRow>, Vec<String>) {
@@ -647,15 +686,15 @@ impl AtHour for AirForceAt {
             AirForceMeasure::Wings => "air wings",
         };
         let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
-            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::AirForceTotals>(frame, &Keys::All) {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 };
                 match select_population(totals, |row| row.slot, total_of, |_| None, at.holders, frame.hour, params.top, label) {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 }
             }
             Chosen::These(countries) => select_explicit::<tables::AirForceTotals>(frame, &countries, total_of, |_| None, None, at.holders, frame.hour, label),
@@ -704,9 +743,10 @@ impl AtHour for AirForceAt {
                 AirForceMeasure::Wings => name_air_wings(frame, &met, &content, &mut warnings),
             }
         };
+        let ordinals = named.ordinals();
         let (parts, rows, extra_warnings) = attach_parts(selected, named, &by_slot, parts_error);
         warnings.extend(extra_warnings);
-        Ok(ForceAtReply { parts, rows, missing: None, warnings })
+        Ok(ForceAtReply { parts, ordinals, rows, missing: None, warnings })
     }
 }
 
@@ -790,15 +830,15 @@ impl AtHour for NavyAt {
             NavyMeasure::Strength => "hull strength",
         };
         let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
-            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+            Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::NavyTotals>(frame, &Keys::All) {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 };
                 match select_population(totals, |row| row.slot, total_of, reference_of, at.holders, frame.hour, params.top, label) {
                     Ok(rows) => rows,
-                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
+                    Err(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
                 }
             }
             Chosen::These(countries) => select_explicit::<tables::NavyTotals>(frame, &countries, total_of, reference_of, absent_reference, at.holders, frame.hour, label),
@@ -831,8 +871,9 @@ impl AtHour for NavyAt {
         } else {
             name_navy_classes(frame, &met, &content, params.grouping, &mut warnings)
         };
+        let ordinals = named.ordinals();
         let (parts, rows, extra_warnings) = attach_parts(selected, named, &by_slot, parts_error);
         warnings.extend(extra_warnings);
-        Ok(ForceAtReply { parts, rows, missing: None, warnings })
+        Ok(ForceAtReply { parts, ordinals, rows, missing: None, warnings })
     }
 }

@@ -478,6 +478,19 @@ mod tests {
         assert_eq!(clipped.lines.len(), 1);
         assert_eq!(clipped.lines[0].missing[0].first_hour, 1_005);
         assert_eq!(clipped.lines[0].missing[0].last_hour, 1_009);
+
+        let groups = GroupsAt::load(&src, &load, "1", None).unwrap();
+        let at = |kind, period| {
+            let params = NavalLossesAtParams { branch_id: "1".into(), hour: 1_035, countries: vec![Country::Slot(7)], top: None, group: None, attribution: NavalAttribution::Lost, kind, period };
+            reply_at(&query, &params, &groups, &cancel).unwrap()
+        };
+        let ships = at(NavalKind::Ships, NavalPeriod::Running);
+        assert_eq!((ships.missing.as_deref(), ships.rows[0].total), (None, Some(3)));
+        let both = at(NavalKind::Both, NavalPeriod::Running);
+        assert_eq!(both.missing, None, "unknown convoy losses do not withhold the known ship losses");
+        assert_eq!(both.rows[0].values[0], Some(3));
+        assert_eq!((both.rows[0].values[1], both.rows[0].total), (None, None));
+        assert!(both.rows[0].missing.as_deref().is_some_and(|why| why.starts_with("Convoys")), "{:?}", both.rows[0].missing);
     }
 
     fn head(src: &Source, hour: i32, countries: Vec<Country>, top: Option<u32>) -> super::super::NavalLossesAtReply {
