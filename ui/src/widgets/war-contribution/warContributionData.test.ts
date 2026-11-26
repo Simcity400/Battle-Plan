@@ -278,6 +278,69 @@ test('warContributionSources plans no contribution reads when no eligible war ex
   if (savedEnded.read.shape === 'point') {
     assert.deepEqual(savedEnded.read.provenInterval?.(undefined, 250), [201, Infinity], 'saved ended war stays valid even when another war starts');
   }
+
+  const { askUnits, settleUnits, unitEntries } = await import('../../families/readUnits.ts');
+  const { readPlanExact } = await import('../../families/broker.ts');
+  const pinEndedPlan = warContributionSources(makeCtx(withWars, false, undefined, 'pin', 250));
+  const pinUnits = askUnits(unitEntries(pinEndedPlan, false, []), {
+    following: false,
+    trackOffset: 0,
+    displayHour: 250,
+    pinned: { timeMode: 'pin', branch: { firstHour: 0, lastHour: 1000 }, window: { firstHour: 250, lastHour: 250 }, pinHour: 250, gate },
+    content: 1,
+  });
+  assert.equal(pinUnits.length, 1);
+  assert.equal((pinUnits[0]!.spec?.request.params as { hour?: number } | undefined)?.hour, 200);
+  const endedReply = {
+    branchId: 'b1',
+    hour: 200,
+    available: true,
+    contributions: [{
+      viewpointSide: ['AAA'],
+      opposingSide: ['BBB'],
+      reason: null,
+      participants: [],
+      measures: [{ key: 'participation', viewpoint: { total: '100000', shareOfWar: null, partial: false, members: [] }, opposing: { total: '100000', shareOfWar: null, partial: false, members: [] } }],
+    }],
+    warnings: [],
+  };
+  const settled = settleUnits(pinUnits, new Map([[pinUnits[0]!.name, { key: pinUnits[0]!.key!, data: endedReply }]]), {
+    following: false,
+    moving: false,
+    hour: 250,
+    subscribed: false,
+  });
+  assert.equal(settled.kind, 'complete');
+  if (settled.kind === 'complete') {
+    assert.equal(settled.bundle.hour, 250, 'static ended war preserves display hour 250 while using hour 200 contributions');
+    const shown = chosenGroup(createBoundedReadView({ hour: settled.bundle.hour, panels: settled.bundle.panels }), { wars: withWars, saved: null });
+    assert.equal(shown.kind, 'shown');
+    if (shown.kind === 'shown') assert.equal(shown.reply.hour, 200);
+  }
+
+  let exactFetches = 0;
+  const exactClient = { product: async () => { exactFetches++; return { data: null }; } } as unknown as Parameters<typeof readPlanExact>[2]['client'];
+  for (const [emptyPlan, atHour, expectedEmpty, warsArg, savedArg] of [
+    [warContributionSources(makeCtx(emptyWars, true)), 50, 'Choose a war to see who fought it.', emptyWars, null],
+    [warContributionSources(makeCtx(withWars, false, '2', 'pin', 250)), 250, 'The selected war has not started at this date.', withWars, '2'],
+    [warContributionSources(makeCtx(gappedWars, false, '1', 'pin', 175)), 175, 'This war’s contributions were not recorded at this time.', gappedWars, '1'],
+  ] as const) {
+    const exactView = await readPlanExact(emptyPlan, atHour, {
+      client: exactClient,
+      following: false,
+      timeMode: 'pin',
+      branch: { firstHour: 0, lastHour: 1000 },
+      window: { firstHour: atHour, lastHour: atHour },
+      staticSpan: null,
+      gate,
+    });
+    assert.ok(exactView, 'allowed empty plan produces a dated empty exact read view');
+    assert.equal(exactView.hour, atHour);
+    const group = chosenGroup(exactView, { wars: warsArg, saved: savedArg });
+    assert.equal(group.kind, 'blank');
+    if (group.kind === 'blank') assert.equal(group.empty, expectedEmpty);
+  }
+  assert.equal(exactFetches, 0, 'allowed empty exact reads fetch no contribution products');
 });
 
 test('war chip and menu watchers stay quiet across 100 played hours and wake only on observation or lead-identity changes', async () => {
@@ -308,6 +371,10 @@ test('war chip and menu watchers stay quiet across 100 played hours and wake onl
   let scans = 0;
   let wakes = 0;
   const shownHour = (axis: number) => Math.floor(axis) + offset;
+  const pending = createWarChipTracker(undefined, null, shownHour, offset);
+  const p1 = pending.read(140);
+  assert.strictEqual(pending.read(140), p1, 'pending chip snapshot keeps reference equality while wars are loading');
+  assert.strictEqual(pending.read(150), p1, 'pending chip snapshot stays stable across hours while wars are loading');
   const tracker = createWarChipTracker(wars, null, shownHour, offset, (reply, saved, at) => {
     scans++;
     return warChipStateAt(reply, saved, at);

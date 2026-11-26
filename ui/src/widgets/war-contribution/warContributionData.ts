@@ -10,7 +10,6 @@ export interface WarChipState {
   readonly observation: WarObservation | null;
   readonly prestart: boolean;
   readonly valid: readonly [number, number];
-  readonly key: string;
 }
 
 export function chosenWar(reply: WarsReply, saved: string | null, at: number): WarTimeline | null {
@@ -34,28 +33,21 @@ export function chosenWar(reply: WarsReply, saved: string | null, at: number): W
 
 export const readHourFor = (war: WarTimeline, at: number) => Math.min(Math.floor(at), war.lastHour);
 
-function narrowSpan(edges: readonly number[], hour: number, min = -Infinity, max = Infinity): readonly [number, number] {
-  let lo = min;
-  let hi = max;
-  for (const edge of edges) {
-    if (edge <= hour) {
-      if (edge > lo) lo = edge;
-    } else if (edge - 1 < hi) {
-      hi = edge - 1;
-    }
-  }
-  return [lo, hi];
-}
+const PENDING_CHIP: WarChipState = Object.freeze({
+  at: null,
+  war: null,
+  observation: null,
+  prestart: false,
+  valid: [-Infinity, Infinity] as const,
+});
 
 export function warChipStateAt(wars: WarsReply | undefined, saved: string | null, at: number | null): WarChipState {
-  if (!wars || at === null || !Number.isFinite(at)) {
-    return { at: null, war: null, observation: null, prestart: false, valid: [-Infinity, Infinity], key: '::false' };
-  }
+  if (!wars || at === null || !Number.isFinite(at)) return PENDING_CHIP;
   const hour = Math.floor(at);
   const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
   if (explicit) {
     if (hour < explicit.firstHour) {
-      return { at: hour, war: null, observation: null, prestart: true, valid: [-Infinity, explicit.firstHour - 1], key: '::true' };
+      return { at: hour, war: null, observation: null, prestart: true, valid: [-Infinity, explicit.firstHour - 1] };
     }
     if (hour > explicit.lastHour) {
       const observation = explicit.observations.at(-1) ?? null;
@@ -65,7 +57,6 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
         observation,
         prestart: false,
         valid: [explicit.lastHour + 1, Infinity],
-        key: `${explicit.id}:${observation?.firstHour ?? ''}:false`,
       };
     }
     const observation = labelObservationAt(explicit, hour);
@@ -86,7 +77,6 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
       observation,
       prestart: false,
       valid: [lo, hi],
-      key: `${explicit.id}:${observation?.firstHour ?? ''}:false`,
     };
   }
   const war = chosenWar(wars, null, hour);
@@ -113,7 +103,6 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
     observation,
     prestart: false,
     valid: [lo, hi],
-    key: `${war?.id ?? ''}:${observation?.firstHour ?? ''}:false`,
   };
 }
 
@@ -126,6 +115,7 @@ export function createWarChipTracker(
 ) {
   let cached: WarChipState | null = null;
   const read = (clockHour: number): WarChipState => {
+    if (!wars) return cached ??= compute(undefined, saved, null);
     const raw = shownHour(clockHour);
     const at = raw !== null && Number.isFinite(raw) ? Math.floor(raw) : null;
     if (cached) {
@@ -151,12 +141,35 @@ export function warChipLeaderHour(
   return shown === null || !Number.isFinite(shown) ? null : Math.min(Math.floor(shown), observation.lastHour);
 }
 
+const menuStartsCache = new WeakMap<WarsReply, readonly number[]>();
+
+function menuStartsOf(wars: WarsReply): readonly number[] {
+  let starts = menuStartsCache.get(wars);
+  if (!starts) {
+    const raw: number[] = [];
+    for (const war of wars.wars) for (const obs of war.observations) raw.push(obs.firstHour);
+    raw.sort((a, b) => a - b);
+    const unique: number[] = [];
+    for (const hour of raw) if (unique[unique.length - 1] !== hour) unique.push(hour);
+    starts = unique;
+    menuStartsCache.set(wars, starts);
+  }
+  return starts;
+}
+
 export function warMenuSpanAt(wars: WarsReply | undefined, at: number): readonly [number, number] {
   if (!wars || !Number.isFinite(at)) return [-Infinity, Infinity];
+  const starts = menuStartsOf(wars);
+  if (!starts.length) return [-Infinity, Infinity];
   const hour = Math.floor(at);
-  const edges: number[] = [];
-  for (const war of wars.wars) for (const obs of war.observations) edges.push(obs.firstHour);
-  return narrowSpan(edges, hour);
+  let low = 0;
+  let high = starts.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (starts[mid]! <= hour) low = mid + 1;
+    else high = mid;
+  }
+  return [low > 0 ? starts[low - 1]! : -Infinity, low < starts.length ? starts[low]! - 1 : Infinity];
 }
 
 export function createWarMenuTracker(

@@ -111,6 +111,7 @@ export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): Sourc
     },
     provenInterval: (_data, hour) => endedRead(ctx.aux, saved, hour).valid,
     idleInterval: hour => endedRead(ctx.aux, saved, hour).valid,
+    preserveDisplayHour: true,
     validate: validateWarContributions,
   });
   if (!ctx.following) {
