@@ -80,7 +80,7 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
         let mut since = None;
         replay.visit_blocks(
             &[block],
-            &OUTPUT_TABLES,
+            &[TableId::ConstructionLineOutput],
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
