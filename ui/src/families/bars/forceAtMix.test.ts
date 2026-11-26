@@ -72,3 +72,17 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
     { label: 'Convoys', value: '20' },
   ], 'each witnessed count is still shown');
 });
+
+test('a part keeps its colour when the parts beside it change (convoys alone or beside ships)', () => {
+  const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map(), identity: fakeIdentity({}) });
+  const project = (parts: ForceAtReply['parts'], values: number[]) => projectForceAtMix(view, {
+    parts, rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: values.reduce((a, b) => a + b, 0), missing: null, values, partsMissing: null }], missing: null, warnings: [],
+  }, { top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys (colour test)', emptyMessage: 'None.' });
+  const colours = (model: ReturnType<typeof project>) => new Map(model.legend?.map(item => [item.key, item.color]));
+  const both = colours(project([{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [2, 3]));
+  const alone = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }], [3]));
+  const added = colours(project([{ key: 'aaa', name: 'Earlier kind', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }], [1, 2, 3]));
+  assert.equal(alone.get('convoys'), both.get('convoys'));
+  assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
+  assert.notEqual(added.get('aaa'), added.get('ships'));
+});
