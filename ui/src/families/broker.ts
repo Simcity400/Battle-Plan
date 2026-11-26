@@ -9,7 +9,7 @@ import type { BoundWindow, FollowRequest, GatedHour } from '../dashboard/regionT
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
 import type { DrawnKeys } from './host/installed.ts';
-import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
   BoundedReadView,
@@ -666,10 +666,8 @@ async function readEntryExact(
     const identity = `${entry.source.id}|${entry.branch}|${entry.name}`;
     const headLimit = Math.max(1, read.tailQuery.limit);
     const window = options.rowWindow;
-    const dataWindow = window
-      ? { first: window.dataFirst ?? window.first, count: window.dataCount ?? window.count }
-      : null;
-    if (dataWindow && dataWindow.count > 0 && dataWindow.first + dataWindow.count > headLimit) {
+    const dataWindow = window ? dataWindowOf(window) : null;
+    if (dataWindow && dataWindow.first + dataWindow.count > headLimit) {
       const at = Math.min(recorded, options.snapshotHour?.(entry.name) ?? recorded);
       const pageSize = Math.max(1, read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
       const validate = read.validate ?? validateGenericTailReply;

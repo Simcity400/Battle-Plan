@@ -1,6 +1,6 @@
 import type { SourceEntry, SourcePlan } from '../contract.ts';
 import type { FamilyRowWindow } from './adapter.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagerStep } from '../table/rowSource.ts';
+import { dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagerStep } from '../table/rowSource.ts';
 
 export type PagedEntry = SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> };
 
@@ -42,9 +42,8 @@ export function replacePagers(previous: PagerSet, sig: string, entries: readonly
 }
 
 function atHead(window: FamilyRowWindow, limit: number): boolean {
-  const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
-  const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
-  return count > 0 && first + count <= limit;
+  const data = dataWindowOf(window);
+  return data !== null && data.first + data.count <= limit;
 }
 
 export function pagerWindow(held: PagerSet, entry: PagedEntry, window: FamilyRowWindow, installedHour: number | null): { readonly pager: SnapshotPager; readonly step: PagerStep } {

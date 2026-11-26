@@ -1163,6 +1163,10 @@ test('R3-S1: a paged table scrolled past its head asks the absolute rows under t
   const atS = await readPlanExact(plan, 200, { client: atSnapshot, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: window, snapshotHour: () => 150 });
   assert.deepEqual(snapshotHours, [150], 'a scrolled source is audited at the hour of the snapshot the picture shows');
   assert.equal(atS?.rows('main')?.at, 150);
+  const gapHours: unknown[] = [];
+  const atGaps = { product: async (request: { params: Record<string, unknown> }) => { gapHours.push(request.params.hour); return client.product(request as never, new AbortController().signal); } } as unknown as DashboardClient;
+  await readPlanExact(plan, 200, { client: atGaps, following: false, timeMode: 'pin', branch: { firstHour: 0, lastHour: 5000 }, window: null, staticSpan: null, gate, rowWindow: { first: 596, count: 2, dataFirst: 596, dataCount: 0 }, snapshotHour: () => 150 });
+  assert.deepEqual(gapHours, [150], 'a scrolled window of gaps only is audited at the snapshot hour too');
 
   const model: TableModel = { columns, hour: 200, rows: Array.from({ length: 18 }, (_, i) => ({ key: `e${596 + i}`, name: `e${596 + i}`, cells: { event: { value: { kind: 'known', value: `e${596 + i}` } } } })) as never, windowOffset: 596, totalRows: TOTAL };
   const audited = tableHostAdapter.deriveAuditRows!(model, 200, { viewport, settings, expanded: {}, theme: undefined, fields: { ...installed, range: { first: 4, count: 10 } } });
@@ -2042,7 +2046,7 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   const twice = replacePagers(replacePagers(frozenAt100(), 'opened', [expanded]), 'closed again', [paged()]);
   assert.deepEqual(hours(pagerWindow(twice, paged(), scrolled, 124).step), [100], 'a second plan change before the first answers keeps the frozen hour');
   const gapFirst = replacePagers(frozenAt100(), 'gap', [expanded]);
-  assert.deepEqual(pagerWindow(gapFirst, expanded, gaps, 124).step.fetch, []);
+  assert.deepEqual(hours(pagerWindow(gapFirst, expanded, gaps, 124).step), [100], 'a window of gaps past the head reads the page they sit in at the frozen hour');
   const gapThenChange = replacePagers(gapFirst, 'gap closed', [paged()]);
   assert.deepEqual(hours(pagerWindow(gapThenChange, paged(), scrolled, 124).step), [100], 'a window of gaps only, then another plan change, keeps the frozen hour');
   const unseen = replacePagers(replacePagers(frozenAt100(), 'branch b', [paged('2')]), 'branch a', [paged()]);
@@ -2054,7 +2058,7 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   assert.deepEqual(hours(pagerWindow(filtered, expanded, scrolled, 124).step), [100], 'a filter naming a range is not the plan range');
   const gapsAfterHead = replacePagers(frozenAt100(), 'gaps after head', [expanded]);
   pagerWindow(gapsAfterHead, expanded, { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
-  assert.deepEqual(hours(pagerWindow(gapsAfterHead, expanded, scrolled, 124).step), [100], 'gaps just after the head are not the head');
+  assert.equal(pagerWindow(gapsAfterHead, expanded, scrolled, 124).pager.hour, 100, 'gaps just after the head are not the head');
   const released = replacePagers(frozenAt100(), 'expanded', [expanded]);
   assert.deepEqual(hours(pagerWindow(released, expanded, scrolled, 124).step), [100]);
   pagerWindow(released, expanded, { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
@@ -2067,6 +2071,13 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   assert.deepEqual(hours(pagerWindow(soughtBack, expanded, scrolled, 90).step), [90]);
   pagerWindow(soughtBack, expanded, { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
   assert.equal(pagerWindow(soughtBack, expanded, scrolled, 124).pager.hour, 90, 'after a plan change and a seek back, gaps after the head keep the page at 90');
+  const noMatches = replacePagers(frozenAt100(), 'no matches', [expanded]);
+  pagerWindow(noMatches, expanded, { first: 0, count: 1, dataFirst: 0, dataCount: 0 }, 124);
+  assert.deepEqual(hours(pagerWindow(noMatches, expanded, scrolled, 130).step), [130], 'a filter leaving only a gap before the first row returns to the head');
+  const gapAtTop = frozenAt100();
+  assert.equal(pagerWindow(gapAtTop, paged(), { first: 0, count: 1, dataFirst: 0, dataCount: 0 }, 124).pager.hour, null, 'gaps among head rows are the head, with no plan change');
+  const gapsBack = frozenAt100();
+  assert.deepEqual(hours(pagerWindow(gapsBack, paged(), { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 90).step), [90], 'a seek back under gaps past the head reads the page at the displayed hour');
   const homed = replacePagers(frozenAt100(), 'home', [expanded]);
   pagerWindow(homed, expanded, head, 124);
   assert.deepEqual(hours(pagerWindow(homed, expanded, scrolled, 130).step), [130], 'returning to the head drops the frozen hour');

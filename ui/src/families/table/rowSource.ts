@@ -449,6 +449,12 @@ export interface PagerStep {
 
 const NO_STEP: PagerStep = { fetch: [], cancel: [] };
 
+export function dataWindowOf(window: RowWindow): { readonly first: number; readonly count: number } | null {
+  if (Math.max(0, Math.floor(window.count)) === 0) return null;
+  const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
+  return { first, count: Math.max(1, Math.floor(window.dataCount ?? window.count)) };
+}
+
 export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   readonly #headLimit: number;
   readonly #pageSize: number;
@@ -473,11 +479,9 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   }
 
   window(window: RowWindow, installedHour: number | null): PagerStep {
-    const displayCount = Math.max(0, Math.floor(window.count));
-    if (displayCount === 0) return NO_STEP;
-    const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
-    const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
-    if (count === 0) return NO_STEP;
+    const data = dataWindowOf(window);
+    if (!data) return NO_STEP;
+    const { first, count } = data;
     if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
     if (installedHour === null || !Number.isFinite(installedHour)) return NO_STEP;
     const hour = Math.floor(installedHour);
