@@ -312,7 +312,8 @@ fn ranking_tokens(query: &Query<'_>, run: u32, hour: i32, group: bool) -> io::Re
     Ok(tokens)
 }
 
-fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, group: bool) -> io::Result<Option<i32>> {
+fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, members: Option<&[(u128, u128)]>) -> io::Result<Option<i32>> {
+    let group = members.is_some();
     let recording = query.replay.recording();
     let leaders = TableId::UnitLeaders;
     let components = field(leaders, "skill_category")? + 1;
@@ -351,7 +352,8 @@ fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, group: bool) 
             let read_from = if from == start { from } else { from - 1 };
             let to = last.min(origin + ((from - origin) / block + 1) * block - 1);
             for (table, columns) in inputs.iter().filter(|(table, _)| held(*table)) {
-                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, LaneKeys::All, read_from, to))?;
+                let keys = if *table == TableId::LeaderBattleTotals { members.map_or(LaneKeys::All, LaneKeys::Ranges) } else { LaneKeys::All };
+                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, keys, read_from, to))?;
                 ranking_steps(&history, after, &mut next);
             }
             let spelled_to = next.0.map_or(to, |at| at.saturating_sub(1).min(to));
@@ -502,9 +504,19 @@ fn resolve_selection_at(
     };
     let live = dashboard_follow::live::Cells::default();
     let reads_at = ReadsAt { holders: &query.holders, context: &context, run: stretch.run, hour, since: None };
+    let mut battle_keys = None;
     for step in 0..8 {
-        let reads = UnitLeaders::reads_at(&asked, step, &frame, &reads_at, context.roster.is_none());
-        if context.roster.is_some() && step == 2 && !reads.is_empty() { next.see(hour.saturating_add(1)); }
+        let reads = if step == 1 && context.roster.is_some() {
+            let kept = UnitLeaders::kept(&asked, &frame, &reads_at);
+            battle_keys = Some(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32));
+            UnitLeaders::people(&kept)
+        } else if step == 2 && context.roster.is_some() {
+            let (reads, clocked) = UnitLeaders::visibility_reads(&asked, &frame, &reads_at, true);
+            if clocked { next.see(hour.saturating_add(1)); }
+            reads
+        } else {
+            UnitLeaders::reads_in(&asked, None, step, &frame, &reads_at)
+        };
         if reads.is_empty() {
             break;
         }
@@ -515,7 +527,7 @@ fn resolve_selection_at(
         }
     }
     let until = next.0.map_or(through, |at| through.min(at - 1));
-    if let Some(change) = next_ranking_change(&query, hour, until, context.roster.is_some())? { next.see(change); }
+    if let Some(change) = next_ranking_change(&query, hour, until, battle_keys.as_deref())? { next.see(change); }
     let at = At { owner: None, holders: &query.holders, hour, context: &context, cancelled, live: &live };
     let shown = UnitLeaders::reply(&frame, &asked, &at)?;
     let top = shown
@@ -779,6 +791,28 @@ dashboard_base::reply_warnings!(LeaderHourReply, LeaderCareerReply, LeaderChoice
 
 pub struct LeaderHour;
 
+fn leader_ranges(keys: impl Iterator<Item = u64>, bits: u32) -> Vec<(u128, u128)> {
+    let mask = (1u128 << bits) - 1;
+    let mut ranges: Vec<_> = keys.map(|key| { let lo = u128::from(key) << bits; (lo, lo | mask) }).collect();
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
+}
+
+fn member_details(asked: &UnitLeadersParams, held: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, followed: bool) -> Vec<Read> {
+    let kept = UnitLeaders::kept(asked, held, at);
+    let mut reads = UnitLeaders::people(&kept);
+    if !kept.is_empty() {
+        let handles = || kept.iter().map(|row| handle(row));
+        reads.push(Read { table: TableId::UnitLeaderTraitExperience, keys: Keys::Ranges(leader_ranges(handles(), 33)) });
+        if followed {
+            reads.push(Read { table: TableId::LeaderBattleTotals, keys: Keys::Ranges(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32)) });
+            reads.push(Read { table: TableId::LeaderTraitDates, keys: Keys::Ranges(leader_ranges(handles(), 32)) });
+        }
+    }
+    reads
+}
+
 impl AtHour for LeaderHour {
     const KEY: &'static str = "unit-leader-hour";
     const TITLE: &'static str = "General career";
@@ -823,8 +857,10 @@ impl AtHour for LeaderHour {
 
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let Some(selection) = &params.selection else { return Self::reads(params, owner, step, held) };
-        let mut reads = UnitLeaders::reads_in(&top_asked(&params.branch_id, selection), owner, step, held, at);
-        if step == 0 && !reads.is_empty() {
+        let asked = top_asked(&params.branch_id, selection);
+        if step == 1 && at.context.roster.is_some() { return member_details(&asked, held, at, false); }
+        let mut reads = UnitLeaders::reads_in(&asked, owner, step, held, at);
+        if step == 0 && at.context.roster.is_none() {
             reads.push(Read::all(TableId::UnitLeaderTraitExperience));
         }
         reads
@@ -864,19 +900,17 @@ impl AtHour for LeaderHour {
         let (Some(roster), Some(selection)) = (&at.context.roster, &params.selection) else {
             return (Self::reads_in(params, owner, stage, held, at), i32::MAX);
         };
-        let mut reads = if stage == 2 {
-            UnitLeaders::reads_at(&top_asked(&params.branch_id, selection), stage, held, at, false)
-        } else {
-            Self::reads_in(params, owner, stage, held, at)
+        let asked = top_asked(&params.branch_id, selection);
+        let reads = match stage {
+            1 => member_details(&asked, held, at, true),
+            2 => UnitLeaders::visibility_reads(&asked, held, at, false).0,
+            _ => UnitLeaders::reads_in(&asked, owner, stage, held, at),
         };
-        if stage == 0 && !reads.is_empty() {
-            reads.extend([TableId::LeaderBattleTotals, TableId::LeaderTraitDates].map(Read::all));
-        }
         (reads, roster.through(at.hour))
     }
 
     fn clock_dependent(plan: &[(Vec<Read>, i32)], context: &Self::Context) -> bool {
-        context.roster.is_none() || plan.get(2).is_some_and(|(reads, _)| reads.iter().any(|read| read.table == TableId::Clock))
+        context.roster.is_none() || plan.get(2).is_some_and(|(reads, _)| !reads.is_empty())
     }
 
     fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], context: &Self::Context) -> Option<Vec<usize>> {
@@ -889,6 +923,13 @@ impl AtHour for LeaderHour {
             }
             _ => None,
         }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        let table = TableId::UnitLeaderTraitExperience;
+        if at.context.roster.is_none() || !frame.tables[TableId::Clock.index()].held().is_not_selected() { return Ok(false); }
+        let training = edits.tables.get(&table).is_some_and(|rows| rows.keys().all(|key| key & (1u128 << 32) == 0));
+        Ok(training && edits.only_columns(table, 1 << field(table, "experience")?))
     }
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {

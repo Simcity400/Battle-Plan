@@ -446,7 +446,7 @@ fn top_general_follows_recorded_faction_membership() {
     use super::career::{LeaderCareer, LeaderCareerParams};
     use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};
     use replay::campaign::Replay;
-    use replay_data::rows::{FactionMemberRow, FactionRow, TableId, TableRows, UnitLeaderRow};
+    use replay_data::rows::{FactionMemberRow, FactionRow, LandCombatDetailsRow, LandCombatSideDetails, TableId, TableRows, UnitLeaderRow, UnitLeaderTraitExperienceRow};
     use replay_frame::frame::TableView;
     use serde_json::json;
     use std::sync::{Arc, atomic::AtomicBool};
@@ -466,6 +466,14 @@ fn top_general_follows_recorded_faction_membership() {
             TableView::Complete(TableRows::FactionMembers(members))
         };
         *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: 9, ..Default::default() }]));
+        for table in [TableId::NavalCombatDetails, TableId::UnitLeaderTraits, TableId::Characters, TableId::LexicalTokens] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        let combat = LandCombatDetailsRow { combat: 7, sides: [LandCombatSideDetails { commander: super::handle(&visitor), ..Default::default() }, Default::default()], ..Default::default() };
+        *frame.tables[TableId::LandCombatDetails.index()] = TableView::Complete(TableRows::LandCombatDetails(if hour >= 175 { vec![combat] } else { vec![] }));
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+            UnitLeaderTraitExperienceRow { leader_reference: super::handle(&visitor), experience: i64::from(hour), ..Default::default() },
+        ]));
         let skill_level = if hour == 225 { 1 } else { visitor.skill_level };
         *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![
             UnitLeaderRow { experience: i64::from(hour), ..home.clone() },
@@ -514,6 +522,7 @@ fn top_general_follows_recorded_faction_membership() {
             (253, None, unknown, if ever { None } else { Some(254) }), (254, if ever { None } else { Some(&home) }, if ever { unknown } else { None }, None),
         ] {
             let head = (exact.cold)(hour, &cancelled).unwrap();
+            if hour == 200 { assert_eq!(head["fought"], 1, "the visitor fought before joining"); }
             let followed = played.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
             assert_eq!((&followed["reference"], &followed["missing"]), (&head["reference"], &head["missing"]));
             let params = LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(selection.clone()), hour };

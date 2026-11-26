@@ -741,39 +741,38 @@ pub fn held_traits(rows: &[UnitLeaderTraitRow]) -> BTreeMap<u64, Vec<String>> {
 }
 
 impl UnitLeaders {
-    fn reads_at(params: &UnitLeadersParams, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, cached: bool) -> Vec<Read> {
+    fn kept<'a>(params: &UnitLeadersParams, frame: &'a DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> Vec<&'a UnitLeaderRow> {
+        let Ok(leaders) = frame.complete::<tables::UnitLeaders>() else { return Vec::new() };
         let roster = at.context.roster.as_deref();
-        if roster.is_some_and(|roster| roster.missing(at.hour).is_some()) { return Vec::new(); }
-        let kept = || -> Vec<&UnitLeaderRow> {
-            let Ok(leaders) = held.complete::<tables::UnitLeaders>() else { return Vec::new() };
-            let tags = Tags::read(held).ok();
-            leaders.iter().filter(|row| params.leaders.includes(row.kind)).filter(|row| {
-                let slot = tags.as_ref().and_then(|tags| tags.slot(row.owner));
-                let tag = tags.as_ref().and_then(|tags| tags.tag(row.owner));
-                params.selection.keeps(slot, tag.as_deref(), roster, at.hour)
-            }).collect()
-        };
-        match step {
-            0 => BASE_TABLES.into_iter().map(Read::all).collect(),
-            1 => {
-                let kept = kept();
-                if kept.is_empty() {
-                    return Vec::new();
-                }
-                vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
+        let tags = Tags::read(frame).ok();
+        leaders.iter().filter(|row| params.leaders.includes(row.kind)).filter(|row| {
+            let slot = tags.as_ref().and_then(|tags| tags.slot(row.owner));
+            let tag = tags.as_ref().and_then(|tags| tags.tag(row.owner));
+            params.selection.keeps(slot, tag.as_deref(), roster, at.hour)
+        }).collect()
+    }
+
+    fn people(kept: &[&UnitLeaderRow]) -> Vec<Read> {
+        if kept.is_empty() { return Vec::new(); }
+        vec![Read::these(TableId::Characters, kept.iter().map(|row| u128::from(row.character_id))), Read::all(TableId::LexicalTokens)]
+    }
+
+    fn visibility_reads(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, cached: bool) -> (Vec<Read>, bool) {
+        let kept = Self::kept(params, frame, at);
+        if !kept.iter().any(|row| needs_world(row)) { return (Vec::new(), false); }
+        let mut world = None;
+        let Ok(world) = world_of(frame, &at.context.content, &mut world) else { return (Vec::new(), false) };
+        let decided = cached.then(|| at.context.verdicts_at(at.run, at.hour));
+        let mut clocked = false;
+        for row in kept {
+            let known = decided.as_ref().is_some_and(|known| known.contains_key(&handle(row)));
+            if (known && at.context.roster.is_none()) || !conditioned(row, world) { continue; }
+            if !known {
+                return (RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect(), true);
             }
-            2 => {
-                let kept = kept();
-                if !kept.iter().any(|row| needs_world(row)) {
-                    return Vec::new();
-                }
-                let decided = cached.then(|| at.context.verdicts_at(at.run, at.hour));
-                let mut world = None;
-                let open = world_of(held, &at.context.content, &mut world).is_ok_and(|world| kept.iter().any(|row| decided.as_ref().is_none_or(|known| !known.contains_key(&handle(row))) && conditioned(row, world)));
-                if open { RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect() } else { Vec::new() }
-            }
-            _ => Vec::new(),
+            clocked = true;
         }
+        (Vec::new(), clocked)
     }
 }
 
@@ -808,7 +807,13 @@ impl AtHour for UnitLeaders {
     }
 
     fn reads_in(params: &Self::Params, _owner: Option<dashboard_base::products::at_hour::Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
-        Self::reads_at(params, step, held, at, true)
+        if at.context.roster.as_ref().is_some_and(|roster| roster.missing(at.hour).is_some()) { return Vec::new(); }
+        match step {
+            0 => BASE_TABLES.into_iter().map(Read::all).collect(),
+            1 => Self::people(&Self::kept(params, held, at)),
+            2 => Self::visibility_reads(params, held, at, true).0,
+            _ => Vec::new(),
+        }
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -824,8 +829,10 @@ impl AtHour for UnitLeaders {
         let content = &context.content;
         let mut warnings = content.missing();
         let roster = context.roster.as_deref();
+        let tags = Tags::read(frame).map_err(|error| error.to_string());
         let rows = match roster.and_then(|roster| roster.missing(at.hour)) {
             Some(reason) => Err(reason.to_owned()),
+            None if roster.is_some() && let Err(why) = &tags => Err(why.clone()),
             None => frame.complete::<tables::UnitLeaders>().map_err(|error| error.to_string()),
         };
         let leaders = match rows {
@@ -837,8 +844,8 @@ impl AtHour for UnitLeaders {
         let branch = parse_branch(&params.branch_id).map_err(dashboard_core::invalid)?;
         let query = context.query(branch)?;
         let run = query.timeline.at(at.hour).map(|stretch| stretch.run);
-        dashboard_base::products::at_hour::count_rows(|| leaders.len() as u64);
-        let tags = Tags::read(frame).map_err(|error| error.to_string());
+        #[cfg(test)]
+        if roster.is_some() { dashboard_base::products::at_hour::count_rows(|| leaders.len() as u64); }
         if let Err(why) = &tags {
             warnings.push(format!("Leaders' owners are not named at this hour: {why}"));
         }
