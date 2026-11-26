@@ -10,11 +10,16 @@ const OVERFLOW: &str = "division damage total overflow";
 const ATTACKERS: &str = "a division was damaged by more attackers than a row id can number";
 const ALLOCATION: &str = "collector allocation failed";
 
-type Attackers = Vec<(u64, u64, i64)>;
-type Targets = HashMap<u64, Attackers>;
+#[derive(Clone, Copy)]
+struct Open {
+    combat: u64,
+    attacker: u64,
+    army: u64,
+    strength: i64,
+}
 
 pub(crate) struct Fold {
-    open: Option<HashMap<u64, Targets>>,
+    open: Option<HashMap<u64, Vec<Open>>>,
 }
 
 impl Fold {
@@ -50,8 +55,6 @@ impl Fold {
         out: &mut Vec<LandDivisionDamageRow>,
     ) -> Result<(), &'static str> {
         let open = self.open.get_or_insert_with(HashMap::new);
-        let mut ended = Vec::new();
-        let mut destroyed = Vec::new();
         let mut at = 0;
         while at < words.len() {
             let size = usize::try_from(words[at]).map_err(|_| FRAMING)?;
@@ -67,80 +70,57 @@ impl Fold {
                         return Err(HIT_UNREADABLE);
                     }
                     allocation::reserve_map(open, 1).map_err(|_| ALLOCATION)?;
-                    let targets = open.entry(hit.combat).or_default();
-                    allocation::reserve_map(targets, 1).map_err(|_| ALLOCATION)?;
-                    let attackers = targets.entry(hit.target).or_default();
-                    match attackers
+                    let held = open.entry(hit.target).or_default();
+                    match held
                         .iter_mut()
-                        .find(|(attacker, army, _)| *attacker == hit.attacker && *army == hit.army)
+                        .find(|open| open.combat == hit.combat && open.attacker == hit.attacker && open.army == hit.army)
                     {
-                        Some((_, _, total)) => *total = total.checked_add(hit.strength).ok_or(OVERFLOW)?,
+                        Some(open) => open.strength = open.strength.checked_add(hit.strength).ok_or(OVERFLOW)?,
                         None => {
-                            allocation::reserve_push_batch(attackers, 1).map_err(|_| ALLOCATION)?;
-                            attackers.push((hit.attacker, hit.army, hit.strength));
+                            allocation::reserve_push_batch(held, 1).map_err(|_| ALLOCATION)?;
+                            held.push(Open { combat: hit.combat, attacker: hit.attacker, army: hit.army, strength: hit.strength });
                         }
                     }
                 }
                 edges::EXITED => {
-                    let &[_, combat, hour, withheld, _, division, ..] = record else {
+                    let &[_, _, hour, withheld, _, division, ..] = record else {
                         return Err(FRAMING);
                     };
-                    if withheld as u8 & (edges::COMBAT_UNREADABLE | edges::DIVISION_UNREADABLE) != 0 {
+                    if withheld as u8 & edges::DIVISION_UNREADABLE != 0 {
                         return Err(EXIT_UNREADABLE);
                     }
-                    let Some(targets) = open.get_mut(&combat) else {
-                        at = end;
-                        continue;
-                    };
-                    if let Some(attackers) = targets.remove(&division) {
+                    if let Some(held) = open.remove(&division) {
                         let hour = edges::unpack(hour).unwrap_or(to_hour);
                         let id = first.wrapping_add(at as u64) << 16;
-                        allocation::reserve_push_batch(out, attackers.len()).map_err(|_| ALLOCATION)?;
-                        for (ordinal, (attacker, army, strength)) in attackers.into_iter().enumerate() {
+                        allocation::reserve_push_batch(out, held.len()).map_err(|_| ALLOCATION)?;
+                        for (ordinal, open) in held.into_iter().enumerate() {
                             let ordinal = u16::try_from(ordinal).map_err(|_| ATTACKERS)?;
                             out.push(LandDivisionDamageRow {
                                 id: id | u64::from(ordinal),
                                 hour,
-                                combat,
+                                combat: open.combat,
                                 target: division,
-                                attacker,
-                                army: (army != 0).then_some(army),
-                                strength_raw: strength,
+                                attacker: open.attacker,
+                                army: (open.army != 0).then_some(open.army),
+                                strength_raw: open.strength,
                             });
                         }
                     }
-                    if targets.is_empty() {
-                        open.remove(&combat);
-                    }
-                }
-                0 | 2 => {
-                    allocation::reserve_push_batch(&mut ended, 1).map_err(|_| ALLOCATION)?;
-                    ended.push(*record.get(1).ok_or(FRAMING)?);
                 }
                 1 | 7 => {
                     let division = record.get(if record[0] == 1 { 1 } else { 2 }).ok_or(FRAMING)?;
-                    allocation::reserve_push_batch(&mut destroyed, 1).map_err(|_| ALLOCATION)?;
-                    destroyed.push(*division);
+                    open.remove(division);
                 }
                 _ => {}
             }
             at = end;
-        }
-        for combat in ended {
-            open.remove(&combat);
-        }
-        if !destroyed.is_empty() {
-            open.retain(|_, targets| {
-                targets.retain(|target, _| !destroyed.contains(target));
-                !targets.is_empty()
-            });
         }
         Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn open_targets(&self) -> usize {
-        self.open.as_ref().map_or(0, |open| open.values().map(HashMap::len).sum())
+        self.open.as_ref().map_or(0, HashMap::len)
     }
 }
 
@@ -177,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn hits_fold_across_hours_per_attacker_and_army_and_close_when_the_target_leaves() {
+    fn hits_fold_across_hours_per_combat_attacker_and_army_and_close_when_the_target_leaves() {
         let mut fold = Fold::new();
         let hour = folded(&mut fold, &[hit(BATTLE, FIRST, THIRD, GROUP, 100), hit(BATTLE, SECOND, THIRD, 0, 30), hit(OTHER, FIRST, SECOND, GROUP, 5)], 0).unwrap();
         assert!(hour.is_empty(), "nothing closes before the target leaves");
@@ -193,20 +173,31 @@ mod tests {
                 row(id | 2, BATTLE, THIRD, FIRST, Some(7), 1),
             ]
         );
-        assert_eq!(fold.open_targets(), 1, "the other combat's target stays open");
+        assert_eq!(fold.open_targets(), 1, "the other target stays open");
         assert!(folded(&mut fold, &[exit(BATTLE, THIRD, 82, 0)], 2000).unwrap().is_empty(), "a closed target has nothing left");
     }
 
     #[test]
-    fn a_combat_end_or_destruction_drops_open_targets_only_after_the_hours_exits() {
+    fn a_division_in_two_combats_has_one_pending_pool_so_any_exit_closes_all_its_damage() {
         let mut fold = Fold::new();
-        let result = vec![4, 0, BATTLE, 0];
-        let rows = folded(&mut fold, &[hit(BATTLE, FIRST, THIRD, GROUP, 9), hit(BATTLE, FIRST, SECOND, GROUP, 4), result, exit(BATTLE, THIRD, 81, 0)], 0).unwrap();
-        assert_eq!(rows.iter().map(|row| (row.target, row.strength_raw)).collect::<Vec<_>>(), [(THIRD, 9)], "the end's own exits still close");
-        assert_eq!(fold.open_targets(), 0, "the target that never left is dropped with its combat");
+        folded(&mut fold, &[hit(BATTLE, FIRST, THIRD, GROUP, 40), hit(OTHER, SECOND, THIRD, GROUP, 60)], 0).unwrap();
+        let rows = folded(&mut fold, &[vec![4, 0, BATTLE, 0], exit(OTHER, THIRD, 81, edges::COMBAT_UNREADABLE)], 500).unwrap();
+        assert_eq!(
+            rows,
+            [row(504 << 16, BATTLE, THIRD, FIRST, Some(GROUP), 40), row(504 << 16 | 1, OTHER, THIRD, SECOND, Some(GROUP), 60)],
+            "each row keeps the combat its hits came from; the exit that flushed the pool closes them all, even after the other combat ended"
+        );
+        assert_eq!(fold.open_targets(), 0);
+    }
+
+    #[test]
+    fn a_destroyed_division_s_damage_is_dropped_with_it() {
+        let mut fold = Fold::new();
         let wipe = vec![5, 7, 81, SECOND, 0];
         folded(&mut fold, &[hit(OTHER, FIRST, SECOND, GROUP, 4), hit(OTHER, SECOND, FIRST, GROUP, 4), wipe], 0).unwrap();
         assert_eq!(fold.open_targets(), 1, "only the destroyed division's damage is dropped");
+        folded(&mut fold, &[vec![9, 1, FIRST, 0, 0, 0, 0, 0, 0]], 0).unwrap();
+        assert_eq!(fold.open_targets(), 0);
     }
 
     #[test]

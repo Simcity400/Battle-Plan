@@ -195,7 +195,7 @@ NavalRefitShips.line also carries its stored full reference without destination-
 | LandCombatResults | hook log | land_events log. |
 | LandCombatResultObservers | hook log | land_events log: terminal combat-log observer rows copied before side deletion. |
 | LandCombatEdges | hook log | land_events log: each land combat's opening roster at the start routine's return and each division's exit around its loss flush, with its pending strength damage read before the flush clears it. |
-| LandDivisionDamage | hook log | land_events log: the attack resolver's per-hit attacker, target, attacker's army and strength lost, folded at the observer boundary per combat, target, attacker and army, and published when the target leaves the combat. |
+| LandDivisionDamage | hook log | land_events log: the attack resolver's per-hit attacker, target, attacker's army and strength lost, folded at the observer boundary per target, combat, attacker and army, and published when the target leaves any combat, since that exit flushes the target's whole pending damage. |
 | CombatEngagementRefreshes | hook log | combat_engagement_refreshes sparse hourly event ledger: unit add/remove, naval convoy transfer, controller reassignment target, and local all-combat refresh hooks. |
 | LandCombatSides | hourly tick | Hourly combat manager updates. |
 | LandCombats | hourly tick | Combat manager updates from the hourly game-state update. |

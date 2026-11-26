@@ -31,11 +31,12 @@ fn inserted(hour: &Hour<'_>, table: TableId) -> Vec<u32> {
 }
 
 struct Exit {
+    division: u64,
     losses: Option<i64>,
     pool: Option<i64>,
 }
 
-fn exits(hour: &Hour<'_>) -> HashMap<(u64, u64), Exit> {
+fn exits(hour: &Hour<'_>) -> HashMap<u64, Exit> {
     let table = hour.table(TableId::LandCombatEdges);
     let mut exits = HashMap::new();
     for slot in inserted(hour, TableId::LandCombatEdges) {
@@ -46,7 +47,7 @@ fn exits(hour: &Hour<'_>) -> HashMap<(u64, u64), Exit> {
             continue;
         }
         let losses = table.number(EDGES[2], slot).zip(table.number(EDGES[3], slot)).map(|(before, after)| after - before);
-        exits.insert(((key >> 64) as u64, division as u64), Exit { losses, pool: table.number(EDGES[4], slot) });
+        exits.insert(key as u64, Exit { division: division as u64, losses, pool: table.number(EDGES[4], slot) });
     }
     exits
 }
@@ -54,19 +55,20 @@ fn exits(hour: &Hour<'_>) -> HashMap<(u64, u64), Exit> {
 fn shares(hour: &Hour<'_>) -> HashMap<u64, Option<i64>> {
     let exits = exits(hour);
     let table = hour.table(TableId::LandDivisionDamage);
-    let mut targets = HashMap::<(u64, u64), Vec<(u64, i64)>>::new();
+    let mut targets = HashMap::<(u64, u64), (u64, Vec<(u64, i64)>)>::new();
     for slot in inserted(hour, TableId::LandDivisionDamage) {
         let (Some(key), Some(target), Some(attacker), Some(strength)) =
             (table.key(slot), table.number(DAMAGE[0], slot), table.number(DAMAGE[1], slot), table.number(STRENGTH[0], slot))
         else {
             continue;
         };
-        targets.entry(((key >> 64) as u64, target as u64)).or_default().push((attacker as u64, strength));
+        let closed = targets.entry((key as u64 >> 16, target as u64)).or_insert((target as u64, Vec::new()));
+        closed.1.push((attacker as u64, strength));
     }
     let mut killed = HashMap::<u64, Option<i64>>::new();
-    for (target, attackers) in targets {
+    for (exit, (target, attackers)) in targets {
         let dealt: i128 = attackers.iter().map(|&(_, strength)| i128::from(strength)).sum();
-        let split = exits.get(&target).and_then(|exit| match (exit.losses, exit.pool) {
+        let split = exits.get(&exit.0).filter(|exit| exit.division == target).and_then(|exit| match (exit.losses, exit.pool) {
             (Some(losses), Some(pool)) if losses >= 0 && pool > 0 && dealt <= i128::from(pool) => Some((i128::from(losses), i128::from(pool))),
             _ => None,
         });
