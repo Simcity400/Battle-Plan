@@ -40,6 +40,12 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       const f5Activated = await act<string[]>('waitActivated()');
       assert.deepEqual(f5Activated, ['GER'], 'F5: updating widget frame mid-press preserves pointerdown and activates row on release');
 
+      assert.equal(await act<boolean>('waitHoverRow("GER")'), true, 'the hovered row is reported');
+      const reset = await act<{ before: string | null; cleared: string | null; afterInstall: string | null }>('testHoverRowOwnerReset()');
+      assert.deepEqual([reset.before, reset.cleared, reset.afterInstall], ['GER', null, null], 'an owner reset clears the hovered row, and the first picture of the new owner reports none while the pointer rests');
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: px + 1, y: py });
+      assert.equal(await act<boolean>('waitHoverRow("GER")'), true, 'the pointer hitting the row again reports it');
+
       const focus = await act<{ moved: (string | null)[]; playing: { hoursAdvanced: number; installs: number; repainted: boolean; calls: number; commits: number }; outside: (string | null)[]; left: (string | null)[] }>('testFocusRow()');
       assert.deepEqual(focus.moved, ['GER', 'FRA'], 'the focused row is reported each time keyboard focus moves to another row');
       assert.ok(focus.playing.hoursAdvanced > 0 && focus.playing.repainted, `playback advanced and installed another picture under the resting focus (${focus.playing.installs} installs)`);
