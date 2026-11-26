@@ -57,7 +57,7 @@ pub struct EmbeddedMapSpec {
     pub map_mode: Option<String>,
     pub perspective: Option<String>,
     #[serde(default)]
-    pub perspective_slot: Option<u16>,
+    pub perspective_slot: Option<u32>,
     pub fog: bool,
     pub day_night: Option<bool>,
     pub allied_plans: Option<bool>,
