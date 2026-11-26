@@ -1,5 +1,6 @@
-import type { Span } from '../../charts/series';
-import { isMember } from '../../dashboard/groups.ts';
+import { isSlotKey } from '../../dashboard/countryKey.ts';
+import type { DatedCountrySelection } from '../../dashboard/datedCountry.ts';
+import type { Holder } from '../../dashboard/regionGate.ts';
 
 export type BranchFamilyLevel = 'family:0' | 'family:1' | 'family:2';
 
@@ -16,26 +17,79 @@ export function parseBranchFamily(subject: string | null | undefined): BranchFam
 
 export interface BranchDrillOpenInput {
   readonly active: boolean;
-  readonly tag: string | undefined;
+  readonly holder: Holder | null;
   readonly extent: readonly [number, number];
-  readonly membership: ReadonlyMap<string, readonly Span[]> | undefined;
   readonly hour: number;
   readonly subject?: string | null;
 }
 
 export interface BranchDrillOpen {
-  readonly tag: string;
+  readonly holder: Holder;
   readonly hour: number;
   readonly initialLevel: BranchFamilyLevel | null;
 }
 
 export function resolveBranchDrillOpen(input: BranchDrillOpenInput): BranchDrillOpen | null {
-  const { active, tag, extent, membership, subject } = input;
-  if (!active || !tag) return null;
-  if (subject?.startsWith('gap:')) return null;
+  const { active, holder, extent, subject } = input;
+  if (!active || !holder) return null;
   if (!Number.isFinite(input.hour)) return null;
   const hour = Math.floor(input.hour);
   if (hour < extent[0] || hour > extent[1]) return null;
-  if (!isMember(membership?.get(tag), hour)) return null;
-  return { tag, hour, initialLevel: parseBranchFamily(subject) };
+  return { holder, hour, initialLevel: parseBranchFamily(subject) };
+}
+
+export interface BranchDrillSelectionInput {
+  readonly sourceId: string | undefined;
+  readonly revision: string | number | undefined;
+  readonly branchId: string | undefined;
+  readonly chosen: string | null;
+  readonly savedSelection: DatedCountrySelection | null;
+  readonly branchFirstHour: number | undefined;
+  readonly resolvedHolder: Holder | null;
+  readonly drillHolder: Holder | null;
+  readonly extent: readonly [number, number];
+}
+
+export function branchDrillSelectionKey(input: BranchDrillSelectionInput): string {
+  const {
+    sourceId,
+    revision,
+    branchId,
+    chosen,
+    savedSelection,
+    branchFirstHour,
+    resolvedHolder,
+    drillHolder,
+    extent,
+  } = input;
+  const holderKey = !chosen
+    ? null
+    : isSlotKey(chosen)
+      ? chosen
+      : savedSelection && branchFirstHour !== undefined
+        ? `${savedSelection.tag}@${branchFirstHour + savedSelection.originOffset}`
+        : resolvedHolder
+          ? `${resolvedHolder.tag}@${resolvedHolder.origin}`
+          : drillHolder?.tag === chosen
+            ? `${drillHolder.tag}@${drillHolder.origin}`
+            : chosen;
+  return JSON.stringify([sourceId, revision, branchId, holderKey, extent]);
+}
+
+export function branchDrillDetailSubject(
+  drillTag: string | null,
+  drillHolder: Holder | null | undefined,
+  open: boolean,
+): string | null {
+  if (!open) return null;
+  if (drillHolder) return `${drillHolder.tag}@${drillHolder.origin}`;
+  return drillTag;
+}
+
+export function branchDrillCanFollow(
+  playbackCovered: boolean,
+  drillHolder: Holder | null | undefined,
+  drillTag: string | null,
+): boolean {
+  return playbackCovered && (drillHolder != null || drillTag !== null);
 }

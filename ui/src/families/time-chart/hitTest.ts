@@ -10,7 +10,7 @@ const NEGATIVE_SWATCH = 'var(--short-ink)';
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'label'; readonly seriesId: string }
-  | { readonly kind: 'gap'; readonly index: number }
+  | { readonly kind: 'gap'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'fold'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'month'; readonly index: number; readonly hour?: number }
   | { readonly kind: 'line'; readonly seriesId: string; readonly hour: number }
@@ -30,8 +30,11 @@ export function parseChartInspect(key: string | null | undefined): ParsedChartIn
     return seriesId ? { kind: 'label', seriesId } : null;
   }
   if (key.startsWith('gap:')) {
-    const index = Number(key.slice(4));
-    return Number.isInteger(index) && index >= 0 ? { kind: 'gap', index } : null;
+    const [rawIndex, rawHour] = key.slice(4).split('@');
+    const index = Number(rawIndex);
+    const hour = rawHour === undefined ? undefined : Number(rawHour);
+    if (!Number.isInteger(index) || index < 0 || (hour !== undefined && !Number.isFinite(hour))) return null;
+    return hour === undefined ? { kind: 'gap', index } : { kind: 'gap', index, hour };
   }
   if (key.startsWith('fold:')) {
     const [rawIndex, rawHour] = key.slice(5).split('@');
@@ -182,14 +185,16 @@ export function hitTestTimeChart(
     return null;
   }
 
-  for (const gap of layout.gaps) {
-    if (px >= gap.x0 && px <= gap.x1) {
-      return `gap:${gap.index}`;
-    }
-  }
-
   const rawHour = Math.round(layout.fromX(px));
   const clampedHour = Math.max(Math.floor(layout.xDomain[0]), Math.min(Math.floor(model.hour), rawHour));
+
+  for (const gap of layout.gaps) {
+    if (px >= gap.x0 && px <= gap.x1) {
+      const gapLast = Math.min(Math.floor(model.hour), Math.floor(gap.gap.lastHour));
+      const gapHour = Math.max(Math.floor(gap.gap.firstHour), Math.min(gapLast, clampedHour));
+      return `gap:${gap.index}@${gapHour}`;
+    }
+  }
 
   if (model.mode === 'lines') {
     let bestId: string | null = null;
@@ -412,7 +417,7 @@ export function deriveTimeChartTooltip(
       ? `From ${formatDateOnly(placed.gap.firstHour)}`
       : `${formatDateOnly(placed.gap.firstHour)} \u2013 ${formatDateOnly(placed.gap.lastHour)}`;
     return {
-      hour: placed.gap.firstHour,
+      hour: parsed.hour ?? placed.gap.firstHour,
       rowKey: inspectKey,
       payload: {
         title: notRecordedLabel(),
