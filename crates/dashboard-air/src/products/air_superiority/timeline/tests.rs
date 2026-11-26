@@ -179,10 +179,13 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
         [(5, view("150", "20")), (1, unknown), (4, view("150", "20")), (2, view("0", "0"))],
         "the day whose holders are not known says so, never a day without the chosen country"
     );
-    let ranked_days = reads(&world[..=5], gap_last);
+    let mut ranked_days = reads(&world[..=5], gap_last);
+    if let Some(Some(read)) = ranked_days.last_mut() {
+        read.complete = false;
+    }
     let ranked = AirTimelineParams { last_hour: gap_last, viewpoint: Some(dashboard_base::products::Country::Slot(3)), ..params(AirMode::Viewpoint, None, true, None) };
     let rank = Days { index: &index, holders: &split, days: &ranked_days, rows: &held, params: &ranked, theatres: None }.rank_at(&REGIONS, &cancelled).unwrap();
-    assert_eq!((rank.regions.len(), rank.missing.as_deref()), (0, Some(wanted.as_str())), "nothing is ranked for a chosen country whose holder is not known");
+    assert_eq!((rank.regions.len(), rank.missing.as_deref()), (0, Some(wanted.as_str())), "nothing is ranked for a chosen country whose holder is not known, before a part read is");
 }
 
 #[test]
