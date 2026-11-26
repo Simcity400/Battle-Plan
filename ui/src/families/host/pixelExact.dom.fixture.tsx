@@ -6,7 +6,7 @@ import type { Layout } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -220,7 +220,7 @@ const chartHour = H1936 + 2000;
 const chartModel: TimeChartModel = {
   kind: 'pixel-time-chart', measureTitle: 'Political power', mode: 'lines', hour: chartHour, extent: [H1936, chartHour], yAxis: { format: 'power' },
   series: [{
-    id: 'ger', key: 'GER', name: 'German Reich', color: CHART_MEASURE_COLOURS.politicalPower, role: 'primary', area: true, negRed: true,
+    id: 'ger', key: 'GER', name: 'German Reich', color: measureColour('politicalPower', '#111111'), role: 'primary', area: true, negRed: true,
     points: Array.from({ length: 21 }, (_, i) => ({ hour: H1936 + i * 100, value: 40 + 30 * Math.sin(i / 3) + i * 2 })), headValue: 80, headHour: chartHour, absentReason: null,
   }],
 };
