@@ -204,6 +204,17 @@ test('a statically dated time chart repaints at the newest hour its supply cover
   assert.equal(page.view(1).fields?.first, 40, 'the supply now covers 40, so its picture shows though the playhead is past it');
 });
 
+test('paused past what its supply covers, a statically dated time chart mounted fresh still waits for a covering picture', async () => {
+  const probe: LaneView = {
+    next: (_scene, hour) => hour + 1,
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: hour + 1, motion: false }),
+  };
+  const { page, mount, step } = rig({ probe });
+  mount(1, [], 'probe', 0, { dated: { h: 0, c: 40 } });
+  await step(60, { playing: false });
+  assert.equal(page.view(1).mode, 'reading');
+});
+
 test('playing past its confirmed hour, a newer picture with the same day deadline as the shown one still replaces it', async () => {
   const probe: LaneView = {
     paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: (Math.floor(hour / 24) + 1) * 24, motion: false }),
@@ -217,7 +228,7 @@ test('playing past its confirmed hour, a newer picture with the same day deadlin
   await step(10, { playing: true, speed: 1440, step: 24 });
   supply(14);
   await step(40);
-  assert.equal(page.view(1).fields?.first, 14, 'windows [10, 23] and [14, 23] end together; the later start is the newer picture');
+  assert.equal(page.view(1).fields?.first, 14, 'the picture of 14 replaces the picture of 10 though both were painted with the same day deadline');
 });
 
 test('after a backward seek while playing, a picture from before the seek never holds back the newest known one', async () => {

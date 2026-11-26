@@ -102,6 +102,8 @@ test('while playing, an entry whose window ended before the actual target still 
   assert.deepEqual([view().id, view().h], [2, 120]);
   offer(entry({ id: 3, h: 100, c: 110, lo: 100, hi: 110 })); p.publish(151);
   assert.deepEqual([view().id, frames().at(-1)!.refused.map(r => [r.id, r.reason])], [2, [[3, 'superseded']]]);
+  offer(entry({ id: 4, h: 130, c: 143, lo: 130, hi: 143 })); p.publish(152);
+  assert.deepEqual([view().id, view().h], [4, 130], 'the same window end with a later start is the newer picture');
 });
 
 test('review 3: a paused step to 20 never installs a delayed entry whose window ended at 14; the visible picture stays, dimmed', () => {

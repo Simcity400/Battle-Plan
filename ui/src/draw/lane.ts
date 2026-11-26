@@ -1748,7 +1748,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           }
           break;
         }
-        if (painted.nextChangeAt !== undefined && painted.nextChangeAt > activeSelected.window[0] && painted.nextChangeAt <= activeSelected.c) {
+        if (painted.nextChangeAt !== undefined && painted.nextChangeAt > activeSelected.window[0] && (painted.nextChangeAt <= activeSelected.c || request.speed === 0)) {
           const clampedHi = Math.min(activeSelected.window[1], painted.nextChangeAt - 1);
           if (clampedHi < activeSelected.window[1]) {
             activeSelected = { ...activeSelected, window: [activeSelected.window[0], clampedHi] };
