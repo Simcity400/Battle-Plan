@@ -21,9 +21,9 @@ impl Renderer<'_, '_, '_> {
                         .registries
                         .as_ref(),
                 )
-                .effect_class_name(0x142A31830)
+                .effect_class_name(effect_identity::CONTEXT)
                 .expect("context effect class is present in verified metadata"),
-                vtable: 0x142A31830,
+                vtable: effect_identity::CONTEXT,
             });
         }
         let name = content_reader_parser::parser::c_string(item.key.as_deref().unwrap_or_default());
@@ -37,16 +37,16 @@ impl Renderer<'_, '_, '_> {
                         .registries
                         .as_ref(),
                 )
-                .effect_class_name(0x142A31900)
+                .effect_class_name(effect_identity::SCRIPTED)
                 .expect("scripted effect class is present in verified metadata"),
-                vtable: 0x142A31900,
+                vtable: effect_identity::SCRIPTED,
             })
     }
 
     pub(super) fn leaf(&mut self, item: &Item, scopes: Scopes) -> Option<Result<String, String>> {
         let class = self.effect_class(item)?;
         Some(match class.vtable {
-            0x142A31830 => self
+            effect_identity::CONTEXT => self
                 .context_header(item, scopes)
                 .map(|selected| selected.map(|(_, header)| header).unwrap_or_default()),
             0x1427EB218 => lists::own(),
@@ -146,7 +146,7 @@ impl Renderer<'_, '_, '_> {
 
             0x1428527b0  | 0x142A31D78  | 0x142A31E48 => lists::own(),
 
-            0x142A31900  | 0x1427f3a70  | 0x1427F5440  | 0x142A321B0 => lists::own(),
+            effect_identity::SCRIPTED  | 0x1427f3a70  | 0x1427F5440  | 0x142A321B0 => lists::own(),
             0x142A32320 => self.random_list(item, scopes),
             0x142A320B8 => self.override_own(item, scopes),
 
