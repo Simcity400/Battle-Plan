@@ -208,8 +208,6 @@ impl SailingConvoy {
                 start - at
             };
             (towards / speed).max(0.)
-        } else if speed < 0. && at >= start {
-            ((end - at) / speed).max(0.)
         } else {
             f32::INFINITY
         }
@@ -225,6 +223,13 @@ impl ConvoyFleet {
         view: &viewer_models::motion_view::MotionView,
         height: &dyn Fn(f32, f32) -> f32,
     ) -> f32 {
+        if defines.speed < 0. {
+            return self
+                .convoys
+                .iter()
+                .map(|convoy| if convoy.active { 0. } else { convoy.sleep.max(0.) })
+                .fold(f32::INFINITY, f32::min);
+        }
         let mut next = f32::INFINITY;
         for convoys in self.convoys.chunk_by(|a, b| a.line == b.line) {
             let index = convoys[0].line;
@@ -468,7 +473,6 @@ mod tests {
         assert_eq!(moving.arrival(&along, 5., 8., 2.), 1.);
         moving.distance = 9.;
         assert_eq!(moving.arrival(&along, 5., 8., 2.), 50.5);
-        assert_eq!(moving.arrival(&along, 5., 8., -2.), 0.5);
         moving.active = false;
         moving.sleep = 2.5;
         assert_eq!(moving.arrival(&along, 5., 8., 2.), 2.5);
