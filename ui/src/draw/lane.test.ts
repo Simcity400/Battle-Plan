@@ -3941,13 +3941,15 @@ test('preparing projections waits for every projection to settle, when another t
   bindFamilyManifest([
     { family: 'bars', kind: 'prepare-throws', loadSpec: () => { throw new Error('the chunk is missing'); } },
     { family: 'bars', kind: 'prepare-held', loadSpec: () => new Promise(resolve => { release = resolve; }) as never },
+    { family: 'bars', kind: 'prepare-blank', loadSpec: () => { throw new Error(); } },
   ]);
   let done = false;
-  const prepared = prepareProjections([['bars', 'prepare-throws', 'default'], ['bars', 'prepare-held', 'default']]).then(() => { done = true; });
+  const prepared = prepareProjections([['bars', 'prepare-throws', 'default'], ['bars', 'prepare-held', 'default'], ['bars', 'prepare-blank', 'default']]).then(() => { done = true; });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(done, false, 'a projection that throws does not settle its held sibling');
   release({ projection: { family: 'bars', kind: 'prepare-held', project: () => null } } as never);
   await prepared;
   assert.equal(done, true);
   assert.equal(familyProjectionFailure('bars', 'prepare-throws'), 'the chunk is missing', 'a load that throws as it starts is recorded as that projection failing, and its waiter is woken');
+  assert.equal(familyProjectionFailure('bars', 'prepare-blank'), 'Error', 'a failure without a message is still recorded as a failure, never as a missing projection');
 });

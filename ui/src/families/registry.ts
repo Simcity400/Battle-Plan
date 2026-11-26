@@ -68,7 +68,7 @@ export function ensureFamilyProjection<TModel = unknown, TOptions = unknown>(
       projections.set(key, projection);
       return projection;
     }).catch((error: unknown) => {
-      failures.set(key, error instanceof Error ? error.message : String(error));
+      failures.set(key, (error instanceof Error ? error.message || error.name : String(error)) || 'the view did not load');
       return undefined;
     }).finally(() => {
       pendingLoads.delete(key);
