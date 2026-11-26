@@ -170,7 +170,9 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   drawKey: readonly unknown[];
   content: string;
   motion: boolean;
-  artKey: string;
+  artShown: string | null;
+  artUrls: readonly string[] | null;
+  artUrlsKey: string;
   structureKey: readonly unknown[];
   structureFields: Record<string, Field>;
   kept: Map<string, Field>;
@@ -423,7 +425,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       demandFields: {},
       layout: null, layoutKey: [], expiry: Infinity,
       windowKey: '', phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 }, phasesField: null,
-      drawKey: [], content: '', motion: false, artKey: '',
+      drawKey: [], content: '', motion: false, artShown: null, artUrls: null, artUrlsKey: '',
       structureKey: [], structureFields: {},
       kept: new Map(),
       frameKey: [], frameRevision: 0,
@@ -616,9 +618,16 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
       if (keep.motion || input.now >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
-        const artKey = `${shown.join('\u0000')}\u0001${projected.artUrls.join('\u0000')}`;
-        if (artKey !== keep.artKey) {
-          keep.artKey = artKey;
+        const shownKey = shown.join('\u0000');
+        let offscreenChanged = false;
+        if (projected.artUrls !== keep.artUrls) {
+          const urlsKey = projected.artUrls.join('\u0000');
+          offscreenChanged = keep.artUrls === null || urlsKey !== keep.artUrlsKey;
+          keep.artUrls = projected.artUrls;
+          keep.artUrlsKey = urlsKey;
+        }
+        if (offscreenChanged || shownKey !== keep.artShown) {
+          keep.artShown = shownKey;
           keep.art.requestVisible(shown, projected.artUrls);
         }
         const drawCanvas = () => {

@@ -53,6 +53,8 @@ interface TableShape {
   readonly hasTree: boolean;
   readonly panes: readonly ResolvedPane[] | null;
   readonly paneGeom: ReturnType<typeof paneGeometry> | null;
+  readonly paneSpans: ReturnType<typeof combinedPaneGeometry> | null;
+  readonly paneStarts: readonly number[];
   readonly rankShown: boolean;
   readonly rankMarkersOn: boolean;
   readonly rankWidth: number;
@@ -85,6 +87,7 @@ interface TableLayout {
   readonly shape: TableShape;
   readonly localScrollTop: number;
   readonly rowWindow: { readonly first: number; readonly count: number };
+  readonly shownWindows: readonly { readonly first: number; readonly count: number }[];
   readonly tops: (index: number) => number;
   readonly heights: (index: number) => number;
   readonly focusedIndex: number;
@@ -252,6 +255,8 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   }
   const { shown: rankShown, markers: rankMarkersOn, width: rankWidth } = tableRank(model, settings);
   const paneGeom = panes ? paneGeometry(width, panes.length) : null;
+  const paneStarts: number[] = [];
+  if (panes) for (let p = 0, at = 0; p < panes.length; at += panes[p]!.rows.length + 1, p++) paneStarts.push(at);
   const layoutWidth = paneGeom ? paneGeom.width : width;
   const baseCols = buildColumnLayouts(model.columns, settings);
   const samples = textSamples(baseCols, flatRows);
@@ -285,7 +290,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     model, options: binding.options, settings, expanded, width, theme,
     flatRows, rowIndex, hasGroups, incremental: inc !== null,
     hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
-    panes, paneGeom, rankShown, rankMarkersOn, rankWidth,
+    panes, paneGeom, paneSpans: panes ? combinedPaneGeometry(panes) : null, paneStarts, rankShown, rankMarkersOn, rankWidth,
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
     windowOffset, totalCount, totalHeight, extents, maxima, maximaCols,
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
@@ -300,13 +305,20 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   const { panes, rowGeom, rowHeight, flatRows } = shape;
   const windowTop = panes ? 0 : extentTop(shape.extents, rowHeight, shape.windowOffset);
   const localScrollTop = Math.max(0, binding.scrollTop - windowTop);
-  const spans = panes ? combinedPaneGeometry(panes) : null;
+  const spans = shape.paneSpans;
   const rowWindow = spans ? { first: 0, count: flatRows.length } : tableRowWindow(flatRows.length, rowGeom, rowHeight, localScrollTop, surface.height);
+  const shownWindows = panes
+    ? panes.flatMap((pane, p) => {
+      const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, localScrollTop, surface.height);
+      return [{ first: shape.paneStarts[p]!, count: 1 }, { first: shape.paneStarts[p]! + 1 + first, count: last - first }];
+    })
+    : [rowWindow];
   const tops = (index: number) => (spans ? spans.tops[index]! : (rowGeom ? rowGeom.tops[index]! : index * rowHeight) + windowTop);
   const heights = (index: number) => (spans ? spans.heights[index]! : rowGeom ? rowGeom.heights[index]! : rowHeight);
   const focused = binding.focusedKey;
-  const focusedIndex = focused ? (panes ? (paneOfRow(panes, focused)?.index ?? -1) : (shape.rowIndex.get(focused) ?? -1)) : -1;
-  return { shape, localScrollTop, rowWindow, tops, heights, focusedIndex, height: surface.height };
+  const inPane = focused && panes ? paneOfRow(panes, focused) : null;
+  const focusedIndex = focused ? (panes ? (inPane ? shape.paneStarts[inPane.pane]! + 1 + inPane.index : -1) : (shape.rowIndex.get(focused) ?? -1)) : -1;
+  return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height };
 }
 
 const NO_MOTION: TableMotion = { markers: new Map(), expiries: [], glide: NO_GLIDE, started: -Infinity };
@@ -561,7 +573,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   mirror({ model, layout, binding }) {
     const shape = layout.shape;
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.rowWindow, binding.focusedKey ?? null, layout.focusedIndex);
+    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.shownWindows, binding.focusedKey ?? null, layout.focusedIndex);
   },
   audit({ model, layout }) {
     const shape = layout.shape;

@@ -1140,21 +1140,24 @@ export function deriveTableMirror(
   flatRows: readonly FlatTableRow[],
   columns: readonly TableColumnSpec[],
   rankShown: boolean,
-  window?: { readonly first: number; readonly count: number },
+  window?: { readonly first: number; readonly count: number } | readonly { readonly first: number; readonly count: number }[],
   focusedKey?: string | null,
   focusedIndex?: number,
 ): MirrorModel {
-  const first = window ? Math.max(0, Math.min(window.first, flatRows.length)) : 0;
-  const end = window ? Math.min(flatRows.length, first + window.count) : flatRows.length;
+  const windows = window === undefined ? [{ first: 0, count: flatRows.length }] : 'first' in window ? [window] : window;
   const indices: number[] = [];
-  for (let i = first; i < end; i++) indices.push(i);
+  for (const shown of windows) {
+    const first = Math.max(0, Math.min(shown.first, flatRows.length));
+    const end = Math.min(flatRows.length, first + Math.max(0, shown.count));
+    for (let i = first; i < end; i++) indices.push(i);
+  }
   if (focusedKey) {
     const focusAt = focusedIndex !== undefined
       ? focusedIndex
       : flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey);
-    if (focusAt >= 0 && focusAt < flatRows.length && (focusAt < first || focusAt >= end)) {
-      if (focusAt < first) indices.unshift(focusAt);
-      else indices.push(focusAt);
+    if (focusAt >= 0 && focusAt < flatRows.length && !indices.includes(focusAt)) {
+      indices.push(focusAt);
+      indices.sort((a, b) => a - b);
     }
   }
   const rows: MirrorRow[] = indices.map(index => {
@@ -1212,7 +1215,7 @@ export function deriveTableMirror(
       }),
     };
   });
-  return { first, total: flatRows.length, rows };
+  return { first: Math.max(0, Math.min(windows[0]?.first ?? 0, flatRows.length)), total: flatRows.length, rows };
 }
 
 function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, extra?: Partial<TooltipRow>): TooltipRow {
