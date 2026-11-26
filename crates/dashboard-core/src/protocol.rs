@@ -557,7 +557,10 @@ pub enum BattleKind {
 pub struct BattleWindow {
     #[serde(default)]
     pub kind: BattleKind,
-    pub combat: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<BattleResult>,
     pub country: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country_slot: Option<u32>,
@@ -569,9 +572,30 @@ pub struct BattleWindow {
     pub text: [u8; 3],
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BattleResult {
+    pub handle: String,
+    pub from: i32,
+}
+
+fn full_number(text: &str) -> Option<u64> {
+    text.parse().ok().filter(|_| text.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 impl BattleWindow {
     pub fn handle(&self) -> Option<u64> {
-        self.combat.parse().ok().filter(|_| self.combat.bytes().all(|byte| byte.is_ascii_digit()))
+        self.combat.as_deref().and_then(full_number)
+    }
+
+    pub fn result(&self) -> Option<(u64, i32)> {
+        self.result.as_ref().and_then(|result| Some((full_number(&result.handle)?, result.from)))
+    }
+
+    fn named(&self) -> bool {
+        let combat = self.combat.is_none() || self.handle().is_some();
+        let result = self.result.is_none() || (self.kind == BattleKind::Naval && self.result().is_some());
+        combat && result && (self.combat.is_some() || self.result.is_some())
     }
 }
 
@@ -582,9 +606,9 @@ impl DashboardMapView {
         }
         .validate()?;
         if let Some(battle) = &self.battle
-            && (battle.handle().is_none() || validate_tag(&battle.country).is_err() || battle.live.len() > 100_000 || battle.live.iter().any(|[first, last]| first > last))
+            && (!battle.named() || validate_tag(&battle.country).is_err() || battle.live.len() > 100_000 || battle.live.iter().any(|[first, last]| first > last))
         {
-            return Err("A battle window names a full combat handle and one country tag");
+            return Err("A battle window names a full combat or naval result handle and one country tag");
         }
         for text in [&self.id, &self.source_id, &self.revision] {
             if text.is_empty() || text.len() > 128 || text.contains('\0') {
@@ -885,10 +909,21 @@ mod tests {
         view.seek_sequence = Some(9_007_199_254_740_992);
         assert!(view.validate().is_err());
         view.seek_sequence = None;
-        let battle = |combat: &str, country: &str| super::BattleWindow { kind: super::BattleKind::Land, combat: combat.into(), country: country.into(), country_slot: Some(7), played_from: None, live: Vec::new(), canvas: [0; 3], text: [255; 3] };
+        let battle = |combat: &str, country: &str| super::BattleWindow { kind: super::BattleKind::Land, combat: Some(combat.into()), result: None, country: country.into(), country_slot: Some(7), played_from: None, live: Vec::new(), canvas: [0; 3], text: [255; 3] };
         for (combat, country, valid) in [("12747462934590", "GER", true), ("12747462934590", "MOD_LONG_TAG_ÄÖ", true), ("12747462934590", "", false), ("1274746293459x", "GER", false), ("", "GER", false)] {
             view.battle = Some(battle(combat, country));
             assert_eq!(view.validate().is_ok(), valid, "battle window {combat:?} as {country:?}");
+        }
+        let result = |handle: &str| Some(super::BattleResult { handle: handle.into(), from: 40 });
+        for (kind, combat, result, valid) in [
+            (super::BattleKind::Naval, None, result("31"), true),
+            (super::BattleKind::Naval, Some("12".to_owned()), result("31"), true),
+            (super::BattleKind::Naval, None, None, false),
+            (super::BattleKind::Naval, None, result("3x"), false),
+            (super::BattleKind::Land, Some("12".to_owned()), result("31"), false),
+        ] {
+            view.battle = Some(super::BattleWindow { kind, combat: combat.clone(), result: result.clone(), ..battle("1", "GER") });
+            assert_eq!(view.validate().is_ok(), valid, "{kind:?} battle window {combat:?} with result {result:?}");
         }
         let kind = |extra: serde_json::Value| {
             let mut window = serde_json::json!({ "combat": "1", "country": "GER", "canvas": [0, 0, 0], "text": [0, 0, 0] });

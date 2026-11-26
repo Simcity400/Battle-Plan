@@ -53,7 +53,7 @@ export interface DashboardMapView {
   clip: MapBounds;
   visible: boolean;
   focusProvince?: number;
-  battle?: { kind?: 'land' | 'naval'; combat: string; country: string; countrySlot?: number; playedFrom?: number; live?: [number, number][]; canvas: [number, number, number]; text: [number, number, number] };
+  battle?: { kind?: 'land' | 'naval'; combat?: string; result?: { handle: string; from: number }; country: string; countrySlot?: number; playedFrom?: number; live?: [number, number][]; canvas: [number, number, number]; text: [number, number, number] };
 }
 
 export interface DashboardMapState {

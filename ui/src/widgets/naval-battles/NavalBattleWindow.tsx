@@ -58,8 +58,7 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const { subject } = opened;
   const { row } = subject;
   const ongoing = row.result === 'ongoing';
-  const resultRead = row.detailId.startsWith('result:') && row.detailHour !== null;
-  const { liveEnd, live, span, noteFrom } = useMemo(() => navalBattleClock(row, opened.hour, track.branch.firstHour, track.branch.lastHour),
+  const { liveEnd, live, result, span, noteFrom } = useMemo(() => navalBattleClock(row, opened.hour, track.branch.firstHour, track.branch.lastHour),
     [row, opened.hour, track.branch.firstHour, track.branch.lastHour]);
   const first = span?.first ?? Math.max(row.hour, track.branch.firstHour);
   const leadSlot = row.countries[0][0];
@@ -69,31 +68,26 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const leadLabel = useKeyLabelsAt(runtime, track, leadKeys, leadHour, false, true)[0];
   const lead = leadSlot !== undefined && leadTag ? { slot: leadSlot, tag: leadTag } : null;
   const combat = row.key.startsWith('combat:') ? row.key.split(':')[1] ?? null : null;
-  const result = row.result === 'attackerWon' ? 'Attacker won' : row.result === 'defenderWon' ? 'Defender won' : null;
-  const shownEnd = ongoing ? opened.hour : resultRead ? row.detailHour : row.endSeen && liveEnd !== null ? liveEnd + 1 : liveEnd;
+  const shownEnd = ongoing ? opened.hour : result ? result.from : row.endSeen && liveEnd !== null ? liveEnd + 1 : liveEnd;
   const day = <span className="bv-when"><time>{shownEnd !== null ? formatDateRange(row.hour, shownEnd) : formatDay(row.hour)}</time></span>;
   const unplayable = <span className="bv-missing" data-tooltip="The recording does not give this battle's last hour." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />End not recorded</span>;
 
   const battle = (hour: number, clock: BattleClock | null): ReactNode => {
-    const until = noteFrom !== null && span !== null && liveEnd !== null ? Math.max(span.first, liveEnd) : null;
-    const headline = resultRead ? `The battle’s result was recorded on ${formatDay(row.detailHour!)}.`
-      : row.endSeen ? `The battle ended on ${formatDay(liveEnd! + 1)}.`
-        : `The battle was last recorded on ${formatDateTime(liveEnd!)}; the recording does not show when it ended.`;
-    const winner = result ? <span>{result}</span>
-      : resultRead ? <span className="bv-missing" data-tooltip="The recorded result names no winning side." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />No winner recorded</span>
-        : <span className="bv-missing" data-tooltip={NO_RESULT} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Result not recorded</span>;
+    const until = noteFrom !== null && liveEnd !== null ? Math.max(first, liveEnd) : null;
+    const headline = row.endSeen ? `The battle ended on ${formatDay(liveEnd! + 1)}.`
+      : `The battle was last recorded on ${formatDateTime(liveEnd!)}; the recording does not show when it ended.`;
     const ended = until !== null && hour >= noteFrom! ? <div className="bv-battle"><div className="bv-battle-note">
-      <strong>{headline}</strong>{winner}
+      <strong>{headline}</strong>
+      <span className="bv-missing" data-tooltip={NO_RESULT} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Result not recorded</span>
     </div></div> : null;
-    if (!combat || !lead || !clock) return ended ?? <div className="bv-battle"><div className="bv-battle-note">
+    if (!lead || !clock) return ended ?? <div className="bv-battle"><div className="bv-battle-note">
       <strong>Battle window not available</strong>
-      <span>{!combat ? 'The recording holds this battle only as a result, so there are no live hours to replay.'
-        : leadSlot === undefined ? 'The recording does not name the battle’s attacker, so the game’s window cannot be opened as that country.'
+      <span>{leadSlot === undefined ? 'The recording does not name the battle’s attacker, so the game’s window cannot be opened as that country.'
           : !leadTag && leadLabel?.known === undefined ? 'Reading the attacker’s country…'
             : !clock ? 'The recording has no hours of this battle to play.'
               : 'The recording does not name the attacker’s country, so the game’s window cannot be opened as it.'}</span>
     </div></div>;
-    return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} lead={lead} live={live} until={until} ended={ended} />;
+    return <BattleGameWindow key={row.key} runtime={runtime} track={track} clock={clock} kind="naval" combat={combat} result={result} lead={lead} live={live} until={until} ended={ended} />;
   };
 
   return <BattleViewer subject={row.key} title={subject.title} day={day} closeLabel="Close battle viewer" anchor={anchor}

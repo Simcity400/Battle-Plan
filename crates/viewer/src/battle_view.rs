@@ -62,16 +62,39 @@ struct Picture {
     rect: [f32; 2],
 }
 
-fn selection(battle: &BattleWindow) -> Option<Selection> {
-    let combat = battle.handle()?;
-    Some(match battle.kind {
-        BattleKind::Land => Selection::Land(combat),
-        BattleKind::Naval => Selection::Naval(combat),
-    })
+const RESULT_UNCHECKED: &str = "The naval result window has not yet been checked against the game's own window.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Battle {
+    first: Selection,
+    result: Option<(u64, Hour)>,
+}
+
+impl Battle {
+    fn of(window: &BattleWindow) -> Option<Self> {
+        let result = window.result();
+        let first = match (window.handle(), result) {
+            (Some(combat), _) => match window.kind {
+                BattleKind::Land => Selection::Land(combat),
+                BattleKind::Naval => Selection::Naval(combat),
+            },
+            (None, Some((id, _))) => Selection::NavalResult(id),
+            (None, None) => return None,
+        };
+        Some(Self { first, result })
+    }
+
+    fn at(self, hour: Hour) -> Selection {
+        match self.result {
+            Some((id, from)) if hour >= from => Selection::NavalResult(id),
+            _ => self.first,
+        }
+    }
 }
 
 struct Held {
     document: Document,
+    battle: Battle,
     selection: Selection,
     window: Window,
     pass: SpritePass,
@@ -182,7 +205,7 @@ impl BattleView {
         let canvas = egui::Color32::from_rgb(battle.canvas[0], battle.canvas[1], battle.canvas[2]);
         let ink = egui::Color32::from_rgb(battle.text[0], battle.text[1], battle.text[2]);
         ui.painter().rect_filled(body, 0.0, canvas);
-        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.selection) != selection(battle)) {
+        if self.held.as_ref().is_some_and(|held| !Arc::ptr_eq(&held.document.content, content) || Some(held.battle) != Battle::of(battle)) {
             self.retire(frame);
         }
         if self.held.is_none() && self.error.is_none() {
@@ -310,7 +333,8 @@ fn note(ui: &mut egui::Ui, body: egui::Rect, ink: egui::Color32, text: &str) {
 impl Held {
     fn open(source: &Source, content: &Arc<Content>, battle: &BattleWindow, gpu: &(wgpu::Device, wgpu::Queue), icons: Arc<IconTextures>) -> Result<Self, String> {
         let (device, queue) = gpu;
-        let selection = selection(battle).ok_or("The battle's combat handle is not a full number.")?;
+        let battle = Battle::of(battle).ok_or("The battle's combat handle is not a full number.")?;
+        let selection = battle.first;
         let mut document = Document::from_content(Arc::clone(content), source.replay())
             .map_err(|error| format!("The battle window could not open the recording: {error}"))?;
         document.bind_source(source);
@@ -333,6 +357,7 @@ impl Held {
         let cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&replay), &tables, false)));
         Ok(Self {
             document,
+            battle,
             selection,
             window,
             pass,
@@ -446,6 +471,9 @@ impl Held {
                 self.answered_sequence = self.at_sequence;
                 self.refused = None;
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
+                if matches!(self.selection, Selection::NavalResult(_)) {
+                    self.notes.push(RESULT_UNCHECKED.to_owned());
+                }
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
@@ -556,6 +584,16 @@ impl Held {
     }
 
     fn ask(&mut self, ctx: &egui::Context, branch: BranchId, target: &DashboardMapView, perspective: &Choice) {
+        if let Some(want) = self.next.map(|next| self.battle.at(next))
+            && want != self.selection
+        {
+            if !self.queue.is_empty() || self.asked.is_some() {
+                return;
+            }
+            self.selection = want;
+            self.closed = None;
+            self.window.open(want);
+        }
         if !self.window.is_open() {
             if self.closed == Some(target.hour) && self.next.is_none_or(|next| next > target.hour) {
                 return;
@@ -581,13 +619,14 @@ impl Held {
         let Some(hour) = self.next.filter(|next| *next <= target.hour) else {
             return;
         };
-        let through = target.hour.min(hour + STEPS_BEFORE_SEEK - 1);
+        let switch = self.battle.result.map(|(_, from)| from).filter(|from| hour < *from);
+        let through = target.hour.min(hour + STEPS_BEFORE_SEEK - 1).min(switch.map_or(Hour::MAX, |from| from - 1));
         let key = Key { generation: self.generation, epoch: self.epoch, branch, hour, through, landing: hour == self.start, read };
         self.next = Some(through + 1);
         self.asked = Some(key.clone());
         let cursor = Arc::clone(&self.cursor);
         let declared = self.tables.clone();
-        let live = target.battle.as_ref().map(|battle| battle.live.clone()).unwrap_or_default();
+        let live = target.battle.as_ref().filter(|_| !matches!(self.selection, Selection::NavalResult(_))).map(|battle| battle.live.clone()).unwrap_or_default();
         let executable = self.document.content.tables;
         let seek = key.epoch;
         let wake = ctx.clone();

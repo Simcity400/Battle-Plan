@@ -989,7 +989,7 @@ impl Assets {
         }));
         if let Err(reason) = &convoy_weapon_bound {
             warnings.push(format!(
-                "Naval weapon totals with live convoys stay dash: the convoy equipment's weapon values are unknown ({reason})."
+                "Weapon totals stay a dash while convoys are in a battle: the recording does not hold the convoy equipment's weapon values ({reason})."
             ));
         }
         let naval_defines = match content_reader_naval_combat_defines::naval_combat_defines::read(layers)
