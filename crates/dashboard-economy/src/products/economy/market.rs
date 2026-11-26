@@ -331,7 +331,10 @@ fn slots(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<Stri
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            Some(Holder::Unresolved) => return Err(format!("Who holds {} is not known: {TAG_UNLINKED}", tag.key())),
+            Some(Holder::Unresolved) => {
+                let reason = holders.unnamed(tag, hour);
+                return Err(if reason == NOT_HELD_AT_HOUR || reason == NOT_IN_HISTORY { format!("Who holds {} is not known: {TAG_UNLINKED}", tag.key()) } else { reason });
+            }
             None => {
                 let reason = holders.unnamed(tag, hour);
                 if reason != NOT_HELD_AT_HOUR && reason != NOT_IN_HISTORY {
@@ -538,7 +541,9 @@ fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, members: Opti
     };
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);
+    let none_can_match = wanted.as_ref().is_some_and(BTreeSet::is_empty);
     let leases = show_agreements.then(|| dashboard_query::coverage::witnessed_rows::<tables::LendLeaseAgreements>(frame)).and_then(|witnessed| match witnessed.missing {
+        Some(_) if none_can_match => Some(witnessed.rows),
         Some(reason) if witnessed.rows.is_empty() => {
             reply.warnings.push(format!("Lend-lease agreements are not recorded at this hour: {reason}"));
             None

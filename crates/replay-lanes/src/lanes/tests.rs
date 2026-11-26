@@ -1067,21 +1067,52 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     let source = summary::Source::Cell(column).id();
     let held = bare.run(0).unwrap();
     let (from, to) = (held.first_hour, held.last_hour());
-    let bin_hours = summary::bucket_hours(1) * 4;
-    let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
-    let summed = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, 1, bin_hours).unwrap();
-    assert!(chart.walked > 0, "the hours the pieces do not summarize are walked");
-    assert!((0..chart.keys.len()).all(|at| chart.totals(at).is_some()), "political power counts its changes and falls, walked or summarized");
-    let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
-    assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
     let shown = |chart: &Chart| chart.values.iter().map(|bin| (bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>();
-    assert_eq!((&chart.keys, shown(&chart), &chart.life), (&summed.keys, shown(&summed), &summed.life), "the walk shows what the summary shows");
-    assert_eq!(chart.totals, summed.totals, "the walk counts only what the summary declares");
+    for (level, bin_hours) in [(1, summary::bucket_hours(1) * 4), (2, summary::bucket_hours(2))] {
+        let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
+        let summed = chart_at(&summarized, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
+        assert!(chart.walked > 0, "the hours the pieces do not summarize are walked");
+        assert!((0..chart.keys.len()).all(|at| chart.totals(at).is_some()), "political power counts its changes and falls, walked or summarized");
+        let walked = chart_at(&bare, 0, TableId::Countries, source, None, from, to, WALKED, bin_hours).unwrap();
+        assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
+        assert_eq!((&chart.keys, shown(&chart), &chart.life), (&summed.keys, shown(&summed), &summed.life), "level {level}: the walk shows what the summary shows");
+        assert_eq!(chart.totals, summed.totals, "level {level}: the walk counts only what the summary declares");
+    }
     let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
-    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last)] {
+    for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last), (2, 1, By::Last), (4, 2, By::Last)] {
         let read = values(top(&bare, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap());
         assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap()), "width {width} n {n} {by:?}");
     }
+}
+
+#[test]
+fn a_coarse_piece_ending_inside_a_bucket_does_not_reach_past_its_last_hour() {
+    use replay_journal::synthetic::{Input, Sample};
+    use replay_data::rows::CountryRow;
+    const RUNS: [(u64, i32, u32); 1] = [(1, 103, 17)];
+    let column = field(TableId::Countries, "political_power_raw");
+    let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"coarse edge", &RUNS, &[TableId::Countries], replay_recording::summaries::registry().unwrap(), |synthetic, _, ordinal| {
+        let hour = 103 + ordinal as i64;
+        let mut rows = vec![CountryRow { id: 1, political_power_raw: Some(5), ..Default::default() }];
+        if hour <= 11_623 {
+            rows.push(CountryRow { id: 9, political_power_raw: Some(if hour <= 11_622 { 20 } else { 10 }), ..Default::default() });
+        }
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let source = summary::Source::Cell(column).id();
+    let held = recording.run(0).unwrap();
+    let bin_hours = summary::bucket_hours(1) * 4;
+    let edge = 11_622;
+    let coarse = chart_at(&recording, 0, TableId::Countries, source, None, held.first_hour, edge, 1, bin_hours).unwrap();
+    let walked = chart_at(&recording, 0, TableId::Countries, source, None, held.first_hour, edge, WALKED, bin_hours).unwrap();
+    assert_eq!((coarse.pieces, coarse.walked), (1, 0), "one coarse piece ends at the asked hour");
+    let last = |chart: &Chart| {
+        let at = chart.keys.iter().position(|&held| held == 9).unwrap();
+        let bin = *chart.values(at).last().unwrap();
+        (bin.hours, bin.first, bin.last, bin.first_bucket, bin.last_bucket)
+    };
+    assert_eq!(last(&coarse), last(&walked), "the piece's last bucket is the last one it read, not the end of its coarse bucket");
 }
 
 #[test]

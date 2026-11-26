@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateMarketReply } from '../../dashboard/market.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
-import { emptyAgreements, lastDelivery } from './agreementsProjection.ts';
+import { emptyAgreements, fuelDelivered, lastDelivery } from './agreementsProjection.ts';
 
 const item = (amountRaw: string) => ({ variant: '6', name: null, amountRaw });
 const terms = (lastDelivery: number, delivered: string[], lastFuelDeliveredRaw = '0') => ({ lastDelivery, delivered: delivered.map(item), lastFuelDeliveredRaw });
@@ -17,6 +17,13 @@ test('a last delivery is a date when recorded, no delivery only when neither equ
   const unread = lastDelivery(terms(0, []), notRecorded('fuel unread'));
   assert.equal(unread.kind, 'notRecorded', 'unread fuel is never no delivery');
   assert.match(unread.kind === 'notRecorded' ? unread.reason : '', /fuel unread/);
+});
+
+test('an agreement shows its fuel when fuel was delivered, scheduled or not', () => {
+  assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '0' }, zeroValue(0n)), false);
+  assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '32768' }, zeroValue(0n)), true);
+  assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '0' }, knownValue(32_768n)), true);
+  assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '0' }, notRecorded('fuel unread')), false);
 });
 
 test('an empty list is no lend-lease only when every agreement was read and placed', () => {

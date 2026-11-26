@@ -1961,15 +1961,16 @@ impl Grid {
         mut totals: Option<&mut [Totals]>,
         mut marks: Option<&mut [u64]>,
     ) -> io::Result<()> {
-        let mut merge = |bin: usize, mut fold: Fold, level: u8, at: u64| {
+        let mut merge = |bin: usize, mut fold: Fold, directory: &summary::Directory, at: u64| {
             if let Some(marks) = marks.as_deref_mut() {
                 marks[bin] = at;
             }
-            let ratio = summary::bucket_hours(level) / summary::bucket_hours(0);
-            fold.first_bucket *= ratio;
-            fold.min_bucket *= ratio;
-            fold.max_bucket *= ratio;
-            fold.last_bucket = (fold.last_bucket + 1) * ratio - 1;
+            let ratio = summary::bucket_hours(directory.level) / summary::bucket_hours(0);
+            let (opens, closes) = (summary::bucket_of(directory.first_hour, 0), summary::bucket_of(directory.first_hour + i64::from(directory.hours) - 1, 0));
+            fold.first_bucket = (fold.first_bucket * ratio).max(opens);
+            fold.min_bucket = (fold.min_bucket * ratio).max(opens);
+            fold.max_bucket = (fold.max_bucket * ratio).max(opens);
+            fold.last_bucket = ((fold.last_bucket + 1) * ratio - 1).min(closes);
             values[bin].add(&fold);
             if let Some(totals) = totals.as_deref_mut() {
                 totals[bin].add(&fold);
@@ -1993,7 +1994,7 @@ impl Grid {
                     summary::Span::None(count) => bucket += run(count, bucket)?,
                     summary::Span::One(fold) => {
                         if let Some(bin) = self.bin(directory, bucket) {
-                            merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket)));
+                            merge(bin, fold, directory, hour_mark(bucket_last_hour(directory, bucket)));
                         }
                         bucket += 1;
                     }
@@ -2010,7 +2011,7 @@ impl Grid {
                             if let Some(bin) = bin {
                                 let mut fold = Fold::constant(value, hours, directory.first_bucket + i64::from(start));
                                 fold.last_bucket = directory.first_bucket + i64::from(bucket - 1);
-                                merge(bin, fold, directory.level, hour_mark(bucket_last_hour(directory, bucket - 1)));
+                                merge(bin, fold, directory, hour_mark(bucket_last_hour(directory, bucket - 1)));
                             }
                         }
                     }
@@ -2129,15 +2130,17 @@ fn top_with(
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
-        .map(|bytes| -> io::Result<(i64, Option<(Piece<'_>, ColumnFrame, usize)>)> {
+        .map(|bytes| -> io::Result<((i64, i64, i64), Option<(Piece<'_>, ColumnFrame, usize)>)> {
             let piece = Piece::read(bytes)?;
-            let end = piece.directory.first_hour + i64::from(piece.directory.hours) - 1;
-            let Some(column) = piece.column_of(source) else { return Ok((end, None)) };
+            let directory = &piece.directory;
+            let span = (directory.first_hour, directory.first_hour + i64::from(directory.hours) - 1, summary::bucket_hours(directory.level));
+            let Some(column) = piece.column_of(source) else { return Ok((span, None)) };
             let frame = piece.column(column)?;
-            Ok((end, Some((piece, frame, column))))
+            Ok((span, Some((piece, frame, column))))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let mut walked_ends: Vec<i64> = decoded.iter().map(|(end, _)| *end).collect();
+    let mut lacking: Vec<(i64, i64, i64)> = decoded.iter().filter(|(_, held)| held.is_none()).map(|(span, _)| *span).collect();
+    lacking.sort_unstable();
     let decoded = decoded.into_iter().filter_map(|(_, decoded)| decoded).collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
@@ -2155,9 +2158,7 @@ fn top_with(
         .collect();
     let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
     let run_first = i64::from(recording.run(run)?.first_hour);
-    walked_ends.extend(ranges.iter().map(|&(_, last)| run_first + i64::from(last)));
-    walked_ends.sort_unstable();
-    walked_ends.dedup();
+    let walked_ends: Vec<i64> = ranges.iter().map(|&(_, last)| run_first + i64::from(last)).collect();
     let walked: HashMap<u128, Row, foldhash::fast::RandomState> = if ranges.is_empty() {
         HashMap::default()
     } else {
@@ -2193,7 +2194,7 @@ fn top_with(
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
-        false => grid.top_folded(&decoded, &walked, (&walked_ends, summary::bucket_hours(level)), n, by),
+        false => grid.top_folded(&decoded, &walked, (&lacking, &walked_ends, summary::bucket_hours(level)), n, by),
     }
 }
 
@@ -2242,14 +2243,17 @@ impl Grid {
         &self,
         pieces: &[(Piece<'_>, ColumnFrame)],
         walked: &HashMap<u128, Row, foldhash::fast::RandomState>,
-        (walked_ends, bucket_hours): (&[i64], i64),
+        (lacking, walked_ends, bucket_hours): (&[(i64, i64, i64)], &[i64], i64),
         n: usize,
         by: By,
     ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
         let walked_mark = |hour: i64| {
-            let bucket_last = (hour.div_euclid(bucket_hours) + 1) * bucket_hours - 1;
-            let range_last = walked_ends[walked_ends.partition_point(|&end| end < hour).min(walked_ends.len() - 1)];
-            hour_mark(bucket_last.min(range_last))
+            let bucket_last = |size: i64| (hour.div_euclid(size) + 1) * size - 1;
+            let last = match lacking.get(lacking.partition_point(|&(_, last, _)| last < hour)).filter(|&&(first, ..)| first <= hour) {
+                Some(&(_, last, size)) => bucket_last(size).min(last),
+                None => bucket_last(bucket_hours).min(walked_ends[walked_ends.partition_point(|&end| end < hour).min(walked_ends.len() - 1)]),
+            };
+            hour_mark(last)
         };
         use std::cmp::Ordering;
         let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).chain(walked.keys().copied()).collect();

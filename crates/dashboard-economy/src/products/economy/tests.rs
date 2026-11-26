@@ -450,9 +450,9 @@ mod market {
         assert_eq!((&unheld["agreements"], &unheld["contracts"], unheld["unattributed"].as_u64(), &unheld["refused"]), (&json!([]), &json!([]), Some(0), &Value::Null), "no country holds ITA, so no row can be ITA's");
         let unknown = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"] }), UNKNOWN).unwrap();
         assert_eq!((&unknown["agreements"], &unknown["offers"]), (&Value::Null, &Value::Null), "who holds GER is not known, so no list is given");
-        assert!(unknown["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "{}", unknown["refused"]);
+        assert!(unknown["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known") && !reason.contains(dashboard_query::identity::TAG_UNLINKED)), "the hour's countries were not read, which is its own reason: {}", unknown["refused"]);
         let unlinked = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"] }), UNLINKED).unwrap();
-        assert!(unlinked["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known")), "GER's country is not resolved: {}", unlinked["refused"]);
+        assert!(unlinked["refused"].as_str().is_some_and(|reason| reason.contains("Who holds GER is not known") && reason.contains(dashboard_query::identity::TAG_UNLINKED)), "GER's country is not resolved: {}", unlinked["refused"]);
         let slot = |hour: i32| asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [99] }), hour).unwrap();
         assert_eq!((&slot(110)["agreements"], &slot(110)["refused"]), (&json!([]), &Value::Null), "an unheld slot holds nothing while every tag is resolved");
         assert!(slot(UNLINKED)["refused"].as_str().is_some_and(|reason| reason.contains("is not known")), "an unresolved tag could be the slot's: {}", slot(UNLINKED)["refused"]);
@@ -475,6 +475,8 @@ mod market {
         assert_eq!(unsent["agreements"], json!([]));
         assert!(unsent["agreementsMissing"].as_str().is_some(), "an unread row could be FRA's, so the empty list says so");
         assert_eq!(whole["agreementsMissing"], Value::Null);
+        let unheld = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["ITA"], "only": "agreements" }), PARTLY).unwrap();
+        assert_eq!((&unheld["agreements"], &unheld["agreementsMissing"]), (&json!([]), &Value::Null), "no country holds ITA, so no unread row can be ITA's");
     }
 
     #[test]
