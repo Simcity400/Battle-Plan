@@ -52,7 +52,7 @@ TS_STYLE_VALUE = re.compile(
 STATEMENT_BREAK = re.compile(r"[;,}]")
 COMPARED = re.compile(r"[=!]==?\s*$")
 COMPARED_AFTER = re.compile(r"\s*[=!]==?")
-CLOSED_ATTRIBUTE = re.compile(r"[\w-]+\s*=\s*(['\"])[^'\"\n]*\1")
+CLOSED_ATTRIBUTE = re.compile(r"(?<=\s)[\w-]+=(?:\"[^\"\n]*\"|'[^'\n]*')")
 
 
 def mask_ts(text):

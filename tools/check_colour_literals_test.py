@@ -29,8 +29,9 @@ class TypeScript(unittest.TestCase):
             "const a = <i style={{ backgroundColor: 'white' }} />;\nctx.fillStyle = theme.text ?? 'white';\n"
             "ctx.strokeStyle = dark ? 'black' : theme.line;\nconst b = { borderColor: 'red', tone: 'red' };\n"
             "const c = <path fill={selected ? 'white' : theme.text} />;\nconst d = <path\n  stroke={\n    selected\n      ? 'white'\n      : theme.text\n  }\n/>;\n"
+            "ctx.fillStyle = 'warning' === tone ? theme.accent : 'red';\n"
         )
-        self.assertEqual(cc.literals("ui/src/widgets/x/X.tsx", text), [1, 2, 3, 4, 5, 9])
+        self.assertEqual(cc.literals("ui/src/widgets/x/X.tsx", text), [1, 2, 3, 4, 5, 9, 13])
 
     def test_words_that_are_not_colours_and_names_of_tones_pass(self):
         text = (
@@ -39,6 +40,7 @@ class TypeScript(unittest.TestCase):
             "ctx.fillStyle = tone === 'red' ? theme.red : theme.text;\nctx.fillStyle = 'grey' !== tone ? theme.muted : theme.text;\n"
             "ctx.fillStyle = tone ===\n        'red' ? theme.red : theme.text;\n"
             "const e = <path\n  fill=\"currentColor\"\n  aria-label=\"Red\"\n  title='red'\n/>;\n"
+            "const f = <path fill=\"url('#gradient')\" aria-label=\"Red\" />;\n"
         )
         self.assertEqual(cc.literals("ui/src/families/x.ts", text), [])
 
