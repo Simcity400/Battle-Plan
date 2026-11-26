@@ -469,6 +469,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       staticRowLooks: model.rowTimeBoundaries === false,
       rowHeightMode: shape.rowHeightMode,
       rhythm: model.rhythm,
+      hideHeader: model.hideHeader === true,
     };
     let drew = false;
     if (shape.panes && shape.paneGeom) {
