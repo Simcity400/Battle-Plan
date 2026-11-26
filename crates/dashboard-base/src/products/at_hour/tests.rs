@@ -728,9 +728,14 @@ fn an_older_recordings_law_can_rule_out_a_variable_only_with_a_recorded_store() 
     )]);
     let script = catalogue.scripted_content().unwrap();
     let law = content_reader_politics::occupation_laws::parse(b"candidate={visible={has_variable=mod_law}}", &Default::default()).unwrap().remove(0);
-    let mut frame = older_format_frame(&[TableId::Countries, TableId::CountryLinks, TableId::ScriptVariableNames, TableId::ScriptVariableValues]);
+    let split_tables = [TableId::ScriptVariableNames, TableId::ScriptVariableValues];
+    let mut frame = older_format_frame(&split_tables);
+    let country = source(1, frame.hour, None);
+    for table in [TableId::Countries, TableId::CountryLinks] {
+        frame.tables[table.index()] = country.tables[table.index()].clone();
+    }
     let absent = TableView::NotRecorded { mode: CaptureMode::Full };
-    for table in [TableId::ScriptVariableNames, TableId::ScriptVariableValues] {
+    for table in split_tables {
         assert_eq!(*frame.tables[table.index()], absent);
     }
     for table in [TableId::Provinces, TableId::States] {
