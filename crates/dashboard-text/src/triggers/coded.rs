@@ -3,7 +3,7 @@ use crate::triggers::Failure;
 use std::collections::BTreeSet;
 
 use content_reader_parser::parser::{Item, Operator};
-use replay_data::rows::{TableSchema, tables};
+use replay_data::rows::{CountryStabilityInputRow, TableSchema, mask, tables};
 use replay_frame::frame::Leader;
 
 use super::{
@@ -24,8 +24,8 @@ fn field_name(item: &Item) -> Option<String> {
 fn country_core(name: &str) -> Option<&'static [replay_data::rows::TableId]> {
     use replay_data::rows::TableId::{Countries, CountryLinks};
     Some(match name {
-        "has_stability" | "has_war_support" | "num_of_controlled_states" | "exists"
-        | "has_focus_tree" => &[Countries],
+        "has_stability" | "has_war_support" | "has_defensive_war" | "num_of_controlled_states"
+        | "exists" | "has_focus_tree" => &[Countries],
         "is_neighbor_of" | "has_template" | "has_civil_war" | "has_dynamic_modifier"
         | "is_ally_with" => &[Countries, CountryLinks],
         "has_tech" | "has_war" | "is_ai" | "has_idea_with_trait" | "is_in_tech_sharing_group"
@@ -181,6 +181,12 @@ impl Evaluator<'_, '_> {
                 )))
             }
             "has_war" => is(self.country_has_war(slot)?),
+            "has_defensive_war" => {
+                const WAR: u64 = mask::<CountryStabilityInputRow>(&["defensive_war"]);
+                let row = self.country_stability_inputs(slot, WAR)?;
+                world.table_fresh(tables::CountryStabilityInputs::ID)?;
+                is(row.defensive_war != 0)
+            }
             "is_ai" => is(self.country_is_ai(slot)?),
             "has_idea_with_trait" => Some(Eval::from_bool(
                 self.idea_has_trait(slot, scalar.ok_or("has_idea_with_trait needs a trait")?)?,

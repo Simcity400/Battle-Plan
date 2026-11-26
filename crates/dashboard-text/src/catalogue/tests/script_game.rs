@@ -29,7 +29,7 @@ pub fn executable() -> Executable {
         ][..]),
         (0, Assign, &["has_event_target", "has_variable", "round_temp_variable"]),
         (country, Assign, &[
-            "has_elections", "has_focus_tree", "has_idea_with_trait", "has_template",
+            "has_defensive_war", "has_elections", "has_focus_tree", "has_idea_with_trait", "has_template",
             "has_volunteers", "is_faction_leader", "is_in_tech_sharing_group", "is_neighbor_of",
             "is_subject",
         ]),
