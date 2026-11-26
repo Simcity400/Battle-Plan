@@ -14,6 +14,7 @@ import { WidgetBody } from '../dashboard/widgets';
 import { WidgetFrameContext, widgetWording, type WidgetFrameValue } from '../dashboard/widgetFrame';
 import { HeldFailures, HeldFailuresContext } from '../dashboard/heldFailures';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from '../dashboard/follow/store';
+import { resolveWidgetActiveView } from '../widgets/manifest';
 import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { LiveMotion } from '../charts/liveMotion';
 import { useAppearance } from '../shell/appearance/useAppearance';
@@ -623,9 +624,9 @@ export default function ExportPresentationApp() {
                 expected: resolved.trackIds.some(id => boundTrackIds.has(id)),
               };
             }
-            const viewOpt = typeof w.options?.view === 'string' ? w.options.view : undefined;
+            const activeView = resolveWidgetActiveView(w.kind, w.options);
             const renderer =
-              (viewOpt !== undefined ? await loadWidgetRenderer(w.kind, viewOpt) : undefined) ??
+              (await loadWidgetRenderer(w.kind, activeView)) ??
               (await loadWidgetRenderer(w.kind));
             return {
               id: w.id,
