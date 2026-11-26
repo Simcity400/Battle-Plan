@@ -111,10 +111,11 @@ const fixture = {
   },
   async play(frames: number, hours: number) {
     clock.playing = true; clock.anchor();
-    await frame(); await frame();
-    const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
-    await frame();
     let laid = false;
+    await frame(); laid ||= fixture.hostShown();
+    await frame(); laid ||= fixture.hostShown();
+    const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
+    await frame(); laid ||= fixture.hostShown();
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
       await frame();
