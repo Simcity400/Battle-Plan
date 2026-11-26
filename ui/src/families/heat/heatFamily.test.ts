@@ -454,6 +454,9 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.equal(regionLayout.addTop, 2 * ROW_SECTION_HEIGHT + 2 * stride);
   const middle = (top: number) => regionLayout.plotTop + top + regionLayout.rowHeight / 2;
   assert.deepEqual(hitHeatLanes(10, middle(regionLayout.addTop!), 0, regionLayout, regionRows), { kind: 'add' });
+  const cropped = layoutHeatLanes({ width: 720, height: 120, scrollTop: 0, firstHour: model.firstHour, lastHour: model.lastHour, displayedHour: model.hour, rows: regionRows, regions });
+  assert.ok(cropped.addTop! < cropped.plotHeight && cropped.addTop! + cropped.rowHeight > cropped.plotHeight);
+  assert.equal(hitHeatLanes(10, cropped.plotTop + cropped.addTop! + 1, 0, cropped, regionRows), null);
   assert.equal(hitHeatLanes(10, regionLayout.plotTop + 5, 0, regionLayout, regionRows), null, 'a section label is not a row');
   assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, 1), { kind: 'remove', rowIndex: 1 });
   assert.deepEqual(hitHeatLanes(regionLayout.nameWidth - 4, middle(regionLayout.rowTops[1]!), 0, regionLayout, regionRows, null), { kind: 'row', rowIndex: 1 }, 'no remove where none is drawn');

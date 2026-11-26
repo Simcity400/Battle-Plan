@@ -125,6 +125,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
     return {
       ...(regions ? { regions } : {}),
       meta: {
+        rowViewport: { top: layout.plotTop, height: layout.plotHeight },
         empty: model.empty ?? null,
         emptyDetail: model.emptyDetail ?? null,
         emptyKind: model.emptyKind ?? 'empty',
@@ -137,7 +138,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
   },
   mirror: frame => {
     const window = shown(frame);
-    return deriveLanesMirror(frame.model, window.firstRow, window.endRow);
+    return deriveLanesMirror(frame.model, window.firstRow, window.endRow + Number(window.addVisible));
   },
   audit: frame => {
     const window = shown(frame);
