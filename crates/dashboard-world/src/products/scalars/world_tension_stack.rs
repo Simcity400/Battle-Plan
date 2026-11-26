@@ -750,6 +750,7 @@ fn collect_opt_change_hours(runs: &[(i32, i32, Option<i64>)], first: i32, last: 
         if r_first > last {
             break;
         }
+        dashboard_base::products::at_hour::count_rows(|| 1);
         out.push(r_first.max(first));
         if r_last < last {
             out.push(r_last + 1);
@@ -1521,6 +1522,7 @@ impl Product for WorldTensionStack {
                 bump(&mut next_change_hour, Some(next_ev.first_read));
             }
             for event in &held.events[..ev_end] {
+                dashboard_base::products::at_hour::count_rows(|| 1);
                 if let Some(&(later_hour, _)) = event.added.iter().find(|&&(h, _)| h > last) {
                     bump(&mut next_change_hour, Some(later_hour));
                 }
