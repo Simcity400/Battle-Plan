@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DISTINCT_MARK_DISTANCE, MARK_CONTRAST, paletteCache, readableColour, tailColour } from '../../charts/palette.ts';
+import { colourDistance } from '../../charts/paletteDistance.ts';
+import { contrast, parseColor } from '../../shell/appearance/color.ts';
+import { deriveColors } from '../../shell/appearance/themes.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, createBoundedSlice, displayedHour, FutureDataError } from '../../families/boundedView.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
@@ -101,6 +105,74 @@ test('territory lines registers in TIME_CHART_VIEWS and selects series tiles for
   assert.ok(factionMain && factionMain.read.shape === 'pixel-binned');
   assert.deepEqual(factionMain.read.family, { kind: 'faction-totals', measure: 'controlledStates' });
 });
+
+const recorded = ['#bca9df', '#bda8df', '#df95ae', '#df96ad', '#ad9ed1', '#c4b4e6', '#499d7e', '#8991a1', '#777777', '#999999'];
+const slots = [2, 12, 15, 18, 23, 25, 31, 34, 40, 41];
+const lineIdentities = fakeIdentity(Object.fromEntries(slots.map((slot, i) => [
+  `country:${countryKey(slot)}`, { name: `Country ${slot}`, color: recorded[i]! },
+])));
+
+function territoryColors(order: number[], hour: number, surface: string, identity = lineIdentities) {
+  const view = createBoundedReadView({
+    hour,
+    identity,
+    panels: new Map([['main', { rows: order.map(country => ({ country, readings: [] })) }]]),
+  });
+  const opts = territoryLinesDeclaration.projectionOptions(makeCtx({ top: order.length }), { extent: [100, 600], surface });
+  return territoryLinesProjection.project(view, opts).series;
+}
+
+test('a collision starts at the recorded colour change for both the stroke and its dated swatch', () => {
+  const surface = '#36303f';
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      const current = lineIdentities.resolve(kind, key, atHour);
+      return key === countryKey(2) && atHour < 200
+        ? { ...current, colour: { status: 'ready', value: '#45a879' }, validInterval: [100, 199] }
+        : current;
+    },
+  };
+  const before = territoryColors([12, 2], 199, surface, identity)[0]!;
+  const after = territoryColors([12, 2], 200, surface, identity)[0]!;
+  assert.equal(before.color, readableColour(recorded[1]!, surface));
+  assert.notEqual(after.color, before.color);
+  assert.deepEqual(after.identities?.map(run => [run.firstHour, run.lastHour, run.color]), [
+    [100, 199, before.color], [200, 200, after.color],
+  ]);
+});
+
+test('a missing map colour keeps its palette fallback when the rankings swap', () => {
+  const surface = '#493c51';
+  const first = territoryColors([2, 12, 53], 200, surface);
+  const next = territoryColors([53, 12, 2], 201, surface);
+  assert.deepEqual(new Map(first.map(line => [line.id, line.color])), new Map(next.map(line => [line.id, line.color])));
+});
+
+for (const canvas of ['#2c2635', '#ebe3d9']) {
+  const { surface } = deriveColors({ canvas, accent: '#9854a3' });
+  test(`Territory distinguishes eight recorded colours on a custom surface ${surface}`, t => {
+    const lines = territoryColors(slots, 200, surface);
+    assert.equal(lines.length, 10);
+    assert.ok(lines.slice(8).every(line => line.color === tailColour(surface)));
+    const marks = lines.slice(0, 8).map(line => parseColor(line.color)!);
+    const minimum = Math.min(...marks.flatMap((mark, i) => marks.slice(0, i).map(other => colourDistance(mark, other))));
+    t.diagnostic(`minimum pairwise colour distance ${minimum}`);
+    assert.ok(minimum >= DISTINCT_MARK_DISTANCE, `closest coloured lines are ${minimum} units apart`);
+    assert.ok(marks.every(mark => contrast(mark, parseColor(surface)!) >= MARK_CONTRAST));
+    assert.equal(lines[0]!.color, readableColour(recorded[0]!, surface));
+    const reversed = [...slots.slice(0, 8).reverse(), ...slots.slice(8)];
+    const before = paletteCache.lineSolves + paletteCache.readableSolves;
+    for (let hour = 201; hour <= 300; hour++) {
+      const swapped = territoryColors(hour % 2 ? reversed : slots, hour, surface);
+      for (const line of lines) assert.equal(swapped.find(other => other.id === line.id)!.color, line.color);
+    }
+    assert.equal(paletteCache.lineSolves + paletteCache.readableSolves - before, 0, 'zero colour solves over 100 played hours');
+  });
+
+  test(`a single Territory line keeps its readable recorded grey on ${surface}`, () => {
+    assert.equal(territoryColors([slots[8]!], 200, surface)[0]!.color, readableColour(recorded[8]!, surface));
+  });
+}
 
 test('territory lines projects slot-keyed countries, whole-number axis, area note, missing readings, and dated hover', () => {
   const ger = countryKey(7);

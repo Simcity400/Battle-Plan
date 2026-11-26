@@ -191,7 +191,6 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
           auditRows: [],
         };
       }
-      const rowOf = new Map(tags.map((tag, row) => [tag, row]));
       const present = tags.filter(tag => memberAt(options.membership, tag, hour));
       const presentSet = new Set(present);
       const ranking = rankedOrder(readView, present);
@@ -201,7 +200,6 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         from: options.extent[0],
         surface: options.surface,
         withFlag: true,
-        recordedOrdinal: tag => rowOf.get(tag) ?? 0,
         tailColor: tailColour(options.surface),
       }), ranking.unnamed, hour);
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);

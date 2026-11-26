@@ -70,7 +70,6 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
-      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: measureColour('politicalPower', options.surface),
     }), ranking.unnamed, hour);
     const measureIcon: ChartArtSlot | undefined = single

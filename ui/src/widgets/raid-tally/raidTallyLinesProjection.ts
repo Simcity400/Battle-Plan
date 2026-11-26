@@ -314,13 +314,11 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
     const headMissing = missingAtHour(reply, floorHour);
     const orderedKeys = reply.series.map(item => countryKey(item.slot));
     const slotByKey = new Map(reply.series.map(item => [countryKey(item.slot), item.slot]));
-    const rowOf = new Map(orderedKeys.map((key, idx) => [key, idx]));
     const rawLooks = countrySeriesLooks(orderedKeys, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: true,
-      recordedOrdinal: key => rowOf.get(key) ?? 0,
       tailColor: tailColour(options.surface),
     });
     const looks = new Map(
