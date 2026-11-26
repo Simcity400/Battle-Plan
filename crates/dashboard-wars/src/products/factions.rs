@@ -277,7 +277,10 @@ impl EverIndex {
             return Ok(Arc::clone(index));
         }
         let query = dashboard_base::queries::query(source, branch)?;
-        let slots = dashboard_world::products::groups::member_slots(source, &query)?;
+        let slots = match group {
+            Some(group) if !matches!(group.kind, GroupKind::Faction) => HashMap::new(),
+            _ => dashboard_world::products::groups::member_slots(source, &query)?,
+        };
         let index = Arc::new(match group {
             Some(group) => Self::of_group(reply, group, &query.holders, &slots)?,
             None => Self::build(reply, &slots),

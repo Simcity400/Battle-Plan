@@ -373,25 +373,35 @@ pub fn tile(
 
         if let Some(group) = &family.group {
             let reply = groups::shared(source, query, context, cancelled)?;
-            match group_members::runs(&reply, group)? {
-                Ok(found) => {
-                    let (drawn, unread) = match group.membership {
-                        GroupMembership::Hour => (
-                            hour_spans_from_runs(&found.members, read_from, clip),
-                            merged(found.unknown.iter().map(|s| (s.first_hour, s.last_hour)).collect(), read_from, clip)
+            let unread_reason = "The group's members were not read whole here";
+            let held = match group.membership {
+                GroupMembership::Ever => {
+                    let index = EverIndex::shared(source, query.timeline.id, &reply, Some(group))?;
+                    match &index.refused {
+                        Some(reason) => Err(reason.clone()),
+                        None => Ok((
+                            ever_spans(index.joins_of(GROUP_LINE), read_from, clip),
+                            index
+                                .unknown_from
+                                .filter(|&from| from <= clip)
+                                .map(|from| MissingSpan { first_hour: from.max(read_from), last_hour: clip, reason: unread_reason.to_owned() })
                                 .into_iter()
-                                .map(|(first_hour, last_hour)| MissingSpan {
-                                    first_hour,
-                                    last_hour,
-                                    reason: "The group's members were not read whole here".to_owned(),
-                                })
-                                .collect(),
-                        ),
-                        GroupMembership::Ever => (
-                            ever_spans(EverIndex::shared(source, query.timeline.id, &reply, Some(group))?.joins_of(GROUP_LINE), read_from, clip),
-                            ever_unread(&found.unknown, read_from, clip, "The group's members were not read whole here"),
-                        ),
-                    };
+                                .collect::<Vec<_>>(),
+                        )),
+                    }
+                }
+                GroupMembership::Hour => group_members::runs(&reply, group)?.map(|found| {
+                    (
+                        hour_spans_from_runs(&found.members, read_from, clip),
+                        merged(found.unknown.iter().map(|s| (s.first_hour, s.last_hour)).collect(), read_from, clip)
+                            .into_iter()
+                            .map(|(first_hour, last_hour)| MissingSpan { first_hour, last_hour, reason: unread_reason.to_owned() })
+                            .collect(),
+                    )
+                }),
+            };
+            match held {
+                Ok((drawn, unread)) => {
                     check_cancel(cancelled)?;
                     built.push(sum_member_tiles(
                         &line,
@@ -542,7 +552,7 @@ mod tests {
     use replay_frame::frame::{DecodedFrame, Metrics, TableView};
     use std::sync::Arc;
 
-    fn flags(reply: &SeriesTileReply, line: usize) -> Vec<u8> {
+    fn bytes(reply: &SeriesTileReply) -> Vec<u8> {
         const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let val = |byte: u8| ALPHABET.iter().position(|&c| c == byte).map_or(0, |at| at as u32);
         let mut out = Vec::new();
@@ -550,7 +560,12 @@ mod tests {
             let word = chunk.iter().fold(0u32, |word, &byte| (word << 6) | val(byte));
             out.extend([(word >> 16) as u8, (word >> 8) as u8, word as u8]);
         }
-        out[line * BINS..(line + 1) * BINS].to_vec()
+        out.truncate(out.len() - reply.bins.bytes().rev().take_while(|&byte| byte == b'=').count());
+        out
+    }
+
+    fn flags(reply: &SeriesTileReply, line: usize) -> Vec<u8> {
+        bytes(reply)[line * BINS..(line + 1) * BINS].to_vec()
     }
 
     fn build_source() -> Source {
@@ -739,6 +754,17 @@ mod tests {
         let (load, cancelled) = (LoadContext { content: None }, AtomicBool::new(false));
         let at = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 110, "kind": "country-factories", "measure": "free7", "membership": "ever" }), &load, &cancelled);
         assert_eq!(at["rows"][0]["total"], 60, "slot 9 was a member at 100 to 104 though it held no tag then: {at}");
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        for family in [
+            serde_json::json!({ "kind": SERIES, "sourceKind": "country-factories", "measure": "free7", "membership": "ever" }),
+            serde_json::json!({ "kind": SERIES, "sourceKind": "country-factories", "measure": "free7", "group": { "type": "faction", "id": "10", "membership": "ever" } }),
+        ] {
+            let line = if family.get("group").is_some() { GROUP_LINE } else { "10" };
+            let reply = tile(&src, &query, &serde_json::json!({ "branchId": "1", "family": family, "binHours": 1, "index": 0, "countries": [line] }), &load, &cancelled).unwrap();
+            let drawn = tile::decode_runs(&bytes(&reply), 1, reply.first_hour, 10f64.powi(i32::from(reply.decimals)), reply.raw_values).unwrap().remove(0);
+            let at_110 = drawn.iter().find(|run| run.0 <= 110 && 110 <= run.1).map(|run| run.2);
+            assert_eq!(at_110, Some(60.0), "the tile draws the untagged member too, for {family}: {drawn:?}");
+        }
     }
 
     #[test]
