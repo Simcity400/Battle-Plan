@@ -65,13 +65,20 @@ const clock = new PlaybackController();
 clock.setBounds({ firstHour: BOUNDS[0], lastHour: BOUNDS[1] });
 const runtime = { client, clock, tracks: [{ id: 't1', source, branch: { id: '1', firstHour: BOUNDS[0], lastHour: BOUNDS[1] }, axisOffset: 0 }] } as unknown as WidgetRuntime;
 
+let held: Promise<void> | null = null;
+let release = () => {};
+
 function createLane(): LaneWorker {
   const worker: LaneWorker = { onmessage: null, postMessage(message: ToLane) { queueMicrotask(() => dispatch(message)); } };
   const dispatch = laneDispatch(
     (message: FromLane) => { queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>)); },
     {
       views: (kind, wake) => drawnViews(kind, wake)!,
-      crop: sources => Promise.all(sources.map(item => createImageBitmap(item as OffscreenCanvas))),
+      crop: async sources => {
+        const bitmaps = await Promise.all(sources.map(item => createImageBitmap(item as OffscreenCanvas)));
+        while (held) await held;
+        return bitmaps;
+      },
       later: run => requestAnimationFrame(() => run()),
     },
   );
@@ -463,6 +470,14 @@ const api = {
     setLook({ ...look, width: look.width + widthChange, layout: look.layout.map(item => (item.i === id ? { ...item, w, h } : item)) });
   },
   zoom(zoom: Readonly<Record<string, number>>) { setLook({ ...look, zoom }); },
+  hold() {
+    const undim = document.createElement('style');
+    undim.textContent = '[data-held] { opacity: 1 !important; transition: none !important; }';
+    document.head.append(undim);
+    held = new Promise(resolve => { release = () => { held = null; undim.remove(); resolve(); }; });
+  },
+  release() { release(); },
+  frames,
 };
 
 (window as unknown as { pixelExact: typeof api }).pixelExact = api;

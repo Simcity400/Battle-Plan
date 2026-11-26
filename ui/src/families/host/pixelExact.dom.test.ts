@@ -17,9 +17,11 @@ async function screenshot(cdp: Cdp): Promise<string> {
   return (await cdp.send('Page.captureScreenshot', { format: 'png' }) as { data: string }).data;
 }
 
-async function exactOnScreen(page: NativePage, cdp: Cdp, label: string): Promise<Exactness[]> {
-  const settled = await page.evaluate<{ settled: boolean; pending: string[] }>('window.pixelExact.settle()');
-  assert.ok(settled.settled, `${label}: every widget installed its picture (${settled.pending.join(', ')} pending)`);
+async function exactOnScreen(page: NativePage, cdp: Cdp, label: string, settle = true): Promise<Exactness[]> {
+  if (settle) {
+    const settled = await page.evaluate<{ settled: boolean; pending: string[] }>('window.pixelExact.settle()');
+    assert.ok(settled.settled, `${label}: every widget installed its picture (${settled.pending.join(', ')} pending)`);
+  }
   const shown = await screenshot(cdp);
   await page.evaluate('window.pixelExact.hideCanvases(true)');
   const under = await screenshot(cdp);
@@ -27,6 +29,7 @@ async function exactOnScreen(page: NativePage, cdp: Cdp, label: string): Promise
   const rows = await page.evaluate<Exactness[]>(`window.pixelExact.exactness(${JSON.stringify(shown)}, ${JSON.stringify(under)})`);
   assert.deepEqual(rows.map(row => row.id).sort(), FAMILIES, `${label}: one canvas per family`);
   for (const row of rows) {
+    assert.ok(row.compared > 0, `${label}, ${row.id}: some of the canvas is on screen to compare`);
     assert.deepEqual(row.backing, row.box, `${label}, ${row.id}: the backing ${row.backing.join('×')} is the canvas's device-pixel box ${row.box.join('×')}`);
     assert.deepEqual(row.backing, row.css.map(css => Math.round(css * row.dpr)), `${label}, ${row.id}: the backing is the CSS size × ${row.dpr}`);
     assert.ok(row.css.every((css, axis) => Math.abs(css * row.dpr - row.backing[axis]!) < 1e-3), `${label}, ${row.id}: the CSS size is whole device pixels`);
@@ -56,7 +59,12 @@ for (const ratio of RATIOS) {
         assert.ok(tableTop > 0, 'the table scrolled');
         await exactOnScreen(page, cdp, `table scrolled to ${tableTop}`);
 
+        await page.evaluate('window.pixelExact.hold()');
         await page.evaluate('window.pixelExact.resize("breakdown", 5, 9, -7.4)');
+        await page.evaluate('window.pixelExact.frames(4)');
+        const resizing = await exactOnScreen(page, cdp, 'resizing, before the new pictures arrive', false);
+        assert.deepEqual(resizing.find(row => row.id === 'breakdown')!.backing, placed.find(row => row.id === 'breakdown')!.backing, 'while resizing, the old picture is still the one shown');
+        await page.evaluate('window.pixelExact.release()');
         const resized = await exactOnScreen(page, cdp, 'resized');
         const before = placed.find(row => row.id === 'breakdown')!;
         assert.notDeepEqual(resized.find(row => row.id === 'breakdown')!.backing, before.backing, 'the resized widget has a new backing');
