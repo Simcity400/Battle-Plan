@@ -841,6 +841,13 @@ pub fn compare_boundary_counters(
             )
         };
         if !advanced.is_empty() {
+            let warning = format!(
+                "{} counter(s) are higher in the save than in the compared frame ({}), so its differences are not certified; take the save at a sampled hour: pause, recorder refresh, step one hour, save, then run until the recorder has sampled that hour before detaching",
+                advanced.len(),
+                advanced.join(", ")
+            );
+            report.incomplete("boundary", warning.clone());
+            report.save_after_frame = Some(warning);
             verdict.push_str(&format!(
                 "; {} counter(s) are higher in the save than in the compared frame ({}), which a monotonic counter cannot do without a reload, a 32-bit wrap or a frame read before the save (one no refresh settled), so neither direction is treated as a difference",
                 advanced.len(),

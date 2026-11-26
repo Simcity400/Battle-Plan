@@ -95,8 +95,7 @@ fn report_daily_name(frame: &DecodedFrame, saved: &Save) -> Report {
     let countries = country_context(frame).unwrap();
     let mut report = Report::default();
     report
-        .observed_refresh
-        .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
+        .read_now.insert(TableId::DivisionTemplates);
     compare_division_templates(frame, saved, &countries, &mut report).unwrap();
     report
 }
@@ -242,8 +241,7 @@ fn daily_and_hourly_names_compare_native_nul_prefix_without_changing_demand() {
         let context = country_context(&frame).unwrap();
         let mut report = report_name(&frame, &saved);
         report
-            .observed_refresh
-            .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
+            .read_now.insert(TableId::DivisionTemplates);
         compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert!(
@@ -265,8 +263,7 @@ fn daily_and_hourly_names_compare_native_nul_prefix_without_changing_demand() {
         saved.division_templates.values_mut().next().unwrap().name = b"Different".to_vec();
         let mut report = report_name(&frame, &saved);
         report
-            .observed_refresh
-            .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
+            .read_now.insert(TableId::DivisionTemplates);
         compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
         assert!(
             report
@@ -303,8 +300,7 @@ fn daily_and_hourly_leading_nul_keys_compare_emitted_empty_presence() {
     let context = country_context(&frame).unwrap();
     let mut report = report_name(&frame, &saved);
     report
-        .observed_refresh
-        .push(replay_data::cadence::cadence(TableId::DivisionTemplates));
+        .read_now.insert(TableId::DivisionTemplates);
     compare_division_templates(&frame, &saved, &context, &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert!(report.failed_comparisons.is_empty());

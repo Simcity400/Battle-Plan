@@ -60,6 +60,44 @@ fn membership_exclusions_are_counted_separately_from_failed_groups() {
 }
 
 #[test]
+fn a_design_change_reading_variants_off_their_slot_is_not_a_full_refresh() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+    let daily = |table: TableId| matches!(replay_data::cadence::cadence(table), replay_data::cadence::Cadence::Daily(_));
+    let hour = 24 * 1000;
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour,
+        tables: std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index]))).map(Into::into),
+        metrics: Metrics::default(),
+    };
+    let variants = [TableId::VariantDefinitions, TableId::VariantModules, TableId::VariantStats, TableId::VariantUpgrades];
+    for table in variants {
+        assert!(daily(table), "{table:?}");
+        frame.metrics.table_ns[table.index()] = 1;
+    }
+    let last_read = hour - 22;
+    let mut report = Report { read_hours: Some(BTreeMap::from([(TableId::DivisionEquipment, last_read)])), ..Report::default() };
+    report.record_tables(&frame);
+    assert!(!report.full_refresh());
+    assert!(variants.iter().all(|&table| report.read_at_hour(table)));
+    assert!(!report.read_at_hour(TableId::DivisionEquipment));
+    assert_eq!(replay_data::cadence::cadence(TableId::CountryUnitBonuses), replay_data::cadence::cadence(TableId::VariantDefinitions));
+    assert!(!report.read_at_hour(TableId::CountryUnitBonuses), "a read off the slot is current for its own table, not for its slot");
+    assert!(report.attempt("DivisionEquipment", |report| {
+        report.difference("field", 1, 2);
+        Ok(())
+    }));
+    assert!(report.differences.is_empty());
+    assert_eq!(report.carried.get("DivisionEquipment"), Some(&Some(last_read)));
+    for table in TableId::ALL.into_iter().filter(|&table| daily(table)) {
+        frame.metrics.table_ns[table.index()] = 1;
+    }
+    report.record_tables(&frame);
+    assert!(report.full_refresh());
+}
+
+#[test]
 fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     let (slot, hour) = match replay_data::cadence::cadence(TableId::CountryFuel) {
         replay_data::cadence::Cadence::Daily(slot) => (slot as Hour, 24 * 1000 + 5_i32),
@@ -102,11 +140,10 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     report.attempt_table(TableId::Countries, differ);
     assert_eq!(report.differences.len(), 2);
     report
-        .observed_refresh
-        .push(replay_data::cadence::cadence(TableId::CountryFuel));
+        .read_now.insert(TableId::CountryFuel);
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 3);
-    report.observed_refresh.clear();
+    report.read_now.clear();
     report.forced_full = true;
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 4);
@@ -116,7 +153,7 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
         other => panic!("CountryIntel is {other:?}"),
     };
     report.hour = 24 * 1000 + intel_slot;
-    report.observed_refresh.clear();
+    report.read_now.clear();
     assert!(report.attempt("CountryIntel", differ));
     assert!(
         report.carried.contains_key("CountryIntel"),

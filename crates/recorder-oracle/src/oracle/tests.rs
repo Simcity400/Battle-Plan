@@ -4951,7 +4951,9 @@ fn forced_full_refresh_compares_every_owner_whatever_its_read_hour() {
     let (mut frame, mut save, _, _) = relation_fixture();
     frame.hour = 0;
     relations_read_at(&mut frame, -5);
-    frame.metrics.table_ns[TableId::ResearchSlots.index()] = 1;
+    for table in TableId::ALL {
+        frame.metrics.table_ns[table.index()] = 1;
+    }
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
     opinions(
         &mut frame,
@@ -5296,6 +5298,7 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         "{verdict}"
     );
     assert!(verdict.contains("does not prove"), "{verdict}");
+    assert!(report.save_after_frame.is_none() && !report.failed_comparisons.contains_key("boundary"));
     assert!(
         verdict.contains("writes after the save and untracked allocations"),
         "{verdict}"
@@ -5318,6 +5321,8 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     let report = compare_at(&frame, &save, &membership, &equipment, after).unwrap();
     let verdict = report.boundary_verdict.clone().unwrap();
     assert!(verdict.contains("higher in the save than in the compared frame"), "{verdict}");
+    assert!(report.save_after_frame.as_deref().is_some_and(|warning| warning.contains("not certified")));
+    assert!(report.failed_comparisons.contains_key("boundary"));
     assert!(verdict.contains("a frame read before the save"), "{verdict}");
     assert!(verdict.contains("debug_current_ref_id "), "{verdict}");
     let end = compare(&frame, &save, &membership, &equipment).unwrap();

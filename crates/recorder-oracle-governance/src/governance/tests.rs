@@ -82,9 +82,7 @@ fn gap_research_grants_oracle_compares_counter_unused_uses_and_restrictions() {
 
 fn refreshed_report() -> Report {
     let mut report = Report::default();
-    report
-        .observed_refresh
-        .push(replay_data::cadence::cadence(TableId::ResearchSlots));
+    report.read_now.insert(TableId::ResearchSlots);
     report
 }
 use replay_data::{

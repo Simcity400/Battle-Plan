@@ -128,9 +128,10 @@ pub struct Report {
     pub country_emissions: Option<Vec<content_reader_save::SavedCountryEmission>>,
     pub canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
     pub content_reads: Option<content_reader_layers::content::UncoveredReads>,
-    pub observed_refresh: Vec<replay_data::cadence::Cadence>,
     pub intel_walked: bool,
     pub forced_full: bool,
+    pub read_now: BTreeSet<TableId>,
+    pub save_after_frame: Option<String>,
     pub hour: Hour,
     pub load_hour: bool,
     pub read_hours: Option<BTreeMap<TableId, Hour>>,
@@ -356,16 +357,13 @@ impl Report {
             .into_iter()
             .filter(|table| !frame.recorded(*table))
             .collect();
-        self.observed_refresh.clear();
-        self.forced_full = TableId::ALL.into_iter().any(|table| {
+        self.read_now = TableId::ALL.into_iter().filter(|table| frame.metrics.table_ns[table.index()] != 0).collect();
+        let mut daily = TableId::ALL.into_iter().filter(|&table| {
             table != TableId::CountryIntel
-                && frame.metrics.table_ns[table.index()] != 0
-                && matches!(
-                    replay_data::cadence::cadence(table),
-                    replay_data::cadence::Cadence::Daily(_)
-                )
-                && !replay_data::cadence::is_refresh(table, frame.hour)
+                && frame.recorded(table)
+                && matches!(replay_data::cadence::cadence(table), replay_data::cadence::Cadence::Daily(_))
         });
+        self.forced_full = daily.next().is_some_and(|first| self.read_now.contains(&first)) && daily.all(|table| self.read_now.contains(&table));
         self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
         let mut field_gaps = BTreeMap::<String, usize>::new();
         for table in TableId::ALL {
@@ -380,16 +378,6 @@ impl Report {
                 for (field, count) in nested {
                     *field_gaps.entry(field.to_owned()).or_default() += count;
                 }
-            }
-            if table != TableId::CountryIntel
-                && frame.metrics.table_ns[table.index()] != 0
-                && matches!(
-                    replay_data::cadence::cadence(table),
-                    replay_data::cadence::Cadence::Daily(_) | replay_data::cadence::Cadence::Static
-                )
-            {
-                self.observed_refresh
-                    .push(replay_data::cadence::cadence(table));
             }
         }
         for (name, count) in field_gaps {
@@ -417,7 +405,7 @@ impl Report {
         let cadence = replay_data::cadence::cadence(table);
         matches!(cadence, replay_data::cadence::Cadence::Static)
             || cadence.is_refresh(hour)
-            || self.observed_refresh.contains(&cadence)
+            || self.read_now.contains(&table)
     }
 
     pub fn full_refresh(&self) -> bool {
@@ -719,6 +707,9 @@ impl Report {
     pub fn print(&self, format: replay_data::format::FormatVersion) {
         if let Some(warning) = self.content_warning() {
             println!("Warning: {warning}");
+        }
+        if let Some(boundary) = &self.save_after_frame {
+            println!("Warning: {boundary}");
         }
         println!("{}", Self::format_line(format));
         println!(
