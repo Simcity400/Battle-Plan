@@ -2242,7 +2242,7 @@ pub mod tests {
         game::enter();
         let (_, base) = folder_catalogue(&[(
             "common/defines/00_base.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NMilitary={
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NMilitary={
                 WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR=1.25,
                 WAR_SCORE_LEND_LEASE_GIVEN_FUEL_FACTOR=0.5,
                 WAR_SCORE_LEND_LEASE_RECEIVED_IC_FACTOR=2.5,
@@ -2278,7 +2278,7 @@ pub mod tests {
             ),
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
             ),
         ]);
         assert!(catalogue.refusal_lines().is_empty());
@@ -2393,7 +2393,7 @@ pub mod tests {
             ),
             (
                 "common/defines/mod.lua",
-                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
+                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
             ),
         ]);
         let frame = crate::scope::tests::positive_frame();
