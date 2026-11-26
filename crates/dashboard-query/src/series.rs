@@ -470,6 +470,61 @@ struct AliasPlan {
     owners: Vec<u128>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RankOwner<'a> {
+    Slot(u32),
+    Tag(&'a str, u32),
+}
+
+impl RankOwner<'_> {
+    fn country(self) -> Country {
+        match self {
+            Self::Slot(slot) => Country::Slot(slot),
+            Self::Tag(tag, _) => Country::from(tag),
+        }
+    }
+
+    fn is(self, country: &Country) -> bool {
+        match (self, country) {
+            (Self::Slot(slot), Country::Slot(asked)) => slot == *asked,
+            (Self::Tag(tag, _), Country::Tag(asked)) => tag == asked,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RankRows<'a> {
+    owners: HashMap<u128, RankOwner<'a>>,
+    present: HashSet<u128>,
+    values: Vec<(i64, RankOwner<'a>)>,
+    slots: Vec<u32>,
+}
+
+pub(crate) enum RankProof<'a> {
+    Order(&'a [Country]),
+    Slots(&'a [u32]),
+}
+
+impl RankProof<'_> {
+    fn holds(&self, ranked: &mut RankRows<'_>) -> bool {
+        let rows = &ranked.values;
+        match self {
+            Self::Order(asked) => rows.len() == asked.len() && rows.iter().zip(*asked).all(|((_, owner), country)| owner.is(country)),
+            Self::Slots(asked) => {
+                if rows.len() != asked.len() { return false; }
+                ranked.slots.clear();
+                for &(_, owner) in rows {
+                    let RankOwner::Tag(_, slot) = owner else { return false };
+                    ranked.slots.push(slot);
+                }
+                ranked.slots.sort_unstable();
+                ranked.slots == *asked
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Unread {
     statuses: HashMap<u32, Vec<StatusCache>>,
@@ -658,60 +713,61 @@ impl<'q, 'a> Line<'q, 'a> {
         if let Some(reason) = board::table_unrecorded(self.series.table, snapshot.status, status_reason) {
             return Ok(Err(reason));
         }
-        Ok(self.rank_rows(&snapshot.view(), hour, n, least, &self.rank_owners(hour)))
+        let mut ranked = RankRows { owners: self.rank_owners(hour), ..Default::default() };
+        Ok(self.rank_rows(&snapshot.view(), hour, n, least, true, &mut ranked)
+            .map(|()| ranked.values.into_iter().map(|(_, owner)| owner.country()).collect()))
     }
 
-    fn rank_owners(&self, hour: i32) -> HashMap<u128, &str> {
+    fn rank_owners(&self, hour: i32) -> HashMap<u128, RankOwner<'_>> {
         let mut owners = HashMap::with_capacity(self.query.holders.tags.len());
         for (tag, runs) in &self.query.holders.tags {
             let at = runs.partition_point(|run| run.last < hour);
             if let Some(run) = runs.get(at).filter(|run| run.first <= hour)
                 && let Holder::Found { slot, id } = run.holder
             {
-                owners.entry(self.series.key.of(slot, id)).or_insert(tag.as_str());
+                owners.entry(self.series.key.of(slot, id)).or_insert(RankOwner::Tag(tag, slot));
             }
         }
         owners
     }
 
-    fn rank_rows(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: usize, least: bool, owners: &HashMap<u128, &str>) -> Result<Vec<Country>, String> {
-        let mut values: Vec<(i64, Country)> = Vec::new();
-        let mut held: HashSet<u128> = HashSet::new();
+    fn rank_rows(&self, view: &replay_columnar::store::TableView<'_>, hour: i32, n: usize, least: bool, ordered: bool, ranked: &mut RankRows<'_>) -> Result<(), String> {
         let drop_zero = !least && self.measure.drops_zeros_in_top();
+        let include_absent = self.series.absent_none && !drop_zero;
+        ranked.values.clear();
+        ranked.present.clear();
         for slot in view.rows() {
             let Some(key) = view.key(slot) else { continue };
             if self.series.skips_row(key) {
                 continue;
             }
-            held.insert(key);
+            if include_absent {
+                ranked.present.insert(key);
+            }
             let read = self.source.read(view, slot);
-            if matches!(read, Computed::NotApplicable(_)) || (drop_zero && matches!(read, Computed::Value(0))) {
-                continue;
-            }
-            let country = match (owners.get(&key).copied(), self.unnamed_slot(key)) {
-                (Some(tag), _) => Country::from(tag),
-                (None, Some(slot)) => Country::Slot(slot),
-                (None, None) => return Err(format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table))),
-            };
+            let owner = || ranked.owners.get(&key).copied().or_else(|| self.unnamed_slot(key).map(RankOwner::Slot))
+                .ok_or_else(|| format!("{} holds a row of a country not known at this hour", crate::coverage::table_title(self.series.table)));
             match read {
-                Computed::Value(value) => values.push((value, country)),
+                Computed::Value(0) if drop_zero => {}
+                Computed::Value(value) => ranked.values.push((value, owner()?)),
                 Computed::NotApplicable(_) => {}
-                Computed::Unrecorded => return Err(self.query.holders.say(&country, hour, |name| board::measure_unrecorded(name, self.measure.name))),
+                Computed::Unrecorded => return Err(self.query.holders.say(&owner()?.country(), hour, |name| board::measure_unrecorded(name, self.measure.name))),
             }
         }
-        if self.series.absent_none && !drop_zero {
-            values.extend(owners.iter().filter(|(key, _)| !held.contains(key)).map(|(_, &tag)| (0, Country::from(tag))));
+        if include_absent {
+            ranked.values.extend(ranked.owners.iter().filter(|(key, _)| !ranked.present.contains(key)).map(|(_, &owner)| (0, owner)));
         }
-        let order = |a: &(i64, Country), b: &(i64, Country)| {
-            let (a0, b0) = if least { (b.0, a.0) } else { (a.0, b.0) };
-            b0.cmp(&a0).then_with(|| a.1.cmp(&b.1))
+        let order = |a: &(i64, RankOwner<'_>), b: &(i64, RankOwner<'_>)| {
+            (if least { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) }).then_with(|| a.1.cmp(&b.1))
         };
-        if values.len() > n && n > 0 {
-            values.select_nth_unstable_by(n - 1, order);
-            values.truncate(n);
+        if ranked.values.len() > n {
+            ranked.values.select_nth_unstable_by(n, order);
+            ranked.values.truncate(n);
         }
-        values.sort_unstable_by(order);
-        Ok(values.into_iter().take(n).map(|(_, country)| country).collect())
+        if ordered {
+            ranked.values.sort_unstable_by(order);
+        }
+        Ok(())
     }
 
     fn unnamed_slot(&self, key: u128) -> Option<u32> {
@@ -757,15 +813,15 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(i32, &[Country]) -> bool) -> io::Result<(i32, i32)> {
+    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), proof: RankProof<'_>) -> io::Result<(i32, i32)> {
         let timeline = &self.query.timeline;
-        let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
-        let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
+        let lo = within.0.max(timeline.first);
+        let hi = within.1.min(timeline.last);
         let recording = self.query.replay.recording();
         let columns = read::columns_of(&self.source);
         let mut reader: Option<TableReader> = None;
-        let mut owners = HashMap::new();
-        let mut owners_until = None;
+        let mut ranked = RankRows::default();
+        let mut owners_span = None;
         let mut previous = None;
         let mut matched = false;
         let mut holds = |at: i32| -> io::Result<bool> {
@@ -787,27 +843,41 @@ impl<'q, 'a> Line<'q, 'a> {
                 let changes = reader.changes();
                 Ok(reader.status() != status || changes.anew || !changes.inserted.is_empty() || !changes.deleted.is_empty() || changes.written.iter().any(|rows| !rows.is_empty()))
             })?;
-            let owners_changed = owners_until.is_none_or(|until| at > until);
+            let owners_changed = owners_span.is_none_or(|(first, last)| at < first || at > last);
             if owners_changed {
-                owners = self.rank_owners(at);
-                owners_until = Some(self.query.holders.interval(at).1);
+                ranked.owners = self.rank_owners(at);
+                owners_span = Some(self.query.holders.interval(at));
             }
             if changed || owners_changed {
                 let reader = reader.as_ref().expect("rank hour has a reader");
-                matched = reader.status() == Status::Complete && self.rank_rows(&reader.view(), at, n, least, &owners).is_ok_and(|ranked| same(at, &ranked));
+                matched = reader.status() == Status::Complete
+                    && self.rank_rows(&reader.view(), at, n, least, matches!(proof, RankProof::Order(_)), &mut ranked).is_ok()
+                    && proof.holds(&mut ranked);
             }
             previous = Some(at);
             Ok(matched)
         };
-        let mut from = Ok(lo.min(hour));
-        for at in lo..hour {
-            match holds(at) {
-                Ok(true) => {}
-                Ok(false) => from = Ok(at + 1),
-                Err(error) => from = Err(error),
+        let mut holds = |at| match holds(at) {
+            Err(_) if matches!(proof, RankProof::Slots(_)) => Ok(false),
+            result => result,
+        };
+        let mut from = hour;
+        while from > lo {
+            let end = from - 1;
+            let Some(stretch) = timeline.at(end) else { break };
+            let ordinal = read::ordinal(recording, stretch.run, end)?;
+            let first = (end - (ordinal % UNIT_ORDINALS) as i32).max(stretch.first).max(lo);
+            let mut suffix = Ok(first);
+            for at in first..=end {
+                match holds(at) {
+                    Ok(false) => suffix = Ok(at + 1),
+                    Err(error) => suffix = Err(error),
+                    Ok(true) => {}
+                }
             }
+            from = suffix?;
+            if from != first { break; }
         }
-        let from = from?;
         let mut until = hour;
         while until < hi && holds(until + 1)? {
             until += 1;

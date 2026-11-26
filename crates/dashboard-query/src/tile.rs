@@ -46,7 +46,7 @@ struct Params {
     rank_by: Option<String>,
 }
 
-#[doc = " How far the membership of a top is proven on each side of its hour, in hours."]
+#[doc = " Lookaround for an ordered point reply and for the preceding production sample."]
 pub const RANK_PROOF_HOURS: i32 = 48;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -186,10 +186,9 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
     let (asks, ranking) = match slots {
         Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
         Ok(slots) => {
-            let winners: std::collections::HashSet<u32> = slots.iter().copied().collect();
-            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at, list| {
-                list.len() == winners.len() && list.iter().all(|country| named_slot(country, at).is_some_and(|slot| winners.contains(&slot)))
-            })?;
+            let mut winners = slots.clone();
+            winners.sort_unstable();
+            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), crate::series::RankProof::Slots(&winners))?;
             let asks = slots.into_iter().map(|slot| Ask::whole(Country::Slot(slot))).collect();
             (asks, TileRanking { hour, from, until, refused: None })
         }

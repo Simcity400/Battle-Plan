@@ -1512,7 +1512,7 @@ describe('several countries, one measure', () => {
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
       { tags: [], top: 3, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
-    assert.deepEqual(model.series.map(s => s.id), ['A07', 'A01', 'A03']);
+    assert.deepEqual(model.series.map(s => s.id), ['A07', 'A03', 'A01'], 'the held tile supplies the countries and the displayed heads order them');
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234, raw: 1234n, denominator: 1n });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });

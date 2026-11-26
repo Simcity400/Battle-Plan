@@ -2005,9 +2005,11 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
 
 #[test]
 fn territory_ranking_skips_world_summary_row() {
-    let fixture = Fixture::new(Data::Faction, FIRST..=ITA_FROM + 10);
+    let overtake = (ITA_FROM..ITA_FROM + UNIT_HOURS).find(|&at| states(9002, at) > states(9001, at)).unwrap();
+    let (first, last) = (overtake - 54, overtake + 12);
+    let fixture = Fixture::new(Data::Faction, first..=last);
     let query = fixture.query();
-    let hour = ITA_FROM + 10;
+    let hour = overtake - 1;
     let series = dashboard_declare::series("territory").unwrap();
     let measure = series.measure("controlledStates").unwrap();
     let line = Line::new(&query, series, measure).unwrap();
@@ -2015,7 +2017,10 @@ fn territory_ranking_skips_world_summary_row() {
     assert!(!ranked.contains(&Country::Slot(replay_data::rows::TerritoryTotalRow::WORLD)));
     assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour })).unwrap();
-    assert_eq!(tiles.ranking.as_ref().and_then(|r| r.refused.as_deref()), None);
+    let ranking = tiles.ranking.unwrap();
+    assert_eq!(ranking.refused, None);
+    assert_eq!(line.rank_at(overtake, 10, false).unwrap().unwrap(), [Country::from("ITA"), Country::from("GER")]);
+    assert_eq!((ranking.from, ranking.until), (first, last), "an overtake between the same winning countries keeps their tiles");
     assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), ranked.iter().map(|country| Country::Slot(query.holders.slot_at(country, hour).unwrap())).collect::<Vec<_>>());
 }
 

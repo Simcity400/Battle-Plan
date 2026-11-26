@@ -479,8 +479,11 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
         for at in ranking.from..=ranking.until {
             assert_eq!(line.rank_at(at, 1, false).unwrap().unwrap(), ranked, "the same top through its proven hours ({at} for {hour})");
         }
-        if ranking.from > FIRST && hour - ranking.from < RANK_PROOF_HOURS {
+        if ranking.from > FIRST {
             assert_ne!(line.rank_at(ranking.from - 1, 1, false).unwrap(), Ok(ranked.clone()), "the hour before the proof is another top");
+        }
+        if ranking.until < LONG_LAST {
+            assert_ne!(line.rank_at(ranking.until + 1, 1, false).unwrap(), Ok(ranked), "the ranking holds until the winner changes or a contender is unread");
         }
         proven += usize::try_from(ranking.until - ranking.from).unwrap();
     }

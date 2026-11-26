@@ -1,10 +1,12 @@
 import { SECONDARY_DASH, tailColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
+import { compareValues, notRecorded } from '../value.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { auditRow } from '../auditRow.ts';
 import { formatChartAxisValue } from './layout.ts';
@@ -101,6 +103,7 @@ function hoverHourOf(readView: BoundedReadView, name: string): number | null {
   }
 }
 const COLOURED = 8;
+const NO_HEAD = notRecorded('No reading at the displayed hour');
 
 const SECOND_SUFFIX = '\u0000second';
 
@@ -176,7 +179,11 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const population = top ? rankedCountries(readView, 'main') : null;
-      const tags = top ? [...(population?.rows.keys() ?? drawn?.keys() ?? [])] : options.tags;
+      const tags = top
+        ? population ? [...population.rows.keys()] : [...(drawn ?? [])]
+            .sort(([a, left], [b, right]) => compareValues(left.headValue ?? NO_HEAD, right.headValue ?? NO_HEAD, 'descending') || compareTags(a, b))
+            .map(([key]) => key)
+        : options.tags;
       if (top && (drawn !== undefined || population !== null) && tags.length === 0) {
         return {
           kind: spec.kind,
