@@ -650,6 +650,8 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
 
   const body = makeTarget();
   const menuHost = makeTarget();
+  let pictureBox = body.getBoundingClientRect();
+  const picture = { getBoundingClientRect: () => pictureBox };
   const nav: readonly FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', { tag: 'GER' }]];
   let installed: InstalledPicture | null = {
     id: 7,
@@ -689,6 +691,7 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
 
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
+    pictureNode: picture as unknown as HTMLElement,
     menuHost: menuHost as unknown as HTMLElement,
     pipeline: fakePipeline,
     pipe: 1,
@@ -819,6 +822,10 @@ test('bindFamilyPointer resolves actions against the installed picture, rejects 
   stop.clearHover();
   assert.equal(inspectedTokens.at(-1), null, 'a zoom or pan drops the inspected hour under a still pointer');
   assert.equal(hoverHits.at(-1), null, 'and publishes no hover hour');
+
+  pictureBox = { left: 10, top: 20, width: 200, height: 100 };
+  body.dispatch('pointermove', { isTrusted: true, clientX: 110, clientY: 70 });
+  assert.deepEqual(pointerPoints.at(-1), [100, 50], 'a picture shown at a size other than its body, as one held across a scale change is, maps the pointer by its own box');
 
   stop();
   tooltips.dispose();
@@ -961,6 +968,7 @@ test('a press, release or menu waits for its own hit and acts only on the pictur
   const tooltips = new FamilyTooltipController('delayed-worker');
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
+    pictureNode: body as unknown as HTMLElement,
     menuHost: body as unknown as HTMLElement,
     pipeline: fakePipeline,
     pipe: 1,
@@ -1158,6 +1166,7 @@ test('class D: every action and published state comes from the installed picture
   const tooltips = new FamilyTooltipController('class-d');
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement,
+    pictureNode: body as unknown as HTMLElement,
     menuHost: body as unknown as HTMLElement,
     pipeline: fakePipeline,
     pipe: 1,

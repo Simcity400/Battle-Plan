@@ -34,6 +34,7 @@ import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/re
 import { widgetOptionFields } from '../widgets/manifest.ts';
 import { commitZone } from '../shell/commitCount';
 import { engine } from '../engine/frame.ts';
+import { useGridPlacement } from './gridPlacement.ts';
 
 const RESET_UNDO_MS = 6000;
 const READING_BADGE_DELAY_MS = 400;
@@ -50,6 +51,7 @@ interface Props {
 
 function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
+  const placement = useGridPlacement(containerRef);
   const kinds = [...new Set(template.widgets.map(widget => widget.kind))].join(' ');
   useEffect(() => { preloadWidgetRenderers(kinds.split(' ')); preloadAllWidgetRenderers(); }, [kinds]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
@@ -63,7 +65,7 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
   }, [onLayouts, runtime.maps]);
   return <div className={`dash-grid${editing ? ' is-editing' : ''}`} ref={containerRef}>
     {mounted && <Responsive<Breakpoint> width={width} layouts={template.layouts}
-      breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]}
+      breakpoints={{ lg: 1280, md: 850, sm: 520, xs: 0 }} cols={GRID_COLUMNS} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]} positionStrategy={placement}
       dragConfig={{ enabled: editing, handle: '.dash-drag-grip', cancel: 'input,select,textarea,a' }}
       resizeConfig={{ enabled: editing, handles: ['se'] }} onLayoutChange={changed}
       onDrag={runtime.maps.schedule} onDragStop={runtime.maps.schedule} onResize={runtime.maps.schedule} onResizeStop={runtime.maps.schedule}>

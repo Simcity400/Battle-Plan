@@ -1,5 +1,6 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { deviceFit, watchDevicePixelRatio, windowRatio } from '../../charts/surface.ts';
 import { useContextMenu, type MenuItem } from '../../components/ContextMenu';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { FailureOrigin } from '../../dashboard/follow/page.ts';
@@ -143,8 +144,18 @@ interface HostInputAt extends HostInput {
   readonly at?: { readonly x: number; readonly y: number };
 }
 
-function currentDpr(): number {
-  return typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+const canvasSizes = new WeakMap<HTMLCanvasElement, { readonly width: number; readonly height: number }>();
+
+function sizeCanvas(canvas: HTMLCanvasElement, width: number, height: number) {
+  const sized = canvasSizes.get(canvas);
+  if (sized && sized.width === width && sized.height === height) return;
+  canvasSizes.set(canvas, { width, height });
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+}
+
+function showPicture(canvas: HTMLCanvasElement, picture: { readonly width: number; readonly height: number; readonly dpr: number }, dpr: number) {
+  sizeCanvas(canvas, Math.round(picture.width * picture.dpr) / dpr, Math.round(picture.height * picture.dpr) / dpr);
 }
 
 export interface FamilyChromeTargets {
@@ -318,7 +329,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const viewportRef = useRef({
     width: 0,
     height: 0,
-    dpr: currentDpr(),
+    dpr: windowRatio(),
     scrollLeft: 0,
     scrollTop: 0,
     zoomWindow: null as readonly [number, number] | null,
@@ -552,15 +563,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const [defW, defH] = curAdapter.defaultSize ?? [320, 200];
     const vp = viewportRef.current;
     if (!measuredRef.current && bodyRef.current && typeof ResizeObserver === 'function') {
-      vp.width = Math.floor(bodyRef.current.clientWidth);
-      vp.height = Math.floor(bodyRef.current.clientHeight);
+      const fit = deviceFit(bodyRef.current, bodyRef.current.clientWidth, bodyRef.current.clientHeight);
+      vp.width = fit.width;
+      vp.height = fit.height;
+      vp.dpr = fit.dpr;
       measuredRef.current = true;
     }
     const hidden = measuredRef.current && (vp.width <= 0 || vp.height <= 0);
-    const w = hidden ? 0 : Math.max(1, vp.width || defW);
-    const h = hidden ? 0 : Math.max(1, vp.height || defH);
-    const dpr = currentDpr();
-    vp.dpr = dpr;
+    const w = hidden ? 0 : vp.width || defW;
+    const h = hidden ? 0 : vp.height || defH;
+    const dpr = vp.dpr;
     const viewport: FamilyViewportState = {
       width: w,
       height: h,
@@ -622,10 +634,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     reportWindow();
 
     if (!hidden) {
-      const widthPx = `${w}px`;
-      const heightPx = `${h}px`;
-      if (mounted.canvas.style.width !== widthPx) mounted.canvas.style.width = widthPx;
-      if (mounted.canvas.style.height !== heightPx) mounted.canvas.style.height = heightPx;
+      const shown = pipeline.view(pipe);
+      if (shown?.mode === 'picture' && shown.viewport) showPicture(mounted.canvas, shown.viewport, dpr);
+      else sizeCanvas(mounted.canvas, w, h);
     }
     pipeline.present(pipe, curAdapter.family);
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
@@ -845,6 +856,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const activeAdapter = cur.adapter;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
+      if (visible && shown.viewport) showPicture(mounted.canvas, shown.viewport, viewportRef.current.dpr);
       if (lastVisibleRef.current !== visible) {
         lastVisibleRef.current = visible;
         node.toggleAttribute('data-family-visible', visible);
@@ -1045,6 +1057,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const gestures = mountAdapter.gestures;
     const stopPointer = bindFamilyPointer({
       bodyNode: node,
+      pictureNode: mounted.canvas,
       menuHost: frameRef.current ?? node,
       pipeline,
       pipe,
@@ -1145,31 +1158,36 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   useLayoutEffect(() => {
     const node = bodyRef.current;
     if (!node) return;
-    const measure = (width: number, height: number, observed = false) => {
+    const box = { width: node.clientWidth, height: node.clientHeight };
+    const measure = (observed = false) => {
       refreshFocusAnchor();
-      const w = Math.floor(width);
-      const h = Math.floor(height);
-      const dpr = currentDpr();
+      const fit = deviceFit(node, box.width, box.height);
       const vp = viewportRef.current;
       const canMeasure = observed || typeof ResizeObserver === 'function';
       const newlyMeasured = canMeasure && !measuredRef.current;
       if (canMeasure) measuredRef.current = true;
-      if (!newlyMeasured && w === vp.width && h === vp.height && dpr === vp.dpr) return;
-      vp.width = w;
-      vp.height = h;
-      vp.dpr = dpr;
-      if (latestRef.current.hasChrome) setChromeWidth(w);
+      if (!newlyMeasured && fit.width === vp.width && fit.height === vp.height && fit.dpr === vp.dpr) return;
+      vp.width = fit.width;
+      vp.height = fit.height;
+      vp.dpr = fit.dpr;
+      if (latestRef.current.hasChrome) setChromeWidth(fit.width);
       notifyViewportChange();
       bindRef.current();
     };
-    measure(Math.floor(node.clientWidth), Math.floor(node.clientHeight));
-    if (typeof ResizeObserver !== 'function') return;
+    measure();
+    const stopRatio = watchDevicePixelRatio(() => measure());
+    if (typeof ResizeObserver !== 'function') return stopRatio;
     const observer = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
-      measure(rect ? rect.width : node.clientWidth, rect ? rect.height : node.clientHeight, true);
+      box.width = rect ? rect.width : node.clientWidth;
+      box.height = rect ? rect.height : node.clientHeight;
+      measure(true);
     });
     observer.observe(node);
-    return () => observer.disconnect();
+    return () => {
+      stopRatio();
+      observer.disconnect();
+    };
   }, [notifyViewportChange, refreshFocusAnchor]);
 
   useLayoutEffect(() => {

@@ -150,7 +150,7 @@ async function devServer(name: string, route: string, fixture: string, profile: 
   return { port: address.port, fixture, close: () => vite.close() };
 }
 
-export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = [], built = false): Promise<void> {
+export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>, plugins: PluginOption[] = [], built = false, browserArgs: readonly string[] = []): Promise<void> {
   const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
@@ -162,7 +162,7 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
   try {
     const address = { port: served.port };
     browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--edge-skip-compat-layer-relaunch',
-      '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
+      '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...browserArgs], { windowsHide: true });
     browser.stdout?.resume(); browser.stderr?.resume();
     endpoint = await browserStage(browser, `${name} Edge startup`, async signal => {
       for (;;) {
