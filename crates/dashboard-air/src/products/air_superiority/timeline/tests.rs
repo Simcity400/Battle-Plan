@@ -170,7 +170,7 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
             .collect(),
         vec![(gap_first, gap_last, reason.to_owned())],
     );
-    let wanted = format!("Who holds 3 is not known: {reason}");
+    let wanted = format!("Who holds {} is not known: {reason}", dashboard_base::products::Country::Slot(3).key());
     let by_slot = AirTimelineParams { viewpoint: Some(dashboard_base::products::Country::Slot(3)), ..params(AirMode::Viewpoint, None, true, None) };
     let timeline = Days { index: &index, holders: &split, days: &days, rows: &held, params: &by_slot, theatres: None };
     let unknown = Some(AirDayCell::Reason { reason: wanted.clone() });

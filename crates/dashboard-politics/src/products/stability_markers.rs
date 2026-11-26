@@ -275,9 +275,6 @@ impl Product for StabilityMarkers {
         if params.wars || params.factions {
             let groups = groups::shared(source, &query, context, cancelled)?;
             let holds = |tag: &str, at: i32| query.holders.tag_at(&params.country, at) == Some(tag);
-            if params.country.tag().is_none() {
-                warnings.extend(query.holders.unknown.iter().filter(|&&(first, _, _)| first <= hour).filter_map(|&(first, _, _)| query.holders.not_known(&params.country, first)));
-            }
             if params.wars {
                 war_markers(&mut out, &holds, &groups);
             }

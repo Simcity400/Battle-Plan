@@ -361,14 +361,16 @@ impl<'a> Days<'a> {
         let Some(day) = self.days.len().checked_sub(1) else {
             return Ok(AtHourRank::unranked(NOT_RECORDED));
         };
+        if let Some(read) = self.days[day].as_ref().filter(|read| read.hour == self.params.last_hour)
+            && let Some(reason) = self.viewpoint_not_known(read.hour)
+        {
+            return Ok(AtHourRank::unranked(&reason));
+        }
         match &self.days[day] {
             Some(read) if read.hour != self.params.last_hour => return Ok(AtHourRank::unranked(NOT_RECORDED)),
             Some(read) if !read.complete => return Ok(AtHourRank::unranked(READ_IN_PART)),
             None => return Ok(AtHourRank::unranked(NOT_RECORDED)),
             Some(_) => {}
-        }
-        if let Some(reason) = self.days[day].as_ref().and_then(|read| self.viewpoint_not_known(read.hour)) {
-            return Ok(AtHourRank::unranked(&reason));
         }
         let keep = self.keep();
         let mut active: Vec<(u32, u128)> = Vec::new();
