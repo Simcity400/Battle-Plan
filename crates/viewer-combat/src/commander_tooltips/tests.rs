@@ -306,10 +306,10 @@ fn exile_localisation() -> Localisation {
             "displaced_officer_desc",
             "A displaced officer keeps fighting.",
         ),
-        ("EXILE_ATTACK", "Exiled Divisions Attack"),
-        ("OWN_EXILE_ATTACK", "Own Exiled Divisions Attack"),
-        ("EXILE_DEFENSE", "Exiled Divisions Defense"),
-        ("OWN_EXILE_DEFENSE", "Own Exiled Divisions Defense"),
+        ("EXILE_ATTACK", "Exile Fixture Attack"),
+        ("OWN_EXILE_ATTACK", "Own Exile Fixture Attack"),
+        ("EXILE_DEFENSE", "Exile Fixture Defence"),
+        ("OWN_EXILE_DEFENSE", "Own Exile Fixture Defence"),
     ]
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
@@ -460,8 +460,8 @@ fn exile_badge_hover_uses_mod_values_and_counts_named_refusals() {
     let tooltip = &out.values["traits"].entries[0]["exile_flag"];
     let text = tooltip.tooltip.as_deref().unwrap();
     assert!(text.starts_with("\u{11}HDisplaced Captain\u{11}!\n\n"));
-    assert!(text.contains("Exiled Divisions Attack: \u{11}G+17.50%\u{11}!"));
-    assert!(text.contains("Own Exiled Divisions Defense: \u{11}R-3.50%\u{11}!"));
+    assert!(text.contains("Exile Fixture Attack: \u{11}G+17.50%\u{11}!"));
+    assert!(text.contains("Own Exile Fixture Defence: \u{11}R-3.50%\u{11}!"));
     assert_eq!(
         tooltip.tooltip_description.as_deref(),
         Some("Mod description.")
@@ -560,7 +560,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
         ("infantry_leader", "Infantry Leader"),
         ("cruiser", "Cruiser"),
         ("destroyer", "Destroyer"),
-        ("trait_xp_factor", "$NAME|H$ experience factor: $VAL|H%.0$"),
+        ("trait_xp_factor", "$NAME|H$ xp fixture: $VAL|H%.0$"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -609,7 +609,7 @@ fn effects_follow_the_native_block_adjuster_skill_and_factor_order() {
     let mut dropped = Vec::new();
     assert_eq!(
         effects(&context, &definition, &mut dropped).unwrap(),
-        "Division Attack: \u{11}G+5.0%\u{11}!\n\u{11}HForest\u{11}!\nMovement: \u{11}G+5.0%\u{11}!\nAttack: \u{11}G+10.0%\u{11}!\nAttack: \u{11}G+1\u{11}!\nStarting Proximity: Close\n\u{11}HInfantry Leader\u{11}! experience factor: \u{11}H100%\u{11}!\n"
+        "Division Attack: \u{11}G+5.0%\u{11}!\n\u{11}HForest\u{11}!\nMovement: \u{11}G+5.0%\u{11}!\nAttack: \u{11}G+10.0%\u{11}!\nAttack: \u{11}G+1\u{11}!\nStarting Proximity: Close\n\u{11}HInfantry Leader\u{11}! xp fixture: \u{11}H100%\u{11}!\n"
     );
     assert_eq!(dropped, [Dropped::Modifier("unknown_modifier".into())]);
     definition.override_tooltips = vec!["forest".into()];
@@ -755,7 +755,7 @@ fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
         ("cc_leader", "General"),
         ("trait_engineer", "Engineer"),
         ("LEARNING_TRAITS_TITLE", "Learning Traits:"),
-        ("LEARNING_TRAITS", "$NAME$ ($PERC|%0H$ done)"),
+        ("LEARNING_TRAITS", "$NAME$ [$PERC|%0H$ learnt]"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -776,7 +776,7 @@ fn the_land_portrait_lists_the_recorded_rows_and_refuses_only_without_them() {
     );
     assert_eq!(
         portrait(Ok(true), Ok(&shown[..])),
-        Ok("General Rommel\n\nLearning Traits:\nEngineer (\u{11}H57%\u{11}! done)\n".into())
+        Ok("General Rommel\n\nLearning Traits:\nEngineer [\u{11}H57%\u{11}! learnt]\n".into())
     );
     assert_eq!(
         portrait(Ok(true), Ok(&[][..])),

@@ -53,6 +53,7 @@ for the workspace crates of a test build, which compile incrementally as a check
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import importlib.util
 import io
 import json
 import msvcrt
@@ -923,8 +924,23 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
     raise Failure("Could not claim a VM after three attempts")
 
 
+def game_content(worktree, names):
+    """tools/check-game-content.py's asset findings for files about to be sent."""
+    spec = importlib.util.spec_from_file_location("check_game_content", Path(__file__).resolve().parent / "check-game-content.py")
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    files = [(name, (worktree / name).read_bytes()) for name in names if (worktree / name).is_file()]
+    return guard.offenders(files, guard.allow_rules(worktree))
+
+
 def source_manifest(worktree, cache=None):
-    """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put."""
+    """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put.
+    Refuses an untracked file that is an asset or binary not in tools/game-content.allow: game
+    content never reaches the VM (tracked files are checked in CI)."""
+    untracked = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
+    found = game_content(worktree, [os.fsdecode(raw).replace("\\", "/") for raw in untracked.split(b"\0") if raw])
+    if found:
+        raise Refused("Boat would send these untracked files, which may be game content; delete or ignore them, or list ours in tools/game-content.allow:\n" + "\n".join(found))
     names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
     try:
         known = json.loads(cache.read_text()) if cache else {}

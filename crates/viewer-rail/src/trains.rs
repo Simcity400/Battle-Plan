@@ -2211,8 +2211,8 @@ mod tests {
                 .load(
                     "common/defines/00_graphics.lua",
                     format!(
-                        "NDefines = {{ NGraphics = {{ TRAIN_MAP_SPEED = 3, \
-                         TUNNELBANA_TIMETABLE = {{ 9200, 12000 }}, {counts} }} }}"
+                        "NDefines = {{ NGraphics = {{ TRAIN_MAP_SPEED = 4, \
+                         TUNNELBANA_TIMETABLE = {{ 9100, 12100 }}, {counts} }} }}"
                     )
                     .as_bytes(),
                 )
@@ -2220,8 +2220,8 @@ mod tests {
             TrainDefines::load(&defines).map(|read| read.wagon_count)
         };
         assert_eq!(
-            wagons("MIN_TRAIN_WAGON_COUNT = 3, MAX_TRAIN_WAGON_COUNT = 6").unwrap(),
-            [3, 6]
+            wagons("MIN_TRAIN_WAGON_COUNT = 2, MAX_TRAIN_WAGON_COUNT = 7").unwrap(),
+            [2, 7]
         );
         let missing = TrainDefines {
             wagon_count: wagons("").unwrap(),
@@ -2230,8 +2230,8 @@ mod tests {
         assert_eq!(missing.wagon_count, [1, 1]);
         assert_eq!(missing.cars(12345), 2);
         assert_eq!(
-            wagons("MAX_TRAIN_WAGON_COUNT = 6").unwrap(),
-            [1, 6],
+            wagons("MAX_TRAIN_WAGON_COUNT = 7").unwrap(),
+            [1, 7],
             "a missing minimum"
         );
         assert_eq!(
@@ -2257,7 +2257,7 @@ mod tests {
                 .load(
                     "common/defines/00_graphics.lua",
                     format!(
-                        "NDefines = {{ NGraphics = {{ TRAIN_MAP_SPEED = 3, \
+                        "NDefines = {{ NGraphics = {{ TRAIN_MAP_SPEED = 4, \
                          TUNNELBANA_TIMETABLE = {{ {entries} }}, \
                          MIN_TRAIN_WAGON_COUNT = 2, MAX_TRAIN_WAGON_COUNT = 5 }} }}"
                     )
@@ -2266,8 +2266,8 @@ mod tests {
                 .unwrap();
             TrainDefines::load(&defines)
         };
-        assert_eq!(load("9200, 12000").unwrap().timetable, [9200, 12000]);
-        assert_eq!(load("12000, 9200").unwrap().timetable, [9200, 12000]);
+        assert_eq!(load("9100, 12100").unwrap().timetable, [9100, 12100]);
+        assert_eq!(load("12100, 9100").unwrap().timetable, [9100, 12100]);
         assert_eq!(load("5000").unwrap().timetable, [5000, 5000]);
         assert_eq!(load("1.8, 3.9").unwrap().timetable, [1, 3]);
         assert_eq!(load("12.9, 4.1").unwrap().timetable, [4, 12]);

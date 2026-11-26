@@ -249,7 +249,7 @@ fn balance_nested_description_inherits_the_active_variable_session() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         (
             "common/bop/test.txt",
@@ -320,7 +320,7 @@ fn balance_modifier_description_derives_from_sources_and_localised_static_keys()
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/00_defines.lua",
-            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
         ),
         (
             "localisation/replace/extra_l_english.yml",

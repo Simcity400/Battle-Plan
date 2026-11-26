@@ -37,7 +37,7 @@ impl LabelFont for Fixed {
 
 fn localisation() -> Localisation {
     [
-        (KEY_FULL, "$ORDERNAME$$DIVISIONS$ - $GROUP$"),
+        (KEY_FULL, "$ORDERNAME$$DIVISIONS$ of $GROUP$"),
         (KEY_EMPTY, "No divisions"),
         (KEY_DIVISIONS, "$DIV$ Divs"),
         (KEY_DIVISIONS_SHORT, "$DIV$ Divs"),
@@ -45,7 +45,7 @@ fn localisation() -> Localisation {
         (KEY_PARATROOPERS, "$DIV$ Paras"),
         (KEY_INVASION_TRANSPORTS, " ($TR$ convoys)"),
         (KEY_PARADROP_TRANSPORTS, " ($TR$ planes)"),
-        ("o_strat_offensive_ru", "Strategic Offensive Operation"),
+        ("o_strat_offensive_ru", "Fixture Push Order"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -62,7 +62,7 @@ fn the_order_name_uses_the_stored_unique_text_and_localised_keys() {
     };
     assert_eq!(
         order_name(&loc, &name).as_deref(),
-        Ok("South Sudetenland Strategic Offensive Operation")
+        Ok("South Sudetenland Fixture Push Order")
     );
     let codename = OrderName {
         first: b"missing_first",
@@ -94,7 +94,7 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
     let empty_group = compose(super::super::TYPE_MOVE, "Army Group 11", true, 0);
     assert_eq!(
         empty_group.text(Variant::Full).as_deref(),
-        Ok("South Sudetenland Strategic Offensive Operation - Army Group 11")
+        Ok("South Sudetenland Fixture Push Order of Army Group 11")
     );
     assert_eq!(
         empty_group.text(Variant::Middle).as_deref(),
@@ -102,7 +102,7 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
     );
     assert_eq!(empty_group.text(Variant::Short).as_deref(), Ok("No Divs"));
     let line = compose(super::super::TYPE_LINE, "Army 28", false, 2);
-    assert_eq!(line.text(Variant::Full).as_deref(), Ok("2 Divs - Army 28"));
+    assert_eq!(line.text(Variant::Full).as_deref(), Ok("2 Divs of Army 28"));
     assert_eq!(line.text(Variant::Middle).as_deref(), Ok("2 Divs"));
     let latin1 = Composer {
         group_name: b"Arm\xe9e 28",
@@ -121,7 +121,7 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
     let drop = compose(super::super::TYPE_PARADROP, "Army 3", false, 4);
     assert_eq!(
         drop.text(Variant::Full).as_deref(),
-        Ok("South Sudetenland Strategic Offensive Operation - 4 Paras - Army 3")
+        Ok("South Sudetenland Fixture Push Order - 4 Paras of Army 3")
     );
     let broken = Composer {
         name: OrderName {
@@ -159,7 +159,7 @@ fn extended_transports_append_to_full_only_after_the_strict_point_threshold() {
         composer
             .drawn_with_transports(Variant::Full, 5, 5, &supplied)
             .as_deref(),
-        Ok("Landing - 2 Divs - Army")
+        Ok("Landing - 2 Divs of Army")
     );
     assert_eq!(
         composer
@@ -178,7 +178,7 @@ fn extended_transports_append_to_full_only_after_the_strict_point_threshold() {
         composer
             .drawn_with_transports(Variant::Full, 6, 5, &supplied)
             .as_deref(),
-        Ok("Landing - 2 Divs - Army (-3 convoys)")
+        Ok("Landing - 2 Divs of Army (-3 convoys)")
     );
     assert_eq!(reads.get(), 1);
 
@@ -201,7 +201,7 @@ fn extended_transports_append_to_full_only_after_the_strict_point_threshold() {
             Err("a line must not read transport inputs".into())
         })
         .as_deref(),
-        Ok("2 Divs - Army")
+        Ok("2 Divs of Army")
     );
 }
 

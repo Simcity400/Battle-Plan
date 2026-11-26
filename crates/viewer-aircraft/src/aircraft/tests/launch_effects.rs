@@ -182,7 +182,7 @@ fn launch_assets() -> (AircraftAssets, std::path::PathBuf) {
     defines
         .load(
             "fixture",
-            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = 3.0 } }",
+            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = 2.5 } }",
         )
         .unwrap();
     let regions = BTreeMap::from([(

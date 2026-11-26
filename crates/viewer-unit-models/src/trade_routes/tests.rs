@@ -273,7 +273,7 @@ fn defines() -> TradeRouteDefines {
                 TRADEROUTE_SMOOTHEN_PASSES = 1,
                 TRADE_ROUTE_LINE_OFFSET = 0.25,
                 TRADE_ROUTE_MAX_LINES = 4,
-                TRADE_ROUTE_INTERSECT_DISTANCE_MULT = 10,
+                TRADE_ROUTE_INTERSECT_DISTANCE_MULT = 8,
                 TRADE_ROUTE_REGIONAL_BAD_EFFICIENCY_THRESHOLD = 0.5,
                 TRADE_ROUTE_BAD_EFFICIENCY_ROUTE_COLOR = { 0.9, 0.9, 0.1, 0.5 },
                 TRADE_ROUTE_BAD_EFFICIENCY_HOTSPOT_COLOR = { 0.9, 0.1, 0.1, 0.5 },
@@ -288,7 +288,7 @@ fn defines() -> TradeRouteDefines {
                 TRADE_ROUTE_MAX_NUM_CONVOYS = 3,
                 TRADE_ROUTE_CONVOY_SPEED = 2,
                 TRADE_ROUTE_CONVOY_SLEEP_TIME = 1,
-                TRADE_ROUTE_CONVOY_ROUTE_OFFSET = 0.5,
+                TRADE_ROUTE_CONVOY_ROUTE_OFFSET = 0.4,
                 UNITS_DISTANCE_CUTOFF = 100,
             } }",
         )

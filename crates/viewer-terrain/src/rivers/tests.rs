@@ -541,9 +541,9 @@ fn river_fade_resolves_non_default_defines_and_refuses_missing_or_invalid_ones()
     );
     assert_eq!(custom_mesh.vertices[4 * 2].position[3], 0.0);
 
-    let missing_from = load("RIVER_FADE_TO = 3.0").unwrap_err().to_string();
+    let missing_from = load("RIVER_FADE_TO = 4.5").unwrap_err().to_string();
     assert!(missing_from.contains("RIVER_FADE_FROM"), "{missing_from}");
-    let missing_to = load("RIVER_FADE_FROM = 20.0").unwrap_err().to_string();
+    let missing_to = load("RIVER_FADE_FROM = 25.0").unwrap_err().to_string();
     assert!(missing_to.contains("RIVER_FADE_TO"), "{missing_to}");
     let inverted = load("RIVER_FADE_FROM = 5.0, RIVER_FADE_TO = 10.0")
         .unwrap_err()

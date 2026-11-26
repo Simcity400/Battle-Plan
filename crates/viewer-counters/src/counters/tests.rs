@@ -4144,27 +4144,27 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     let text = r"NDefines = {
             NGraphics = {
                 UNITS_ICONS_DISTANCE_CUTOFF = 12.345674,
-                UNITS_DISTANCE_CUTOFF = 120,
-                LAND_UNIT_MOVEMENT_SPEED = 12,
+                UNITS_DISTANCE_CUTOFF = 130,
+                LAND_UNIT_MOVEMENT_SPEED = 14,
                 NAVAL_UNIT_MOVEMENT_SPEED = 6.5,
-                AIRBASE_ICON_DISTANCE_CUTOFF = 900,
-                NAVALBASE_ICON_DISTANCE_CUTOFF = 900,
+                AIRBASE_ICON_DISTANCE_CUTOFF = 940,
+                NAVALBASE_ICON_DISTANCE_CUTOFF = 960,
                 NAVAL_MISSION_ICONS_DISTANCE_CUTOFF = 1500,
-                FACILITY_DISTANCE_CUTOFF = 900,
-                LAND_COMBAT_DISTANCE_CUTOFF = 1500,
-                NAVAL_COMBAT_DISTANCE_CUTOFF = 1500,
-                RADAR_ICON_DISTANCE_CUTOFF = 1100,
+                FACILITY_DISTANCE_CUTOFF = 920,
+                LAND_COMBAT_DISTANCE_CUTOFF = 1450,
+                NAVAL_COMBAT_DISTANCE_CUTOFF = 1550,
+                RADAR_ICON_DISTANCE_CUTOFF = 1150,
                 MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE = 500.9,
                 MAP_ICONS_COARSE_COUNTRY_GROUPING_DISTANCE_STRATEGIC = 350.4,
-                MAP_ICONS_GROUP_CAM_DISTANCE = 90,
-                MAP_ICONS_STATE_GROUP_CAM_DISTANCE = 180,
-                MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE = 350,
-                MAP_ICONS_STATE_HUGE = 100,
-                MAP_ICONS_STRATEGIC_AREA_HUGE = 220,
-                MAPICON_GROUP_PASSES = 20,
-                SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD = 0.2,
-                SUPPLY_UNIT_COUNTER_LOW_THRESHOLD = 0.35,
-                SUPPLY_UNIT_COUNTER_SHOW_THRESHOLD = 0.5,
+                MAP_ICONS_GROUP_CAM_DISTANCE = 70,
+                MAP_ICONS_STATE_GROUP_CAM_DISTANCE = 170,
+                MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE = 370,
+                MAP_ICONS_STATE_HUGE = 110,
+                MAP_ICONS_STRATEGIC_AREA_HUGE = 230,
+                MAPICON_GROUP_PASSES = 17,
+                SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD = 0.15,
+                SUPPLY_UNIT_COUNTER_LOW_THRESHOLD = 0.3,
+                SUPPLY_UNIT_COUNTER_SHOW_THRESHOLD = 0.45,
                 COUNTER_MODE_ALLEGIANCE_OURS = { 1, 1, 1, 1 },
                 COUNTER_MODE_ALLEGIANCE_ALLIED = { 1, 1, 1, 1 },
                 COUNTER_MODE_ALLEGIANCE_ENEMY = { 1, 1, 1, 1 },
@@ -4177,38 +4177,38 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 LAND_COMBAT_BALANCED_COLOR = { 1, 1, 0, 1 },
             },
             NMilitary = {
-                BASE_CHANCE_TO_AVOID_HIT = 90,
-                CHANCE_TO_AVOID_HIT_AT_NO_DEF = 60,
-                LAND_COMBAT_ORG_DICE_SIZE = 4,
+                BASE_CHANCE_TO_AVOID_HIT = 70,
+                CHANCE_TO_AVOID_HIT_AT_NO_DEF = 45,
+                LAND_COMBAT_ORG_DICE_SIZE = 3,
             },
             NMapIcons = {
                 DEFAULT_PRIORITY_UNITS_STACK = 10.7,
                 DEFAULT_PRIORITY_UNITS_STACK_GROUP = 267,
                 DEFAULT_PRIORITY_AIR_BASE = -3.2,
-                DEFAULT_PRIORITY_NAVAL_BASE = 3,
+                DEFAULT_PRIORITY_NAVAL_BASE = 2,
                 DEFAULT_PRIORITY_NAVAL_HEADQUARTER = 4,
                 DEFAULT_PRIORITY_FACILITY = 5,
-                DEFAULT_PRIORITY_LAND_COMBAT = 20,
+                DEFAULT_PRIORITY_LAND_COMBAT = 21,
                 DEFAULT_PRIORITY_NAVAL_COMBAT = 532,
-                DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS = 19,
-                DEFAULT_PRIORITY_NAVAL_MISSION = 13,
+                DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS = 18,
+                DEFAULT_PRIORITY_NAVAL_MISSION = 12,
                 DEFAULT_PRIORITY_AIR_MISSION = 14.8,
-                DEFAULT_PRIORITY_VICTORY_POINTS = 5,
+                DEFAULT_PRIORITY_VICTORY_POINTS = 15,
                 DEFAULT_PRIORITY_CAPITAL = 6,
                 DEFAULT_PRIORITY_ROCKET_SITE = 7,
                 DEFAULT_PRIORITY_GUN_EMPLACEMENT = 8,
                 DEFAULT_PRIORITY_STRATEGIC_LOCATION = 9,
-                DEFAULT_PRIORITY_RESOURCE = 10,
+                DEFAULT_PRIORITY_RESOURCE = 16,
                 DEFAULT_PRIORITY_ADJACENCY_RULE = 11,
                 OTHER_TABLES
                 HOME_BASE_MAP_ICON_SCALE_DEFAULT = 1.25,
                 HOME_BASE_MAP_ICON_SCALE_HIGHLIGHTED = 1.5,
             },
             NNavy = {
-                INTEL_LEVEL_LOW_HALF_RANGE_PERCENTAGE = 10,
-                INTEL_LEVEL_LOW_HALF_RANGE_MIN_SHIPS = 3,
+                INTEL_LEVEL_LOW_HALF_RANGE_PERCENTAGE = 12,
+                INTEL_LEVEL_LOW_HALF_RANGE_MIN_SHIPS = 4,
                 INTEL_LEVEL_LOW_HALF_RANGE_MIN_CAPITALS = 1,
-                INTEL_LEVEL_MEDIUM_HALF_RANGE_PERCENTAGE = 5,
+                INTEL_LEVEL_MEDIUM_HALF_RANGE_PERCENTAGE = 6,
                 INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_SHIPS = 1,
                 INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_CAPITALS = 1,
             },
@@ -4218,7 +4218,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     let read = CounterDefines::read(&defines).unwrap();
     assert_eq!(read.type_colors, type_tint::Colors::TEST);
     assert_eq!(read.icons_cutoff, 12.34567);
-    assert_eq!(read.movement_speeds, [12.0, 6.5]);
+    assert_eq!(read.movement_speeds, [14.0, 6.5]);
     assert_eq!(read.coarse_distance, [500.0, 350.0]);
     assert!(!read.coarse(500.0, false));
     assert!(read.coarse(500.01, false));
@@ -4239,7 +4239,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     );
     assert_eq!(read.naval_base_scale, 1.25);
     assert_eq!(read.naval_base_highlighted_scale, 1.5);
-    assert_eq!(default(PriorityIcon::NavalCombatResults), 19);
+    assert_eq!(default(PriorityIcon::NavalCombatResults), 18);
     assert_eq!(default(PriorityIcon::NavalCombat), 20);
     assert_eq!(
         (
@@ -4250,7 +4250,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
         (7, 8, 9)
     );
     assert_eq!(default(PriorityIcon::AdjacencyRule), 11);
-    assert_eq!(default(PriorityIcon::Resource), 10);
+    assert_eq!(default(PriorityIcon::Resource), 16);
     assert_eq!(
         read.priorities
             .get(PriorityTable::StrategicNavy, PriorityIcon::NavalBase),
@@ -4266,9 +4266,9 @@ fn counter_defines_read_each_define_through_its_native_getter() {
             .get(PriorityTable::StrategicAir, PriorityIcon::AirMission),
         51
     );
-    assert_eq!(read.stack_priority(89.9, PriorityTable::Default), 10);
-    assert_eq!(read.stack_priority(90.0, PriorityTable::Default), 11);
-    assert_eq!(read.stack_priority(89.9, PriorityTable::StrategicAir), 40);
+    assert_eq!(read.stack_priority(69.9, PriorityTable::Default), 10);
+    assert_eq!(read.stack_priority(70.0, PriorityTable::Default), 11);
+    assert_eq!(read.stack_priority(69.9, PriorityTable::StrategicAir), 40);
 }
 
 #[test]

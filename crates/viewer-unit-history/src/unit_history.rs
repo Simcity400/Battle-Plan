@@ -2541,7 +2541,7 @@ pub mod tests {
         defines.load("synthetic.lua", br#"NDefines = { NGraphics = {
             UNITS_DISTANCE_CUTOFF=11, SHIPS_DISTANCE_CUTOFF=22, UNIT_ARROW_DISTANCE_CUTOFF=33, SHIP_IN_PORT_SCALE=.125,
             MESH_POPUP_SCALE_UP_SPEED=7, MESH_POPUP_SCALE_DOWN_SPEED=9, SHIP_POPUP_SCALE_DOWN_SPEED=13,
-            NAVAL_UNIT_MOVEMENT_SPEED=12, LAND_UNIT_MOVEMENT_SPEED=12
+            NAVAL_UNIT_MOVEMENT_SPEED=14, LAND_UNIT_MOVEMENT_SPEED=15
         }}"#).unwrap();
         let gates = Gates::read(&defines).unwrap();
         assert_eq!(

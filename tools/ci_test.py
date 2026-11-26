@@ -317,6 +317,11 @@ class Verdict(unittest.TestCase):
         self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "fail")), "failure")
         self.assertEqual(ci.verdict(self.outcomes("pass", "skipped", "later", "ci only")), "success")
 
+    def test_a_part_a_job_could_not_run_here_is_named_in_its_detail(self):
+        log = "$ check\ntree: 3 files\nnot run here: installation comparison (no game installation)\n0 finding(s)\n"
+        self.assertEqual(ci.not_run_here(log), ["not run here: installation comparison (no game installation)"])
+        self.assertEqual(ci.not_run_here("  not run here: indented output is not a note\n"), [])
+
     def test_every_junit_failure_is_reported_with_its_output(self):
         report = """<testsuites><testsuite name="dashboard-base">
             <testcase name="ready"/><testcase name="ignored"><skipped/></testcase>

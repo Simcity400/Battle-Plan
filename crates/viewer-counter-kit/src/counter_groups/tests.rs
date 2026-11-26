@@ -79,8 +79,8 @@ fn the_huge_defines_truncate_like_the_native_integer_getter() {
             "mod.lua",
             b"NDefines = { NGraphics = {
                 MAP_ICONS_GROUP_CAM_DISTANCE = 90.5,
-                MAP_ICONS_STATE_GROUP_CAM_DISTANCE = 180,
-                MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE = 350,
+                MAP_ICONS_STATE_GROUP_CAM_DISTANCE = 170,
+                MAP_ICONS_STRATEGIC_GROUP_CAM_DISTANCE = 370,
                 MAP_ICONS_STATE_HUGE = 100.9,
                 MAP_ICONS_STRATEGIC_AREA_HUGE = -220.7,
                 MAPICON_GROUP_PASSES = 20.9,

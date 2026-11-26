@@ -761,14 +761,14 @@ fn bench_localisation() -> content_reader_localisation::localisation::Localisati
     [
         (
             "MAP_ARROWS_LOCALIZATION",
-            "$ORDERNAME$$DIVISIONS$ - $GROUP$",
+            "$ORDERNAME$$DIVISIONS$ of $GROUP$",
         ),
         ("MAP_ARROWS_LOCALIZATION_EMPTY", "No divisions"),
         ("MAP_ARROWS_LOCALIZATION_EMPTY_SHORT", "No Divs"),
         ("MAP_ARROWS_DIVISIONS_COUNT", "$DIV$ Divs"),
         ("MAP_ARROWS_DIVISIONS_COUNT_SHORT", "$DIV$"),
         ("MAP_ARROWS_PARATROOPERS_COUNT", "$DIV$ Paras"),
-        ("o_strat_offensive_ru", "Strategic Offensive Operation"),
+        ("o_strat_offensive_ru", "Fixture Push Order"),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))

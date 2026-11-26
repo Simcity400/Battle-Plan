@@ -345,15 +345,15 @@ fn a_negative_launch_delay_reads_as_zero() {
     defines
         .load(
             "fixture",
-            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = -3.0 } }",
+            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = -2.5 } }",
         )
         .unwrap();
     assert_eq!(launches::max_delay(&defines), Ok(0.0));
     defines
         .load(
             "fixture",
-            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = 3.0 } }",
+            b"NDefines = { NAirGfx = { RANDOM_SCENARIO_ANIMATION_MAX_DELAY = 2.5 } }",
         )
         .unwrap();
-    assert_eq!(launches::max_delay(&defines), Ok(3.0));
+    assert_eq!(launches::max_delay(&defines), Ok(2.5));
 }

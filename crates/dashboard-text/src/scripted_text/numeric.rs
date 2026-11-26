@@ -206,7 +206,7 @@ mod tests {
             ),
             (
                 "common/defines/00_defines.lua",
-                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }",
             ),
             (
                 "common/scripted_localisation/mod.txt",

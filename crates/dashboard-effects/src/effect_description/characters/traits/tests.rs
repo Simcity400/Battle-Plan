@@ -13,7 +13,7 @@ fn fixture() -> (Fixture, Folder) {
     let (catalogue, folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NMilitary={GENERAL_PROXIMITY_DEFAULT=10,GENERAL_PROXIMITY_CLOSE=5,GENERAL_PROXIMITY_MEDIUM=15}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NMilitary={GENERAL_PROXIMITY_DEFAULT=10,GENERAL_PROXIMITY_CLOSE=5,GENERAL_PROXIMITY_MEDIUM=15}}",
         ),
         (
             "common/country_leader/test.txt",
@@ -593,7 +593,7 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
     let (catalogue, _conditional_folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
         ),
         (
             "common/unit_leader/test.txt",

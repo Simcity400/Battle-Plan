@@ -39,6 +39,14 @@ inputs = ["**"]
 command = ["{python}", "tools/check-machine-paths.py"]
 
 [[job]]
+name = "game-content"
+group = "linux"
+tier = "check"
+toolchain = "python"
+inputs = ["**"]
+command = ["{python}", "tools/check-game-content.py"]
+
+[[job]]
 name = "agent-context"
 group = "linux"
 tier = "check"

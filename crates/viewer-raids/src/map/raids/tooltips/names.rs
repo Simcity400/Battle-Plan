@@ -465,7 +465,7 @@ mod tests {
             ("raid_inst_unit_desc".into(), "$NAME$".into()),
             (
                 "tooltip_launch_button_right_click".into(),
-                "§GRight-click§! to find §Y$NAME$§!".into(),
+                "§GAlt-press§! to locate §Y$NAME$§!".into(),
             ),
         ]
         .into_iter()
@@ -524,7 +524,7 @@ mod tests {
             let tooltip = draw(&loc, &loc.language);
             assert!(
                 tooltip.body.contains(&format!(
-                    "\u{11}GRight-click\u{11}! to find \u{11}Y{text}\u{11}!"
+                    "\u{11}GAlt-press\u{11}! to locate \u{11}Y{text}\u{11}!"
                 )),
                 "{tooltip:?}"
             );

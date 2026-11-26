@@ -1,0 +1,15 @@
+# Asset and binary files that are ours, and where each came from: `<path or glob> <provenance>`.
+# tools/check-game-content.py fails any other; an entry that matches no file fails too.
+.github/*.yml our GitHub configuration
+.github/*.yaml our GitHub configuration
+.github/workflows/*.yml our CI workflows
+crates/content-reader-image/src/native/testdata/*.jpg 7x9 and 11x13 pixel images we encoded with the IJG tools for the JPEG decoder tests (#136)
+crates/content-reader-layers/src/content/testdata/zipcrypto_*.zip archives we wrote whose members hold made-up bytes, for the encrypted-archive tests (#136)
+crates/content-reader-sound/src/fixtures/synthetic-tone.ogg a sine tone we generated for the music reader test (#156)
+crates/dashboard-follow/fixtures/series_slot_tag_*.bin our follow protocol's answers over the synthetic recording (#281)
+crates/desktop/icons/* the desktop app's icons, drawn for BattlePlan (#9)
+crates/recorder-app/icons/* the recorder tray app's icons, drawn for BattlePlan
+ui/public/favicon.svg the UI's icon, drawn for BattlePlan (#9)
+vendor/eframe/data/icon.png the eframe crate's own icon, vendored with its MIT licence
+LICENSE our MIT licence; mods ship the same standard text
+crates/engine-dlc/src/dlc_feature_state.rs DLC names the reader matches against the installed DLC files: identifiers, allowed (owner, 26 Nov)

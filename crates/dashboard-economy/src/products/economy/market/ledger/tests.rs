@@ -26,7 +26,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
         ("hoi4.exe", "test"),
         ("user/settings.txt", "language=l_english force_pow2_textures=no"),
         ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
-        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NBuildings = { MAX_BUILDING_LEVELS = 13 } }"),
         ("localisation/mod_l_english.yml", "\u{feff}l_english:\n rifle_0:0 \"Default Rifle\"\n"),
     ]);
     let context: names::Context = Ok(names::Content::from_catalogue(Arc::new(cat)));
@@ -94,7 +94,7 @@ fn a_design_whose_token_the_run_never_spells_keeps_the_refusal_of_its_own_hour()
         ("hoi4.exe", "test"),
         ("user/settings.txt", "language=l_english force_pow2_textures=no"),
         ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
-        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NBuildings = { MAX_BUILDING_LEVELS = 13 } }"),
         ("localisation/mod_l_english.yml", "\u{feff}l_english:\n rifle_0:0 \"Default Rifle\"\n"),
     ]);
     let context: names::Context = Ok(names::Content::from_catalogue(Arc::new(cat)));

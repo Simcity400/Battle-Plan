@@ -16,7 +16,7 @@ fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears
     let (catalogue, folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/country_tags/test.txt",
@@ -94,7 +94,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={\"synthetic_slot\"}},NSupply={MAX_RAILWAY_LEVEL=5}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={\"synthetic_slot\"}},NSupply={MAX_RAILWAY_LEVEL=7}}",
         ),
         (
             "common/idea_tags/test.txt",
@@ -168,7 +168,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .unwrap()
     );
-    assert_eq!(content.max_railway_level, Some(5));
+    assert_eq!(content.max_railway_level, Some(7));
     assert!(std::ptr::eq(environment, scripted.environment().unwrap()));
     assert!(std::ptr::eq(content, scripted.effects().unwrap()));
     let templates = content.advisor_templates.as_ref().unwrap();
@@ -194,7 +194,7 @@ fn effect_catalogues_remain_available_without_map_inputs() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
         ),
         ("common/ideologies/test.txt", "ideologies={synthetic={}}"),
         (
@@ -251,7 +251,7 @@ impl Fixture {
         let (catalogue, folder) = crate::fixtures::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MIN_TRAIN_REQUIREMENT=2}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NSupply={MIN_TRAIN_REQUIREMENT=3}}",
             ),
             (
                 "localisation/test_l_english.yml",
@@ -541,7 +541,7 @@ fn equipment_and_autonomy_content_is_cached_with_reader_notes() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/units/equipment/test.txt",
@@ -1763,7 +1763,7 @@ fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() 
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/factions/templates/test.txt",

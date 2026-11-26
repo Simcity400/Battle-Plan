@@ -45,7 +45,7 @@ pub(super) fn fixture_with(extra: &[(&str, &str)]) -> (Fixture, Folder) {
         ),
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -749,7 +749,7 @@ fn named_party_effect_keeps_plain_text_without_unrelated_map_or_variable_inputs(
         ),
         (
             "common/defines/synthetic.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/plain_l_english.yml",

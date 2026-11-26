@@ -288,7 +288,7 @@ fn event_files_fixture(
     let mut files = vec![
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/events_l_english.yml",

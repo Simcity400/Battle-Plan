@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-pub const DEFINES: &str = "NDefines={NGraphics={POSTEFFECT_PER_PROVINCE_MIN_SNOW=0.1,POSTEFFECT_PER_PROVINCE_MAX_SNOW=0.8,POSTEFFECT_TOTAL_MIN_SNOW=0.0,POSTEFFECT_TOTAL_MAX_SNOW=1.0}}";
+pub const DEFINES: &str = "NDefines={NGraphics={POSTEFFECT_PER_PROVINCE_MIN_SNOW=0.15,POSTEFFECT_PER_PROVINCE_MAX_SNOW=0.8,POSTEFFECT_TOTAL_MIN_SNOW=0.0,POSTEFFECT_TOTAL_MAX_SNOW=1.0}}";
 pub const TERRAIN: &str = "categories={plain={}} terrain={plain={type=plain color={0} perm_snow=no} ice={type=plain color={1} perm_snow=yes}}";
 pub const VOLUMES: &str = "posteffect_values={name=plain} posteffect_values={name=winter} posteffect_volumes={posteffect_volume={posteffect_values_day=plain posteffect_values_night=plain posteffect_values_day_winter=winter posteffect_values_night_winter=winter position={6 0 4} size={12 1 8}}}";
 
