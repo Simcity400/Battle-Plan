@@ -55,6 +55,7 @@ import {
   type LegendMeasure,
   drawTimeAxis,
   drawTimelineBar,
+  timeAxisLabels,
   winRateColor,
 } from './kit.ts';
 
@@ -372,6 +373,36 @@ test('timeline bars hide icon and name under the minimum width, mix ended items 
   assert.equal(decade.length, 11, 'R2-K9: every 1 January is marked in a narrow decade');
   assert.ok(decade.every(tick => tick.major && gameDate(tick.hour)?.month === 1 && gameDate(tick.hour)?.day === 1));
   assert.deepEqual(decade.filter(tick => tick.label).map(tick => tick.label), ['1940', '1945'], 'labels are thinned apart from the marks');
+  const h1945 = engineHour({ year: 1945, month: 6, day: 1, hour: 1 })!;
+  const narrowDecade = computeTimeAxisTicks(h1936, h1945, 32);
+  assert.deepEqual(
+    narrowDecade.map(tick => gameDate(tick.hour)?.year),
+    [1936, 1938, 1940, 1942, 1944],
+    'R3-S10: a 32px decade keeps distinguishable January marks independently of label spacing',
+  );
+  const weekPlaced = timeAxisLabels(week, {
+    plotLeft: 0,
+    plotRight: 600,
+    startHour: hJan3,
+    endHour: hJan3 + 7 * 24,
+    playhead: null,
+    playheadLabel: '',
+  }, text => text.length * 7);
+  assert.ok(weekPlaced.length > 0 && weekPlaced[0]!.label.includes('1936'),
+    `R3-S10: first surviving label carries the year after the left-edge tick clips (${weekPlaced[0]?.label})`);
+  const hDec22 = engineHour({ year: 1936, month: 12, day: 22, hour: 1 })!;
+  const hJan14 = engineHour({ year: 1937, month: 1, day: 14, hour: 1 })!;
+  const acrossYear = computeTimeAxisTicks(hDec22, hJan14, 300);
+  const acrossLabels = timeAxisLabels(acrossYear, {
+    plotLeft: 0,
+    plotRight: 300,
+    startHour: hDec22,
+    endHour: hJan14,
+    playhead: hJan14,
+    playheadLabel: '14 Jan 1937',
+  }, text => text.length * 7);
+  assert.ok(acrossLabels.some(item => item.label.includes('1936')) && acrossLabels.some(item => item.label.includes('1937')),
+    `R3-S10: a short range crossing New Year labels both years (${acrossLabels.map(i => i.label).join(', ')})`);
   const hugeNonCalendar = computeTimeAxisTicks(0, 43_800_000, 600, 24);
   assert.ok(hugeNonCalendar.length >= 2 && hugeNonCalendar.length <= 20, 'K10: huge non-calendar span stays bounded');
 
@@ -551,6 +582,16 @@ test('K6 & K8: legend strip draws whole entries with +N more overflow, keeps mis
   const one = [{ label: 'Germany', color: '#4f86f7' }, { label: 'Italy', color: '#64a86e' }];
   const tight = fitLegendStrip(0, 15 + 7 * 6 + 12 + 15 + 5 * 6, { entries: one }, THEME, chars);
   assert.deepEqual(summary(tight), [['Germany', 'Italy'], 0, []], '"+1 more" is never shown where the entry itself fits');
+
+  const pendingFlag = { label: 'Germany', color: '#4f86f7', flag: { kind: 'pending' as const, label: 'GER' } };
+  const readyFlag = { label: 'Germany', color: '#4f86f7', flag: { kind: 'ready' as const, bitmap: { width: 20, height: 13 } as ImageBitmap, width: 20, height: 13, label: 'GER' } };
+  const pendingFit = fitLegendStrip(0, 135, { entries: [pendingFlag, { label: 'Italy', color: '#64a86e' }] }, THEME, chars);
+  const readyFit = fitLegendStrip(0, 135, { entries: [readyFlag, { label: 'Italy', color: '#64a86e' }] }, THEME, chars);
+  assert.equal(pendingFit.shown.length, 1);
+  assert.deepEqual(summary(pendingFit), summary(readyFit), 'R3-S12: pending and ready flag entries reserve the same width during fitting');
+  const flagDraw = makeFakeCtx();
+  drawLegendStrip(flagDraw.ctx, 0, 0, 200, 22, { entries: [readyFlag] }, THEME, pendingFit);
+  assert.ok(flagDraw.ops.some(op => op.op === 'drawImage'), 'R3-S12: drawLegendStrip resolves live entries from spec so decoded flags paint using the cached fit');
 });
 
 test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 colours, and text measurer stays bounded without native font reads on hits', () => {

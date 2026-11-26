@@ -346,7 +346,7 @@ test('the audit lists what the installed view draws: shares, open children and t
   const open = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: { New: true } });
   const rows = deriveBreakdownAudit(read, open);
   assert.ok(rows.some(row => row.key === '__comparison__' && String(row.value).includes('Some gains were not recorded.')));
-  assert.ok(rows.some(row => row.key === 'New' && String(row.value).endsWith('|71%')), 'a drawn share is audited');
+  assert.ok(rows.some(row => row.key === 'New' && String(row.value).endsWith('|70%')), 'a drawn share is audited');
   assert.ok(deriveBreakdownAudit(read, open).length > deriveBreakdownAudit(read, closed).length, 'opening a part audits its drawn children');
   const moved = nested();
   moved.parts[0] = { ...moved.parts[0]!, children: [{ ...moved.parts[0]!.children[0]!, amount: exact('700') }, { ...moved.parts[0]!.children[1]!, amount: exact('292') }] };

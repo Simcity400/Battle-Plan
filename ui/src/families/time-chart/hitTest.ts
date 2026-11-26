@@ -98,9 +98,6 @@ export function sampleSeriesValueAt(
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
-    if (series.headValue != null && Number.isFinite(series.headValue) && hour === (series.headHour ?? until)) {
-      return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
-    }
   }
   if (series.points && series.points.length > 0) {
     const pointSample = (pt: { readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly min?: number | null; readonly max?: number | null; readonly approximate?: boolean }) => {
@@ -132,6 +129,9 @@ export function sampleSeriesValueAt(
     if (prev && prev.value !== null) {
       return pointSample(prev);
     }
+  }
+  if (series.headValue != null && Number.isFinite(series.headValue) && hour === (series.headHour ?? until)) {
+    return { value: series.headValue, min: series.headValue, max: series.headValue, exact: true };
   }
   return null;
 }
@@ -234,7 +234,11 @@ export function hitTestTimeChart(
 
 function formatExactFigure(value: number, model: TimeChartModel, format: ChartValueFormat, raw?: bigint, denominator?: bigint): string {
   if (raw !== undefined && denominator !== undefined) {
-    if (format === 'share') return formatShareRatio(raw, denominator * 100n);
+    if (format === 'share') {
+      return raw >= 0n && raw <= denominator * 100n
+        ? formatShareRatio(raw, denominator * 100n)
+        : formatRational(raw, denominator, { maxDecimals: 5, percent: true });
+    }
     if (format === 'percent' || format === 'signedPercent') {
       return formatRational(raw, denominator, { maxDecimals: 5, percent: true, signed: format === 'signedPercent' });
     }
@@ -249,7 +253,9 @@ function formatExactFigure(value: number, model: TimeChartModel, format: ChartVa
     }
     return formatRational(raw, denominator, { maxDecimals: 0 });
   }
-  if (format === 'share') return formatShare(value / 100);
+  if (format === 'share') {
+    return value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
+  }
   if (format === 'percent' || format === 'signedPercent') {
     return formatRecordedPercent(value, { signed: format === 'signedPercent' });
   }
@@ -550,9 +556,10 @@ export function deriveTimeChartTooltip(
     }
     const s = model.series.find(item => item.id === parsed.seriesId);
     if (s) {
-      const items = seriesTooltipItemsAt(model, model.hour, s.id);
+      const labelHour = Math.min(model.hour, s.headHour ?? model.hour);
+      const items = seriesTooltipItemsAt(model, labelHour, s.id);
       return {
-        hour: model.hour,
+        hour: labelHour,
         rowKey: inspectKey,
         payload: {
           title: s.endLabel?.fullName ?? s.name,

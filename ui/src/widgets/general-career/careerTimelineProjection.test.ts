@@ -183,7 +183,7 @@ test('a general no longer serving keeps the battles the career recorded, not the
   const career = { ...careerReply(), runs: [{ firstHour: FIRST, lastHour: retired, role, skill: 6, components: [5, 5, 5, 4] as [number, number, number, number] }] };
   const notServing: LeaderHourReply = { ...hourReply(), missing: 'This leader is not serving at this hour', role: null, skill: null, fought: 0, won: 0, lost: 0, progress: null, traits: null };
   const model = projectAt(notServing, career);
-  assert.deepEqual(model.header?.kpis?.map(k => [k.value, k.label]), [['2', 'won'], ['1', 'lost'], ['0', 'unresolved'], ['3', 'fought'], ['67%', 'won']]);
+  assert.deepEqual(model.header?.kpis?.map(k => [k.value, k.label]), [['2', 'won'], ['1', 'lost'], ['0', 'unresolved'], ['3', 'fought'], ['66%', 'won']]);
   assert.equal(model.header?.subtitle, 'General · ★ 6 / 9', 'rank and skill as last recorded in service');
   assert.ok(model.notes?.includes('This leader is not serving at this hour'), 'why the hour reply holds no counters is said');
   assert.equal(model.meters, undefined, 'no training is claimed for a leader not serving');

@@ -111,7 +111,7 @@ describe('world-tension projections', () => {
     const stack = worldTensionProjection.project(view(data, { ...main, bands: [{ ...main.bands[0]!, remembered: true }] }),
       { ...opts, layers: 1, values: 'share', showMarkers: false });
     const items = stack.hoverDetail!.items.filter(item => !['World tension', 'Uncapped sum'].includes(item.label));
-    assert.deepEqual(items.map(item => [item.label, item.value]), [['German Reich', '20%'], ['Other (1)', '30%']]);
+    assert.deepEqual(items.map(item => [item.label, item.value]), [['German Reich', '+20%'], ['Other (1)', '+30%']]);
     const ctx = {
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
       branch: { id: '1', firstHour: H1936, lastHour: H1941, gaps: [] },
@@ -280,8 +280,8 @@ describe('world-tension projections', () => {
       showMarkers: false,
       gaps: [],
     });
-    assert.equal(model.stack?.bands[0]?.endLabel?.value, '0.4%');
-    assert.equal(model.stack?.bands[1]?.endLabel?.value, '<0.1%');
+    assert.equal(model.stack?.bands[0]?.endLabel?.value, '+0.4%');
+    assert.equal(model.stack?.bands[1]?.endLabel?.value, '+0.04%');
     assert.equal(model.stack?.bands[2]?.endLabel, null);
   });
 
@@ -772,10 +772,10 @@ describe('world-tension projections', () => {
       createBoundedReadView({ hour: H1941, panels: new Map([['main', shareReply]]), identity: makeIdentity() }),
       { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] },
     );
-    assert.equal(shareModel.stack?.bands[0]?.endLabel?.value, '15%', '145/700 of 70% is exact 14.5% -> 15%, not float 14.499999999999998 -> 14%');
-    assert.equal(shareModel.stack?.bands.at(-1)?.endLabel?.value, '15%', 'Other 145/700 of 70% prints 15%, not float 14%');
-    assert.equal(shareModel.auditRows?.find(r => r.row === 'slot:1')?.value, '15%');
-    assert.equal(shareModel.auditRows?.find(r => r.row === 'other')?.value, '15%');
+    assert.equal(shareModel.stack?.bands[0]?.endLabel?.value, '+14.5%', '145/700 of 70% keeps the signed contribution figure on the end label');
+    assert.equal(shareModel.stack?.bands.at(-1)?.endLabel?.value, '+14.5%', 'Other 145/700 of 70% keeps the signed contribution figure on the end label');
+    assert.equal(shareModel.auditRows?.find(r => r.row === 'slot:1')?.value, '+14.5%');
+    assert.equal(shareModel.auditRows?.find(r => r.row === 'other')?.value, '+14.5%');
     const shareLayout = layoutTimeChart(shareModel, 960, 280, 'Segoe UI', measure);
     const shareTip = deriveTimeChartTooltip(shareModel, shareLayout, 'label:__total__');
     assert.equal(shareTip?.payload?.items?.find(i => i.label === 'German Reich')?.value, '+14.5%');
@@ -803,10 +803,10 @@ describe('world-tension projections', () => {
       { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'recorded', showMarkers: false, gaps: [] },
     );
     assert.equal(recModel.stack?.total?.endLabel?.value, '100%', 'the world line is the recorded world tension');
-    assert.equal(recModel.stack?.bands[0]?.endLabel?.value, '9,999,999,999,999.99999%');
-    assert.equal(recModel.stack?.bands[1]?.endLabel?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.stack?.bands[0]?.endLabel?.value, '+9,999,999,999,999.99999%');
+    assert.equal(recModel.stack?.bands[1]?.endLabel?.value, '+9,999,999,999,999.99999%');
     assert.equal(recModel.auditRows?.find(r => r.row === '__total__')?.value, '100%');
-    assert.equal(recModel.auditRows?.find(r => r.row === 'other')?.value, '9,999,999,999,999.99999%');
+    assert.equal(recModel.auditRows?.find(r => r.row === 'other')?.value, '+9,999,999,999,999.99999%');
     const recLayout = layoutTimeChart(recModel, 960, 280, 'Segoe UI', measure);
     const recTip = deriveTimeChartTooltip(recModel, recLayout, 'label:__total__');
     assert.equal(recTip?.payload?.items?.[0]?.value, '100%');
@@ -883,7 +883,7 @@ describe('world-tension projections', () => {
     const recorded = await project('tension', 'recorded');
     assert.equal(recorded.stack?.total?.endLabel?.value, '100%', 'in recorded mode too the world line is the recorded world tension');
     assert.equal(audit(recorded).get('__total__'), '100%');
-    assert.equal(audit(recorded).get('slot:1'), '130%');
+    assert.equal(audit(recorded).get('slot:1'), '+130%');
 
     const lines = await project('lines', 'recorded');
     assert.equal(lines.series.filter(s => s.role === 'tail').length, 2);

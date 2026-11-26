@@ -798,3 +798,65 @@ test('share rows draw the category legend strip, wrap long category lists cleanl
   assert.ok(texts.includes('Support Companies'), 'wrapped legend includes last category');
   assert.ok(texts.includes('Battalions'), 'legend strip includes count unit once');
 });
+
+test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of repeated <1 labels', () => {
+  const h = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const model: BarsModel = {
+    form: 'ordered',
+    hour: h,
+    showAxis: true,
+    scaleFormat: { decimals: 0 },
+    rows: [
+      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(0) }, numeric: 0 },
+      { kind: 'data', key: 'FRA', label: 'France', value: { value: knownValue(0) }, numeric: 0 },
+    ],
+  };
+  const layout = layoutFamilyBars(model, 600, 300);
+  const { ctx, ops } = makeFakeCtx();
+  drawFamilyBars(ctx, { model, layout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const axisY = layout.axisTop + layout.axisHeight / 2;
+  const axisTexts = ops.filter(op => op.op === 'fillText' && op.args[2] === axisY).map(op => String(op.args[0]));
+  assert.deepEqual(axisTexts, ['0', '1']);
+});
+
+test('C1.7: offscreen rank swaps in a 1,500-country Race trigger no glide motion', () => {
+  const h = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  registerFamilyProjection<BarsProjection<Record<string, never>>>({
+    kind: 'test-bars-offscreen-swap',
+    family: 'bars',
+    project(readView) {
+      const rows = Array.from({ length: 1500 }, (_, idx) => {
+        const swapped = readView.hour > h && idx === 1200 ? 1201 : readView.hour > h && idx === 1201 ? 1200 : idx;
+        return { kind: 'data' as const, key: `C${swapped}`, label: `Country ${swapped}`, value: { value: knownValue(1500 - idx) }, numeric: 1500 - idx };
+      });
+      return { form: 'ordered', hour: readView.hour, animateOrder: true, rows };
+    },
+  });
+  const origOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    private readonly fake = makeFakeCtx();
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return this.fake.ctx; }
+  }
+  (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const view = createLaneView(barsLane, () => {});
+    const state = new Map<string, unknown>();
+    let seq = 0;
+    const model = new LaneTransport().carry({
+      family: 'bars', kind: 'test-bars-offscreen-swap', options: {}, sources: {}, width: 480, height: 240, scrollTop: 0, theme: THEME,
+    } satisfies FamilyBarsBinding<Record<string, never>>);
+    const input = (hour: number, now: number): PaintInput => ({
+      widget: 1, subs: [], pictures: [], hour, seek: 0, speed: 24, now, inspect: null,
+      binding: { surfaces: [{ width: 480, height: 240, dpr: 1 }] } as unknown as PaintInput['binding'],
+      model,
+    });
+    view.paint(input(h, 100), state, () => `c${++seq}`);
+    const afterOffscreenSwap = view.paint(input(h + 1, 120), state, () => `c${++seq}`);
+    assert.equal(afterOffscreenSwap.motion, false, 'swapping rows 1200 and 1201 offscreen triggers no glide motion');
+  } finally {
+    (globalThis as { OffscreenCanvas: unknown }).OffscreenCanvas = origOffscreen;
+  }
+});

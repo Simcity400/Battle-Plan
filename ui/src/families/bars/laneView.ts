@@ -2,7 +2,7 @@ import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { barsAuditWindow, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
+import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
 import { collectVisibleBarsIcons, drawFamilyBars, hitFamilyBars, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
@@ -26,24 +26,30 @@ interface Glide {
 }
 
 const STILL: Glide = { duration: 0, offsets: new Map(), moving: false };
-const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
+const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly scrollTop: number; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
 
 function glideOf(frame: BarsFrame): Glide {
   const { model, layout, before, binding } = frame;
   const duration = model.animateOrder ? glideDurationForSpeed(frame.speed, binding.reducedMotion) : 0;
   if (duration === 0 || !before || before.hour === frame.hour || frame.now - frame.changedAt >= duration) return { ...STILL, duration };
   let held = glides.get(layout);
-  if (!held || held.continuity !== frame.continuity) {
+  if (!held || held.continuity !== frame.continuity || held.scrollTop !== binding.scrollTop) {
+    const visible = visibleBarsRange(layout, binding.scrollTop);
+    const bandTop = before.binding.scrollTop - layout.bodyHeight;
+    const bandBottom = before.binding.scrollTop + before.layout.bodyHeight + layout.bodyHeight;
+    const priorRange = barsRangeForBand(before.layout, bandTop, bandBottom, 2);
     const prior = new Map<string, number>();
-    for (let i = 0; i < before.model.rows.length; i++) prior.set(before.model.rows[i]!.key, before.layout.bodyTop + before.layout.rowTops[i]! - before.binding.scrollTop);
+    for (let i = priorRange.first; i < priorRange.last; i++) {
+      prior.set(before.model.rows[i]!.key, before.layout.bodyTop + before.layout.rowTops[i]! - before.binding.scrollTop);
+    }
     const offsets = new Map<string, BarsGlideOffset>();
-    for (let i = 0; i < model.rows.length; i++) {
+    for (let i = visible.first; i < visible.last; i++) {
       const key = model.rows[i]!.key;
       const fromY = prior.get(key);
       const nextY = layout.bodyTop + layout.rowTops[i]! - binding.scrollTop;
       if (fromY !== undefined && Math.abs(fromY - nextY) > 1 && Math.abs(fromY - nextY) <= layout.bodyHeight) offsets.set(key, { fromY, startedAt: frame.changedAt });
     }
-    glides.set(layout, held = { continuity: frame.continuity, offsets });
+    glides.set(layout, held = { continuity: frame.continuity, scrollTop: binding.scrollTop, offsets });
   }
   return { duration, offsets: held.offsets, moving: held.offsets.size > 0 };
 }

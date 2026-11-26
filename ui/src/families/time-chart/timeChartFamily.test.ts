@@ -21,7 +21,7 @@ import { type TimeChartBinding } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart } from './hitTest.ts';
 import { createTimeChartGestures, parseTimeChartHit, timeChartHostAdapter } from './hostAdapter.ts';
-import { timeChartLane } from './laneView.ts';
+import { chartNavStops, timeChartLane } from './laneView.ts';
 import { assertFreshPaint, assertQuietFrames, installRecordingCanvas, LANE_THEME, LaneTransport } from '../laneRuntime.fixture.ts';
 import { SceneTiles } from '../sceneTiles.ts';
 import { formatChartAxisValue, hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
@@ -504,6 +504,135 @@ describe('time-chart layout & rules C1-C12', () => {
       'R2-K10: the precision distinguishes every tick');
     const implicitFull = layoutTimeChart({ kind: 'percent-test', measureTitle: 'Percent', mode: 'lines', hour: H1936 + 2000, extent: [H1936, H1936 + 2000], yAxis: { format: 'percent' }, series: [] }, 958, 314, FONT, measure);
     assert.deepEqual(implicitFull.yTicks, [0, 25, 50, 75, 100], 'R2-K10: the implicit full 0 to 100 domain steps by 25');
+    assert.deepEqual([0, 0.5, 1].map(v => formatChartAxisValue(v, 'compact', [0, 0.5, 1])), ['0.0', '0.5', '1.0'], 'R3-S11: compact fractional ticks never collapse to 1');
+    assert.deepEqual([1000, 1005].map(v => formatChartAxisValue(v, 'compact', [1000, 1005])), ['1,000', '1,005'], 'R3-S11: colliding compact ticks fall back to unshortened labels');
+    assert.deepEqual([10000, 10005].map(v => formatChartAxisValue(v, 'power', [10000, 10005])), ['10,000', '10,005'], 'R3-S11: colliding power ticks fall back to unshortened labels');
+    const allZeroApm = layoutTimeChart({
+      kind: 'apm-zero',
+      measureTitle: 'APM',
+      mode: 'lines',
+      hour: H1936 + 100,
+      extent: [H1936, H1936 + 100],
+      yAxis: { format: 'compact', min: 0 },
+      series: [{ id: 'p1', key: 'p1', name: 'Player 1', color: '#4f86f7', role: 'primary', points: [{ hour: H1936, value: 0 }, { hour: H1936 + 100, value: 0 }] }],
+    }, 640, 240, FONT, measure);
+    assert.equal(allZeroApm.yDomain[1], 1, '#833-7: all-zero non-integer charts use [0, 1] instead of [0, 1e-6]');
+    const apmLabels = allZeroApm.yTicks.map(v => formatChartAxisValue(v, 'compact', allZeroApm.yTicks));
+    assert.equal(new Set(apmLabels).size, apmLabels.length, '#833-7: all-zero APM ticks are distinguishable');
+  });
+});
+
+describe('time-chart PR2 regressions (C1.6, C1.8, C7, R3-S12)', () => {
+  it('C1.6: chartNavStops includes contributor entry and exit hours in ranked lines', () => {
+    const enter = H1936 + 240;
+    const leave = H1936 + 720;
+    const end = H1936 + 1200;
+    const model: TimeChartModel = {
+      kind: 'world-tension',
+      measureTitle: 'Contribution',
+      mode: 'lines',
+      hour: end,
+      extent: [H1936, end],
+      yAxis: { format: 'signedPercent', min: 0 },
+      series: [{
+        id: 'slot:1',
+        key: 'slot:1',
+        name: 'Country',
+        color: '#4f86f7',
+        role: 'primary',
+        step: true,
+        points: [
+          { hour: H1936, value: 0 },
+          { hour: enter, value: 12 },
+          { hour: leave, value: 0 },
+        ],
+      }],
+    };
+    const layout = layoutTimeChart(model, 640, 240, FONT, measure);
+    const keys = chartNavStops(model, layout).map(stop => stop[0]);
+    assert.ok(keys.includes(`plot:${enter}`), 'keyboard stops include contributor entry');
+    assert.ok(keys.includes(`plot:${leave}`), 'keyboard stops include contributor exit');
+    assert.equal(keys.at(-1), `plot:${end}`, 'playhead stays last');
+  });
+
+  it('C1.8: summary-only ranked row with empty points samples and hovers at its witnessed head hour', () => {
+    const end = H1936 + 500;
+    const model: TimeChartModel = {
+      kind: 'world-tension',
+      measureTitle: 'Contribution',
+      mode: 'lines',
+      hour: end,
+      extent: [H1936, end],
+      yAxis: { format: 'signedPercent', min: 0 },
+      series: [{
+        id: 'slot:9',
+        key: 'slot:9',
+        name: 'Summary Only',
+        color: '#4f86f7',
+        role: 'primary',
+        step: true,
+        points: [],
+        headValue: 18.5,
+        headHour: end,
+        endLabel: { name: 'Summary Only', value: '+18.5%' },
+      }],
+    };
+    const layout = layoutTimeChart(model, 640, 240, FONT, measure);
+    const tip = deriveTimeChartTooltip(model, layout, 'label:slot:9');
+    assert.deepEqual(tip?.payload?.items?.map(i => [i.label, i.value]), [['Summary Only', '+18.5%']]);
+  });
+
+  it('C7: step stack bands draw no vertical separator strokes on contributor entry or exit', () => {
+    const h0 = H1936;
+    const h1 = H1936 + 240;
+    const h2 = H1936 + 480;
+    const h3 = H1936 + 720;
+    const model: TimeChartModel = {
+      kind: 'world-tension',
+      measureTitle: 'World tension',
+      mode: 'stack',
+      hour: h3,
+      extent: [h0, h3],
+      yAxis: { format: 'percent', fixed: [0, 100] },
+      series: [],
+      stack: {
+        hours: [h0, h1, h2, h3],
+        step: true,
+        bands: [
+          { id: 'slot:1', key: 'slot:1', name: 'A', color: '#4f86f7', values: [0, 30, 0, 0] },
+          { id: 'slot:2', key: 'slot:2', name: 'B', color: '#e5534b', values: [20, 20, 20, 20] },
+        ],
+      },
+    };
+    const layout = layoutTimeChart(model, 640, 240, FONT, measure);
+    const verticalSurfaceStrokes: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    let curX = 0;
+    let curY = 0;
+    let pathSegs: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    const { ctx } = mockCanvas(640, 240);
+    const origBegin = ctx.beginPath.bind(ctx);
+    const origMove = ctx.moveTo.bind(ctx);
+    const origLine = ctx.lineTo.bind(ctx);
+    const origStroke = ctx.stroke.bind(ctx);
+    (ctx as unknown as Record<string, unknown>).beginPath = () => { pathSegs = []; origBegin(); };
+    (ctx as unknown as Record<string, unknown>).moveTo = (x: number, y: number) => { curX = x; curY = y; origMove(x, y); };
+    (ctx as unknown as Record<string, unknown>).lineTo = (x: number, y: number) => {
+      pathSegs.push({ x0: curX, y0: curY, x1: x, y1: y });
+      curX = x; curY = y;
+      origLine(x, y);
+    };
+    (ctx as unknown as Record<string, unknown>).stroke = function (this: { strokeStyle: string }) {
+      if (this.strokeStyle === LANE_THEME.surface) {
+        for (const seg of pathSegs) {
+          if (Math.abs(seg.x0 - seg.x1) < 0.5 && Math.abs(seg.y0 - seg.y1) > 1) {
+            verticalSurfaceStrokes.push(seg);
+          }
+        }
+      }
+      origStroke();
+    };
+    drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+    assert.deepEqual(verticalSurfaceStrokes, [], 'step stack separators contain no vertical strokes');
   });
 });
 
@@ -1907,10 +2036,10 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       }]]),
     }), { surface: '#111111', subject: 'GER', extent: [base, base + 95], gaps: [] });
     const inSupplyBand = supplyModel.stack!.bands.find(b => b.id === 'inSupply')!;
-    assert.equal(inSupplyBand.endLabel?.value, '15%', '14,500/100,000 exact share prints 15%, not float 14%');
-    assert.equal(supplyModel.auditRows?.find(r => r.row === 'inSupply')?.value, '15%');
-    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'In supply')?.value, '15% · 14 divisions');
-    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'Strained')?.value, '2.9% · 3 divisions');
+    assert.equal(inSupplyBand.endLabel?.value, '14%', '14,500/100,000 exact share truncates to 14%');
+    assert.equal(supplyModel.auditRows?.find(r => r.row === 'inSupply')?.value, '14%');
+    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'In supply')?.value, '14% · 14 divisions');
+    assert.equal(supplyModel.hoverDetail?.items.find(i => i.label === 'Strained')?.value, '2.8% · 3 divisions');
 
     const rulingHistory = {
       branchId: '1',
@@ -1943,9 +2072,9 @@ describe('stacked bounded series, supply health, and ruling party', () => {
         },
       }]]),
     }), { subject: 'GER', history: rulingHistory, extent: [base, base + 95], gaps: [], surface: '#111111', showChanges: false, showLeaders: false });
-    assert.equal(rulingModel.stack!.bands[0]!.endLabel?.value, '15%', '1,450,000/10,000,000 popularity prints 15%, not float 14%');
-    assert.equal(rulingModel.auditRows?.find(r => r.row === 'fascism')?.value, '15%');
-    assert.equal(rulingModel.hoverDetail?.items.find(i => i.label.startsWith('Fascist'))?.value, '2.9%');
+    assert.equal(rulingModel.stack!.bands[0]!.endLabel?.value, '14%', '1,450,000/10,000,000 popularity truncates to 14%');
+    assert.equal(rulingModel.auditRows?.find(r => r.row === 'fascism')?.value, '14%');
+    assert.equal(rulingModel.hoverDetail?.items.find(i => i.label.startsWith('Fascist'))?.value, '2.8%');
 
     const fuelAnswer = parseFollowed(message(hour, [{
       id: 1,

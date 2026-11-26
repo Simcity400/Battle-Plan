@@ -15,7 +15,7 @@ import {
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
 import type { ChartExactRational, ChartGap, ChartIdentityRun, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, countrySeriesLooks } from '../../families/time-chart/seriesHelpers.ts';
-import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
+import { formatRational, formatRecordedPercent, formatScaledPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
 
@@ -82,14 +82,10 @@ function exactBandRational(
   return tension === 0n && sum === 0n && raw === 0n ? { raw: 0n, denominator: 1n } : null;
 }
 
-function formatEndPct(value: number, mode: 'share' | 'recorded', exact: ChartExactRational | null): string {
-  if (exact) {
-    if (mode === 'share' && exact.raw >= 0n && exact.raw <= exact.denominator * 100n) {
-      return formatShareRatio(exact.raw, exact.denominator * 100n);
-    }
-    return formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true });
-  }
-  return mode === 'share' && value >= 0 && value <= 100 ? formatShare(value / 100) : formatRecordedPercent(value);
+function formatEndPct(value: number, exact: ChartExactRational | null): string {
+  return exact
+    ? formatRational(exact.raw, exact.denominator, { maxDecimals: 5, percent: true, signed: true })
+    : formatRecordedPercent(value, { signed: true });
 }
 
 function formatTotalPct(value: number, exact: ChartExactRational | null): string {
@@ -260,7 +256,7 @@ function buildHoverDetail(
   const sum = cells.raw?.(liveKey('world', 'sum'));
   const figure = (raw: bigint | undefined, reason?: string) => {
     const exact = exactBandRational(raw?.toString() ?? null, options.values, tension?.toString(), sum?.toString(), detail.tensionScale, detail.contributionScale);
-    if (exact) return { value: formatEndPct(Number(exact.raw) / Number(exact.denominator), options.values, exact) };
+    if (exact) return { value: formatEndPct(Number(exact.raw) / Number(exact.denominator), exact) };
     const missing = reason ?? (tension === undefined ? detail.missing ?? cells.missing(liveKey('world', 'tension'))
       : sum === undefined ? cells.missing(liveKey('world', 'sum')) : 'No share is defined for these contributions.');
     return { missingReason: missing, tone: 'muted' as const };
@@ -403,7 +399,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
               ...(flag ? { flag } : {}),
               name: shortName,
               fullName: name,
-              value: formatEndPct(endVal, options.values, endExact),
+              value: formatEndPct(endVal, endExact),
             }
           : null,
       });
@@ -432,7 +428,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
               name: otherLabel,
               shortName: 'Other',
               fullName: otherLabel,
-              value: formatEndPct(otherEnd, options.values, otherEndExact),
+              value: formatEndPct(otherEnd, otherEndExact),
             }
           : null,
       });
@@ -442,7 +438,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
     const lastTotal = reply.cappedEndTension !== null && Number.isFinite(reply.cappedEndTension) ? reply.cappedEndTension : null;
     const worldText = lastTotal !== null ? formatTotalPct(lastTotal, lastTotalExact) : null;
     const endText = (value: number | null, exact: ChartExactRational | null, missing: string | null) =>
-      endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, options.values, exact) : (missing ?? END_UNKNOWN);
+      endHour !== null && value !== null && Number.isFinite(value) ? formatEndPct(value, exact) : (missing ?? END_UNKNOWN);
     const worldIcon = { art: readView.art(measureArtHandle('worldTension')), label: 'World tension' };
     const markers = options.showMarkers ? buildMarkers(readView, reply, hour) : undefined;
     const hoverDetail = buildHoverDetail(readView, reply, options);

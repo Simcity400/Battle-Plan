@@ -2,7 +2,7 @@ import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { readableColour } from '../../charts/palette.ts';
 import { ellipsise } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
-import { linearTicks } from '../../charts/valueAxis.ts';
+import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import {
   barCornerRadius,
   contrastInkForFill,
@@ -31,12 +31,13 @@ import { drawMediaSlot } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
 import { drawHatchRect } from '../valueCanvas.ts';
-import { formatCompactScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
+import { formatCompactScalar, formatScalar, formatShare, formatValueState, notRecordedLabel } from '../valueFormat.ts';
 import { mix } from '../../shell/appearance/color.ts';
 import type { FamilyTheme } from '../contract.ts';
 import {
   BARS_PAD_X,
   BARS_VALUE_GAP,
+  isWholeScaleFormat,
   visibleBarsRange,
   type BarsLayout,
 } from './layout.ts';
@@ -207,10 +208,42 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
   ctx.restore();
 }
 
+function formatBarsAxisLabels(ticks: readonly number[], format: BarsModel['scaleFormat']): string[] {
+  const compact = ticks.map(tick => formatCompactScalar(tick, format).text);
+  const seenLabels = new Set<string>();
+  const seenValues = new Set<number>();
+  let collides = false;
+  for (let i = 0; i < ticks.length; i++) {
+    const tick = ticks[i]!;
+    if (seenValues.has(tick)) continue;
+    seenValues.add(tick);
+    const label = compact[i]!;
+    if (seenLabels.has(label)) {
+      collides = true;
+      break;
+    }
+    seenLabels.add(label);
+  }
+  if (!collides) return compact;
+  let places = 0;
+  for (const tick of ticks) {
+    if (Number.isFinite(tick)) places = Math.max(places, exactDecimal(tick).scale);
+  }
+  const obj = typeof format === 'object' && format !== null ? format : null;
+  return ticks.map(tick => formatScalar(tick, {
+    decimals: 0,
+    maxDecimals: Math.min(12, places),
+    fixedDecimals: places > 0,
+    ...(obj?.percent ? { percent: true } : {}),
+    ...(obj?.unit ? { unit: obj.unit } : {}),
+  }));
+}
+
 function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: FamilyTheme): void {
   if (!layout.showAxis || layout.axisHeight <= 0) return;
   const tokens = resolveKitTokens(theme);
-  const ticks = linearTicks(0, layout.scaleMax, 4);
+  const ticks = linearTicks(0, layout.scaleMax, 4, isWholeScaleFormat(model.scaleFormat));
+  const labels = formatBarsAxisLabels(ticks, model.scaleFormat);
   const y = layout.axisTop + layout.axisHeight / 2;
   ctx.save();
   ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
@@ -233,8 +266,7 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
 
     ctx.fillStyle = theme.muted;
     ctx.textAlign = i === 0 ? 'left' : i === ticks.length - 1 ? 'right' : 'center';
-    const text = formatCompactScalar(tick, model.scaleFormat).text;
-    ctx.fillText(text, tx, y);
+    ctx.fillText(labels[i]!, tx, y);
   }
   ctx.restore();
 }

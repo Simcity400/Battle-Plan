@@ -91,14 +91,16 @@ export function placeTimeline(
     y += lh;
   }
   const contentHeight = y + TOP_PAD;
+  const avail = h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0);
+  const laneFloor = Math.min(contentHeight, Math.max(LANE_HEIGHT_COMPACT, Math.floor(avail * 0.5)));
   const wantedRows = Math.max(1, Math.ceil((model.meters?.items.length ?? 0) / METERS_PER_ROW));
-  const roomRows = Math.floor((h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0) - LANE_HEIGHT_COMPACT - METERS_HEADER_HEIGHT - 8) / METERS_ROW_HEIGHT);
+  const roomRows = Math.floor((avail - laneFloor - METERS_HEADER_HEIGHT - 8) / METERS_ROW_HEIGHT);
   const meterRows = Math.min(wantedRows, roomRows);
   const showMeters = !!model.meters && !compact && h >= METERS_MIN_HEIGHT && w >= 420 && meterRows >= 1;
   const metersHeight = showMeters ? METERS_HEADER_HEIGHT + meterRows * METERS_ROW_HEIGHT + 8 : 0;
   const bodyHeight = Math.max(
     LANE_HEIGHT_COMPACT,
-    h - bodyTop - (axisPosition === 'bottom' ? axisHeight : 0) - metersHeight,
+    avail - metersHeight,
   );
   const axisTop = axisPosition === 'top' ? headerHeight + legendHeight : bodyTop + bodyHeight;
   const metersTop = axisPosition === 'top'
