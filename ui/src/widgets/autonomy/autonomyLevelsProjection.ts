@@ -65,11 +65,11 @@ export function overlordKeyOf(item: Pick<AutonomySubject, 'overlordSlot' | 'over
 
 export function sampleSparkline(series: BoundedSeries | undefined, hour: number, points = 16): readonly (number | null)[] | undefined {
   if (!series || series.buckets.length === 0) return undefined;
-  const pieces: { readonly first: number; readonly last: number; readonly firstValue: number; readonly lastValue: number }[] = [];
+  const pieces: { readonly first: number; readonly last: number; readonly firstValue: number; readonly lastValue: number; readonly starts: boolean; readonly broken: boolean }[] = [];
   for (const bucket of series.buckets) {
     if (!bucket) continue;
     if (bucket.firstHour > hour) break;
-    pieces.push({ first: bucket.firstHour, last: Math.min(bucket.lastHour, hour), firstValue: bucket.firstValue, lastValue: bucket.lastValue });
+    pieces.push({ first: bucket.firstHour, last: Math.min(bucket.lastHour, hour), firstValue: bucket.firstValue, lastValue: bucket.lastValue, starts: bucket.firstBreak, broken: bucket.hasBreak });
   }
   if (!pieces.length) return undefined;
   const first = pieces[0]!.first;
@@ -86,8 +86,9 @@ export function sampleSparkline(series: BoundedSeries | undefined, hour: number,
     while (cursor < pieces.length && pieces[cursor]!.last + 1 <= target && cursor + 1 < pieces.length) cursor++;
     const piece = pieces[cursor]!;
     const at = Math.floor(target);
-    const inside = piece.first <= target && target < piece.last + 1 && !unreadBetween(at, at);
-    const broken = previous !== null && (unreadBetween(previous.hour + 1, at) || pieces.slice(previous.piece, cursor).some((held, k) => held.last + 1 < pieces[previous!.piece + k + 1]!.first));
+    const inside = piece.first <= target && target < piece.last + 1 && !unreadBetween(at, at) && !piece.broken;
+    const broken = previous !== null && (unreadBetween(previous.hour + 1, at)
+      || pieces.slice(previous.piece + 1, cursor + 1).some((held, k) => held.starts || pieces[previous!.piece + k]!.last + 1 < held.first));
     if (inside && !broken) {
       out.push(target >= piece.last ? piece.lastValue : piece.firstValue);
       known++;

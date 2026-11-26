@@ -84,6 +84,7 @@ const traitName = (trait: LeaderTrait | undefined) => trait?.name ?? trait?.toke
 interface BattleMonth {
   readonly first: number;
   readonly last: number;
+  readonly monthLast: number;
   count: number;
   won: number;
   lost: number;
@@ -136,7 +137,7 @@ function battleMonths(battles: readonly CareerBattle[], firstHour: number, hour:
     if (end < firstHour) continue;
     let entry = byMonth.get(key);
     if (!entry) {
-      entry = { first: Math.max(firstHour, start), last: Math.min(hour, end), count: 0, won: 0, lost: 0, unresolved: 0 };
+      entry = { first: Math.max(firstHour, start), last: Math.min(hour, end), monthLast: end, count: 0, won: 0, lost: 0, unresolved: 0 };
       byMonth.set(key, entry);
     }
     entry.count++;
@@ -234,7 +235,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     const hourReply = readView.panel<LeaderHourReply>('hour');
     if (!career) return timelineModel(base);
 
-    const nextChangeAt = career.nextChange ?? Infinity;
+    const replyChange = career.nextChange ?? Infinity;
     const warnings = [...new Set([...career.warnings, ...(hourReply?.warnings ?? [])])];
     const reference = career.reference ?? hourReply?.reference ?? null;
 
@@ -245,7 +246,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         empty: missing ?? (opt.reference === null ? 'No generals yet.' : 'This leader is not serving at this date.'),
         emptyKind: missing ? 'unavailable' : 'empty',
         warnings,
-        nextChangeAt,
+        nextChangeAt: replyChange,
       });
     }
 
@@ -255,7 +256,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         empty: career.missing,
         emptyKind: 'unavailable',
         warnings,
-        nextChangeAt,
+        nextChangeAt: replyChange,
       });
     }
 
@@ -294,7 +295,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
         firstHour: first,
         lastHour: last,
         color: CHART_MEASURE_COLOURS.supplyOk,
-        open: false,
+        open: last === hour && m.monthLast > hour,
         histogram: { positive: m.won, negative: m.lost, max: maxMonthly },
         meta,
       }));
@@ -368,7 +369,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
       unobserved: gapsWithin(observed, opt.firstHour, hour),
       warnings,
       notes,
-      nextChangeAt,
+      nextChangeAt: Math.min(replyChange, ...battleSpans.filter(span => span.open).map(span => (span.meta as BattleMonth).monthLast + 1)),
     });
   },
 

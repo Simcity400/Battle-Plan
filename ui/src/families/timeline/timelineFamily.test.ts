@@ -400,3 +400,27 @@ test('a short widget keeps the trait meters that fit rather than dropping them a
   const layout = frameTimeline(placeTimeline(model, 640, 240, {}), H(1940));
   assert.ok(layout.metersHeight >= METERS_HEADER_HEIGHT + 2 * METERS_ROW_HEIGHT, `both rows of four meters are shown (${layout.metersHeight})`);
 });
+
+test('the scroll extent covers every lane above a meter strip', () => {
+  const items = Array.from({ length: 4 }, (_, i) => ({ key: `t${i}`, label: `Trait ${i}`, figure: `${i}`, fraction: 0.5 }));
+  const lanes: TimelineLane[] = ['command', 'battles', 'traits'].map(key => ({ key, kind: 'item' as const, label: key, auditValue: key, spans: [], height: 34 }));
+  const model = timelineModel({ hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, labelWidth: 72, axisPosition: 'top', header: { title: 'General' }, meters: { title: 'Traits in training', items }, lanes });
+  const placement = placeTimeline(model, 640, 240, {});
+  const layout = frameTimeline(placement, H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  const frame = { model, layout: { placement, frame: layout, resolution }, binding: { scrollTop: 0 } } as never;
+  const extent = (timelineLane.structure(frame) as { extent: { height: number } }).extent.height;
+  assert.ok(extent - 240 >= layout.contentHeight - layout.bodyHeight, `scrolling ${extent - 240} px reaches the last lane (needs ${layout.contentHeight - layout.bodyHeight})`);
+});
+
+test('where two bars meet, the pointer on the later bar hits the later bar', () => {
+  const lanes: TimelineLane[] = [{ key: 'l', kind: 'item', label: 'Lane', auditValue: 'Lane', spans: [
+    { id: 'a', firstHour: FIRST, lastHour: H(1938) - 1, color: '#fff', open: false },
+    { id: 'b', firstHour: H(1938), lastHour: H(1940), color: '#000', open: true },
+  ] }];
+  const model: TimelineModel = { hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, lanes, unobserved: [], iconsOnBars: false, labelWidth: 200, warnings: [], nextChangeAt: Infinity };
+  const layout = frameTimeline(placeTimeline(model, 600, 200, {}), H(1940));
+  const resolution = resolutionFor(null, model, layout);
+  const x = layout.plotLeft + ((H(1938) - FIRST) / (H(1940) - FIRST)) * (layout.plotRight - layout.plotLeft);
+  assert.equal(hitTimeline(layout, resolution, x, layout.lanes[0]!.y + 10, 0)!.spanId, 'b');
+});

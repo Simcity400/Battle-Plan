@@ -292,12 +292,13 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
     let unnamedCount = 0;
 
     for (const war of reply.wars) {
-      if (war.firstHour > reply.hour || fightingEnd(war) < opt.firstHour) continue;
+      if (war.firstHour > reply.hour) continue;
       if (opt.selected && !war.sides.some(side => sideMatchesSelected(side, reply.hour, opt.selected!, opt.holders, opt.membership))) {
         continue;
       }
       const state = runState(war.atWar, reply.hour, unread);
       const ongoing = state.kind === 'held' || state.kind === 'unknown';
+      if ((ongoing ? hour : fightingEnd(war)) < opt.firstHour) continue;
       matchedTotal++;
       if (ongoing) ongoingCount++;
       if (!ongoing && !opt.showEnded) continue;

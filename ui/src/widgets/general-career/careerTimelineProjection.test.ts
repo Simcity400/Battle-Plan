@@ -223,3 +223,13 @@ test('with a Range, trait gains before it are not piled onto its first hour', ()
   const traits = model.lanes.find(lane => lane.key === 'traits')!.spans;
   assert.deepEqual(traits.map(span => span.firstHour), [H(1938, 4, 1)], 'the gain held before 1936 lies outside the Range');
 });
+
+test('the month of battles still running is an open bar that follows the playhead to the month end', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  assert.equal(bar.open, true, 'painted to the playhead on each day redraw');
+  assert.equal(model.nextChangeAt, firstHourOfMonth(monthIndex(gameDate(read)!) + 1), 'projected again when the month ends');
+});

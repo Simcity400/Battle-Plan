@@ -229,3 +229,11 @@ test('a gap before the Range start still makes a war first seen after it a cut s
   const model = civilWarsProjection.project(createBoundedReadView({ hour: 150, identity, panels: new Map([['main', data]]) }), { ...OPTIONS, firstHour: 100 });
   assert.equal(model.lanes[0]!.spans[0]!.startBy, true, 'hours 90-99 were not read: the start is not definite');
 });
+
+test('a war the reply proves ongoing is kept by a Range that starts after the reply was read', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 200, null, true), side(2, tags([100, 'SPR']), 100, 200, 0)];
+  const data = validateCivilWarsReply(reply(200, [war('w', 100, 200, sides)], { nextChange: 250 }));
+  const model = civilWarsProjection.project(createBoundedReadView({ hour: 230, identity, panels: new Map([['main', data]]) }), { ...OPTIONS, firstHour: 210 });
+  assert.equal(model.summaryText, '1 civil war · 1 ongoing');
+});

@@ -751,9 +751,10 @@ export function hitTimeline(layout: TimelineLayout, resolution: TimelineResoluti
   const hour = Math.floor(xToHour(layout, x));
   let nearest: { readonly span: TimelineSpan; readonly distance: number } | null = null;
   for (const { span, x0, x1 } of paintedSpans(resolution, lane, layout)) {
-    const distance = x >= x0 && x < x1 ? 0 : x < x0 ? x0 - x : x - x1;
+    const direct = x >= x0 && x < x1;
+    const distance = direct ? -1 : x < x0 ? x0 - x : x - x1;
     if (distance <= HIT_SLACK && (!nearest || distance < nearest.distance)) nearest = { span, distance };
-    if (distance === 0) break;
+    if (direct) break;
   }
   if (!nearest) return { kind: 'lane', laneKey: lane.key, hour };
   const span = spanUnder(resolution, nearest.span, hour);
