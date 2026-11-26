@@ -569,7 +569,7 @@ mod tests {
             )
             .unwrap();
         let ids: Vec<u128> = answer.rows.iter().map(|shown| index.get(shown.at).id).collect();
-        assert_eq!(ids, [2, 1], "member slot 7 keeps its later BBB row and nonmember slot 8 taking AAA is excluded");
+        assert_eq!(ids, [2, 1], "slot 7 keeps its later BBB row and slot 8 has no witnessed membership");
         assert!(answer.gaps.iter().any(|gap| gap.first_hour == 117 && gap.last_hour == 120), "slot 8 could have joined during the unread roster: {:?}", answer.gaps);
     }
 }

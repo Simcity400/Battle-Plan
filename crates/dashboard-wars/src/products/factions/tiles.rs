@@ -778,7 +778,7 @@ mod tests {
                 if hour == 107 {
                     tables[TableId::Countries.index()] = TableView::Unavailable { reason: "country roster unread".into() };
                 }
-                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
+                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(if hour == 108 { Vec::new() } else { links.clone() }));
                 tables[TableId::HumanControllers.index()] = TableView::Complete(TableRows::HumanControllers(Vec::new()));
                 tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
                     FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() },
@@ -804,6 +804,8 @@ mod tests {
         let reason = query.holders.not_known(&Country::from("GER"), 107).unwrap();
         assert!(chosen["rows"][0]["total"].is_null());
         assert_eq!(chosen["rows"][0]["missing"], reason);
+        let unlinked = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 108, "kind": "country-factories", "measure": "free7", "members": ["GER"] }), &load, &cancelled);
+        assert_eq!(unlinked["rows"][0]["missing"], format!("Who holds GER is not known: {}", dashboard_query::identity::TAG_UNLINKED));
     }
 
     fn load_at(source: &Source, params: Value, load: &LoadContext, cancelled: &AtomicBool) -> Value {

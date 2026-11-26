@@ -2,6 +2,8 @@ import { entryAt } from '../../dashboard/reads.ts';
 import type { WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { labelObservationAt } from '../wars/warsData.ts';
 
+export const WAR_NOT_STARTED = 'The selected war has not started at this date.';
+
 export function chosenWar(reply: WarsReply, saved: string | null, at: number): WarTimeline | null {
   if (saved) {
     const war = reply.wars.find(item => item.id === saved);
@@ -26,14 +28,18 @@ export const readHourFor = (war: WarTimeline, at: number) => Math.min(Math.floor
 export function warChipAt(wars: WarsReply | undefined, saved: string | null, at: number | null) {
   const war = wars && at !== null ? chosenWar(wars, saved, at) : null;
   const observation = war && at !== null ? labelObservationAt(war, at) : null;
-  return { at, observation, key: `${war?.id ?? ''}:${observation?.firstHour ?? ''}` };
+  const prestart = !war && at !== null && !!wars?.wars.some(item => item.id === saved && at < item.firstHour);
+  return { at, observation, prestart, key: `${war?.id ?? ''}:${observation?.firstHour ?? ''}:${prestart}` };
 }
 
 export const warName = (observation: WarObservation | null) => observation?.name.known ? observation.name.text : 'Name not recorded';
 
-export function warChoicesAt(wars: WarsReply | undefined, at: number) {
-  return (wars?.wars ?? []).flatMap(war => {
+export function warChoicesAt(wars: WarsReply | undefined, at: number, saved: string | null = null) {
+  const choices: { id: string; firstHour: number | null; name: string }[] = [];
+  for (const war of wars?.wars ?? []) {
     const observation = entryAt(war.observations, at);
-    return observation ? [{ id: war.id, firstHour: war.firstHour, name: warName(observation) }] : [];
-  });
+    if (observation) choices.push({ id: war.id, firstHour: war.firstHour, name: warName(observation) });
+    else if (war.id === saved) choices.push({ id: war.id, firstHour: null, name: WAR_NOT_STARTED });
+  }
+  return choices;
 }

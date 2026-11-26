@@ -8,7 +8,7 @@ use dashboard_world::products::{group_members::{self, GroupsAt}, groups::{Countr
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
     coverage::{Witness, witnessed},
-    identity::{Holder, Holders},
+    identity::{Holder, Holders, TAG_UNLINKED},
     series::{MissingSpan, ranked::{GroupKind, GroupMembership, GroupSelection}},
 };
 use replay_data::rows::{CountryFactoriesRow, GroupSpanRow as Span, TableId, TerritoryTotalRow, tables};
@@ -509,10 +509,14 @@ impl AtHour for FactionTotalsAt {
                             Err(_) => {}
                         }
                     }
-                    _ => {
+                    holder => {
                         member_countries.push(country.clone());
                         if missing.is_none() {
-                            missing = Some(at.holders.not_known_as(&tag, frame.hour).unwrap_or_else(|| format!("A member ({tag}) is not present at this hour")));
+                            missing = Some(if holder == Some(Holder::Unresolved) {
+                                format!("Who holds {country} is not known: {}", at.holders.unknown_reason(frame.hour).unwrap_or(TAG_UNLINKED))
+                            } else {
+                                format!("A member ({country}) is not present at this hour")
+                            });
                         }
                     }
                 }

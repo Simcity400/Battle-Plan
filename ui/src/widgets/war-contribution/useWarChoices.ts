@@ -11,6 +11,7 @@ import type { WarsReply } from '../../generated/dashboard';
 import { validateWarsReply } from '../wars/warsData';
 import { useHeadHour } from '../army-size/headHour';
 import { warChoicesAt } from './warContributionData';
+import { savedWar } from './warContributionPlan';
 import { productRequest } from '../../dashboard/request.ts';
 
 export function useWarsReply(widget: WidgetBase, runtime: WidgetRuntime, active: boolean): ProductState<WarsReply> {
@@ -24,7 +25,7 @@ export function useWars(widget: WidgetBase, runtime: WidgetRuntime, active: bool
   return useWarsReply(widget, runtime, active).data;
 }
 
-export function useWarMenu(widget: WidgetBase, runtime: WidgetRuntime) {
+export function useWarMenu(widget: WidgetBase, runtime: WidgetRuntime, saved: string | null) {
   const reply = useWarsReply(widget, runtime, true);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const starts = useMemo(() => (reply.data?.wars ?? []).flatMap(war => war.observations).sort((a, b) => a.firstHour - b.firstHour), [reply.data]);
@@ -32,12 +33,12 @@ export function useWarMenu(widget: WidgetBase, runtime: WidgetRuntime) {
   const edge = (clock: number) => entryAt(starts, date(clock))?.firstHour ?? -Infinity;
   const clock = useHeadHour(runtime.clock, !!reply.data && widget.time.mode === 'follow', hour => String(edge(hour)));
   const at = edge(clock);
-  const choices = useMemo(() => warChoicesAt(reply.data, at), [reply.data, at]);
+  const choices = useMemo(() => warChoicesAt(reply.data, at, saved), [reply.data, at, saved]);
   return { reply, choices };
 }
 
 export function useWarChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const { choices } = useWarMenu(widget, runtime);
+  const { choices } = useWarMenu(widget, runtime, savedWar(widget.options ?? {}));
   return useMemo(() => ({ war: choices.map(war => ({ value: setToken(war.id),
-    label: `${war.name} · ${dayLabel(war.firstHour)}` })) }), [choices]);
+    label: war.firstHour === null ? war.name : `${war.name} · ${dayLabel(war.firstHour)}` })) }), [choices]);
 }

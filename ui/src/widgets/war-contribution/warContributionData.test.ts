@@ -27,6 +27,7 @@ test('the saved war wins while it exists, else the war with most participants go
     observation(0, 49, ['A'], ['B'], 'First name'), observation(50, 100, ['A'], ['B'], 'Later name'),
   ] }, reply.wars[2]!] };
   assert.deepEqual(warChoicesAt(renamed, 49), [{ id: '1', firstHour: 0, name: 'First name' }]);
+  assert.deepEqual(warChoicesAt(renamed, 49, '3')[1], { id: '3', firstHour: null, name: 'The selected war has not started at this date.' });
   assert.equal(warChoicesAt(renamed, 50)[0]?.name, 'Later name');
   assert.equal(readHourFor(reply.wars[0], 550), 100, 'an ended war reads its last observed hour');
   const sides = reply.wars[1].observations[0];
