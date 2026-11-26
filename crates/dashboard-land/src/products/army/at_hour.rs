@@ -82,7 +82,7 @@ fn name_army_groups(frame: &DecodedFrame, tokens: &BTreeSet<u128>, catalogue: Op
     if unresolved > 0 {
         warnings.push(format!("{unresolved} sub-unit group/name lookups are unresolved or refused; battalions remain counted."));
     }
-    let groups = units.as_deref().into_iter().flat_map(|units| units.in_content_order().filter_map(|unit| Some(group_key(units.group(unit).ok()??)))).collect::<Vec<_>>();
+    let groups = units.as_deref().filter(|units| units.gap().is_none()).into_iter().flat_map(|units| units.in_content_order().filter_map(|unit| Some(group_key(units.group(unit).ok()??)))).collect::<Vec<_>>();
     Named::group(resolved).in_content_order(groups)
 }
 

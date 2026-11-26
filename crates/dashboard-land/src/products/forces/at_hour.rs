@@ -1,6 +1,7 @@
 use super::{
     AirForceMeasure, AirForceOwnership, Content, ForcePart, Named, NavyGrouping, NavyMeasure, NavyOwnership, UNRESOLVED, equipment, split, unidentified, validate_selection, variant_part,
 };
+use content_reader_key_names::unit_leader::AirWings as _;
 use content_reader_script::sub_units::{Domain, SubUnit, SubUnits};
 use dashboard_base::{
     Source,
@@ -385,7 +386,7 @@ fn name_air_planes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Conte
         })
         .collect();
     warnings.extend(notes);
-    Named::group(resolved).in_content_order(aircraft(content, warnings))
+    Named::group(resolved).in_content_order(aircraft(units.as_deref(), content, warnings))
 }
 
 fn sub_units(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<SubUnits>> {
@@ -408,12 +409,17 @@ fn sub_units(content: &Content, warnings: &mut Vec<String>) -> Option<Arc<SubUni
     })
 }
 
-fn aircraft(content: &Content, warnings: &mut Vec<String>) -> Vec<String> {
-    let Some(units) = sub_units(content, warnings) else { return Vec::new() };
+fn aircraft(equipment: Option<&content_reader_key_names::equipment::Database>, content: &Content, warnings: &mut Vec<String>) -> Vec<String> {
+    let (Some(units), Some(equipment)) = (sub_units(content, warnings).filter(|units| units.gap().is_none()), equipment) else { return Vec::new() };
     units
         .in_content_order()
-        .filter_map(|unit| units.air_wing(unit).ok().filter(|wing| wing.sizes.iter().any(|&size| size > 0))?.first_requirement.clone())
-        .filter_map(|archetype| String::from_utf8(archetype).ok())
+        .filter(|unit| units.air_wing_sizes(unit, equipment).is_ok_and(|sizes| sizes.iter().any(|&size| size > 0)))
+        .filter_map(|unit| {
+            let required = units.air_wing(unit).ok()?.first_requirement.as_ref()?;
+            let at = equipment.get(required)?;
+            let archetype = if equipment.equipment[at].is_archetype { at } else { equipment.equipment[at].archetype? };
+            equipment.equipment[archetype].name_str().ok().map(str::to_owned)
+        })
         .collect()
 }
 
@@ -460,13 +466,14 @@ fn name_air_wings(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Conten
         resolved.insert(part, named);
     }
     warnings.extend(notes);
-    Named::group(resolved).in_content_order(aircraft(content, warnings))
+    Named::group(resolved).in_content_order(aircraft(units.as_deref(), content, warnings))
 }
 
 fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Content, grouping: NavyGrouping, warnings: &mut Vec<String>) -> Named {
     let spelled = frame_literals(frame);
     let units = sub_units(content, warnings);
     let mut resolved = BTreeMap::new();
+    let mut unplaced = BTreeMap::new();
     for &part in parts {
         let token = part as u32;
         let spelling = spelled.get(&token);
@@ -507,17 +514,19 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
         if let (Some(spelling), Some(units)) = (spelling, units.as_deref())
             && let Err(why) = units.domain(spelling.as_bytes())
         {
-            warnings.push(format!("{spelling}: {why}; its part is drawn in the neutral colour."));
+            unplaced.insert(named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour."));
         }
         resolved.insert(part, named);
     }
-    let order = units.as_deref().into_iter().flat_map(|units| {
+    let order = units.as_deref().filter(|units| units.gap().is_none()).into_iter().flat_map(|units| {
         units.in_content_order().filter(|unit| units.domain(unit) == Ok(Domain::Sea)).filter_map(|unit| match grouping {
             NavyGrouping::Class => std::str::from_utf8(unit).ok().map(|unit| format!("class:{unit}")),
             NavyGrouping::Type => units.category(unit).ok().map(|mask| format!("type:{mask}")),
         })
     });
-    Named::group(resolved).in_content_order(order.collect::<Vec<_>>())
+    let named = Named::group(resolved).in_content_order(order.collect::<Vec<_>>());
+    warnings.extend(unplaced.into_iter().filter(|(key, _)| !named.order.contains_key(key)).map(|(_, warning)| warning));
+    named
 }
 
 pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &HashMap<u32, Vec<(u128, Option<i64>)>>, parts_error: Option<String>) -> (Vec<ForcePart>, Vec<ForceAtRow>, Vec<String>) {
