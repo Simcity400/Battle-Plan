@@ -2,6 +2,7 @@ use super::*;
 use crate::triggers::{
     ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query,
 };
+use dashboard_core::test_fixtures::game;
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
     rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
@@ -274,7 +275,7 @@ fn scoped_ruling_ideology_keeps_unresolved_country_refusal() {
 
 #[test]
 fn has_war_records_clock_only_when_scanning_relations() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let body = content_reader_parser::parser::parse(b"has_war=yes").unwrap().items;
     for (hour, enemies, expected, scans) in [
         (16, Vec::new(), true, true),
@@ -1880,8 +1881,7 @@ fn every_other_world_query_is_declared_and_reads_no_table_field_or_row_it_does_n
 
 #[test]
 fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let root =
         std::env::temp_dir().join(format!("dashboard-declared-trait-{}", std::process::id()));
     let file = root.join("common/country_leader/traits.txt");
