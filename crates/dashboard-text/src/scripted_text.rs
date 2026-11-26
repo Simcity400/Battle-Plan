@@ -706,7 +706,7 @@ impl ScriptedText<'_> {
                 crate::triggers::inputs::digest(&self.character_name_unrecorded(*id))
             }
             TextQuery::Capital(slot, original) => {
-                crate::triggers::inputs::digest_debug(&self.capital_unrecorded(*slot, *original))
+                crate::triggers::inputs::fingerprint(&self.capital_unrecorded(*slot, *original))
             }
             TextQuery::Overlord(slot) => {
                 crate::triggers::inputs::digest(&self.overlord_unrecorded(*slot))
@@ -715,13 +715,13 @@ impl ScriptedText<'_> {
                 crate::triggers::inputs::digest(&self.state_record_unrecorded(*id))
             }
             TextQuery::StateCountry(id, owner) => {
-                crate::triggers::inputs::digest_debug(&self.state_country_unrecorded(*id, *owner))
+                crate::triggers::inputs::fingerprint(&self.state_country_unrecorded(*id, *owner))
             }
             TextQuery::CharacterCountry(id) => {
-                crate::triggers::inputs::digest_debug(&self.character_country_unrecorded(*id))
+                crate::triggers::inputs::fingerprint(&self.character_country_unrecorded(*id))
             }
             TextQuery::EventObject(object, name) => {
-                crate::triggers::inputs::digest_debug(&self.event_object_unrecorded(*object, name))
+                crate::triggers::inputs::fingerprint(&self.event_object_unrecorded(*object, name))
             }
             TextQuery::LocalPlayer => {
                 crate::triggers::inputs::digest(&self.local_player_unrecorded())
@@ -1882,7 +1882,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn capital(&self, slot: u32, original: bool) -> Result<Object, String> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_typed(
             || crate::triggers::inputs::Key::Text(TextQuery::Capital(slot, original)),
             || self.capital_unrecorded(slot, original),
         )
@@ -1970,7 +1970,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn state_country(&self, id: u32, owner: bool) -> Result<Object, String> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_typed(
             || crate::triggers::inputs::Key::Text(TextQuery::StateCountry(id, owner)),
             || self.state_country_unrecorded(id, owner),
         )
@@ -1988,7 +1988,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn character_country(&self, id: u32) -> Result<Object, String> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_typed(
             || crate::triggers::inputs::Key::Text(TextQuery::CharacterCountry(id)),
             || self.character_country_unrecorded(id),
         )
@@ -2010,7 +2010,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     fn event_object(&self, object: EventObject, name: &str) -> Result<Object, String> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_typed(
             || crate::triggers::inputs::Key::Text(TextQuery::EventObject(object, name.to_owned())),
             || self.event_object_unrecorded(object, name),
         )

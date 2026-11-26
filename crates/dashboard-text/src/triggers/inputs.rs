@@ -2,7 +2,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
-    hash::{Hash, Hasher},
+    hash::{DefaultHasher, Hash, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -10,7 +10,8 @@ use replay::{campaign::QuietHours, campaign::TableFields};
 use replay_data::{
     BranchId, Hour, rows::DeltaRow, rows::TableId, rows::full_mask, rows::tables,
 };
-use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, kept, view_reads};
+use replay_data::rows::{RowCodec, RowsVisit, TableRows};
+use replay_frame::frame::{DecodedFrame, HourFrame, OperandStatus, Rowset, TableView, ViewIdentity, kept, view_reads};
 use std::sync::LazyLock;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -735,7 +736,7 @@ pub fn query<V: Hash>(key: impl FnOnce() -> Key, compute: impl FnOnce() -> V) ->
     value
 }
 
-pub fn query_debug<V: std::fmt::Debug>(
+pub fn query_typed<V: Fingerprint>(
     key: impl FnOnce() -> Key,
     compute: impl FnOnce() -> V,
 ) -> V {
@@ -743,7 +744,7 @@ pub fn query_debug<V: std::fmt::Debug>(
         return compute();
     }
     let value = unrecorded(compute);
-    record(key(), || Value::Digest(digest_debug(&value)));
+    record(key(), || Value::Digest(fingerprint(&value)));
     value
 }
 
@@ -774,7 +775,7 @@ pub(crate) fn query_resolved<V: Hash>(key: impl FnOnce() -> Key, compute: impl F
     value
 }
 
-pub(crate) fn query_debug_resolved<V: std::fmt::Debug>(
+pub(crate) fn query_typed_resolved<V: Fingerprint>(
     key: impl FnOnce() -> Key,
     compute: impl FnOnce() -> V,
 ) -> V {
@@ -783,7 +784,7 @@ pub(crate) fn query_debug_resolved<V: std::fmt::Debug>(
     }
     let (value, failures) = unrecorded(|| super::refusal::resolutions(compute));
     record(key(), || {
-        Value::Digest(with_resolutions(digest_debug(&value), &failures))
+        Value::Digest(with_resolutions(fingerprint(&value), &failures))
     });
     value
 }
@@ -820,8 +821,8 @@ pub fn table<'f>(frame: impl Into<replay_frame::frame::HourFrame<'f>>, table: Ta
 fn view_value(frame: replay_frame::frame::HourFrame<'_>, table: TableId) -> Value {
     match (frame.identity(table), frame.decoded()) {
         (Some(view), _) => Value::View(view),
-        (None, Some(decoded)) => Value::Digest(digest_debug(decoded.view(table.index()))),
-        (None, None) => Value::Digest(digest_debug(&frame.status(table))),
+        (None, Some(decoded)) => Value::Digest(fingerprint(decoded.view(table.index()))),
+        (None, None) => Value::Digest(fingerprint(&frame.status(table))),
     }
 }
 
@@ -848,17 +849,175 @@ fn record(key: Key, value: impl FnOnce() -> Value) {
     });
 }
 
-pub fn digest_debug<V: std::fmt::Debug + ?Sized>(value: &V) -> u64 {
-    struct Digesting(std::hash::DefaultHasher);
-    impl std::fmt::Write for Digesting {
-        fn write_str(&mut self, text: &str) -> std::fmt::Result {
-            self.0.write(text.as_bytes());
-            Ok(())
+pub trait Fingerprint {
+    fn fingerprint(&self, into: &mut DefaultHasher);
+}
+
+pub fn fingerprint<V: Fingerprint + ?Sized>(value: &V) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.fingerprint(&mut hasher);
+    hasher.finish()
+}
+
+macro_rules! hashed {
+    ($($held:ty),* $(,)?) => {
+        $(impl Fingerprint for $held {
+            fn fingerprint(&self, into: &mut DefaultHasher) {
+                Hash::hash(self, into);
+            }
+        })*
+    };
+}
+
+hashed!(
+    bool, i32, u32, u64, str, String,
+    super::Failure, super::Eval, super::world::PartyLeaders, super::saved_event_targets::Selected,
+    crate::scope::Target, crate::scope::Unresolved, crate::scripted_text::Object,
+    content_reader_key_names::tag_aliases::TagAlias, content_reader_country_names::country_names::Operands,
+);
+
+impl Fingerprint for super::world::Invasion<'_> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        Hash::hash(self, into);
+    }
+}
+
+pub(crate) fn row_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
+    into.write_u128(row.key());
+    let mut fields = Vec::new();
+    match row.encode_fields(&mut fields) {
+        Ok(()) => into.write(&fields),
+        Err(error) => error.to_string().hash(into),
+    }
+}
+
+macro_rules! rows {
+    ($($row:ty),* $(,)?) => {
+        $(impl Fingerprint for $row {
+            fn fingerprint(&self, into: &mut DefaultHasher) {
+                row_fingerprint(self, into);
+            }
+        })*
+    };
+}
+
+rows!(
+    replay_data::rows::GlobalSavedEventTargetRow, replay_data::rows::DivisionStatusRow, replay_data::rows::IndustrialOrganisationRow,
+    replay_data::rows::IndustrialOrganisationDetailsRow, replay_data::rows::CountryCounterInputRow, replay_data::rows::UnitLeaderRow,
+    replay_data::rows::CharacterRow, replay_data::rows::CountryAppearanceRow,
+);
+
+impl<T: Fingerprint + ?Sized> Fingerprint for &T {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        (**self).fingerprint(into);
+    }
+}
+
+impl<T: Fingerprint> Fingerprint for Option<T> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        match self {
+            None => into.write_u8(0),
+            Some(value) => {
+                into.write_u8(1);
+                value.fingerprint(into);
+            }
         }
     }
-    let mut hasher = Digesting(std::hash::DefaultHasher::new());
-    std::fmt::Write::write_fmt(&mut hasher, format_args!("{value:?}")).expect("digest write");
-    hasher.0.finish()
+}
+
+impl<T: Fingerprint, E: Fingerprint> Fingerprint for Result<T, E> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        match self {
+            Ok(value) => {
+                into.write_u8(0);
+                value.fingerprint(into);
+            }
+            Err(error) => {
+                into.write_u8(1);
+                error.fingerprint(into);
+            }
+        }
+    }
+}
+
+impl<T: Fingerprint> Fingerprint for [T] {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        into.write_usize(self.len());
+        self.iter().for_each(|value| value.fingerprint(into));
+    }
+}
+
+impl<T: Fingerprint> Fingerprint for Vec<T> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        self.as_slice().fingerprint(into);
+    }
+}
+
+impl<A: Fingerprint, B: Fingerprint> Fingerprint for (A, B) {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        self.0.fingerprint(into);
+        self.1.fingerprint(into);
+    }
+}
+
+impl<K: Fingerprint, V: Fingerprint> Fingerprint for std::collections::BTreeMap<K, V> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        into.write_usize(self.len());
+        for (key, value) in self {
+            key.fingerprint(into);
+            value.fingerprint(into);
+        }
+    }
+}
+
+impl<T: Fingerprint + ToOwned + ?Sized> Fingerprint for std::borrow::Cow<'_, T> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        (**self).fingerprint(into);
+    }
+}
+
+impl Fingerprint for OperandStatus<'_> {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        std::mem::discriminant(self).hash(into);
+        match *self {
+            OperandStatus::Complete | OperandStatus::WrongLayout => {}
+            OperandStatus::TruncatedWrongLayout(missing) | OperandStatus::Truncated(missing) => into.write_u32(missing),
+            OperandStatus::Unavailable(reason) => reason.hash(into),
+            OperandStatus::NotRecorded(mode) => mode.byte().hash(into),
+        }
+    }
+}
+
+struct RowsFingerprint<'h>(&'h mut DefaultHasher);
+
+impl RowsVisit for RowsFingerprint<'_> {
+    type Output = ();
+    fn rows<R: RowCodec>(self, rows: &[R]) {
+        self.0.write_usize(rows.len());
+        rows.iter().for_each(|row| row_fingerprint(row, self.0));
+    }
+}
+
+impl Fingerprint for TableRows {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        std::mem::discriminant(self).hash(into);
+        self.visit(RowsFingerprint(into));
+    }
+}
+
+impl Fingerprint for TableView {
+    fn fingerprint(&self, into: &mut DefaultHasher) {
+        std::mem::discriminant(self).hash(into);
+        match self {
+            TableView::Complete(rows) => rows.fingerprint(into),
+            TableView::Truncated { rows, missing } => {
+                rows.fingerprint(into);
+                into.write_u32(*missing);
+            }
+            TableView::Unavailable { reason } => reason.hash(into),
+            TableView::NotRecorded { mode } => mode.byte().hash(into),
+        }
+    }
 }
 
 pub fn digest<V: Hash + ?Sized>(value: &V) -> u64 {

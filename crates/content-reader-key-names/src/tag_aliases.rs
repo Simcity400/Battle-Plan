@@ -8,7 +8,7 @@ use std::{
     io,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TagAlias {
     pub original_tag: Option<Vec<u8>>,
     pub original_tag_assignments: usize,
@@ -34,7 +34,7 @@ impl TagAlias {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VariableKey {
     Variable,
     EventTarget,

@@ -1,5 +1,5 @@
 
-use crate::triggers::inputs::{Key, digest, digest_debug, query, query_debug};
+use crate::triggers::inputs::{Key, digest, fingerprint, query, query_typed};
 use content_reader_country_names::{country_names::CountryNames, country_names::Operands};
 
 pub(crate) struct RecordedNames<'a>(pub(super) CountryNames<'a>);
@@ -16,7 +16,7 @@ pub enum Query {
 
 impl RecordedNames<'_> {
     pub(crate) fn operands(&self, slot: u32) -> Option<&Result<Operands, String>> {
-        query_debug(
+        query_typed(
             || Key::Names(Query::Operands(slot)),
             || self.0.operands(slot),
         )
@@ -49,7 +49,7 @@ impl RecordedNames<'_> {
 
     pub fn reread(&self, query: &Query) -> u64 {
         match query {
-            Query::Operands(slot) => digest_debug(&self.0.operands(*slot)),
+            Query::Operands(slot) => fingerprint(&self.0.operands(*slot)),
             Query::Name(slot) => digest(&self.0.name(*slot)),
             Query::NameWith(slot, suffix) => digest(&self.0.name_with(*slot, suffix)),
             Query::RulingGroup(slot) => digest(&self.0.ruling_group(*slot)),

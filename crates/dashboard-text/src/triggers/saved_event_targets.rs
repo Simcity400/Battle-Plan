@@ -38,7 +38,7 @@ impl Reader {
         )
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Selected {
     Missing,
     State(i32),

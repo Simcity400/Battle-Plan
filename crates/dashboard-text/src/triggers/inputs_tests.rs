@@ -2380,3 +2380,19 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
     assert!(!confirmed.unchanged(&since));
     assert!(!confirm(&mut confirmed, &third, Some(&since)).0);
 }
+
+#[test]
+fn two_tables_whose_texts_differ_only_in_bytes_that_are_not_text_have_different_fingerprints() {
+    use replay_data::{event_feed_rows::{EventFeedScope, EventFeedText}, rows::{EventFeedHistoryRow, RowCodec}};
+    let table = |name: &[u8]| {
+        let names = [EventFeedText::new(name).unwrap(), EventFeedText::default(), EventFeedText::default()];
+        let row = EventFeedHistoryRow { script_scopes: vec![EventFeedScope { country_names: Some(names), ..Default::default() }], ..Default::default() };
+        row.encode_fields(&mut Vec::new()).expect("the row is one the recording can hold");
+        TableView::Complete(TableRows::EventFeedHistory(vec![row]))
+    };
+    let (first, second) = (table(b"Reich \xff"), table(b"Reich \xfe"));
+    assert_ne!(first, second);
+    assert_eq!(format!("{first:?}"), format!("{second:?}"), "both read the same as text, which is what a diagnostic fingerprint saw");
+    assert_ne!(fingerprint(&first), fingerprint(&second), "the typed fingerprint keeps the recorded bytes");
+    assert_eq!(fingerprint(&first), fingerprint(&table(b"Reich \xff")));
+}

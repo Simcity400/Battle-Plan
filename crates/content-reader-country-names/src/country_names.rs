@@ -28,7 +28,7 @@ pub const TABLES: [TableId; 7] = [
     TableId::ReservedCountryNaming,
 ];
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[derive(replay_spool::Spooled)]
 pub struct Operands {
     pub tag: String,
