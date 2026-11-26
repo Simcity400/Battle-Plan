@@ -435,7 +435,7 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   prodAxisCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawTimeAxis(prodAxisCtx, strokeTicks, {
     plotLeft: 30,
-    plotRight: 62,
+    plotRight: 45,
     startHour: H0,
     endHour: H0 + 15 * 24,
     axisTop: 80,
@@ -451,7 +451,7 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   refAxisCtx.strokeStyle = resolveKitTokens(darkTheme).zeroLine;
   refAxisCtx.lineWidth = 1;
   for (const tick of strokeTicks) {
-    const x = Math.floor(30 + ((tick.hour - H0) / (15 * 24)) * 32) + 0.5;
+    const x = Math.floor(30 + ((tick.hour - H0) / (15 * 24)) * 15) + 0.5;
     refAxisCtx.beginPath();
     refAxisCtx.moveTo(x, 80);
     refAxisCtx.lineTo(x, 85);
@@ -469,7 +469,7 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     mode: 'lines',
     hour: H0 + 24,
     extent: [H0, H0 + 24],
-    yAxis: { format: 'number', fixed: [0, 10], ticks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+    yAxis: { format: 'number', fixed: [0, 10], ticks: Array.from({ length: 21 }, (_, i) => i * 0.5) },
     series: [],
   };
   const denseLay = layoutTimeChart(denseGridModel, 200, 60, darkTheme.font, cachedMeasure);
