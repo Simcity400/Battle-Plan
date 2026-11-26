@@ -563,6 +563,7 @@ describe('time-chart laneView integration', () => {
     }, state, () => `c${seq++}`);
 
     assert.equal(painted.surfaces.length, 1);
+    assert.deepEqual(painted.fields.drawnKeys?.value, { main: ['GER'] });
     assert.ok(painted.fields.audit);
     assert.deepEqual(painted.fields.artDemands?.value, [{ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true }],
       'the full sprite handle goes to the art request');

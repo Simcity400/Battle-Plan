@@ -54,7 +54,7 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       activatedMatchesInstalled: boolean;
     }>('testGenericHostFrames()');
     assert.equal(generic.firstPicture, true, 'generic host installs its first picture');
-    assert.deepEqual(generic.rankedHovers, [[90, ['NEW']], [90, ['NEXT']]], 'a stationary hit reports only the installed ranking changes');
+    assert.deepEqual(generic.rankedHovers, [[90, ['NEW', 'OLD']], [90, ['NEXT']]], 'a stationary hit reports a different country only when it enters the picture');
     assert.ok(generic.mountCommits > 0, 'the generic host render counter observes mounting');
     assert.ok(generic.quiet.hoursAdvanced > 0, 'quiet playback advanced the clock');
     assert.deepEqual([generic.quiet.commits, generic.quiet.binds, generic.quiet.paints], [0, 0, 0], 'quiet playback ticks: no React render, no bind, no paint');

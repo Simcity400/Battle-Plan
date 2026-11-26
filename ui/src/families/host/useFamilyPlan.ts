@@ -172,8 +172,6 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly widget: WidgetBase;
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
-  readonly hoverHour?: number | null;
-  readonly drawnKeys?: DrawnKeys;
   readonly setOption?: (key: string, value: OptionValue) => void;
 }
 
@@ -198,6 +196,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly tiledSeries: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
   readonly onSeriesViewport: (viewport: TileViewport) => void;
   readonly retryTiles: () => void;
+  readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null>) | undefined;
   readonly bodyStatus: FamilyBodyStatus;
@@ -231,8 +230,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     widget,
     runtime,
     active,
-    hoverHour = null,
-    drawnKeys,
     setOption,
   } = input;
 
@@ -689,12 +686,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, []);
 
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
+  const [hover, setHover] = useState<{ hour: number; keys?: DrawnKeys; owner: string; sourceOwner?: string } | null>(null);
+  const sourceOwner = plan?.owner;
+  const onHoverHour = useCallback((hour: number | null, keys?: DrawnKeys) => {
+    setHover(hour === null ? null : { hour, keys, owner, sourceOwner });
+  }, [owner, sourceOwner]);
   const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
   const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
   const asksRef = useRef<readonly HoverAsk[] | undefined>(undefined);
   const asks = useMemo(
-    () => (asksRef.current = active && plan ? hoverAsks(plan, hoverHour, name => displayedHoverKeys(name, drawnKeys, displayedSeries), asksRef.current) : []),
-    [active, plan, hoverHour, drawnKeys, displayedSeries],
+    () => (asksRef.current = active && plan && hover?.owner === owner && hover.sourceOwner === sourceOwner
+      ? hoverAsks(plan, hover.hour, name => displayedHoverKeys(name, hover.keys, displayedSeries), asksRef.current) : []),
+    [active, plan, owner, sourceOwner, hover, displayedSeries],
   );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
@@ -1226,6 +1229,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     tiledSeries: currentTiled?.series ?? NO_SERIES,
     onSeriesViewport,
     retryTiles,
+    onHoverHour,
     hovers,
     exactReadView,
     bodyStatus,

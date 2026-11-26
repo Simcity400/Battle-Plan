@@ -349,7 +349,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const inspectedHitRef = useRef<ParsedFamilyHit | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const lastHoverHourRef = useRef<number | null>(null);
-  const lastDrawnKeysRef = useRef<DrawnKeys | undefined>(undefined);
+  const lastHoverKeys = useRef<{ picture?: DrawnKeys; asked?: DrawnKeys; owner?: string }>({});
   const heldRef = useRef(held);
   heldRef.current = held;
   const pauseFlushRef = useRef(0);
@@ -479,10 +479,13 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
     const keys = normalized === null ? undefined : recordRef.current?.fields.drawnKeys as DrawnKeys | undefined;
-    const drawnKeys = keepEqual(lastDrawnKeysRef.current, keys);
-    if (normalized === lastHoverHourRef.current && drawnKeys === lastDrawnKeysRef.current) return;
+    const previous = lastHoverKeys.current;
+    const owner = normalized === null ? undefined : latestRef.current.plan?.owner;
+    const drawnKeys = keys === previous.picture ? previous.asked : keys && keepEqual(previous.asked,
+      Object.fromEntries(Object.entries(keys).map(([name, series]) => [name, [...series].sort()])));
+    if (keys !== previous.picture || owner !== previous.owner) lastHoverKeys.current = { picture: keys, asked: drawnKeys, owner };
+    if (normalized === lastHoverHourRef.current && drawnKeys === previous.asked && owner === previous.owner) return;
     lastHoverHourRef.current = normalized;
-    lastDrawnKeysRef.current = drawnKeys;
     latestRef.current.onHoverHour?.(normalized, drawnKeys);
   }, []);
 

@@ -92,7 +92,7 @@ const client = {
 const clock = new PlaybackController();
 const paintsByWidget = new Map<number, number>();
 let payloadTips = false;
-let hoverRanking: string | null = null;
+let hoverRanking: readonly string[] | null = null;
 const hoverReports: Array<readonly [number | null, readonly string[] | undefined]> = [];
 
 type PaintedField = { readonly value: unknown; readonly content: string };
@@ -125,7 +125,7 @@ function createLane(): LaneWorker {
           const painted = paint(input, state, content);
           if (painted.mode !== undefined && painted.mode !== 'picture') return painted;
           const fields = { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' },
-            ...(hoverRanking ? { drawnKeys: { value: { main: [hoverRanking] }, content: hoverRanking } } : {}) };
+            ...(hoverRanking ? { drawnKeys: { value: { main: hoverRanking }, content: hoverRanking.join(',') } } : {}) };
           if (payloadTips && 'focusTooltip' in fields) fields.focusTooltip = asPayloadTip(fields.focusTooltip) as typeof fields.focusTooltip;
           return { ...painted, fields };
         };
@@ -625,7 +625,7 @@ window.hostDom = {
   },
 
   async testGenericHostFrames() {
-    hoverRanking = 'NEW';
+    hoverRanking = ['NEW', 'OLD'];
     hoverReports.length = 0;
     currentState = { ...currentState, genericMounted: true };
     renderApp();
@@ -674,6 +674,7 @@ window.hostDom = {
     let factories = 90n;
     for (let i = 0; i < 20; i++) {
       factories += 5n;
+      hoverRanking = i % 2 ? ['NEW', 'OLD'] : ['OLD', 'NEW'];
       sendHour(subsG, clock.getSnapshot().hour, [factories, 70n, 50n, 30n]);
       await frames(1);
     }
@@ -704,7 +705,7 @@ window.hostDom = {
     row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const installed = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
-    hoverRanking = 'NEXT';
+    hoverRanking = ['NEXT'];
     sendHour(subsG, clock.getSnapshot().hour, [factories + 1n, 70n, 50n, 30n]);
     await until(() => hoverReports.at(-1)?.[1]?.[0] === 'NEXT');
     const rankedHovers = [...hoverReports];

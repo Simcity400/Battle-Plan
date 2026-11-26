@@ -124,13 +124,7 @@ export default function DeclaredFamilyWidget<
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
-  const [hover, setHover] = useState<{ hour: number; drawnKeys?: DrawnKeys } | null>(null);
   const lastViewportRef = useRef<FamilyViewportChange | null>(null);
-
-  const handleHoverHour = useCallback((next: number | null, drawnKeys?: DrawnKeys) => {
-    setHover(next === null ? null : { hour: next, drawnKeys });
-    externalHoverHour?.(next);
-  }, [externalHoverHour]);
 
 
   const optionFields = familyViewOptionFields(declaration.kind, view);
@@ -152,10 +146,13 @@ export default function DeclaredFamilyWidget<
     widget,
     runtime,
     active,
-    hoverHour: hover?.hour,
-    drawnKeys: hover?.drawnKeys,
     setOption,
   });
+  const reportHover = plan.onHoverHour;
+  const handleHoverHour = useCallback((hour: number | null, keys?: DrawnKeys) => {
+    reportHover(hour, keys);
+    externalHoverHour?.(hour);
+  }, [reportHover, externalHoverHour]);
 
   const { theme } = useFamilyTheme();
 
