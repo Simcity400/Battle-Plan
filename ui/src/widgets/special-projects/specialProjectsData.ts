@@ -5,6 +5,9 @@ import { dayLabel } from '../../charts/draw.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import type { Gate } from '../../dashboard/regionGate';
+import { productRequest } from '../../dashboard/request.ts';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -91,19 +94,24 @@ export function shownCard(data: SpecialProjectsReply, hour: number, id: string):
 
 interface EpisodeBound { through: number; open: boolean }
 
-export function episodeBound(reply: SpecialProjectsReply, project: ProjectRecord, through: number | null): EpisodeBound {
+export function projectWindowRequest(source: { id: string; revision: string }, branchId: string, opened: { tag: string; hour: number }, recorded: Gate['recorded']) {
+  const hour = recorded(opened.hour);
+  return hour === null ? null : productRequest({ sourceId: source.id, revision: source.revision, product: 'special-projects',
+    params: { branchId, country: countryFromKey(opened.tag), hour } });
+}
+
+export function episodeBound(reply: SpecialProjectsReply, project: ProjectRecord, hour: number): EpisodeBound {
   const last = project.statuses[project.statuses.length - 1].lastHour;
   const open = last === reply.available.at(-1)?.lastHour;
-  return { through: open && through !== null && through > last ? through : last, open };
+  return { through: Math.min(hour, last), open };
 }
 
 const ended = (card: ProjectCard): EpisodeBound => ({ through: card.project.statuses[card.project.statuses.length - 1].lastHour, open: false });
 const joined = (details: SpecialProjectDetails, card: ProjectCard) =>
   details.projects?.find(project => project.owner === card.project.owner && project.id === card.project.local);
 const listStale = (found: ProjectRuntimeDetails | undefined, bound: EpisodeBound) => !!found && bound.open && found.readHour > bound.through;
-const inStatuses = (project: ProjectRecord, bound: EpisodeBound, read: number) => runAt(project.statuses, read) !== null
-  || project.statuses.some(run => run.readHour === read)
-  || bound.open && read > project.statuses[project.statuses.length - 1].lastHour && read <= bound.through;
+const inStatuses = (project: ProjectRecord, bound: EpisodeBound, read: number) => read <= bound.through
+  && (runAt(project.statuses, read) !== null || project.statuses.some(run => run.readHour === read));
 
 export interface RuntimeMatch { project: ProjectRuntimeDetails; choices: ProjectRuntimeDetails['choices'] | string }
 
@@ -115,9 +123,9 @@ function recordedChoices(project: ProjectRecord, bound: EpisodeBound, found: Pro
 }
 
 export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number, bound: EpisodeBound = ended(card)): RuntimeMatch | string | null {
+  if (details.hour > hour) return null;
   const found = joined(details, card);
   if (listStale(found, bound)) return `Project rewards were read ${dayLabel(found!.readHour)}, after the project list is known current (${dayLabel(bound.through)}).`;
-  if (details.hour > hour) return null;
   if (!details.projects) return 'Project rewards and output were not read at this time.';
   if (!found) return 'Project rewards and output were not recorded for this project at this time.';
   if (found.readHour < card.project.firstRead) return 'Project rewards and output were last read before this project was first recorded.';

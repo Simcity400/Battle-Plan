@@ -32,14 +32,7 @@ impl Renderer<'_, '_, '_> {
             |row| database_index.is_none_or(|index| row.database_index == index) && c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
         )?
         .ok_or("technology definitions lacks bound technology identity")?;
-        let status = self
-            .complete::<tables::ResearchTechnologies>(0)?
-            .keys()
-            .any(|key| {
-                key as u32 as i32 == definition.database_index
-                    && world.slot((key >> 32) as u32) == Some(country)
-            });
-        if !status {
+        if !world.research_status(country, definition.database_index)? {
             return Err("research technologies lacks bound country's technology status".into());
         }
         if let Some(why) = &catalog.effect_refusal {

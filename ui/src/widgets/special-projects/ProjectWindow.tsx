@@ -70,7 +70,7 @@ function Summary({ reply, card, hour }: { reply: SpecialProjectsReply; card: Pro
 function Runtime({ reply, card, hour, ...asked }: Asked & { reply: SpecialProjectsReply; card: ProjectCard; hour: number }) {
   const { data, error, retry } = usePinnedDetails(asked);
   const values = useMemo(() => data ? detailTexts(data) : new Map<string, string>(), [data]);
-  const match = data ? runtimeProject(data, card, hour, episodeBound(reply, card.project, null)) : null;
+  const match = data ? runtimeProject(data, card, hour, episodeBound(reply, card.project, hour)) : null;
   return <div className="dossier-body">
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>

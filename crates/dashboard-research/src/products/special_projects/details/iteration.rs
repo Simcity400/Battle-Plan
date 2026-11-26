@@ -1,5 +1,5 @@
 use dashboard_effects::ScriptedEffects;
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, accepted_projects, project_slices, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, branch, context, definition, effect_tables, owner_read, owners_of, with_projects, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -46,6 +46,8 @@ pub struct IterationSection {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectIteration {
+    #[serde(skip)]
+    through: i32,
     #[doc = " The iteration's own hour: its game state is read at it, the choice and its project at the listing read."]
     pub hour: i32,
     #[doc = " The game's heading over the whole output; null when nothing is described."]
@@ -85,17 +87,23 @@ fn project_history(rows: &[ProjectHistoryRow], owner: u32, project: u32) -> &[Pr
     &rows[first..last]
 }
 
-pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterationParams, holder: Owner) -> io::Result<Result<Listing, String>> {
+pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialProjectIterationParams, holder: Owner, through: &mut i32) -> io::Result<Result<Listing, String>> {
     let read = params.read;
     if read < at.hour {
         return Ok(Err("The iteration's choices were listed before its hour".into()));
     }
+    *through = read;
     let run = query.timeline.at(read).ok_or_else(|| dashboard_core::refused("The read listing this iteration is not recorded"))?.run;
-    let reads = Reads { query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: read };
-    match reads.held_since(params.owner, at.hour) {
-        Err(Withheld::Owner) => return Ok(Err(OTHER_OWNER.into())),
-        Err(_) => return Ok(Err("This iteration's choice was listed after this country stopped holding the tag".into())),
-        Ok(()) => {}
+    let reads = Reads { through: None, query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: read };
+    let since = super::super::held_from(query, &params.country, holder.slot, holder.id, read);
+    if since.is_none_or(|since| at.hour < since) {
+        if let Some(since) = since { *through = (*through).min(since - 1); }
+        return Ok(Err("This iteration's choice was listed after this country stopped holding the tag".into()));
+    }
+    let Some(links) = reads.run_links() else { return Ok(Err(OTHER_OWNER.into())) };
+    if let Some((_, _, end)) = links.within(params.owner, at.hour, read).filter(|(slot, ..)| *slot != Some(holder.slot)).last() {
+        *through = end;
+        return Ok(Err(OTHER_OWNER.into()));
     }
     let project = u128::from(params.owner) << 32 | u128::from(params.project);
     let frame = dashboard_base::products::at_hour::frame(query, read, &[history_range(params.owner, params.project), Read::these(TableId::Projects, [project]), project_slices(params.owner)], SpecialProjectIterationAt::TITLE)?;
@@ -113,8 +121,10 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
             return Err("This history entry is the project's completion, not an iteration".to_owned());
         }
         if row.date != at.hour {
+            if row.date > at.hour { *through = (*through).min(row.date - 1); }
             return Err("The asked hour is not this iteration's hour".to_owned());
         }
+        *through = at.hour;
         let (project, _) = supplied_project(&reads, params.owner, params.project)?;
         Ok((project, row.clone(), history.to_vec()))
     })();
@@ -218,7 +228,7 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_military::special_projects::PrototypeOption, accepted: dashboard_text::triggers::AcceptedProjects, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_military::special_projects::PrototypeOption, accepted: dashboard_text::triggers::ProjectReads<'_>, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;
@@ -248,7 +258,7 @@ fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &L
 }
 
 fn empty(hour: i32) -> SpecialProjectIteration {
-    SpecialProjectIteration { hour, heading: None, sections: Vec::new(), no_changes: false, refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() }
+    SpecialProjectIteration { through: i32::MAX, hour, heading: None, sections: Vec::new(), no_changes: false, refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() }
 }
 
 fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<'_, Context>, holder: Owner, out: &mut SpecialProjectIteration) -> io::Result<Result<(), String>> {
@@ -256,28 +266,33 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
         return Ok(Err("The project's owner is not this country at this iteration's hour".into()));
     }
     let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-    let listing = match listed(&query, at, params, holder)? {
+    let listing = match listed(&query, at, params, holder, &mut out.through)? {
         Ok(listing) => listing,
         Err(why) => return Ok(Err(why)),
     };
     let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project iteration hour is not recorded"))?.run;
-    let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: at.hour };
+    let reads = Reads { through: None, query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: at.hour };
     let content = at.context.content.as_ref().map_err(|why| dashboard_core::refused(why.clone()))?;
     if definition(content, &listing.definition).is_none() {
         return Ok(Err(format!("Definition {} is absent from content", listing.definition)));
     }
-    if let Err(why) = same_project(frame, &reads, &listing) {
+    let mut tables = effect_tables();
+    tables.push(TableId::ProjectHistory);
+    let replay::campaign::SeekResult::Frame(choice) = query.replay.seek_selected_with(frame.branch, at.hour, Some(&tables), || dashboard_text::metadata::check_cancel(at.cancelled))? else {
+        return Err(dashboard_core::refused("Special project iteration hour is not recorded"));
+    };
+    if let Err(why) = same_project(&choice, &reads, &listing) {
         return Ok(Err(why));
     }
-    let accepted = accepted_projects(&reads, frame);
-    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, accepted, out)))
+    Ok(chosen(content, &listing).and_then(|option| with_projects(&reads, &choice, |accepted| render(content, &choice, holder.slot, &listing, option, accepted, out)).0))
 }
 
 impl AtHour for SpecialProjectIterationAt {
     const KEY: &'static str = "special-project-iteration";
     const TITLE: &'static str = "Special project iteration";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads project coverage spans and custody history and stamps at.hour into reply");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectIterationParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project, ordinal, read: Read];
     type Reply = SpecialProjectIteration;
@@ -298,18 +313,18 @@ impl AtHour for SpecialProjectIterationAt {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = effect_tables();
-        tables.push(TableId::ProjectHistory);
-        tables.sort_unstable();
-        tables.dedup();
-        tables
+        vec![TableId::CountryLinks]
     }
 
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         if step != 0 {
             return Vec::new();
         }
-        effect_tables().into_iter().filter(|&table| table != TableId::ProjectHistory).map(Read::all).chain([history_range(params.owner, params.project)]).collect()
+        vec![Read::these(TableId::CountryLinks, [u128::from(params.owner)])]
+    }
+
+    fn valid_reply_through(_frame: &DecodedFrame, _: &Self::Params, _: &At<'_, Context>, reply: &Self::Reply, _: bool) -> i32 {
+        reply.through
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -320,7 +335,7 @@ impl AtHour for SpecialProjectIterationAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project iteration names no country"))?;
         let mut out = empty(at.hour);
         if let Err(why) = answer(frame, params, at, owner, &mut out)? {
-            out = SpecialProjectIteration { unavailable: Some(why), ..empty(at.hour) };
+            out.unavailable = Some(why);
         }
         Ok(out)
     }

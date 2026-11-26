@@ -257,7 +257,7 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     const lane = laneByKey(model, hit.laneKey);
     if (!lane || lane.kind !== 'item') return null;
     const span = spanAt(lane, hit);
-    const at = hit.hour ?? model.hour;
+    const at = Math.min(hit.hour ?? model.hour, readView.hour);
     const where = (span?.meta as LaneMeta | undefined) ?? (lane.meta as LaneMeta | undefined);
     const raw = where ? readView.panel<unknown>(entryName(where.sourceKey)) : undefined;
     const reply = raw === undefined ? undefined : validateSpecialProjectsReply(raw);

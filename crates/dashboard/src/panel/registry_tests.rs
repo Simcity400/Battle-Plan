@@ -109,6 +109,14 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
             assert!(read.fresh || !seek, "{name}: a seed reads its live values at its hour");
             let packet = delivery.packet((0, 1, 1), 1, hour, seek, &read.value);
             let mut expected = shown(&cold, read.fresh);
+            if name == "special-projects" && let Ok(data) = &*read.value {
+                let through = i32::try_from(data["shown"]["through"].as_i64().unwrap()).unwrap();
+                assert!(through >= hour);
+                expected = (exact.cold)(through, &false.into());
+            }
+            if name == "special-project-details" && !read.fresh && let (Ok(data), Ok(reply)) = (&*read.value, &mut expected) {
+                reply["hour"] = data["hour"].clone();
+            }
             if name == "territory-share" && hour == 101 {
                 assert!(!packet.changed, "unchanged ownership confirms the hour 100 reply");
                 let reply = expected.as_mut().unwrap();
@@ -149,16 +157,15 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         "decryption",
         "faction-details", "factory-parts",
         "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
-        "production-licences", "resource-balance", "special-project-details", "special-project-effects",
-        "special-project-iteration", "special-projects", "stability-part-names", "stockpile-artwork",
-        "technology-effects", "territory-breakdown", "trade-flow",
+        "production-licences", "resource-balance",
+        "stability-part-names", "stockpile-artwork",
+        "territory-breakdown", "trade-flow",
         "volunteer-flow", "war-contributions",
         "wargoals", "world-tension",
     ];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
-        matches!(reader.kind, PanelKind::WholeFrame { every_frame: true } | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
+        matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
     }).collect();
-    assert_eq!(READERS.iter().filter_map(|(&key, reader)| (reader.kind == PanelKind::WholeFrame { every_frame: false }).then_some(key)).collect::<Vec<_>>(), ["content-entity-stats"]);
     let conditional: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
         PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
         _ => None,
