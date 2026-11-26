@@ -40,11 +40,11 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       const f5Activated = await act<string[]>('waitActivated()');
       assert.deepEqual(f5Activated, ['GER'], 'F5: updating widget frame mid-press preserves pointerdown and activates row on release');
 
-      const focus = await act<{ moved: (string | null)[]; playing: { hoursAdvanced: number; installs: number; calls: number; commits: number }; outside: (string | null)[]; left: (string | null)[] }>('testFocusRow()');
+      const focus = await act<{ moved: (string | null)[]; playing: { hoursAdvanced: number; installs: number; repainted: boolean; calls: number; commits: number }; outside: (string | null)[]; left: (string | null)[] }>('testFocusRow()');
       assert.deepEqual(focus.moved, ['GER', 'FRA'], 'the focused row is reported each time keyboard focus moves to another row');
-      assert.ok(focus.playing.hoursAdvanced > 0 && focus.playing.installs > 0, `playback advanced and installed changed pictures under the resting focus (${focus.playing.installs} installs)`);
+      assert.ok(focus.playing.hoursAdvanced > 0 && focus.playing.repainted, `playback advanced and installed another picture under the resting focus (${focus.playing.installs} installs)`);
       assert.deepEqual([focus.playing.calls, focus.playing.commits], [0, 0], `while playback runs under a resting focus: no report and no React render (${focus.playing.hoursAdvanced} hours)`);
-      assert.deepEqual(focus.outside, [null], 'playback leaving the widget\'s bounds clears the focused row with its picture');
+      assert.deepEqual(focus.outside, [null], 'a seek that takes the picture away clears the focused row with it');
       assert.deepEqual(focus.left, [null], 'focus leaving the rows clears the focused row');
     } finally {
       cdp.close();
