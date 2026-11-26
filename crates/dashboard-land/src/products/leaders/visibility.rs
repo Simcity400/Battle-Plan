@@ -56,7 +56,7 @@ struct Dates {
 
 impl Changes {
     fn read(replay: &replay::campaign::Replay, run: u32, read: &TableRead, first: i32, last: i32) -> io::Result<Self> {
-        use replay_lanes::lanes::{self, Cell, Keys};
+        use replay_lanes::lanes::{self, Keys};
         if replay.recording().predates(read.table.index()).is_some() {
             return Ok(Self { status: Vec::new(), rows: Vec::new() });
         }
@@ -65,14 +65,7 @@ impl Changes {
         let status = history.statuses.iter().map(|s| s.first).collect();
         let end = read.ends.then(|| history.columns.iter().position(|&c| read.table.field_name(c) == Some("end_hour"))).flatten();
         let rows = history.keys.into_iter().filter_map(|(key, steps)| {
-            let mut changes = Vec::new();
-            for (i, step) in steps.iter().enumerate() {
-                if step.hour > first { changes.push(step.hour); }
-                if let Some(col) = end && let Some(Cell::Number(n)) = step.cells.as_deref().and_then(|c| c.get(col))
-                    && let Ok(n) = i32::try_from(*n) && n > step.hour && n <= steps.get(i + 1).map_or(last, |next| next.hour) {
-                    changes.push(n);
-                }
-            }
+            let changes: Vec<_> = dashboard_base::products::at_hour::row_change_hours(&steps, end, last).filter(|&hour| hour > first).collect();
             (!changes.is_empty()).then_some((key, changes))
         }).collect();
         Ok(Self { status, rows })
@@ -132,8 +125,7 @@ impl Visibility {
                 let SeekResult::Frame(recorded) = self.cursor.as_mut().expect("selected world").1.seek(frame.branch, at.hour)? else {
                     return Err(io::Error::other("Leader visibility hour is not recorded"));
                 };
-                let mut world = None;
-                let world = world_of(&recorded, &at.context.content, &mut world).map_err(io::Error::other)?;
+                let world = world_of(&recorded, &at.context.content).map_err(io::Error::other)?;
                 let gap = core_gap(&recorded);
                 let mut bounds = HashMap::new();
                 let mut bound = |read: TableRead| *bounds.entry(read).or_insert_with(|| self.dates.through(at, &recorded, read, first, last));
@@ -144,7 +136,7 @@ impl Visibility {
                     let decision = match &gap {
                         Some(reason) => Err(reason.clone()),
                         None => {
-                            let (answer, inputs) = inputs::capture(&recorded, || Evaluator::new(world, None)
+                            let (answer, inputs) = inputs::capture(&recorded, || Evaluator::new(&world, None)
                                 .decide_leader_visibility(row, LeaderVisibility::Conditioned(role), true).decided());
                             if let Some(reads) = inputs.footprint() {
                                 for &read in reads {
@@ -195,7 +187,7 @@ pub(super) fn prepare(params: &UnitLeadersParams, frame: &DecodedFrame, at: &Rea
         let mut world = None;
         let roles = UnitLeaders::kept(params, frame, at).into_iter().filter(|row| {
             needs_world(row) && !(row.kind == super::KIND_ARMY && (row.category as u32) < 2 && row.captured != 0)
-        }).filter_map(|row| match world_of(frame, &at.context.content, &mut world).ok()?.decoded_leader_visibility(row) {
+        }).filter_map(|row| match world.get_or_insert_with(|| world_of(frame, &at.context.content)).as_ref().ok()?.decoded_leader_visibility(row) {
             LeaderVisibility::Conditioned(role) => Some((handle(row), row.owner, role)),
             _ => None,
         }).collect();

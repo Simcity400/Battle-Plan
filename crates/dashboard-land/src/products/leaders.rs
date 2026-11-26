@@ -269,24 +269,21 @@ fn trait_icon(catalogue: &Catalogue, leaders: &Leaders, token: &str) -> Result<S
         .ok_or_else(|| "Trait icon unavailable".to_owned())
 }
 
-fn world_of<'a, 'w>(frame: &'a DecodedFrame, content: &'a Content, world: &'w mut Option<Result<World<'a>, String>>) -> Result<&'w World<'a>, String> {
-    world
-        .get_or_insert_with(|| {
-            let catalogue = content.catalogue.as_ref().map_err(|why| format!("Leader visibility needs the recorded content: {why}"))?;
-            catalogue.scripted_content()?.recorded_world(frame)
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+fn world_of<'a>(frame: &'a DecodedFrame, content: &'a Content) -> Result<World<'a>, String> {
+    let catalogue = content.catalogue.as_ref().map_err(|why| format!("Leader visibility needs the recorded content: {why}"))?;
+    catalogue.scripted_content()?.recorded_world(frame)
 }
 
-pub fn visible<'a>(row: &UnitLeaderRow, frame: &'a DecodedFrame, content: &'a Content, world: &mut Option<Result<World<'a>, String>>) -> Result<bool, String> {
+fn visible<'a>(row: &UnitLeaderRow, frame: &'a DecodedFrame, content: &'a Content, held: &mut Option<(Result<World<'a>, String>, catalogue::OwnRefusals)>) -> Result<bool, String> {
     if row.kind == KIND_ARMY && (row.category as u32) < 2 && row.captured != 0 {
         return Ok(false);
     }
     if !needs_world(row) {
         return Ok(true);
     }
-    let world = world_of(frame, content, world)?;
+    if let Some((_, notes)) = held.as_ref() { catalogue::credit(notes); }
+    let (world, _) = held.get_or_insert_with(|| catalogue::capture(|| world_of(frame, content)));
+    let world = world.as_ref().map_err(Clone::clone)?;
     match world.decoded_leader_visibility(row) {
         LeaderVisibility::Decided(value) => value.decided(),
         LeaderVisibility::Unconditioned => Ok(true),
@@ -317,10 +314,10 @@ pub fn needs_world(row: &UnitLeaderRow) -> bool {
     row.visibility_choice != 0 || row.template_visibility != 0
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Tally {
-    counts: HashMap<u128, u64>,
-    dates: HashMap<(u64, String), (i32, u8)>,
+    counts: BTreeMap<u128, u64>,
+    dates: BTreeMap<(u64, String), (i32, u8)>,
 }
 
 #[derive(Default)]
@@ -330,18 +327,37 @@ struct RunTally {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Asked {
+enum Asked<'a> {
     All,
-    Id(u32),
+    Ids(&'a [u32]),
 }
 
-impl Asked {
+impl Asked<'_> {
     fn keeps(self, handle: u64) -> bool {
         match self {
             Self::All => true,
-            Self::Id(id) => (handle >> 32) as u32 == id,
+            Self::Ids(ids) => ids.binary_search(&((handle >> 32) as u32)).is_ok(),
         }
     }
+
+    fn slices<T>(self, rows: &[T], owner: impl Fn(&T) -> u32, mut take: impl FnMut(&[T])) {
+        match self {
+            Self::All => take(rows),
+            Self::Ids(ids) => for &id in ids {
+                let first = rows.partition_point(|row| owner(row) < id);
+                let end = first + rows[first..].partition_point(|row| owner(row) == id);
+                take(&rows[first..end]);
+            },
+        }
+    }
+}
+
+struct TallyHistory {
+    branch: u64,
+    stretch: i32,
+    first: i32,
+    past: Tally,
+    before: Vec<(u64, [u64; 3])>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -360,7 +376,9 @@ fn facet(id: u32, entry: u32, outcome: u32) -> u128 {
     (u128::from(id) << 96) | (u128::from(entry) << 64) | (u128::from(outcome) << 32)
 }
 
-fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result<RunTally> {
+fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked<'_>) -> io::Result<RunTally> {
+    #[cfg(test)]
+    tests::TALLY_SNAPSHOTS.set(tests::TALLY_SNAPSHOTS.get() + 1);
     let recording = query.replay.recording();
     let totals = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, run, TableId::LeaderBattleTotals, hour, None))?;
     let dated = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, run, TableId::LeaderTraitDates, hour, None))?;
@@ -368,20 +386,18 @@ fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result
 }
 
 impl RunTally {
-    fn staged(frame: &DecodedFrame, asked: Asked) -> Option<Self> {
+    fn staged(frame: &DecodedFrame, asked: Asked<'_>) -> Option<Self> {
         let totals = frame.complete::<tables::LeaderBattleTotals>().ok()?;
         let dates = frame.complete::<tables::LeaderTraitDates>().ok()?;
-        let range = |handle: u64| match asked {
-            Asked::All => std::cmp::Ordering::Equal,
-            Asked::Id(id) => ((handle >> 32) as u32).cmp(&id),
-        };
         let mut out = Self::default();
-        for row in &totals[totals.partition_point(|r| range(r.leader).is_lt())..totals.partition_point(|r| !range(r.leader).is_gt())] {
-            out.battles.push((row.leader, [row.fought, row.won, row.lost].map(u64::from)));
-        }
-        for row in &dates[dates.partition_point(|r| range(r.leader).is_lt())..dates.partition_point(|r| !range(r.leader).is_gt())] {
-            out.date(row.leader, String::from_utf8_lossy(&row.spelling).into_owned(), (row.first_hour, row.first_class), row.gained_hour);
-        }
+        asked.slices(totals, |row| (row.leader >> 32) as u32, |rows| {
+            out.battles.extend(rows.iter().map(|row| (row.leader, [row.fought, row.won, row.lost].map(u64::from))));
+        });
+        asked.slices(dates, |row| (row.leader >> 32) as u32, |rows| {
+            for row in rows {
+                out.date(row.leader, String::from_utf8_lossy(&row.spelling).into_owned(), (row.first_hour, row.first_class), row.gained_hour);
+            }
+        });
         Some(out)
     }
 
@@ -391,7 +407,7 @@ impl RunTally {
         held.1 = held.1.max(gained);
     }
 
-    fn of(totals: &StoreView<'_>, dated: &StoreView<'_>, asked: Asked) -> Self {
+    fn of(totals: &StoreView<'_>, dated: &StoreView<'_>, asked: Asked<'_>) -> Self {
         let mut out = Self::default();
         let view = totals;
         for slot in view.rows() {
@@ -432,31 +448,20 @@ impl Tally {
         self.dates.get(&(leader, token.to_owned())).copied()
     }
 
-    fn read(query: &Query<'_>, frame: &DecodedFrame, asked: Asked) -> io::Result<Self> {
-        let hour = frame.hour;
-        let mut runs: Vec<(u32, i32, i32)> = Vec::new();
-        for stretch in query.timeline.within(query.timeline.first, hour) {
-            match runs.last_mut() {
-                Some(held) if held.0 == stretch.run => held.2 = stretch.last,
-                _ => runs.push((stretch.run, stretch.first, stretch.last)),
-            }
-        }
+    fn select(&self, asked: Asked<'_>) -> Self {
+        let Asked::Ids(ids) = asked else { return self.clone() };
         let mut out = Self::default();
-        for (run, first, last) in runs {
-            let through = match (last == hour).then(|| RunTally::staged(frame, asked)).flatten() {
-                Some(through) => through,
-                None => run_tally(query, run, last, asked)?,
-            };
-            let before = match first > query.replay.recording().run(run)?.first_hour {
-                true => Some(run_tally(query, run, first - 1, asked)?),
-                false => None,
-            };
-            out.fold(through, before.as_ref(), first);
+        for &id in ids {
+            let first = u128::from(id) << 96;
+            out.counts.extend(self.counts.range(first..).take_while(|(key, _)| (**key >> 96) as u32 == id));
+            let first = (u64::from(id) << 32, String::new());
+            out.dates.extend(self.dates.range(first..).take_while(|((leader, _), _)| (leader >> 32) as u32 == id)
+                .map(|(key, &value)| (key.clone(), value)));
         }
-        Ok(out)
+        out
     }
 
-    fn fold(&mut self, through: RunTally, before: Option<&RunTally>, first: i32) {
+    fn fold(&mut self, through: RunTally, before: &[(u64, [u64; 3])], first: i32) {
         let mut add = |battles: &[(u64, [u64; 3])], sign: i64| {
             for &(handle, [fought, won, lost]) in battles {
                 let id = (handle >> 32) as u32;
@@ -467,9 +472,7 @@ impl Tally {
             }
         };
         add(&through.battles, 1);
-        if let Some(before) = before {
-            add(&before.battles, -1);
-        }
+        add(before, -1);
         let mut dates: Vec<_> = through.dates.into_iter().collect();
         dates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         for (key, ((hour, class), gained)) in dates {
@@ -478,6 +481,31 @@ impl Tally {
                 fold_date(&mut self.dates, key, gained, replay_data::rows::LeaderTraitGainRow::GAINED);
             }
         }
+    }
+}
+
+impl TallyHistory {
+    fn load(query: &Query<'_>, stretch: &dashboard_query::timeline::Stretch) -> io::Result<Self> {
+        let mut spans: Vec<(u32, i32, i32)> = Vec::new();
+        for part in query.timeline.within(query.timeline.first, stretch.first) {
+            match spans.last_mut() {
+                Some(last) if last.0 == part.run => last.2 = part.last,
+                _ => spans.push((part.run, part.first, part.last)),
+            }
+        }
+        let (run, first, _) = spans.pop().expect("the current stretch is included");
+        let before_run = |run, first| -> io::Result<Vec<(u64, [u64; 3])>> {
+            if first > query.replay.recording().run(run)?.first_hour {
+                Ok(run_tally(query, run, first - 1, Asked::All)?.battles)
+            } else { Ok(Vec::new()) }
+        };
+        let mut past = Tally::default();
+        for (run, first, last) in spans {
+            past.fold(run_tally(query, run, last, Asked::All)?, &before_run(run, first)?, first);
+        }
+        let mut before = before_run(run, first)?;
+        before.sort_unstable_by_key(|&(handle, _)| handle);
+        Ok(Self { branch: query.timeline.id, stretch: stretch.first, first, past, before })
     }
 }
 
@@ -498,7 +526,7 @@ pub fn cell_number(cell: &log::Cell) -> Option<i64> {
     }
 }
 
-pub fn fold_date(dates: &mut HashMap<(u64, String), (i32, u8)>, key: (u64, String), hour: i32, class: u8) {
+fn fold_date(dates: &mut BTreeMap<(u64, String), (i32, u8)>, key: (u64, String), hour: i32, class: u8) {
     use replay_data::rows::LeaderTraitGainRow as Gain;
     match (dates.get(&key), class) {
         (_, Gain::GAINED) | (None, _) => {
@@ -534,6 +562,7 @@ pub struct LeadersContext {
     roster: Option<Arc<Roster>>,
     visibility: std::sync::Mutex<visibility::Visibility>,
     ranking: std::sync::Mutex<ranking::Ranking>,
+    tally_history: std::sync::Mutex<Option<TallyHistory>>,
     battle_coverage: Option<(u64, Option<i32>)>,
 }
 
@@ -556,7 +585,7 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), ranking: Default::default(), battle_coverage: None })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), ranking: Default::default(), tally_history: Default::default(), battle_coverage: None })
     }
 
     fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
@@ -603,8 +632,25 @@ impl LeadersContext {
         lives[start..].iter().take_while(|life| life.0 == key).find(|life| life.1 <= i64::from(hour) && i64::from(hour) <= life.2).and_then(|life| i32::try_from(life.1).ok())
     }
 
-    fn tally(&self, query: &Query<'_>, frame: &DecodedFrame, asked: Asked) -> io::Result<Tally> {
-        Tally::read(query, frame, asked)
+    fn tally(&self, query: &Query<'_>, frame: &DecodedFrame, asked: Asked<'_>) -> io::Result<Tally> {
+        let stretches = &query.timeline.stretches;
+        let after = stretches.partition_point(|stretch| stretch.first <= frame.hour);
+        let Some(stretch) = stretches[..after].last() else { return Ok(Tally::default()) };
+        let mut held = self.tally_history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.as_ref().is_none_or(|history| history.branch != query.timeline.id || history.stretch != stretch.first) {
+            *held = Some(TallyHistory::load(query, stretch)?);
+        }
+        let history = held.as_ref().expect("loaded the current stretch");
+        let hour = frame.hour.min(stretch.last);
+        let current = match (hour == frame.hour).then(|| RunTally::staged(frame, asked)).flatten() {
+            Some(current) => current,
+            None => run_tally(query, stretch.run, hour, asked)?,
+        };
+        let mut tally = history.past.select(asked);
+        let mut before = Vec::new();
+        asked.slices(&history.before, |row| (row.0 >> 32) as u32, |rows| before.extend_from_slice(rows));
+        tally.fold(current, &before, history.first);
+        Ok(tally)
     }
 
     fn battles_partial(&self, query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
@@ -827,19 +873,6 @@ impl TraitList {
     }
 }
 
-pub fn held_traits(rows: &[UnitLeaderTraitRow]) -> BTreeMap<u64, Vec<String>> {
-    let mut out: BTreeMap<u64, Vec<(u32, String)>> = BTreeMap::new();
-    for row in rows {
-        out.entry(row.leader_reference).or_default().push((row.ordinal, String::from_utf8_lossy(&row.token).into_owned()));
-    }
-    out.into_iter()
-        .map(|(leader, mut held)| {
-            held.sort_by_key(|(ordinal, _)| *ordinal);
-            (leader, held.into_iter().map(|(_, token)| token).collect())
-        })
-        .collect()
-}
-
 pub fn held_traits_for(rows: &[UnitLeaderTraitRow], leader: u64) -> Vec<String> {
     let first = rows.partition_point(|row| row.leader_reference < leader);
     let mut held: Vec<(u32, &[u8])> = rows[first..]
@@ -932,13 +965,12 @@ impl UnitLeaders {
     fn visibility_reads(params: &UnitLeadersParams, frame: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, cached: bool) -> (Vec<Read>, bool) {
         let kept = Self::kept(params, frame, at);
         if !kept.iter().any(|row| needs_world(row)) { return (Vec::new(), false); }
-        let mut world = None;
-        let Ok(world) = world_of(frame, &at.context.content, &mut world) else { return (Vec::new(), false) };
+        let Ok(world) = world_of(frame, &at.context.content) else { return (Vec::new(), false) };
         let decided = cached.then(|| at.context.verdicts_at(at.run, at.hour));
         let mut clocked = false;
         for row in kept {
             let known = decided.as_ref().is_some_and(|known| known.contains_key(&handle(row)));
-            if !conditioned(row, world) { continue; }
+            if !conditioned(row, &world) { continue; }
             if !known {
                 return (RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)).map(Read::all).collect(), true);
             }
@@ -1019,7 +1051,7 @@ impl UnitLeaders {
                     Some(verdict) => verdict.clone(),
                     None => {
                         let verdict = visible(row, frame, content, &mut world);
-                        if evaluable && world.as_ref().and_then(|world| world.as_ref().ok()).is_some_and(|world| conditioned(row, world)) {
+                        if evaluable && world.as_ref().and_then(|(world, _)| world.as_ref().ok()).is_some_and(|world| conditioned(row, world)) {
                             made.insert(reference, verdict.clone());
                         }
                         verdict
@@ -1043,13 +1075,9 @@ impl UnitLeaders {
         let tally = if shown.is_empty() {
             None
         } else if keys.is_some() {
-            let mut tally = Tally::default();
-            for id in shown.iter().map(|(row, ..)| row.id).collect::<std::collections::BTreeSet<_>>() {
-                let individual = context.tally(&query, frame, Asked::Id(id))?;
-                tally.counts.extend(individual.counts);
-                tally.dates.extend(individual.dates);
-            }
-            Some(tally)
+            let mut ids: Vec<_> = shown.iter().map(|(row, ..)| row.id).collect();
+            ids.dedup();
+            Some(context.tally(&query, frame, Asked::Ids(&ids))?)
         } else {
             Some(context.tally(&query, frame, Asked::All)?)
         };

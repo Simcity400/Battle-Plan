@@ -1,15 +1,17 @@
 use super::{
     LeaderKinds, LeaderSelection, Tally, career::{RunValues, career_gains, career_runs, join_battles, led_spans},
-    fold_date, held_traits, KIND_ARMY, KIND_NAVY,
+    fold_date, KIND_ARMY, KIND_NAVY,
 };
 use replay_data::rows::{LeaderBattleRow as Battle, LeaderTraitGainRow as Gain, UnitLeaderTraitRow};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+thread_local! { pub(super) static TALLY_SNAPSHOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[test]
 fn a_leaders_battles_are_its_participations_and_its_results_won_or_lost() {
     let facet = |id: u32, entry: u32, outcome: u32| (u128::from(id) << 96) | (u128::from(entry) << 64) | (u128::from(outcome) << 32);
     let mut tally = Tally::default();
-    tally.counts = HashMap::from([(facet(7, 0, u32::MAX), 5), (facet(7, 1, 1), 2), (facet(7, 1, 2), 1), (facet(7, 1, u32::MAX), 1), (facet(8, 0, u32::MAX), 3)]);
+    tally.counts = BTreeMap::from([(facet(7, 0, u32::MAX), 5), (facet(7, 1, 1), 2), (facet(7, 1, 2), 1), (facet(7, 1, u32::MAX), 1), (facet(8, 0, u32::MAX), 3)]);
     let seven = tally.battles(7);
     assert_eq!((seven.fought, seven.won, seven.lost), (5, 2, 1), "a result whose outcome is not recorded is neither won nor lost");
     assert_eq!(tally.battles(8).fought, 3);
@@ -18,7 +20,7 @@ fn a_leaders_battles_are_its_participations_and_its_results_won_or_lost() {
 
 #[test]
 fn a_trait_is_dated_by_its_gain_and_a_later_first_observation_does_not_move_it() {
-    let mut dates = HashMap::new();
+    let mut dates = BTreeMap::new();
     let key = |token: &str| (5u64, token.to_owned());
     fold_date(&mut dates, key("organizer"), 100, Gain::HELD_BEFORE);
     fold_date(&mut dates, key("organizer"), 400, Gain::FIRST_OBSERVED);
@@ -79,19 +81,46 @@ fn kinds_and_countries_choose_leaders_by_kind_and_owner_tag() {
 fn a_leaders_traits_are_listed_in_their_recorded_order() {
     let row = |leader: u64, ordinal: u32, token: &str| UnitLeaderTraitRow { leader_reference: leader, ordinal, token: token.as_bytes().to_vec(), ..Default::default() };
     let rows = [row(2, 1, "b"), row(2, 0, "a"), row(3, 0, "c")];
-    let held = held_traits(&rows);
-    assert_eq!(held[&2], vec!["a".to_owned(), "b".to_owned()]);
-    assert_eq!(held[&3], vec!["c".to_owned()]);
     assert_eq!(super::held_traits_for(&rows, 2), vec!["a".to_owned(), "b".to_owned()]);
     assert_eq!(super::held_traits_for(&rows, 9), Vec::<String>::new());
+}
+
+#[test]
+fn changed_leaders_share_the_completed_run_on_a_loaded_branch() {
+    use dashboard_base::{Source, SourceKey, products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{LeaderBattleTotalRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::Arc;
+
+    let segments = [(1, 100..=102), (2, 103..=107)].map(|(branch, hours)| {
+        records(branch, hours.map(|hour| source(branch, hour, None)).collect())
+    });
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let recording = Source::from_replay(SourceKey { source_id: "leader-tally".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+    let context = super::LeadersContext::load(&recording, &LoadContext { content: None }).unwrap();
+    let query = context.query(1).unwrap();
+    assert_ne!(query.timeline.at(102).unwrap().run, query.timeline.at(103).unwrap().run);
+    for hour in 103..=107 {
+        let mut frame = source(1, hour, None);
+        let battles = [1_u32, 2].map(|id| LeaderBattleTotalRow { leader: u64::from(id) << 32, fought: hour as u32 * id, ..Default::default() });
+        *frame.tables[TableId::LeaderBattleTotals.index()] = TableView::Complete(TableRows::LeaderBattleTotals(battles.into()));
+        *frame.tables[TableId::LeaderTraitDates.index()] = TableView::Complete(TableRows::empty(TableId::LeaderTraitDates));
+        for id in [1_u32, 2] {
+            TALLY_SNAPSHOTS.set(0);
+            let tally = context.tally(&query, &frame, super::Asked::Ids(&[id])).unwrap();
+            assert_eq!(tally.battles(id).fought, hour as u64 * u64::from(id));
+            assert_eq!(TALLY_SNAPSHOTS.get(), usize::from(hour == 103 && id == 1), "prior run reads at {hour} for leader {id}");
+        }
+    }
 }
 
 #[test]
 fn a_leaders_battles_from_its_totals_sum_its_handles_and_runs() {
     let run = |battles: Vec<(u64, [u64; 3])>| super::RunTally { battles, dates: HashMap::new() };
     let mut tally = Tally::default();
-    tally.fold(run(vec![(7 << 32 | 1, [3, 2, 1]), (7 << 32 | 2, [1, 0, 0]), (8 << 32 | 1, [2, 0, 2])]), Some(&run(vec![(7 << 32 | 1, [1, 1, 0])])), 50);
-    tally.fold(run(vec![(7 << 32 | 1, [2, 1, 1])]), None, 100);
+    tally.fold(run(vec![(7 << 32 | 1, [3, 2, 1]), (7 << 32 | 2, [1, 0, 0]), (8 << 32 | 1, [2, 0, 2])]), &[(7 << 32 | 1, [1, 1, 0])], 50);
+    tally.fold(run(vec![(7 << 32 | 1, [2, 1, 1])]), &[], 100);
     let seven = tally.battles(7);
     assert_eq!((seven.fought, seven.won, seven.lost), (5, 2, 2));
     let eight = tally.battles(8);
@@ -141,9 +170,9 @@ fn trait_dates_from_their_table_are_the_fold_of_the_gain_rows_over_runs() {
             hour(&mut store, &mut writers, first + at as i32, at == 0, held, &mut logged);
         }
         let through = super::RunTally::of(&store.view(TableId::LeaderBattleTotals.index()), &store.view(TableId::LeaderTraitDates.index()), super::Asked::All);
-        tally.fold(through, None, first);
+        tally.fold(through, &[], first);
     }
-    let mut folded = HashMap::new();
+    let mut folded = BTreeMap::new();
     for (key, at, class) in logged {
         fold_date(&mut folded, key, at, class);
     }
@@ -1075,6 +1104,9 @@ fn a_thousand_played_hours_keep_the_ranking_and_only_rebuild_a_changed_top() {
         let exact = panel.exact().unwrap();
         let top = request.get("leaders").is_none();
         for read in played(source.replay_ref(), exact, 100, 1100) {
+            if !top && read.hour > 100 {
+                assert_eq!(read.product_calls, 0, "the leaderboard rebuilt at {}", read.hour);
+            }
             if top && read.hour > 100 && ![450, 600, 825, 850].contains(&read.hour) {
                 assert_eq!(read.product_calls, 0, "an edit to a rival rebuilt the top at {}", read.hour);
             }

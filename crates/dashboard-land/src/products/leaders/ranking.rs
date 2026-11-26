@@ -199,11 +199,15 @@ impl Ranking {
 
     fn battle_changes(&mut self, frame: &DecodedFrame, at: &At<'_, LeadersContext>, keys: &BTreeSet<u64>) -> io::Result<Vec<(u64, usize, usize, Battles)>> {
         let query = at.context.query(frame.branch)?;
+        let mut ids: Vec<_> = keys.iter().filter(|key| self.shown.contains_key(key)).map(|key| (key >> 32) as u32).collect();
+        ids.dedup();
+        if ids.is_empty() { return Ok(Vec::new()); }
+        let tally = at.context.tally(&query, frame, Asked::Ids(&ids))?;
         let mut moves = Vec::new();
         for &key in keys {
             let Some(old) = self.shown.get(&key) else { continue };
             let id = (key >> 32) as u32;
-            let counts = at.context.tally(&query, frame, Asked::Id(id))?.battles(id);
+            let counts = tally.battles(id);
             if counts == old.battles { continue; }
             let from = self.order.binary_search_by(|h| self.shown[h].cmp(old)).expect("ranked leader");
             self.order.remove(from);
@@ -352,4 +356,3 @@ impl Ranking {
         Ok(())
     }
 }
-

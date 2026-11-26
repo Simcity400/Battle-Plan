@@ -513,11 +513,8 @@ fn resolve_selection_at(
         let reads = if step == 1 && context.roster.is_some() {
             let kept = UnitLeaders::kept(&asked, &frame, &reads_at);
             let ranges = leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32);
-            let mut reads = UnitLeaders::people(&kept);
-            reads.push(Read { table: TableId::LeaderBattleTotals, keys: Keys::Ranges(ranges.clone()) });
-            reads.push(Read { table: TableId::LeaderTraitDates, keys: Keys::Ranges(leader_ranges(kept.iter().map(|row| handle(row)), 32)) });
             battle_keys = Some(ranges);
-            reads
+            UnitLeaders::people(&kept)
         } else if step == 2 {
             let (reads, clocked) = UnitLeaders::visibility_reads(&asked, &frame, &reads_at, true);
             if clocked || !reads.is_empty() { next.see(hour.saturating_add(1)); }
@@ -1178,7 +1175,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
     });
     let name = content.person_name(person, lexical);
     let skill = (row.skill_valid != 0).then_some(row.skill_level);
-    let tally = context.tally(&query, frame, Asked::Id(row.id))?;
+    let tally = context.tally(&query, frame, Asked::Ids(&[row.id]))?;
     let battles = tally.battles(row.id);
     let battles_partial_from = context.battles_partial(&query, at.hour)?;
     let evaluated = EvaluatedLeader { row, handle: leader, owner, name, skill, battles };
