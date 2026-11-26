@@ -10,6 +10,6 @@ Apply or refund saved days at the assignment's stored rate. At a shared boundary
 
 The explanation compares expected time to time used on one axis. Use `base + penalty - bonus - credits - earlier - remaining = taken`, and show time off-slot separately. Earlier progress is a cause only where the start was not witnessed. A residual under one fixed5 day can be accounted for by rounding and the daily update phase. Keep clamped time distinct and retain full modifier segments even if opposing modifiers overlap. Perform arithmetic before presentation rounding. Reuse the hover segment key only while the segment survives a new view.
 
-The widget migration updates the old default title while retaining a user-edited one. The artwork-hook tests replace React dispatch only and cover the actual dated stores, request queue, envelope and reply validation together.
+The artwork-hook tests replace React dispatch only and cover the actual dated stores, request queue, envelope and reply validation together.
 
 [Research replay](../../ui/src/widgets/research/researchData.ts) · [Journey](../../ui/src/widgets/research/researchJourney.ts) · [Breakdown](../../ui/src/widgets/research/researchBreakdown.ts) · [Layout](../../ui/src/widgets/research/researchLayout.ts) · [Research requests](../../ui/src/widgets/research/useResearch.ts)

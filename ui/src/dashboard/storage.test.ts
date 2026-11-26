@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { widgetUnavailable } from './definitions.ts';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
 import { clearLayouts, doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import { resolveOptions, setOption, type OptionField } from './options.ts';
@@ -114,6 +115,20 @@ test('legacy single-layout keys and unreadable old-format saves return defaults 
   assert.equal(restored.warning, null);
   assert.equal(restored.library.layouts[0].template.name, 'Current layout');
   assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
+
+  const olderWidget = structuredClone(current);
+  olderWidget.layouts[0].template.widgets[0] = {
+    ...olderWidget.layouts[0].template.widgets[0],
+    kind: 'army-size',
+    configVersion: 1,
+    options: { show: 'breakdown' },
+  };
+  assert.equal(saveLayouts(olderWidget, storage), null);
+  const reloadedOlder = loadLayouts(storage).library.layouts[0].template.widgets[0];
+  assert.equal(reloadedOlder.kind, 'army-size');
+  assert.equal(reloadedOlder.configVersion, 1);
+  assert.deepEqual(reloadedOlder.options, { show: 'breakdown' });
+  assert.match(widgetUnavailable(reloadedOlder)!, /version 1 is unsupported/);
 });
 
 test('saved layout names are kept as stored without renaming', () => {
