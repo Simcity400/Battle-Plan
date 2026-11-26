@@ -1482,13 +1482,14 @@ function dayTicks(startHour: number, endHour: number, plotWidth: number, hoursPe
 }
 
 interface CachedTimeAxisTicks {
-  readonly validAfterEnd: number;
+  readonly kind: 'month' | 'year';
   readonly validFromEnd: number;
   readonly validBeforeEnd: number;
-  readonly ticks: TimeAxisTick[];
+  readonly ticks: readonly TimeAxisTick[];
 }
 
 const TIME_AXIS_CACHE_MAX = 64;
+const TIME_AXIS_MAX_HOUR = 2_147_483_647;
 const timeAxisTickCache = new Map<string, CachedTimeAxisTicks>();
 
 function storeTimeAxisTicks(key: string, entry: CachedTimeAxisTicks): TimeAxisTick[] {
@@ -1497,7 +1498,7 @@ function storeTimeAxisTicks(key: string, entry: CachedTimeAxisTicks): TimeAxisTi
     if (oldest !== undefined) timeAxisTickCache.delete(oldest);
   }
   timeAxisTickCache.set(key, entry);
-  return entry.ticks;
+  return entry.ticks.slice();
 }
 
 export function computeTimeAxisTicks(startHour: number, endHour: number, plotWidth: number, dayHours = 24): TimeAxisTick[] {
@@ -1505,18 +1506,26 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   const hoursPerDay = Math.max(1, dayHours);
   const useCache = timeChartCacheState.enabled;
   const cacheKey = useCache ? `${startHour}\u0000${hoursPerDay}\u0000${plotWidth}` : '';
-  if (useCache) {
+  const span = endHour - startHour;
+  if (useCache && Math.floor(endHour) <= TIME_AXIS_MAX_HOUR) {
     const cached = timeAxisTickCache.get(cacheKey);
-    if (cached && endHour > cached.validAfterEnd && endHour >= cached.validFromEnd && endHour < cached.validBeforeEnd) {
-      return cached.ticks;
+    if (
+      cached
+      && endHour >= cached.validFromEnd
+      && endHour < cached.validBeforeEnd
+      && (cached.kind === 'month'
+        ? span > 62 * hoursPerDay && span < 2 * 365 * hoursPerDay
+        : span >= 2 * 365 * hoursPerDay)
+    ) {
+      return cached.ticks.slice();
     }
   }
   const start = gameDate(Math.floor(startHour));
   const end = gameDate(Math.floor(endHour));
   if (!start || !end) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 5, 10]);
-  if (endHour - startHour <= 62 * hoursPerDay) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 3, 5, 7, 14]);
+  if (span <= 62 * hoursPerDay) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 3, 5, 7, 14]);
   const ticks: TimeAxisTick[] = [];
-  if (endHour - startHour < 2 * 365 * hoursPerDay) {
+  if (span < 2 * 365 * hoursPerDay) {
     let shownYear: number | null = null;
     for (let year = start.year, month = start.month; year < end.year || (year === end.year && month <= end.month);) {
       const hour = boundaryInView(engineHour({ year, month, day: 1, hour: 1 }), startHour, endHour);
@@ -1538,11 +1547,11 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
       const curStart = engineHour({ year: end.year, month: end.month, day: 1, hour: 1 }) ?? endHour;
       const nextY = end.month === 12 ? end.year + 1 : end.year;
       const nextM = end.month === 12 ? 1 : end.month + 1;
-      const nextStart = engineHour({ year: nextY, month: nextM, day: 1, hour: 1 }) ?? Infinity;
+      const nextStart = engineHour({ year: nextY, month: nextM, day: 1, hour: 1 }) ?? (TIME_AXIS_MAX_HOUR + 1);
       return storeTimeAxisTicks(cacheKey, {
-        validAfterEnd: startHour + 62 * hoursPerDay,
+        kind: 'month',
         validFromEnd: curStart,
-        validBeforeEnd: Math.min(nextStart, startHour + 2 * 365 * hoursPerDay),
+        validBeforeEnd: nextStart,
         ticks,
       });
     }
@@ -1561,10 +1570,10 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   }
   if (useCache) {
     const curStart = engineHour({ year: end.year, month: 1, day: 1, hour: 1 }) ?? endHour;
-    const nextStart = engineHour({ year: end.year + 1, month: 1, day: 1, hour: 1 }) ?? 2_147_483_648;
+    const nextStart = engineHour({ year: end.year + 1, month: 1, day: 1, hour: 1 }) ?? (TIME_AXIS_MAX_HOUR + 1);
     return storeTimeAxisTicks(cacheKey, {
-      validAfterEnd: -Infinity,
-      validFromEnd: Math.max(curStart, startHour + 2 * 365 * hoursPerDay),
+      kind: 'year',
+      validFromEnd: curStart,
       validBeforeEnd: nextStart,
       ticks,
     });
@@ -1708,20 +1717,14 @@ export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], opti
   ctx.textBaseline = 'middle';
   ctx.strokeStyle = options.tickColor ?? tokens.hairlineStrong;
   ctx.lineWidth = 1;
-  if (options.tickMarks !== false && ticks.length > 0) {
-    let lastX = NaN;
-    ctx.beginPath();
+  if (options.tickMarks !== false) {
     for (const tick of ticks) {
       const x = Math.floor(timeAxisX(options, tick.hour)) + 0.5;
-      if (x === lastX) {
-        ctx.stroke();
-        ctx.beginPath();
-      }
+      ctx.beginPath();
       ctx.moveTo(x, axisTop);
       ctx.lineTo(x, axisTop + (tick.major === false ? 3 : 5));
-      lastX = x;
+      ctx.stroke();
     }
-    ctx.stroke();
   }
   for (const placed of timeAxisLabels(ticks, options, text => measureCanvasText(ctx, text, axisFont))) {
     ctx.fillStyle = placed.major ? tokens.textSecondary : theme.muted;

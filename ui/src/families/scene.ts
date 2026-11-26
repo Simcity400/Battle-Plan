@@ -85,7 +85,7 @@ function readScene(
   readers: SceneReaders | undefined,
   demands: DemandSink | null,
   noteWindow?: () => void,
-  captureSink?: () => DemandSink | null,
+  captureSinks?: readonly DemandSink[],
 ): BoundedReadView {
   let byName: Map<string, Picture<LaneValue>> | null = null;
   const pictureOf = (name: string): Picture<LaneValue> | undefined => {
@@ -121,18 +121,26 @@ function readScene(
             const demandKey = `${kind}\u0000${key}\u0000${atHour}`;
             const entry: SceneIdentityDemand = [kind, key, atHour];
             if (!demands.identity.has(demandKey)) demands.identity.set(demandKey, entry);
-            const extra = captureSink?.();
-            if (extra && !extra.identity.has(demandKey)) extra.identity.set(demandKey, entry);
+            if (captureSinks) {
+              for (let i = 0; i < captureSinks.length; i++) {
+                const sink = captureSinks[i]!;
+                if (!sink.identity.has(demandKey)) sink.identity.set(demandKey, entry);
+              }
+            }
           },
           onArtDemand: (handle: ArtHandle, result?: ArtResult) => {
-            const extra = captureSink?.();
             if (result?.status === 'ready' && result.url) {
               demands.urls.add(result.url);
-              extra?.urls.add(result.url);
+              if (captureSinks) for (let i = 0; i < captureSinks.length; i++) captureSinks[i]!.urls.add(result.url);
               return;
             }
             laneArtDemand(handle, readers?.index, readers?.artResolutions, demands.urls, demands.asks);
-            if (extra) laneArtDemand(handle, readers?.index, readers?.artResolutions, extra.urls, extra.asks);
+            if (captureSinks) {
+              for (let i = 0; i < captureSinks.length; i++) {
+                const sink = captureSinks[i]!;
+                laneArtDemand(handle, readers?.index, readers?.artResolutions, sink.urls, sink.asks);
+              }
+            }
           },
         }
       : {}),
@@ -234,16 +242,15 @@ export function projectScene<TModel>(
       : {}),
   };
   let windowRead = false;
-  let activeCapture: DemandSink | null = null;
-  const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; }, () => activeCapture);
+  const captureStack: DemandSink[] = [];
+  const view = readScene(scene, sources, hour, recorded, demands, () => { windowRead = true; }, captureStack);
   sceneRecorders.set(view, {
     readers,
     capture<T>(fn: () => T) {
       const whoStart = whoReads.length;
       const artStart = artReads.length;
-      const prevCapture = activeCapture;
       const sink: DemandSink = { identity: new Map(), urls: new Set(), asks: new Map() };
-      activeCapture = sink;
+      captureStack.push(sink);
       try {
         const value = fn();
         return {
@@ -257,7 +264,7 @@ export function projectScene<TModel>(
           },
         };
       } finally {
-        activeCapture = prevCapture;
+        captureStack.pop();
       }
     },
     replay(captured: CapturedSceneReads) {
@@ -266,18 +273,21 @@ export function projectScene<TModel>(
       for (let i = 0; i < captured.artReads.length; i++) artReads.push(captured.artReads[i]!);
       for (let i = 0; i < captured.identityDemands.length; i++) {
         const [idKey, entry] = captured.identityDemands[i]!;
-        demands.identity.set(idKey, entry);
-        activeCapture?.identity.set(idKey, entry);
+        if (!demands.identity.has(idKey)) demands.identity.set(idKey, entry);
+        for (let s = 0; s < captureStack.length; s++) {
+          const sink = captureStack[s]!;
+          if (!sink.identity.has(idKey)) sink.identity.set(idKey, entry);
+        }
       }
       for (let i = 0; i < captured.urls.length; i++) {
         const url = captured.urls[i]!;
         demands.urls.add(url);
-        activeCapture?.urls.add(url);
+        for (let s = 0; s < captureStack.length; s++) captureStack[s]!.urls.add(url);
       }
       for (let i = 0; i < captured.asks.length; i++) {
         const [askKey, handle] = captured.asks[i]!;
         demands.asks.set(askKey, handle);
-        activeCapture?.asks.set(askKey, handle);
+        for (let s = 0; s < captureStack.length; s++) captureStack[s]!.asks.set(askKey, handle);
       }
     },
   });

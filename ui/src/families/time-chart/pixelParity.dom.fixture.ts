@@ -330,8 +330,11 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     { label: 'zoom-in', mode: 'lines', hour: H0 + 850 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: ['USA', 'GER', 'SOV', 'FRA'], zoom: [H0 + 150 * BIN, H0 + 450 * BIN], inspect: null },
     { label: 'zoom-pan', mode: 'lines', hour: H0 + 860 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: ['USA', 'GER', 'SOV', 'FRA'], zoom: [H0 + 220 * BIN, H0 + 520 * BIN], inspect: null },
     { label: 'resize-small', mode: 'lines', hour: H0 + 860 * BIN, width: 380, height: 190, dpr: 1, theme: darkTheme, tags: ['USA', 'GER', 'SOV'], inspect: null },
+    { label: 'fractional-dpr-125', mode: 'lines', hour: H0 + 865 * BIN, width: 720, height: 320, dpr: 1.25, theme: darkTheme, tags: ['USA', 'GER', 'SOV', 'ENG'], inspect: null },
+    { label: 'fractional-dpr-125-warm', mode: 'lines', hour: H0 + 868 * BIN, width: 720, height: 320, dpr: 1.25, theme: darkTheme, tags: ['USA', 'GER', 'SOV', 'ENG'], inspect: null },
     { label: 'resize-hidpi-light', mode: 'lines', hour: H0 + 870 * BIN, width: 640, height: 300, dpr: 1.5, theme: lightTheme, tags: ['USA', 'GER', 'SOV', 'ENG'], inspect: null },
     { label: 'stack-forward', mode: 'stack', hour: H0 + 520 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], inspect: null },
+    { label: 'stack-dpr-125', mode: 'stack', hour: H0 + 620 * BIN, width: 720, height: 320, dpr: 1.25, theme: darkTheme, tags: [], inspect: null },
     { label: 'stack-zoom-hover', mode: 'stack', hour: H0 + 820 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], zoom: [H0 + 100 * BIN, H0 + 600 * BIN], inspect: `plot:${H0 + 300 * BIN}` },
     { label: 'columns-folded-partial', mode: 'columns', hour: H0 + 400 * BIN, width: 720, height: 320, dpr: 1, theme: darkTheme, tags: [], inspect: null },
   ];
@@ -340,7 +343,14 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   const cachedCtx = cachedCanvas.getContext('2d', { willReadFrequently: true })!;
   const cachedMeasure = canvasMeasureText(cachedCtx);
 
-  const failures: ParityFailure[] = [];
+  const cachedResults: {
+    readonly bw: number;
+    readonly pixels: Uint8ClampedArray;
+    readonly navJson: string;
+    readonly looksJson: string | null;
+    readonly artUrlsJson: string | null;
+  }[] = [];
+
   for (const step of steps) {
     const bw = Math.round(step.width * step.dpr);
     const bh = Math.round(step.height * step.dpr);
@@ -353,57 +363,64 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     const cachedLayout = layoutTimeChart(cachedModel, step.width, step.height, step.theme.font, cachedMeasure);
     const cachedLegend = fitTimeChartLegend(cachedModel, cachedLayout, step.theme, cachedMeasure);
     drawTimeChart(cachedCtx, cachedModel, cachedLayout, step.theme, step.inspect, step.dpr, cachedLegend);
-    const cachedPixels = cachedCtx.getImageData(0, 0, bw, bh).data;
-    const cachedNav = chartNavStops(cachedModel, cachedLayout);
+    cachedResults.push({
+      bw,
+      pixels: new Uint8ClampedArray(cachedCtx.getImageData(0, 0, bw, bh).data),
+      navJson: JSON.stringify(chartNavStops(cachedModel, cachedLayout)),
+      looksJson: cachedLine ? cachedLine.looksJson : null,
+      artUrlsJson: cachedLine ? JSON.stringify(cachedLine.artUrls) : null,
+    });
+  }
 
-    const refCanvas = new OffscreenCanvas(bw, bh);
-    const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
-    const refOut = (() => {
-      const prevEnabled = timeChartCacheState.enabled;
-      timeChartCacheState.enabled = false;
-      try {
-        clearTextWidthCache();
-        const refMeasure = (text: string, font: string) => {
-          const prev = refCtx.font;
-          if (prev !== font) refCtx.font = font;
-          const w = refCtx.measureText(text).width;
-          if (prev !== font) refCtx.font = prev;
-          return w;
-        };
-        const refLine = step.mode === 'lines' ? buildLineModel(step, false) : null;
-        const refModel = refLine ? refLine.model : step.mode === 'stack' ? buildStackModel(step, false) : buildColumnsModel(step);
-        const refLayout = layoutTimeChart(refModel, step.width, step.height, step.theme.font, refMeasure);
-        const refLegend = fitTimeChartLegend(refModel, refLayout, step.theme, refMeasure);
-        drawTimeChart(refCtx, refModel, refLayout, step.theme, step.inspect, step.dpr, refLegend);
-        return {
-          refPixels: refCtx.getImageData(0, 0, bw, bh).data,
-          refNav: chartNavStops(refModel, refLayout),
-          refLine,
-        };
-      } finally {
-        timeChartCacheState.enabled = prevEnabled;
-      }
-    })();
+  const failures: ParityFailure[] = [];
+  const prevEnabled = timeChartCacheState.enabled;
+  timeChartCacheState.enabled = false;
+  try {
+    for (let s = 0; s < steps.length; s++) {
+      const step = steps[s]!;
+      const cached = cachedResults[s]!;
+      const bw = cached.bw;
+      const bh = Math.round(step.height * step.dpr);
+      const refCanvas = new OffscreenCanvas(bw, bh);
+      const refCtx = refCanvas.getContext('2d', { willReadFrequently: true })!;
+      clearTextWidthCache();
+      const refMeasure = (text: string, font: string) => {
+        const prev = refCtx.font;
+        if (prev !== font) refCtx.font = font;
+        const w = refCtx.measureText(text).width;
+        if (prev !== font) refCtx.font = prev;
+        return w;
+      };
+      const refLine = step.mode === 'lines' ? buildLineModel(step, false) : null;
+      const refModel = refLine ? refLine.model : step.mode === 'stack' ? buildStackModel(step, false) : buildColumnsModel(step);
+      const refLayout = layoutTimeChart(refModel, step.width, step.height, step.theme.font, refMeasure);
+      const refLegend = fitTimeChartLegend(refModel, refLayout, step.theme, refMeasure);
+      drawTimeChart(refCtx, refModel, refLayout, step.theme, step.inspect, step.dpr, refLegend);
+      const refPixels = refCtx.getImageData(0, 0, bw, bh).data;
+      const refNavJson = JSON.stringify(chartNavStops(refModel, refLayout));
 
-    let diffBytes = 0;
-    let firstDiff: ParityFailure['firstDiff'] = null;
-    for (let i = 0; i < cachedPixels.length; i++) {
-      if (cachedPixels[i] !== refOut.refPixels[i]) {
-        diffBytes++;
-        if (firstDiff === null) {
-          const px = Math.floor(i / 4);
-          firstDiff = { x: px % bw, y: Math.floor(px / bw), channel: i % 4, cached: cachedPixels[i]!, ref: refOut.refPixels[i]! };
+      let diffBytes = 0;
+      let firstDiff: ParityFailure['firstDiff'] = null;
+      for (let i = 0; i < cached.pixels.length; i++) {
+        if (cached.pixels[i] !== refPixels[i]) {
+          diffBytes++;
+          if (firstDiff === null) {
+            const px = Math.floor(i / 4);
+            firstDiff = { x: px % bw, y: Math.floor(px / bw), channel: i % 4, cached: cached.pixels[i]!, ref: refPixels[i]! };
+          }
         }
       }
+      const navEqual = cached.navJson === refNavJson;
+      const looksEqual = !refLine || (
+        cached.looksJson === refLine.looksJson
+        && cached.artUrlsJson === JSON.stringify(refLine.artUrls)
+      );
+      if (diffBytes > 0 || !navEqual || !looksEqual) {
+        failures.push({ label: step.label, diffBytes, firstDiff, navEqual, looksEqual });
+      }
     }
-    const navEqual = JSON.stringify(cachedNav) === JSON.stringify(refOut.refNav);
-    const looksEqual = !cachedLine || (
-      cachedLine.looksJson === refOut.refLine!.looksJson
-      && JSON.stringify(cachedLine.artUrls) === JSON.stringify(refOut.refLine!.artUrls)
-    );
-    if (diffBytes > 0 || !navEqual || !looksEqual) {
-      failures.push({ label: step.label, diffBytes, firstDiff, navEqual, looksEqual });
-    }
+  } finally {
+    timeChartCacheState.enabled = prevEnabled;
   }
   return { checked: steps.length, failures };
 }

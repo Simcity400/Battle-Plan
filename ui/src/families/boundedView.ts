@@ -394,12 +394,10 @@ export function sliceRuns(
   return sliceSpansByHour(runs, hour, clipSingleRun, counter, hint);
 }
 
-const EMPTY_MISSING: MissingSpan[] = [];
-
 export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedHour): MissingSpan[] {
-  if (spans.length === 0) return EMPTY_MISSING;
+  if (spans.length === 0) return [];
   const sliced = sliceMissingSpans(spans, hour).slice;
-  return sliced.length === 0 ? EMPTY_MISSING : [...sliced];
+  return sliced.length === 0 ? [] : [...sliced];
 }
 
 export interface UnrecordedLine {
@@ -595,7 +593,7 @@ function sameHeadValue(a: Value | undefined, b: Value | undefined): boolean {
     case 'notApplicable':
       return a.reason === (b as typeof a).reason;
     case 'partial':
-      return Object.is(a.value, (b as typeof a).value) && a.reason === (b as typeof a).reason;
+      return Object.is(a.value, (b as typeof a).value) && a.reason === (b as typeof a).reason && a.atLeast === (b as typeof a).atLeast;
   }
 }
 

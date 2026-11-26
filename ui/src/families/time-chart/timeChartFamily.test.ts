@@ -8,8 +8,8 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
-import { boundTiledSeries, BoundedSeriesCursor, createBoundedReadView, displayedHour } from '../boundedView.ts';
-import { projectScene } from '../scene.ts';
+import { boundTiledSeries, BoundedSeriesCursor, clipMissingSpans, createBoundedReadView, displayedHour } from '../boundedView.ts';
+import { projectScene, sceneReadRecorder } from '../scene.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { IdentityIndex } from '../identity/index.ts';
@@ -2474,9 +2474,13 @@ describe('time-chart PR 1 fixed-work caches', () => {
     assert.equal(b, a, 'equal boxed headValue/headPoint reuses the cached BoundedSeries');
     const c = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 15 }, headValue: knownValue(15) });
     assert.notEqual(c, a, 'changed headValue invalidates the cached BoundedSeries');
+    const p1 = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 15 }, headValue: { kind: 'partial', value: 15, reason: 'clipped' } });
+    const p2 = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 15 }, headValue: { kind: 'partial', value: 15, reason: 'clipped', atLeast: true } });
+    assert.notEqual(p2, p1, 'changed partial atLeast qualifier invalidates cached BoundedSeries');
+    assert.equal(p2.headValue?.kind === 'partial' ? p2.headValue.atLeast : undefined, true);
   });
 
-  it('caches computeTimeAxisTicks across month and year interiors and matches uncached results across boundaries', () => {
+  it('caches computeTimeAxisTicks across month and year interiors, respects boundary/MAX_HOUR limits, and isolates caller mutations', () => {
     const probes = [
       H1936 + 61 * 24,
       H1936 + 62 * 24,
@@ -2498,7 +2502,117 @@ describe('time-chart PR 1 fixed-work caches', () => {
       assert.deepEqual(cached, uncached, `ticks match uncached at end=${end}`);
     }
     const y1 = computeTimeAxisTicks(H1936, H1936 + 800 * 24, 640);
+    const beforeLen = y1.length;
+    y1.length = 0;
     const y2 = computeTimeAxisTicks(H1936, H1936 + 850 * 24, 640);
-    assert.equal(y1, y2, 'ticks inside the same year return the same cached array');
+    assert.equal(y2.length, beforeLen, 'mutating returned tick array does not corrupt cache');
+
+    const floatStart = 67_108_863.00000001;
+    computeTimeAxisTicks(floatStart, 67_126_384, 640);
+    const cachedBack = computeTimeAxisTicks(floatStart, 67_126_383, 640);
+    timeChartCacheState.enabled = false;
+    const uncachedBack = (() => {
+      try { return computeTimeAxisTicks(floatStart, 67_126_383, 640); }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(cachedBack, uncachedBack, 'float start 2-year boundary matches uncached');
+
+    const maxStart = 2_147_483_647 - 90 * 24;
+    computeTimeAxisTicks(maxStart, 2_147_483_647, 640);
+    const cachedOverMax = computeTimeAxisTicks(maxStart, 2_147_483_648, 640);
+    timeChartCacheState.enabled = false;
+    const uncachedOverMax = (() => {
+      try { return computeTimeAxisTicks(maxStart, 2_147_483_648, 640); }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(cachedOverMax, uncachedOverMax, 'past MAX_HOUR falls back to uncached dayTicks');
+  });
+
+  it('preserves tag insertion order in SceneTiles, isolates clipMissingSpans, keys legend dash/limit, and propagates nested scene captures', () => {
+    const tiles = new SceneTiles();
+    const mkRaw = (tag: string) => ({
+      source: 'main', tag, head: 'h', decimals: 0, binHours: 24, from: H1936, to: H1936 + 23, width: 1,
+      buckets: [makeBucket(H1936, H1936 + 23, 10)], missing: [], parts: [],
+    });
+    const rawA = mkRaw('AAA');
+    const rawB = mkRaw('BBB');
+    const scene = { widget: 1, subs: [], pictures: [], model: null, hour: H1936 + 23, seek: 0, speed: 0, binding: { generation: 1, surfaces: [], offset: 0, pin: null }, inspect: null, now: 0 };
+    const s1 = tiles.series(scene, { sources: {} }, { tiledBySource: { main: { AAA: rawA, BBB: rawB } } }, H1936 + 23)!;
+    assert.deepEqual([...s1.get('main')!.keys()], ['AAA', 'BBB']);
+    const s2 = tiles.series(scene, { sources: {} }, { tiledBySource: { main: { BBB: rawB, AAA: rawA } } }, H1936 + 23)!;
+    assert.deepEqual([...s2.get('main')!.keys()], ['BBB', 'AAA']);
+
+    const emptyClip = clipMissingSpans([], displayedHour(H1936));
+    emptyClip.push({ firstHour: H1936, lastHour: H1936, reason: 'mutated' });
+    assert.equal(clipMissingSpans([], displayedHour(H1936)).length, 0);
+
+    const baseModel: TimeChartModel = {
+      kind: 'test-stack', measureTitle: 'Stack', mode: 'stack', hour: H1936 + 48, extent: [H1936, H1936 + 48],
+      yAxis: { format: 'number' }, series: [],
+      legend: [{ id: 'a', label: 'Alpha', color: LANE_THEME.blue }, { id: 'b', label: 'Beta', color: LANE_THEME.red }],
+    };
+    const lay = layoutTimeChart(baseModel, 140, 200, FONT, measure);
+    const fitPlain = fitTimeChartLegend(baseModel, lay, LANE_THEME, measure)!;
+    const dashedModel: TimeChartModel = {
+      ...baseModel,
+      legend: [{ id: 'a', label: 'Alpha', color: LANE_THEME.blue, dash: [4, 3] }, { id: 'b', label: 'Beta', color: LANE_THEME.red, dash: [4, 3] }],
+    };
+    const fitDashed = fitTimeChartLegend(dashedModel, lay, LANE_THEME, measure)!;
+    timeChartCacheState.enabled = false;
+    const fitDashedUncached = (() => {
+      try { return fitTimeChartLegend(dashedModel, lay, LANE_THEME, measure)!; }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(fitDashed.shown.length, fitDashedUncached.shown.length);
+    assert.ok(fitPlain.shown.length >= fitDashed.shown.length);
+
+    let outerCaptured: ReturnType<NonNullable<ReturnType<typeof sceneReadRecorder>>['capture']>['reads'] | null = null;
+    const firstProj = projectScene(
+      scene,
+      { sources: {} },
+      H1936,
+      {
+        identity: {
+          resolve: (kind, key, atHour) => ({
+            kind, key, holder: { status: 'pending' }, name: { status: 'pending' }, validInterval: [atHour, atHour], nextChangeAt: Infinity,
+          }),
+        },
+        art: {
+          resolve: () => readyArt('art://nested', { assetId: 'nested', file: 'nested.png' }),
+        },
+        artRevision: 1,
+      },
+      view => {
+        const rec = sceneReadRecorder(view)!;
+        const outer = rec.capture(() => rec.capture(() => {
+          view.who('country', 'GER', H1936);
+          view.art({ kind: 'flag', choice: 'GER', size: 'small' });
+        }));
+        outerCaptured = outer.reads;
+        return null;
+      },
+    );
+    const replayedProj = projectScene(
+      scene,
+      { sources: {} },
+      H1936,
+      {
+        identity: {
+          resolve: (kind, key, atHour) => ({
+            kind, key, holder: { status: 'pending' }, name: { status: 'pending' }, validInterval: [atHour, atHour], nextChangeAt: Infinity,
+          }),
+        },
+        art: {
+          resolve: () => readyArt('art://nested', { assetId: 'nested', file: 'nested.png' }),
+        },
+        artRevision: 1,
+      },
+      view => {
+        sceneReadRecorder(view)!.replay(outerCaptured!);
+        return null;
+      },
+    );
+    assert.deepEqual(replayedProj.identityDemands, firstProj.identityDemands);
+    assert.deepEqual(replayedProj.artUrls, firstProj.artUrls);
   });
 });

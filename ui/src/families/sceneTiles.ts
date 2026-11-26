@@ -189,11 +189,13 @@ export class SceneTiles {
     const gen = ++this.gen;
     let answers: BoundedReadView | null = null;
     let allSourcesSame = this.lastBySource !== null;
+    const prevSourceKeys = this.lastBySource ? this.lastBySource.keys() : null;
     let sourceCount = 0;
     const nextBySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
     for (const source in tiledBySource) {
       if (!Object.hasOwn(tiledBySource, source)) continue;
       sourceCount++;
+      if (allSourcesSame && prevSourceKeys!.next().value !== source) allSourcesSame = false;
       const lines = tiledBySource[source]!;
       let sourceSlots = this.cursors.get(source);
       if (!sourceSlots) this.cursors.set(source, sourceSlots = new Map());
@@ -201,6 +203,7 @@ export class SceneTiles {
       const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
       const prevByTag = this.lastBySource?.get(source);
       let allTagsSame = prevByTag !== undefined;
+      const prevTagKeys = prevByTag ? prevByTag.keys() : null;
       let tagCount = 0;
       let byTag: Map<string, BoundedSeries> | null = null;
       const floorHour = Math.floor(hour);
@@ -225,7 +228,7 @@ export class SceneTiles {
           }
         }
         const bounded = slot.cursor.advance(line, hour, { headPoint, headValue });
-        if (allTagsSame && prevByTag!.get(tag) === bounded) continue;
+        if (allTagsSame && prevTagKeys!.next().value === tag && prevByTag!.get(tag) === bounded) continue;
         if (allTagsSame) {
           allTagsSame = false;
           byTag = new Map();

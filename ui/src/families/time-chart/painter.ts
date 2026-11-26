@@ -65,20 +65,27 @@ interface CachedLegendFit {
 
 const legendFitCache = new WeakMap<LegendMeasure, { revision: number; map: Map<string, CachedLegendFit> }>();
 const LEGEND_FIT_CACHE_MAX = 64;
+const LEGEND_FIT_MAX_ENTRIES = 32;
 
-function legendFitKey(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme): string | null {
+function legendFitKey(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, ink: string): string | null {
   const legend = model.legend;
-  if (!legend || legend.length === 0 || layout.legendTop === null) return null;
-  let key = `${model.mode}\u0000${layout.left}\u0000${layout.width - layout.left}\u0000${theme.font}\u0000${theme.fontSize.small}`;
+  if (!legend || legend.length === 0 || legend.length > LEGEND_FIT_MAX_ENTRIES || layout.legendTop === null) return null;
+  let key = `${model.mode}\u0000${layout.left}\u0000${layout.width - layout.left}\u0000${theme.font}\u0000${theme.fontSize.small}\u0000${ink}`;
   for (let i = 0; i < legend.length; i++) {
     const item = legend[i]!;
-    key += `\u0001${item.label}\u0002${item.hatch ? 1 : 0}\u0002${item.flag ? (item.flag.art.status === 'noArtExpected' ? 0 : 1) : 0}`;
+    const dash = item.dash?.length ? item.dash.join(',') : '';
+    const flag = item.flag
+      ? (item.flag.art.status === 'noArtExpected' ? '0' : `${item.flag.art.status}:${item.flag.tag ?? item.flag.label ?? ''}`)
+      : '';
+    key += `\u0001${item.label}\u0002${item.color ?? ''}\u0002${dash}\u0002${item.hatch ? 1 : 0}\u0002${flag}`;
   }
   return key;
 }
 
 export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayout, theme: FamilyTheme, measure: LegendMeasure): LegendFit | null {
-  const key = timeChartCacheState.enabled ? legendFitKey(model, layout, theme) : null;
+  if (layout.legendTop === null || !model.legend?.length) return null;
+  const ink = resolveKitTokens(theme).textSecondary;
+  const key = timeChartCacheState.enabled ? legendFitKey(model, layout, theme, ink) : null;
   if (key !== null) {
     const rev = textWidthRevision();
     let bucket = legendFitCache.get(measure);
@@ -91,14 +98,14 @@ export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayou
     }
     const hit = bucket.map.get(key);
     if (hit !== undefined) return hit.fit;
-    const spec = timeChartLegendSpec(model, undefined, resolveKitTokens(theme).textSecondary);
+    const spec = timeChartLegendSpec(model, undefined, ink);
     if (!spec) return null;
     const fit = fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure);
     if (bucket.map.size >= LEGEND_FIT_CACHE_MAX) bucket.map.clear();
     bucket.map.set(key, { key, fit });
     return fit;
   }
-  const spec = layout.legendTop === null ? null : timeChartLegendSpec(model, undefined, resolveKitTokens(theme).textSecondary);
+  const spec = timeChartLegendSpec(model, undefined, ink);
   return spec ? fitLegendStrip(layout.left, layout.width - layout.left, spec, theme, measure) : null;
 }
 
@@ -346,30 +353,18 @@ export function drawTimeChart(
   if (layout.yTicks.length > 0) {
     ctx.save();
     ctx.lineWidth = 1;
-    let activeZero: boolean | null = null;
-    let lastY = NaN;
-    let open = false;
     for (let i = 0; i < layout.yTicks.length; i++) {
       const v = layout.yTicks[i]!;
       const y = Math.round(layout.toY(v)) + 0.5;
       if (y < layout.top - 2 || y > layout.baseY + 2) continue;
       visibleYTicks.push({ index: i, value: v, y });
       const isZeroCrossing = v === 0 && layout.yDomain[0] < 0;
-      if (open && (isZeroCrossing !== activeZero || y === lastY)) {
-        ctx.stroke();
-        open = false;
-      }
-      if (!open) {
-        ctx.strokeStyle = isZeroCrossing ? tokens.zeroLine : tokens.gridLine;
-        ctx.beginPath();
-        activeZero = isZeroCrossing;
-        open = true;
-      }
+      ctx.strokeStyle = isZeroCrossing ? tokens.zeroLine : tokens.gridLine;
+      ctx.beginPath();
       ctx.moveTo(layout.left, y);
       ctx.lineTo(layout.left + layout.plotWidth, y);
-      lastY = y;
+      ctx.stroke();
     }
-    if (open) ctx.stroke();
     ctx.restore();
   }
   if (visibleYTicks.length > 0) {
