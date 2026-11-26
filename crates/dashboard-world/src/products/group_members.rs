@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-const UNKNOWN: &str = "Membership of this group is not recorded at this hour";
+pub const UNKNOWN: &str = "Membership of this group is not recorded at this hour";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
