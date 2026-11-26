@@ -189,6 +189,24 @@ fn next_change(reply: &MilitaryAirReply, hour: i32, relevant: &dyn Fn(Option<&st
     next
 }
 
+const HELD_STEPS: usize = 48;
+
+pub(super) fn answer_held(reply: &MilitaryAirReply, params: &MilitaryAirAtParams, members: Option<&Members>) -> io::Result<MilitaryAirAtReply> {
+    let mut out = answer(reply, params, members)?;
+    let limit = reply.last_hour.min(members.map_or(i32::MAX, |members| members.until));
+    for _ in 0..HELD_STEPS {
+        if out.valid_until >= limit {
+            break;
+        }
+        let later = answer(reply, &MilitaryAirAtParams { hour: out.valid_until + 1, ..params.clone() }, members)?;
+        if (&later.rows, &later.absent, &later.missing, &later.rank_missing, &later.unattributed) != (&out.rows, &out.absent, &out.missing, &out.rank_missing, &out.unattributed) {
+            break;
+        }
+        out.valid_until = later.valid_until;
+    }
+    Ok(out)
+}
+
 pub fn answer(reply: &MilitaryAirReply, params: &MilitaryAirAtParams, members: Option<&Members>) -> io::Result<MilitaryAirAtReply> {
     let hour = params.hour;
     let mut out = MilitaryAirAtReply {
@@ -388,7 +406,7 @@ impl Product for MilitaryAirAt {
             }
             None => None,
         };
-        answer(&reply, params, members.as_ref())
+        answer_held(&reply, params, members.as_ref())
     }
 }
 
@@ -456,6 +474,17 @@ mod tests {
 
     fn tags(reply: &MilitaryAirAtReply) -> Vec<(&str, &str, &str)> {
         reply.rows.iter().map(|row| (row.tag.as_str(), row.dealt.as_str(), row.taken.as_str())).collect()
+    }
+
+    #[test]
+    fn a_top_holds_while_what_it_shows_is_unchanged_however_the_rows_below_it_move() {
+        let mut moving = ledger();
+        moving.parts[0] = part(Some("GER"), Some("1:1"), true, &[(5, "100"), (12, "110"), (20, "300")]);
+        let top = MilitaryAirAtParams { top: Some(1), ..asked(10) };
+        assert_eq!(answer_of(&moving, &top).unwrap().valid_until, 11, "a plain answer expires at the runner-up's event");
+        let held = answer_held(&moving, &top, None).unwrap();
+        assert_eq!(tags(&held), [("SOV", "200", "0")]);
+        assert_eq!(held.valid_until, 19, "GER moving below SOV at 12 changes nothing shown; GER passing SOV at 20 does");
     }
 
     #[test]

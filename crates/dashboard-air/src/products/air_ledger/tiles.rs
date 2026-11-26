@@ -1,6 +1,6 @@
 use super::{
     Fold, MilitaryAirFamily, MilitaryAirMetric, MilitaryAirParams,
-    at::{self, LINKS_NOT_RECORDED, LOSSES_NOT_RECORDED, MilitaryAirAtParams},
+    at::{self, LINKS_NOT_RECORDED, LOSSES_NOT_RECORDED, MilitaryAirAtParams, UNATTRIBUTED},
     countries, openings, scan, selected,
 };
 use dashboard_base::{
@@ -30,6 +30,7 @@ pub const SERIES: &str = "air-losses";
 const DECIMALS: u8 = 5;
 const SCALE: f64 = 100_000.0;
 const KEPT_FOLDS: usize = 8;
+pub const SUBTOTAL_UNREAD: &str = "Some aircraft losses since the totals' start were not recorded: the line is the recorded subtotal";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
@@ -317,7 +318,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
                 group: None,
             };
             let win = at::window(source, &at_params, query.timeline.id, load, cancelled)?;
-            let at_reply = at::answer(&win, &at_params, None)?;
+            let at_reply = at::answer_held(&win, &at_params, None)?;
             let until = at_reply.valid_until.max(hour);
             if let Some(reason) = at_reply.missing.or(at_reply.rank_missing) {
                 (Vec::new(), Some(TileRanking { hour, from: hour, until, refused: Some(reason) }))
@@ -354,6 +355,46 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
         let leaves = selected(&fold, &ledger_params)?;
         let country_spans = countries(query, &fold.observed);
         let missing_all = base_missing(query, &fold, scan_first, clip);
+        let count_from = match family.from_hour {
+            Some(from) => Some(from),
+            None => super::first_observed(source, query, MilitaryAirFamily::AirLosses, (query.timeline.first, query.timeline.last))?,
+        };
+        let mut subtotal: Option<(i32, &'static str)> = None;
+        if let Some(from) = count_from {
+            let mut note = |hour: i32, reason: &'static str| {
+                if subtotal.is_none_or(|(at, _)| hour < at) {
+                    subtotal = Some((hour, reason));
+                }
+            };
+            if from < scan_first {
+                let family = MilitaryAirFamily::AirLosses;
+                if super::observed_since(source, query, family, scan_first, from)? > from || super::latest_in_part(source, query, family, (from, scan_first - 1))?.is_some() {
+                    note(scan_first, SUBTOTAL_UNREAD);
+                }
+                if opened.iter().any(|((identity, dealt, ..), total)| identity.is_none() && *dealt == is_dealt && *total != 0) {
+                    note(scan_first, UNATTRIBUTED);
+                }
+            }
+            for gap in missing_all.iter().filter(|gap| gap.last_hour >= from) {
+                note(gap.first_hour.max(from), SUBTOTAL_UNREAD);
+            }
+            for span in fold.incomplete.iter().filter(|span| span.last_hour >= from) {
+                note(span.first_hour.max(from), SUBTOTAL_UNREAD);
+            }
+            for (leaf, points) in &leaves {
+                if leaf.dealt != is_dealt || leaf.country.is_some() {
+                    continue;
+                }
+                let mut before = 0_i128;
+                for &(_, read_hour, total) in points {
+                    if total != before && read_hour >= from {
+                        note(read_hour, UNATTRIBUTED);
+                        break;
+                    }
+                    before = total;
+                }
+            }
+        }
 
         let mut opening_by_identity: BTreeMap<&str, i128> = BTreeMap::new();
         for ((identity, dealt, ..), total) in &opened {
@@ -457,7 +498,13 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
                     pieces[at].break_before = false;
                 }
             }
-            let missing = clip_missing(&missing_all, family.from_hour, within);
+            let mut missing = clip_missing(&missing_all, family.from_hour, within);
+            if let Some((at, reason)) = subtotal {
+                for piece in pieces.iter().filter(|piece| piece.last >= at) {
+                    push_missing(&mut missing, piece.first.max(at), piece.last, reason);
+                }
+                missing.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
+            }
             drawn_lines.push(pieces);
             tile_lines.push(TileLine { country: key.clone(), part: None, missing, parts: Vec::new(), marks: None });
         }
@@ -537,6 +584,33 @@ mod tests {
 
     fn loss(id: u64, game_hour: i32, country: u32, credited_enemy: bool, amount_raw: i64, opponent: Option<u32>) -> AirLossEventRow {
         AirLossEventRow { id, game_hour, country, region: 1, native_cause: 1, family_base: 0, credited_enemy, amount_raw, opponent, daily_slot: 0 }
+    }
+
+    #[test]
+    fn a_loss_with_no_recorded_country_leaves_every_later_total_a_recorded_subtotal() {
+        let frames: Vec<DecodedFrame> = (0..=40)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }]);
+                let events = match hour {
+                    5 => vec![loss(1, 5, 9001, false, 400_000, None)],
+                    15 => vec![loss(2, 15, 9050, false, 100_000, None)],
+                    _ => Vec::new(),
+                };
+                set::<tables::AirLossEvents>(&mut frame, events);
+                frame
+            })
+            .collect();
+        let rep = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let src = Source::from_replay(SourceKey { source_id: "air-unattributed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
+        let q = query(&src, 1).unwrap();
+        let params = serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "taken" }, "binHours": 1, "index": 0, "countries": [7] });
+        let reply = tile(&src, &q, &params, &LoadContext { content: None }, &cancelled).unwrap();
+        let bytes = unbase64(&reply.bins);
+        let reasons_at = |hour: i32| reply.lines[0].missing.iter().filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour).map(|gap| gap.reason.as_str()).collect::<Vec<_>>();
+        assert_eq!((bytes[10] & tile::PRESENT, reasons_at(10)), (tile::PRESENT, vec![]), "before the unplaced loss the total is whole");
+        assert_eq!((bytes[18] & tile::PRESENT, reasons_at(18)), (tile::PRESENT, vec![UNATTRIBUTED]), "after it the line keeps its recorded subtotal and says it is one");
     }
 
     #[test]
@@ -676,7 +750,11 @@ mod tests {
         assert_eq!(ranking.until, 11);
         assert_eq!(
             top_reply.lines[0].missing,
-            vec![MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() }]
+            vec![
+                MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() },
+                MissingSpan { first_hour: 18, last_hour: 20, reason: SUBTOTAL_UNREAD.to_owned() },
+            ],
+            "after hours whose losses could not be credited, the line is the recorded subtotal, never an exact total"
         );
 
         let decoded = tile::decode_runs(

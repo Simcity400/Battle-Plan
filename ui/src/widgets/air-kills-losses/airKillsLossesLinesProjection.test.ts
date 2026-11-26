@@ -176,6 +176,21 @@ test('air kills & losses lines projects slot-keyed dual lines, whole-number axis
   assert.deepEqual(model.legend?.map(l => l.label), ['Solid: enemy losses', 'Dashed: own losses']);
 });
 
+test('a partial total is labelled and audited as at least its recorded subtotal, never as exact', () => {
+  const k1 = countryKey(1);
+  const reason = "Some events since the totals' start have no recorded country";
+  const rows = airReply().rows.map(row => ({ ...row, complete: false, partial: reason, ratioHundredths: null }));
+  const readView = createBoundedReadView({
+    hour: displayedHour(100),
+    panels: new Map([['head', airReply({ rows, unattributed: ['0', '7'] })]]),
+    identity: fakeIdentity({ [k1]: { name: 'German Reich', color: '#6d7874' } }),
+  });
+  const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
+  assert.equal(model.series[1]!.endLabel?.value, '≥ 450 / 200');
+  const audited = model.auditRows?.find(row => row.key === `${k1}\u0000taken`);
+  assert.ok(audited && String(audited.value).includes(reason), `the audit says the total is partial: ${JSON.stringify(audited)}`);
+});
+
 test('unrecorded air losses stay not recorded with their reason, never zero or blank', () => {
   const readView = createBoundedReadView({
     hour: displayedHour(100),
