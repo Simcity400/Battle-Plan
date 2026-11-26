@@ -356,7 +356,7 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatShare(0.0999), '9.9%');
   assert.equal(formatShare(0.15), '15%');
   assert.equal(formatShare(0.334), '33%');
-  assert.equal(formatShare(0.6667), '67%');
+  assert.equal(formatShare(0.6667), '66%');
   assert.equal(formatShare(0.996), '99%');
   assert.equal(formatShare(0.9999), '99%');
   assert.equal(formatShare(1), '100%');
@@ -413,12 +413,20 @@ test('fixedDecimals, formatShare, formatProgress, formatRecordedPercent, and sig
   assert.equal(formatRecordedPercent(15.5, { signed: true }), '+15.5%');
   assert.equal(formatRecordedPercent(-10.2, { signed: true }), '−10.2%');
   assert.equal(formatRecordedPercent(0, { signed: true }), '0%');
-  assert.equal(formatScalar(11 / 5975, 'share'), '0.2%');
+  assert.equal(formatScalar(11 / 5975, 'share'), '0.1%');
   assert.equal(formatScalar(0, 'share'), '0%');
   assert.deepEqual(formatValueState(knownValue(0.24), 'share'), { kind: 'known', text: '24%', exact: '24%', spoken: '24%', audit: '24%' });
+  assert.deepEqual(formatValueState(knownValue(99.6), 'progress'), { kind: 'known', text: '99%', exact: '99.6%', spoken: '99.6%', audit: '99.6%' });
+  assert.deepEqual(formatValueState(knownValue(0.145), 'share'), { kind: 'known', text: '14%', exact: '14.5%', spoken: '14.5%', audit: '14.5%' });
+  assert.equal(formatValueState(knownValue(0.0004), 'share').audit, '0.04%');
+  assert.equal(formatValueState(knownValue(12.3456789), 'recordedPercent').audit, '12.3456789%');
+  assert.equal(formatValueState(knownValue(0n), 'share').audit, '0%');
+  assert.equal(formatValueState(knownValue(1n), 'share').audit, '100%');
+  assert.throws(() => formatValueState(knownValue(2n), 'share'), InvalidFamilyValueError);
+  assert.throws(() => formatValueState(knownValue(-1n), 'share'), InvalidFamilyValueError);
 
-  assert.equal(formatShareRatio(14_500n, 100_000n), '15%');
-  assert.equal(formatShareRatio(2_850n, 100_000n), '2.9%');
+  assert.equal(formatShareRatio(14_500n, 100_000n), '14%');
+  assert.equal(formatShareRatio(2_850n, 100_000n), '2.8%');
   assert.equal(formatShareRatio(0n, 100_000n), '0%');
   assert.equal(formatShareRatio(100_000n, 100_000n), '100%');
   assert.equal(formatShareRatio(1n, 100_000n), '<0.1%');

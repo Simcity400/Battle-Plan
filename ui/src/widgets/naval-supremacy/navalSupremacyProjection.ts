@@ -10,7 +10,7 @@ import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclar
 import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { contestedGrey, countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
-import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { knownValue, notRecorded } from '../../families/value.ts';
@@ -48,6 +48,14 @@ function lookOf(readView: BoundedReadView, reply: NavalSupremacyReply, options: 
     enemyLabel: 'Enemy control',
     viewer: reply.viewerName ?? 'Viewer',
   };
+}
+
+function shareRatio(text: string | null, scale: number): { readonly raw: bigint; readonly denom: bigint } | null {
+  if (text === null || !Number.isSafeInteger(scale) || scale <= 0 || !/^-?\d+$/.test(text)) return null;
+  const denom = BigInt(scale);
+  const parsed = BigInt(text);
+  const raw = parsed < 0n ? 0n : parsed > denom ? denom : parsed;
+  return { raw, denom };
 }
 
 function shareOf(text: string | null, scale: number): number | null {
@@ -96,12 +104,14 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
     if (share === null) {
       return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: named.label, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };
     }
-    const friendlyPct = formatShare(share);
-    const enemyPct = formatShare(1 - share);
+    const ratio = shareRatio(readout.share, reply.scale);
+    const enemyShare = ratio ? Number(ratio.denom - ratio.raw) / Number(ratio.denom) : 1 - share;
+    const friendlyPct = ratio ? formatShareRatio(ratio.raw, ratio.denom) : formatShare(share);
+    const enemyPct = ratio ? formatShareRatio(ratio.denom - ratio.raw, ratio.denom) : formatShare(enemyShare);
     const friendly = look.friendly(readout.as_of_hour).colour;
     const segments: BarsSegment[] = [
       { key: 'friendly', label: `${look.viewer} and friends`, share, value: knownValue(share), color: friendly, inlineLabel: `Friendly ${friendlyPct}` },
-      { key: 'enemy', label: `Enemies of ${look.viewer}`, share: 1 - share, value: knownValue(1 - share), color: look.enemy, inlineLabel: `Enemy ${enemyPct}` },
+      { key: 'enemy', label: `Enemies of ${look.viewer}`, share: enemyShare, value: knownValue(enemyShare), color: look.enemy, inlineLabel: `Enemy ${enemyPct}` },
     ];
     const control = readout.control > 0 ? look.friendlyLabel : readout.control < 0 ? look.enemyLabel : 'Contested';
     return {
@@ -232,9 +242,13 @@ function inspectDay(reply: NavalSupremacyReply, region: SupremacyRegion | undefi
   if (run.control === null) return { title, ...dated, missingReason: run.missing ?? 'Naval region control was not recorded' };
   if (idle(run.friendly, run.enemy)) return { title, ...dated, items: [{ label: 'No activity' }] };
   const share = shareOf(run.share, reply.scale);
+  const ratio = shareRatio(run.share, reply.scale);
+  const sideRaw = ratio ? (run.control < 0 ? ratio.denom - ratio.raw : ratio.raw) : null;
+  const sideShare = share === null ? null : (run.control < 0 ? 1 - share : share);
+  const shareText = ratio && sideRaw !== null ? formatShareRatio(sideRaw, ratio.denom) : sideShare === null ? null : formatShare(sideShare);
   const label = run.control > 0 ? look.friendlyLabel : run.control < 0 ? look.enemyLabel : 'Contested';
   const swatch = run.control === 0 ? look.contested : run.control < 0 ? look.enemy : painted?.kind === 'solid' ? painted.color : look.contested;
-  return { title, ...dated, items: [{ label, swatch, ...(share === null ? {} : { value: `${formatShare(share)} of the score` }) }] };
+  return { title, ...dated, items: [{ label, swatch, ...(shareText === null ? {} : { value: `${shareText} of the score` }) }] };
 }
 
 export function projectSupremacyTimeline(readView: BoundedReadView, options: SupremacyOptions): HeatLanesModel {
@@ -282,10 +296,16 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     else if (readout && idle(readout.friendly, readout.enemy)) shown = { kind: 'clear', label: 'No activity' };
     else if (readout) {
       const share = shareOf(readout.share, now.scale);
+      const ratio = shareRatio(readout.share, now.scale);
       const color = readout.control > 0 ? look.friendly(readout.as_of_hour).colour : readout.control < 0 ? look.enemy : look.contested;
+      const primary = ratio
+        ? formatShareRatio(readout.control > 0 ? ratio.raw : ratio.denom - ratio.raw, ratio.denom)
+        : share === null
+          ? ''
+          : formatShare(readout.control > 0 ? share : 1 - share);
       shown = readout.control === 0
         ? { kind: 'value', form: 'value', primary: '', secondary: 'Contested', swatch: color, audit: 'Contested' }
-        : { kind: 'value', form: 'value', primary: share === null ? '' : formatShare(readout.control > 0 ? share : 1 - share), secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
+        : { kind: 'value', form: 'value', primary, secondary: readout.control > 0 ? look.friendlyLabel : look.enemyLabel, swatch: color };
     }
     return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });

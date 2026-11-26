@@ -31,6 +31,24 @@ function axisDecimalPlaces(ticks: readonly number[] | undefined, value: number, 
   return Math.min(ticks?.length ? AXIS_MAX_DECIMALS : cap, places);
 }
 
+function compactCollides(ticks: readonly number[] | undefined, value: number, threshold: number): boolean {
+  if (!ticks || ticks.length < 2) return !Number.isInteger(value) && Math.abs(value) >= threshold;
+  const seenLabels = new Set<string>();
+  const seenValues = new Set<number>();
+  for (const tick of ticks) {
+    if (!Number.isFinite(tick) || seenValues.has(tick)) continue;
+    seenValues.add(tick);
+    const label = tick === 0
+      ? '0'
+      : Math.abs(tick) >= threshold
+        ? formatCompactScalar(Math.round(tick), 'integer').text
+        : formatScalar(tick, 'integer');
+    if (seenLabels.has(label)) return true;
+    seenLabels.add(label);
+  }
+  return false;
+}
+
 export function formatChartAxisValue(value: number, format: ChartValueFormat, ticks?: readonly number[]): string {
   if (!Number.isFinite(value)) return '';
   if (format === 'percent' || format === 'share' || format === 'signedPercent') {
@@ -41,12 +59,16 @@ export function formatChartAxisValue(value: number, format: ChartValueFormat, ti
     const places = axisDecimalPlaces(ticks, value, 1);
     return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0, signed: true });
   }
+  const places = axisDecimalPlaces(ticks, value, 2);
   if (format === 'compact') {
-    if (value === 0) return '0';
+    if (places === 0 && !compactCollides(ticks, value, 0)) {
+      return value === 0 ? '0' : formatCompactScalar(Math.round(value), 'integer').text;
+    }
+    return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
+  }
+  if (format === 'power' && places === 0 && Math.abs(value) >= 1e4 && !compactCollides(ticks, value, 1e4)) {
     return formatCompactScalar(Math.round(value), 'integer').text;
   }
-  const places = axisDecimalPlaces(ticks, value, 2);
-  if (format === 'power' && Math.abs(value) >= 1e4) return formatCompactScalar(Math.round(value), 'integer').text;
   return formatScalar(value, { decimals: 0, maxDecimals: places, fixedDecimals: places > 0 });
 }
 
@@ -468,7 +490,7 @@ export function layoutTimeChart(
   } else if (dataMin <= dataMax) {
     const autoLo = model.yAxis.min != null ? model.yAxis.min : Math.min(0, dataMin);
     const span = Math.abs(dataMax - Math.min(0, autoLo));
-    const padTop = Math.max(span * 0.08, wholeAxis && span === 0 ? 1 : 1e-6);
+    const padTop = Math.max(span * 0.08, span === 0 ? 1 : 1e-6);
     const autoHi = model.yAxis.max != null ? model.yAxis.max : Math.max(0, dataMax) + padTop;
     const negPad = autoLo < 0 ? Math.max(Math.abs(autoLo) * 0.12, 1) : 0;
     yLo = model.yAxis.min != null ? model.yAxis.min : autoLo - negPad;
@@ -745,8 +767,16 @@ export function layoutTimeChart(
       const gap = model.gaps[i]!;
       const ga = Math.max(xDomain[0], gap.firstHour);
       const gb = Math.min(xDomain[1], model.hour, gap.lastHour);
-      if (gb <= ga) continue;
-      placedGaps.push({ index: i, gap, ongoing: gap.lastHour > model.hour, x0: toX(ga), x1: toX(gb) });
+      if (gb < ga) continue;
+      const rawX0 = toX(ga);
+      const rawX1 = toX(gb);
+      let x0 = rawX0;
+      let x1 = Math.max(rawX0 + 2, rawX1);
+      if (x1 > left + plotWidth) {
+        x1 = left + plotWidth;
+        x0 = Math.max(left, Math.min(rawX0, x1 - 2));
+      }
+      placedGaps.push({ index: i, gap, ongoing: gap.lastHour > model.hour, x0, x1 });
     }
   }
 

@@ -42,7 +42,7 @@ test('spending rows are the product\'s categories and items, dated by their late
     return 'text' in shown ? `${shown.kind} ${shown.text}` : shown.kind;
   };
   assert.equal(share(0), 'known 70%');
-  assert.equal(share(2), 'known 0.2%', 'a share above zero never prints 0%');
+  assert.equal(share(2), 'known 0.1%', 'a share above zero never prints 0%');
   assert.equal(share(3), 'zero 0%');
   assert.deepEqual(model.rows.map(row => row.cells.picture!.iconSlot === true), [true, true, true, false], 'a category the product names no picture for shows its row with none');
   assert.deepEqual(asked.map(handle => handle.kind === 'sprite' && handle.text === true ? handle.key : null), ['decision_icon_small', 'change_government', 'pol_idea']);

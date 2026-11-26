@@ -1,6 +1,7 @@
 import { linearTicks } from '../../charts/valueAxis.ts';
 import { FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import type { FamilyTheme } from '../contract.ts';
+import type { ValueFormat } from '../valueFormat.ts';
 import type { BarsDataRow, BarsForm, BarsModel, BarsTwoSidedLayout } from './model.ts';
 
 export const BARS_PAD_X = 12;
@@ -111,9 +112,14 @@ function resolveRowMetrics(model: BarsModel, bodyHeight: number, width: number):
   return { dataRowHeight, barHeight };
 }
 
-export function axisCeiling(dataMax: number): number {
+export function isWholeScaleFormat(format?: ValueFormat): boolean {
+  return format === undefined || format === 'integer'
+    || (typeof format === 'object' && format !== null && format.decimals === 0 && (format.maxDecimals ?? 0) === 0);
+}
+
+export function axisCeiling(dataMax: number, whole = false): number {
   if (!(dataMax > 0) || !Number.isFinite(dataMax)) return dataMax;
-  const ticks = linearTicks(0, dataMax, 4);
+  const ticks = linearTicks(0, dataMax, 4, whole);
   const last = ticks[ticks.length - 1] ?? dataMax;
   if (last >= dataMax) return last;
   const step = ticks.length > 1 ? ticks[1]! - ticks[0]! : dataMax;
@@ -357,7 +363,8 @@ function layoutBarsBody(
     if (d.rightSide?.numeric !== undefined && d.rightSide.numeric !== null) dataRightMax = Math.max(dataRightMax, Math.abs(d.rightSide.numeric));
   }
   const sharedTwoSidedMax = Math.max(dataMax, dataLeftMax, dataRightMax);
-  const scaleMax = positiveScale(model.scaleMax, form === 'two-sided' ? sharedTwoSidedMax : wantAxis ? axisCeiling(dataMax) : dataMax);
+  const wholeScale = isWholeScaleFormat(model.scaleFormat);
+  const scaleMax = positiveScale(model.scaleMax, form === 'two-sided' ? sharedTwoSidedMax : wantAxis ? axisCeiling(dataMax, wholeScale) : dataMax);
   const scaleLeftMax = positiveScale(model.scaleLeftMax ?? model.scaleMax, sharedTwoSidedMax);
   const scaleRightMax = positiveScale(model.scaleRightMax ?? model.scaleMax, sharedTwoSidedMax);
 
@@ -411,26 +418,36 @@ function layoutBarsBody(
   };
 }
 
+export function barsRangeForBand(
+  layout: BarsLayout,
+  topEdge: number,
+  bottomEdge: number,
+  overscan = 0,
+): { readonly first: number; readonly last: number } {
+  const count = layout.rowTops.length;
+  if (!count) return { first: 0, last: 0 };
+  const top = Math.max(0, topEdge);
+  const bottom = Math.max(top, bottomEdge);
+  let lo = 0;
+  let hi = count - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (layout.rowTops[mid]! + layout.rowHeights[mid]! <= top) lo = mid + 1;
+    else hi = mid;
+  }
+  const first = Math.max(0, lo - overscan);
+  let last = lo;
+  while (last < count && layout.rowTops[last]! < bottom) last++;
+  return { first, last: Math.min(count, last + overscan) };
+}
+
 export function visibleBarsRange(
   layout: BarsLayout,
   scrollTop: number,
   overscan = 2,
 ): { readonly first: number; readonly last: number } {
-  const count = layout.rowTops.length;
-  if (!count) return { first: 0, last: 0 };
   const topEdge = Math.max(0, scrollTop);
-  const bottomEdge = topEdge + layout.bodyHeight;
-  let lo = 0;
-  let hi = count - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (layout.rowTops[mid]! + layout.rowHeights[mid]! <= topEdge) lo = mid + 1;
-    else hi = mid;
-  }
-  const first = Math.max(0, lo - overscan);
-  let last = lo;
-  while (last < count && layout.rowTops[last]! < bottomEdge) last++;
-  return { first, last: Math.min(count, last + overscan) };
+  return barsRangeForBand(layout, topEdge, topEdge + layout.bodyHeight, overscan);
 }
 
 export function barsAuditWindow(layout: BarsLayout, scrollTop: number): { readonly first: number; readonly count: number } {

@@ -21,6 +21,42 @@ interface ChartLayout {
 
 type ChartFrame = LaneFrame<TimeChartBinding, TimeChartModel, ChartLayout>;
 
+function collectChangeHours(model: TimeChartModel, layout: TimeChartLayout): number[] {
+  const minHour = layout.xDomain[0];
+  const maxHour = Math.min(layout.xDomain[1], model.hour);
+  const hours = new Set<number>();
+  if (model.mode === 'lines') {
+    for (const s of model.series) {
+      if (!s.points?.length) continue;
+      let prev: number | null = null;
+      let started = false;
+      for (const pt of s.points) {
+        if (pt.hour > maxHour) break;
+        const val = pt.value !== null && Number.isFinite(pt.value) ? pt.value : null;
+        if (pt.hour >= minHour && ((!started && val !== null) || (started && val !== prev))) {
+          hours.add(pt.hour);
+        }
+        prev = val;
+        started = true;
+      }
+    }
+  } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+    const { hours: stackHours, bands } = model.stack;
+    for (const band of bands) {
+      let prevActive = false;
+      for (let i = 0; i < stackHours.length; i++) {
+        const h = stackHours[i]!;
+        if (h > maxHour) break;
+        const v = band.values[i];
+        const active = v !== null && v !== undefined && Number.isFinite(v) && v !== 0;
+        if (h >= minHour && active !== prevActive) hours.add(h);
+        prevActive = active;
+      }
+    }
+  }
+  return [...hours].sort((a, b) => a - b);
+}
+
 export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): readonly FamilyNavTuple[] {
   if (model.mode === 'columns') {
     return layout.columns.map((col, index) => {
@@ -36,13 +72,22 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
     });
   }
   const stops: { readonly hour: number; readonly key: string; readonly name: string }[] = [];
+  const plotHours = new Set<number>();
+  const addPlot = (hour: number) => {
+    if (plotHours.has(hour)) return;
+    plotHours.add(hour);
+    stops.push({ hour, key: `plot:${hour}`, name: formatDateOnly(hour) });
+  };
   for (const tick of layout.rawAxisTicks) {
-    if (tick.hour <= model.hour) stops.push({ hour: tick.hour, key: `plot:${tick.hour}`, name: formatDateOnly(tick.hour) });
+    if (tick.hour < model.hour) addPlot(tick.hour);
+  }
+  for (const hour of collectChangeHours(model, layout)) {
+    if (hour < model.hour) addPlot(hour);
   }
   for (const placed of layout.markers) {
     stops.push({ hour: placed.marker.hour, key: `marker:${placed.index}@${placed.marker.hour}`, name: placed.marker.title });
   }
-  stops.push({ hour: model.hour, key: `plot:${model.hour}`, name: formatDateOnly(model.hour) });
+  addPlot(model.hour);
   stops.sort((a, b) => a.hour - b.hour);
   return stops.map((stop, index) => [stop.key, stop.name, index, 0, ''] as const);
 }

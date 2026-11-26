@@ -150,3 +150,33 @@ test('a hundred played hours share the naval history and grow only the last run'
   assert.equal(at(275, corrected).inspect!(0, 130)?.missingReason, 'No sample');
   assert.equal(original.inspect!(0, 130)?.missingReason, data.unknown[0]!.reason);
 });
+
+test('a recorded 55% / 45% supremacy split formats from integer numerator and scale without float subtraction understating enemy share', () => {
+  const base = reply(60);
+  const split = {
+    ...base,
+    scale: 100000,
+    regions: [{
+      ...base.regions[0]!,
+      readout: { kind: 'control' as const, as_of_hour: 60, control: 1, friendly: '55', enemy: '45', share: '55000', own: '20' },
+    }],
+  };
+  const shares = projectSupremacyShares(view(60, split), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  const row = shares.rows.find(r => r.kind === 'data')!;
+  assert.equal(row.kind === 'data' ? row.segments?.[0]?.inlineLabel : null, 'Friendly 55%');
+  assert.equal(row.kind === 'data' ? row.segments?.[1]?.inlineLabel : null, 'Enemy 45%');
+  assert.equal(row.kind === 'data' ? row.segments?.[1]?.share : null, 0.45);
+  assert.equal(row.kind === 'data' ? (row.segments?.[1]?.value?.kind === 'known' ? row.segments[1].value.value : null) : null, 0.45);
+
+  const enemyDay = {
+    ...base,
+    scale: 100000,
+    unknown: [],
+    regions: [{
+      ...base.regions[0]!,
+      runs: [{ firstDay: 0, lastDay: 2, control: -1, friendly: '10', enemy: '90', share: '10000', own: '0' }],
+    }],
+  };
+  const timeline = projectSupremacyTimeline(view(60, enemyDay), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  assert.deepEqual(deriveLanesTooltip(timeline, 0, 12)?.items?.map(i => [i.label, i.value]), [['Enemy control', '90% of the score']]);
+});

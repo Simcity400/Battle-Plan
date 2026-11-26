@@ -88,8 +88,22 @@ test('the chart draws the answer, keeps an unnamed range and side by key with it
   assert.equal(line.endLabel?.name, 'Upper Hand');
   assert.equal(line.endLabel?.value, '0.36');
   assert.deepEqual(named.overlays?.map(item => item.text), ['East Assembly', 'West Council']);
-  assert.deepEqual(named.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 500]]);
+  assert.equal(named.gaps, undefined, 'a recorded inactive opening before the first active balance is not hatched as an unrecorded gap');
   assert.equal(named.auditRows![0]!.value, '+0.36|Upper Hand|range_high|East Assembly|West Council');
+
+  const unreadOpening = project(800, [['history', history(800, {
+    selected: 'bop_a',
+    known: [{ firstHour: 300, lastHour: 800 }],
+    holderBalances: [holder([balance('bop_a', [run(500, 800, '36000')])])],
+  })], ['state', detail([record(0, 'bop_a')])]]);
+  assert.deepEqual(unreadOpening.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 299]], 'only the unread stretch is hatched, not the known-inactive stretch before the first active balance');
+
+  const singleUnread = project(20, [['history', history(20, {
+    selected: 'bop_a',
+    known: [{ firstHour: 1, lastHour: 20 }],
+    holderBalances: [holder([balance('bop_a', [run(5, 20, '36000')])])],
+  })], ['state', detail([record(0, 'bop_a')])]]);
+  assert.deepEqual(singleUnread.gaps?.map(gap => [gap.firstHour, gap.lastHour]), [[0, 0]], 'a single unread opening hour is preserved');
 
   const unnamed = project(800, [['history', hist], ['state', detail([record(0, 'bop_a', {
     range: { token: 'range_high', name: null, reason: 'missing localisation', min: '25000', max: '100000' },

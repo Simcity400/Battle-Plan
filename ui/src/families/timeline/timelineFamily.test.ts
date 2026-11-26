@@ -424,3 +424,12 @@ test('where two bars meet, the pointer on the later bar hits the later bar', () 
   const x = layout.plotLeft + ((H(1938) - FIRST) / (H(1940) - FIRST)) * (layout.plotRight - layout.plotLeft);
   assert.equal(hitTimeline(layout, resolution, x, layout.lanes[0]!.y + 10, 0)!.spanId, 'b');
 });
+
+test('career timeline keeps all three lanes visible at default widget height alongside many training meters', () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ key: `t${i}`, label: `Trait ${i}`, figure: `${i}%`, fraction: 0.5 }));
+  const lanes: TimelineLane[] = ['command', 'battles', 'traits'].map(key => ({ key, kind: 'item' as const, label: key, auditValue: key, spans: [], height: 34 }));
+  const model = timelineModel({ hour: H(1940) as TimelineModel['hour'], firstHour: FIRST, labelWidth: 72, axisPosition: 'top', header: { title: 'General' }, meters: { title: 'Traits in training', items }, lanes });
+  const layout = frameTimeline(placeTimeline(model, 640, 300, {}), H(1940));
+  assert.ok(layout.bodyHeight >= layout.contentHeight, `all three lanes fit (${layout.bodyHeight} >= ${layout.contentHeight})`);
+  assert.ok(layout.metersHeight > 0, 'training meters still appear below the lanes');
+});

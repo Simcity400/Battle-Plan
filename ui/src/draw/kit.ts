@@ -988,7 +988,7 @@ export function drawLegendEntry(
     ctx.fill();
     cursor += swatchW + gap;
   }
-  if (options?.flag && options.flag.kind !== 'pending') {
+  if (options?.flag && options.flag.kind !== 'none') {
     const fw = 16;
     const fh = 10;
     drawFlagSlot(ctx, cursor, Math.round(middleY - fh / 2), options.flag, theme, { width: fw, height: fh });
@@ -1411,9 +1411,9 @@ function dayTicks(startHour: number, endHour: number, plotWidth: number, hoursPe
   const days = Math.max(1, (endHour - startHour) / hoursPerDay);
   const fit = Math.max(2, Math.floor(plotWidth / DAY_LABEL_SPACING));
   const labelStep = steps.find(candidate => Math.ceil(days / candidate) <= fit) ?? Math.max(steps.at(-1)!, Math.ceil(niceStep(days, fit)));
-  const markStep = plotWidth / days >= MIN_MARK_SPACING ? 1 : labelStep;
+  const markStep = steps.find(candidate => candidate <= labelStep && labelStep % candidate === 0 && plotWidth / Math.ceil(days / candidate) >= MIN_MARK_SPACING) ?? labelStep;
   const ticks: TimeAxisTick[] = [];
-  let yearShown = false;
+  let shownYear: number | null = null;
   for (let day = Math.ceil(firstDay / markStep) * markStep; day <= lastDay && ticks.length < 512; day += markStep) {
     const hour = boundaryInView(HOUR_EPOCH + day * hoursPerDay, startHour, endHour);
     if (hour === null) continue;
@@ -1422,8 +1422,8 @@ function dayTicks(startHour: number, endHour: number, plotWidth: number, hoursPe
     let label = '';
     if (day % labelStep === 0) {
       const dayMonth = date ? `${date.day} ${shortMonth(date.month)}` : formatDateOnly(hour);
-      label = newYear ? String(date!.year) : date && !yearShown ? `${dayMonth} ${date.year}` : dayMonth;
-      yearShown = yearShown || date !== null;
+      label = newYear ? String(date!.year) : date && shownYear !== date.year ? `${dayMonth} ${date.year}` : dayMonth;
+      if (date !== null) shownYear = date.year;
     }
     ticks.push({ hour, label, major: newYear || (date !== null && date.day === 1) });
   }
@@ -1439,20 +1439,20 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   if (endHour - startHour <= 62 * hoursPerDay) return dayTicks(startHour, endHour, plotWidth, hoursPerDay, [1, 2, 3, 5, 7, 14]);
   const ticks: TimeAxisTick[] = [];
   if (endHour - startHour < 2 * 365 * hoursPerDay) {
-    let yearShown = false;
+    let shownYear: number | null = null;
     for (let year = start.year, month = start.month; year < end.year || (year === end.year && month <= end.month);) {
       const hour = boundaryInView(engineHour({ year, month, day: 1, hour: 1 }), startHour, endHour);
       if (hour !== null) {
         const major = month === 1;
         const quarter = month === 4 || month === 7 || month === 10;
-        const label = major ? String(year) : quarter ? (yearShown ? shortMonth(month) : `${shortMonth(month)} ${year}`) : '';
-        if (label) yearShown = true;
+        const label = major ? String(year) : quarter ? (shownYear === year ? shortMonth(month) : `${shortMonth(month)} ${year}`) : '';
+        if (label) shownYear = year;
         ticks.push({ hour, label, major });
       }
       month++;
       if (month > 12) { month = 1; year++; }
     }
-    if (!yearShown && ticks.length > 0) {
+    if (shownYear === null && ticks.length > 0) {
       const date = gameDate(ticks[0]!.hour)!;
       ticks[0] = { ...ticks[0]!, label: `${shortMonth(date.month)} ${date.year}` };
     }
@@ -1460,8 +1460,11 @@ export function computeTimeAxisTicks(startHour: number, endHour: number, plotWid
   }
   const years = end.year - start.year + 1;
   const fit = Math.max(2, Math.floor(plotWidth / YEAR_LABEL_SPACING));
-  const labelStep = [1, 2, 5, 10, 20, 50].find(candidate => Math.ceil(years / candidate) <= fit) ?? Math.max(100, Math.round(niceStep(years, fit)));
-  const markStep = plotWidth / years >= MIN_MARK_SPACING ? 1 : labelStep;
+  const yearSteps = [1, 2, 5, 10, 20, 50];
+  const markStep = yearSteps.find(candidate => plotWidth / Math.ceil(years / candidate) >= MIN_MARK_SPACING)
+    ?? Math.max(100, Math.round(niceStep(years, Math.max(2, Math.floor(plotWidth / MIN_MARK_SPACING)))));
+  const labelStep = yearSteps.find(candidate => candidate % markStep === 0 && Math.ceil(years / candidate) <= fit)
+    ?? Math.max(markStep, Math.ceil(Math.max(100, Math.round(niceStep(years, fit))) / markStep) * markStep);
   for (let year = Math.ceil(start.year / markStep) * markStep; year <= end.year && ticks.length < 512; year += markStep) {
     const hour = boundaryInView(engineHour({ year, month: 1, day: 1, hour: 1 }), startHour, endHour);
     if (hour !== null) ticks.push({ hour, label: year % labelStep === 0 ? String(year) : '', major: true });
@@ -1547,15 +1550,45 @@ export function timeAxisLabels(
   if (options.hover != null && options.hoverLabel) keepOut.push(dateTabSpan(timeAxisX(options, options.hover), measure(options.hoverLabel) + 14, bounds));
   const placed: PlacedTimeAxisLabel[] = [];
   let lastRight = -Infinity;
+  let placedYear: number | null = null;
   for (const tick of ticks) {
     if (!tick.label || (options.firstLabelOnly && placed.length > 0)) continue;
+    const date = gameDate(tick.hour);
+    const label = date !== null && placedYear !== date.year && !tick.label.includes(String(date.year))
+      ? `${tick.label} ${date.year}`
+      : tick.label;
     const x = timeAxisX(options, tick.hour);
-    const half = measure(tick.label) / 2;
+    const half = measure(label) / 2;
     if (x - half < options.plotLeft - 4 || x + half > options.plotRight + 4) continue;
     if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
     if (x - half < lastRight + 8) continue;
-    placed.push({ hour: tick.hour, x, label: tick.label, major: tick.major !== false });
+    placed.push({ hour: tick.hour, x, label, major: tick.major !== false });
+    if (date !== null) placedYear = date.year;
     lastRight = x + half;
+  }
+  if (placed.length === 0 && ticks.length > 0) {
+    const midX = (options.plotLeft + options.plotRight) / 2;
+    const candidates = ticks
+      .map(tick => ({ tick, x: timeAxisX(options, tick.hour) }))
+      .sort((a, b) => Math.abs(a.x - midX) - Math.abs(b.x - midX));
+    for (const { tick, x } of candidates) {
+      const date = gameDate(tick.hour);
+      const fallback = tick.label
+        ? (date !== null && !tick.label.includes(String(date.year)) ? `${tick.label} ${date.year}` : tick.label)
+        : date !== null
+          ? (date.month === 1 && date.day === 1
+            ? String(date.year)
+            : date.day === 1
+              ? `${shortMonth(date.month)} ${date.year}`
+              : `${date.day} ${shortMonth(date.month)} ${date.year}`)
+          : formatDateOnly(tick.hour);
+      if (!fallback) continue;
+      const half = measure(fallback) / 2;
+      if (x - half < options.plotLeft - 4 || x + half > options.plotRight + 4) continue;
+      if (keepOut.some(([l, r]) => x + half > l && x - half < r)) continue;
+      placed.push({ hour: tick.hour, x, label: fallback, major: tick.major !== false });
+      break;
+    }
   }
   return placed;
 }
@@ -2127,7 +2160,7 @@ function legendEntryWidth(entry: LegendStripEntry, font: string, measure: Legend
   else if (entry.outlined) width += 9 + gap;
   else if (isLine) width += 14 + gap;
   else if (entry.color) width += 9 + gap;
-  if (entry.flag && entry.flag.kind !== 'pending') width += 16 + gap;
+  if (entry.flag && entry.flag.kind !== 'none') width += 16 + gap;
   return width + measure(entry.label, font);
 }
 
@@ -2225,9 +2258,20 @@ export function drawLegendStrip(
       { barWidth: GRADIENT_BAR_WIDTH, gap: GRADIENT_GAP });
   }
   let cursor = fit.entriesLeft;
+  const list = Array.isArray(spec.entries) ? spec.entries as readonly LegendStripEntry[] : null;
+  const source = list || !spec.entries ? null : spec.entries as LegendEntrySource;
+  const liveOrdinary = list ? list.filter(entry => !entry.hatch) : null;
+  const liveMissing = list ? list.filter(entry => entry.hatch) : source?.trailing ?? null;
   ctx.save();
   ctx.font = font;
-  for (const entry of fit.shown) cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + gap;
+  for (let i = 0; i < fit.shown.length; i++) {
+    const entry = liveOrdinary
+      ? (liveOrdinary[i] ?? fit.shown[i]!)
+      : source && i < source.length
+        ? source.at(i)
+        : fit.shown[i]!;
+    cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + gap;
+  }
   if (fit.hidden > 0) {
     const label = `+${fit.hidden} more`;
     ctx.fillStyle = theme.muted;
@@ -2236,7 +2280,10 @@ export function drawLegendStrip(
     ctx.fillText(label, cursor, middleY);
     cursor += measureCanvasText(ctx, label, font) + gap;
   }
-  for (const entry of fit.missing) cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + gap;
+  for (let i = 0; i < fit.missing.length; i++) {
+    const entry = liveMissing?.[i] ?? fit.missing[i]!;
+    cursor += drawEntryItem(ctx, cursor, middleY, entry, theme) + gap;
+  }
   ctx.restore();
   const rightLimit = x + width - (spec.padX ?? 0);
   if (spec.rightNote) {

@@ -94,27 +94,16 @@ function mergeGaps(
   hour: number,
   branchGaps: readonly ChartGap[],
   unknown: readonly HourSpan[],
-  firstReadingHour: number | null,
-  known: readonly HourSpan[],
 ): ChartGap[] {
   const out: ChartGap[] = [];
   const push = (firstHour: number, lastHour: number, reason: string) => {
     const a = Math.max(extent[0], firstHour);
     const b = Math.min(hour, lastHour);
-    if (b <= a) return;
+    if (b < a) return;
     out.push({ firstHour: a, lastHour: b, reason });
   };
   for (const g of branchGaps) push(g.firstHour, g.lastHour, g.reason);
   for (const u of unknown) push(u.firstHour, u.lastHour, 'Balance of power was not recorded during this stretch');
-  if (firstReadingHour !== null && firstReadingHour > extent[0]) {
-    const alreadyCovered = unknown.some(u => u.firstHour <= extent[0] && u.lastHour >= firstReadingHour - 1);
-    if (!alreadyCovered) {
-      const reason = readAt(known, extent[0])
-        ? 'No balance of power was active before this date'
-        : 'Balance of power was not recorded before this date';
-      push(extent[0], firstReadingHour, reason);
-    }
-  }
   out.sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
   const merged: ChartGap[] = [];
   for (const g of out) {
@@ -220,11 +209,10 @@ export const balanceOfPowerProjection: TimeChartProjection<BalanceOfPowerOptions
       return emptyModel(hour, options.extent, { warnings, empty });
     }
 
-    const unknown = unknownHours(options.branchGaps, known, options.branchFirstHour, hour);
+    const unknown = unknownHours(options.branchGaps, known, Math.min(options.extent[0], options.branchFirstHour), hour);
     const record = recordAt(state, balance, Math.min(hour, history.hour));
     const points = stepPoints(balance, history.hour, hour);
-    const firstReadingHour = balance.values[0]?.firstHour ?? null;
-    const gaps = mergeGaps(options.extent, hour, options.gaps, unknown, firstReadingHour, known);
+    const gaps = mergeGaps(options.extent, hour, options.gaps, unknown);
     const headRaw = valueAt(balance.values, Math.min(hour, history.hour));
     const headValue = headRaw !== null ? plotValue(headRaw) : null;
     const icon = { art: readView.art(measureArtHandle('balanceOfPower')), label: 'Balance of power' };

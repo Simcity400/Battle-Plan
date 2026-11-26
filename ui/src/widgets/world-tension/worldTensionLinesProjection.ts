@@ -28,9 +28,9 @@ function parseRawInt(raw: string | null | undefined): bigint | null {
 function formatContributionPct(value: number, rawStr: string | null | undefined, scale: number): string {
   const parsed = parseRawInt(rawStr);
   if (parsed !== null && scale > 0) {
-    return formatRational(parsed, BigInt(scale), { maxDecimals: 5, percent: true });
+    return formatRational(parsed, BigInt(scale), { maxDecimals: 5, percent: true, signed: true });
   }
-  return formatRecordedPercent(value);
+  return formatRecordedPercent(value, { signed: true });
 }
 
 export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerFamilyProjection({

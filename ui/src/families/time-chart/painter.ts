@@ -302,9 +302,11 @@ export function drawTimeChart(
       legendFit ?? fitLegendStrip(layout.left, width, legendSpec, theme, (text, font) => measureCanvasText(ctx, text, font)));
   }
 
+  const visibleYTicks: { readonly value: number; readonly y: number }[] = [];
   for (const v of layout.yTicks) {
     const y = Math.round(layout.toY(v)) + 0.5;
     if (y < layout.top - 2 || y > layout.baseY + 2) continue;
+    visibleYTicks.push({ value: v, y });
     const isZeroCrossing = v === 0 && layout.yDomain[0] < 0;
     ctx.save();
     ctx.strokeStyle = isZeroCrossing ? tokens.zeroLine : tokens.gridLine;
@@ -313,11 +315,26 @@ export function drawTimeChart(
     ctx.moveTo(layout.left, y);
     ctx.lineTo(layout.left + layout.plotWidth, y);
     ctx.stroke();
+    ctx.restore();
+  }
+  if (visibleYTicks.length > 0) {
+    const minGap = theme.fontSize.small + 2;
+    const placedY: number[] = [];
+    const lastIdx = visibleYTicks.length - 1;
+    const order = lastIdx === 0
+      ? [0]
+      : [0, lastIdx, ...Array.from({ length: lastIdx - 1 }, (_, i) => i + 1)];
+    ctx.save();
     ctx.font = smallFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(formatChartAxisValue(v, model.yAxis.format, layout.yTicks), layout.left - 8, y);
+    for (const idx of order) {
+      const tick = visibleYTicks[idx]!;
+      if (placedY.some(prev => Math.abs(prev - tick.y) < minGap)) continue;
+      placedY.push(tick.y);
+      ctx.fillText(formatChartAxisValue(tick.value, model.yAxis.format, layout.yTicks), layout.left - 8, tick.y);
+    }
     ctx.restore();
   }
 
@@ -460,10 +477,21 @@ export function drawTimeChart(
               ctx.fillStyle = fills?.[bandIdx] ?? band.color;
               ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
               ctx.fill();
-              ctx.globalAlpha = 0.9;
-              ctx.strokeStyle = theme.surface;
-              ctx.lineWidth = 0.8;
-              ctx.stroke();
+              if (bandIdx < bands.length - 1) {
+                ctx.beginPath();
+                for (let j = subStart; j <= subEnd; j++) {
+                  const x0 = layout.toX(hours[run.start + j]!);
+                  const x1 = xEndAt(j);
+                  if (x1 <= x0) continue;
+                  const y = layout.toY(topVals[j]!);
+                  ctx.moveTo(x0, y);
+                  ctx.lineTo(x1, y);
+                }
+                ctx.globalAlpha = 0.9;
+                ctx.strokeStyle = theme.surface;
+                ctx.lineWidth = 0.8;
+                ctx.stroke();
+              }
             }
           }
           if (total) {

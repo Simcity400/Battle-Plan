@@ -142,10 +142,10 @@ export function formatShareRatio(numerator: bigint, denominator: bigint): string
   if (numerator === denominator) return '100%';
   if (numerator * 1000n < denominator) return '<0.1%';
   if (numerator * 10n >= denominator) {
-    const whole = (numerator * 200n + denominator) / (denominator * 2n);
+    const whole = (numerator * 100n) / denominator;
     return `${whole > 99n ? 99n : whole}%`;
   }
-  const tenths = (numerator * 2000n + denominator) / (denominator * 2n);
+  const tenths = (numerator * 1000n) / denominator;
   const clamped = tenths > 99n ? 99n : tenths < 1n ? 1n : tenths;
   return `${clamped / 10n}.${clamped % 10n}%`;
 }
@@ -262,7 +262,25 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
 export function formatExactScalar(raw: Scalar, format?: ValueFormat): string {
   assertFiniteScalar(raw, 'formatExactScalar');
   if (typeof raw === 'string') return raw;
-  if (format === 'progress' || format === 'clockSeconds' || format === 'share' || format === 'recordedPercent') return formatScalar(raw, format);
+  if (format === 'clockSeconds') return formatClockSeconds(raw);
+  if (format === 'share') {
+    if (typeof raw === 'bigint') {
+      if (raw < 0n || raw > 1n) {
+        throw new InvalidFamilyValueError(`formatExactScalar: share out of [0, 1] (${raw})`);
+      }
+      return raw === 0n ? '0%' : '100%';
+    }
+    assertFiniteNumber(raw, 'formatExactScalar');
+    const { units, scale } = decimalOf(raw);
+    if (units < 0n || units > 10n ** BigInt(scale)) {
+      throw new InvalidFamilyValueError(`formatExactScalar: share out of [0, 1] (${raw})`);
+    }
+    return formatTruncatedFixed(units * 100n, scale, scale, false, false, true, '');
+  }
+  if (format === 'progress' || format === 'recordedPercent') {
+    const { units, scale } = toFixedDecimal(raw, 0);
+    return formatTruncatedFixed(units, scale, scale, false, false, true, '');
+  }
   if (format === 'fixed5Percent') return formatTruncatedFixed(exactTruncBigInt(raw), 5, 5, false, false, true, '');
   if (format === 'fixed5Amount') {
     const big = exactTruncBigInt(raw);
