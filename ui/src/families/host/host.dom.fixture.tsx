@@ -19,7 +19,9 @@ import { measureWith, PerfRecorder } from '../../shell/perf.ts';
 import type { InstalledAction } from '../contract.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { tableLane } from '../table/laneView.ts';
-import { tableSettingsOf } from '../table/settings.ts';
+import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
+import { registerFamilyProjection } from '../registry.ts';
+import type { TableColumnSpec, TableModel, TableModelSlot, TableRow } from '../table/model.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from '../table/tableFamilyDom.fixture.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
 import TableChrome from '../table/TableChrome.tsx';
@@ -249,6 +251,8 @@ let currentState = {
   paged: undefined as PagedRows | undefined,
   windowed: false,
   spanMounted: false,
+  deepLogMounted: false,
+  deepLogPaged: undefined as PagedRows | undefined,
 };
 
 const origBind = pipeline.bind.bind(pipeline);
@@ -288,6 +292,51 @@ const WINDOWED_PLAN: SourcePlan = {
   owner: 'windowed',
   entries: [{ name: 'log', source: sourceA, branch: '1', offset: 0, read: { shape: 'paged-rows', tailQuery: { product: 'event-feed-tail', branchId: '1', from: null, limit: 64 }, followQuery: null } }],
 };
+
+const DEEP_LOG_TOTAL = 2000;
+const DEEP_LOG_COLUMNS: readonly TableColumnSpec[] = [
+  { key: 'name', label: 'Event', as: 'plain', offered: ['plain'], priority: 0, text: true },
+];
+const DEEP_LOG_SETTINGS = tableSettingsOf(undefined, DEEP_LOG_COLUMNS, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+const DEEP_LOG_OPTIONS = {};
+let deepLogHeldRanges: Array<readonly [number, number]> = [];
+let deepLogCommits = 0;
+
+const deepLogProjection = registerFamilyProjection({
+  family: 'table',
+  kind: 'host-deep-log',
+  project(readView): TableModel {
+    const win = readView.rowWindow ?? { first: 0, count: 20 };
+    const first = Math.max(0, Math.min(DEEP_LOG_TOTAL, win.first));
+    const count = Math.max(0, Math.min(DEEP_LOG_TOTAL - first, win.count));
+    const slots: TableModelSlot[] = [];
+    const rows: TableRow[] = [];
+    for (let i = 0; i < count; i++) {
+      const ord = first + i;
+      const held = deepLogHeldRanges.some(([lo, hi]) => ord >= lo && ord <= hi);
+      if (held) {
+        slots.push({ kind: 'loading', key: `loading:${ord}` });
+      } else {
+        const row: TableRow = {
+          key: `R${ord}`,
+          name: `Row ${ord}`,
+          cells: { name: { value: { kind: 'known', value: `Row ${ord} h${readView.hour}` } } },
+        };
+        slots.push({ kind: 'data', row });
+        rows.push(row);
+      }
+    }
+    return {
+      hour: readView.hour,
+      columns: DEEP_LOG_COLUMNS,
+      rows,
+      slots,
+      unsorted: true,
+      windowOffset: first,
+      totalRows: DEEP_LOG_TOTAL,
+    };
+  },
+});
 
 const NO_EXACT = async () => null;
 const NO_SUBSCRIPTIONS: ReturnType<typeof makeSubs> = [];
@@ -479,6 +528,32 @@ function renderApp() {
                   {...currentState.hovers ? { hovers: currentState.hovers } : {}}
                   {...currentState.paged ? { pagedRows: currentState.paged } : {}}
                   laneArt={staticArt}
+                  identitySnapshot={identity}
+                  offset={0}
+                  pin={null}
+                  bounds={BOUNDS}
+                />
+              </div>
+            </Profiler>
+          )}
+          {currentState.deepLogMounted && (
+            <Profiler id="deep-log-host" onRender={() => { deepLogCommits++; }}>
+              <div data-slot="deep-log" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+                <FamilyHost
+                  adapter={tableHostAdapter}
+                  chrome={TableChrome}
+                  plan={WINDOWED_PLAN}
+                  settings={DEEP_LOG_SETTINGS}
+                  declaration={deepLogProjection}
+                  view="default"
+                  options={DEEP_LOG_OPTIONS}
+                  label="Deep Log"
+                  subject="deep-log"
+                  widget={widget}
+                  runtime={rt}
+                  active
+                  subscriptions={subs}
+                  {...currentState.deepLogPaged ? { pagedRows: currentState.deepLogPaged } : {}}
                   identitySnapshot={identity}
                   offset={0}
                   pin={null}
@@ -1039,5 +1114,154 @@ window.hostDom = {
       : null;
 
     return { distinctCanvases, distinctPlacements, hasReaderA, hasReaderB, primaryStillInstalls, typeaheadKey };
+  },
+
+  async testDeepLogHomeEnd() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    let pageSeq = 1;
+    const releasePages = () => {
+      deepLogHeldRanges = [];
+      currentState = { ...currentState, deepLogPaged: { log: { mark: pageSeq++ } } as unknown as PagedRows };
+      renderApp();
+    };
+    deepLogHeldRanges = [];
+    currentState = { ...currentState, deepLogMounted: true, deepLogPaged: { log: { mark: pageSeq++ } } as unknown as PagedRows };
+    renderApp();
+    let pipeD = -1;
+    await until(() => {
+      const c = container!.querySelector<HTMLCanvasElement>('[data-slot="deep-log"] canvas.fh-canvas');
+      if (!c?.dataset.placement) return false;
+      pipeD = Number(c.dataset.placement);
+      return pipeD > 0;
+    });
+    const subsD = subsForPipe(pipeD);
+    await until(() => subsD.length === 2 && subsD.every(id => pipeline.status(id).status === 'followed'));
+    clock.setPlaying(false);
+    clock.seek(400);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subsD, 400, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeD)?.mode === 'picture' && !pipeline.view(pipeD)?.dim
+      && !!container!.querySelector('[data-slot="deep-log"] table tbody tr[data-row-key="R0"]'));
+
+    const bodyD = container!.querySelector<HTMLElement>('[data-slot="deep-log"] .fh-body')!;
+    const tableD = container!.querySelector<HTMLTableElement>('[data-slot="deep-log"] table')!;
+    const scrollToRow = async (ord: number) => {
+      bodyD.scrollTop = ord * ROW_HEIGHT.normal;
+      bodyD.dispatchEvent(new Event('scroll'));
+      await until(() => !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="R${ord}"]`), 3000);
+      await frames(2);
+    };
+    const rowEl = (ord: number) => container!.querySelector<HTMLTableRowElement>(`[data-slot="deep-log"] table tbody tr[data-row-key="R${ord}"]`);
+    const activeInfo = () => {
+      const el = document.activeElement as HTMLElement | null;
+      return { key: el?.getAttribute('data-row-key') ?? null, rowIndex: el?.getAttribute('aria-rowindex') ?? null };
+    };
+
+    await scrollToRow(610);
+    const deepRowCount = tableD.getAttribute('aria-rowcount');
+    const deepRowIndex = rowEl(610)?.getAttribute('aria-rowindex') ?? null;
+    rowEl(610)!.focus();
+    await frames(2);
+
+    deepLogHeldRanges = [[0, 30]];
+    boundIds = [];
+    const homeGen = pipeline.binding(pipeD);
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    const homeScrolled = await until(() => bodyD.scrollTop === 0 && !!container!.querySelector('[data-slot="deep-log"] table tbody tr[data-row-key="loading:0"]'), 2000);
+    await frames(2);
+    const homeScrollBinds = boundIds.filter(id => id === pipeD).length;
+    const homeScrollKeptGen = pipeline.binding(pipeD) === homeGen;
+    releasePages();
+    const homeArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === 'R0', 2000);
+    const homeActive = activeInfo();
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(2);
+
+    deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
+    boundIds = [];
+    const endGen = pipeline.binding(pipeD);
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const endScrolled = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    await frames(2);
+    const endScrollBinds = boundIds.filter(id => id === pipeD).length;
+    const endScrollKeptGen = pipeline.binding(pipeD) === endGen;
+    releasePages();
+    const endArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 1}`, 2000);
+    const endActive = activeInfo();
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(2);
+    deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    bodyD.scrollTop = (DEEP_LOG_TOTAL - 10) * ROW_HEIGHT.normal;
+    bodyD.dispatchEvent(new Event('scroll'));
+    await frames(2);
+    releasePages();
+    await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
+    await frames(4);
+    const scrollCancelKey = activeInfo().key;
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(2);
+    deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    releasePages();
+    await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
+    await frames(4);
+    const keyCancelKey = activeInfo().key;
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(4);
+    deepLogCommits = 0;
+    boundIds = [];
+    paintsByWidget.set(pipeD, 0);
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    let fac = 90n;
+    for (let i = 0; i < 20; i++) {
+      fac += 5n;
+      sendHour(subsD, clock.getSnapshot().hour, [fac, 70n, 50n, 30n]);
+      await frames(1);
+    }
+    await frames(4);
+    const playCommits = deepLogCommits;
+    const playBinds = boundIds.filter(id => id === pipeD).length;
+    const playPaints = paintsByWidget.get(pipeD) ?? 0;
+    clock.setPlaying(false);
+    await frames(2);
+
+    deepLogHeldRanges = [];
+    currentState = { ...currentState, deepLogMounted: false, deepLogPaged: undefined };
+    renderApp();
+    await frames(2);
+    return {
+      deepRowCount,
+      deepRowIndex,
+      homeScrolled,
+      homeScrollBinds,
+      homeScrollKeptGen,
+      homeArrived,
+      homeActive,
+      endScrolled,
+      endScrollBinds,
+      endScrollKeptGen,
+      endArrived,
+      endActive,
+      scrollCancelKey,
+      keyCancelKey,
+      playCommits,
+      playBinds,
+      playPaints,
+    };
   },
 };
