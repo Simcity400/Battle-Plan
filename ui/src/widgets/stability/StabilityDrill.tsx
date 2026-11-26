@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Segmented } from '../../components/Segmented';
 import WidgetState from '../../components/WidgetState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -11,7 +11,8 @@ import type { Gate } from '../../dashboard/regionGate';
 import type { Region } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { TimeRegion } from '../../dashboard/widgetTime.ts';
-import type { FamilyViewportChange } from '../../families/host/adapter.ts';
+import type { InstalledAction } from '../../families/contract.ts';
+import type { PointsNavigateRequest } from '../../families/host/FamilyHost.tsx';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import { measureOf, namesAt, validateStabilityPartNames } from './partsData.ts';
 import type { Measure } from './stabilityData';
@@ -24,17 +25,12 @@ import {
   stabilityPartsChartDeclaration,
   stabilityPartsTableDeclaration,
   type StabilityDetailOptions,
-  type StabilityNavKey,
   type StabilitySeriesOwner,
 } from './stabilityDetailProjection.ts';
 import type { StabilityPartNamesReply } from './types';
 
 const EMPTY_MAP_OPTIONS: FamilyViewProps['mapOptions'] = { country: null, fog: false };
 const NOOP = () => {};
-
-function isStabilityNavKey(key: string): key is StabilityNavKey {
-  return key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home' || key === 'End';
-}
 
 function pinnedTime(track: BoundTrack, hour: number): WidgetTime {
   const offset = Math.floor(hour) - track.branch.firstHour;
@@ -132,47 +128,45 @@ export default function StabilityDrill({
   const warnings = useMemo(() => [...new Set(namedRead.data?.flatMap(reply => reply.warnings) ?? [])], [namedRead.data]);
   const parts = useMemo(() => allParts.filter(part => measureOf(part) === measure), [allParts, measure]);
   const namesReady = !listed || namesRequests.length === 0 || namedRead.data !== undefined;
-  const missingReasons = useMemo(() => {
-    const raw = listed?.missing ?? [];
-    if (!raw.length) return [];
-    const lo = extent[0];
-    const hi = following ? extent[1] : Math.min(extent[1], Math.floor(playhead ?? extent[1]));
-    const reasons: string[] = [];
-    for (const item of raw) {
-      if (item.firstHour <= hi && item.lastHour >= lo && item.reason) reasons.push(item.reason);
+  const partSpans = useMemo(() => {
+    if (!listed) return undefined;
+    const out: Record<string, readonly { firstHour: number; lastHour: number }[]> = {};
+    for (const part of listed.parts) {
+      if (measureOf(part.part) === measure) out[part.part] = part.spans;
     }
-    return [...new Set(reasons)];
-  }, [listed?.missing, extent[0], extent[1], following, playhead]);
+    return out;
+  }, [listed, measure]);
 
   const day = hour == null ? null : Math.floor(hour);
-  const visibleWindowRef = useRef<readonly [number, number] | null>(null);
   const navScope = JSON.stringify([track.source.id, track.source.revision, track.branch.id, ownerKey, measure, parts]);
   const navScopeRef = useRef(navScope);
   navScopeRef.current = navScope;
   const navAbortRef = useRef<AbortController | null>(null);
+  const navGenRef = useRef(0);
   const [navError, setNavError] = useState<{ readonly scope: string; readonly failure: Failure } | null>(null);
-  useEffect(() => {
-    visibleWindowRef.current = null;
-  }, [track.source.id, track.source.revision, track.branch.id, ownerKey]);
-  useEffect(() => {
+  const cancelPendingNav = useCallback(() => {
+    navGenRef.current++;
     navAbortRef.current?.abort();
     navAbortRef.current = null;
-    return () => {
-      navAbortRef.current?.abort();
-      navAbortRef.current = null;
-    };
-  }, [navScope, active]);
-
-  const handleViewportChange = useCallback((vp: FamilyViewportChange) => {
-    visibleWindowRef.current = vp.window ?? null;
   }, []);
+  useEffect(() => {
+    cancelPendingNav();
+    return cancelPendingNav;
+  }, [navScope, active, day, following, extent[0], extent[1], cancelPendingNav]);
 
-  const handleChartKeyDownCapture = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    if (!isStabilityNavKey(event.key)) return;
-    if (!active || !owner || !parts.length || !onPick) return;
+  const handleViewportChange = useCallback(() => {
+    cancelPendingNav();
+  }, [cancelPendingNav]);
+
+  const handleChartActivate = useCallback((action: InstalledAction) => {
+    cancelPendingNav();
+    onPick?.(Math.floor(action.hour));
+  }, [cancelPendingNav, onPick]);
+
+  const handlePointsNavigate = useCallback((req: PointsNavigateRequest): boolean => {
+    if (!active || !owner || !parts.length) return false;
     const livePlayhead = following ? Math.floor(runtime.clock.getHour()) + track.axisOffset : playhead;
-    const visible: readonly [number, number] = visibleWindowRef.current
+    const visible: readonly [number, number] = req.zoomWindow
       ?? (following && windowHours != null && livePlayhead !== null
         ? [Math.max(extent[0], livePlayhead - windowHours), Math.min(extent[1], livePlayhead)]
         : extent);
@@ -180,38 +174,38 @@ export default function StabilityDrill({
       branchId: track.branch.id,
       owner,
       parts,
-      key: event.key,
-      fromHour: following ? livePlayhead : day,
+      key: req.key,
+      fromHour: req.currentHour ?? (following ? livePlayhead : day),
       visible,
       playhead: livePlayhead,
       gate,
     });
-    if (!params) return;
-    event.preventDefault();
-    event.stopPropagation();
-    navAbortRef.current?.abort();
+    if (!params) return false;
+    cancelPendingNav();
+    const gen = navGenRef.current;
     const controller = new AbortController();
     navAbortRef.current = controller;
     const scope = navScopeRef.current;
-    const req = productRequest({
+    const request = productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
       product: 'series-next-change',
       params,
     });
-    void loadTransientProduct<{ hour: unknown }>(runtime.client, req, controller.signal).then(reply => {
-      if (controller.signal.aborted || navScopeRef.current !== scope) return;
+    void loadTransientProduct<{ hour: unknown }>(runtime.client, request, controller.signal).then(reply => {
+      if (controller.signal.aborted || navGenRef.current !== gen || navScopeRef.current !== scope) return;
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) {
         throw new Error('The keyboard reply is malformed.');
       }
       setNavError(null);
-      if (typeof reply.hour === 'number') onPick(reply.hour);
+      if (typeof reply.hour === 'number') req.focusHour(reply.hour);
     }).catch(err => {
-      if (!controller.signal.aborted && navScopeRef.current === scope) {
+      if (!controller.signal.aborted && navGenRef.current === gen && navScopeRef.current === scope) {
         setNavError({ scope, failure: asFailure(err) });
       }
     });
-  }, [active, owner, parts, onPick, track.source.id, track.source.revision, track.branch.id, track.axisOffset, following, playhead, day, extent, windowHours, gate, runtime.clock, runtime.client]);
+    return true;
+  }, [active, owner, parts, track.source.id, track.source.revision, track.branch.id, track.axisOffset, following, playhead, day, extent, windowHours, gate, runtime.clock, runtime.client, cancelPendingNav]);
 
   const tableWidget = useMemo<WidgetBase>(() => ({
     ...widget,
@@ -230,17 +224,18 @@ export default function StabilityDrill({
     ownerKey,
     spans: owner?.spans ?? null,
     parts,
+    ...(partSpans ? { partSpans } : {}),
     partBits: listed?.partBits ?? 1,
     names,
     namesReady,
     warnings,
-    ...(missingReasons.length ? { missingReasons } : {}),
+    ...(listed?.missing.length ? { missingSpans: listed.missing } : {}),
     measure,
     extent,
     selectedHour: following ? null : day,
     ...(windowHours != null ? { windowHours } : {}),
     surface: '',
-  }), [ownerKey, owner?.spans, parts, listed?.partBits, names, namesReady, warnings, missingReasons, measure, extent, following, day, windowHours]);
+  }), [ownerKey, owner?.spans, parts, partSpans, listed?.partBits, listed?.missing, names, namesReady, warnings, measure, extent, following, day, windowHours]);
 
   const activeNavError = navError?.scope === navScope ? navError.failure : null;
   const error = listedRead.error ?? namedRead.error ?? activeNavError;
@@ -275,7 +270,7 @@ export default function StabilityDrill({
             />
           </div>
         </TimeRegion>
-        <div className="stability-drill-chart fh-frame" onKeyDownCapture={handleChartKeyDownCapture}>
+        <div className="stability-drill-chart fh-frame">
           <FamilyWidget
             widget={chartWidget}
             options={sharedOptions as unknown as FamilyViewProps['options']}
@@ -287,7 +282,8 @@ export default function StabilityDrill({
             family="time-chart"
             declaration={stabilityPartsChartDeclaration}
             onViewportChange={handleViewportChange}
-            onActivate={onPick ? action => onPick(Math.floor(action.hour)) : undefined}
+            onPointsNavigate={handlePointsNavigate}
+            onActivate={onPick ? handleChartActivate : undefined}
           />
         </div>
       </>

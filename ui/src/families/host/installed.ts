@@ -108,6 +108,15 @@ export function hoveredSubject(adapter: FamilyHostAdapter<any, any, any, any>, r
   return record && hit ? actionOf(adapter, record, hit, false)?.subject ?? null : null;
 }
 
+function pointsHas(adapter: FamilyHostAdapter<any, any, any, any>, record: InstalledRecord, key: string): boolean {
+  if (record.picture.actionKeys.has(key)) return true;
+  const parsed = parseFamilyHit(adapter, key);
+  if (!parsed || parsed.kind !== 'plot' || parsed.hour === undefined) return false;
+  const transform = (record.fields.meta as { readonly transform?: { readonly axisFrom?: number; readonly axisTo?: number } } | undefined)?.transform;
+  if (!transform || transform.axisFrom === undefined || transform.axisTo === undefined) return true;
+  return parsed.hour >= transform.axisFrom && parsed.hour <= transform.axisTo;
+}
+
 export function focusedSubject(
   adapter: FamilyHostAdapter<any, any, any, any>,
   record: InstalledRecord | null,
@@ -115,7 +124,11 @@ export function focusedSubject(
   parseGridKey: (key: string | null) => { readonly row: number; readonly column: number } | null,
 ): string | null {
   if (!record || key === null) return null;
-  const shown = adapter.navigation === 'grid' ? gridHas(adapter, record, key, parseGridKey) : record.picture.actionKeys.has(key);
+  const shown = adapter.navigation === 'grid'
+    ? gridHas(adapter, record, key, parseGridKey)
+    : adapter.navigation === 'points'
+      ? pointsHas(adapter, record, key)
+      : record.picture.actionKeys.has(key);
   return shown ? actionOf(adapter, record, { key }, false)?.subject ?? key : null;
 }
 
@@ -131,7 +144,14 @@ export function resolveHostInput(
   if (inputBlocked(gate) || !record || record.picture.owner !== gate.current!.picture.owner) return null;
   const picture = record.picture;
   const { key, hit } = input;
-  if (key !== null && !hit && !(adapter.navigation === 'grid' ? gridHas(adapter, record, key, parseGridKey) : picture.actionKeys.has(key))) return null;
+  const hasKey = key === null || !!hit || (
+    adapter.navigation === 'grid'
+      ? gridHas(adapter, record, key, parseGridKey)
+      : adapter.navigation === 'points'
+        ? pointsHas(adapter, record, key)
+        : picture.actionKeys.has(key)
+  );
+  if (!hasKey) return null;
   if (command === 'menu') {
     if (!options.menu) return null;
     const target = key ? picture.actionKeys.get(key) : undefined;

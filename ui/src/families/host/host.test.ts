@@ -2294,3 +2294,69 @@ test('dated-at-hour widgets distinguish recorded empty hours from unobserved spa
     'a pinned read inside a roster gap reports not-recorded',
   );
 });
+
+test('points keyboard navigation supports async next-change focus without activating, activates off-nav plot hours on Enter, and drops stale replies', () => {
+  const nav: FamilyNavTuple[] = [
+    ['plot:0', 'Day 0', 0, -1, '', null],
+    ['plot:13', 'Day 13', 1, -1, '', null],
+  ];
+  let focusedKey: string | null = 'plot:0';
+  const activated: string[] = [];
+  const navCalls: string[] = [];
+  let pendingApply: ((hour: number) => void) | null = null;
+  const opts = {
+    nav,
+    get focusedKey() { return focusedKey; },
+    pageStep: 5,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusKey: (key: string) => { focusedKey = key; },
+    onPointsNavigate: (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End') => {
+      navCalls.push(key);
+      pendingApply = (hour: number) => { focusedKey = `plot:${hour}`; };
+      return true;
+    },
+    onActivate: (entry: FamilyNavTuple) => { activated.push(entry[0]); },
+  };
+  const evRight = mkEvent('ArrowRight');
+  handleFamilyPointsKeyDown(evRight.event, opts);
+  assert.equal(evRight.prevented(), true);
+  assert.deepEqual(navCalls, ['ArrowRight']);
+  assert.deepEqual(activated, [], 'ArrowRight does not immediately activate or pin the drawer');
+  pendingApply!(3);
+  assert.equal(focusedKey, 'plot:3', 'async reply moves keyboard focus to exact change hour 3 inside coarse bucket');
+
+  const evEnter = mkEvent('Enter');
+  handleFamilyPointsKeyDown(evEnter.event, opts);
+  assert.equal(evEnter.prevented(), true);
+  assert.deepEqual(activated, ['plot:3'], 'Enter activates the focused off-nav hour plot:3 rather than nav[0]');
+
+  const installed: InstalledPicture = {
+    id: 1,
+    owner: 'owner-stab',
+    generation: { seek: 1, reset: 0, binding: 1 },
+    factRevisions: {},
+    validInterval: [0, 17],
+    through: 17,
+    hour: displayedHour(17),
+    viewport: { width: 600, height: 220, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+    optionsRevision: '',
+    themeRevision: '',
+    actionKeys: lazyActionKeys(nav, displayedHour(17)),
+    accessibleDescription: null,
+  };
+  const record = recordInstalled(installed, {
+    nav,
+    meta: { transform: { xFrom: 0, xTo: 17, axisFrom: 0, axisTo: 17 } },
+  }, null);
+  const effect = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(effect?.kind, 'activate', 'resolveHostInput accepts an in-axis plot:<hour> focus key even when absent from coarse nav');
+  assert.equal(effect?.kind === 'activate' ? effect.action.hour : null, 3);
+});

@@ -3,13 +3,15 @@ import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createBoundedReadView, createBoundedSlice, displayedHour, emptySlice } from '../../families/boundedView.ts';
-import { hoverAsks } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { BoundedSeries, FamilyPlanContext } from '../../families/contract.ts';
 import { SceneTiles } from '../../families/sceneTiles.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import { knownValue } from '../../families/value.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
+import { answerBody } from '../../dashboard/follow/messages.fixture.ts';
 import { keyId, type KeyedState, type KeyedStates } from '../../dashboard/keyedSeriesData.ts';
 import type { BreakdownLine } from '../../generated/dashboard';
 import {
@@ -20,6 +22,7 @@ import {
   STABILITY_PARTS_CHART_KIND,
   STABILITY_PARTS_TABLE_KIND,
   stabilityPartsChartDeclaration,
+  stabilityPartsTableDeclaration,
   stabilityPartsTableProjection,
   type StabilityDetailOptions,
 } from './stabilityDetailProjection.ts';
@@ -559,7 +562,7 @@ describe('stability detail projections', () => {
 
     const listedMissingChart = buildStabilityPartsChartModel(
       createBoundedReadView({ hour: displayedHour(50), series: new Map() }),
-      baseOptions({ parts: [], extent: [0, 100], missingReasons: ['Breakdown table absent in older format'] }),
+      baseOptions({ parts: [], extent: [0, 100], missingSpans: [{ firstHour: 0, lastHour: 100, reason: 'Breakdown table absent in older format' }] }),
     );
     assert.deepEqual(listedMissingChart.empty, {
       message: 'Breakdown table absent in older format',
@@ -569,7 +572,7 @@ describe('stability detail projections', () => {
     const missingTable = buildStabilityPartsTableModel(
       50,
       [{ tag: 'GER', part: TOTAL_PART, hour: 50, drop: null, missing: 'Breakdown unread at this hour', run: null }],
-      baseOptions({ parts: [TOTAL_PART], extent: [0, 100], missingReasons: ['Other hour gap'] }),
+      baseOptions({ parts: [TOTAL_PART], extent: [0, 100], missingSpans: [{ firstHour: 0, lastHour: 100, reason: 'Other hour gap' }] }),
     );
     assert.equal(missingTable.empty, 'Breakdown unread at this hour');
     assert.equal(missingTable.emptyKind, 'unavailable');
@@ -639,5 +642,148 @@ describe('stability detail projections', () => {
     const resolved = JSON.parse(stdout.trim()) as Record<string, boolean>;
     assert.equal(resolved[STABILITY_PARTS_TABLE_KIND], true, 'worker resolves stability-parts-table projection');
     assert.equal(resolved[STABILITY_PARTS_CHART_KIND], true, 'worker resolves stability-parts-chart projection');
+  });
+
+  it('preserves alternating Smaller parts lifetimes, exact-audit wire normalization, NoRow sentinel reasons, and dated catalogue missing spans', async () => {
+    const baseParts = Array.from({ length: 12 }, (_, i) => String(100 + i));
+    const smallA = '200';
+    const smallB = '201';
+    const allParts = [TOTAL_PART, ...baseParts, smallA, smallB];
+    const allNames: StabilityPartName[] = [
+      { part: TOTAL_PART, measure: 'stability', kind: 'total', id: 'total', term: null, line: null, missing: null },
+      ...baseParts.map((part, i) => ({
+        part,
+        measure: 'stability' as const,
+        kind: 'line' as const,
+        id: `big-${i}`,
+        term: null,
+        line: lineOf(`big-${i}`, `Big ${i}`, i === 0 ? '49000' : '1000'),
+        missing: null,
+      })),
+      { part: smallA, measure: 'stability', kind: 'line', id: 'small-a', term: null, line: lineOf('small-a', 'Small A', '1000'), missing: null },
+      { part: smallB, measure: 'stability', kind: 'line', id: 'small-b', term: null, line: lineOf('small-b', 'Small B', '1000'), missing: null },
+    ];
+    const seriesWithMissing = (firstHour: number, lastHour: number, value: number, missing: { firstHour: number; lastHour: number; reason: string }[]): BoundedSeries => ({
+      tag: 'x',
+      decimals: 5,
+      binHours: 1,
+      from: 0,
+      validInterval: [0, 20],
+      runs: createBoundedSlice([{ firstHour, lastHour, value }], 1),
+      buckets: emptySlice(),
+      missing: createBoundedSlice(missing, missing.length),
+      straddling: 'none',
+    });
+    const map = new Map<string, BoundedSeries>([
+      [keyId({ tag: 'GER', part: TOTAL_PART }), seriesOf(0, 20, 0.61)],
+      ...baseParts.map((part, i) => [keyId({ tag: 'GER', part }), seriesOf(0, 20, i === 0 ? 0.49 : 0.01)] as const),
+      [keyId({ tag: 'GER', part: smallA }), seriesWithMissing(0, 10, 0.01, [{ firstHour: 11, lastHour: 20, reason: 'No row' }])],
+      [keyId({ tag: 'GER', part: smallB }), seriesWithMissing(11, 20, 0.01, [{ firstHour: 0, lastHour: 10, reason: 'No row' }])],
+    ]);
+    const groupedModel = buildStabilityPartsChartModel(
+      createBoundedReadView({ hour: displayedHour(20), series: new Map([['parts', map]]) }),
+      baseOptions({ parts: allParts, names: allNames, extent: [0, 20] }),
+    );
+    const otherBand = groupedModel.stack!.bands.find(b => b.id === '__smaller');
+    assert.ok(otherBand, 'Smaller parts band is drawn when two 1% modifiers take turns');
+    assert.equal(otherBand.values[groupedModel.stack!.hours.indexOf(0)], 1, 'Small A (+1%) is drawn at hour 0 despite Small B being missing there');
+    assert.equal(otherBand.values[groupedModel.stack!.hours.indexOf(11)], 1, 'Small B (+1%) is drawn at hour 11 despite Small A being missing there');
+
+    const withLifetimes = buildStabilityPartsChartModel(
+      createBoundedReadView({ hour: displayedHour(20), series: new Map([['parts', map]]) }),
+      baseOptions({
+        parts: allParts,
+        partSpans: {
+          [smallA]: [{ firstHour: 0, lastHour: 10 }],
+          [smallB]: [{ firstHour: 11, lastHour: 20 }],
+        },
+        names: allNames,
+        extent: [0, 20],
+      }),
+    );
+    const otherWithLifetimes = withLifetimes.stack!.bands.find(b => b.id === '__smaller')!;
+    assert.equal(otherWithLifetimes.values[withLifetimes.stack!.hours.indexOf(0)], 1);
+    assert.equal(otherWithLifetimes.values[withLifetimes.stack!.hours.indexOf(11)], 1);
+
+    const inLifetimeGap = buildStabilityPartsChartModel(
+      createBoundedReadView({ hour: displayedHour(20), series: new Map([['parts', map]]) }),
+      baseOptions({
+        parts: allParts,
+        partSpans: {
+          [smallA]: [{ firstHour: 0, lastHour: 20 }],
+          [smallB]: [{ firstHour: 11, lastHour: 20 }],
+        },
+        names: allNames,
+        extent: [0, 20],
+      }),
+    );
+    const gappedOther = inLifetimeGap.stack!.bands.find(b => b.id === '__smaller')!;
+    assert.equal(gappedOther.values[inLifetimeGap.stack!.hours.indexOf(11)], null, 'missing span inside declared lifetime keeps grouped layer unresolved');
+
+    const slot7 = countryKey(7);
+    const tableOpts = baseOptions({ ownerKey: slot7, parts: [TOTAL_PART, POS_PART], extent: [0, 100] });
+    const tablePlan = stabilityPartsTableDeclaration.sources({
+      track: { source: { id: 's1', revision: 'r1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: 0, lastHour: 100, gaps: [] },
+      options: tableOpts,
+    } as unknown as FamilyPlanContext, { following: false, staticSpan: null });
+    const exactView = await readPlanExact(tablePlan, 50, {
+      client: {
+        product: async () => ({
+          data: {
+            branchId: '1',
+            decimals: 5,
+            states: [
+              { country: 7, part: TOTAL_PART, hour: 50, drop: null, missing: null, run: { firstHour: 0, lastHour: 100, valueRaw: '75000', slot: 7, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } },
+              { country: 7, part: POS_PART, hour: 50, drop: null, missing: null, run: { firstHour: 0, lastHour: 100, valueRaw: '75000', slot: 7, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } },
+            ],
+          },
+        }),
+      } as never,
+      following: false,
+      timeMode: 'pin',
+      branch: { firstHour: 0, lastHour: 100 },
+      window: null,
+      staticSpan: null,
+      gate: {
+        recorded: (h: number) => h as never,
+        span: (a: number, b: number) => ({ firstHour: a, lastHour: b } as never),
+        within: (h: number | null) => h as never,
+      } as never,
+    });
+    assert.ok(exactView, 'readPlanExact returns a view for stability-parts-table');
+    const auditedTable = stabilityPartsTableProjection.project(exactView, tableOpts);
+    assert.equal(auditedTable.empty, undefined, 'audited table normalizes raw wire country to tag');
+    assert.equal(auditedTable.rows[0]?.name, 'Base value');
+
+    const noRowAnswer = parseAnswer(answerBody({
+      keys: [0n],
+      columns: 1,
+      values: [0n],
+      states: [CELL.noRow],
+      reasons: ['Stability parts unread for owner'],
+      names: [null],
+    }));
+    const noRowTable = stabilityPartsTableProjection.project(
+      createBoundedReadView({ hour: displayedHour(50), answers: new Map([['state', noRowAnswer]]) }),
+      baseOptions({ ownerKey: slot7, parts: [TOTAL_PART], extent: [0, 100] }),
+    );
+    assert.equal(noRowTable.empty, 'Stability parts unread for owner');
+    assert.equal(noRowTable.emptyKind, 'unavailable');
+
+    const futureGapOpts = baseOptions({
+      parts: [],
+      extent: [0, 100],
+      missingSpans: [{ firstHour: 80, lastHour: 100, reason: 'Later gap after hour 80' }],
+    } as Partial<StabilityDetailOptions>);
+    const earlyTable = buildStabilityPartsTableModel(20, [], futureGapOpts);
+    assert.notEqual(earlyTable.empty, 'Later gap after hour 80', 'hour-80 catalogue gap must not explain unavailable table at hour 20');
+    const earlyChart = buildStabilityPartsChartModel(createBoundedReadView({ hour: displayedHour(20), series: new Map() }), futureGapOpts);
+    assert.notEqual(earlyChart.empty?.message, 'Later gap after hour 80', 'hour-80 catalogue gap must not explain unavailable chart at hour 20');
+    const lateTable = buildStabilityPartsTableModel(90, [], futureGapOpts);
+    assert.equal(lateTable.empty, 'Later gap after hour 80');
+    assert.equal(lateTable.emptyKind, 'unavailable');
+    const lateChart = buildStabilityPartsChartModel(createBoundedReadView({ hour: displayedHour(90), series: new Map() }), futureGapOpts);
+    assert.deepEqual(lateChart.empty, { message: 'Later gap after hour 80', kind: 'unavailable' });
   });
 });

@@ -3,7 +3,7 @@ import { colour } from '../../charts/palette.ts';
 import { runAt } from '../../charts/series.ts';
 import { fixedNumber } from '../../charts/valueAxis.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellState, cellValue, rowReason, type FollowedAnswer } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowKey, rowName, rowReason, type FollowedAnswer } from '../../dashboard/follow/message.ts';
 import { followedRow, keyId, keyedTileParams, validateKeyedStates, type KeyedState, type KeyedStates, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
 import type { Gate } from '../../dashboard/regionGate';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourcePlan } from '../../families/contract.ts';
@@ -29,7 +29,7 @@ export interface StabilitySeriesOwner {
   readonly spans: readonly HourSpan[] | null;
 }
 
-export type StabilityNavKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
+type StabilityNavKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
 
 export function buildStabilityNextChangeParams(input: {
   readonly branchId: string;
@@ -68,15 +68,22 @@ export const MEASURE_NAMES: Record<Measure, string> = {
   warSupport: 'War support',
 };
 
+interface StabilityMissingSpan {
+  readonly firstHour: number;
+  readonly lastHour: number;
+  readonly reason: string;
+}
+
 export interface StabilityDetailOptions {
   readonly ownerKey: string | null;
   readonly spans: readonly HourSpan[] | null;
   readonly parts: readonly string[];
+  readonly partSpans?: Readonly<Record<string, readonly HourSpan[]>>;
   readonly partBits: number;
   readonly names: readonly StabilityPartName[];
   readonly namesReady: boolean;
   readonly warnings: readonly string[];
-  readonly missingReasons?: readonly string[];
+  readonly missingSpans?: readonly StabilityMissingSpan[];
   readonly measure: Measure;
   readonly extent: readonly [number, number];
   readonly selectedHour?: number | null;
@@ -166,21 +173,42 @@ function statesFromFollowed(
       },
     });
   }
+  if (!out.length) {
+    for (let row = 0; row < answer.rows; row++) {
+      if ((rowKey(answer, row) >> BigInt(partBits)) !== 0n) continue;
+      const name = rowName(answer, row);
+      if (name !== null && name !== ownerKey) continue;
+      if (cellState(answer, row * answer.columns) === CELL.value) continue;
+      const missing = rowReason(answer, row);
+      if (missing) out.push({ tag: ownerKey, part: parts[0] ?? '', hour, drop: null, missing, run: null });
+    }
+  }
   return out;
+}
+
+function normalizeKeyedStates(raw: unknown): readonly KeyedState[] | null {
+  if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { states?: unknown }).states)) return null;
+  const states = (raw as { states: readonly Record<string, unknown>[] }).states;
+  if (states.every(state => typeof state.tag === 'string')) return states as unknown as readonly KeyedState[];
+  return validateKeyedStates(raw).states;
 }
 
 function percentOf(raw: string): number {
   return fixedNumber(raw, DECIMALS) * 100;
 }
 
-function tableMissingReason(states: readonly KeyedState[] | null, options: StabilityDetailOptions): string | null {
+function tableMissingReason(hour: number, states: readonly KeyedState[] | null, options: StabilityDetailOptions): string | null {
   const reasons: string[] = [];
   if (states && options.ownerKey) {
     for (const state of states) {
       if (state.tag === options.ownerKey && state.missing) reasons.push(state.missing);
     }
   }
-  if (!reasons.length && options.missingReasons?.length) reasons.push(...options.missingReasons);
+  if (!reasons.length && options.missingSpans?.length) {
+    for (const span of options.missingSpans) {
+      if (span.firstHour <= hour && hour <= span.lastHour && span.reason) reasons.push(span.reason);
+    }
+  }
   const unique = [...new Set(reasons)];
   return unique.length ? unique.join(' · ') : null;
 }
@@ -199,13 +227,13 @@ export function buildStabilityPartsTableModel(
     ...(options.warnings.length ? { warnings: options.warnings } : {}),
   };
   if (!options.ownerKey || !options.parts.length || states === null) {
-    return { ...base, empty: tableMissingReason(states, options) ?? 'No breakdown was recorded for this date.', emptyKind: 'unavailable' };
+    return { ...base, empty: tableMissingReason(hour, states, options) ?? 'No breakdown was recorded for this date.', emptyKind: 'unavailable' };
   }
   const names = namesMapOf(options.names);
   const filtered = states.filter(state => state.tag === options.ownerKey);
   const measured = partsAtStates(options.parts, filtered, hour, names);
   if (!measured.observed.length) {
-    return { ...base, empty: tableMissingReason(filtered, options) ?? 'No breakdown was recorded for this date.', emptyKind: 'unavailable' };
+    return { ...base, empty: tableMissingReason(hour, filtered, options) ?? 'No breakdown was recorded for this date.', emptyKind: 'unavailable' };
   }
   const active = measured.parts
     .map(part => ({ part, raw: part.runs[0]!.valueRaw }))
@@ -274,9 +302,9 @@ export const stabilityPartsTableProjection: TableProjection<StabilityDetailOptio
     if (answer && options.ownerKey) {
       return buildStabilityPartsTableModel(hour, statesFromFollowed(answer, options.ownerKey, options.parts, options.partBits, hour), options);
     }
-    const panel = readView.panel<KeyedStates>('state');
+    const panel = readView.panel<unknown>('state');
     if (panel) {
-      return buildStabilityPartsTableModel(hour, panel.states, options);
+      return buildStabilityPartsTableModel(hour, normalizeKeyedStates(panel), options);
     }
     return buildStabilityPartsTableModel(hour, null, options);
   },
@@ -443,13 +471,22 @@ function subtractRuns(firstHour: number, lastHour: number, runs: readonly FixedR
   if (cursor <= lastHour) out.push({ firstHour: cursor, lastHour });
 }
 
+function intersectSpans(a: readonly HourSpan[], b: readonly HourSpan[]): HourSpan[] {
+  const out: HourSpan[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const firstHour = Math.max(a[i]!.firstHour, b[j]!.firstHour);
+    const lastHour = Math.min(a[i]!.lastHour, b[j]!.lastHour);
+    if (firstHour <= lastHour) out.push({ firstHour, lastHour });
+    if (a[i]!.lastHour < b[j]!.lastHour) i++;
+    else j++;
+  }
+  return out;
+}
+
 function unresolvedOpenIntervals(series: BoundedSeries, runs: readonly FixedRun[], until: number): HourSpan[] {
   const out: HourSpan[] = [];
-  for (let i = 0; i < series.missing.length; i++) {
-    const span = series.missing.at(i);
-    if (!span || span.firstHour > until) continue;
-    out.push({ firstHour: span.firstHour, lastHour: Math.min(span.lastHour, until) });
-  }
   if (!series.runs || !series.runs.length) {
     for (let i = 0; i < series.buckets.length; i++) {
       const bucket = series.buckets.at(i);
@@ -479,9 +516,11 @@ function measurePartsFromSeries(
   until: number,
   headHour: number,
   within: readonly HourSpan[] | null,
+  partSpans?: Readonly<Record<string, readonly HourSpan[]>>,
 ): {
   readonly measured: MeasureParts;
   readonly unresolvedById: ReadonlyMap<string, readonly HourSpan[]>;
+  readonly missingById: ReadonlyMap<string, readonly HourSpan[]>;
   readonly missingReasons: readonly string[];
   readonly reduced: boolean;
   readonly anyLoading: boolean;
@@ -489,6 +528,7 @@ function measurePartsFromSeries(
   const observed: HourSpan[] = [];
   const byId = new Map<string, StabilityPart>();
   const unresolvedRaw = new Map<string, HourSpan[]>();
+  const missingRaw = new Map<string, HourSpan[]>();
   const missingReasons: string[] = [];
   let reduced = false;
   let anyLoading = false;
@@ -496,13 +536,15 @@ function measurePartsFromSeries(
     const series = seriesMap.get(keyId({ tag: ownerKey, part }));
     if (!series) continue;
     if (series.straddling === 'loading') anyLoading = true;
+    const seriesMissing: HourSpan[] = [];
     for (let i = 0; i < series.missing.length; i++) {
       const span = series.missing.at(i);
       if (!span || span.firstHour > until || span.lastHour < from) continue;
       const first = Math.max(span.firstHour, from);
       const last = Math.min(span.lastHour, until);
-      if (first <= last && span.reason && overlapsWithin(first, last, within)) {
-        missingReasons.push(span.reason);
+      if (first <= last) {
+        seriesMissing.push({ firstHour: first, lastHour: last });
+        if (span.reason && overlapsWithin(first, last, within)) missingReasons.push(span.reason);
       }
     }
     const { runs, reduced: partReduced } = boundedToRuns(series, until, headHour);
@@ -523,19 +565,31 @@ function measurePartsFromSeries(
       byId.set(id, held);
     }
     for (const run of runs) addRun(held.runs, run);
-    const missingSpans = unresolvedOpenIntervals(series, runs, until);
-    if (missingSpans.length) {
+    const openSpans = unresolvedOpenIntervals(series, runs, until);
+    const declaredLifetime = partSpans?.[part];
+    if (declaredLifetime) {
+      const inLifetimeMissing = seriesMissing.length ? intersectSpans(mergeSpans(seriesMissing), mergeSpans(declaredLifetime)) : [];
+      if (inLifetimeMissing.length) openSpans.push(...inLifetimeMissing);
+    } else if (seriesMissing.length) {
+      let bucket = missingRaw.get(id);
+      if (!bucket) missingRaw.set(id, bucket = []);
+      bucket.push(...seriesMissing);
+    }
+    if (openSpans.length) {
       let bucket = unresolvedRaw.get(id);
       if (!bucket) unresolvedRaw.set(id, bucket = []);
-      bucket.push(...missingSpans);
+      bucket.push(...openSpans);
     }
   }
   for (const part of byId.values()) part.runs.sort((a, b) => a.firstHour - b.firstHour);
   const unresolvedById = new Map<string, readonly HourSpan[]>();
   for (const [id, spans] of unresolvedRaw) unresolvedById.set(id, mergeSpans(spans));
+  const missingById = new Map<string, readonly HourSpan[]>();
+  for (const [id, spans] of missingRaw) missingById.set(id, mergeSpans(spans));
   return {
     measured: { parts: [...byId.values()], observed: observed.sort((a, b) => a.firstHour - b.firstHour) },
     unresolvedById,
+    missingById,
     missingReasons: [...new Set(missingReasons)],
     reduced,
     anyLoading,
@@ -548,6 +602,7 @@ function buildStackFromParts(
   from: number,
   to: number,
   unresolvedById: ReadonlyMap<string, readonly HourSpan[]>,
+  missingById: ReadonlyMap<string, readonly HourSpan[]>,
 ): ChartStackModel | undefined {
   if (!parts.observed.length || !layers.length) return undefined;
   const layerOf = new Map<string, number>();
@@ -580,6 +635,23 @@ function buildStackFromParts(
         collected.push({ firstHour, lastHour });
       }
     }
+    let commonMissing: HourSpan[] | null = null;
+    for (const member of layer.members) {
+      const memberMissing = missingById.get(member);
+      if (!memberMissing?.length) {
+        commonMissing = [];
+        break;
+      }
+      const clipped: HourSpan[] = [];
+      for (const span of memberMissing) {
+        const firstHour = Math.max(span.firstHour, lo);
+        const lastHour = Math.min(span.lastHour, hi);
+        if (firstHour <= lastHour) clipped.push({ firstHour, lastHour });
+      }
+      commonMissing = commonMissing === null ? clipped : intersectSpans(commonMissing, clipped);
+      if (!commonMissing.length) break;
+    }
+    if (commonMissing?.length) collected.push(...commonMissing);
     const merged = mergeSpans(collected);
     for (const span of merged) {
       cutSet.add(span.firstHour);
@@ -663,11 +735,13 @@ function stabilityChartHoverDetail(
     throw error;
   }
   if (!hover?.data || !options.ownerKey) return null;
+  const states = normalizeKeyedStates(hover.data);
+  if (!states) return null;
   const at = hover.hour;
   if (options.spans && !runAt(options.spans, at)) return null;
   const measured = partsAtStates(
     options.parts,
-    hover.data.states.filter(state => state.tag === options.ownerKey),
+    states.filter(state => state.tag === options.ownerKey),
     at,
     names,
   );
@@ -715,17 +789,28 @@ export function buildStabilityPartsChartModel(
     ...(options.gaps?.length ? { gaps: options.gaps } : {}),
     ...(options.warnings.length ? { warnings: options.warnings } : {}),
   };
+  const displayedEnd = Math.min(options.extent[1], hour);
+  const catalogueMissingReasons: string[] = [];
+  if (options.missingSpans?.length) {
+    for (const span of options.missingSpans) {
+      if (span.firstHour > displayedEnd || span.lastHour < options.extent[0]) continue;
+      const first = Math.max(span.firstHour, options.extent[0]);
+      const last = Math.min(span.lastHour, displayedEnd);
+      if (first <= last && span.reason && overlapsWithin(first, last, options.spans)) {
+        catalogueMissingReasons.push(span.reason);
+      }
+    }
+  }
   if (!options.ownerKey || !options.parts.length) {
-    if (options.missingReasons?.length) {
-      return { ...base, empty: { message: [...new Set(options.missingReasons)].join(' · '), kind: 'unavailable' } };
+    if (catalogueMissingReasons.length) {
+      return { ...base, empty: { message: [...new Set(catalogueMissingReasons)].join(' · '), kind: 'unavailable' } };
     }
     return { ...base, empty: { message: 'No breakdown recorded in this time.', kind: 'empty' } };
   }
   const seriesMap = readView.series('parts');
   if (!seriesMap) return base;
   const names = namesMapOf(options.names);
-  const displayedEnd = Math.min(options.extent[1], hour);
-  const { measured: rawParts, unresolvedById, missingReasons: tileMissingReasons, reduced, anyLoading } = measurePartsFromSeries(
+  const { measured: rawParts, unresolvedById, missingById, missingReasons: tileMissingReasons, reduced, anyLoading } = measurePartsFromSeries(
     options.ownerKey,
     options.parts,
     seriesMap,
@@ -734,16 +819,17 @@ export function buildStabilityPartsChartModel(
     displayedEnd,
     readView.hour,
     options.spans,
+    options.partSpans,
   );
   const shown = partsWithin(partsWithin(rawParts, [{ firstHour: options.extent[0], lastHour: options.extent[1] }]), options.spans);
   const palette = partPalette(options.surface);
   const muted = colour(options.surface, LAYER_SLOTS);
   const layers = partLayers(shown, options.measure, palette, muted);
   const colorOf = new Map<string, string>(layers.flatMap(layer => layer.members.map(id => [id, layer.color] as const)));
-  const built = buildStackFromParts(shown, layers, options.extent[0], displayedEnd, unresolvedById);
+  const built = buildStackFromParts(shown, layers, options.extent[0], displayedEnd, unresolvedById, missingById);
   const stack = built ? { ...built, ...(reduced ? { reduced: true, bucketed: true } : {}) } : undefined;
   const hoverDetail = stabilityChartHoverDetail(readView, options, names, colorOf);
-  const allMissingReasons = [...new Set([...tileMissingReasons, ...(options.missingReasons ?? [])])];
+  const allMissingReasons = [...new Set([...tileMissingReasons, ...catalogueMissingReasons])];
   const empty = shown.observed.length > 0
     ? { message: 'No active modifiers in this time.', kind: 'empty' as const }
     : allMissingReasons.length > 0
