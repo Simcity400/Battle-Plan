@@ -218,7 +218,7 @@ fn block_buckets(recording: &Recording, run: u32, table: TableId, column: u32, k
     };
     let bytes = recording.stored_bytes(&extent)?;
     let piece = Piece::read(&bytes)?;
-    let at = piece.column_of(column).ok_or_else(|| invalid("The summary holds no such column"))?;
+    let Some(at) = piece.column_of(column) else { return Ok(None) };
     let frame = piece.column(at)?;
     let buckets = piece.directory.buckets as usize;
     let mut out = Vec::with_capacity(keys.len());
