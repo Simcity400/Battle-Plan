@@ -1395,7 +1395,7 @@ pub(super) fn bind(
         );
         menu.entries.push(row);
     }
-    for reason in unavailable {
+    for reason in by_reason(unavailable) {
         out.warnings.push(format!(
             "Possible tactics: {reason}; missing values remain unavailable."
         ));
@@ -1835,6 +1835,21 @@ fn repair_heap<T: Clone, F: Fn(&T, &T) -> bool>(
     values[hole] = value;
 }
 
+
+fn by_reason(unavailable: BTreeSet<String>) -> BTreeSet<String> {
+    let mut tactics: BTreeMap<String, usize> = BTreeMap::new();
+    let mut reasons = BTreeSet::new();
+    for reason in unavailable {
+        match reason.strip_prefix("tactic ").and_then(|rest| rest.split_once("'s ")) {
+            Some((_, why)) => *tactics.entry(why.to_owned()).or_default() += 1,
+            None => {
+                reasons.insert(reason);
+            }
+        }
+    }
+    reasons.extend(tactics.into_iter().map(|(why, count)| format!("{why} (in {count} tactic(s))")));
+    reasons
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1846,6 +1861,24 @@ mod tests {
         rows::ResourceDefinitionRow, rows::StateRow, rows::TableId, rows::TableRows,
     };
     use replay_frame::{frame::Metrics, frame::TableView};
+
+    #[test]
+    fn one_reason_shared_by_many_tactics_is_one_note() {
+        let unavailable = BTreeSet::from([
+            "tactic attack's immediate hover: sources unavailable".to_owned(),
+            "tactic shock's immediate hover: sources unavailable".to_owned(),
+            "tactic shock's selection hover: weights unavailable".to_owned(),
+            "the viewing country's side is unavailable".to_owned(),
+        ]);
+        assert_eq!(
+            by_reason(unavailable),
+            BTreeSet::from([
+                "immediate hover: sources unavailable (in 2 tactic(s))".to_owned(),
+                "selection hover: weights unavailable (in 1 tactic(s))".to_owned(),
+                "the viewing country's side is unavailable".to_owned(),
+            ])
+        );
+    }
 
     #[test]
     fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {

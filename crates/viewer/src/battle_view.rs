@@ -809,15 +809,26 @@ impl Held {
         let listing = (wheel != 0.0).then(|| drawn.list_at([at.x, at.y])).flatten();
         let text = |value: Option<&str>| value.map(crate::game_windows::strip_markup).filter(|text| !text.trim().is_empty());
         let hovered = drawn.hovers().filter(|(hit, _, _)| inside(*hit)).last().map(|(_, label, detail)| (text(label), text(detail)));
-        if let Some((label, detail)) = hovered.filter(|(label, detail)| label.is_some() || detail.is_some()) {
-            response.on_hover_ui_at_pointer(|ui| {
-                if let Some(label) = label {
-                    ui.strong(label);
-                }
-                if let Some(detail) = detail {
-                    ui.label(detail);
-                }
-            });
+        if let Some((label, detail)) = hovered.filter(|(label, detail)| label.is_some() || detail.is_some())
+            && egui::Tooltip::should_show_tooltip(&response, false)
+        {
+            let width = ui.style().spacing.tooltip_width;
+            egui::Area::new(ui.id().with("battle tooltip"))
+                .order(egui::Order::Tooltip)
+                .interactable(false)
+                .fixed_pos(pointer + egui::vec2(12.0, 12.0))
+                .constrain_to(ui.clip_rect().intersect(body))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_max_width(width);
+                        if let Some(label) = label {
+                            ui.strong(label);
+                        }
+                        if let Some(detail) = detail {
+                            ui.label(detail);
+                        }
+                    });
+                });
         }
         if let Some(list) = listing {
             self.window.scroll(list, if wheel < 0.0 { 1 } else { -1 }, true);
