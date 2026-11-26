@@ -227,28 +227,29 @@ function formatBarsAxisLabels(ticks: readonly number[], format: BarsModel['scale
   if (!collides) return compact;
   const obj = typeof format === 'object' && format !== null ? format : null;
   const scale = obj?.decimals ?? (format === 'fixed5Amount' || format === 'fixed5Percent' || format === 'fixed5Width' ? 5 : 0);
-  const percent = obj?.percent === true || format === 'fixed5Percent' || format === 'percent2' || format === 'recordedPercent';
+  const scalePercent = obj?.percent === true;
+  const percent = scalePercent || format === 'fixed5Percent' || format === 'percent2' || format === 'recordedPercent';
   const unit = obj?.unit;
   const allWhole = ticks.every(Number.isInteger);
   const scaleDiv = scale > 0 ? 10 ** scale : 1;
   let places = 0;
   for (const tick of ticks) {
     if (!Number.isFinite(tick)) continue;
-    const displayVal = scale > 0 ? (percent ? (tick * 100) / scaleDiv : tick / scaleDiv) : tick;
+    const displayVal = scale > 0 ? (scalePercent ? (tick * 100) / scaleDiv : tick / scaleDiv) : tick;
     places = Math.max(places, exactDecimal(displayVal).scale);
   }
   const maxDecimals = Math.min(12, places);
   return ticks.map(tick => {
-    if (scale > 0 && allWhole) {
+    if (obj !== null && scale > 0 && allWhole) {
       return formatScalar(tick, {
         decimals: scale,
         maxDecimals,
         fixedDecimals: maxDecimals > 0,
-        ...(percent ? { percent: true } : {}),
+        ...(scalePercent ? { percent: true } : {}),
         ...(unit ? { unit } : {}),
       });
     }
-    const displayVal = scale > 0 ? (percent ? (tick * 100) / scaleDiv : tick / scaleDiv) : tick;
+    const displayVal = scale > 0 ? (scalePercent ? (tick * 100) / scaleDiv : tick / scaleDiv) : tick;
     return formatScalar(displayVal, {
       decimals: 0,
       maxDecimals,

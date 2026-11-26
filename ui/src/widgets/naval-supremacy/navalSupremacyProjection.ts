@@ -105,12 +105,13 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
       return { ...base, segments: [], missing: notRecorded('The supremacy share was not recorded'), tooltip: { title: named.label, hour: readout.as_of_hour, missingReason: 'The supremacy share was not recorded' } };
     }
     const ratio = shareRatio(readout.share, reply.scale);
+    const enemyShare = ratio ? Number(ratio.denom - ratio.raw) / Number(ratio.denom) : 1 - share;
     const friendlyPct = ratio ? formatShareRatio(ratio.raw, ratio.denom) : formatShare(share);
-    const enemyPct = ratio ? formatShareRatio(ratio.denom - ratio.raw, ratio.denom) : formatShare(1 - share);
+    const enemyPct = ratio ? formatShareRatio(ratio.denom - ratio.raw, ratio.denom) : formatShare(enemyShare);
     const friendly = look.friendly(readout.as_of_hour).colour;
     const segments: BarsSegment[] = [
       { key: 'friendly', label: `${look.viewer} and friends`, share, value: knownValue(share), color: friendly, inlineLabel: `Friendly ${friendlyPct}` },
-      { key: 'enemy', label: `Enemies of ${look.viewer}`, share: 1 - share, value: knownValue(1 - share), color: look.enemy, inlineLabel: `Enemy ${enemyPct}` },
+      { key: 'enemy', label: `Enemies of ${look.viewer}`, share: enemyShare, value: knownValue(enemyShare), color: look.enemy, inlineLabel: `Enemy ${enemyPct}` },
     ];
     const control = readout.control > 0 ? look.friendlyLabel : readout.control < 0 ? look.enemyLabel : 'Contested';
     return {
@@ -242,7 +243,9 @@ function inspectDay(reply: NavalSupremacyReply, region: SupremacyRegion | undefi
   if (idle(run.friendly, run.enemy)) return { title, ...dated, items: [{ label: 'No activity' }] };
   const share = shareOf(run.share, reply.scale);
   const ratio = shareRatio(run.share, reply.scale);
-  const shareText = ratio ? formatShareRatio(ratio.raw, ratio.denom) : share === null ? null : formatShare(share);
+  const sideRaw = ratio ? (run.control < 0 ? ratio.denom - ratio.raw : ratio.raw) : null;
+  const sideShare = share === null ? null : (run.control < 0 ? 1 - share : share);
+  const shareText = ratio && sideRaw !== null ? formatShareRatio(sideRaw, ratio.denom) : sideShare === null ? null : formatShare(sideShare);
   const label = run.control > 0 ? look.friendlyLabel : run.control < 0 ? look.enemyLabel : 'Contested';
   const swatch = run.control === 0 ? look.contested : run.control < 0 ? look.enemy : painted?.kind === 'solid' ? painted.color : look.contested;
   return { title, ...dated, items: [{ label, swatch, ...(shareText === null ? {} : { value: `${shareText} of the score` }) }] };

@@ -834,6 +834,23 @@ test('#833-7: all-zero integer Race axis emits whole ticks [0, 1] instead of rep
   const scaledAxisY = scaledLayout.axisTop + scaledLayout.axisHeight / 2;
   const scaledTexts = scaledCtx.ops.filter(op => op.op === 'fillText' && op.args[2] === scaledAxisY).map(op => String(op.args[0]));
   assert.deepEqual(scaledTexts, ['0.00 HP', '0.25 HP', '0.50 HP', '0.75 HP', '1.00 HP']);
+
+  const fixedPctModel: BarsModel = {
+    form: 'ordered',
+    hour: h,
+    showAxis: true,
+    scaleMax: 100_000,
+    scaleFormat: 'fixed5Percent',
+    rows: [
+      { kind: 'data', key: 'GER', label: 'German Reich', value: { value: knownValue(100_000) }, numeric: 100_000 },
+    ],
+  };
+  const fixedPctLayout = layoutFamilyBars(fixedPctModel, 600, 300);
+  const fixedPctCtx = makeFakeCtx();
+  drawFamilyBars(fixedPctCtx.ctx, { model: fixedPctModel, layout: fixedPctLayout, theme: THEME, scrollTop: 0, now: 0, glideDuration: 0 });
+  const fixedPctAxisY = fixedPctLayout.axisTop + fixedPctLayout.axisHeight / 2;
+  const fixedPctTexts = fixedPctCtx.ops.filter(op => op.op === 'fillText' && op.args[2] === fixedPctAxisY).map(op => String(op.args[0]));
+  assert.deepEqual(fixedPctTexts, ['0.00%', '0.25%', '0.50%', '0.75%', '1.00%']);
 });
 
 test('C1.7: offscreen rank swaps and scrolling unchanged ranks in a 1,500-country Race trigger no glide motion', () => {
