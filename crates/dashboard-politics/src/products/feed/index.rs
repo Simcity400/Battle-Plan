@@ -104,8 +104,42 @@ pub(crate) struct Scanned {
     pub incomplete: Vec<(i32, u128, FeedEvent)>,
     pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
+    resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
     breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
+}
+
+impl Scanned {
+    pub(crate) fn decision_states(&self, query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
+        let key = |event: &FeedEvent| (u128::from(event.generation) << 64) | u128::from(event.sequence);
+        let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];
+        let mut missing: Vec<usize> = Vec::new();
+        {
+            let held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+            for (at, event) in events.iter().enumerate() {
+                if !decision_state::applies(event) {
+                    continue;
+                }
+                let key = key(event);
+                match (self.states.get(&key), held.get(&key)) {
+                    (Some(state), _) => out[at] = Some(state.clone()),
+                    (None, Some(state)) => out[at] = state.clone(),
+                    (None, None) => missing.push(at),
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(out);
+        }
+        let asked: Vec<&FeedEvent> = missing.iter().map(|&at| events[at]).collect();
+        let resolved = decision_state::resolve_all(query, &asked)?;
+        let mut held = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        for (&at, state) in missing.iter().zip(resolved) {
+            held.insert(key(events[at]), state.clone());
+            out[at] = state;
+        }
+        Ok(out)
+    }
 }
 
 pub(crate) struct Feed {
@@ -248,7 +282,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     breaks.retain(|(first, last)| first <= last);
     breaks.sort_unstable();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), breaks, gaps })
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {

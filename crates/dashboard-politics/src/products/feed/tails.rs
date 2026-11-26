@@ -438,7 +438,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         });
         shapes.push((head_at, choice));
     }
-    let mut presented = present_all(query, &events, &names, &presenter, &mut notices, cancelled)?;
+    let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
     let rows = answer
         .rows
         .iter()
@@ -560,7 +560,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         let opened = edges.first().is_some_and(|first| first == head) && EventFeedKind::of_code(events[first].code).is_some_and(|kind| list.openers().contains(&kind)) && events[first].opener.is_none();
         spans.push((first, events.len(), opened));
     }
-    let presented = present_all(query, &events, &names, &presenter, &mut notices, cancelled)?;
+    let presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
     let mut rows = Vec::with_capacity(answer.rows.len());
     for (shown, (first, end, opened)) in answer.rows.iter().zip(spans) {
         let occurrence = prepared.index.get(shown.at);

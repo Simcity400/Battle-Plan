@@ -754,6 +754,7 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     );
 
     let cards_b1 = DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap();
+    assert_eq!(DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap(), cards_b1, "a second read of the hour, from the states the index remembers, is the same reply");
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));

@@ -395,8 +395,8 @@ fn tag(names: &Names, slot: Slot, hour: i32) -> Option<String> {
     }
 }
 
-pub(crate) fn present_all(query: &Query<'_>, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
-    let states = decision_state::resolve_all(query, events)?;
+pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &[&FeedEvent], names: &Names, presenter: &Presenter<'_>, notices: &mut Notices, cancelled: &AtomicBool) -> io::Result<Vec<Option<EventFeedRow>>> {
+    let states = scanned.decision_states(query, events)?;
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
     let mut out: Vec<Option<EventFeedRow>> = (0..events.len()).map(|_| None).collect();
