@@ -324,7 +324,7 @@ fn validate_at(params: &NavalLossesAtParams) -> Result<(), &'static str> {
 }
 
 #[expect(clippy::too_many_arguments, reason = "the hour, its stretch and the selection the bounds prove")]
-fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, attribution: u8, kinds: &[u8]) -> io::Result<(i32, i32)> {
+fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, stretch_last: i32, period: NavalPeriod, attribution: u8, kinds: &[u8], chosen: Option<&[u128]>) -> io::Result<(i32, i32)> {
     let recording = query.replay.recording();
     let mut lo = stretch_first;
     let mut hi = stretch_last;
@@ -354,16 +354,19 @@ fn proven_bounds(query: &Query<'_>, run: u32, hour: i32, stretch_first: i32, str
             clamp(runs, &mut lo, &mut hi);
         }
     }
-    let owners: BTreeSet<u128> = query
-        .holders
-        .tags
-        .values()
-        .flatten()
-        .filter_map(|held| match held.holder {
-            Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
-            Holder::Unresolved => None,
-        })
-        .collect();
+    let owners: BTreeSet<u128> = match chosen {
+        Some(chosen) => chosen.iter().copied().collect(),
+        None => query
+            .holders
+            .tags
+            .values()
+            .flatten()
+            .filter_map(|held| match held.holder {
+                Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
+                Holder::Unresolved => None,
+            })
+            .collect(),
+    };
     let mut keys: Vec<u128> = owners.iter().flat_map(|&owner| kinds.iter().map(move |&kind| Row::holder_key(owner, attribution, kind))).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -424,21 +427,36 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
     };
     let counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
     let missing_baseline = kinds.iter().any(|&kind| counts.baseline(kind, hour).is_none());
-    let (mut first_hour, mut last_hour) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, attribution, kinds)?;
-    let mut warnings = Vec::new();
+    let bounds = |chosen: Option<&[u128]>, window: Option<(i32, i32)>| -> io::Result<(i32, i32)> {
+        let (first, last) = proven_bounds(query, stretch.run, hour, stretch.first, stretch.last, params.period, attribution, kinds, chosen)?;
+        Ok(window.map_or((first, last), |(from, until)| (first.max(from).min(hour), last.min(until).max(hour))))
+    };
+    let mut window = None;
     let countries: Vec<Country> = match &params.group {
         None => params.countries.clone(),
         Some(group) => {
             let members = groups.members(group, hour)?;
-            first_hour = first_hour.max(members.from).min(hour);
-            last_hour = last_hour.min(members.until).max(hour);
+            window = Some((members.from, members.until));
             if let Some(reason) = members.refused {
-                return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(reason), warnings });
+                let (first_hour, last_hour) = bounds(None, window)?;
+                return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(reason), warnings: Vec::new() });
             }
             members.tags.into_iter().map(Country::from).collect()
         }
     };
-    if missing_baseline && (params.top.is_some() || (countries.is_empty() && params.group.is_none())) {
+    let ranked = params.top.is_some() || (countries.is_empty() && params.group.is_none());
+    let chosen: Option<Vec<u128>> = (!ranked).then(|| {
+        countries
+            .iter()
+            .filter_map(|country| match query.holders.at(country, hour)?.holder {
+                Holder::Found { slot, id } => Some(Key::Holder.of(slot, id)),
+                Holder::Unresolved => None,
+            })
+            .collect()
+    });
+    let (first_hour, last_hour) = bounds(chosen.as_deref(), window)?;
+    let mut warnings = Vec::new();
+    if missing_baseline && ranked {
         return Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows: Vec::new(), missing: Some(MISSING_BASELINE.into()), warnings });
     }
     let at_hour = |at: i32| -> io::Result<HashMap<u128, i64>> {
@@ -519,7 +537,21 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
             if !seen.insert(country.clone()) {
                 continue;
             }
-            let Some(run) = query.holders.at(country, hour) else { continue };
+            let Some(run) = query.holders.at(country, hour) else {
+                if query.holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last) {
+                    rows.push(ForceAtRow {
+                        country: country.clone(),
+                        slot: None,
+                        tag: query.holders.name(country, hour),
+                        total: None,
+                        reference_total: None,
+                        missing: Some(query.holders.unnamed(country, hour)),
+                        values: vec![None; kinds.len()],
+                        parts_missing: None,
+                    });
+                }
+                continue;
+            };
             if let Holder::Found { slot, .. } = run.holder
                 && !held_slots.insert(slot)
             {

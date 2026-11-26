@@ -354,15 +354,15 @@ mod tests {
     use std::sync::Arc;
 
     fn naval_source() -> Source {
-        losses_source(false, None)
+        losses_source(false, None, None)
     }
 
-    fn losses_source(convoys: bool, refused_at: Option<i32>) -> Source {
+    fn losses_source(convoys: bool, refused: Option<(i32, u32)>, unlinked: Option<(i32, i32)>) -> Source {
         const FIRST: i32 = 1_000;
         const LAST: i32 = 1_040;
         let sunk = |name: &[u8], sink_hour: i32| SunkShipEntry {
             ship_name: name.to_vec(),
-            victim_country: 9001,
+            victim_country: if sink_hour > LAST { refused.map_or(9001, |(_, victim)| victim) } else { 9001 },
             attacker_country: 9002,
             sink_hour,
             province: 5,
@@ -394,11 +394,14 @@ mod tests {
                     if hour >= 1_030 {
                         entries.push(sunk(b"C", 1_030));
                     }
-                    if refused_at.is_some_and(|at| hour >= at) {
+                    if refused.is_some_and(|(at, _)| hour >= at) {
                         entries.push(sunk(b"D", 5_000));
                     }
                     *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
                     frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+                }
+                if unlinked.is_some_and(|(first, last)| (first..=last).contains(&hour)) {
+                    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "not read".into() };
                 }
                 if convoys {
                     let rows = (hour >= 1_010).then(|| SunkConvoyRow { month: 0, killer_country: 9002, owner_country: 9001, convoys: hour - 1_009, ordinal: 0 });
@@ -496,7 +499,7 @@ mod tests {
 
     #[test]
     fn a_ships_ranking_is_not_expired_by_convoy_losses_changing_every_hour() {
-        let src = losses_source(true, None);
+        let src = losses_source(true, None, None);
         let ranked = head(&src, 1_035, Vec::new(), Some(1));
         assert_eq!(ranked.rows.iter().map(|row| row.slot).collect::<Vec<_>>(), [Some(7)]);
         assert_eq!((ranked.first_hour, ranked.last_hour), (1_030, 1_040));
@@ -504,7 +507,7 @@ mod tests {
 
     #[test]
     fn the_head_ends_where_a_refused_sinking_changes_its_evidence() {
-        let src = losses_source(false, Some(1_033));
+        let src = losses_source(false, Some((1_033, 9001)), None);
         let before = head(&src, 1_031, vec![Country::Slot(7)], None);
         assert_eq!((before.rows[0].total, before.last_hour), (Some(3), 1_032));
         assert!(before.warnings.is_empty());
@@ -520,5 +523,21 @@ mod tests {
         assert_eq!(chosen.missing, None);
         assert_eq!(chosen.rows.iter().map(|row| (row.slot, row.total, row.missing.as_deref())).collect::<Vec<_>>(), [(Some(7), None, Some(MISSING_BASELINE))]);
         assert_eq!(head(&src, 1_005, Vec::new(), Some(1)).missing.as_deref(), Some(MISSING_BASELINE));
+    }
+
+    #[test]
+    fn a_chosen_country_is_proved_by_its_own_losses_only() {
+        let src = losses_source(false, Some((1_033, 9002)), None);
+        assert_eq!(head(&src, 1_031, vec![Country::Slot(7)], None).last_hour, 1_040);
+        assert_eq!(head(&src, 1_031, vec![Country::Slot(8)], None).last_hour, 1_032);
+    }
+
+    #[test]
+    fn a_chosen_country_keeps_its_row_while_its_holder_is_unread() {
+        let src = losses_source(false, None, Some((1_005, 1_007)));
+        let reply = head(&src, 1_006, vec![Country::Slot(7)], None);
+        assert_eq!(reply.missing, None);
+        assert_eq!(reply.rows.len(), 1, "{:?}", reply.rows);
+        assert_eq!((reply.rows[0].total, reply.rows[0].missing.is_some()), (None, true));
     }
 }
