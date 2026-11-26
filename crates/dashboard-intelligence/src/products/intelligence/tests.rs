@@ -4,6 +4,25 @@ use super::{
 };
 use replay_data::rows::{OperativeMembershipRow, Recorded};
 
+#[test]
+fn shared_defines_give_captivity_its_mod_duration_or_name_the_missing_days() {
+    let assignment = |changes| {
+        let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NOperatives={OPERATIVE_CAPTURE_DURATION_IN_DAYS=3}}",
+            changes,
+            &[("localisation/probe_l_english.yml", "\u{feff}l_english:\n DURATION_DAYS:0 \"$NUM$ ticks\"\n OPERATIVE_CAPTURED_BY:0 \"$CAPTURER$\"\n")],
+        );
+        let content = super::operative_content::content(&source, &load).unwrap();
+        let epoch = game_model::calendar::HOUR_EPOCH;
+        let row = OperativeMembershipRow { assignment: CAPTURED, captured_hour: epoch, ..Default::default() };
+        content.assignment(&row, epoch + 24, None, Some("Probe"))
+    };
+    assert_eq!(assignment("NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS=29").duration.as_deref(), Some("28 ticks"));
+    let refused = assignment("NDefines.NOperatives=nil");
+    assert!(refused.duration.is_none() && refused.progress.is_none());
+    assert_eq!(refused.missing.as_deref(), Some("NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS is unavailable: missing NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS"));
+}
+
 const fn state(amount: i64, decrypting: bool, bonus_active: bool, broken: Option<bool>) -> Option<CipherState> {
     Some(CipherState { amount, decrypting, bonus_active, broken })
 }

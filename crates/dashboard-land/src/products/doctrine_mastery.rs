@@ -102,7 +102,7 @@ fn default_reward(source: &Source, resolved: &Arc<ResolvedContent>) -> Result<i6
     let shared = source.state::<DefaultReward>();
     let mut held = shared.lock().unwrap_or_else(|error| error.into_inner());
     if held.0.as_ref().is_none_or(|(old, _)| !Arc::ptr_eq(old, resolved)) {
-        let read = content_reader_defines::defines::read(&resolved.layers).and_then(|defines| defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")).map_err(|error| error.to_string());
+        let read = super::doctrines::default_reward(&resolved.layers).map_err(|error| error.to_string());
         held.0 = Some((Arc::clone(resolved), read));
     }
     held.0.as_ref().map(|(_, read)| read.clone()).expect("default reward read")

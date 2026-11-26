@@ -857,7 +857,7 @@ fn equipment_icons_resolve_mixed_continent_and_coastal_capital_states() {
         &layers.read(&default_map.file("definitions").unwrap()).unwrap(),
     )
     .unwrap();
-    let defines = content_reader_defines::defines::read(&layers).unwrap();
+    let defines = crate::catalogue::defines_for_layers(&layers).unwrap();
     let geography =
         equipment_graphics::context::Content::load(&layers, &default_map, &provinces, &defines)
             .unwrap();
