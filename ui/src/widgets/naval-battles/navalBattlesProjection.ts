@@ -5,7 +5,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { artKindCell, newIdentityBoundary, resolveIdentity, resolveName, type IdentityBoundary } from '../../families/table/identityCell.ts';
-import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
+import { LOG_TABLE_BASE, logCountryCell, logPairCell, logDateCell, logStatusCell, logWatchCell, occurrenceSelection, pagedTailEntry, projectPagedSlots } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
@@ -13,6 +13,12 @@ import type { NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/d
 import { NAVAL_BATTLES_COLUMNS } from './definition.ts';
 
 const LEAST_SHARE = 0.03;
+
+export interface NavalBattleSubject {
+  readonly row: NavalBattleLogRow;
+  readonly title: string;
+  readonly sides: ReturnType<typeof resolveIdentity>[][];
+}
 
 function countValue(n: number | null, label: string, lowerBound?: string): Value<number> {
   if (n === null) return notRecorded(`${label} not recorded`);
@@ -106,7 +112,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const icLost = logPairCell(row.icLost, 'IC lost', colors, lowerBound);
   const ships = vesselPairCell(row.ships, row.convoys, 'Ships', 'Convoys');
   return {
-    key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
+    key: row.key, name: title, rowHour: row.hour, live, meta: { row, title, sides } satisfies NavalBattleSubject,
     ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
     tooltipExtra: () => sides.flatMap((side, i): TooltipExtraRow[] => {
       const convoyCount = row.convoys[i];
@@ -129,6 +135,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
       kind: artKindCell(view, { kind: 'sprite', key: 'GFX_naval_combat_icon', frame: 0 }, 'square', 'Naval battle', 'Battle artwork unavailable'),
       country: logCountryCell(view, flags, row.hour, boundary), item: { value: name },
       shipsSunk: { ...shipsSunk, tooltipRows: [] }, icLost: { ...icLost, tooltipRows: [] }, ships: { ...ships, tooltipRows: [] }, status,
+      ...(row.key.startsWith('combat:') ? { action: logWatchCell() } : {}),
     },
   };
 }

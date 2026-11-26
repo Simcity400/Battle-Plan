@@ -4,7 +4,7 @@ import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDet
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
-import { navalBattlesProjection } from './navalBattlesProjection.ts';
+import { navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
@@ -49,13 +49,16 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
     readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
-  const head: NavalBattlesTailReply = { branchId: '1', total: '2', offset: '0', missing: [], warnings: [], nextChange: null,
-    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }] };
+  const head: NavalBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null,
+    rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', result: 'attackerWon' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
   const view = createBoundedReadView({ hour: 18, rows: new Map([['main', source]]) });
   const model = (following: boolean) => navalBattlesProjection.project(view, { scope: 'test', following, byDate: true });
   const project = (following: boolean) => model(following).rows[0]!;
   const row = project(true);
+  assert.equal(row.cells.action?.actionLabel, 'Watch', 'a battle with live hours offers Watch');
+  assert.equal((row.meta as NavalBattleSubject).row.key, 'combat:9:10');
+  assert.equal(model(true).rows[2]!.cells.action, undefined, 'a battle held only as a result has no live hours to watch');
   assert.match(model(true).columns.find(column => column.key === 'shipsSunk')!.partialReason!, /lower bound/);
   assert.match(model(true).columns.find(column => column.key === 'icLost')!.partialReason!, /lower bound/);
   const ended = model(true).rows[1]!.cells.status!;
