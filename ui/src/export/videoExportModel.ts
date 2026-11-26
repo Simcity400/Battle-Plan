@@ -42,31 +42,40 @@ export interface RangeCoverage {
 }
 
 export function mergeRecordedTracks(tracks: readonly (readonly RecordedStretch[])[]): RecordedStretch[] {
-  const intervals: RecordedStretch[] = [];
+  const intervals: { first: number; last: number }[] = [];
+  const loadStarts = new Set<number>();
   for (const track of tracks) {
     for (const s of track) {
-      intervals.push({ first: s.first, last: s.last, join: s.join });
+      if (s.first > s.last) continue;
+      intervals.push({ first: s.first, last: s.last });
+      if (s.join === 'load') loadStarts.add(s.first);
     }
   }
   intervals.sort((a, b) => (a.first !== b.first ? a.first - b.first : a.last - b.last));
-  const merged: RecordedStretch[] = [];
+  const spans: { first: number; last: number }[] = [];
   for (const item of intervals) {
-    const prev = merged.at(-1);
-    if (prev) {
-      const touches = item.first === prev.last + 1;
-      const overlaps = item.first <= prev.last;
-      if (overlaps || (touches && item.join !== 'load')) {
-        if (item.last > prev.last) {
-          prev.last = item.last;
-        }
-        continue;
+    const prev = spans.at(-1);
+    if (prev && item.first <= prev.last + 1) {
+      if (item.last > prev.last) prev.last = item.last;
+      continue;
+    }
+    spans.push({ first: item.first, last: item.last });
+  }
+  const sortedLoads = [...loadStarts].sort((a, b) => a - b);
+  const merged: RecordedStretch[] = [];
+  for (const span of spans) {
+    let cursor = span.first;
+    let join: RecordedStretch['join'] = merged.length === 0 ? 'start' : loadStarts.has(span.first) ? 'load' : 'break';
+    for (const cut of sortedLoads) {
+      if (cut <= span.first) continue;
+      if (cut > span.last) break;
+      if (cut > cursor) {
+        merged.push({ first: cursor, last: cut - 1, join });
+        cursor = cut;
+        join = 'load';
       }
     }
-    merged.push({
-      first: item.first,
-      last: item.last,
-      join: merged.length === 0 ? 'start' : item.join,
-    });
+    merged.push({ first: cursor, last: span.last, join });
   }
   return merged;
 }
@@ -74,23 +83,45 @@ export function mergeRecordedTracks(tracks: readonly (readonly RecordedStretch[]
 export function mergeUnheldGaps(
   mergedStretches: readonly RecordedStretch[],
   tracksUnheld: readonly (readonly UnheldGap[])[],
+  fromHour?: number,
+  toHour?: number,
 ): UnheldGap[] {
-  const out: UnheldGap[] = [];
-  for (let i = 1; i < mergedStretches.length; i += 1) {
-    const prev = mergedStretches[i - 1]!;
-    const next = mergedStretches[i]!;
-    const first = prev.last + 1;
-    const last = next.first - 1;
-    if (first > last) continue;
-    let reason = "Not recorded: this play happened while the recorder wasn't watching";
+  const reasonFor = (first: number, last: number): string => {
     for (const gaps of tracksUnheld) {
       const hit = gaps.find(g => g.first <= last && g.last >= first);
-      if (hit) {
-        reason = hit.reason;
-        break;
-      }
+      if (hit) return hit.reason;
     }
-    out.push({ first, last, reason });
+    return "Not recorded: this play happened while the recorder wasn't watching";
+  };
+  if (fromHour === undefined || toHour === undefined) {
+    const out: UnheldGap[] = [];
+    for (let i = 1; i < mergedStretches.length; i += 1) {
+      const prev = mergedStretches[i - 1]!;
+      const next = mergedStretches[i]!;
+      const first = prev.last + 1;
+      const last = next.first - 1;
+      if (first > last) continue;
+      out.push({ first, last, reason: reasonFor(first, last) });
+    }
+    return out;
+  }
+  const lo = Math.min(fromHour, toHour);
+  const hi = Math.max(fromHour, toHour);
+  const out: UnheldGap[] = [];
+  let cursor = lo;
+  for (const stretch of mergedStretches) {
+    const sFirst = Math.max(lo, stretch.first);
+    const sLast = Math.min(hi, stretch.last);
+    if (sFirst > sLast) continue;
+    if (cursor < sFirst) {
+      out.push({ first: cursor, last: sFirst - 1, reason: reasonFor(cursor, sFirst - 1) });
+    }
+    if (sLast + 1 > cursor) {
+      cursor = sLast + 1;
+    }
+  }
+  if (cursor <= hi) {
+    out.push({ first: cursor, last: hi, reason: reasonFor(cursor, hi) });
   }
   return out;
 }
@@ -282,7 +313,7 @@ export function exportGlideDurationMs(hoursPerSecond: number, fps: number): numb
 
 export function readabilityHint(minTextPx: number | null, scale: number): string | null {
   if (minTextPx !== null && Number.isFinite(minTextPx) && minTextPx > 0 && minTextPx < 9.5) {
-    return `Smallest text renders around ${minTextPx.toFixed(1)} px at this output size. Try Visible viewport, Reflow for portrait, or a higher resolution.`;
+    return `Smallest DOM text renders around ${minTextPx.toFixed(1)} px at this output size. Try Visible viewport, Reflow for portrait, or a higher resolution.`;
   }
   if (Number.isFinite(scale) && scale > 0 && scale < 0.55) {
     return `This page scales to ${Math.round(scale * 100)}% to fit the frame. Inspect the 100% crop preview or switch to Visible viewport.`;

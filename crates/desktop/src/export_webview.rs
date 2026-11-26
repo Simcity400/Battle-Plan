@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 use video_export::{
     AudioConfig, BackendChoice, Quality, VideoConfig,
     schedule::{
-        FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, UnheldGap, build_schedule,
-        merge_recorded_tracks, merge_unheld_gaps,
+        FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, StretchJoin, UnheldGap,
+        build_schedule, merge_recorded_tracks, merge_unheld_gaps,
     },
 };
 use viewer::video_export::{
@@ -127,6 +127,15 @@ pub struct ExportMapRect {
     pub height: u32,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportClipRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageAckPayload {
@@ -139,6 +148,8 @@ pub struct PageAckPayload {
     pub map_rects: Vec<ExportMapRect>,
     #[serde(default)]
     pub overlay_rects: Vec<ExportMapRect>,
+    #[serde(default)]
+    pub viewport_clip: Option<ExportClipRect>,
     #[serde(default)]
     pub bg_rgb: Option<[u8; 3]>,
     pub error: Option<String>,
@@ -220,9 +231,34 @@ pub struct ExportWebviewState {
     bus: Arc<(Mutex<AckBus>, Condvar)>,
     next_seq: Arc<AtomicU64>,
     op_lock: Arc<Mutex<()>>,
+    owned_sources: Arc<Mutex<Vec<String>>>,
 }
 
 impl ExportWebviewState {
+    pub fn track_source(&self, source_id: &str) {
+        self.owned_sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(source_id.to_owned());
+    }
+
+    pub fn untrack_source(&self, source_id: &str) {
+        let mut owned = self.owned_sources.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pos) = owned.iter().position(|id| id == source_id) {
+            owned.swap_remove(pos);
+        }
+    }
+
+    fn release_owned_sources(&self, app: &AppHandle) {
+        let leaked: Vec<String> = {
+            let mut owned = self.owned_sources.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *owned)
+        };
+        for source_id in leaked {
+            crate::dashboard_service::release_export_source(app, source_id);
+        }
+    }
+
     pub fn record_ack(&self, payload: PageAckPayload) {
         let (lock, cv) = &*self.bus;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -238,6 +274,7 @@ impl ExportWebviewState {
         if let Some(window) = app.get_webview_window(EXPORT_WINDOW_LABEL) {
             let _ = window.destroy();
         }
+        self.release_owned_sources(app);
         let (lock, cv) = &*self.bus;
         let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
         bus.booted = false;
@@ -270,12 +307,13 @@ impl ExportWebviewState {
         Ok(())
     }
 
-    fn unmount_window(&self, window: &WebviewWindow) {
+    fn unmount_window(&self, app: &AppHandle, window: &WebviewWindow) {
         let seq = self.next_seq();
         if window.emit(UNMOUNT_EVENT, serde_json::json!({ "seq": seq })).is_ok() {
             let never = AtomicBool::new(false);
             let _ = self.wait_for_ack_timeout(seq, &never, Duration::from_secs(5));
         }
+        self.release_owned_sources(app);
     }
 
     fn wait_for_ack(&self, seq: u64, cancel: &AtomicBool) -> Result<PageAckPayload, String> {
@@ -391,13 +429,13 @@ fn initial_metrics(req: &SurfaceVideoRequest) -> ViewportMetrics {
                 css_width: out_w,
                 css_height: out_h,
                 dpr: 1.0,
-                scale: ratio.clamp(0.01, 1.0),
+                scale: ratio.clamp(1e-4, 1.0),
             };
         }
         let src_h = req.source_height.max(240);
         let fit = (f64::from(out_w) / f64::from(src_w))
             .min(f64::from(out_h) / f64::from(src_h))
-            .clamp(0.01, 4.0);
+            .clamp(1e-4, 4.0);
         if fit >= 1.0 {
             let dpr = fit.clamp(1.0, 4.0);
             let css_w = ((f64::from(out_w) / dpr).round() as u32).max(16);
@@ -441,7 +479,7 @@ fn finalized_metrics(
         .unwrap_or_else(|| f64::from(req.source_height.max(320)));
     let out_w = f64::from(req.width.max(16));
     let out_h = f64::from(req.height.max(16));
-    let fit = (out_w / cw).min(out_h / ch).clamp(0.01, 4.0);
+    let fit = (out_w / cw).min(out_h / ch).clamp(1e-4, 4.0);
     if fit >= 1.0 {
         let dpr = fit.clamp(1.0, 4.0);
         let css_w = (out_w / dpr).round().max(16.0) as u32;
@@ -470,7 +508,12 @@ fn build_surface_schedule(req: &SurfaceVideoRequest) -> Result<FrameSchedule, St
         req.tracks.iter().map(|t| t.stretches.clone()).collect();
     let track_unheld: Vec<Vec<UnheldGap>> = req.tracks.iter().map(|t| t.unheld.clone()).collect();
     let merged_stretches = merge_recorded_tracks(&track_stretches);
-    let merged_unheld = merge_unheld_gaps(&merged_stretches, &track_unheld);
+    let merged_unheld = merge_unheld_gaps(
+        &merged_stretches,
+        &track_unheld,
+        req.from_hour,
+        req.to_hour,
+    );
     build_schedule(
         &merged_stretches,
         &merged_unheld,
@@ -484,6 +527,168 @@ fn build_surface_schedule(req: &SurfaceVideoRequest) -> Result<FrameSchedule, St
         },
     )
     .map_err(|e| e.to_string())
+}
+
+fn preview_frame_kind(schedule: &FrameSchedule, preview_hour: i32) -> FrameKind {
+    if schedule
+        .stretches
+        .iter()
+        .any(|s| s.first <= preview_hour && preview_hour <= s.last)
+    {
+        return FrameKind::Recorded {
+            hour: preview_hour,
+            fraction: 0.0,
+            reset_continuity: true,
+            cut_banner: None,
+        };
+    }
+    let (gap_first, gap_last, reason) = schedule
+        .gaps
+        .iter()
+        .find(|g| g.first <= preview_hour && preview_hour <= g.last)
+        .map_or_else(
+            || {
+                (
+                    schedule.summary.from_hour.min(preview_hour),
+                    schedule.summary.to_hour.max(preview_hour),
+                    "Not recorded".to_owned(),
+                )
+            },
+            |g| (g.first, g.last, g.reason.clone()),
+        );
+    FrameKind::GapCard {
+        hour: preview_hour,
+        gap_first,
+        gap_last,
+        reason,
+        crossed_gap: None,
+    }
+}
+
+fn step_payload_for_frame(
+    seq: u64,
+    frame_index: u64,
+    virtual_now_ms: f64,
+    kind: &FrameKind,
+    request: &SurfaceVideoRequest,
+    metrics: ViewportMetrics,
+) -> (StepEventPayload, Option<String>, Option<i32>) {
+    let ref_offset = request.reference_offset;
+    match kind {
+        FrameKind::Recorded {
+            hour,
+            fraction,
+            reset_continuity,
+            cut_banner,
+        } => (
+            StepEventPayload {
+                seq,
+                frame_index,
+                virtual_now_ms,
+                mode: "recorded".to_owned(),
+                hour: Some(*hour),
+                fraction: *fraction,
+                reset_continuity: *reset_continuity,
+                date_text: request
+                    .date_stamp
+                    .then(|| format_campaign_date(*hour + ref_offset)),
+                card_heading: None,
+                card_dates: None,
+                card_detail: None,
+                cut_banner: cut_banner.as_ref().map(|c| {
+                    format!(
+                        "Unrecorded gap skipped · {} -> {} ({} h omitted)",
+                        format_campaign_date(c.from_hour + ref_offset),
+                        format_campaign_date(c.to_hour + ref_offset),
+                        c.omitted_hours,
+                    )
+                }),
+                css_width: metrics.css_width,
+                css_height: metrics.css_height,
+                dpr: metrics.dpr,
+                scale: metrics.scale,
+            },
+            None,
+            Some(*hour),
+        ),
+        FrameKind::GapCard {
+            hour,
+            gap_first,
+            gap_last,
+            reason,
+            crossed_gap,
+        } => {
+            let dates = format!(
+                "{}  (gap: {} to {})",
+                format_campaign_date(*hour + ref_offset),
+                format_campaign_date(*gap_first + ref_offset),
+                format_campaign_date(*gap_last + ref_offset),
+            );
+            let detail = match crossed_gap {
+                Some(cut) => format!(
+                    "{reason} · earlier gap skipped: {} -> {} ({} h omitted)",
+                    format_campaign_date(cut.from_hour + ref_offset),
+                    format_campaign_date(cut.to_hour + ref_offset),
+                    cut.omitted_hours,
+                ),
+                None => reason.clone(),
+            };
+            let key = format!("gap:{dates}:{detail}");
+            (
+                StepEventPayload {
+                    seq,
+                    frame_index,
+                    virtual_now_ms,
+                    mode: "card".to_owned(),
+                    hour: Some(*hour),
+                    fraction: 0.0,
+                    reset_continuity: true,
+                    date_text: None,
+                    card_heading: Some("Unrecorded stretch".to_owned()),
+                    card_dates: Some(dates),
+                    card_detail: Some(detail),
+                    cut_banner: None,
+                    css_width: metrics.css_width,
+                    css_height: metrics.css_height,
+                    dpr: metrics.dpr,
+                    scale: metrics.scale,
+                },
+                Some(key),
+                Some(*hour),
+            )
+        }
+        FrameKind::SkipCutCard(cut) => {
+            let dates = format!(
+                "{} -> {}",
+                format_campaign_date(cut.from_hour + ref_offset),
+                format_campaign_date(cut.to_hour + ref_offset),
+            );
+            let detail = format!("{} unrecorded hours omitted · {}", cut.omitted_hours, cut.reason);
+            let key = format!("cut:{dates}:{detail}");
+            (
+                StepEventPayload {
+                    seq,
+                    frame_index,
+                    virtual_now_ms,
+                    mode: "card".to_owned(),
+                    hour: Some(cut.to_hour),
+                    fraction: 0.0,
+                    reset_continuity: true,
+                    date_text: None,
+                    card_heading: Some("Unrecorded gap skipped".to_owned()),
+                    card_dates: Some(dates),
+                    card_detail: Some(detail),
+                    cut_banner: None,
+                    css_width: metrics.css_width,
+                    css_height: metrics.css_height,
+                    dpr: metrics.dpr,
+                    scale: metrics.scale,
+                },
+                Some(key),
+                Some(cut.to_hour),
+            )
+        }
+    }
 }
 
 fn cdp_call(
@@ -766,13 +971,40 @@ fn blit_rgba(
     dst_x: i32,
     dst_y: i32,
 ) {
+    blit_rgba_clipped(dst, dst_w, dst_h, src, src_w, src_h, dst_x, dst_y, None);
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pixel blitter takes source and destination buffers, dimensions, offset, and optional clip rectangle"
+)]
+fn blit_rgba_clipped(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_x: i32,
+    dst_y: i32,
+    clip: Option<ExportClipRect>,
+) {
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
         return;
     }
-    let x0 = dst_x.max(0);
-    let y0 = dst_y.max(0);
-    let x1 = (dst_x + src_w as i32).min(dst_w as i32);
-    let y1 = (dst_y + src_h as i32).min(dst_h as i32);
+    let (cx0, cy0, cx1, cy1) = match clip {
+        Some(rect) => (
+            rect.x.max(0),
+            rect.y.max(0),
+            (rect.x + rect.width as i32).min(dst_w as i32),
+            (rect.y + rect.height as i32).min(dst_h as i32),
+        ),
+        None => (0, 0, dst_w as i32, dst_h as i32),
+    };
+    let x0 = dst_x.max(cx0);
+    let y0 = dst_y.max(cy0);
+    let x1 = (dst_x + src_w as i32).min(cx1);
+    let y1 = (dst_y + src_h as i32).min(cy1);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
@@ -880,10 +1112,38 @@ fn map_request_for_embedded(
     }
 }
 
-fn map_covers_hour(spec: &EmbeddedMapSpec, hour: i32) -> Result<bool, String> {
-    let (stretches, _) =
-        viewer::video_export::branch_schedule_inputs(std::path::Path::new(&spec.path), spec.branch)?;
-    Ok(stretches.iter().any(|s| s.first <= hour && hour <= s.last))
+fn render_embedded_map_still(
+    config: dashboard_core::config::Config,
+    map_req: MapVideoRequest,
+    hour: i32,
+    fps: u32,
+    cancel: &AtomicBool,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let width = map_req.width;
+    let height = map_req.height;
+    let single = build_schedule(
+        &[RecordedStretch {
+            first: hour,
+            last: hour,
+            join: StretchJoin::Start,
+        }],
+        &[],
+        &ScheduleRequest {
+            from_hour: hour,
+            to_hour: hour,
+            fps: fps.max(1),
+            hours_per_second: 1.0,
+            skip_gaps: false,
+            cut_card_seconds: 0.0,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let stream = MapFrameStream::spawn(config, map_req, single)?;
+    let chunk = stream.next_frame(cancel)?;
+    let rgba = chunk
+        .rgba
+        .ok_or_else(|| "Embedded map renderer produced no pixels for this hour".to_owned())?;
+    Ok((width, height, rgba))
 }
 
 enum EmbeddedMapSource {
@@ -912,6 +1172,11 @@ pub fn preview_surface_video(
         .op_lock
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let schedule = build_surface_schedule(&request)?;
+    let first_recorded_hour = schedule
+        .first_recorded()
+        .map_or(request.from_hour, |(hour, _)| hour);
+    let frame_kind = preview_frame_kind(&schedule, preview_hour);
     let window = webview_state.ensure_window(app, &cancel)?;
     let initial = initial_metrics(&request);
     set_device_metrics(&window, initial, &cancel)?;
@@ -935,14 +1200,21 @@ pub fn preview_surface_video(
         hours_per_second: request.hours_per_second,
         date_stamp: request.date_stamp,
         follow_pinned: request.follow_pinned,
-        initial_hour: preview_hour,
+        initial_hour: first_recorded_hour,
         payload: request.payload.clone(),
     };
     window
         .emit(MOUNT_EVENT, mount)
         .map_err(|e| format!("Couldn’t send mount payload to export page: {e}"))?;
-    let mount_ack = webview_state.wait_for_ack(mount_seq, &cancel)?;
+    let mount_ack = match webview_state.wait_for_ack(mount_seq, &cancel) {
+        Ok(ack) => ack,
+        Err(error) => {
+            webview_state.unmount_window(app, &window);
+            return Err(error);
+        }
+    };
     if let Some(error) = mount_ack.error {
+        webview_state.unmount_window(app, &window);
         return Err(error);
     }
 
@@ -952,86 +1224,83 @@ pub fn preview_surface_video(
         mount_ack.content_width,
         mount_ack.content_height,
     );
+    let mut viewport_clip = mount_ack.viewport_clip;
     if metrics.css_width != initial.css_width
         || metrics.css_height != initial.css_height
         || (metrics.dpr - initial.dpr).abs() > 1e-4
         || (metrics.scale - initial.scale).abs() > 1e-4
     {
-        set_device_metrics(&window, metrics, &cancel)?;
-        let metrics_seq = webview_state.next_seq();
-        window
-            .emit(
-                METRICS_EVENT,
-                MetricsEventPayload {
-                    seq: metrics_seq,
-                    css_width: metrics.css_width,
-                    css_height: metrics.css_height,
-                    dpr: metrics.dpr,
-                    scale: metrics.scale,
-                },
-            )
-            .map_err(|e| format!("Couldn’t apply export viewport metrics: {e}"))?;
-        let metrics_ack = webview_state.wait_for_ack(metrics_seq, &cancel)?;
-        if let Some(error) = metrics_ack.error {
-            webview_state.unmount_window(&window);
+        if let Err(error) = set_device_metrics(&window, metrics, &cancel) {
+            webview_state.unmount_window(app, &window);
             return Err(error);
+        }
+        let metrics_seq = webview_state.next_seq();
+        if let Err(e) = window.emit(
+            METRICS_EVENT,
+            MetricsEventPayload {
+                seq: metrics_seq,
+                css_width: metrics.css_width,
+                css_height: metrics.css_height,
+                dpr: metrics.dpr,
+                scale: metrics.scale,
+            },
+        ) {
+            webview_state.unmount_window(app, &window);
+            return Err(format!("Couldn’t apply export viewport metrics: {e}"));
+        }
+        let metrics_ack = match webview_state.wait_for_ack(metrics_seq, &cancel) {
+            Ok(ack) => ack,
+            Err(error) => {
+                webview_state.unmount_window(app, &window);
+                return Err(error);
+            }
+        };
+        if let Some(error) = metrics_ack.error {
+            webview_state.unmount_window(app, &window);
+            return Err(error);
+        }
+        if metrics_ack.viewport_clip.is_some() {
+            viewport_clip = metrics_ack.viewport_clip;
         }
     }
 
     let step_seq = webview_state.next_seq();
-    let step = StepEventPayload {
-        seq: step_seq,
-        frame_index: 0,
-        virtual_now_ms: 0.0,
-        mode: "recorded".to_owned(),
-        hour: Some(preview_hour),
-        fraction: 0.0,
-        reset_continuity: true,
-        date_text: request
-            .date_stamp
-            .then(|| format_campaign_date(preview_hour + request.reference_offset)),
-        card_heading: None,
-        card_dates: None,
-        card_detail: None,
-        cut_banner: None,
-        css_width: metrics.css_width,
-        css_height: metrics.css_height,
-        dpr: metrics.dpr,
-        scale: metrics.scale,
-    };
-    window
-        .emit(STEP_EVENT, step)
-        .map_err(|e| {
-            webview_state.unmount_window(&window);
-            format!("Couldn’t step export page for preview: {e}")
-        })?;
+    let (step, card_key, _) =
+        step_payload_for_frame(step_seq, 0, 0.0, &frame_kind, &request, metrics);
+    window.emit(STEP_EVENT, step).map_err(|e| {
+        webview_state.unmount_window(app, &window);
+        format!("Couldn’t step export page for preview: {e}")
+    })?;
     let step_ack = match webview_state.wait_for_ack(step_seq, &cancel) {
         Ok(ack) => ack,
         Err(error) => {
-            webview_state.unmount_window(&window);
+            webview_state.unmount_window(app, &window);
             return Err(error);
         }
     };
     if let Some(error) = step_ack.error {
-        webview_state.unmount_window(&window);
+        webview_state.unmount_window(app, &window);
         return Err(error);
+    }
+    if step_ack.viewport_clip.is_some() {
+        viewport_clip = step_ack.viewport_clip;
     }
 
     let (png_base64, png_bytes) = match capture_screenshot_png(&window, metrics, &cancel) {
         Ok(pair) => pair,
         Err(error) => {
-            webview_state.unmount_window(&window);
+            webview_state.unmount_window(app, &window);
             return Err(error);
         }
     };
     let mut final_base64 = png_base64;
     let bg_rgb = step_ack.bg_rgb.or(mount_ack.bg_rgb).unwrap_or([15, 19, 26]);
 
-    if !step_ack.map_rects.is_empty() && !request.embedded_maps.is_empty() {
+    if card_key.is_none() && !step_ack.map_rects.is_empty() && !request.embedded_maps.is_empty() {
         let (src_w, src_h, raw_rgba) = match decode_png_rgba(&png_bytes) {
             Ok(decoded) => decoded,
             Err(error) => {
-                webview_state.unmount_window(&window);
+                webview_state.unmount_window(app, &window);
                 return Err(error);
             }
         };
@@ -1054,44 +1323,24 @@ pub fn preview_surface_video(
                 let Some(map_hour) = map_hour else {
                     continue;
                 };
-                match map_covers_hour(spec, map_hour) {
-                    Ok(false) => continue,
-                    Ok(true) => {}
-                    Err(error) => {
-                        webview_state.unmount_window(&window);
-                        return Err(format!(
-                            "Couldn’t preview embedded map “{}”: {error}",
-                            spec.display_name()
-                        ));
-                    }
-                }
                 let map_req = map_request_for_embedded(spec, rect, &request, false);
-                let map_png = match viewer::video_export::render_map_video_preview(
+                let (mw, mh, mrgba) = match render_embedded_map_still(
                     config.clone(),
                     map_req,
                     map_hour,
-                    Arc::clone(&cancel),
+                    request.fps,
+                    &cancel,
                 ) {
-                    Ok(png) => png,
+                    Ok(rendered) => rendered,
                     Err(error) => {
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(app, &window);
                         return Err(format!(
                             "Couldn’t preview embedded map “{}”: {error}",
                             spec.display_name()
                         ));
                     }
                 };
-                let (mw, mh, mrgba) = match decode_png_rgba(&map_png) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        webview_state.unmount_window(&window);
-                        return Err(format!(
-                            "Couldn’t decode preview for embedded map “{}”: {error}",
-                            spec.display_name()
-                        ));
-                    }
-                };
-                blit_rgba(
+                blit_rgba_clipped(
                     &mut rgba,
                     request.width,
                     request.height,
@@ -1100,6 +1349,7 @@ pub fn preview_surface_video(
                     mh,
                     rect.x,
                     rect.y,
+                    viewport_clip,
                 );
             }
         }
@@ -1107,14 +1357,14 @@ pub fn preview_surface_video(
         let composited = match encode_rgba_png(&rgba, request.width, request.height) {
             Ok(bytes) => bytes,
             Err(error) => {
-                webview_state.unmount_window(&window);
+                webview_state.unmount_window(app, &window);
                 return Err(error);
             }
         };
         final_base64 = encode_base64(&composited);
     }
 
-    webview_state.unmount_window(&window);
+    webview_state.unmount_window(app, &window);
     Ok(SurfacePreviewResult {
         png_base64: final_base64,
         min_text_px: step_ack.min_text_px.or(mount_ack.min_text_px),
@@ -1186,7 +1436,7 @@ pub fn run_surface_video_export(
 
     let initial = initial_metrics(&request);
     if let Err(error) = set_device_metrics(&window, initial, &cancel) {
-        let _ = window.emit(UNMOUNT_EVENT, ());
+        webview_state.unmount_window(&app, &window);
         return if cancel.load(Ordering::Acquire) || error == "cancelled" {
             MapVideoOutcome::Cancelled
         } else {
@@ -1221,6 +1471,7 @@ pub fn run_surface_video_export(
         payload: request.payload.clone(),
     };
     if let Err(e) = window.emit(MOUNT_EVENT, mount) {
+        webview_state.unmount_window(&app, &window);
         return MapVideoOutcome::Failed {
             error: format!("Couldn’t mount export page: {e}"),
             campaign_hour: None,
@@ -1230,7 +1481,7 @@ pub fn run_surface_video_export(
     let mount_ack = match webview_state.wait_for_ack(mount_seq, &cancel) {
         Ok(ack) => ack,
         Err(error) => {
-            let _ = window.emit(UNMOUNT_EVENT, ());
+            webview_state.unmount_window(&app, &window);
             return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                 MapVideoOutcome::Cancelled
             } else {
@@ -1243,7 +1494,7 @@ pub fn run_surface_video_export(
         }
     };
     if let Some(error) = mount_ack.error {
-        let _ = window.emit(UNMOUNT_EVENT, ());
+        webview_state.unmount_window(&app, &window);
         return MapVideoOutcome::Failed {
             error,
             campaign_hour: None,
@@ -1258,13 +1509,14 @@ pub fn run_surface_video_export(
         mount_ack.content_height,
     );
     let mut final_map_rects = mount_ack.map_rects;
+    let mut viewport_clip = mount_ack.viewport_clip;
     if metrics.css_width != initial.css_width
         || metrics.css_height != initial.css_height
         || (metrics.dpr - initial.dpr).abs() > 1e-4
         || (metrics.scale - initial.scale).abs() > 1e-4
     {
         if let Err(error) = set_device_metrics(&window, metrics, &cancel) {
-            let _ = window.emit(UNMOUNT_EVENT, ());
+            webview_state.unmount_window(&app, &window);
             return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                 MapVideoOutcome::Cancelled
             } else {
@@ -1286,7 +1538,7 @@ pub fn run_surface_video_export(
                 scale: metrics.scale,
             },
         ) {
-            let _ = window.emit(UNMOUNT_EVENT, ());
+            webview_state.unmount_window(&app, &window);
             return MapVideoOutcome::Failed {
                 error: format!("Couldn’t apply export viewport metrics: {e}"),
                 campaign_hour: None,
@@ -1296,7 +1548,7 @@ pub fn run_surface_video_export(
         match webview_state.wait_for_ack(metrics_seq, &cancel) {
             Ok(ack) => {
                 if let Some(error) = ack.error {
-                    let _ = window.emit(UNMOUNT_EVENT, ());
+                    webview_state.unmount_window(&app, &window);
                     return MapVideoOutcome::Failed {
                         error,
                         campaign_hour: None,
@@ -1304,9 +1556,12 @@ pub fn run_surface_video_export(
                     };
                 }
                 final_map_rects = ack.map_rects;
+                if ack.viewport_clip.is_some() {
+                    viewport_clip = ack.viewport_clip;
+                }
             }
             Err(error) => {
-                let _ = window.emit(UNMOUNT_EVENT, ());
+                webview_state.unmount_window(&app, &window);
                 return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                     MapVideoOutcome::Cancelled
                 } else {
@@ -1345,27 +1600,14 @@ pub fn run_surface_video_export(
                 let Some(fixed) = spec.fixed_hour else {
                     continue;
                 };
-                match map_covers_hour(spec, fixed) {
-                    Ok(false) => continue,
-                    Ok(true) => {}
-                    Err(error) => {
-                        webview_state.unmount_window(&window);
-                        return MapVideoOutcome::Failed {
-                            error: format!("Couldn’t inspect embedded map “{}”: {error}", spec.display_name()),
-                            campaign_hour: Some(fixed),
-                            partial: None,
-                        };
-                    }
-                }
                 let map_req = map_request_for_embedded(spec, rect, &request, false);
-                match viewer::video_export::render_map_video_preview(
+                match render_embedded_map_still(
                     config.clone(),
                     map_req,
                     fixed,
-                    Arc::clone(&cancel),
-                )
-                .and_then(|png| decode_png_rgba(&png))
-                {
+                    request.fps,
+                    &cancel,
+                ) {
                     Ok((mw, mh, rgba)) => map_sources.push(EmbeddedMapSource::Static {
                         rect: rect.clone(),
                         rgba,
@@ -1373,11 +1615,18 @@ pub fn run_surface_video_export(
                         height: mh,
                     }),
                     Err(error) => {
-                        webview_state.unmount_window(&window);
-                        return MapVideoOutcome::Failed {
-                            error,
-                            campaign_hour: Some(fixed),
-                            partial: None,
+                        webview_state.unmount_window(&app, &window);
+                        return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                            MapVideoOutcome::Cancelled
+                        } else {
+                            MapVideoOutcome::Failed {
+                                error: format!(
+                                    "Couldn’t render embedded map “{}”: {error}",
+                                    spec.display_name()
+                                ),
+                                campaign_hour: Some(fixed),
+                                partial: None,
+                            }
                         };
                     }
                 }
@@ -1396,7 +1645,7 @@ pub fn run_surface_video_export(
                         });
                     }
                     Err(error) => {
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         return MapVideoOutcome::Failed {
                             error,
                             campaign_hour: None,
@@ -1412,7 +1661,8 @@ pub fn run_surface_video_export(
     let mut sink = match video_export::open(&video_config, audio_cfg, &staged_path) {
         Ok(s) => s,
         Err(error) => {
-            let _ = window.emit(UNMOUNT_EVENT, ());
+            drop(map_sources);
+            webview_state.unmount_window(&app, &window);
             return MapVideoOutcome::Failed {
                 error: error.to_string(),
                 campaign_hour: None,
@@ -1458,12 +1708,24 @@ pub fn run_surface_video_export(
                             error: String,
                             last_hour: Option<i32>|
      -> MapVideoOutcome {
+        if cancel.load(Ordering::Acquire) {
+            sink.abort();
+            return MapVideoOutcome::Cancelled;
+        }
         let written = sink.frames_written();
         let partial = if written > 0 {
             match sink.finish_cancellable(&cancel) {
                 Ok(finished) => {
+                    if cancel.load(Ordering::Acquire) {
+                        let _ = std::fs::remove_file(&finished.path);
+                        return MapVideoOutcome::Cancelled;
+                    }
                     let playable = video_export::mp4_boxes::inspect_mp4(&finished.path)
                         .is_ok_and(|summary| summary.has_avc1);
+                    if cancel.load(Ordering::Acquire) {
+                        let _ = std::fs::remove_file(&finished.path);
+                        return MapVideoOutcome::Cancelled;
+                    }
                     if playable {
                         Some(PartialVideo {
                             staged_path: finished.path,
@@ -1476,6 +1738,13 @@ pub fn run_surface_video_export(
                         let _ = std::fs::remove_file(&finished.path);
                         None
                     }
+                }
+                Err(finish_err)
+                    if finish_err.kind() == std::io::ErrorKind::Interrupted
+                        || cancel.load(Ordering::Acquire) =>
+                {
+                    let _ = std::fs::remove_file(&staged_path);
+                    return MapVideoOutcome::Cancelled;
                 }
                 Err(_) => {
                     let _ = std::fs::remove_file(&staged_path);
@@ -1493,131 +1762,23 @@ pub fn run_surface_video_export(
         }
     };
 
-    let ref_offset = request.reference_offset;
     for scheduled in schedule.cursor() {
         if cancel.load(Ordering::Acquire) {
             drop(map_sources);
             sink.abort();
-            webview_state.unmount_window(&window);
+            webview_state.unmount_window(&app, &window);
             webview_state.close_window(&app);
             return MapVideoOutcome::Cancelled;
         }
         let virtual_now_ms = (scheduled.frame_index as f64 * 1000.0) / f64::from(schedule.fps);
-        let (step_payload, card_key, frame_hour) = match &scheduled.kind {
-            FrameKind::Recorded {
-                hour,
-                fraction,
-                reset_continuity,
-                cut_banner,
-            } => (
-                StepEventPayload {
-                    seq: webview_state.next_seq(),
-                    frame_index: scheduled.frame_index,
-                    virtual_now_ms,
-                    mode: "recorded".to_owned(),
-                    hour: Some(*hour),
-                    fraction: *fraction,
-                    reset_continuity: *reset_continuity,
-                    date_text: request
-                        .date_stamp
-                        .then(|| format_campaign_date(*hour + ref_offset)),
-                    card_heading: None,
-                    card_dates: None,
-                    card_detail: None,
-                    cut_banner: cut_banner.as_ref().map(|c| {
-                        format!(
-                            "Unrecorded gap skipped · {} -> {} ({} h omitted)",
-                            format_campaign_date(c.from_hour + ref_offset),
-                            format_campaign_date(c.to_hour + ref_offset),
-                            c.omitted_hours,
-                        )
-                    }),
-                    css_width: metrics.css_width,
-                    css_height: metrics.css_height,
-                    dpr: metrics.dpr,
-                    scale: metrics.scale,
-                },
-                None,
-                Some(*hour),
-            ),
-            FrameKind::GapCard {
-                hour,
-                gap_first,
-                gap_last,
-                reason,
-                crossed_gap,
-            } => {
-                let dates = format!(
-                    "{}  (gap: {} to {})",
-                    format_campaign_date(*hour + ref_offset),
-                    format_campaign_date(*gap_first + ref_offset),
-                    format_campaign_date(*gap_last + ref_offset),
-                );
-                let detail = match crossed_gap {
-                    Some(cut) => format!(
-                        "{reason} · earlier gap skipped: {} -> {} ({} h omitted)",
-                        format_campaign_date(cut.from_hour + ref_offset),
-                        format_campaign_date(cut.to_hour + ref_offset),
-                        cut.omitted_hours,
-                    ),
-                    None => reason.clone(),
-                };
-                let key = format!("gap:{dates}:{detail}");
-                (
-                    StepEventPayload {
-                        seq: webview_state.next_seq(),
-                        frame_index: scheduled.frame_index,
-                        virtual_now_ms,
-                        mode: "card".to_owned(),
-                        hour: Some(*hour),
-                        fraction: 0.0,
-                        reset_continuity: true,
-                        date_text: None,
-                        card_heading: Some("Unrecorded stretch".to_owned()),
-                        card_dates: Some(dates),
-                        card_detail: Some(detail),
-                        cut_banner: None,
-                        css_width: metrics.css_width,
-                        css_height: metrics.css_height,
-                        dpr: metrics.dpr,
-                        scale: metrics.scale,
-                    },
-                    Some(key),
-                    Some(*hour),
-                )
-            }
-            FrameKind::SkipCutCard(cut) => {
-                let dates = format!(
-                    "{} -> {}",
-                    format_campaign_date(cut.from_hour + ref_offset),
-                    format_campaign_date(cut.to_hour + ref_offset),
-                );
-                let detail = format!("{} unrecorded hours omitted · {}", cut.omitted_hours, cut.reason);
-                let key = format!("cut:{dates}:{detail}");
-                (
-                    StepEventPayload {
-                        seq: webview_state.next_seq(),
-                        frame_index: scheduled.frame_index,
-                        virtual_now_ms,
-                        mode: "card".to_owned(),
-                        hour: Some(cut.to_hour),
-                        fraction: 0.0,
-                        reset_continuity: true,
-                        date_text: None,
-                        card_heading: Some("Unrecorded gap skipped".to_owned()),
-                        card_dates: Some(dates),
-                        card_detail: Some(detail),
-                        cut_banner: None,
-                        css_width: metrics.css_width,
-                        css_height: metrics.css_height,
-                        dpr: metrics.dpr,
-                        scale: metrics.scale,
-                    },
-                    Some(key),
-                    Some(cut.to_hour),
-                )
-            }
-        };
+        let (step_payload, card_key, frame_hour) = step_payload_for_frame(
+            webview_state.next_seq(),
+            scheduled.frame_index,
+            virtual_now_ms,
+            &scheduled.kind,
+            &request,
+            metrics,
+        );
 
         let mut frame_audio: Option<Vec<i16>> = None;
         let mut embedded_frames: Vec<(ExportMapRect, Vec<u8>, u32, u32)> = Vec::new();
@@ -1640,7 +1801,7 @@ pub fn run_surface_video_export(
                     }
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                             sink.abort();
@@ -1670,7 +1831,7 @@ pub fn run_surface_video_export(
                 let seq = step_payload.seq;
                 if let Err(e) = window.emit(STEP_EVENT, step_payload) {
                     drop(map_sources);
-                    webview_state.unmount_window(&window);
+                    webview_state.unmount_window(&app, &window);
                     webview_state.close_window(&app);
                     return finalize_partial(sink, format!("Couldn’t step export card: {e}"), last_recorded_hour);
                 }
@@ -1682,7 +1843,7 @@ pub fn run_surface_video_export(
                     }
                     Ok(ack) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return finalize_partial(
                             sink,
@@ -1692,7 +1853,7 @@ pub fn run_surface_video_export(
                     }
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                             sink.abort();
@@ -1706,7 +1867,7 @@ pub fn run_surface_video_export(
                     Ok(pair) => pair,
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                             sink.abort();
@@ -1720,7 +1881,7 @@ pub fn run_surface_video_export(
                     Ok(v) => v,
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return finalize_partial(sink, error, last_recorded_hour);
                     }
@@ -1733,7 +1894,7 @@ pub fn run_surface_video_export(
             let seq = step_payload.seq;
             if let Err(e) = window.emit(STEP_EVENT, step_payload) {
                 drop(map_sources);
-                webview_state.unmount_window(&window);
+                webview_state.unmount_window(&app, &window);
                 webview_state.close_window(&app);
                 return finalize_partial(sink, format!("Couldn’t step export page: {e}"), last_recorded_hour);
             }
@@ -1741,7 +1902,7 @@ pub fn run_surface_video_export(
                 Ok(ack) => ack,
                 Err(error) => {
                     drop(map_sources);
-                    webview_state.unmount_window(&window);
+                    webview_state.unmount_window(&app, &window);
                     webview_state.close_window(&app);
                     return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                         sink.abort();
@@ -1753,12 +1914,15 @@ pub fn run_surface_video_export(
             };
             if let Some(error) = ack.error {
                 drop(map_sources);
-                webview_state.unmount_window(&window);
+                webview_state.unmount_window(&app, &window);
                 webview_state.close_window(&app);
                 return finalize_partial(sink, error, last_recorded_hour);
             }
             if let Some(rgb) = ack.bg_rgb {
                 bg_rgb = rgb;
+            }
+            if ack.viewport_clip.is_some() {
+                viewport_clip = ack.viewport_clip;
             }
             if !ack.dirty
                 && let Some((cached, cached_overlays)) = &cached_page_rgba
@@ -1769,7 +1933,7 @@ pub fn run_surface_video_export(
                     Ok(pair) => pair,
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return if cancel.load(Ordering::Acquire) || error == "cancelled" {
                             sink.abort();
@@ -1783,7 +1947,7 @@ pub fn run_surface_video_export(
                     Ok(v) => v,
                     Err(error) => {
                         drop(map_sources);
-                        webview_state.unmount_window(&window);
+                        webview_state.unmount_window(&app, &window);
                         webview_state.close_window(&app);
                         return finalize_partial(sink, error, last_recorded_hour);
                     }
@@ -1799,7 +1963,7 @@ pub fn run_surface_video_export(
                 let overlay_patches =
                     save_overlay_patches(&frame_rgba, request.width, request.height, &frame_overlay_rects);
                 for (rect, mrgba, mw, mh) in &embedded_frames {
-                    blit_rgba(
+                    blit_rgba_clipped(
                         &mut frame_rgba,
                         request.width,
                         request.height,
@@ -1808,6 +1972,7 @@ pub fn run_surface_video_export(
                         *mh,
                         rect.x,
                         rect.y,
+                        viewport_clip,
                     );
                 }
                 restore_overlay_patches(&mut frame_rgba, request.width, request.height, &overlay_patches);
@@ -1817,7 +1982,7 @@ pub fn run_surface_video_export(
 
         if let Err(error) = sink.push_video_rgba(&frame_rgba) {
             drop(map_sources);
-            webview_state.unmount_window(&window);
+            webview_state.unmount_window(&app, &window);
             webview_state.close_window(&app);
             sink.abort();
             return MapVideoOutcome::Failed {
@@ -1831,7 +1996,7 @@ pub fn run_surface_video_export(
                 .unwrap_or_else(|| vec![0i16; scheduled.audio_frames * 2]);
             if let Err(error) = sink.push_audio_stereo_i16(&samples) {
                 drop(map_sources);
-                webview_state.unmount_window(&window);
+                webview_state.unmount_window(&app, &window);
                 webview_state.close_window(&app);
                 sink.abort();
                 return MapVideoOutcome::Failed {
@@ -1852,7 +2017,7 @@ pub fn run_surface_video_export(
 
     emit_progress("finalizing", total_frames, last_recorded_hour, &mut last_progress, true);
     drop(map_sources);
-    webview_state.unmount_window(&window);
+    webview_state.unmount_window(&app, &window);
     webview_state.close_window(&app);
 
     if cancel.load(Ordering::Acquire) {
@@ -1908,6 +2073,27 @@ mod tests {
         let idx = (3 * 4 + 3) * 4;
         assert_eq!(&dst[idx..idx + 4], &[255, 255, 255, 255]);
         assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_rgba_clipped_confines_pixels_to_visible_viewport_clip() {
+        let mut dst = vec![0u8; 6 * 6 * 4];
+        let mut src = vec![0u8; 4 * 4 * 4];
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = (y * 4 + x) * 4;
+                src[p] = (x as u8 + 1) * 10;
+                src[p + 1] = (y as u8 + 1) * 20;
+                src[p + 2] = 77;
+                src[p + 3] = 255;
+            }
+        }
+        let clip = ExportClipRect { x: 1, y: 1, width: 3, height: 2 };
+        blit_rgba_clipped(&mut dst, 6, 6, &src, 4, 4, 2, 2, Some(clip));
+        assert_eq!(&dst[(2 * 6 + 2) * 4..(2 * 6 + 2) * 4 + 4], &[10, 20, 77, 255]);
+        assert_eq!(&dst[(2 * 6 + 3) * 4..(2 * 6 + 3) * 4 + 4], &[20, 20, 77, 255]);
+        assert_eq!(&dst[(2 * 6 + 4) * 4..(2 * 6 + 4) * 4 + 4], &[0, 0, 0, 0]);
+        assert_eq!(&dst[(3 * 6 + 2) * 4..(3 * 6 + 2) * 4 + 4], &[0, 0, 0, 0]);
     }
 
     #[test]

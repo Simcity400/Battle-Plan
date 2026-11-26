@@ -42,7 +42,7 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
     return (
       <div
         className="dash-map-widget is-export-slot"
-        data-export-map-id={desired ? widget.id : undefined}
+        data-export-map-id={track ? widget.id : undefined}
       >
         <div className="dash-map-surface" ref={body}>
           {!desired && (

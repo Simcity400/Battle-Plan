@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { nativeDashboardClient } from '../dashboard/nativeClient';
 import { bindTracks, clockBounds, resolveWindow, type DashboardTemplate, type WidgetSpec } from '../dashboard/model';
-import { includeCampaigns } from '../dashboard/campaigns';
+import { includeCampaigns, resolveWidgetCampaign } from '../dashboard/campaigns';
 import { PlaybackController } from '../dashboard/playback';
 import { MapViewsStore } from '../dashboard/geometry';
 import { widgetDefinition } from '../dashboard/definitions';
@@ -14,12 +14,12 @@ import { WidgetBody } from '../dashboard/widgets';
 import { WidgetFrameContext, widgetWording, type WidgetFrameValue } from '../dashboard/widgetFrame';
 import { HeldFailures, HeldFailuresContext } from '../dashboard/heldFailures';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from '../dashboard/follow/store';
-import { loadedWidgetRenderer, preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { LiveMotion } from '../charts/liveMotion';
 import { useAppearance } from '../shell/appearance/useAppearance';
 import { useWidgetIconMenu, WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import { ExportSurfaceContext, type ExportWidgetStatus } from './exportMotion';
-import { sendVideoExportPageAck, type ExportMapRect } from './videoExportApi';
+import { sendVideoExportPageAck, type ExportClipRect, type ExportMapRect } from './videoExportApi';
 import { exportGlideDurationMs } from './videoExportModel';
 import type { LaneMotion } from '../families/laneRuntime';
 import '../widgets';
@@ -165,17 +165,22 @@ function measureMinTextPx(root: HTMLElement | null, pixelFactor: number): number
     }
     inspected += 1;
   }
-  const canvases = root.querySelectorAll<HTMLCanvasElement>('.dash-widget canvas');
-  for (const canvas of canvases) {
-    const box = canvas.getBoundingClientRect();
-    if (box.width <= 0 || box.height <= 0) continue;
-    const zoom = ancestorZoom(canvas, root);
-    minSize = Math.min(minSize, 11 * zoom * pixelFactor);
-  }
   if (!Number.isFinite(minSize)) {
     return null;
   }
   return Math.round(minSize * 10) / 10;
+}
+
+function measureViewportClip(root: HTMLElement | null, dpr: number): ExportClipRect | null {
+  if (!root) return null;
+  const clipEl = root.querySelector<HTMLElement>('.export-visible-clip');
+  if (!clipEl) return null;
+  const box = clipEl.getBoundingClientRect();
+  const x = Math.round(box.left * dpr);
+  const y = Math.round(box.top * dpr);
+  const width = Math.max(0, Math.round(box.width * dpr));
+  const height = Math.max(0, Math.round(box.height * dpr));
+  return { x, y, width, height };
 }
 
 function measureBgRgb(root: HTMLElement | null): [number, number, number] | null {
@@ -252,7 +257,11 @@ function SingleWidgetCard({
   const [failures] = useState(() => new HeldFailures());
   const definition = widgetDefinition(widget.kind);
   const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
-  const campaignTrack = runtime.tracks.find(track => track.id === widget.trackIds[0]) ?? runtime.tracks[0];
+  const resolvedWidget = useMemo(
+    () => resolveWidgetCampaign(widget, template, runtime.defaultRoleId),
+    [widget, template, runtime.defaultRoleId],
+  );
+  const campaignTrack = runtime.tracks.find(track => track.id === resolvedWidget.trackIds[0]) ?? runtime.tracks[0];
   const frameValue = useMemo<WidgetFrameValue>(
     () => ({
       title: widget.title,
@@ -350,8 +359,13 @@ export default function ExportPresentationApp() {
   const expectedFamilyIdsRef = useRef<string[]>([]);
   const widgetStatusesRef = useRef(new Map<string, ExportWidgetStatus>());
   const statusWaitersRef = useRef(new Set<() => void>());
+  const opGenRef = useRef(0);
   const lastSignatureRef = useRef<string>('');
   const lastModeRef = useRef<'recorded' | 'card'>('card');
+
+  const wakeWaiters = useCallback(() => {
+    for (const wake of [...statusWaitersRef.current]) wake();
+  }, []);
 
   const releaseOpenedSources = useCallback(async () => {
     const ids = openedSourcesRef.current.splice(0, openedSourcesRef.current.length);
@@ -363,13 +377,14 @@ export default function ExportPresentationApp() {
   const reportWidget = useCallback((key: string, status: ExportWidgetStatus | null) => {
     if (status === null) widgetStatusesRef.current.delete(key);
     else widgetStatusesRef.current.set(key, status);
-    for (const wake of [...statusWaitersRef.current]) wake();
-  }, []);
+    wakeWaiters();
+  }, [wakeWaiters]);
 
   const waitForWidgetsSettled = useCallback(
     async (
       expectedBindings: Map<string, number>,
       expectedTargets: Map<string, number | null>,
+      opGen: number,
       timeoutMs = 15000,
     ) => {
       const start = performance.now();
@@ -393,6 +408,21 @@ export default function ExportPresentationApp() {
             missing.push(`${key}:reading`);
             continue;
           }
+          if (status.mode === 'unavailable' || status.mode === 'failed' || status.mode === 'refused') {
+            continue;
+          }
+          const expectedHour = expectedTargets.get(status.widgetId);
+          if (status.mode === 'outside') {
+            if (
+              expectedHour !== undefined &&
+              expectedHour !== null &&
+              status.target !== null &&
+              status.target !== expectedHour
+            ) {
+              missing.push(`${key}:hour(${status.target}!=${expectedHour})`);
+            }
+            continue;
+          }
           const minBinding = expectedBindings.get(key) ?? 0;
           if (status.binding > 0 && status.installedBinding < Math.max(status.binding, minBinding)) {
             missing.push(`${key}:binding(${status.installedBinding}<${Math.max(status.binding, minBinding)})`);
@@ -402,7 +432,6 @@ export default function ExportPresentationApp() {
             missing.push(`${key}:expired`);
             continue;
           }
-          const expectedHour = expectedTargets.get(status.widgetId);
           if (
             expectedHour !== undefined &&
             expectedHour !== null &&
@@ -420,6 +449,9 @@ export default function ExportPresentationApp() {
         return missing;
       };
       while (performance.now() - start < timeoutMs) {
+        if (opGenRef.current !== opGen) {
+          throw new Error('cancelled');
+        }
         const allowArtTimeout = performance.now() - start >= artBudgetMs;
         if (unsettled(allowArtTimeout).length === 0) return;
         await new Promise<void>(resolve => {
@@ -434,6 +466,9 @@ export default function ExportPresentationApp() {
           };
           statusWaitersRef.current.add(done);
         });
+      }
+      if (opGenRef.current !== opGen) {
+        throw new Error('cancelled');
       }
       const remaining = unsettled(true);
       if (remaining.length > 0) {
@@ -472,21 +507,28 @@ export default function ExportPresentationApp() {
       if (clockHour === null) return map;
       const bound = bindTracks(curSession.template, curSession.sources, curSession.selectedBranches);
       const widgets = curSession.kind === 'widget' && curSession.widget ? [curSession.widget] : curSession.template.widgets;
-      for (const widget of widgets) {
-        const track = bound.find(t => t.id === widget.trackIds[0]) ?? bound[0];
-        if (!track) continue;
+      for (const rawWidget of widgets) {
+        const widget = resolveWidgetCampaign(rawWidget, curSession.template, curSession.defaultRoleId);
+        const track = bound.find(t => t.id === widget.trackIds[0]);
+        if (!track) {
+          map.set(widget.id, null);
+          continue;
+        }
         const win = resolveWindow(widget, track, bound, clockHour);
-        map.set(widget.id, win ? Math.floor(win.lastHour) : null);
+        const inBranch = win !== null && win.lastHour >= track.branch.firstHour && win.lastHour <= track.branch.lastHour;
+        map.set(widget.id, inBranch ? Math.floor(win.lastHour) : null);
       }
       return map;
     };
 
     const handleMount = async (payload: MountPayload) => {
+      const opGen = ++opGenRef.current;
       const openedThisMount: string[] = [];
       try {
         setSession(null);
         await nextAnimationFrames(1);
         await releaseOpenedSources();
+        if (opGenRef.current !== opGen) throw new Error('cancelled');
         widgetStatusesRef.current.clear();
         expectedFamilyIdsRef.current = [];
         lastSignatureRef.current = '';
@@ -494,6 +536,7 @@ export default function ExportPresentationApp() {
         const data = payload.payload;
         const openedSources = new Map<string, DashboardSource>();
         for (const campaign of data.campaigns) {
+          if (opGenRef.current !== opGen) throw new Error('cancelled');
           const source = await nativeDashboardClient.openSource(campaign.path, new AbortController().signal);
           openedThisMount.push(source.id);
           openedSources.set(campaign.id, source);
@@ -517,16 +560,21 @@ export default function ExportPresentationApp() {
               : data.widget)
           : null;
         const activeWidgets = targetWidget ? [targetWidget] : template.widgets;
-        const kinds = [...new Set(activeWidgets.map(w => w.kind))];
-        await preloadWidgetRenderers(kinds);
-        expectedFamilyIdsRef.current = activeWidgets
-          .filter(w => {
-            if (w.kind === 'map') return false;
+        const loadedRenderers = await Promise.all(
+          activeWidgets.map(async w => {
+            if (w.kind === 'map') return { id: w.id, isFamily: false };
             const viewOpt = typeof w.options?.view === 'string' ? w.options.view : undefined;
-            const renderer = loadedWidgetRenderer(w.kind, viewOpt) ?? loadedWidgetRenderer(w.kind);
-            return Boolean(renderer && 'declaration' in renderer && renderer.declaration);
-          })
-          .map(w => w.id);
+            const renderer =
+              (viewOpt !== undefined ? await loadWidgetRenderer(w.kind, viewOpt) : undefined) ??
+              (await loadWidgetRenderer(w.kind));
+            return {
+              id: w.id,
+              isFamily: Boolean(renderer && 'declaration' in renderer && renderer.declaration),
+            };
+          }),
+        );
+        if (opGenRef.current !== opGen) throw new Error('cancelled');
+        expectedFamilyIdsRef.current = loadedRenderers.filter(r => r.isFamily).map(r => r.id);
         const tracks = bindTracks(template, openedSources, data.selectedBranches);
         clock.setBounds(clockBounds(tracks), true);
         clock.stepExport(payload.initialHour, payload.hoursPerSecond, true);
@@ -569,7 +617,7 @@ export default function ExportPresentationApp() {
         });
         setSession(nextSession);
         await nextAnimationFrames(4);
-        await waitForWidgetsSettled(new Map(), expectedTargetsFor(nextSession, payload.initialHour), 15000);
+        await waitForWidgetsSettled(new Map(), expectedTargetsFor(nextSession, payload.initialHour), opGen, 15000);
         await nextAnimationFrames(2);
         const contentNode = contentRef.current;
         const contentWidth = contentNode ? contentNode.scrollWidth : payload.cssWidth;
@@ -584,6 +632,7 @@ export default function ExportPresentationApp() {
           minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
           mapRects: measureMapRects(rootRef.current, payload.dpr),
           overlayRects: measureOverlayRects(rootRef.current, payload.dpr),
+          viewportClip: measureViewportClip(rootRef.current, payload.dpr),
           bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
@@ -603,6 +652,7 @@ export default function ExportPresentationApp() {
           minTextPx: null,
           mapRects: [],
           overlayRects: [],
+          viewportClip: null,
           bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
@@ -633,6 +683,7 @@ export default function ExportPresentationApp() {
           minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
           mapRects: measureMapRects(rootRef.current, payload.dpr),
           overlayRects: measureOverlayRects(rootRef.current, payload.dpr),
+          viewportClip: measureViewportClip(rootRef.current, payload.dpr),
           bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
@@ -646,6 +697,7 @@ export default function ExportPresentationApp() {
           minTextPx: null,
           mapRects: [],
           overlayRects: [],
+          viewportClip: null,
           bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
@@ -653,6 +705,7 @@ export default function ExportPresentationApp() {
     };
 
     const handleStep = async (payload: StepPayload) => {
+      const opGen = ++opGenRef.current;
       try {
         const curSession = sessionRef.current;
         if (!curSession) {
@@ -697,6 +750,7 @@ export default function ExportPresentationApp() {
             minTextPx: null,
             mapRects: [],
             overlayRects: [],
+            viewportClip: null,
             bgRgb: measureBgRgb(rootRef.current),
             error: null,
           });
@@ -721,12 +775,13 @@ export default function ExportPresentationApp() {
           );
         }
         await nextAnimationFrames(1);
-        await waitForWidgetsSettled(expectedBindings, expectedTargetsFor(curSession, payload.hour), 15000);
+        await waitForWidgetsSettled(expectedBindings, expectedTargetsFor(curSession, payload.hour), opGen, 15000);
         await nextAnimationFrames(2);
 
         const sig = computeSignature(payload);
         const mapRects = measureMapRects(rootRef.current, payload.dpr);
         const overlayRects = measureOverlayRects(rootRef.current, payload.dpr);
+        const viewportClip = measureViewportClip(rootRef.current, payload.dpr);
         const dirty =
           payload.frameIndex === 0 ||
           lastModeRef.current !== 'recorded' ||
@@ -747,6 +802,7 @@ export default function ExportPresentationApp() {
               : null,
           mapRects,
           overlayRects,
+          viewportClip,
           bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
@@ -760,6 +816,7 @@ export default function ExportPresentationApp() {
           minTextPx: null,
           mapRects: [],
           overlayRects: [],
+          viewportClip: null,
           bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
@@ -767,6 +824,8 @@ export default function ExportPresentationApp() {
     };
 
     const handleUnmount = async (payload?: { seq?: number } | null) => {
+      opGenRef.current += 1;
+      wakeWaiters();
       widgetStatusesRef.current.clear();
       expectedFamilyIdsRef.current = [];
       lastSignatureRef.current = '';
@@ -784,6 +843,7 @@ export default function ExportPresentationApp() {
           minTextPx: null,
           mapRects: [],
           overlayRects: [],
+          viewportClip: null,
           bgRgb: null,
           error: null,
         });
@@ -791,6 +851,8 @@ export default function ExportPresentationApp() {
     };
 
     const onBeforeUnload = () => {
+      opGenRef.current += 1;
+      wakeWaiters();
       void releaseOpenedSources();
     };
     window.addEventListener('beforeunload', onBeforeUnload);
@@ -799,7 +861,11 @@ export default function ExportPresentationApp() {
       listen<MountPayload>('video-export-mount', event => enqueue(() => handleMount(event.payload))),
       listen<MetricsPayload>('video-export-metrics', event => enqueue(() => handleMetrics(event.payload))),
       listen<StepPayload>('video-export-step', event => enqueue(() => handleStep(event.payload))),
-      listen<{ seq?: number } | null>('video-export-unmount', event => enqueue(() => handleUnmount(event.payload))),
+      listen<{ seq?: number } | null>('video-export-unmount', event => {
+        opGenRef.current += 1;
+        wakeWaiters();
+        enqueue(() => handleUnmount(event.payload));
+      }),
     ]).then(stops => {
       if (!alive) {
         for (const stop of stops) stop();
@@ -815,6 +881,7 @@ export default function ExportPresentationApp() {
         minTextPx: null,
         mapRects: [],
         overlayRects: [],
+        viewportClip: null,
         bgRgb: measureBgRgb(rootRef.current),
         error: null,
       });
@@ -822,11 +889,13 @@ export default function ExportPresentationApp() {
 
     return () => {
       alive = false;
+      opGenRef.current += 1;
+      wakeWaiters();
       window.removeEventListener('beforeunload', onBeforeUnload);
       for (const stop of unlisteners) stop();
       void releaseOpenedSources();
     };
-  }, [clock, waitForWidgetsSettled, computeSignature, releaseOpenedSources]);
+  }, [clock, waitForWidgetsSettled, computeSignature, releaseOpenedSources, wakeWaiters]);
 
   const tracks = useMemo(() => {
     if (!session) return [];
@@ -871,7 +940,7 @@ export default function ExportPresentationApp() {
   const pageWidth = useMemo(() => {
     if (!session) return 1280;
     if (isPortraitReflow) {
-      return Math.round(session.cssWidth / Math.max(0.01, session.scale));
+      return Math.round(session.cssWidth / Math.max(1e-4, session.scale));
     }
     return session.sourceWidth;
   }, [session, isPortraitReflow]);

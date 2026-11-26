@@ -75,12 +75,15 @@ function rowFractions(row: BarsDataRow, form: BarsModel['form'], layout: BarsLay
     segmentShares?: Record<string, number>;
   } = {};
   if (form === 'share' || form === 'stacked') {
-    if (row.segments?.length) {
+    if (isMeasuredField(row.value) && row.segments?.length) {
       const shares: Record<string, number> = {};
       for (const seg of row.segments) {
+        if (!isMeasuredField({ value: seg.value })) continue;
         shares[seg.key] = seg.share;
       }
-      out.segmentShares = shares;
+      if (Object.keys(shares).length > 0) {
+        out.segmentShares = shares;
+      }
     }
   } else if (form === 'two-sided' && layout.twoSidedLayout === 'split-sides') {
     if (isMeasuredField(row.value) && row.numeric !== undefined && row.numeric !== null) {
@@ -155,13 +158,17 @@ function easedBarsOf(frame: BarsFrame): { readonly map?: ReadonlyMap<string, Bar
     const tf = step(prev.targetFrac, cur.targetFrac);
     if (tf !== undefined) next.targetFrac = tf;
     if (cur.segmentShares) {
-      const shares: Record<string, number> = {};
-      for (const [segKey, curShare] of Object.entries(cur.segmentShares)) {
-        const prevShare = prev.segmentShares?.[segKey] ?? 0;
-        const val = step(prevShare, curShare);
-        shares[segKey] = val ?? curShare;
+      if (prev.segmentShares) {
+        const shares: Record<string, number> = {};
+        for (const [segKey, curShare] of Object.entries(cur.segmentShares)) {
+          const prevShare = prev.segmentShares[segKey];
+          const val = step(prevShare, curShare);
+          shares[segKey] = val ?? curShare;
+        }
+        next.segmentShares = shares;
+      } else {
+        next.segmentShares = cur.segmentShares;
       }
-      next.segmentShares = shares;
     }
     eased.set(item.key, next);
   }

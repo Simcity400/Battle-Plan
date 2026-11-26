@@ -340,13 +340,13 @@ fn cancel_native(app: &AppHandle, id: String) {
     }
 }
 
-async fn request(
+async fn request_json(
     window: &WebviewWindow,
     _host: &NativeHost,
     service: &DashboardService,
     id: String,
     command: DataCommand,
-) -> Result<Response, QueryError> {
+) -> Result<String, QueryError> {
     let submit_window = window.clone();
     let submit_id = id.clone();
     let receive = tauri::async_runtime::spawn_blocking(move || {
@@ -367,6 +367,17 @@ async fn request(
     {
         return Err(CANCELLED.into());
     }
+    Ok(json)
+}
+
+async fn request(
+    window: &WebviewWindow,
+    host: &NativeHost,
+    service: &DashboardService,
+    id: String,
+    command: DataCommand,
+) -> Result<Response, QueryError> {
+    let json = request_json(window, host, service, id, command).await?;
     Ok(Response::new(json.into_bytes()))
 }
 
@@ -388,7 +399,7 @@ pub async fn dashboard_open_source(
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
-    request(
+    let json = request_json(
         &window,
         &host,
         &service,
@@ -399,7 +410,16 @@ pub async fn dashboard_open_source(
             revision,
         },
     )
-    .await
+    .await?;
+    if window.label() == crate::export_webview::EXPORT_WINDOW_LABEL
+        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json)
+        && let Some(source_id) = parsed.get("id").and_then(|v| v.as_str())
+    {
+        window
+            .state::<crate::export_webview::ExportWebviewState>()
+            .track_source(source_id);
+    }
+    Ok(Response::new(json.into_bytes()))
 }
 
 #[tauri::command]
@@ -506,6 +526,11 @@ pub fn dashboard_release_source(
 ) -> Result<(), String> {
     let runtime = service.runtime(window.app_handle())?;
     let is_export = window.label() == crate::export_webview::EXPORT_WINDOW_LABEL;
+    if is_export {
+        window
+            .state::<crate::export_webview::ExportWebviewState>()
+            .untrack_source(&source_id);
+    }
     if let Ok(source) = runtime.source(&source_id) {
         let params = if is_export {
             serde_json::json!({ "session": dashboard_follow::registry::EXPORT_SESSION_PREFIX })
@@ -527,6 +552,28 @@ pub fn dashboard_release_source(
     }
     runtime.dispatch(DataCommand::Release { source_id });
     Ok(())
+}
+
+pub fn release_export_source(app: &AppHandle, source_id: String) {
+    let service = app.state::<DashboardService>();
+    let Ok(runtime) = service.runtime(app) else {
+        return;
+    };
+    if let Ok(source) = runtime.source(&source_id) {
+        let close = ProductRequest {
+            source_id: source_id.clone(),
+            revision: source.key().revision.clone(),
+            product: "follow-close".into(),
+            params: serde_json::json!({
+                "session": dashboard_follow::registry::EXPORT_SESSION_PREFIX
+            }),
+        };
+        runtime.dispatch(DataCommand::Product {
+            id: format!("follow-close-{source_id}"),
+            request: close,
+        });
+    }
+    runtime.dispatch(DataCommand::Release { source_id });
 }
 
 #[cfg(test)]

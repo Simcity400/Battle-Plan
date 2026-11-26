@@ -263,6 +263,13 @@ export interface ExportMapRect {
   height: number;
 }
 
+export interface ExportClipRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface PageAckPayload {
   seq: number;
   kind: 'boot' | 'mount' | 'metrics' | 'step' | 'unmount';
@@ -272,6 +279,7 @@ export interface PageAckPayload {
   minTextPx: number | null;
   mapRects: ExportMapRect[];
   overlayRects?: ExportMapRect[];
+  viewportClip?: ExportClipRect | null;
   bgRgb?: [number, number, number] | null;
   error: string | null;
 }

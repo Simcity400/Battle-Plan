@@ -443,6 +443,26 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
 
+  useEffect(() => {
+    if (!exportSurface.active || !exportSurface.reportWidget || !active || prepared || enabled) return undefined;
+    const key = `${widget.id}:${instanceId}`;
+    exportSurface.reportWidget(key, {
+      widgetId: widget.id,
+      pipe: null,
+      mode: 'unavailable',
+      target: null,
+      binding: 0,
+      installedBinding: 0,
+      installedId: null,
+      expired: false,
+      pendingIdentities: false,
+      pendingArt: false,
+    });
+    return () => {
+      exportSurface.reportWidget?.(key, null);
+    };
+  }, [exportSurface.active, exportSurface.reportWidget, active, prepared, enabled, widget.id, instanceId]);
+
   const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
 

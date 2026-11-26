@@ -154,15 +154,6 @@ pub struct Push {
     ready: Condvar,
 }
 
-impl Push {
-    pub fn with_budget(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
-        Self {
-            state: Mutex::new(State::new(budget)),
-            ready: Condvar::new(),
-        }
-    }
-}
-
 impl Default for State {
     fn default() -> Self { Self::new(crate::lead::budget()) }
 }

@@ -67,7 +67,7 @@ export default function ExportVideoDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [mapSnapshot, setMapSnapshot] = useState<MapExportSnapshot | null>(null);
   const [embeddedSnapshots, setEmbeddedSnapshots] = useState<Record<string, MapExportSnapshot>>({});
-  const [surfaceTimelines, setSurfaceTimelines] = useState<SurfaceTrackCoverage[] | null>(null);
+  const [surfaceTimelines, setSurfaceTimelines] = useState<Record<string, SurfaceTrackCoverage> | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -201,7 +201,12 @@ export default function ExportVideoDialog({
       void Promise.all([timelinesPromise, mapSnapshotsPromise])
         .then(([timelines, entries]) => {
           if (cancelled) return;
-          setSurfaceTimelines(timelines);
+          const byId: Record<string, SurfaceTrackCoverage> = {};
+          ctx.tracks.forEach((track, idx) => {
+            const cov = timelines[idx];
+            if (cov) byId[track.id] = cov;
+          });
+          setSurfaceTimelines(byId);
           const map: Record<string, MapExportSnapshot> = {};
           for (const entry of entries) {
             if (entry) map[entry[0]] = entry[1];
@@ -248,6 +253,34 @@ export default function ExportVideoDialog({
     }
   }, [speed, audioManual, target, mapSnapshot, advancingMapWidgets]);
 
+  const activeSurfaceTracks = useMemo(() => {
+    if (!target || target.kind === 'map') return [];
+    const ctx = target.context;
+    if (target.kind === 'widget') {
+      return ctx.tracks;
+    }
+    const chosenIds = new Set<string>(ctx.followTrackIds);
+    if (followPinned) {
+      for (const id of ctx.pinnedTrackIds) chosenIds.add(id);
+    }
+    let tracks = ctx.tracks.filter(t => chosenIds.has(t.id));
+    if (tracks.length === 0) {
+      const fallbackIds = new Set<string>(ctx.fallbackTrackIds);
+      tracks = ctx.tracks.filter(t => fallbackIds.has(t.id));
+    }
+    return tracks.length > 0 ? tracks : ctx.tracks;
+  }, [target, followPinned]);
+
+  const activeSurfaceTimelines = useMemo(() => {
+    if (!surfaceTimelines) return null;
+    const out: SurfaceTrackCoverage[] = [];
+    for (const track of activeSurfaceTracks) {
+      const cov = surfaceTimelines[track.id];
+      if (cov) out.push(cov);
+    }
+    return out;
+  }, [surfaceTimelines, activeSurfaceTracks]);
+
   const bounds = useMemo(() => {
     if (!target) return { firstHour: 0, lastHour: 0, currentHour: 0, referenceOffset: 0, maxTexture: 8192, viewport: [1920, 1080] as [number, number] };
     if (target.kind === 'map') {
@@ -260,31 +293,48 @@ export default function ExportVideoDialog({
         viewport: mapSnapshot?.viewport ?? ([1920, 1080] as [number, number]),
       };
     }
+    const firstHour = activeSurfaceTracks.length
+      ? Math.min(...activeSurfaceTracks.map(t => t.firstHour))
+      : target.context.firstHour;
+    const lastHour = activeSurfaceTracks.length
+      ? Math.max(...activeSurfaceTracks.map(t => t.lastHour))
+      : target.context.lastHour;
     return {
-      firstHour: target.context.firstHour,
-      lastHour: target.context.lastHour,
+      firstHour,
+      lastHour,
       currentHour: target.context.currentHour,
       referenceOffset: target.context.referenceOffset,
       maxTexture: 8192,
       viewport: [target.context.sourceWidth, target.context.sourceHeight] as [number, number],
     };
-  }, [target, mapSnapshot]);
+  }, [target, mapSnapshot, activeSurfaceTracks]);
+
+  useEffect(() => {
+    if (!target || target.kind !== 'page') return;
+    setFromHour(prev => Math.min(Math.max(prev, bounds.firstHour), bounds.lastHour));
+    setToHour(prev => Math.min(Math.max(prev, bounds.firstHour), bounds.lastHour));
+  }, [target, bounds.firstHour, bounds.lastHour]);
 
   const ready =
     target !== null &&
     !loadError &&
     (target.kind === 'map'
       ? mapSnapshot !== null
-      : surfaceTimelines !== null && surfaceTimelines.length > 0);
+      : activeSurfaceTimelines !== null && activeSurfaceTimelines.length > 0);
 
   const previewGenRef = useRef(0);
 
   const mergedSurface = useMemo(() => {
-    if (!target || target.kind === 'map' || !surfaceTimelines) return null;
-    const stretches = mergeRecordedTracks(surfaceTimelines.map(t => t.stretches));
-    const unheld = mergeUnheldGaps(stretches, surfaceTimelines.map(t => t.unheld));
+    if (!target || target.kind === 'map' || !activeSurfaceTimelines) return null;
+    const stretches = mergeRecordedTracks(activeSurfaceTimelines.map(t => t.stretches));
+    const unheld = mergeUnheldGaps(
+      stretches,
+      activeSurfaceTimelines.map(t => t.unheld),
+      fromHour,
+      toHour,
+    );
     return { stretches, unheld };
-  }, [target, surfaceTimelines]);
+  }, [target, activeSurfaceTimelines, fromHour, toHour]);
 
   const activeStretches = useMemo(() => {
     if (!target) return null;
@@ -394,7 +444,7 @@ export default function ExportVideoDialog({
   );
 
   const buildSurfaceRequest = useCallback((): SurfaceVideoRequest | null => {
-    if (!target || target.kind === 'map' || !surfaceTimelines) return null;
+    if (!target || target.kind === 'map' || !activeSurfaceTimelines || activeSurfaceTimelines.length === 0) return null;
     const ctx = target.context;
     const evenW = snapEven(width);
     const evenH = snapEven(height);
@@ -449,7 +499,7 @@ export default function ExportVideoDialog({
       followPinned,
       audioMapWidgetId: effectiveAudioMapId,
       allowUnverified: false,
-      tracks: surfaceTimelines,
+      tracks: activeSurfaceTimelines,
       embeddedMaps,
       payload: {
         template: target.template,
@@ -464,7 +514,7 @@ export default function ExportVideoDialog({
   }, [
     target,
     embeddedSnapshots,
-    surfaceTimelines,
+    activeSurfaceTimelines,
     advancingMapWidgets,
     fromHour,
     toHour,
@@ -1094,7 +1144,7 @@ export default function ExportVideoDialog({
                 {target.kind === 'map' && cropMode
                   ? 'Drag the safe frame to crop the camera view, then click “View output frame” to inspect the rendered output.'
                   : `${snapEven(width)}×${snapEven(height)} at ${fps} fps${
-                      previewMinTextPx !== null ? ` · min text ~${previewMinTextPx.toFixed(1)} px` : ''
+                      previewMinTextPx !== null ? ` · min DOM text ~${previewMinTextPx.toFixed(1)} px` : ''
                     } · ${previewBusy ? 'Refreshing preview…' : 'Live output frame'}`}
               </p>
             </div>

@@ -580,27 +580,60 @@ pub fn cadence_info(hours_per_second: f64, fps: u32) -> CadenceInfo {
 }
 
 pub fn merge_recorded_tracks(tracks: &[Vec<RecordedStretch>]) -> Vec<RecordedStretch> {
-    let mut intervals: Vec<(i32, i32, StretchJoin)> = tracks
-        .iter()
-        .flat_map(|track| track.iter().map(|s| (s.first, s.last, s.join)))
-        .collect();
-    intervals.sort_unstable_by_key(|&(first, last, _)| (first, last));
-    let mut merged: Vec<RecordedStretch> = Vec::new();
-    for (first, last, join) in intervals {
-        if let Some(prev) = merged.last_mut() {
-            let touches = i64::from(first) == i64::from(prev.last) + 1;
-            let overlaps = i64::from(first) <= i64::from(prev.last);
-            if overlaps || (touches && join != StretchJoin::Load) {
-                if last > prev.last {
-                    prev.last = last;
-                }
+    let mut intervals: Vec<(i32, i32)> = Vec::new();
+    let mut load_starts = std::collections::BTreeSet::new();
+    for track in tracks {
+        for s in track {
+            if s.first > s.last {
                 continue;
+            }
+            intervals.push((s.first, s.last));
+            if s.join == StretchJoin::Load {
+                load_starts.insert(s.first);
+            }
+        }
+    }
+    intervals.sort_unstable_by_key(|&(first, last)| (first, last));
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in intervals {
+        if let Some(prev) = spans.last_mut()
+            && i64::from(first) <= i64::from(prev.1) + 1
+        {
+            if last > prev.1 {
+                prev.1 = last;
+            }
+            continue;
+        }
+        spans.push((first, last));
+    }
+    let mut merged: Vec<RecordedStretch> = Vec::new();
+    for (span_first, span_last) in spans {
+        let mut cursor = span_first;
+        let mut join = if merged.is_empty() {
+            StretchJoin::Start
+        } else if load_starts.contains(&span_first) {
+            StretchJoin::Load
+        } else {
+            StretchJoin::Break
+        };
+        for &cut in load_starts.range((
+            std::ops::Bound::Excluded(span_first),
+            std::ops::Bound::Included(span_last),
+        )) {
+            if cut > cursor {
+                merged.push(RecordedStretch {
+                    first: cursor,
+                    last: cut - 1,
+                    join,
+                });
+                cursor = cut;
+                join = StretchJoin::Load;
             }
         }
         merged.push(RecordedStretch {
-            first,
-            last,
-            join: if merged.is_empty() { StretchJoin::Start } else { join },
+            first: cursor,
+            last: span_last,
+            join,
         });
     }
     merged
@@ -609,28 +642,50 @@ pub fn merge_recorded_tracks(tracks: &[Vec<RecordedStretch>]) -> Vec<RecordedStr
 pub fn merge_unheld_gaps(
     merged_stretches: &[RecordedStretch],
     tracks_unheld: &[Vec<UnheldGap>],
+    from_hour: i32,
+    to_hour: i32,
 ) -> Vec<UnheldGap> {
-    let mut out = Vec::new();
-    for pair in merged_stretches.windows(2) {
-        let gap_first = i64::from(pair[0].last) + 1;
-        let gap_last = i64::from(pair[1].first) - 1;
-        if gap_first > gap_last {
-            continue;
-        }
-        let first = gap_first as i32;
-        let last = gap_last as i32;
-        let reason = tracks_unheld
+    let lo = from_hour.min(to_hour);
+    let hi = from_hour.max(to_hour);
+    let reason_for = |first: i32, last: i32| -> String {
+        tracks_unheld
             .iter()
             .flat_map(|gaps| gaps.iter())
             .find(|g| g.first <= last && g.last >= first)
             .map_or_else(
                 || "Not recorded: this play happened while the recorder wasn't watching".to_owned(),
                 |g| g.reason.clone(),
-            );
+            )
+    };
+    let mut out = Vec::new();
+    let mut cursor = i64::from(lo);
+    let end = i64::from(hi);
+    for stretch in merged_stretches {
+        let s_first = i64::from(stretch.first).max(i64::from(lo));
+        let s_last = i64::from(stretch.last).min(end);
+        if s_first > s_last {
+            continue;
+        }
+        if cursor < s_first {
+            let first = cursor as i32;
+            let last = (s_first - 1) as i32;
+            out.push(UnheldGap {
+                first,
+                last,
+                reason: reason_for(first, last),
+            });
+        }
+        if s_last + 1 > cursor {
+            cursor = s_last + 1;
+        }
+    }
+    if cursor <= end {
+        let first = cursor as i32;
+        let last = end as i32;
         out.push(UnheldGap {
             first,
             last,
-            reason,
+            reason: reason_for(first, last),
         });
     }
     out
@@ -1124,5 +1179,56 @@ mod tests {
         assert_eq!(info.suggested_hours_per_second, Some(20.0));
         assert!(!cadence_info(30.0, 60).uneven);
         assert!(!cadence_info(60.0, 60).uneven);
+    }
+
+    #[test]
+    fn merge_recorded_tracks_preserves_load_boundary_across_overlapping_track() {
+        let track_a = vec![
+            RecordedStretch { first: 0, last: 99, join: StretchJoin::Start },
+            RecordedStretch { first: 100, last: 200, join: StretchJoin::Load },
+        ];
+        let track_b = vec![RecordedStretch { first: 0, last: 200, join: StretchJoin::Start }];
+        let merged = merge_recorded_tracks(&[track_a, track_b]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0], RecordedStretch { first: 0, last: 99, join: StretchJoin::Start });
+        assert_eq!(merged[1], RecordedStretch { first: 100, last: 200, join: StretchJoin::Load });
+        let gaps = merge_unheld_gaps(&merged, &[], 0, 200);
+        assert!(gaps.is_empty());
+        let schedule = build_schedule(
+            &merged,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 99,
+                to_hour: 100,
+                fps: 1,
+                hours_per_second: 1.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let frames = schedule.collect_frames();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            frames[1].kind,
+            FrameKind::Recorded { hour: 100, reset_continuity: true, .. }
+        ));
+    }
+
+    #[test]
+    fn merge_unheld_gaps_computes_leading_and_trailing_end_gaps() {
+        let merged = vec![RecordedStretch { first: 10, last: 90, join: StretchJoin::Start }];
+        let gaps = merge_unheld_gaps(
+            &merged,
+            &[vec![
+                UnheldGap { first: 0, last: 9, reason: "before start".into() },
+                UnheldGap { first: 91, last: 100, reason: "after end".into() },
+            ]],
+            0,
+            100,
+        );
+        assert_eq!(gaps.len(), 2);
+        assert_eq!((gaps[0].first, gaps[0].last, gaps[0].reason.as_str()), (0, 9, "before start"));
+        assert_eq!((gaps[1].first, gaps[1].last, gaps[1].reason.as_str()), (91, 100, "after end"));
     }
 }

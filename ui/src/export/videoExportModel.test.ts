@@ -119,22 +119,35 @@ test('glideDurationForSpeed honors export override above 168 h/s while keeping l
   assert.equal(exportGlideDurationMs(1, 60), 180);
 });
 
-test('mergeRecordedTracks preserves load joins and mergeUnheldGaps derives complement gaps', () => {
+test('mergeRecordedTracks preserves load joins across overlap and mergeUnheldGaps derives end gaps', () => {
   const merged = mergeRecordedTracks([
     [
       { first: 0, last: 50, join: 'start' },
       { first: 100, last: 150, join: 'break' },
       { first: 151, last: 200, join: 'load' },
     ],
-    [{ first: 40, last: 110, join: 'start' }],
+    [{ first: 40, last: 200, join: 'start' }],
   ]);
   assert.equal(merged.length, 2);
   assert.equal(merged[0]!.first, 0);
   assert.equal(merged[0]!.last, 150);
   assert.equal(merged[1]!.first, 151);
   assert.equal(merged[1]!.join, 'load');
-  const gaps = mergeUnheldGaps(merged, [[{ first: 51, last: 99, reason: 'track A gap' }], []]);
+  const gaps = mergeUnheldGaps(merged, [[{ first: 51, last: 99, reason: 'track A gap' }], []], 0, 200);
   assert.equal(gaps.length, 0);
+
+  const endGaps = mergeUnheldGaps(
+    [{ first: 10, last: 90, join: 'start' }],
+    [[
+      { first: 0, last: 9, reason: 'leading gap' },
+      { first: 91, last: 100, reason: 'trailing gap' },
+    ]],
+    0,
+    100,
+  );
+  assert.equal(endGaps.length, 2);
+  assert.deepEqual(endGaps[0], { first: 0, last: 9, reason: 'leading gap' });
+  assert.deepEqual(endGaps[1], { first: 91, last: 100, reason: 'trailing gap' });
 });
 
 test('readabilityHint flags small rendered text and steep page downscaling', () => {

@@ -51,6 +51,9 @@ export interface SurfaceExportContextSnapshot {
   sourceHeight: number;
   scrollTop: number;
   tracks: SurfaceExportTrackSnapshot[];
+  followTrackIds: string[];
+  pinnedTrackIds: string[];
+  fallbackTrackIds: string[];
   mapWidgets: SurfaceExportMapWidget[];
   hasPinnedWidgets: boolean;
   hasPagedRowsWidgets: boolean;

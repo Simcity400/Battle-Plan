@@ -44,7 +44,7 @@ import type { PreparedPage } from './PreparedPages';
 import { preparingClient } from './prepare.ts';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
-import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
+import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, resolveWidgetCampaign, sameCampaignPath } from './campaigns';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
@@ -599,18 +599,27 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const buildSurfaceContext = useCallback(
     (targetTemplate: DashboardTemplate, singleWidget?: WidgetSpec): SurfaceExportContextSnapshot | null => {
       const bound = bindTracks(targetTemplate, sourceMap, selectedBranches);
-      const widgetsToCheck = singleWidget ? [singleWidget] : targetTemplate.widgets;
-      const relevantTrackIds = new Set<string>();
+      const rawWidgets = singleWidget ? [singleWidget] : targetTemplate.widgets;
+      const widgetsToCheck = rawWidgets.map(widget =>
+        resolveWidgetCampaign(widget, targetTemplate, defaultRoleId),
+      );
+      const followTrackIds = new Set<string>();
+      const pinnedTrackIds = new Set<string>();
+      const fallbackTrackIds = new Set<string>();
       for (const widget of widgetsToCheck) {
-        if (singleWidget || widget.time.mode === 'follow' || widget.time.mode === 'pin') {
-          for (const id of widget.trackIds) relevantTrackIds.add(id);
+        for (const id of widget.trackIds) fallbackTrackIds.add(id);
+        if (singleWidget || widget.time.mode === 'follow') {
+          for (const id of widget.trackIds) followTrackIds.add(id);
+        } else if (widget.time.mode === 'pin') {
+          for (const id of widget.trackIds) pinnedTrackIds.add(id);
         }
       }
-      let activeBound = bound.filter(t => relevantTrackIds.has(t.id));
-      if (activeBound.length === 0) {
-        const allReferenced = new Set(widgetsToCheck.flatMap(w => w.trackIds));
-        activeBound = bound.filter(t => allReferenced.has(t.id));
-      }
+      const initialIds = followTrackIds.size > 0
+        ? followTrackIds
+        : fallbackTrackIds.size > 0
+          ? fallbackTrackIds
+          : new Set(bound.map(t => t.id));
+      let activeBound = bound.filter(t => initialIds.has(t.id));
       if (activeBound.length === 0) {
         activeBound = bound;
       }
@@ -618,10 +627,15 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       if (!clockRange) return null;
       const reference = activeBound.find(track => track.roleId === defaultRoleId) ?? activeBound[0];
       const referenceOffset = reference?.axisOffset ?? 0;
+      const allRelevantIds = new Set<string>([...followTrackIds, ...pinnedTrackIds, ...fallbackTrackIds]);
+      let snapshotBound = bound.filter(t => allRelevantIds.has(t.id));
+      if (snapshotBound.length === 0) {
+        snapshotBound = bound;
+      }
       const mapWidgets: SurfaceExportMapWidget[] = [];
       for (const widget of widgetsToCheck) {
         if (widget.kind !== 'map') continue;
-        const track = bound.find(item => item.id === widget.trackIds[0]) ?? bound[0];
+        const track = bound.find(item => item.id === widget.trackIds[0]);
         if (!track) continue;
         const branchNum = Number(track.branch.id);
         const fixedHour =
@@ -643,7 +657,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           perspectiveSlot: widget.countries.kind === 'tags' ? null : (track.selectedSlot ?? null),
         });
       }
-      const trackSnapshots = activeBound.map(track => {
+      const trackSnapshots = snapshotBound.map(track => {
         const stretches: RecordedStretch[] = [{ first: track.branch.firstHour - track.axisOffset, last: track.branch.lastHour - track.axisOffset, join: 'start' }];
         const unheld: UnheldGap[] = [];
         return {
@@ -690,6 +704,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         sourceHeight: Math.max(240, Math.round(scrollEl?.clientHeight || 720)),
         scrollTop: Math.max(0, Math.round(scrollEl?.scrollTop || 0)),
         tracks: trackSnapshots,
+        followTrackIds: [...followTrackIds],
+        pinnedTrackIds: [...pinnedTrackIds],
+        fallbackTrackIds: [...fallbackTrackIds],
         mapWidgets,
         hasPinnedWidgets,
         hasPagedRowsWidgets,
