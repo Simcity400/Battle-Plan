@@ -314,7 +314,15 @@ impl Scope {
             }
         }
         for gap in &set.unknown {
-            unknown |= span(gap.first_hour, gap.last_hour);
+            if span(gap.first_hour, gap.last_hour) {
+                unknown = true;
+                not_known = not_known.or_else(|| Some(gap.reason.clone()));
+            }
+        }
+        if set.membership.iter().any(|member| !matches!(member.country, Country::Slot(_))) {
+            for &(first, last, _) in &query.holders.unknown {
+                span(first, last);
+            }
         }
         for gap in &set.unobserved {
             unknown |= span(gap.first_hour, gap.last_hour);

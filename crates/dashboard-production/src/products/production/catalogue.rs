@@ -209,10 +209,6 @@ impl AtHour for ProductionLicences {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let empty = |missing: String| CountryFlowReply::not_recorded(missing, 0, Vec::new());
-        let licences = match witnessed_licences(frame) {
-            Ok(licences) => licences,
-            Err(why) => return Ok(empty(format!("Licences are not recorded at this hour: {why}"))),
-        };
         let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
         let subject = params.subject.as_ref().map(resolve);
         if let Some(None) = subject {
@@ -221,6 +217,10 @@ impl AtHour for ProductionLicences {
         let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
             Ok(chosen) => chosen,
             Err(refused) => return Ok(empty(refused)),
+        };
+        let licences = match witnessed_licences(frame) {
+            Ok(licences) => licences,
+            Err(why) => return Ok(empty(format!("Licences are not recorded at this hour: {why}"))),
         };
         let shape = FlowShape {
             subject: subject.flatten(),

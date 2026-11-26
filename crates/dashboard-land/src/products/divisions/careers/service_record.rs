@@ -887,7 +887,7 @@ fn reply(
         || answer.gaps.iter().any(|gap| {
             gap.last_hour == hour && matches!(gap.reason.as_str(), "Division census incomplete" | "Division history incomplete")
         });
-    let unavailable = if let Some(reason) = scope.not_known.filter(|_| subject.is_none()) {
+    let unavailable = if let Some(reason) = scope.not_known.clone().filter(|_| subject.is_none()) {
         Some(reason)
     } else if params.division.is_some() && subject.is_none() {
         Some("The chosen division has not been observed in these countries through this hour.".into())
@@ -898,6 +898,9 @@ fn reply(
     };
     if ambiguous {
         warnings.note(PARTIAL_ROSTER);
+    }
+    if let Some(reason) = scope.not_known {
+        warnings.note(reason);
     }
     content.group_notes(&mut warnings);
     let reply = ServiceRecordTailReply {

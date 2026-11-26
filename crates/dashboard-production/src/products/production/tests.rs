@@ -566,3 +566,22 @@ fn a_truncated_link_table_keeps_a_licence_whose_parties_it_witnessed_and_unlinke
     *frame.tables[TableId::ProductionLicenseRecords.index()] = TableView::Unavailable { reason: "reader fault".into() };
     assert!(witnessed_licences(&frame).is_err());
 }
+
+#[test]
+fn a_licence_subject_whose_holder_is_not_known_is_not_recorded_with_the_reason_though_the_licences_are_withheld_too() {
+    let gapped = |hour: i32| {
+        let mut frame = frame(hour);
+        if (1_210..=1_220).contains(&hour) {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries unread in the fixture".into() };
+            *frame.tables[TableId::ProductionLicenseRecords.index()] = TableView::Unavailable { reason: "licences unread in the fixture".into() };
+        }
+        frame
+    };
+    let frames = (FIRST..=LAST).map(gapped).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "production-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let during = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_215, "subject": "GER" }));
+    assert!(during["missing"].as_str().is_some_and(|missing| missing.starts_with("Who holds GER is not known")), "{}", during["missing"]);
+    let after = asked(&source, entry::<ProductionLicences>(), json!({ "branchId": "1", "hour": 1_230, "subject": "GER" }));
+    assert!(after["missing"].as_str().is_none_or(|missing| !missing.contains("is not known")), "{}", after["missing"]);
+}
