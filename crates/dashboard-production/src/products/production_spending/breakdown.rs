@@ -75,6 +75,23 @@ fn next_piece_edge<T>(pieces: &[Piece<T>], hour: i32) -> Option<i32> {
     }
 }
 
+fn next_availability_edge(pieces: &[Piece<RunAmount>], hour: i32) -> Option<i32> {
+    let known = |amount: &RunAmount| matches!(amount, RunAmount::Known(_));
+    let at = pieces.partition_point(|piece| piece.1 < hour);
+    let current = pieces.get(at)?;
+    if current.0 > hour {
+        return Some(current.0);
+    }
+    let mut end = current.1;
+    for piece in &pieces[at + 1..] {
+        if i64::from(piece.0) != i64::from(end) + 1 || known(&piece.2) != known(&current.2) || (!known(&piece.2) && piece.2 != current.2) {
+            return end.checked_add(1);
+        }
+        end = piece.1;
+    }
+    end.checked_add(1)
+}
+
 fn tighten(through: &mut i32, edge: Option<i32>) {
     if let Some(edge) = edge
         && let Some(until) = edge.checked_sub(1)
@@ -466,7 +483,7 @@ impl SpendingIndex {
         warnings.extend(span.notes.iter().cloned());
 
         let equipment_pieces = span.read.equipment(include_refits || matches!(scope, ProductionSpendingScope::DockyardPurposes | ProductionSpendingScope::AirPurposes | ProductionSpendingScope::LandPurposes));
-        tighten(&mut through, next_piece_edge(&equipment_pieces, hour));
+        tighten(&mut through, next_availability_edge(&equipment_pieces, hour));
         let equipment_at = piece_at(&equipment_pieces, hour).map_or(RunAmount::Unknown(ProductionSpendingUnknown::NotRecorded), |piece| piece.2);
 
         let mut leaves: Vec<Leaf> = Vec::new();
