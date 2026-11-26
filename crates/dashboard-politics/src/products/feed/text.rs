@@ -427,15 +427,6 @@ pub(super) struct Art<'a> {
 }
 
 impl Art<'_> {
-    fn described(&self, notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKind, item: &mut EventFeedItem, inputs: &Inputs) -> io::Result<()> {
-        let listed = (!self.effects).then(|| item.description.clone());
-        effects(notices, catalogue, kind, item, inputs)?;
-        if let Some(listed) = listed {
-            item.description = listed;
-        }
-        Ok(())
-    }
-
     fn drawn(&self, key: (&str, &str), draw: impl FnOnce() -> catalogue::Drawn<Result<String, String>>) -> Result<String, String> {
         let once = {
             let mut held = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
@@ -609,7 +600,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
                 Err(reason) => notices.unavailable("decisionIcon", "Decision icon", format!("Decision {token}: {reason}"), Some(1)),
             }
         }
-        return art.described(notices, catalogue, kind, item, inputs);
+        return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
     }
     let Some(token) = item.token.clone() else {
         item.name_missing = Some("the event's identity was not recorded".into());
@@ -622,12 +613,12 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
             let reason = event.refused.clone().unwrap_or_default();
             item.name_missing = Some(reason.clone());
             notices.unavailable("scriptEventContent", "Event content", reason, Some(1));
-            return art.described(notices, catalogue, kind, item, inputs);
+            return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
         }
         Err(reason) => {
             item.name_missing = Some(reason.clone());
             notices.unavailable("scriptEventContent", "Event content", reason, Some(1));
-            return art.described(notices, catalogue, kind, item, inputs);
+            return if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) };
         }
     };
     let mut scripted = Vec::new();
@@ -704,7 +695,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_>, kind: EventFeedKind, item:
         body.push_str("Authored options (native ordinals):\n");
         body.push_str(&options.join("\n"));
     }
-    art.described(notices, catalogue, kind, item, inputs)
+    if art.effects { effects(notices, catalogue, kind, item, inputs) } else { Ok(()) }
 }
 
 fn draw_picture(notices: &mut Notices, art: &Art<'_>, token: &str, picture: &str) -> Option<String> {

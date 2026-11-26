@@ -1182,3 +1182,86 @@ fn a_listed_choice_card_names_the_option_its_last_choice_took() {
     assert_eq!(super::tails::listed_choice(&[chosen(Some(1), select), chosen(Some(3), EventFeedKind::ScriptEventFired)]), Some(1));
     assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select)]), None);
 }
+
+#[test]
+fn a_kept_row_says_again_which_mod_its_art_came_from() {
+    use super::{DecisionsTail, ScriptTailParams};
+    use dashboard_base::{
+        catalogue::{self, OwnRefusals},
+        products::{LoadContext, Product},
+        test_fixtures::{
+            source,
+            visual_mods::{BLUE, Machine, RED, first_pixel, png, select},
+        },
+    };
+    use replay_data::{
+        event_feed_rows::{EventFeedCountry, EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedScript},
+        rows::{Recorded, TableRows},
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_kept_fallback");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/decisions/categories/fixture.txt", b"FIXTURE_CATEGORY={}");
+    machine.write("common/decisions/fixture.txt", b"FIXTURE_CATEGORY={fixture_decision={allowed={always=yes}}}");
+    machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_decision_fixture_decision textureFile=gfx/fixture_decision.png}}");
+    machine.write("gfx/fixture_decision.png", &png(RED));
+    machine.write_mod("fixture_art", "gfx/fixture_decision.png", &png(BLUE));
+    let token = b"fixture_decision";
+    let event = EventFeedEvent {
+        sequence: 1,
+        generation: 1,
+        hour: 100,
+        source: EventFeedSource::DecisionSelected,
+        actor: EventFeedCountry { reference: 9001, id: 9001, instance: 1 },
+        target: EventFeedCountry::default(),
+        cause: Recorded::NotRecorded,
+        script: Some(EventFeedScript { token_start: 0, token_len: token.len() as u32, ..EventFeedScript::default() }),
+    };
+    let mut frame = source(1, 100, Some(1));
+    frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
+    *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+        generation: 1,
+        read_hour: 100,
+        coverage: EventFeedCoverage::Complete,
+        counts: Some(EventFeedCounts { acquired: 1, settled: 1, failed: 0, rejected: 0 }),
+        outstanding: 0,
+        failure: None,
+        script_refusals: 0,
+        events: vec![event],
+        script_tokens: token.to_vec(),
+        script_scopes: Vec::new(),
+        windows: Default::default(),
+    }]));
+    let (source, mut options) = machine.open_frames(vec![frame]);
+    select(&source, &mut options, &["fixture_art"]);
+    let context = LoadContext { content: Some(options) };
+    let params = ScriptTailParams {
+        branch_id: "1".into(),
+        hour: Some(100),
+        from: None,
+        to: None,
+        countries: None,
+        group: None,
+        search: None,
+        row: None,
+        sort: None,
+        offset: None,
+        limit: 64,
+        events: None,
+        statuses: None,
+    };
+    let read = || {
+        let mut own = OwnRefusals::default();
+        let reply = catalogue::own_refusals(&mut own, || DecisionsTail::load(&source, &params, &context, &AtomicBool::new(false))).unwrap();
+        let icon = reply.rows.iter().filter_map(|row| row.occurrence.as_ref()).flat_map(|occurrence| &occurrence.edges).find_map(|edge| edge.row.item.as_ref().and_then(|item| item.icon.clone()));
+        let mut warnings = Vec::new();
+        own.diagnostics().append_to(&mut warnings);
+        (icon.as_deref().map(first_pixel), warnings)
+    };
+    let (pixel, cold) = read();
+    assert_eq!(pixel, Some(BLUE), "the decision draws the selected mod's icon");
+    assert!(!cold.is_empty(), "the first read says which mod the icon came from");
+    assert_eq!(read(), (pixel, cold), "a read built from kept rows says it too");
+}
