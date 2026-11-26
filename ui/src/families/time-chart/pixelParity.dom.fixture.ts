@@ -9,7 +9,7 @@ import { boundTiledSeries, BoundedSeriesCursor, displayedHour } from '../bounded
 import type { ArtHandle, FamilyTheme, IdentityResult } from '../contract.ts';
 import { projectScene } from '../scene.ts';
 import { knownValue } from '../value.ts';
-import { drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
+import { drawGapBand, drawPlayheadLine, drawSeriesMissingStrip, drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
 import { DEFAULT_SEEDS, deriveColors, type ThemeMode } from '../../shell/appearance/themes.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { chartNavStops } from './laneView.ts';
@@ -728,6 +728,178 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
     ctx.globalAlpha = 0.6;
     ctx.lineCap = 'square';
   });
+
+  const stepHours = Array.from({ length: 40 }, (_, i) => H0 + i * 24);
+  const stepEndHour = stepHours[stepHours.length - 1]! + 12;
+  const stepGap = { firstHour: H0 + 15 * 24 + 6, lastHour: H0 + 17 * 24, reason: 'Unrecorded' };
+  const stepBandA = stepHours.map((_, i) => (i === 10 ? null : i % 7 === 0 ? -12 : 18 + (i % 5) * 4));
+  const stepBandB = stepHours.map((_, i) => (i === 10 ? null : i % 9 === 0 ? -8 : 14 + (i % 4) * 5));
+  const stepTotal = stepHours.map((_, i) => (i === 10 ? null : 24 + (i % 6) * 7));
+  const stepStackModel: TimeChartModel = {
+    kind: 'step-stack-probe',
+    measureTitle: 'Step stack',
+    mode: 'stack',
+    hour: stepEndHour,
+    extent: [H0, stepEndHour],
+    yAxis: { format: 'percent', fixed: [-30, 100], ticks: [] },
+    series: [],
+    gaps: [stepGap],
+    stack: {
+      hours: stepHours,
+      step: true,
+      bands: [
+        { id: 'A', key: 'A', name: 'Band A', color: darkTheme.blue, opacity: 0.84, values: stepBandA },
+        { id: 'B', key: 'B', name: 'Band B', color: darkTheme.amber, opacity: 0.84, values: stepBandB },
+      ],
+      total: { color: darkTheme.text, values: stepTotal },
+    },
+  };
+  const stepW = 480;
+  const stepH = 240;
+  const stepLay = layoutTimeChart(stepStackModel, stepW, stepH, darkTheme.font, cachedMeasure);
+  const stepProdC = new OffscreenCanvas(Math.round(stepW * dpr), Math.round(stepH * dpr));
+  const stepProdCtx = stepProdC.getContext('2d', { willReadFrequently: true })!;
+  drawTimeChart(stepProdCtx, stepStackModel, stepLay, darkTheme, null, dpr, null);
+  const stepRefC = new OffscreenCanvas(Math.round(stepW * dpr), Math.round(stepH * dpr));
+  const stepRefCtx = stepRefC.getContext('2d', { willReadFrequently: true })!;
+  stepRefCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  for (const g of stepLay.gaps) {
+    drawGapBand(stepRefCtx, g.x0, stepLay.top, g.x1 - g.x0, stepLay.plotHeight, darkTheme);
+  }
+  const stepRuns = [
+    { start: 0, end: 9, endHour: stepHours[10]! },
+    { start: 11, end: 15, endHour: stepGap.firstHour },
+    { start: 16, end: 39, endHour: stepEndHour },
+  ];
+  stepRefCtx.save();
+  stepRefCtx.beginPath();
+  stepRefCtx.rect(stepLay.left, stepLay.top - 2, stepLay.plotWidth + 1, stepLay.plotHeight + 4);
+  stepRefCtx.clip();
+  for (const run of stepRuns) {
+    const len = run.end - run.start + 1;
+    const posAcc = new Float64Array(len);
+    const negAcc = new Float64Array(len);
+    const endX = stepLay.toX(Math.min(run.endHour, stepLay.xDomain[1], stepEndHour));
+    const xEndAt = (k: number) => (k + 1 < len ? stepLay.toX(stepHours[run.start + k + 1]!) : endX);
+    for (let bi = 0; bi < stepStackModel.stack!.bands.length; bi++) {
+      const band = stepStackModel.stack!.bands[bi]!;
+      const botVals = new Float64Array(len);
+      const topVals = new Float64Array(len);
+      const sign = new Int8Array(len);
+      for (let k = 0; k < len; k++) {
+        const v = band.values[run.start + k];
+        if (v == null || !Number.isFinite(v) || v === 0) continue;
+        if (v > 0) { botVals[k] = posAcc[k]!; topVals[k] = posAcc[k]! + v; posAcc[k] = topVals[k]!; sign[k] = 1; }
+        else { botVals[k] = negAcc[k]!; topVals[k] = negAcc[k]! + v; negAcc[k] = topVals[k]!; sign[k] = -1; }
+      }
+      let k = 0;
+      while (k < len) {
+        const sg = sign[k]!;
+        if (sg === 0) { k++; continue; }
+        const subStart = k;
+        while (k < len && sign[k] === sg) k++;
+        const subEnd = k - 1;
+        const subEndX = xEndAt(subEnd);
+        stepRefCtx.beginPath();
+        for (let j = subStart; j <= subEnd; j++) {
+          const x = stepLay.toX(stepHours[run.start + j]!);
+          const y = stepLay.toY(topVals[j]!);
+          if (j === subStart) stepRefCtx.moveTo(x, y);
+          else { stepRefCtx.lineTo(x, stepLay.toY(topVals[j - 1]!)); stepRefCtx.lineTo(x, y); }
+        }
+        if (subEndX > stepLay.toX(stepHours[run.start + subEnd]!)) {
+          stepRefCtx.lineTo(subEndX, stepLay.toY(topVals[subEnd]!));
+          stepRefCtx.lineTo(subEndX, stepLay.toY(botVals[subEnd]!));
+        }
+        for (let j = subEnd; j >= subStart; j--) {
+          const x = stepLay.toX(stepHours[run.start + j]!);
+          const y = stepLay.toY(botVals[j]!);
+          if (j < subEnd) stepRefCtx.lineTo(stepLay.toX(stepHours[run.start + j + 1]!), y);
+          stepRefCtx.lineTo(x, y);
+        }
+        stepRefCtx.closePath();
+        stepRefCtx.fillStyle = band.color;
+        stepRefCtx.globalAlpha = band.opacity ?? 0.78;
+        stepRefCtx.fill();
+        if (bi < stepStackModel.stack!.bands.length - 1) {
+          stepRefCtx.beginPath();
+          for (let j = subStart; j <= subEnd; j++) {
+            const x0 = stepLay.toX(stepHours[run.start + j]!);
+            const x1 = xEndAt(j);
+            if (x1 <= x0) continue;
+            const y = stepLay.toY(topVals[j]!);
+            stepRefCtx.moveTo(x0, y);
+            stepRefCtx.lineTo(x1, y);
+          }
+          stepRefCtx.globalAlpha = 0.9;
+          stepRefCtx.strokeStyle = darkTheme.surface;
+          stepRefCtx.lineWidth = 0.8;
+          stepRefCtx.stroke();
+        }
+      }
+    }
+    stepRefCtx.globalAlpha = 1;
+    stepRefCtx.strokeStyle = darkTheme.text;
+    stepRefCtx.lineWidth = 1.6;
+    stepRefCtx.lineJoin = 'round';
+    stepRefCtx.beginPath();
+    let prevY = 0;
+    for (let k = 0; k < len; k++) {
+      const x = stepLay.toX(stepHours[run.start + k]!);
+      const y = stepLay.toY(stepTotal[run.start + k]!);
+      if (k === 0) stepRefCtx.moveTo(x, y);
+      else { stepRefCtx.lineTo(x, prevY); stepRefCtx.lineTo(x, y); }
+      prevY = y;
+    }
+    if (endX > stepLay.toX(stepHours[run.end]!)) stepRefCtx.lineTo(endX, prevY);
+    stepRefCtx.stroke();
+  }
+  const stepZeroY = Math.round(stepLay.toY(0)) + 0.5;
+  stepRefCtx.globalAlpha = 1;
+  stepRefCtx.strokeStyle = tokens.hairlineStrong;
+  stepRefCtx.lineWidth = 1;
+  stepRefCtx.beginPath();
+  stepRefCtx.moveTo(stepLay.left, stepZeroY);
+  stepRefCtx.lineTo(stepLay.left + stepLay.plotWidth, stepZeroY);
+  stepRefCtx.stroke();
+  stepRefCtx.restore();
+  drawPlayheadLine(stepRefCtx, stepLay.playheadX, stepLay.top - 2, stepLay.baseY + stepLay.markerLaneHeight, darkTheme);
+  stepRefCtx.save();
+  stepRefCtx.strokeStyle = tokens.zeroLine;
+  stepRefCtx.lineWidth = 1;
+  stepRefCtx.beginPath();
+  stepRefCtx.moveTo(stepLay.left, stepLay.axisY + 0.5);
+  stepRefCtx.lineTo(stepLay.left + stepLay.plotWidth, stepLay.axisY + 0.5);
+  stepRefCtx.stroke();
+  stepRefCtx.restore();
+  for (const g of stepLay.gaps) {
+    drawSeriesMissingStrip(stepRefCtx, g.x0, stepLay.axisY - 2, g.x1 - g.x0, darkTheme.hatch, darkTheme, 5);
+  }
+  drawTimeAxis(stepRefCtx, stepLay.rawAxisTicks, {
+    plotLeft: stepLay.left,
+    plotRight: stepLay.left + stepLay.plotWidth,
+    startHour: stepLay.xDomain[0],
+    endHour: stepLay.xDomain[1],
+    toX: stepLay.toX,
+    axisTop: stepLay.axisY,
+    playhead: stepStackModel.hour,
+    playheadLabel: stepLay.dateTabText,
+    hover: null,
+    hoverLabel: undefined,
+    playheadLineTop: null,
+    hairline: 'none',
+    tickColor: tokens.zeroLine,
+    firstLabelOnly: stepLay.small,
+    tabBounds: { left: stepLay.left, right: stepLay.width - 6 },
+    tabY: stepLay.axisY + 3,
+    labelY: stepLay.axisY + 12,
+    theme: darkTheme,
+  });
+  const stepProdImg = stepProdCtx.getImageData(0, 0, stepProdC.width, stepProdC.height).data;
+  const stepRefImg = stepRefCtx.getImageData(0, 0, stepRefC.width, stepRefC.height).data;
+  let stepDiff = 0;
+  for (let i = 0; i < stepProdImg.length; i++) if (stepProdImg[i] !== stepRefImg[i]) stepDiff++;
+  if (stepDiff > 0) failures.push({ label: 'step-stack-signed-gaps-total-dpr125', diffBytes: stepDiff, firstDiff: null, navEqual: true, looksEqual: true });
 
   return { checked: steps.length, failures };
 }

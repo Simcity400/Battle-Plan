@@ -2778,3 +2778,416 @@ describe('time-chart PR 2 lines zero-Path2D drawing', () => {
     assert.equal(clips, 1, '10 plain lines share exactly one hoisted plot clip');
   });
 });
+
+describe('time-chart PR 3 incremental buildBoundedStack', () => {
+  it('matches uncached buildBoundedStack across playback, null gaps, missing spans, within ranges, backward seek, and runs', () => {
+    const binA = 24;
+    const binB = 48;
+    const bucketsA: (ChartBucket | null)[] = Array.from({ length: 30 }, (_, i) => (
+      i === 8 || i === 9 ? null : makeBucket(H1936 + i * binA, H1936 + (i + 1) * binA - 1, 30 + (i % 5) * 4, 25, 50, 32 + (i % 4) * 3)
+    ));
+    const bucketsB: (ChartBucket | null)[] = Array.from({ length: 15 }, (_, i) => (
+      i === 5 ? null : makeBucket(H1936 + i * binB, H1936 + (i + 1) * binB - 1, 40 - (i % 4) * 5, 20, 45, 38 - (i % 3) * 4)
+    ));
+    const missingA = [{ firstHour: H1936 + 12 * binA, lastHour: H1936 + 13 * binA, reason: 'gap' }];
+    const tiledA: TiledLine = {
+      tag: 'A', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 30 * binA - 1, width: 30, buckets: bucketsA, tiles: { binHours: binA, valueAt: () => null } },
+      missing: missingA, parts: [], marks: null,
+    };
+    const tiledB: TiledLine = {
+      tag: 'B', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 15 * binB - 1, width: 15, buckets: bucketsB, tiles: { binHours: binB, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const cursorA = new BoundedSeriesCursor();
+    const cursorB = new BoundedSeriesCursor();
+    const withinB: readonly (readonly [number, number])[] = [[H1936 + 3 * binA, H1936 + 18 * binA]];
+    const checkHours = [
+      H1936 + 2 * binA + 6,
+      H1936 + 5 * binA + 12,
+      H1936 + 10 * binA + 3,
+      H1936 + 14 * binA + 18,
+      H1936 + 18 * binA + 1,
+      H1936 + 24 * binA + 5.5,
+      H1936 + 7 * binA + 4,
+      H1936 + 26 * binA + 9,
+    ];
+    for (const hour of checkHours) {
+      const bA = cursorA.advance(tiledA, hour, { headValue: knownValue(35) });
+      const bB = cursorB.advance(tiledB, hour, { headValue: knownValue(40) });
+      const inputs = [
+        { id: 'a', key: 'a', name: 'A', color: LANE_THEME.blue, parts: [{ series: bA }], head: { value: 35 } },
+        { id: 'b', key: 'b', name: 'B', color: LANE_THEME.amber, parts: [{ series: bB, within: withinB }], head: { value: 40 } },
+      ];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `stack parity failed at offset ${hour - H1936}`);
+    }
+
+    const runs: Run[] = Array.from({ length: 20 }, (_, i) => ({
+      firstHour: H1936 + i * 24,
+      lastHour: H1936 + i * 24 + (i === 6 ? 10 : 23),
+      value: 20 + (i % 6) * 5,
+      ...(i === 10 ? { breakBefore: true } : {}),
+    }));
+    const runTiled: TiledLine = {
+      tag: 'R', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 20 * 24 - 1, width: 20, buckets: [], runs, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const runCursor = new BoundedSeriesCursor();
+    for (const hour of [H1936 + 30, H1936 + 160, H1936 + 250, H1936 + 420, H1936 + 90]) {
+      const bR = runCursor.advance(runTiled, hour, { headValue: knownValue(25) });
+      const inputs = [{ id: 'r', key: 'r', name: 'R', color: LANE_THEME.green, parts: [{ series: bR }], head: { value: 25 } }];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `run stack parity failed at offset ${hour - H1936}`);
+    }
+
+    const futureRunTiled: TiledLine = {
+      tag: 'FR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 10,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 10 },
+          { firstHour: H1936 + 6, lastHour: H1936 + 6, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedAt6 = boundTiledSeries(futureRunTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureInputs = [{ id: 'fr', key: 'fr', name: 'FR', color: LANE_THEME.blue, parts: [{ series: boundedAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future run beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before run 2');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the run gap');
+
+    const futureBucketTiled: TiledLine = {
+      tag: 'FB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [
+          makeBucket(H1936, H1936, 10),
+          null, null, null, null, null,
+          makeBucket(H1936 + 6, H1936 + 6, 20),
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedBucketAt6 = boundTiledSeries(futureBucketTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureBucketInputs = [{ id: 'fb', key: 'fb', name: 'FB', color: LANE_THEME.blue, parts: [{ series: boundedBucketAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future bucket beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before bucket 2');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the bucket lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the bucket gap');
+
+    const clippedRunTiled: TiledLine = {
+      tag: 'CR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936 + 10, value: 15 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const clippedAt4 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 4));
+    const clippedAt5 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt4 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 4, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 5, H1936 + 6],
+      'clipped tail run endpoint never becomes a permanent cached row',
+    );
+
+    const nullWithMissingTiled: TiledLine = {
+      tag: 'NM', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 11, width: 1, buckets: [null], tiles: { binHours: 12, valueAt: () => null } },
+      missing: [
+        { firstHour: H1936, lastHour: H1936, reason: 'gap0' },
+        { firstHour: H1936 + 3, lastHour: H1936 + 3, reason: 'gap3' },
+      ],
+      parts: [], marks: null,
+    };
+    const nmAt1 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 1));
+    const nmAt5 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt1 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 3, H1936 + 6],
+      'all-null bucket never hides a newly visible missing span',
+    );
+
+    const withinTiled: TiledLine = {
+      tag: 'W', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 24, width: 1, buckets: [makeBucket(H1936, H1936 + 23, 5)], tiles: { binHours: 24, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const bW = boundTiledSeries(withinTiled, displayedHour(H1936 + 24));
+    const unrestricted = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW }] }], H1936 + 24);
+    const emptyWithin = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW, within: [] }] }], H1936 + 24);
+    assert.deepEqual(unrestricted.bands[0]!.values, [5, 5, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.values, [null, null, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.outside, [true, true, true]);
+
+    const negZero = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: 0, parts: [{ series: bW }] }], H1936 + 24);
+    const negZeroMinus = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: -0, parts: [{ series: bW }] }], H1936 + 24);
+    assert.equal(Object.is(negZero.bands[0]!.values[0], 0), true);
+    assert.equal(Object.is(negZeroMinus.bands[0]!.values[0], -0), true);
+
+    const openEnded = buildBoundedStack([{ id: 'o', key: 'o', name: 'O', color: LANE_THEME.blue, parts: [{ within: [[-Infinity, Infinity]] }] }], 2);
+    assert.deepEqual(openEnded.hours, [-Infinity, 2]);
+
+    let denseReads = 0;
+    const denseBuckets = Array.from({ length: 1005 }, (_, i) => {
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 5));
+      return new Proxy(b, { get: (target, prop) => { denseReads++; return Reflect.get(target, prop); } });
+    });
+    const denseTiled: TiledLine = {
+      tag: 'D', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: denseBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const longRunTiled: TiledLine = {
+      tag: 'LR', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: [], runs: [{ firstHour: H1936, lastHour: H1936 + 1004, value: 42 }], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const nullTiled: TiledLine = {
+      tag: 'N', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: Array.from({ length: 1005 }, () => null), tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const dCur = new BoundedSeriesCursor();
+    const lCur = new BoundedSeriesCursor();
+    const nCur = new BoundedSeriesCursor();
+    const stepDenseWith = (other: TiledLine, oCur: BoundedSeriesCursor, h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'o', key: 'o', name: 'O', color: LANE_THEME.amber, parts: [{ series: oCur.advance(other, h, { headValue: knownValue(42) }) }], head: { value: 42 } },
+    ], h);
+    stepDenseWith(longRunTiled, lCur, H1936 + 998);
+    denseReads = 0;
+    const step999Run = stepDenseWith(longRunTiled, lCur, H1936 + 999);
+    assert.ok(denseReads < 40, `long straddling run does not force dense band resample (reads=${denseReads})`);
+    assert.equal(step999Run.hours[step999Run.hours.length - 1], H1936 + 999);
+    stepDenseWith(nullTiled, nCur, H1936 + 998);
+    denseReads = 0;
+    stepDenseWith(nullTiled, nCur, H1936 + 999);
+    assert.ok(denseReads < 40, `all-null band does not force dense band resample (reads=${denseReads})`);
+
+    const trailingNullTiled: TiledLine = {
+      tag: 'TN', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 1004,
+        width: 1005,
+        buckets: [makeBucket(H1936, H1936, 7), ...Array.from({ length: 999 }, () => null), makeBucket(H1936 + 1000, H1936 + 1000, 9), ...Array.from({ length: 4 }, () => null)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const tnCur = new BoundedSeriesCursor();
+    const stepTrailing = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'tn', key: 'tn', name: 'TN', color: LANE_THEME.amber, parts: [{ series: tnCur.advance(trailingNullTiled, h, { headValue: knownValue(7) }), within: [[H1936, H1936]] }], head: { value: 7 } },
+    ], h);
+    stepTrailing(H1936 + 998);
+    denseReads = 0;
+    stepTrailing(H1936 + 999);
+    assert.ok(denseReads < 40, `trailing nulls after early observation do not force dense band resample (reads=${denseReads})`);
+    const wakeCached = stepTrailing(H1936 + 1001);
+    const wakeUncached = (() => {
+      timeChartCacheState.enabled = false;
+      try { return stepTrailing(H1936 + 1001); }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(wakeCached, wakeUncached, 'waking up after trailing nulls matches uncached');
+
+    const firstBreakTiled: TiledLine = {
+      tag: 'FBRK', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 19,
+        width: 2,
+        buckets: [
+          makeBucket(H1936, H1936, 3),
+          { ...makeBucket(H1936 + 10, H1936 + 19, 5), firstBreak: true },
+        ],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 3 },
+          { firstHour: H1936 + 12, lastHour: H1936 + 19, value: 5, breakBefore: true },
+        ],
+        tiles: { binHours: 10, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const fbSeries = boundTiledSeries({ ...firstBreakTiled, summary: { ...firstBreakTiled.summary, runs: undefined } }, displayedHour(H1936 + 12), {
+      prefixRuns: firstBreakTiled.summary.runs,
+    });
+    const fbRes = buildBoundedStack([{ id: 'fbk', key: 'fbk', name: 'FBK', color: LANE_THEME.blue, parts: [{ series: fbSeries }] }], H1936 + 12);
+    assert.deepEqual(fbRes.hours, [H1936, H1936 + 1, H1936 + 12], 'clipped firstBreak bucket preserves the gap on first render');
+    assert.deepEqual(fbRes.bands[0]!.values, [3, null, 5]);
+
+    const mixedRunTiled: TiledLine = {
+      tag: 'MR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 30,
+        width: 31,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936 + 10, value: 10 },
+          { firstHour: H1936 + 11, lastHour: H1936 + 30, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedBucketTiled: TiledLine = {
+      tag: 'MB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 17,
+        width: 2,
+        buckets: [makeBucket(H1936, H1936 + 8, 5), makeBucket(H1936 + 9, H1936 + 17, 6)],
+        tiles: { binHours: 9, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedInputs = [
+      { id: 'mr', key: 'mr', name: 'MR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(mixedRunTiled, displayedHour(H1936 + 15)) }] },
+      { id: 'mb', key: 'mb', name: 'MB', color: LANE_THEME.amber, parts: [{ series: boundTiledSeries(mixedBucketTiled, displayedHour(H1936 + 15), { prefixRuns: [{ firstHour: H1936 + 9, lastHour: H1936 + 15, value: 6 }] }) }] },
+    ];
+    assert.deepEqual(buildBoundedStack(mixedInputs, H1936 + 15).hours, [H1936, H1936 + 8, H1936 + 9, H1936 + 10, H1936 + 11, H1936 + 15], 'mixed run and bucket bands preserve run transitions across prefix boundary');
+
+    const shrinkRunTiled: TiledLine = {
+      tag: 'SR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936, value: 1 }, { firstHour: H1936 + 10, lastHour: H1936 + 10, value: 2 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking run slice drops gap revealed by removed observation',
+    );
+    const shrinkBucketTiled: TiledLine = {
+      tag: 'SB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [makeBucket(H1936, H1936, 1), ...Array.from({ length: 9 }, () => null), makeBucket(H1936 + 10, H1936 + 10, 2)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking bucket slice drops gap revealed by removed observation',
+    );
+
+    const shortBandTiled: TiledLine = {
+      tag: 'SHORT', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936, width: 1, buckets: [makeBucket(H1936, H1936, 5)], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const shCur = new BoundedSeriesCursor();
+    const stepShort = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'sh', key: 'sh', name: 'SH', color: LANE_THEME.amber, parts: [{ series: shCur.advance(shortBandTiled, h), within: [[H1936, H1936]] }] },
+    ], h);
+    stepShort(H1936 + 998);
+    denseReads = 0;
+    stepShort(H1936 + 999);
+    assert.ok(denseReads < 40, `exhausted short band does not force dense band resample (reads=${denseReads})`);
+
+    let periodicReads = 0;
+    const periodicBuckets = Array.from({ length: 1005 }, (_, i) => {
+      if (i % 3 !== 0) return null;
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 7));
+      return new Proxy(b, { get: (target, prop) => { periodicReads++; return Reflect.get(target, prop); } });
+    });
+    const periodicTiled: TiledLine = {
+      tag: 'PER', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: periodicBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const perCur = new BoundedSeriesCursor();
+    const stepPeriodic = (h: number) => buildBoundedStack([
+      { id: 'p', key: 'p', name: 'P', color: LANE_THEME.blue, parts: [{ series: perCur.advance(periodicTiled, h) }] },
+    ], h);
+    stepPeriodic(H1936 + 998);
+    for (const offset of [999, 1000, 1001, 1002]) {
+      periodicReads = 0;
+      const got = stepPeriodic(H1936 + offset);
+      assert.ok(periodicReads < 30, `periodic gaps stay O(1) at offset ${offset} (reads=${periodicReads})`);
+      const ref = (() => {
+        timeChartCacheState.enabled = false;
+        try { return stepPeriodic(H1936 + offset); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(got, ref, `periodic gaps match uncached at offset ${offset}`);
+    }
+
+    let wideReads = 0;
+    const wideRaw = Array.from({ length: 10000 }, (_, i) => (i === 0 ? makeBucket(H1936, H1936, 1) : i === 9999 ? makeBucket(H1936 + 9999, H1936 + 9999, 2) : null));
+    const wideBuckets = new Proxy(wideRaw, {
+      get: (target, prop) => {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) wideReads++;
+        return Reflect.get(target, prop);
+      },
+    });
+    const wideTiled: TiledLine = {
+      tag: 'WIDE', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 9999, width: 10000, buckets: wideBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const wideSlice = boundTiledSeries(wideTiled, displayedHour(H1936 + 9999));
+    const wideInputs = [{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: wideSlice }] }];
+    buildBoundedStack(wideInputs, H1936 + 3);
+    wideReads = 0;
+    const wideAt4 = buildBoundedStack(wideInputs, H1936 + 4);
+    assert.deepEqual(wideAt4.hours, [H1936, H1936 + 4]);
+    assert.ok(wideReads < 20, `wide slice caps null-bucket scan at requested hour (reads=${wideReads})`);
+  });
+});
