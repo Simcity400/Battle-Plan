@@ -19,6 +19,7 @@ import type { TimeChartModel } from '../../families/time-chart/model.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
 import { demandHistoryRange } from '../fuel/fuelConsumption.ts';
 import { detailWindows } from '../fuel/fuelDrill.ts';
+import '../definitions.ts';
 import { FAMILY_VIEW_UI, familyViewOptionFields, widgetViewOptions } from '../manifest.ts';
 import { OPTIONS as FUEL_BRANCHES_OPTIONS } from './definition.ts';
 import {
@@ -77,6 +78,16 @@ test('fuel-branches shares the reached country option across bars and over-time 
   const timeResolved = widgetViewOptions('fuel-branches', afterSwitch, 'time');
   assert.equal(barsResolved.country, token);
   assert.equal(timeResolved.country, token, 'switching bars -> time preserves the chosen holder');
+  assert.equal(
+    widgetViewOptions('division-equipment', { 'country@equipment': token }, 'equipment').country,
+    token,
+    'existing division-equipment dashboards keep reading legacy scoped country@equipment holders',
+  );
+  assert.equal(
+    widgetViewOptions('division-equipment', { 'country@template': token }, 'template').country,
+    token,
+    'existing division-equipment dashboards keep reading legacy scoped country@template holders',
+  );
 
   const dated = readDatedCountry(timeResolved.country, 'camp', 'b0');
   assert.ok(dated);
