@@ -452,6 +452,9 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     assert_eq!(one.total, [Some(100.0)], "one selected contributor of 20% does not make the world 20%");
     assert_eq!(one.bands.len(), 1);
     assert_eq!(one.bands[0].end_raw.as_deref(), Some("2000000"));
+    let other = one.other.expect("the selected country and the remaining contributions have separate bands");
+    assert_eq!(other.count, 2);
+    assert_eq!(other.end_raw.as_deref(), Some("10500000"));
 
     let gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_missing.as_deref(), Some("World tension withheld"), "the world end states why it is not known");
