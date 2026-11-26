@@ -2180,11 +2180,9 @@ pub mod tests {
 
     #[test]
     fn the_catalogues_defines_do_not_wait_on_scripted_localisation_reading() {
-        let (catalogue, _folder) = folder_catalogue(&[
-            ("common/defines/00_defines.lua", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }"),
-            ("common/country_tag_aliases/broken.txt", "alias = {"),
-        ]);
-        assert!(catalogue.scripted_content().is_err(), "the alias file is unreadable");
+        let (catalogue, _folder) = folder_catalogue(&[("common/defines/00_defines.lua", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }")]);
+        let refused = catalogue.scripted_content().err().expect("scripted localisation needs a define these defines lack");
+        assert!(refused.contains("MAX_SCRIPTED_LOC_RECURSION"), "{refused}");
         let defines = catalogue.defines().expect("the defines are their own read");
         assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 20.0);
     }
