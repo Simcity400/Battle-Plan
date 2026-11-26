@@ -243,11 +243,11 @@ impl<'q, 'a> Line<'q, 'a> {
             None => None,
             Some(back) => {
                 let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Ok(Vec::new())) };
-                if clock(start)?.and_then(|(_, read)| read) != Some(start) {
-                    return Ok(Ok(Vec::new()));
-                }
                 if let Some(reason) = self.query.holders.unknown_reason(start) {
                     return Ok(Err(unranked(reason)));
+                }
+                if clock(start)?.and_then(|(_, read)| read) != Some(start) {
+                    return Ok(Ok(Vec::new()));
                 }
                 match snapshot(start, &wanted, read::Keys::All)? {
                     Some(before) => Some((start, before)),
