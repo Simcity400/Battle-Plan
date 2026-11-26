@@ -290,7 +290,7 @@ impl ParamNode {
 
 fn request_hours() -> String {
     let table = request_fields();
-    let exact = |role: &str| role == "read" || role == "bucket";
+    let exact = |role: &str| role == "read";
     let mut every: std::collections::BTreeMap<String, Option<bool>> = std::collections::BTreeMap::new();
     let mut rows = Vec::with_capacity(table.len());
     let mut params = Vec::with_capacity(table.len());
@@ -319,7 +319,7 @@ fn request_hours() -> String {
         .join("\n");
     let (rows, params, every) = (rows.join("\n"), params.join("\n"), every.object());
     [
-        "export type HourRole = \"read\" | \"start\" | \"end\" | \"bucket\";".to_owned(),
+        "export type HourRole = \"read\" | \"start\" | \"end\";".to_owned(),
         format!("export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, HourRole>>>> = {{\n{rows}\n}};"),
         "/** Every field each product's request type names: a node holds named fields, a leaf a value, and any a value the contract does not spell out. */".to_owned(),
         format!("export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, \"node\" | \"leaf\" | \"any\">>>> = {{\n{names}\n}};"),

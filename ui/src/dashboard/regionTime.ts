@@ -57,7 +57,7 @@ export type ParamsFor<K extends string> = Unchecked & AnyRequestParams<GatedHour
   & (K extends keyof RequestParams<GatedHour, BoundHour> ? RequestParams<GatedHour, BoundHour>[K] : unknown);
 export type GatedParams = ParamsFor<string>;
 
-export const exactRole = (role: HourRole): boolean => role === 'read' || role === 'bucket';
+export const exactRole = (role: HourRole): boolean => role === 'read';
 
 export function requestFields(product: string): Readonly<Record<string, HourRole>> | null {
   return Object.hasOwn(REQUEST_HOURS, product) ? REQUEST_HOURS[product] : null;
