@@ -9,6 +9,7 @@ import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDecl
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
+import { NAME_LOADING } from '../../families/table/identityCell.ts';
 import type { TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import { formatCompactScalar, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
@@ -93,10 +94,11 @@ export function projectTradeTable(readView: BoundedReadView): TableModel {
   const subject = presentFlowEndpoint(readView, reply.endpoints[reply.subject]!);
   const rows: TableRow[] = reply.table.map(row => {
     const partner = presentFlowEndpoint(readView, reply.endpoints[row.partner]!);
-    const name: Value = partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
+    const name = partner.labelLoading ? notRecorded(NAME_LOADING)
+      : partner.labelMissing ? notRecorded(partner.unknown ?? 'Country name not recorded at this date') : knownValue(partner.label);
     const flags = partner.unknown || !partner.flag ? {} : { flags: [{ tag: partner.tag ?? partner.label, art: partner.flag }] };
     const cells: Record<string, TableRow['cells'][string]> = {
-      partner: { value: name, ...flags },
+      partner: { value: name, ...(partner.labelLoading ? { loading: true } : {}), ...flags },
       net: { value: signed(row.net, 'An amount with this partner was not recorded'), format: signedCellFormat },
     };
     reply.parts.forEach((part, at) => {
