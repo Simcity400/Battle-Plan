@@ -84,7 +84,7 @@ pub struct Captured {
 impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.outcomes = [super::failed_capture(TABLES[0], hour, force_full, reason); N];
-        self.states.reset(hour, force_full);
+        self.states.reset_hooked(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
     pub fn vacant() -> Self {
@@ -167,7 +167,7 @@ impl Captured {
     }
 
     pub fn reset_selections(&mut self, hour: i32, force_full: bool) {
-        self.states.reset(hour, force_full);
+        self.states.reset_hooked(hour, force_full);
         self.countries.reset_hooked(hour, force_full);
     }
 
@@ -218,7 +218,7 @@ impl Captured {
         self.buffers.recruitment_enabled =
             stores.is_none() && cfg!(any(test, feature = "test-support"));
         let full = force_full || stores.is_none();
-        self.states.reset(hour, full);
+        self.states.reset_hooked(hour, full);
         self.countries.reset_hooked(hour, full);
         if !should_walk(TABLES[0], hour, force_full) {
             self.outcomes = [Outcome::Unavailable {
@@ -236,13 +236,11 @@ impl Captured {
                 .map_err(crate::allocation::io);
             let states = scan_census.is_ok();
             for &state in &self.census {
-                let origin = stores.states.held(state);
-                self.states.scan_drifting(
-                    stores.states,
-                    state,
-                    Some(origin.unwrap_or(0)),
-                    origin == Some(1),
-                );
+                let origin = stores.states.held(state).unwrap_or(0);
+                self.states.scan(stores.states, state, Some(origin));
+                if origin != 0 {
+                    self.states.select(state);
+                }
             }
             stores.states.finish_scan();
             self.states.finish_pass(stores.states, states);
@@ -626,7 +624,8 @@ mod tests {
         assert_eq!((marked.states, marked.countries), (vec![], vec![2]));
         states.hold(1, 1);
         assert_eq!(read!(&watches, 25).states, [1]);
-        assert!(read!(&watches, 26).states.is_empty());
+        assert_eq!(read!(&watches, 26).states, [1]);
+        states.hold(1, 0);
         watches.boundary(true);
         let invalidated = read!(&watches, 27);
         assert!(invalidated.full);
