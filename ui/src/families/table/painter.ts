@@ -1,6 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
-import { measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
@@ -66,7 +65,6 @@ export interface FamilyTablePicture {
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
-  fittedTexts: Map<string, string>;
   maximaRows?: readonly FlatTableRow[];
   maximaHour?: number;
   maximaCols?: string;
@@ -84,7 +82,6 @@ export function createTablePicture(): FamilyTablePicture {
     rowMarks: [],
     cells: new Map(),
     ranks: [],
-    fittedTexts: new Map(),
   };
 }
 
@@ -333,7 +330,6 @@ export function drawFamilyTable(
   }
 
   let measurements = 0;
-  const fitCache = picture?.fittedTexts ?? new Map<string, string>();
 
   const measure = (text: string, font: string): number => {
     const before = textWidthCacheStats().misses;
@@ -344,15 +340,10 @@ export function drawFamilyTable(
 
   const fit = (text: string, font: string, maxWidth: number): string => {
     if (maxWidth <= 0) return '';
-    if (measure(text, font) <= maxWidth) return text;
-    const key = `${font}\u0000${Math.floor(maxWidth)}\u0000${text}`;
-    let cached = fitCache.get(key);
-    if (cached === undefined) {
-      cached = ellipsise(text, maxWidth, sample => measure(sample, font));
-      if (fitCache.size > 4096) fitCache.clear();
-      fitCache.set(key, cached);
-    }
-    return cached;
+    const before = textWidthCacheStats().misses;
+    const fitted = ellipsiseCanvasText(ctx, text, maxWidth, font);
+    measurements += textWidthCacheStats().misses - before;
+    return fitted;
   };
 
   let maximaCols = '';

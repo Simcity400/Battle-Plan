@@ -1,7 +1,7 @@
 
 import { valueStateText, type ValueStateProps } from '../components/valueStateText.ts';
 import type { Value } from '../families/value.ts';
-import { canvasMeasureText, textWidthRevision, type Canvas2D, type MeasureText } from './textWidth.ts';
+import { canvasMeasureText, TextMeasureScope, textWidthRevision, type Canvas2D, type MeasureText } from './textWidth.ts';
 
 export interface TooltipRow {
   detail?: string;
@@ -75,6 +75,7 @@ type TextRole = 'title' | 'row' | 'strong' | 'small';
 
 let metricsContext: Canvas2D | null | undefined;
 let heldMetrics: { readonly key: string; readonly metrics: TooltipMetrics | null } | null = null;
+const tooltipTextScope = new TextMeasureScope();
 
 function activeMetrics(): TooltipMetrics | null {
   if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return null;
@@ -196,33 +197,35 @@ export interface FitOptions { keep?: number; more?: (hidden: number) => string; 
 const moreRows = (hidden: number) => `${hidden} more`;
 
 export function fitTooltip(forms: Iterable<TooltipContent>, height: number, options: FitOptions = {}): TooltipContent {
-  const room = tooltipRoom(height);
-  const metrics = options.metrics === undefined ? activeMetrics() : options.metrics;
-  let first: TooltipContent | undefined;
-  let last: TooltipContent | undefined;
-  for (const form of forms) {
-    first ??= form;
-    last = form;
-    if (tooltipHeight(form, metrics) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
-  }
-  if (!first || !last) return { title: '', rows: [] };
-  const summary = last.rows.findIndex(row => Number.isSafeInteger(row.omittedRows) && (row.omittedRows ?? 0) > 0);
-  const omitted = summary < 0 ? 0 : last.rows[summary].omittedRows!;
-  const realRows = summary < 0 ? last.rows : [...last.rows.slice(0, summary), ...last.rows.slice(summary + 1)];
-  const inheritedKeep = summary < 0 ? 0 : last.rows.length - summary - 1;
-  const keep = Math.min(Math.max(0, options.keep ?? inheritedKeep), realRows.length);
-  const top = realRows.slice(0, realRows.length - keep);
-  const kept = realRows.slice(realRows.length - keep);
-  const more = (hidden: number): TooltipRow => ({ label: (options.more ?? moreRows)(hidden), tone: 'muted', omittedRows: hidden });
-  let cut: TooltipContent = last;
-  const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(omitted + top.length), ...kept] }, metrics);
-  if (needs(cut) > room && cut.description) cut = { ...cut, description: undefined };
-  if (needs(cut) > room && cut.note) cut = { ...cut, note: undefined };
-  let used = needs(cut);
-  let shown = 0;
-  while (shown < top.length && used + tooltipRowHeight(top[shown], metrics) <= room) used += tooltipRowHeight(top[shown++], metrics);
-  const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(omitted + top.length - shown), ...kept];
-  return { ...cut, rows, spoken: tooltipText(options.full ?? first) };
+  return tooltipTextScope.run(() => {
+    const room = tooltipRoom(height);
+    const metrics = options.metrics === undefined ? activeMetrics() : options.metrics;
+    let first: TooltipContent | undefined;
+    let last: TooltipContent | undefined;
+    for (const form of forms) {
+      first ??= form;
+      last = form;
+      if (tooltipHeight(form, metrics) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
+    }
+    if (!first || !last) return { title: '', rows: [] };
+    const summary = last.rows.findIndex(row => Number.isSafeInteger(row.omittedRows) && (row.omittedRows ?? 0) > 0);
+    const omitted = summary < 0 ? 0 : last.rows[summary].omittedRows!;
+    const realRows = summary < 0 ? last.rows : [...last.rows.slice(0, summary), ...last.rows.slice(summary + 1)];
+    const inheritedKeep = summary < 0 ? 0 : last.rows.length - summary - 1;
+    const keep = Math.min(Math.max(0, options.keep ?? inheritedKeep), realRows.length);
+    const top = realRows.slice(0, realRows.length - keep);
+    const kept = realRows.slice(realRows.length - keep);
+    const more = (hidden: number): TooltipRow => ({ label: (options.more ?? moreRows)(hidden), tone: 'muted', omittedRows: hidden });
+    let cut: TooltipContent = last;
+    const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(omitted + top.length), ...kept] }, metrics);
+    if (needs(cut) > room && cut.description) cut = { ...cut, description: undefined };
+    if (needs(cut) > room && cut.note) cut = { ...cut, note: undefined };
+    let used = needs(cut);
+    let shown = 0;
+    while (shown < top.length && used + tooltipRowHeight(top[shown], metrics) <= room) used += tooltipRowHeight(top[shown++], metrics);
+    const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(omitted + top.length - shown), ...kept];
+    return { ...cut, rows, spoken: tooltipText(options.full ?? first) };
+  });
 }
 
 type Listener = () => void;
@@ -273,6 +276,7 @@ export function hideTooltip(owner: string): void {
   if (state?.owner !== owner) return;
   state = null;
   key = '';
+  tooltipTextScope.release();
   emit();
 }
 

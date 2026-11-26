@@ -1,5 +1,5 @@
-import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
-import { textWidthRevision, type MeasureText } from '../../charts/textWidth.ts';
+import { layoutEndLabels } from '../../charts/labels.ts';
+import { ellipsiseMeasuredText, textWidthRevision, type MeasureText } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
@@ -184,54 +184,35 @@ interface CachedYAxis {
   readonly left: number;
 }
 
-interface CachedEllipsis {
-  readonly text: string;
-  readonly width: number;
-}
-
 interface MeasureCacheBucket {
   revision: number;
   readonly yAxis: Map<string, CachedYAxis>;
-  readonly ellipsis: Map<string, CachedEllipsis>;
 }
 
 const Y_AXIS_CACHE_MAX = 64;
-const ELLIPSIS_CACHE_MAX = 256;
 const measureCaches = new WeakMap<MeasureText, MeasureCacheBucket>();
 
 function measureCacheOf(measure: MeasureText): MeasureCacheBucket {
   const rev = textWidthRevision();
   let bucket = measureCaches.get(measure);
   if (!bucket) {
-    bucket = { revision: rev, yAxis: new Map(), ellipsis: new Map() };
+    bucket = { revision: rev, yAxis: new Map() };
     measureCaches.set(measure, bucket);
   } else if (bucket.revision !== rev) {
     bucket.revision = rev;
     bucket.yAxis.clear();
-    bucket.ellipsis.clear();
   }
   return bucket;
 }
 
-function cachedEllipsise(
+function fitEndLabelName(
   text: string,
   maxWidth: number,
   font: string,
   measure: MeasureText,
-  bucket: MeasureCacheBucket | null,
-): CachedEllipsis {
-  if (!bucket) {
-    const fitted = ellipsise(text, maxWidth, s => measure(s, font));
-    return { text: fitted, width: measure(fitted, font) };
-  }
-  const key = `${font}\u0000${maxWidth}\u0000${text}`;
-  const hit = bucket.ellipsis.get(key);
-  if (hit !== undefined) return hit;
-  const fitted = ellipsise(text, maxWidth, s => measure(s, font));
-  const entry: CachedEllipsis = { text: fitted, width: measure(fitted, font) };
-  if (bucket.ellipsis.size >= ELLIPSIS_CACHE_MAX) bucket.ellipsis.clear();
-  bucket.ellipsis.set(key, entry);
-  return entry;
+): { readonly text: string; readonly width: number } {
+  const fitted = ellipsiseMeasuredText(text, maxWidth, font, measure);
+  return { text: fitted, width: measure(fitted, font) };
 }
 
 function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number], scale: number, headInView: boolean): readonly [number, number] | null {
@@ -638,7 +619,7 @@ export function layoutTimeChart(
         ? s.endLabel.shortName
         : s.endLabel.name;
       const showName = !!(rawName && (!small || s.endLabel.shortName !== undefined || (!s.endLabel.flag && !s.endLabel.icon)));
-      const fittedNameEntry = showName ? cachedEllipsise(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure, cacheBucket) : null;
+      const fittedNameEntry = showName ? fitEndLabelName(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure) : null;
       const nameText = fittedNameEntry ? fittedNameEntry.text : null;
       const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
@@ -705,7 +686,7 @@ export function layoutTimeChart(
           ? band.endLabel.shortName
           : band.endLabel.name;
         const showName = !!(rawName && (!narrow || !band.endLabel.flag));
-        const fittedNameEntry = showName ? cachedEllipsise(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure, cacheBucket) : null;
+        const fittedNameEntry = showName ? fitEndLabelName(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure) : null;
         const nameText = fittedNameEntry ? fittedNameEntry.text : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
@@ -804,7 +785,7 @@ export function layoutTimeChart(
           fittedName = null;
           fittedNameW = 0;
         } else if (fittedNameW > nameBudget) {
-          const entry = cachedEllipsise(fittedName, nameBudget, labelNameFont, measure, cacheBucket);
+          const entry = fitEndLabelName(fittedName, nameBudget, labelNameFont, measure);
           fittedName = entry.text;
           fittedNameW = entry.width;
         }

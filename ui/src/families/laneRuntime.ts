@@ -1,3 +1,4 @@
+import { TextMeasureScope } from '../charts/textWidth.ts';
 import type { Fact } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
@@ -145,6 +146,8 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   readonly canvas: OffscreenCanvas;
   readonly ctx: OffscreenCanvasRenderingContext2D;
   readonly art: LaneArtCache;
+  readonly layoutText: TextMeasureScope;
+  readonly paintText: TextMeasureScope;
   wake: () => void;
   artRevision: number;
   readers: Revisions | null;
@@ -430,6 +433,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
     const held: Held<TBinding, TModel, TLayout> = {
       canvas, ctx, art,
+      layoutText: new TextMeasureScope(),
+      paintText: new TextMeasureScope(),
       wake: wakerOf(widget),
       artRevision: 0,
       readers: null, snapshot: null, artResolutions: undefined, index: null, identity: undefined,
@@ -476,6 +481,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (!held) return;
       held.flusher.cancel();
       held.art.dispose();
+      held.layoutText.release();
+      held.paintText.release();
       releaseIndex(held.snapshot);
       state.delete(stateKey);
     },
@@ -606,6 +613,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (status === 'waiting') return WAITING;
       if (typeof status === 'object') {
         keep.flusher.cancel();
+        keep.layoutText.release();
+        keep.paintText.release();
         keep.drawn = null;
         keep.drawKey = [];
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
@@ -614,7 +623,9 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
       if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
         const previous = continuity === 'continues' ? keep.drawn : null;
-        keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: effectiveNow, speed: effectiveSpeed });
+        keep.layout = keep.layoutText.run(() =>
+          family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: effectiveNow, speed: effectiveSpeed }),
+        );
         keep.layoutKey = layoutKey;
       }
       const layout = keep.layout;
@@ -656,10 +667,20 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
           keep.art.requestVisible(shown, keep.artUrls ?? projected.artUrls);
         }
         const drawCanvas = () => {
+          keep.paintText.begin();
           keep.ctx.save();
           keep.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          const result = family.paint(keep.ctx, frame);
+          let result: ReturnType<typeof family.paint>;
+          try {
+            result = family.paint(keep.ctx, frame);
+          } catch (error) {
+            keep.ctx.restore();
+            keep.paintText.abort();
+            throw error;
+          }
           keep.ctx.restore();
+          if (typeof result === 'object' && !result.drew) keep.paintText.abort();
+          else keep.paintText.commit();
           return result;
         };
         const painted = keep.content && family.keepsCanvas?.(keep.ctx, frame) ? { drew: false, next: false } : drawCanvas();

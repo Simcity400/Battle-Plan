@@ -1,7 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
 import { readableColour } from '../../charts/palette.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawArtSlot,
   drawFlagSlot,
@@ -107,8 +106,7 @@ export interface MeterLayout {
 }
 
 function measureWithFont(ctx: Canvas2D, font: string, text: string): number {
-  ctx.font = font;
-  return textWidth(ctx, text);
+  return measureCanvasText(ctx, text, font);
 }
 
 export function layoutMeterModel(
@@ -332,26 +330,28 @@ function drawSectionHeaderBlock(
   ctx.save();
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.font = `600 12px ${theme.font}`;
+  const titleFont = `600 12px ${theme.font}`;
+  ctx.font = titleFont;
   ctx.fillStyle = theme.text;
   let rightLimit = block.x + block.width;
   if (block.rightCaption) {
-    ctx.font = `400 11px ${theme.font}`;
-    const capW = textWidth(ctx, block.rightCaption);
+    const capFont = `400 11px ${theme.font}`;
+    ctx.font = capFont;
+    const capW = measureCanvasText(ctx, block.rightCaption, capFont);
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.fillText(block.rightCaption, block.x + block.width, midY);
     rightLimit -= capW + 10;
     ctx.textAlign = 'left';
   }
-  ctx.font = `600 12px ${theme.font}`;
+  ctx.font = titleFont;
   ctx.fillStyle = theme.text;
   const countW = block.count ? measureWithFont(ctx, `400 11.5px ${theme.font}`, block.count) + 8 : 0;
   const maxTitleW = Math.max(24, rightLimit - block.x - countW);
-  const titleText = ellipsise(block.title, maxTitleW, s => textWidth(ctx, s));
+  const titleText = ellipsiseCanvasText(ctx, block.title, maxTitleW, titleFont);
   ctx.fillText(titleText, block.x, midY);
   if (block.count) {
-    const drawnTitleW = textWidth(ctx, titleText);
+    const drawnTitleW = measureCanvasText(ctx, titleText, titleFont);
     ctx.font = `400 11.5px ${theme.font}`;
     ctx.fillStyle = theme.muted;
     ctx.fillText(block.count, block.x + drawnTitleW + 8, midY);
@@ -426,15 +426,17 @@ function drawStandardMeterRow(
 
   const showSubtitle = width >= 440 && !!row.subtitle;
   if (showSubtitle) {
+    const nameFont = `${LABEL_WEIGHT} 13px ${theme.font}`;
+    const subFont = `400 11px ${theme.font}`;
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = `${LABEL_WEIGHT} 13px ${theme.font}`;
+    ctx.font = nameFont;
     ctx.fillStyle = row.muted ? theme.muted : theme.text;
-    ctx.fillText(ellipsise(row.name, nameW, s => textWidth(ctx, s)), cursorX, y + 12.5);
-    ctx.font = `400 11px ${theme.font}`;
+    ctx.fillText(ellipsiseCanvasText(ctx, row.name, nameW, nameFont), cursorX, y + 12.5);
+    ctx.font = subFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(ellipsise(row.subtitle!, nameW, s => textWidth(ctx, s)), cursorX, y + 26);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.subtitle!, nameW, subFont), cursorX, y + 26);
     ctx.restore();
   } else {
     drawNameSlot(ctx, row.name, cursorX, y, nameW, height, theme, {
@@ -447,12 +449,13 @@ function drawStandardMeterRow(
 
   let rightX = x + width;
   if (showDays && row.secondary) {
+    const daysFont = `400 12px ${theme.font}`;
     ctx.save();
-    ctx.font = `400 12px ${theme.font}`;
+    ctx.font = daysFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(row.secondary, daysW, s => textWidth(ctx, s)), rightX, midY);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.secondary, daysW, daysFont), rightX, midY);
     ctx.restore();
   } else if (showDays && row.sparkline && row.sparkline.length >= 2) {
     const pts = row.sparkline;
@@ -505,9 +508,10 @@ function drawStandardMeterRow(
   if (row.figureMissing) {
     const label = row.figureMissingLabel;
     if (label) {
+      const missingFont = `400 11.5px ${theme.font}`;
       ctx.save();
-      ctx.font = `400 11.5px ${theme.font}`;
-      const lw = textWidth(ctx, label);
+      ctx.font = missingFont;
+      const lw = measureCanvasText(ctx, label, missingFont);
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
@@ -582,15 +586,17 @@ function drawColumnMeterRow(
   const barW = Math.max(40, width - nameW - valW - 20);
 
   if (!narrow && row.subtitle) {
+    const nameFont = `${LABEL_WEIGHT} 12px ${theme.font}`;
+    const subFont = `400 11px ${theme.font}`;
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = `${LABEL_WEIGHT} 12px ${theme.font}`;
+    ctx.font = nameFont;
     ctx.fillStyle = row.muted ? theme.muted : theme.text;
-    ctx.fillText(ellipsise(row.name, nameW, s => textWidth(ctx, s)), x, y + 13);
-    ctx.font = `400 11px ${theme.font}`;
+    ctx.fillText(ellipsiseCanvasText(ctx, row.name, nameW, nameFont), x, y + 13);
+    ctx.font = subFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(ellipsise(row.subtitle, nameW, s => textWidth(ctx, s)), x, y + 27);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.subtitle, nameW, subFont), x, y + 27);
     ctx.restore();
   } else {
     drawNameSlot(ctx, row.name, x, y, nameW, height, theme, {
@@ -639,20 +645,22 @@ function drawColumnMeterRow(
     } else {
       const compact = row.compactFigure ?? row.figure ?? row.secondary ?? '';
       if (compact) {
+        const compactFont = `${VALUE_WEIGHT} 12px ${theme.font}`;
         ctx.save();
-        ctx.font = `${VALUE_WEIGHT} 12px ${theme.font}`;
+        ctx.font = compactFont;
         ctx.fillStyle = row.muted ? theme.muted : theme.text;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(ellipsise(compact, valW, s => textWidth(ctx, s)), rightX, midY);
+        ctx.fillText(ellipsiseCanvasText(ctx, compact, valW, compactFont), rightX, midY);
         ctx.restore();
       }
     }
   } else if (row.figureMissing) {
     const label = row.figureMissingLabel || 'Not recorded';
+    const missingFont = `400 11.5px ${theme.font}`;
     ctx.save();
-    ctx.font = `400 11.5px ${theme.font}`;
-    const lw = textWidth(ctx, label);
+    ctx.font = missingFont;
+    const lw = measureCanvasText(ctx, label, missingFont);
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -662,21 +670,23 @@ function drawColumnMeterRow(
   } else {
     const masteryRight = row.secondary && row.figure ? rightX - dailyW - 10 : rightX;
     if (row.secondary) {
+      const secFont = SECONDARY_FONT(theme);
       ctx.save();
-      ctx.font = SECONDARY_FONT(theme);
+      ctx.font = secFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(row.secondary, row.figure ? dailyW : valW, s => textWidth(ctx, s)), rightX, midY);
+      ctx.fillText(ellipsiseCanvasText(ctx, row.secondary, row.figure ? dailyW : valW, secFont), rightX, midY);
       ctx.restore();
     }
     if (row.figure) {
+      const figFont = FIGURE_FONT(theme);
       ctx.save();
-      ctx.font = FIGURE_FONT(theme);
+      ctx.font = figFont;
       ctx.fillStyle = row.muted ? theme.muted : theme.text;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(row.figure, valW - (row.secondary ? dailyW + 10 : 0), s => textWidth(ctx, s)), masteryRight, midY);
+      ctx.fillText(ellipsiseCanvasText(ctx, row.figure, valW - (row.secondary ? dailyW + 10 : 0), figFont), masteryRight, midY);
       ctx.restore();
     }
   }
@@ -711,39 +721,41 @@ function drawCipherMeterRow(
     let cx = x;
     drawFlagSlot(ctx, cx, flagY, toArtSlotState(resolveCachedArt(row.pair.ownerFlag.result, artCache), row.pair.ownerFlag.tag), theme, { width: 20, height: 13 });
     cx += 20;
+    const pairFont = `400 12px ${theme.font}`;
     if (wide) {
       cx += 6;
       const eachNameW = Math.max(36, Math.floor((pairW - 68) / 2));
       ctx.save();
-      ctx.font = `400 12px ${theme.font}`;
+      ctx.font = pairFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      const ownerShown = ellipsise(row.pair.ownerName, eachNameW, s => textWidth(ctx, s));
+      const ownerShown = ellipsiseCanvasText(ctx, row.pair.ownerName, eachNameW, pairFont);
       ctx.fillText(ownerShown, cx, midY);
-      cx += Math.min(eachNameW, textWidth(ctx, ownerShown)) + 6;
+      cx += Math.min(eachNameW, measureCanvasText(ctx, ownerShown, pairFont)) + 6;
       ctx.restore();
     } else {
       cx += 5;
     }
+    const arrowFont = `400 11px ${theme.font}`;
     ctx.save();
-    ctx.font = `400 11px ${theme.font}`;
+    ctx.font = arrowFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText('\u2192', cx, midY);
-    cx += textWidth(ctx, '\u2192') + 5;
+    cx += measureCanvasText(ctx, '\u2192', arrowFont) + 5;
     ctx.restore();
 
     drawFlagSlot(ctx, cx, flagY, toArtSlotState(resolveCachedArt(row.pair.targetFlag.result, artCache), row.pair.targetFlag.tag), theme, { width: 20, height: 13 });
     cx += 26;
     const remW = Math.max(24, x + pairW - cx);
     ctx.save();
-    ctx.font = `400 12px ${theme.font}`;
+    ctx.font = pairFont;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(row.pair.targetName, remW, s => textWidth(ctx, s)), cx, midY);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.pair.targetName, remW, pairFont), cx, midY);
     ctx.restore();
   }
 
@@ -784,12 +796,13 @@ function drawChipLineBlock(
   drawFlagSlot(ctx, block.x, Math.round(firstMidY - 6.5), toArtSlotState(resolveCachedArt(block.ownerFlag.result, artCache), block.ownerFlag.tag), theme, { width: 20, height: 13 });
   if (block.showOwnerName) {
     const maxW = Math.max(24, block.ownerWidth - 26);
+    const ownerFont = `400 12px ${theme.font}`;
     ctx.save();
-    ctx.font = `400 12px ${theme.font}`;
+    ctx.font = ownerFont;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(block.ownerName, maxW, s => textWidth(ctx, s)), block.x + 26, firstMidY);
+    ctx.fillText(ellipsiseCanvasText(ctx, block.ownerName, maxW, ownerFont), block.x + 26, firstMidY);
     ctx.restore();
   }
 
@@ -805,13 +818,14 @@ function drawChipLineBlock(
     cx += 18;
     if (block.showTargetName) {
       cx += 5;
+      const chipFont = `${LABEL_WEIGHT} 12px ${theme.font}`;
       ctx.save();
-      ctx.font = `${LABEL_WEIGHT} 12px ${theme.font}`;
+      ctx.font = chipFont;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText(chip.targetName, cx, midY);
-      cx += textWidth(ctx, chip.targetName);
+      cx += measureCanvasText(ctx, chip.targetName, chipFont);
       ctx.restore();
     }
     if (block.showDate) {

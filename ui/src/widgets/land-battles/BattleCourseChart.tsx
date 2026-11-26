@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useMemo, useRef } from 'react';
 import type { Run } from '../../charts/series';
 import { drawingSurface, sizeCanvas, watchCanvasSize } from '../../charts/surface';
-import { canvasMeasureText } from '../../charts/textWidth.ts';
+import { canvasMeasureText, TextMeasureScope } from '../../charts/textWidth.ts';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import { useFamilyTheme } from '../../families/host/theme.ts';
 import { formatDateHover, formatScalar } from '../../families/valueFormat.ts';
@@ -67,20 +67,23 @@ export default function BattleCourseChart({ title, sides, start, until }: {
     if (!surface.context || !theme) return;
     const context = surface.context;
     const measure = canvasMeasureText(context);
+    const textScope = new TextMeasureScope();
     const font = theme?.font ?? "'Segoe UI', system-ui, sans-serif";
     const paint = () => {
-      const { layoutWidth, layoutHeight, backing } = size.read();
-      sizeCanvas(surface.canvas, backing.width, backing.height);
-      const base = layoutTimeChart(model, layoutWidth, layoutHeight, font, measure);
-      hover.current.layout = base;
-      const parsed = parseChartInspect(hover.current.inspect);
-      const shown = parsed?.kind === 'label' || parsed?.kind === 'line' ? hoverTimeChartLayout(base, parsed.seriesId) : base;
-      drawTimeChart(context, model, shown, theme, hover.current.inspect, backing.scaleX);
+      textScope.run(() => {
+        const { layoutWidth, layoutHeight, backing } = size.read();
+        sizeCanvas(surface.canvas, backing.width, backing.height);
+        const base = layoutTimeChart(model, layoutWidth, layoutHeight, font, measure);
+        hover.current.layout = base;
+        const parsed = parseChartInspect(hover.current.inspect);
+        const shown = parsed?.kind === 'label' || parsed?.kind === 'line' ? hoverTimeChartLayout(base, parsed.seriesId) : base;
+        drawTimeChart(context, model, shown, theme, hover.current.inspect, backing.scaleX);
+      });
     };
     hover.current.paint = paint;
     const size = watchCanvasSize(element, paint);
     paint();
-    return () => { size.disconnect(); hideTooltip(tooltipId); };
+    return () => { size.disconnect(); textScope.release(); hideTooltip(tooltipId); };
   }, [model, theme, tooltipId]);
 
   const leave = () => {

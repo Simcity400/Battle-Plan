@@ -1,4 +1,4 @@
-import { measureCanvasText, type Canvas2D } from './textWidth.ts';
+import { cachedGraphemes, ellipsiseCanvasText, measureCanvasText, type Canvas2D } from './textWidth.ts';
 
 export interface EndLabel { id: string; y: number; height: number }
 
@@ -34,7 +34,6 @@ export function fitLabelWidth<T = string>(texts: Iterable<T>, measure: (text: T)
 }
 
 const ELLIPSIS = '\u2026';
-const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const WORDS = new Intl.Segmenter(undefined, { granularity: 'word' });
 const WHITESPACE = /^\s+$/;
 const BREAK_AFTER = /^[-–—/·]$/;
@@ -54,7 +53,7 @@ export function labelFitsTwoLines(rowHeight: number, fontSize: number): boolean 
 }
 
 export function graphemes(text: string): string[] {
-  return Array.from(GRAPHEMES.segment(text), part => part.segment);
+  return cachedGraphemes(text).slice();
 }
 
 export interface FittedLine {
@@ -96,16 +95,8 @@ export function ellipsise(text: string, width: number, measure: (text: string) =
   if (!text || width <= 0) return '';
   if (measure(text) <= width) return text;
   if (measure(ELLIPSIS) > width) return '';
-  const parts = graphemes(text);
+  const parts = cachedGraphemes(text);
   return fitPrefix(parts, ELLIPSIS, parts.length, width, measure);
-}
-
-export function fitLine(text: string, width: number, measure: (text: string) => number): FittedLine {
-  if (!text) return { text: '', truncated: false, full: '' };
-  if (width <= 0) return { text: '', truncated: true, full: text };
-  if (measure(text) <= width) return { text, truncated: false, full: text };
-  const cut = ellipsise(text, width, measure);
-  return { text: cut, truncated: true, full: text };
 }
 
 type SplitPair = readonly [string, string];
@@ -225,7 +216,7 @@ export function fitLabel(
     return { lines: single ? [single] : [], truncated: true, full: text };
   }
 
-  const parts = graphemes(text);
+  const parts = cachedGraphemes(text);
   const words = wordSplits(parts);
   const wordPick = pickSplit(words, width, measure);
   if (wordPick.exact) return { lines: [wordPick.exact[0], wordPick.exact[1]], truncated: false, full: text };
@@ -256,12 +247,27 @@ export function drawFittedLabel(
 ): FittedLabel {
   if (style.font) ctx.font = style.font;
   const font = style.font ?? ctx.font;
-  const measureFn = measure ?? (value => measureCanvasText(ctx, value, font));
-  const fitted = fitLabel(text, width, measureFn, {
-    maxLines: style.maxLines,
-    rowHeight: style.rowHeight,
-    fontSize: style.fontSize,
-  });
+  const maxLines = style.maxLines
+    ?? (style.rowHeight !== undefined
+      ? (labelFitsTwoLines(style.rowHeight, style.fontSize) ? 2 : 1)
+      : 2);
+  let fitted: FittedLabel;
+  if (!measure && maxLines <= 1) {
+    if (!text) fitted = { lines: [], truncated: false, full: '' };
+    else if (width <= 0) fitted = { lines: [], truncated: true, full: text };
+    else if (measureCanvasText(ctx, text, font) <= width) fitted = { lines: [text], truncated: false, full: text };
+    else {
+      const single = ellipsiseCanvasText(ctx, text, width, font);
+      fitted = { lines: single ? [single] : [], truncated: true, full: text };
+    }
+  } else {
+    const measureFn = measure ?? (value => measureCanvasText(ctx, value, font));
+    fitted = fitLabel(text, width, measureFn, {
+      maxLines: style.maxLines,
+      rowHeight: style.rowHeight,
+      fontSize: style.fontSize,
+    });
+  }
   if (fitted.lines.length === 1) {
     ctx.fillText(fitted.lines[0]!, x, centreY);
   } else if (fitted.lines.length > 1) {

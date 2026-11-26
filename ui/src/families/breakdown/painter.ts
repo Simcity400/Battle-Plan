@@ -1,5 +1,4 @@
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawBar,
   drawChevron,
@@ -41,33 +40,34 @@ export interface BreakdownPaintInput {
   readonly artCache?: LaneArtCache;
 }
 
-function fitText(ctx: Canvas2D, text: string, maxWidth: number): string {
+function fitText(ctx: Canvas2D, text: string, maxWidth: number, font: string): string {
   if (maxWidth <= 0) return '';
-  return ellipsise(text, maxWidth, s => textWidth(ctx, s));
+  return ellipsiseCanvasText(ctx, text, maxWidth, font);
 }
 
-function drawPartName(ctx: Canvas2D, part: BreakdownPart, x: number, cy: number, maxWidth: number, theme: FamilyTheme): void {
+function drawPartName(ctx: Canvas2D, part: BreakdownPart, x: number, cy: number, maxWidth: number, theme: FamilyTheme, font: string): void {
   let at = x;
   let room = maxWidth;
   if (part.nameMissing) {
-    const { font, fillStyle, textAlign, textBaseline } = ctx;
+    const { fillStyle, textAlign, textBaseline } = ctx;
     const mark = drawMissingMark(ctx, at, cy, 10, theme);
     Object.assign(ctx, { font, fillStyle, textAlign, textBaseline });
     at += mark.width + 5;
     room -= mark.width + 5;
   }
-  ctx.fillText(fitText(ctx, part.name, room), at, cy);
+  ctx.fillText(fitText(ctx, part.name, room, font), at, cy);
 }
 
 function drawComparison(ctx: Canvas2D, comparison: BreakdownComparison, box: Rect, cy: number, theme: FamilyTheme): void {
   const right = box.x + box.width - (comparison.partial ? 12 : 0);
   if (comparison.partial) drawPartialTab(ctx, right + 6, cy, theme);
+  const valFont = `500 12px ${theme.font}`;
   ctx.save();
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'right';
-  ctx.font = `500 12px ${theme.font}`;
+  ctx.font = valFont;
   ctx.fillStyle = theme.text;
-  const valW = textWidth(ctx, comparison.value);
+  const valW = measureCanvasText(ctx, comparison.value, valFont);
   ctx.fillText(comparison.value, right, cy);
   ctx.font = `400 12px ${theme.font}`;
   ctx.fillStyle = theme.muted;
@@ -84,17 +84,19 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
 
   let cursor = rect.x;
 
-  ctx.font = `600 22px ${theme.font}`;
+  const totalFont = `600 22px ${theme.font}`;
+  ctx.font = totalFont;
   ctx.fillStyle = theme.text;
   ctx.fillText(total.text, cursor, cy);
-  cursor += textWidth(ctx, total.text);
+  cursor += measureCanvasText(ctx, total.text, totalFont);
 
+  const unitFont = `400 12px ${theme.font}`;
   if (total.unit) {
     cursor += 4;
-    ctx.font = `400 12px ${theme.font}`;
+    ctx.font = unitFont;
     ctx.fillStyle = theme.muted;
     ctx.fillText(total.unit, cursor, cy + 3);
-    cursor += textWidth(ctx, total.unit);
+    cursor += measureCanvasText(ctx, total.unit, unitFont);
   }
 
   if (partialTabRect) {
@@ -110,9 +112,9 @@ function drawTotalLine(ctx: Canvas2D, line: TotalLineLayout, theme: FamilyTheme)
 
   if (periodLabel && rightEdge > cursor + 24) {
     ctx.textAlign = 'left';
-    ctx.font = `400 12px ${theme.font}`;
+    ctx.font = unitFont;
     ctx.fillStyle = theme.muted;
-    const shown = fitText(ctx, periodLabel, rightEdge - cursor - 12);
+    const shown = fitText(ctx, periodLabel, rightEdge - cursor - 12, unitFont);
     ctx.fillText(shown, cursor + 12, cy + 2);
   }
 
@@ -170,12 +172,13 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       }
 
       const textMaxW = Math.max(10, row.nameX + row.nameWidth - cursorX);
+      const nameFont = `400 12px ${theme.font}`;
       ctx.save();
-      ctx.font = `400 12px ${theme.font}`;
+      ctx.font = nameFont;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      drawPartName(ctx, row.part, cursorX, cy, textMaxW, theme);
+      drawPartName(ctx, row.part, cursorX, cy, textMaxW, theme, nameFont);
       ctx.restore();
 
       const barH = 12;
@@ -221,12 +224,13 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       }
 
       if (!row.part.notRecorded) {
+        const valFont = `500 12px ${theme.font}`;
         ctx.save();
-        ctx.font = `500 12px ${theme.font}`;
+        ctx.font = valFont;
         ctx.fillStyle = theme.text;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(fitText(ctx, row.part.text, row.valueWidth), row.valueX + row.valueWidth, cy);
+        ctx.fillText(fitText(ctx, row.part.text, row.valueWidth, valFont), row.valueX + row.valueWidth, cy);
         if (row.shareWidth > 0 && row.shareText) {
           ctx.font = `400 11px ${theme.font}`;
           ctx.fillStyle = theme.muted;
@@ -252,12 +256,13 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
         drawMediaSlot(ctx, nameX, cy, FLAG_SLOT_WIDTH, FLAG_SLOT_HEIGHT, { kind: 'flag', art: row.part.flagArt, ...(row.part.flag ? { tag: row.part.flag } : {}) }, theme, { artCache });
         nameX += FLAG_SLOT_WIDTH + 6;
       }
+      const childFont = row.depth === 1 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
       ctx.save();
-      ctx.font = row.depth === 1 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
+      ctx.font = childFont;
       ctx.fillStyle = row.depth === 1 ? theme.text : theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      drawPartName(ctx, row.part, nameX, cy, Math.max(10, row.nameX + row.nameWidth - nameX), theme);
+      drawPartName(ctx, row.part, nameX, cy, Math.max(10, row.nameX + row.nameWidth - nameX), theme, childFont);
       ctx.restore();
 
       const barH = row.depth === 1 ? 8 : 6;
@@ -277,12 +282,13 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       }
 
       if (!row.part.notRecorded) {
+        const valFont = `400 12px ${theme.font}`;
         ctx.save();
-        ctx.font = `400 12px ${theme.font}`;
+        ctx.font = valFont;
         ctx.fillStyle = theme.text;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(fitText(ctx, row.part.text, row.valueWidth), row.valueX + row.valueWidth, cy);
+        ctx.fillText(fitText(ctx, row.part.text, row.valueWidth, valFont), row.valueX + row.valueWidth, cy);
         if (row.shareWidth > 0 && row.shareText) {
           ctx.font = `400 11px ${theme.font}`;
           ctx.fillStyle = theme.muted;
@@ -321,7 +327,7 @@ function drawArcText(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const chars = [...text];
-  const widths = chars.map(ch => textWidth(ctx, ch));
+  const widths = chars.map(ch => measureCanvasText(ctx, ch, font));
   const totalW = widths.reduce((a, b) => a + b, 0);
   const totalAngle = totalW / Math.max(1, r);
   let cur = reversed ? midAngle + totalAngle / 2 : midAngle - totalAngle / 2;
@@ -359,10 +365,11 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
       rightEdge = comparisonRect.x - 12;
     }
     if (text) {
+      const topFont = `400 12px ${theme.font}`;
       ctx.textAlign = 'left';
-      ctx.font = `400 12px ${theme.font}`;
+      ctx.font = topFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitText(ctx, text, Math.max(20, rightEdge - rect.x)), rect.x, cy);
+      ctx.fillText(fitText(ctx, text, Math.max(20, rightEdge - rect.x), topFont), rect.x, cy);
     }
     ctx.restore();
     drawRowHairline(ctx, rect.x, rect.x + rect.width, rect.y + rect.height, theme, 'normal');
@@ -447,31 +454,33 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const maxHoleW = Math.max(20, layout.r1i * 1.75);
+  const holeSmallFont = `400 11px ${theme.font}`;
   if (layout.center.verb) {
-    ctx.font = `400 11px ${theme.font}`;
+    ctx.font = holeSmallFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(fitText(ctx, layout.center.verb, maxHoleW), layout.cx, layout.cy - 16);
+    ctx.fillText(fitText(ctx, layout.center.verb, maxHoleW, holeSmallFont), layout.cx, layout.cy - 16);
   }
-  ctx.font = `600 ${layout.center.valueFontSize}px ${theme.font}`;
+  const holeValFont = `600 ${layout.center.valueFontSize}px ${theme.font}`;
+  ctx.font = holeValFont;
   ctx.fillStyle = theme.text;
   const valY = layout.center.verb ? layout.cy + 4 : layout.cy;
-  ctx.fillText(fitText(ctx, layout.center.value, maxHoleW), layout.cx, valY);
+  ctx.fillText(fitText(ctx, layout.center.value, maxHoleW, holeValFont), layout.cx, valY);
   if (layout.center.partialTabRect) drawPartialTab(ctx, layout.center.partialTabRect.x, valY, theme);
   if (layout.center.unitLine) {
-    ctx.font = `400 11px ${theme.font}`;
+    ctx.font = holeSmallFont;
     ctx.fillStyle = theme.muted;
     if (layout.innerSlices.length) {
-      ctx.fillText(fitText(ctx, layout.center.unitLine, maxHoleW), layout.cx, layout.cy + 21);
+      ctx.fillText(fitText(ctx, layout.center.unitLine, maxHoleW, holeSmallFont), layout.cx, layout.cy + 21);
     } else {
       const right = layout.sideList ? layout.sideList.x - 12 : layout.width - layout.padX;
       const room = Math.max(40, 2 * Math.min(layout.cx - layout.padX, right - layout.cx));
       const lines: string[] = [];
       for (const word of layout.center.unitLine.split(' ')) {
         const held = lines.length ? `${lines[lines.length - 1]} ${word}` : word;
-        if (lines.length && textWidth(ctx, held) <= room) lines[lines.length - 1] = held;
+        if (lines.length && measureCanvasText(ctx, held, holeSmallFont) <= room) lines[lines.length - 1] = held;
         else lines.push(word);
       }
-      lines.forEach((line, at) => ctx.fillText(fitText(ctx, line, room), layout.cx, layout.cy + 21 + at * 14));
+      lines.forEach((line, at) => ctx.fillText(fitText(ctx, line, room, holeSmallFont), layout.cx, layout.cy + 21 + at * 14));
     }
   }
   ctx.restore();
@@ -521,12 +530,13 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         }
         const nameX = swatchX + 16;
         const nameW = Math.max(20, valRight - valW - 8 - nameX);
+        const nameFont = `400 12px ${theme.font}`;
         ctx.save();
-        ctx.font = `400 12px ${theme.font}`;
+        ctx.font = nameFont;
         ctx.fillStyle = row.part.notRecorded ? theme.muted : theme.text;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme, nameFont);
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {
@@ -534,9 +544,10 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
           ctx.fillStyle = theme.muted;
           ctx.fillText('Not recorded', shareRight, cy);
         } else {
-          ctx.font = `500 12px ${theme.font}`;
+          const valFont = `500 12px ${theme.font}`;
+          ctx.font = valFont;
           ctx.fillStyle = theme.text;
-          ctx.fillText(fitText(ctx, row.part.text, valW), valRight, cy);
+          ctx.fillText(fitText(ctx, row.part.text, valW, valFont), valRight, cy);
           if (row.shareText) {
             ctx.font = `400 11px ${theme.font}`;
             ctx.fillStyle = theme.muted;
@@ -555,19 +566,20 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
 
         const nameX = swatchX + 14;
         const nameW = Math.max(20, valRight - valW - 8 - nameX);
+        const subFont = `400 11.5px ${theme.font}`;
         ctx.save();
-        ctx.font = `400 11.5px ${theme.font}`;
+        ctx.font = subFont;
         ctx.fillStyle = theme.muted;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme, subFont);
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {
           ctx.font = `400 10.5px ${theme.font}`;
           ctx.fillText('Not recorded', shareRight, cy);
         } else {
-          ctx.fillText(fitText(ctx, row.part.text, valW), valRight, cy);
+          ctx.fillText(fitText(ctx, row.part.text, valW, subFont), valRight, cy);
           if (row.shareText) {
             ctx.font = `400 10.5px ${theme.font}`;
             ctx.fillText(row.shareText, shareRight, cy);
@@ -621,19 +633,21 @@ function drawMosaicTile(
     ctx.textBaseline = 'middle';
     let rightLimit = tile.x + tile.width - 6;
     if (tile.headerRight) {
-      ctx.font = `400 10.5px ${theme.font}`;
+      const rightFont = `400 10.5px ${theme.font}`;
+      ctx.font = rightFont;
       ctx.fillStyle = tile.ink;
       ctx.globalAlpha = 0.85;
       ctx.textAlign = 'right';
-      const rw = textWidth(ctx, tile.headerRight);
+      const rw = measureCanvasText(ctx, tile.headerRight, rightFont);
       ctx.fillText(tile.headerRight, rightLimit, headerCy);
       rightLimit -= rw + 8;
     }
+    const headerFont = `600 11.5px ${theme.font}`;
     ctx.globalAlpha = 1;
-    ctx.font = `600 11.5px ${theme.font}`;
+    ctx.font = headerFont;
     ctx.fillStyle = tile.ink;
     ctx.textAlign = 'left';
-    ctx.fillText(fitText(ctx, tile.part.name, Math.max(12, rightLimit - (tile.x + 6))), tile.x + 6, headerCy);
+    ctx.fillText(fitText(ctx, tile.part.name, Math.max(12, rightLimit - (tile.x + 6)), headerFont), tile.x + 6, headerCy);
     ctx.restore();
 
     for (const child of tile.children) {
@@ -649,16 +663,19 @@ function drawMosaicTile(
   ctx.fillStyle = tile.ink;
   ctx.textBaseline = 'middle';
   if (tile.labelMode === 'full') {
+    const fullTitleFont = `600 11.5px ${theme.font}`;
+    const fullValFont = `400 10.5px ${theme.font}`;
     ctx.textAlign = 'left';
-    ctx.font = `600 11.5px ${theme.font}`;
-    ctx.fillText(fitText(ctx, tile.part.name, maxW), tile.x + pad, tile.y + 13);
+    ctx.font = fullTitleFont;
+    ctx.fillText(fitText(ctx, tile.part.name, maxW, fullTitleFont), tile.x + pad, tile.y + 13);
     ctx.globalAlpha = 0.85;
-    ctx.font = `400 10.5px ${theme.font}`;
-    ctx.fillText(fitText(ctx, tile.valueLine, maxW), tile.x + pad, tile.y + 28);
+    ctx.font = fullValFont;
+    ctx.fillText(fitText(ctx, tile.valueLine, maxW, fullValFont), tile.x + pad, tile.y + 28);
   } else {
+    const shortFont = `600 11px ${theme.font}`;
     ctx.textAlign = 'center';
-    ctx.font = `600 11px ${theme.font}`;
-    ctx.fillText(fitText(ctx, tile.part.name, maxW), tile.x + tile.width / 2, tile.y + tile.height / 2);
+    ctx.font = shortFont;
+    ctx.fillText(fitText(ctx, tile.part.name, maxW, shortFont), tile.x + tile.width / 2, tile.y + tile.height / 2);
   }
   ctx.restore();
 }
@@ -674,12 +691,13 @@ function drawMosaicView(ctx: Canvas2D, input: BreakdownPaintInput, layout: Mosai
 }
 
 function drawUndrawn(ctx: Canvas2D, text: string, area: Rect, theme: FamilyTheme): void {
+  const undrawnFont = `400 12px ${theme.font}`;
   ctx.save();
-  ctx.font = `400 12px ${theme.font}`;
+  ctx.font = undrawnFont;
   ctx.fillStyle = theme.muted;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(fitText(ctx, text, Math.max(20, area.width - 16)), area.x + area.width / 2, area.y + area.height / 2);
+  ctx.fillText(fitText(ctx, text, Math.max(20, area.width - 16), undrawnFont), area.x + area.width / 2, area.y + area.height / 2);
   ctx.restore();
 }
 

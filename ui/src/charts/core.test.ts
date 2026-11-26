@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
+import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
+import { fitMeasuredLine } from './textWidth.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
 import { runAt } from './series.ts';
@@ -193,7 +194,7 @@ test('text fitter wraps two balanced lines at word boundaries, cuts with end ell
   assert.equal(rtl.lines.length, 2);
   assert.ok(mono(rtl.lines[0]!) <= 120 && mono(rtl.lines[1]!) <= 120);
 
-  const emoji = fitLine('👨‍👩‍👧‍👦🇺🇸abc', 24, mono);
+  const emoji = fitMeasuredLine('👨‍👩‍👧‍👦🇺🇸abc', 24, '12px sans-serif', text => mono(text));
   assert.equal(emoji.truncated, true);
   assert.equal(emoji.text, '👨‍👩‍👧‍👦🇺🇸\u2026');
   assert.equal(ellipsise('Hello', 0, mono), '');

@@ -1,5 +1,5 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
-import { textWidth } from '../../charts/textWidth.ts';
+import { measureCanvasText } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
@@ -193,10 +193,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   view: [],
   layout(model, _binding, surface, theme, measure) {
     const font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
-    return layoutFamilyBars(model, surface.width, surface.height, theme, text => {
-      measure.font = font;
-      return textWidth(measure, text);
-    });
+    return layoutFamilyBars(model, surface.width, surface.height, theme, text => measureCanvasText(measure, text, font));
   },
   paint(ctx, frame) {
     const glide = glideOf(frame);

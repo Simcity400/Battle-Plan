@@ -1,7 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { readableColour } from '../../charts/palette.ts';
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import {
   barCornerRadius,
@@ -158,12 +157,13 @@ function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, th
     }
   }
   if (layout.showReadout && row.readout) {
+    const readoutFont = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.save();
-    ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = readoutFont;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(row.readout.primary, layout.readoutWidth, t => textWidth(ctx, t)), layout.readoutX + layout.readoutWidth, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.readout.primary, layout.readoutWidth, readoutFont), layout.readoutX + layout.readoutWidth, middleY);
     ctx.restore();
   }
 }
@@ -195,16 +195,17 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
       }, theme);
     }
   } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'paired') {
-    ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+    const headerFont = `500 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = headerFont;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'center';
     const leftMid = (layout.plotLeft + layout.centerX) / 2;
     const rightMid = (layout.centerX + layout.plotRight) / 2;
     if (model.leftHeader) {
-      ctx.fillText(ellipsise(model.leftHeader, layout.centerX - layout.plotLeft - 8, s => textWidth(ctx, s)), leftMid, middleY);
+      ctx.fillText(ellipsiseCanvasText(ctx, model.leftHeader, layout.centerX - layout.plotLeft - 8, headerFont), leftMid, middleY);
     }
     if (model.rightHeader) {
-      ctx.fillText(ellipsise(model.rightHeader, layout.plotRight - layout.centerX - 8, s => textWidth(ctx, s)), rightMid, middleY);
+      ctx.fillText(ellipsiseCanvasText(ctx, model.rightHeader, layout.plotRight - layout.centerX - 8, headerFont), rightMid, middleY);
     }
     if (layout.showReadout && model.readoutHeader) {
       ctx.fillStyle = theme.muted;
@@ -213,10 +214,11 @@ function drawHeader(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: 
     }
   } else {
     if (model.caption) {
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      const capFont = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.font = capFont;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
-      ctx.fillText(ellipsise(model.caption, layout.width - layout.bodyLeft - BARS_PAD_X * 2, s => textWidth(ctx, s)), layout.bodyLeft + BARS_PAD_X, middleY);
+      ctx.fillText(ellipsiseCanvasText(ctx, model.caption, layout.width - layout.bodyLeft - BARS_PAD_X * 2, capFont), layout.bodyLeft + BARS_PAD_X, middleY);
     }
     if (model.captionRight && !model.captionSides?.length) {
       ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
@@ -286,13 +288,14 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
   const ticks = linearTicks(0, layout.scaleMax, 4, isWholeScaleFormat(model.scaleFormat));
   const labels = formatBarsAxisLabels(ticks, model.scaleFormat);
   const y = layout.axisTop + layout.axisHeight / 2;
+  const axisFont = `${LABEL_WEIGHT} 11px ${theme.font}`;
   ctx.save();
-  ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+  ctx.font = axisFont;
   ctx.textBaseline = 'middle';
   if (model.scaleUnit) {
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'left';
-    ctx.fillText(ellipsise(model.scaleUnit, Math.max(0, layout.plotLeft - BARS_PAD_X - 6), s => textWidth(ctx, s)), BARS_PAD_X, y);
+    ctx.fillText(ellipsiseCanvasText(ctx, model.scaleUnit, Math.max(0, layout.plotLeft - BARS_PAD_X - 6), axisFont), BARS_PAD_X, y);
   }
   for (let i = 0; i < ticks.length; i++) {
     const tick = ticks[i]!;
@@ -440,22 +443,24 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             notApplicable: formatted.kind === 'notApplicable',
           });
         } else {
+          const valFont = `600 13px ${theme.font}`;
           ctx.save();
           ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
-          ctx.font = `600 13px ${theme.font}`;
+          ctx.font = valFont;
           ctx.fillStyle = row.value?.tone === 'shortage' || (row.numeric ?? 0) < 0
             ? tokens.shortage
             : (row.numeric ?? 0) === 0
               ? theme.muted
               : theme.text;
           const captioned = layout.showPair;
-          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
+          ctx.fillText(ellipsiseCanvasText(ctx, formatted.text, layout.readoutWidth, valFont), rightEdge, captioned ? middleY - 7 : middleY);
           if (captioned) {
             const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
-            ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+            const subFont = `${LABEL_WEIGHT} 11px ${theme.font}`;
+            ctx.font = subFont;
             ctx.fillStyle = theme.muted;
-            ctx.fillText(ellipsise(sub, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, middleY + 8);
+            ctx.fillText(ellipsiseCanvasText(ctx, sub, layout.readoutWidth, subFont), rightEdge, middleY + 8);
           }
           ctx.restore();
         }
@@ -489,12 +494,13 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       if (valueMissing || (!row.segments?.length && row.value?.value.kind === 'notRecorded')) {
         drawHatchRect(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, 2.5, theme);
         const msg = row.value?.value.kind === 'notApplicable' ? '\u2014' : notRecordedLabel(row.value?.figure);
+        const msgFont = `${LABEL_WEIGHT} 11px ${theme.font}`;
         ctx.save();
-        ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
+        ctx.font = msgFont;
         ctx.fillStyle = theme.muted;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(ellipsise(msg, Math.max(0, layout.plotWidth - 8), s => textWidth(ctx, s)), layout.plotLeft + layout.plotWidth / 2, middleY);
+        ctx.fillText(ellipsiseCanvasText(ctx, msg, Math.max(0, layout.plotWidth - 8), msgFont), layout.plotLeft + layout.plotWidth / 2, middleY);
         ctx.restore();
       } else if (row.segments?.length) {
         drawShareBar(
@@ -525,13 +531,14 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.restore();
       }
       if (layout.showReadout && row.readout) {
+        const readoutFont = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
         ctx.save();
-        ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+        ctx.font = readoutFont;
         ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : theme.muted;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
         ctx.fillText(
-          ellipsise(row.readout.primary, layout.readoutWidth, s => textWidth(ctx, s)),
+          ellipsiseCanvasText(ctx, row.readout.primary, layout.readoutWidth, readoutFont),
           layout.readoutX + layout.readoutWidth,
           middleY,
         );
@@ -650,12 +657,13 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         }
       }
       if (layout.showReadout && row.readout) {
+        const readoutFont = `500 ${theme.fontSize.body}px ${theme.font}`;
         ctx.save();
-        ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.font = readoutFont;
         ctx.fillStyle = theme.text;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        ctx.fillText(ellipsise(row.readout.primary, layout.readoutWidth, s => textWidth(ctx, s)), layout.readoutX + layout.readoutWidth, middleY);
+        ctx.fillText(ellipsiseCanvasText(ctx, row.readout.primary, layout.readoutWidth, readoutFont), layout.readoutX + layout.readoutWidth, middleY);
         ctx.restore();
       }
       continue;
@@ -733,26 +741,29 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       ctx.textAlign = 'right';
       let cursorRight = rightEdge;
       if (row.readout.shortfall) {
-        ctx.font = `600 ${theme.fontSize.body}px ${theme.font}`;
+        const sfFont = `600 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.font = sfFont;
         ctx.fillStyle = tokens.shortage;
         ctx.fillText(row.readout.shortfall, cursorRight, middleY);
-        cursorRight -= textWidth(ctx, row.readout.shortfall) + 8;
+        cursorRight -= measureCanvasText(ctx, row.readout.shortfall, sfFont) + 8;
       }
       if (row.readout.secondary) {
-        ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+        const secFont = `400 ${theme.fontSize.body}px ${theme.font}`;
+        ctx.font = secFont;
         ctx.fillStyle = theme.muted;
         const secRoom = Math.max(12, cursorRight - layout.readoutX);
-        const secText = ellipsise(row.readout.secondary, secRoom, s => textWidth(ctx, s));
+        const secText = ellipsiseCanvasText(ctx, row.readout.secondary, secRoom, secFont);
         ctx.fillText(secText, cursorRight, middleY);
-        cursorRight -= textWidth(ctx, secText) + 4;
+        cursorRight -= measureCanvasText(ctx, secText, secFont) + 4;
       }
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      const primFont = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.font = primFont;
       ctx.fillStyle = row.readout.tone === 'shortage' ? tokens.shortage : row.readout.tone === 'muted' ? theme.muted : theme.text;
       const iconReserve = row.readout.icon ? 21 : 0;
       const primRoom = Math.max(12, cursorRight - layout.readoutX - iconReserve);
-      const primText = ellipsise(row.readout.primary, primRoom, s => textWidth(ctx, s));
+      const primText = ellipsiseCanvasText(ctx, row.readout.primary, primRoom, primFont);
       ctx.fillText(primText, cursorRight, middleY);
-      cursorRight -= textWidth(ctx, primText);
+      cursorRight -= measureCanvasText(ctx, primText, primFont);
       ctx.restore();
       if (row.readout.icon && cursorRight - 21 >= layout.readoutX - 2) {
         drawMediaSlot(
@@ -767,10 +778,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         );
       }
     } else if (formatted) {
+      const valueFont = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.save();
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.font = valueFont;
       ctx.textBaseline = 'middle';
-      const labelW = textWidth(ctx, formatted.text);
+      const labelW = measureCanvasText(ctx, formatted.text, valueFont);
       const fitsOutside = !layout.valueInsideBar && drawnEndX + BARS_VALUE_GAP + labelW <= layout.width - BARS_PAD_X;
       if (fitsOutside || drawnEndX - layout.plotLeft < labelW + 12) {
         ctx.fillStyle = formatted.kind === 'zero' ? theme.muted : theme.text;
@@ -806,14 +818,13 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     if (rowCount > 1 && entries.length > 1) {
       const rowH = layout.legendHeight / rowCount;
       const entryGap = 14;
-      ctx.save();
-      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
-      const rightReserve = model.scaleUnit ? Math.min(Math.floor(layout.width * 0.3), Math.ceil(textWidth(ctx, model.scaleUnit))) + entryGap : 0;
+      const legendFont = `500 ${theme.fontSize.small}px ${theme.font}`;
+      const rightReserve = model.scaleUnit ? Math.min(Math.floor(layout.width * 0.3), Math.ceil(measureCanvasText(ctx, model.scaleUnit, legendFont))) + entryGap : 0;
       const row1Limit = Math.max(80, layout.width - BARS_PAD_X * 2 - rightReserve);
       let used = 0;
       let splitAt = entries.length;
       for (let i = 0; i < entries.length; i++) {
-        const w = 18 + Math.ceil(textWidth(ctx, entries[i]!.label));
+        const w = 18 + Math.ceil(measureCanvasText(ctx, entries[i]!.label, legendFont));
         const next = used + (i > 0 ? entryGap : 0) + w;
         if (i > 0 && next > row1Limit) {
           splitAt = i;
@@ -821,7 +832,6 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         }
         used = next;
       }
-      ctx.restore();
       drawLegendStrip(ctx, 0, layout.legendTop, layout.width, rowH, {
         entries: entries.slice(0, splitAt),
         ...(model.scaleUnit ? { rightNote: model.scaleUnit } : {}),

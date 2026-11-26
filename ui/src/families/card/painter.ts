@@ -1,5 +1,4 @@
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   DATE_COLUMN_WIDTH,
   drawDateColumn,
@@ -55,9 +54,9 @@ function line(ctx: Canvas2D, text: string, x: number, y: number, width: number, 
   ctx.fillStyle = color;
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
-  const shown = ellipsise(text, width, s => textWidth(ctx, s));
+  const shown = ellipsiseCanvasText(ctx, text, width, font);
   ctx.fillText(shown, align === 'right' ? x + width : x, y);
-  return textWidth(ctx, shown);
+  return measureCanvasText(ctx, shown, font);
 }
 
 function meterFraction(meter: Pick<CardMeter, 'fraction'>): number | null {
@@ -122,9 +121,9 @@ function drawListRow(ctx: Canvas2D, row: CardListRow, top: number, height: numbe
     line(ctx, row.none, x, middleY, room, `400 12.5px ${theme.font}`, theme.muted);
     return;
   }
-  ctx.font = `400 12.5px ${theme.font}`;
-  const shown = fitItems(row.items, room, text => textWidth(ctx, text));
-  line(ctx, shown, x, middleY, room, `400 12.5px ${theme.font}`, theme.text);
+  const listFont = `400 12.5px ${theme.font}`;
+  const shown = fitItems(row.items, room, text => measureCanvasText(ctx, text, listFont));
+  line(ctx, shown, x, middleY, room, listFont, theme.text);
 }
 
 function fitItems(items: readonly string[], room: number, measure: (text: string) => number): string {

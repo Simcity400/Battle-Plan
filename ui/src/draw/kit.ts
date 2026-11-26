@@ -1,15 +1,19 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../charts/draw.ts';
 import {
   drawFittedLabel,
-  ellipsise,
-  fitLine,
   graphemes,
   labelFitsTwoLines,
   labelLineHeight,
   type FittedLabel,
   type FittedLine,
 } from '../charts/labels.ts';
-import { clearTextWidthCache, measureCanvasText, textWidth, type Canvas2D } from '../charts/textWidth.ts';
+import {
+  clearTextWidthCache,
+  ellipsiseCanvasText,
+  fitCanvasLine,
+  measureCanvasText,
+  type Canvas2D,
+} from '../charts/textWidth.ts';
 import type { FamilyTheme } from '../families/contract';
 import {
   drawHatchRect,
@@ -479,11 +483,12 @@ function drawSlotMark(
   if (state.kind === 'missing' || state.kind === 'unrecorded') {
     drawHatchRect(ctx, x, y, width, height, radius, theme);
     if (state.kind === 'missing' && label) {
-      ctx.font = `${VALUE_WEIGHT} ${labelSize}px ${theme.font}`;
+      const labelFont = `${VALUE_WEIGHT} ${labelSize}px ${theme.font}`;
+      ctx.font = labelFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(label, Math.max(1, width - 2), s => textWidth(ctx, s)), x + width / 2, y + height / 2 + 0.5);
+      ctx.fillText(ellipsiseCanvasText(ctx, label, Math.max(1, width - 2), labelFont), x + width / 2, y + height / 2 + 0.5);
     }
     return;
   }
@@ -819,14 +824,15 @@ export function drawShareBar(
       ctx.fillRect(cursor, y, segW, height);
     }
     if (!seg.hatched && seg.label && segW >= 34) {
-      ctx.font = `600 11px ${theme.font}`;
+      const segFont = `600 11px ${theme.font}`;
+      ctx.font = segFont;
       ctx.fillStyle = contrastInkForFill(readableColour(seg.color, theme.surface), theme);
       const right = seg.labelAlign === 'right';
       ctx.textAlign = right ? 'right' : 'left';
       ctx.textBaseline = 'middle';
       const pad = 6;
       const room = segW - pad * 2;
-      const shown = textWidth(ctx, seg.label) <= room ? seg.label : seg.shortLabel && textWidth(ctx, seg.shortLabel) <= room ? seg.shortLabel : null;
+      const shown = measureCanvasText(ctx, seg.label, segFont) <= room ? seg.label : seg.shortLabel && measureCanvasText(ctx, seg.shortLabel, segFont) <= room ? seg.shortLabel : null;
       if (shown) ctx.fillText(shown, right ? cursor + segW - pad : cursor + pad, y + height / 2);
     }
     cursor += segW + gap;
@@ -972,17 +978,19 @@ export function drawStatusMark(
   }
   const word = options?.label ?? STATUS_MARK_LABELS[kind];
   const fontSize = STATUS_WORD_SIZE;
-  ctx.font = `400 ${fontSize}px ${theme.font}`;
+  const wordFont = `400 ${fontSize}px ${theme.font}`;
+  ctx.font = wordFont;
   ctx.fillStyle = kind === 'ended' ? theme.muted : tokens.textSecondary;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - dotDiameter - gap) : 10_000;
   const fitted = drawFittedLabel(ctx, word, x + dotDiameter + gap, middleY, textMax, {
+    font: wordFont,
     fontSize,
     lineHeight: labelLineHeight(fontSize),
     maxLines: 1,
   });
-  const drawnW = fitted.lines[0] ? textWidth(ctx, fitted.lines[0]) : 0;
+  const drawnW = fitted.lines[0] ? measureCanvasText(ctx, fitted.lines[0], wordFont) : 0;
   ctx.restore();
   return { width: dotDiameter + gap + drawnW, label: fitted };
 }
@@ -1086,16 +1094,19 @@ export function drawDateColumn(
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   if (rowHeight >= 32) {
-    ctx.font = `500 12.5px ${theme.font}`;
+    const dayFont = `500 12.5px ${theme.font}`;
+    ctx.font = dayFont;
     ctx.fillStyle = tokens.textSecondary;
-    ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY - 6);
-    ctx.font = `400 10.5px ${theme.font}`;
+    ctx.fillText(ellipsiseCanvasText(ctx, parts.dayMonth, width, dayFont), anchorX, middleY - 6);
+    const yearFont = `400 10.5px ${theme.font}`;
+    ctx.font = yearFont;
     ctx.fillStyle = tokens.quiet;
-    ctx.fillText(ellipsise(parts.year, width, s => textWidth(ctx, s)), anchorX, middleY + 7);
+    ctx.fillText(ellipsiseCanvasText(ctx, parts.year, width, yearFont), anchorX, middleY + 7);
   } else {
-    ctx.font = `500 11.5px ${theme.font}`;
+    const dayFont = `500 11.5px ${theme.font}`;
+    ctx.font = dayFont;
     ctx.fillStyle = tokens.textSecondary;
-    ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, parts.dayMonth, width, dayFont), anchorX, middleY);
   }
   ctx.restore();
   return { missing: false, full: parts.full, hover: parts.hover };
@@ -1112,13 +1123,14 @@ export function drawMissingMark(
   const align = options?.align ?? 'left';
   const smallFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
   if (options?.notApplicable) {
+    const naFont = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
     ctx.save();
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = naFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = align;
     ctx.textBaseline = 'middle';
     ctx.fillText(NOT_APPLICABLE_LABEL, align === 'right' ? x + maxWidth : x, middleY);
-    const w = textWidth(ctx, NOT_APPLICABLE_LABEL);
+    const w = measureCanvasText(ctx, NOT_APPLICABLE_LABEL, naFont);
     ctx.restore();
     return { width: w, squareOnly: false, label: NOT_APPLICABLE_LABEL };
   }
@@ -1128,16 +1140,16 @@ export function drawMissingMark(
     ctx.fillStyle = theme.muted;
     ctx.textAlign = align;
     ctx.textBaseline = 'middle';
-    const shown = ellipsise(GAME_WINDOW_MISSING_LABEL, maxWidth, s => textWidth(ctx, s));
+    const shown = ellipsiseCanvasText(ctx, GAME_WINDOW_MISSING_LABEL, maxWidth, smallFont);
     ctx.fillText(shown, align === 'right' ? x + maxWidth : x, middleY);
-    const w = textWidth(ctx, shown);
+    const w = measureCanvasText(ctx, shown, smallFont);
     ctx.restore();
     return { width: w, squareOnly: false, label: GAME_WINDOW_MISSING_LABEL };
   }
   const label = notRecordedLabel(options?.figure);
   ctx.save();
   ctx.font = smallFont;
-  const labelW = textWidth(ctx, label);
+  const labelW = measureCanvasText(ctx, label, smallFont);
   const fullW = MISSING_BOX_SIZE + MISSING_BOX_GAP + labelW;
   const showWords = maxWidth >= fullW;
   const totalW = showWords ? fullW : MISSING_BOX_SIZE;
@@ -1421,9 +1433,10 @@ export function drawTimelineBar(ctx: Canvas2D, options: TimelineBarOptions): Tim
       }
     }
     if (options.label && limit - cursor >= 12) {
-      ctx.font = `500 11.5px ${theme.font}`;
-      const fitted = fitLine(options.label, limit - cursor, s => textWidth(ctx, s));
+      const barFont = `500 11.5px ${theme.font}`;
+      const fitted = fitCanvasLine(ctx, options.label, limit - cursor, barFont);
       if (fitted.text) {
+        ctx.font = barFont;
         ctx.fillStyle = contrastInkForFill(fill, theme);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -1825,18 +1838,18 @@ export function drawOutOfFigure(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'right';
   ctx.font = sufFont;
-  const sufW = textWidth(ctx, suffix);
+  const sufW = measureCanvasText(ctx, suffix, sufFont);
   const avail = Math.max(0, right - left);
   if (sufW < avail) {
     ctx.fillStyle = theme.muted;
     ctx.fillText(suffix, right, middleY);
     ctx.font = valFont;
     ctx.fillStyle = options?.muted ? theme.muted : theme.text;
-    ctx.fillText(ellipsise(valueText, Math.max(0, avail - sufW), s => textWidth(ctx, s)), right - sufW, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, valueText, Math.max(0, avail - sufW), valFont), right - sufW, middleY);
   } else {
     ctx.font = valFont;
     ctx.fillStyle = options?.muted ? theme.muted : theme.text;
-    ctx.fillText(ellipsise(`${valueText}${suffix}`, avail, s => textWidth(ctx, s)), right, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, `${valueText}${suffix}`, avail, valFont), right, middleY);
   }
   ctx.restore();
 }
@@ -1860,7 +1873,7 @@ export function drawSkillFigure(
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = options?.muted ? theme.muted : theme.text;
-  const numW = Math.max(14, textWidth(ctx, valueText));
+  const numW = Math.max(14, measureCanvasText(ctx, valueText, font));
   ctx.fillText(valueText, right, middleY);
   const iconX = right - numW - gap - iconW;
   if (iconX >= left) {
@@ -1898,10 +1911,7 @@ export function drawIconStrip(
     const countText = item.count && item.count > 1 ? `\u00d7${item.count}` : '';
     let countW = 0;
     if (countText) {
-      ctx.save();
-      ctx.font = countFont;
-      countW = textWidth(ctx, countText) + 3;
-      ctx.restore();
+      countW = measureCanvasText(ctx, countText, countFont) + 3;
     }
     const width = iconStripSlotWidth(item.state, size);
     return { item, width, countText, countW, total: width + countW };
@@ -1911,19 +1921,16 @@ export function drawIconStrip(
   for (let i = 0; i < measured.length; i++) fitAll += (i > 0 ? gap : 0) + measured[i]!.total;
   let drawnCount = measured.length;
   if (fitAll > available) {
-    ctx.save();
-    ctx.font = moreFont;
     drawnCount = 0;
     let used = 0;
     for (let i = 0; i < measured.length; i++) {
       const nextUsed = used + (i > 0 ? gap : 0) + measured[i]!.total;
       const remaining = measured.length - (i + 1);
-      const moreW = remaining > 0 ? gap + textWidth(ctx, `+${remaining}`) : 0;
+      const moreW = remaining > 0 ? gap + measureCanvasText(ctx, `+${remaining}`, moreFont) : 0;
       if (nextUsed + moreW > available) break;
       used = nextUsed;
       drawnCount = i + 1;
     }
-    ctx.restore();
   }
   let cursor = left;
   for (let i = 0; i < drawnCount; i++) {
@@ -2008,7 +2015,7 @@ export function drawActionButton(
   const font = `500 12px ${theme.font}`;
   ctx.save();
   ctx.font = font;
-  const labelW = textWidth(ctx, label);
+  const labelW = measureCanvasText(ctx, label, font);
   const { padLeft, padRight, gap, height: h } = shape;
   const w = Math.ceil(padLeft + padRight + iconSize + gap + labelW);
   const x = right - w;
@@ -2093,14 +2100,14 @@ export function drawClockSummary(
   ctx.textBaseline = 'alphabetic';
   ctx.font = figureFont;
   ctx.fillStyle = theme.text;
-  const figure = ellipsise(summary.totalText, innerW, s => textWidth(ctx, s));
+  const figure = ellipsiseCanvasText(ctx, summary.totalText, innerW, figureFont);
   ctx.fillText(figure, padX, 57);
-  const figureW = textWidth(ctx, figure);
+  const figureW = measureCanvasText(ctx, figure, figureFont);
   ctx.font = captionFont;
   ctx.fillStyle = theme.muted;
   const captionX = padX + figureW + 12;
   if (captionX < padX + innerW) {
-    ctx.fillText(ellipsise('Recorded, in real time', padX + innerW - captionX, s => textWidth(ctx, s)), captionX, 57);
+    ctx.fillText(ellipsiseCanvasText(ctx, 'Recorded, in real time', padX + innerW - captionX, captionFont), captionX, 57);
   }
 
   const barY = 83;
@@ -2130,10 +2137,8 @@ export function drawClockSummary(
 
   ctx.textBaseline = 'middle';
   const statWidth = (label: string, time: string) => {
-    ctx.font = labelFont;
-    const lw = textWidth(ctx, label);
-    ctx.font = timeFont;
-    return { lw, total: lw + 8 + textWidth(ctx, time) };
+    const lw = measureCanvasText(ctx, label, labelFont);
+    return { lw, total: lw + 8 + measureCanvasText(ctx, time, timeFont) };
   };
   const drawStat = (x: number, cy: number, label: string, time: string) => {
     const { lw } = statWidth(label, time);
@@ -2163,10 +2168,10 @@ export function drawClockSummary(
   ctx.fillStyle = secondary;
   ctx.fillText(summary.coverageLabel, padX + 15, coverageY);
   if (summary.spanText) {
-    const spanX = padX + 15 + textWidth(ctx, summary.coverageLabel) + 22;
+    const spanX = padX + 15 + measureCanvasText(ctx, summary.coverageLabel, labelFont) + 22;
     if (spanX < padX + innerW) {
       ctx.fillStyle = theme.muted;
-      ctx.fillText(ellipsise(summary.spanText, padX + innerW - spanX, s => textWidth(ctx, s)), spanX, coverageY);
+      ctx.fillText(ellipsiseCanvasText(ctx, summary.spanText, padX + innerW - spanX, labelFont), spanX, coverageY);
     }
   }
   ctx.restore();
@@ -2186,13 +2191,14 @@ export function drawGradientLegend(
   const barHeight = options?.barHeight ?? 8;
   const gap = options?.gap ?? 6;
   const fontSize = theme.fontSize.small;
+  const gradFont = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
   ctx.save();
-  ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+  ctx.font = gradFont;
   ctx.fillStyle = theme.muted;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  const lowW = lowLabel ? textWidth(ctx, lowLabel) : 0;
-  const highW = highLabel ? textWidth(ctx, highLabel) : 0;
+  const lowW = lowLabel ? measureCanvasText(ctx, lowLabel, gradFont) : 0;
+  const highW = highLabel ? measureCanvasText(ctx, highLabel, gradFont) : 0;
   let cursor = x;
   if (lowLabel) {
     ctx.fillText(lowLabel, cursor, middleY);
@@ -2403,7 +2409,7 @@ export function drawLegendStrip(
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(ellipsise(spec.rightNote, maxW, text => measureCanvasText(ctx, text, font)), rightLimit, middleY);
+      ctx.fillText(ellipsiseCanvasText(ctx, spec.rightNote, maxW, font), rightLimit, middleY);
       ctx.restore();
     }
   }

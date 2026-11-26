@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { paletteCache, readableColour } from '../charts/palette.ts';
-import { clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
+import { TextMeasureScope, clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
 import { colorCache, mix, parseColorAlpha } from '../shell/appearance/color.ts';
 import { engineHour, gameDate } from '../dashboard/calendar.ts';
 import { markColours } from '../shell/appearance/themes.ts';
@@ -656,10 +656,18 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
   assert.equal(measureCalls, callsAfterWarm, 'cache hit never calls measureText');
   assert.equal(fontReads, readsAfterWarm, 'K9: cache hit never reads native ctx.font');
 
-  for (let i = 0; i < 100; i++) {
-    measureCanvasText(ctx, 'x', `400 ${10 + i}px Font${i}, sans-serif`);
-  }
-  assert.ok(textWidthCacheStats().fonts <= 64, `K9: outer font map stays bounded (got ${textWidthCacheStats().fonts})`);
+  const scope = new TextMeasureScope();
+  scope.run(() => {
+    for (let i = 0; i < 100; i++) {
+      measureCanvasText(ctx, 'x', `400 ${10 + i}px Font${i}, sans-serif`);
+    }
+  });
+  assert.equal(textWidthCacheStats().fonts, 101, 'K9: on-screen fonts are retained without a made-up cap');
+  scope.run(() => {
+    measureCanvasText(ctx, 'x', '400 10px Font0, sans-serif');
+  });
+  assert.equal(textWidthCacheStats().fonts, 2, 'K9: off-screen fonts drop when shown strings change');
+  scope.release();
 
   resolveKitTokens(lightTheme);
   readableColour('#2a4b8c', lightTheme.surface);

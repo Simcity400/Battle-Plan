@@ -1,7 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
 import { colour } from '../../charts/palette.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import { drawFlagSlot, drawLegendStrip, FLAG_SLOT_HEIGHT, FLAG_SLOT_WIDTH, resolveKitTokens, type ArtSlotState } from '../../draw/kit.ts';
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
@@ -265,24 +264,24 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
   const middle = box.y + box.height / 2;
   const fontSize = theme.fontSize.small;
   ctx.textBaseline = 'middle';
-  ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
+  const valueFont = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
+  const labelFont = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
   const figure = node.figure;
-  const figureW = figure ? textWidth(ctx, figure) : 0;
+  const figureW = figure ? measureCanvasText(ctx, figure, valueFont) : 0;
   const flagW = node.others !== undefined || node.unknown !== undefined ? 0 : FLAG_SLOT_WIDTH;
   const room = Math.max(10, layout.labelWidth - figureW - (flagW ? flagW + FLAG_GAP : 0) - 12);
-  ctx.font = `${LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
-  const name = ellipsise(node.label, room, s => textWidth(ctx, s));
-  const nameW = textWidth(ctx, name);
+  const name = ellipsiseCanvasText(ctx, node.label, room, labelFont);
+  const nameW = measureCanvasText(ctx, name, labelFont);
   const muted = node.labelMissing || node.labelLoading || node.others !== undefined;
   const nameColour = muted ? theme.muted : theme.text;
   if (node.side === 'left') {
     let cursor = box.x - 6;
     ctx.textAlign = 'right';
-    ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
+    ctx.font = valueFont;
     ctx.fillStyle = node.numeric === null ? theme.muted : theme.text;
     if (figure) ctx.fillText(figure, cursor, middle + 0.5);
     cursor -= figureW + (figure ? 6 : 0);
-    ctx.font = `${highlighted ? VALUE_WEIGHT : LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+    ctx.font = highlighted ? valueFont : labelFont;
     ctx.fillStyle = nameColour;
     ctx.fillText(name, cursor, middle + 0.5);
     cursor -= nameW + FLAG_GAP;
@@ -294,20 +293,20 @@ function drawNodeLabel(ctx: Canvas2D, box: FlowNodeBox, layout: FlowLayout, them
       cursor += FLAG_SLOT_WIDTH + FLAG_GAP;
     }
     ctx.textAlign = 'left';
-    ctx.font = `${highlighted ? VALUE_WEIGHT : LABEL_WEIGHT} ${fontSize}px ${theme.font}`;
+    ctx.font = highlighted ? valueFont : labelFont;
     ctx.fillStyle = nameColour;
     ctx.fillText(name, cursor, middle + 0.5);
     cursor += nameW + 6;
-    ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
+    ctx.font = valueFont;
     ctx.fillStyle = node.numeric === null ? theme.muted : theme.text;
     if (figure) ctx.fillText(figure, cursor, middle + 0.5);
   } else {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.font = `${VALUE_WEIGHT} ${fontSize}px ${theme.font}`;
+    ctx.font = valueFont;
     ctx.fillStyle = theme.text;
     const centreRoom = Math.max(40, layout.rightBarX - layout.leftBarX - 20);
-    ctx.fillText(ellipsise(node.label, centreRoom, s => textWidth(ctx, s)), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
+    ctx.fillText(ellipsiseCanvasText(ctx, node.label, centreRoom, valueFont), box.x + FLOW_CENTRE_WIDTH / 2, box.y - 3);
   }
 }
 

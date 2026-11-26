@@ -1,5 +1,4 @@
-import { fitLine } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { fitCanvasLine, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import {
   computeTimeAxisTicks,
@@ -96,12 +95,13 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
   const width = Math.max(0, right - x);
   if (lane.sides) {
     if (lane.sidesBelowLabel && !layout.compact) {
+      const labelFont = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.save();
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+      ctx.font = labelFont;
       ctx.fillStyle = theme.text;
-      ctx.fillText(fitLine(lane.label, width, s => textWidth(ctx, s)).text, x, mid - 9);
+      ctx.fillText(fitCanvasLine(ctx, lane.label, width, labelFont).text, x, mid - 9);
       ctx.restore();
       drawSides(ctx, lane.sides, x, right, mid + 9, input, {
         separator: lane.sidesSeparator,
@@ -116,46 +116,50 @@ function drawLabel(ctx: Canvas2D, placed: PlacedLane, y: number, input: Timeline
       smallFlags: lane.sidesBelowLabel,
     });
     if (lane.subtitle && !layout.compact) {
+      const subFont = `400 ${theme.fontSize.small}px ${theme.font}`;
       ctx.save();
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = subFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitLine(lane.subtitle, width, s => textWidth(ctx, s)).text, x, mid + 8);
+      ctx.fillText(fitCanvasLine(ctx, lane.subtitle, width, subFont).text, x, mid + 8);
       ctx.restore();
     }
     return;
   }
   if (lane.kind === 'heading') {
+    const headFont = `400 ${theme.fontSize.small}px ${theme.font}`;
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = headFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(fitLine(lane.label, width, s => textWidth(ctx, s)).text, x, mid);
+    ctx.fillText(fitCanvasLine(ctx, lane.label, width, headFont).text, x, mid);
     ctx.restore();
     return;
   }
   const twoLines = !!lane.subtitle && !layout.compact;
+  const titleFont = `500 ${theme.fontSize.body}px ${theme.font}`;
+  const smallFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = titleFont;
   ctx.fillStyle = theme.text;
-  const title = fitLine(lane.label, width, s => textWidth(ctx, s)).text;
+  const title = fitCanvasLine(ctx, lane.label, width, titleFont).text;
   ctx.fillText(title, x, twoLines ? mid - 7 : mid);
   if (lane.aside && !twoLines) {
-    const after = x + textWidth(ctx, title) + 8;
+    const after = x + measureCanvasText(ctx, title, titleFont) + 8;
     if (right - after > 24) {
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitLine(lane.aside, right - after, s => textWidth(ctx, s)).text, after, mid);
+      ctx.fillText(fitCanvasLine(ctx, lane.aside, right - after, smallFont).text, after, mid);
     }
   }
   if (twoLines) {
-    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = smallFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(fitLine(lane.subtitle!, width, s => textWidth(ctx, s)).text, x, mid + 8);
+    ctx.fillText(fitCanvasLine(ctx, lane.subtitle!, width, smallFont).text, x, mid + 8);
   }
   ctx.restore();
 }
@@ -180,13 +184,14 @@ function drawSide(
     x += fw + 6;
   }
   if (leadName) {
+    const leadFont = `500 ${theme.fontSize.body}px ${theme.font}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = leadFont;
     ctx.fillStyle = theme.text;
-    const fitted = fitLine(side.name, Math.max(0, right - x), s => textWidth(ctx, s)).text;
+    const fitted = fitCanvasLine(ctx, side.name, Math.max(0, right - x), leadFont).text;
     ctx.fillText(fitted, x, mid);
-    x += textWidth(ctx, fitted) + 6;
+    x += measureCanvasText(ctx, fitted, leadFont) + 6;
   }
   for (const member of side.strip) {
     if (x + STRIP_W > Math.min(right, stripLimit)) break;
@@ -217,12 +222,11 @@ function drawSides(
   const sep = style.separator ?? '\u2013';
   const flagSize: readonly [number, number] = style.smallFlags ? [16, 11] : [FLAG_W, FLAG_H];
   const extraText = style.extraSides && style.extraSides > 0 ? `+${style.extraSides}` : null;
+  const extraFont = `500 ${theme.fontSize.small}px ${theme.font}`;
+  const sepFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   let pillW = 0;
   if (extraText) {
-    ctx.save();
-    ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
-    pillW = Math.ceil(textWidth(ctx, extraText)) + 10;
-    ctx.restore();
+    pillW = Math.ceil(measureCanvasText(ctx, extraText, extraFont)) + 10;
   }
   const contentRight = extraText ? right - pillW - 10 : right;
   const half = x + (contentRight - x) * 0.54;
@@ -231,10 +235,10 @@ function drawSides(
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = sepFont;
   ctx.fillStyle = theme.muted;
   ctx.fillText(sep, x, mid);
-  const sepW = textWidth(ctx, sep);
+  const sepW = measureCanvasText(ctx, sep, sepFont);
   ctx.restore();
   const afterSecond = drawSide(ctx, sides[1], x + sepW + 6, contentRight, mid, input, names, contentRight, flagSize);
   if (extraText && right - pillW >= x + sepW + 6) {
@@ -281,17 +285,19 @@ function drawOutcome(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Time
     ctx.fill();
     x += MARK + 6;
   }
+  const bodyFont = `400 ${theme.fontSize.body}px ${theme.font}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = bodyFont;
   ctx.fillStyle = theme.text;
-  const text = fitLine(outcome.text, Math.max(0, right - x), s => textWidth(ctx, s)).text;
+  const text = fitCanvasLine(ctx, outcome.text, Math.max(0, right - x), bodyFont).text;
   ctx.fillText(text, x, mid);
-  x += textWidth(ctx, text) + 8;
+  x += measureCanvasText(ctx, text, bodyFont) + 8;
   if (outcome.detail && right - x > 24) {
-    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    const detailFont = `400 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = detailFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(fitLine(outcome.detail, right - x, s => textWidth(ctx, s)).text, x, mid);
+    ctx.fillText(fitCanvasLine(ctx, outcome.detail, right - x, detailFont).text, x, mid);
   }
   ctx.restore();
 }
@@ -355,12 +361,13 @@ function drawGroupRule(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Ti
   if (lane.endText) {
     const x = (last ? last.x1 : layout.plotLeft) + 6;
     if (layout.plotRight - x > 24) {
+      const endFont = `400 ${theme.fontSize.small}px ${theme.font}`;
       ctx.save();
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = endFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(fitLine(lane.endText, layout.plotRight - x, s => textWidth(ctx, s)).text, x, mid);
+      ctx.fillText(fitCanvasLine(ctx, lane.endText, layout.plotRight - x, endFont).text, x, mid);
       ctx.restore();
     }
   }
@@ -376,11 +383,12 @@ function drawOpenedMarker(ctx: Canvas2D, lane: TimelineLane, mid: number, input:
   const { layout, theme } = input;
   if (marker.hour <= layout.startHour || marker.hour > layout.endHour) return;
   const x = hourToX(layout, marker.hour);
+  const markerFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   ctx.save();
-  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = markerFont;
   ctx.fillStyle = theme.muted;
   ctx.textBaseline = 'middle';
-  const w = textWidth(ctx, marker.label);
+  const w = measureCanvasText(ctx, marker.label, markerFont);
   if (x - 4 - w >= layout.plotLeft) {
     ctx.textAlign = 'right';
     ctx.fillText(marker.label, x - 4, mid);
@@ -416,6 +424,8 @@ function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
   }
   const showFullKpis = layout.width >= 560 && !!header.kpis?.length;
   let rightEdge = layout.width - LABEL_PAD;
+  const titleFont = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+  const smallFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   if (showFullKpis) {
     ctx.save();
     ctx.textAlign = 'right';
@@ -424,16 +434,14 @@ function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
     let kx = rightEdge;
     for (let i = kpis.length - 1; i >= 0; i--) {
       const kpi = kpis[i]!;
-      ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
-      const valW = textWidth(ctx, kpi.value);
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
-      const labW = textWidth(ctx, kpi.label);
+      const valW = measureCanvasText(ctx, kpi.value, titleFont);
+      const labW = measureCanvasText(ctx, kpi.label, smallFont);
       const colW = Math.max(valW, labW);
       if (kx - colW < x + 120) break;
-      ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+      ctx.font = titleFont;
       ctx.fillStyle = theme.text;
       ctx.fillText(kpi.value, kx, mid - 8);
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
       ctx.fillText(kpi.label, kx, mid + 9);
       kx -= colW + 16;
@@ -444,17 +452,18 @@ function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
   ctx.save();
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.font = `600 ${theme.fontSize.body + 1}px ${theme.font}`;
+  ctx.font = titleFont;
   ctx.fillStyle = theme.text;
-  ctx.fillText(fitLine(header.title, Math.max(40, rightEdge - x), s => textWidth(ctx, s)).text, x, header.subtitle ? mid - 8 : mid);
+  ctx.fillText(fitCanvasLine(ctx, header.title, Math.max(40, rightEdge - x), titleFont).text, x, header.subtitle ? mid - 8 : mid);
   if (header.subtitle || (!showFullKpis && header.compactKpi)) {
     let sx = x;
     const sy = mid + 9;
     let subRight = rightEdge;
     if (!showFullKpis && header.compactKpi) {
-      ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+      const compactFont = `500 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = compactFont;
       ctx.fillStyle = theme.text;
-      const cw = textWidth(ctx, header.compactKpi);
+      const cw = measureCanvasText(ctx, header.compactKpi, compactFont);
       if (layout.width - LABEL_PAD - cw > sx + 70) {
         ctx.textAlign = 'right';
         ctx.fillText(header.compactKpi, layout.width - LABEL_PAD, sy);
@@ -467,9 +476,9 @@ function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
       sx += 20;
     }
     if (header.subtitle && subRight - sx > 20) {
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = smallFont;
       ctx.fillStyle = theme.muted;
-      ctx.fillText(fitLine(header.subtitle, subRight - sx, s => textWidth(ctx, s)).text, sx, sy);
+      ctx.fillText(fitCanvasLine(ctx, header.subtitle, subRight - sx, smallFont).text, sx, sy);
     }
   }
   ctx.restore();
@@ -477,8 +486,9 @@ function drawHeader(ctx: Canvas2D, input: TimelinePaintInput): void {
 
 function drawTopAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], input: TimelinePaintInput): void {
   const { layout, theme } = input;
+  const axisFont = `400 ${theme.fontSize.small}px ${theme.font}`;
   ctx.save();
-  ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = axisFont;
   ctx.fillStyle = theme.muted;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
@@ -487,7 +497,7 @@ function drawTopAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], input: Timel
   for (const tick of ticks) {
     const x = hourToX(layout, tick.hour);
     if (x < layout.plotLeft - 2 || x > layout.plotRight - 14) continue;
-    const w = textWidth(ctx, tick.label);
+    const w = measureCanvasText(ctx, tick.label, axisFont);
     if (x < lastRight + 8) continue;
     ctx.fillText(tick.label, x, y);
     lastRight = x + w;
@@ -528,15 +538,17 @@ function drawMeters(ctx: Canvas2D, input: TimelinePaintInput): void {
     const row = Math.floor(index / cols);
     const x = LABEL_PAD + col * (colW + gap);
     const y = layout.metersTop + METERS_HEADER_HEIGHT + row * METERS_ROW_HEIGHT;
-    ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+    const figFont = `400 ${theme.fontSize.small}px ${theme.font}`;
+    const labelFont = `500 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = figFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'right';
-    const figW = textWidth(ctx, item.figure);
+    const figW = measureCanvasText(ctx, item.figure, figFont);
     ctx.fillText(item.figure, x + colW, y + 6);
     ctx.textAlign = 'left';
-    ctx.font = `500 ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = labelFont;
     ctx.fillStyle = theme.text;
-    ctx.fillText(fitLine(item.label, Math.max(24, colW - figW - 8), s => textWidth(ctx, s)).text, x, y + 6);
+    ctx.fillText(fitCanvasLine(ctx, item.label, Math.max(24, colW - figW - 8), labelFont).text, x, y + 6);
     const barY = y + 17;
     const barH = 5;
     ctx.globalAlpha = 0.45;
@@ -634,7 +646,8 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
       ctx.fill();
     }
     if (layout.width >= 560) {
-      ctx.font = `400 ${theme.fontSize.small}px ${theme.font}`;
+      const diamondFont = `400 ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = diamondFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
@@ -652,9 +665,9 @@ function drawBars(ctx: Canvas2D, lane: TimelineLane, mid: number, input: Timelin
         }
         const avail = nextX - tx;
         if (tx < lastLabelRight || avail < 36) continue;
-        const fitted = fitLine(item.text, avail, s => textWidth(ctx, s)).text;
+        const fitted = fitCanvasLine(ctx, item.text, avail, diamondFont).text;
         ctx.fillText(fitted, tx, mid);
-        lastLabelRight = tx + textWidth(ctx, fitted) + 10;
+        lastLabelRight = tx + measureCanvasText(ctx, fitted, diamondFont) + 10;
       }
     }
     ctx.restore();

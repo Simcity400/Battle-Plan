@@ -1,6 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   contrastInkForFill,
   drawBar,
@@ -72,8 +71,9 @@ export function rampColour(theme: FamilyTheme, ramp: MatrixRamp | undefined, int
 function drawCellText(ctx: Canvas2D, text: string, x: number, y: number, w: number, h: number, color: string, theme: FamilyTheme): void {
   if (w < 12 || h < 10) return;
   for (let size = Math.min(11, Math.floor(h * 0.72)); size >= 8; size--) {
-    ctx.font = `${VALUE_WEIGHT} ${size}px ${theme.font}`;
-    if (textWidth(ctx, text) > w - 4) continue;
+    const font = `${VALUE_WEIGHT} ${size}px ${theme.font}`;
+    if (measureCanvasText(ctx, text, font) > w - 4) continue;
+    ctx.font = font;
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -98,11 +98,12 @@ function drawMarginColumn(
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(left, layout.legendHeight, layout.marginWidth, layout.height - layout.legendHeight);
-  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  const headerFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = headerFont;
   ctx.fillStyle = theme.muted;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(ellipsise(margin.header, layout.marginWidth - MATRIX_PAD * 2, s => textWidth(ctx, s)), layout.width - MATRIX_PAD, layout.gridTop - 4);
+  ctx.fillText(ellipsiseCanvasText(ctx, margin.header, layout.marginWidth - MATRIX_PAD * 2, headerFont), layout.width - MATRIX_PAD, layout.gridTop - 4);
   ctx.beginPath();
   ctx.rect(left, layout.gridTop, layout.marginWidth, Math.max(0, layout.height - layout.gridTop));
   ctx.clip();
@@ -128,11 +129,12 @@ function drawMarginColumn(
       continue;
     }
     drawBar(ctx, barLeft, Math.round(middle - barHeight / 2), Math.max(2, barMax * Math.max(0, Math.min(1, item.fraction))), barHeight, item.color ?? rampColour(theme, model.ramp, 1), 'right');
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    const valueFont = `${VALUE_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = valueFont;
     ctx.fillStyle = theme.text;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ellipsise(item.text, figureWidth, s => textWidth(ctx, s)), layout.width - MATRIX_PAD, middle + 0.5);
+    ctx.fillText(ellipsiseCanvasText(ctx, item.text, figureWidth, valueFont), layout.width - MATRIX_PAD, middle + 0.5);
   }
   ctx.restore();
 }
@@ -142,12 +144,13 @@ function drawColumnName(ctx: Canvas2D, label: string, x: number, bottom: number,
   ctx.save();
   ctx.translate(x, bottom);
   ctx.rotate(-MATRIX_COLUMN_NAME_ANGLE);
-  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  const colFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  ctx.font = colFont;
   ctx.fillStyle = theme.muted;
   ctx.globalAlpha = muted ? 0.7 : 1;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(ellipsise(label, room, s => textWidth(ctx, s)), 0, 0);
+  ctx.fillText(ellipsiseCanvasText(ctx, label, room, colFont), 0, 0);
   ctx.restore();
 }
 
@@ -406,14 +409,15 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
         ctx.fillStyle = span.color;
         ctx.fillRect(x0 + 2, bandY + layout.colGroupHeight - 2, Math.max(4, w - 4), 2);
       }
-      ctx.font = `${LABEL_WEIGHT} 10px ${theme.font}`;
+      const groupFont = `${LABEL_WEIGHT} 10px ${theme.font}`;
+      ctx.font = groupFont;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       const labelX = Math.max(layout.gridLeft + 4, x0 + 4);
       const avail = Math.max(0, x0 + w - labelX - 4);
       if (avail >= 16) {
-        ctx.fillText(ellipsise(span.label, avail, s => textWidth(ctx, s)), labelX, bandY + layout.colGroupHeight / 2);
+        ctx.fillText(ellipsiseCanvasText(ctx, span.label, avail, groupFont), labelX, bandY + layout.colGroupHeight / 2);
       }
       if (span.first > 0) {
         const px = Math.floor(x0) + 0.5;
@@ -465,13 +469,14 @@ export function drawHeatMatrix(ctx: Canvas2D, input: DrawHeatMatrixInput): void 
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, layout.legendHeight, layout.gridLeft, layout.headerHeight);
   if (model.corner) {
+    const cornerFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
     ctx.save();
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+    ctx.font = cornerFont;
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     const cornerW = Math.max(0, layout.gridLeft - MATRIX_PAD * 2);
-    ctx.fillText(ellipsise(model.corner, cornerW, s => textWidth(ctx, s)), layout.rowGroupWidth + MATRIX_PAD, flagBandTop + flagBandH / 2);
+    ctx.fillText(ellipsiseCanvasText(ctx, model.corner, cornerW, cornerFont), layout.rowGroupWidth + MATRIX_PAD, flagBandTop + flagBandH / 2);
     ctx.restore();
   }
   drawMarginColumn(ctx, model, layout, theme, scrollTop, hoveredCell?.row ?? null, focusedCell?.column === model.columns.length ? focusedCell.row : null);

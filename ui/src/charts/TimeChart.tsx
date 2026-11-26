@@ -23,7 +23,7 @@ import type { TooltipContent } from './tooltip';
 import { EMPTY_VIEW, reduceView, shownUntil } from './view';
 import type { AxisSettings, PlaybackMode, Range, ViewAction, ViewState } from './view';
 import type { Live } from './live';
-import { canvasMeasureText } from './textWidth';
+import { canvasMeasureText, TextMeasureScope } from './textWidth';
 import {
   TIME_CHART_DEFAULT_PADDING,
   TIME_CHART_MIN_SPAN,
@@ -116,6 +116,8 @@ export default function TimeChart(props: TimeChartProps) {
     const element = canvas.current!;
     const drawing = drawingSurface(element), context = drawing.context!;
     const measure = canvasMeasureText(context);
+    const layoutText = new TextMeasureScope();
+    const paintText = new TextMeasureScope();
     const sheet = overlay.current ? drawingSurface(overlay.current) : null, overlayContext = sheet?.context ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
@@ -189,7 +191,7 @@ export default function TimeChart(props: TimeChartProps) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
-      frame = fitTimeChartFrame({
+      frame = layoutText.run(() => fitTimeChartFrame({
         layoutWidth,
         layoutHeight,
         padding,
@@ -199,7 +201,7 @@ export default function TimeChart(props: TimeChartProps) {
         tokens,
         formatValue: p.formatValue,
         measure,
-      });
+      }));
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
@@ -207,9 +209,9 @@ export default function TimeChart(props: TimeChartProps) {
         ...(p.data?.revision() ?? [])];
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
-        drawTimeChartScene(
+        paintText.run(() => drawTimeChartScene(
           context,
-          frame,
+          frame!,
           tokens,
           {
             layoutWidth,
@@ -225,7 +227,7 @@ export default function TimeChart(props: TimeChartProps) {
             overlay: p.overlay,
           },
           measure,
-        );
+        ));
         painted = baseKey;
       }
       if (overlayContext && overlaid) {
@@ -417,7 +419,7 @@ export default function TimeChart(props: TimeChartProps) {
     return () => {
       if (summaryTimer) clearTimeout(summaryTimer);
       if (pendingHover) clearTimeout(pendingHover.timer);
-      remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
+      remove(); unsubscribe(); surface.disconnect(); layoutText.release(); paintText.release(); hideTooltip(owner);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);

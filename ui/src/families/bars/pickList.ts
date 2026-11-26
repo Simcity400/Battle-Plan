@@ -1,6 +1,5 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import { drawBar, drawRowFocusRing, drawRowHover, drawRowSelected, resolveKitTokens } from '../../draw/kit.ts';
 import { auditCell, type FamilyAuditRow } from '../auditRow.ts';
 import { drawMediaSlot } from '../art/adapters.ts';
@@ -46,7 +45,8 @@ export function drawPickList(
   ctx.fillRect(0, 0, layout.bodyLeft, layout.height);
   ctx.fillStyle = tokens.hairlineStrong;
   ctx.fillRect(Math.round(width + (layout.bodyLeft - width) / 2), 0, 1, layout.height);
-  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  const rowFont = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = rowFont;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   for (let i = 0; i < list.rows.length; i++) {
@@ -63,7 +63,7 @@ export function drawPickList(
     const middle = top + PICK_ROW_HEIGHT / 2;
     const duelX = width - LABEL_INSET - DUEL_WIDTH;
     ctx.fillStyle = theme.text;
-    ctx.fillText(ellipsise(row.label, Math.max(0, duelX - LABEL_INSET * 2), text => textWidth(ctx, text)), LABEL_INSET, middle);
+    ctx.fillText(ellipsiseCanvasText(ctx, row.label, Math.max(0, duelX - LABEL_INSET * 2), rowFont), LABEL_INSET, middle);
     drawDuel(ctx, row, duelX, Math.round(middle - DUEL_HEIGHT / 2), tokens.barTrack, theme.grey);
   }
   ctx.restore();
@@ -92,10 +92,8 @@ export function drawCaptionSides(ctx: Canvas2D, sides: readonly BarsCaptionSide[
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   const pieces = sides.map((side, at) => {
-    ctx.font = label;
-    const labelW = textWidth(ctx, side.label);
-    ctx.font = value;
-    const valueW = textWidth(ctx, side.value);
+    const labelW = measureCanvasText(ctx, side.label, label);
+    const valueW = measureCanvasText(ctx, side.value, value);
     return { side, at, labelW, valueW, width: flagW + 6 + labelW + 5 + valueW };
   });
   for (let p = pieces.length - 1; p >= 0; p--) {

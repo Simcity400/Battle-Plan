@@ -1,6 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsise } from '../../charts/labels.ts';
-import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
+import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   computeTimeAxisTicks,
   contrastInkForFill,
@@ -122,9 +121,10 @@ function drawRowReadout(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   if (readout.kind === 'clear') {
-    ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    const clearFont = `${LABEL_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = clearFont;
     ctx.fillStyle = theme.muted;
-    ctx.fillText(ellipsise(readout.label, width, s => textWidth(ctx, s)), x, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, readout.label, width, clearFont), x, middleY);
     ctx.restore();
     return;
   }
@@ -143,35 +143,39 @@ function drawRowReadout(
           : theme.text);
   const secondaryColor = mix(theme.text, theme.surface, 0.25);
   if (readout.form === 'word') {
-    ctx.font = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    const wordFont = `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = wordFont;
     ctx.fillStyle = color;
     const room = Math.max(0, x + width - cursor);
-    const primary = ellipsise(readout.primary, room, s => textWidth(ctx, s));
+    const primary = ellipsiseCanvasText(ctx, readout.primary, room, wordFont);
     ctx.fillText(primary, cursor, middleY);
     if (readout.secondary) {
-      const after = cursor + textWidth(ctx, primary) + 6;
-      ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      const after = cursor + measureCanvasText(ctx, primary, wordFont) + 6;
+      const secFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+      ctx.font = secFont;
       ctx.fillStyle = theme.muted;
       const rest = x + width - after;
-      if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
+      if (rest > 12) ctx.fillText(ellipsiseCanvasText(ctx, readout.secondary, rest, secFont), after, middleY);
     }
     ctx.restore();
     return;
   }
-  ctx.font = `${readout.tone === 'muted' ? LABEL_WEIGHT : VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  const primaryFont = `${readout.tone === 'muted' ? LABEL_WEIGHT : VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`;
+  ctx.font = primaryFont;
   ctx.fillStyle = color;
   const slot = Math.min(READOUT_VALUE_SLOT, Math.max(0, x + width - cursor));
   if (readout.primary) {
     ctx.textAlign = 'right';
-    ctx.fillText(ellipsise(readout.primary, slot, s => textWidth(ctx, s)), cursor + slot, middleY);
+    ctx.fillText(ellipsiseCanvasText(ctx, readout.primary, slot, primaryFont), cursor + slot, middleY);
     ctx.textAlign = 'left';
   }
   if (readout.secondary) {
     const after = cursor + slot + READOUT_GAP;
     const rest = x + width - after;
-    ctx.font = `400 ${theme.fontSize.body}px ${theme.font}`;
+    const secFont = `400 ${theme.fontSize.body}px ${theme.font}`;
+    ctx.font = secFont;
     ctx.fillStyle = secondaryColor;
-    if (rest > 12) ctx.fillText(ellipsise(readout.secondary, rest, s => textWidth(ctx, s)), after, middleY);
+    if (rest > 12) ctx.fillText(ellipsiseCanvasText(ctx, readout.secondary, rest, secFont), after, middleY);
   }
   ctx.restore();
 }
@@ -188,13 +192,11 @@ function drawInRunLabel(
   explicitTextColor?: string,
 ): void {
   if (!text || width < 28 || height < 14) return;
+  const runFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  const needed = measureCanvasText(ctx, text, runFont) + 16;
+  if (width < needed) return;
   ctx.save();
-  ctx.font = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
-  const needed = textWidth(ctx, text) + 16;
-  if (width < needed) {
-    ctx.restore();
-    return;
-  }
+  ctx.font = runFont;
   ctx.fillStyle = explicitTextColor ?? contrastInkForFill(bgColor, theme);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';

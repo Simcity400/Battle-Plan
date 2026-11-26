@@ -1,5 +1,4 @@
-import { fitLine } from '../../charts/labels.ts';
-import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
+import { fitMeasuredLine, type Canvas2D, type MeasureText } from '../../charts/textWidth.ts';
 import { computeTimeAxisTicks, drawArtSlot, drawTimeAxis, resolveKitTokens, type TimeAxisTick } from '../../draw/kit.ts';
 import { resolveCachedArt, toArtSlotState } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
@@ -59,7 +58,7 @@ export function layoutChartRows(model: TimeChartModel, width: number, height: nu
   const placed = rows.map((row, index) => {
     const rowTop = top + index * rowHeight;
     const scale = row.months.reduce((most, month) => Math.max(most, Math.abs(month.value ?? 0)), 0);
-    const fitted = fitLine(row.name, nameWidth - ICON - 8, text => measure(text, nameFont));
+    const fitted = fitMeasuredLine(row.name, nameWidth - ICON - 8, nameFont, measure);
     return { row, index, top: rowTop, height: rowHeight, zeroY: rowTop + rowHeight / 2, scale, name: fitted.text, nameTruncated: fitted.truncated };
   });
   return {
