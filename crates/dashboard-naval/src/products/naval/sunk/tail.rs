@@ -432,7 +432,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &ShipsSunkTailParams, h
     let reply = ShipsSunkTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         next_change,
         classes: tail.classes[..end].to_vec(),
         rows,

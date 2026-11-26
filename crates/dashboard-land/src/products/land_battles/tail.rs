@@ -582,7 +582,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
     let reply = LandBattlesTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         rows,
         missing: answer.gaps,
         next_change,

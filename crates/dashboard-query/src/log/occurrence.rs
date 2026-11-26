@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -16,6 +16,8 @@ use ts_rs::TS;
 mod tests;
 
 pub const MEMBERSHIP_UNKNOWN: &str = "Group membership is unavailable at this time.";
+
+const KEPT_SIGNATURES: usize = 16;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -226,16 +228,54 @@ struct Signature {
     kinds: Option<Vec<u16>>,
     selection: Option<(Vec<(String, i32, i32)>, Vec<(i32, i32)>, Vec<(i32, i32, String)>)>,
     search: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PageShape {
+    order: Order,
+    live_first: bool,
+    gap_end: i32,
     states: Option<Vec<u8>>,
     chips: Vec<Chip>,
 }
 
+struct Recent<K, V>(VecDeque<(K, Arc<V>, usize)>);
+
+impl<K: PartialEq, V> Recent<K, V> {
+    fn new() -> Self { Self(VecDeque::new()) }
+
+    fn get(&mut self, key: &K) -> Option<Arc<V>> {
+        let at = self.0.iter().position(|(kept, ..)| kept == key)?;
+        let entry = self.0.remove(at)?;
+        let found = Arc::clone(&entry.1);
+        self.0.push_front(entry);
+        Some(found)
+    }
+
+    fn insert(&mut self, key: K, value: V, rows: usize, mut remaining: usize) -> Arc<V> {
+        if let Some(found) = self.get(&key) { return found; }
+        let keep = self.0.iter().take(KEPT_SIGNATURES - 1).take_while(|(_, _, size)| {
+            if *size > remaining { return false; }
+            remaining -= size;
+            true
+        }).count();
+        self.0.truncate(keep);
+        let made = Arc::new(value);
+        self.0.push_front((key, Arc::clone(&made), rows));
+        made
+    }
+}
+
 struct Filtered {
     display: Vec<(u32, i32)>,
-    changes: Vec<i32>,
     unattributed_rows: Vec<u32>,
     unknown: Vec<MissingSpan>,
-    dated: Mutex<Option<(Direction, bool, i32, Arc<PageOrder>)>>,
+    views: Mutex<Recent<PageShape, View>>,
+}
+
+struct View {
+    changes: Vec<i32>,
+    dated: Mutex<Option<Arc<PageOrder>>>,
 }
 
 struct PageOrder {
@@ -256,7 +296,7 @@ pub struct Index<P> {
     subject_gaps: HashMap<u128, Vec<MissingSpan>>,
     gaps: Vec<MissingSpan>,
     live: u64,
-    filtered: Mutex<Option<(Signature, Arc<Filtered>)>>,
+    filtered: Mutex<Recent<Signature, Filtered>>,
 }
 
 fn sorted_spans(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
@@ -415,7 +455,7 @@ impl<P> Index<P> {
         gaps.retain(|gap| gap.first_hour <= gap.last_hour);
         gaps.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
         let live = live.iter().fold(0u64, |mask, &state| mask | 1 << state);
-        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), gaps, live, filtered: Mutex::default() })
+        Ok(Self { entries, by_subject, subject_gaps: HashMap::new(), gaps, live, filtered: Mutex::new(Recent::new()) })
     }
 
     pub fn with_subject_gaps(mut self, gaps: HashMap<u128, Vec<MissingSpan>>) -> Self {
@@ -460,7 +500,7 @@ impl<P> Index<P> {
             (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()), unknown)
         });
         let search = ask.search.map(str::trim).filter(|text| !text.is_empty()).map(str::to_lowercase);
-        Signature { from: ask.from, to: ask.to, subject: ask.subject, kinds, selection, search, states: ask.states.map(<[u8]>::to_vec), chips: ask.chips.to_vec() }
+        Signature { from: ask.from, to: ask.to, subject: ask.subject, kinds, selection, search }
     }
 
     fn changes(&self, entry: &Occurrence<P>, admitted: i32, ask: &Ask<'_>, counted: bool, mut change: impl FnMut(i32)) {
@@ -481,11 +521,8 @@ impl<P> Index<P> {
 
     fn filtered(&self, holders: &Holders, ask: &Ask<'_>) -> Arc<Filtered> {
         let signature = Self::signature(ask);
-        {
-            let kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((held, found)) = kept.as_ref() && *held == signature {
-                return Arc::clone(found);
-            }
+        if let Some(found) = self.filtered.lock().unwrap_or_else(PoisonError::into_inner).get(&signature) {
+            return found;
         }
         let members = ask.selection.map(|selection| Members::resolve(holders, selection));
         let (from, to) = (signature.from.unwrap_or(i32::MIN), signature.to.unwrap_or(i32::MAX));
@@ -516,23 +553,33 @@ impl<P> Index<P> {
                 visit(at);
             }
         }
+        let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
+        if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
+            unknown.extend_from_slice(spans);
+        }
+        let rows = display.len() + unattributed_rows.len();
+        let made = Filtered { display, unattributed_rows, unknown, views: Mutex::new(Recent::new()) };
+        self.filtered.lock().unwrap_or_else(PoisonError::into_inner).insert(signature, made, rows, self.entries.len())
+    }
+
+    fn view(&self, filtered: &Filtered, ask: &Ask<'_>, gap_end: i32) -> Arc<View> {
+        let shape = PageShape { order: ask.order, live_first: ask.live_first, gap_end, states: ask.states.map(<[u8]>::to_vec), chips: ask.chips.to_vec() };
+        if let Some(found) = filtered.views.lock().unwrap_or_else(PoisonError::into_inner).get(&shape) {
+            return found;
+        }
         let mut changes = Vec::new();
-        for &(at, admitted) in &display {
+        for &(at, admitted) in &filtered.display {
             self.changes(self.get(at), admitted, ask, true, |hour| changes.push(hour));
         }
-        for &at in &unattributed_rows {
+        for &at in &filtered.unattributed_rows {
             let entry = self.get(at);
             self.changes(entry, entry.observed, ask, false, |hour| changes.push(hour));
         }
         changes.sort_unstable();
         changes.dedup();
-        let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
-        if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
-            unknown.extend_from_slice(spans);
-        }
-        let made = Arc::new(Filtered { display, changes, unattributed_rows, unknown, dated: Mutex::default() });
-        *self.filtered.lock().unwrap_or_else(PoisonError::into_inner) = Some((signature, Arc::clone(&made)));
-        made
+        let rows = filtered.display.len() + filtered.unattributed_rows.len();
+        let made = View { changes, dated: Mutex::default() };
+        filtered.views.lock().unwrap_or_else(PoisonError::into_inner).insert(shape, made, rows, rows)
     }
 
     fn visible_gaps(&self, filtered: &Filtered, from: i32, hour: i32, gap_end: i32) -> Vec<MissingSpan> {
@@ -583,21 +630,25 @@ impl<P> Index<P> {
         }
         let filtered = self.filtered(holders, ask);
         let gap_end = ask.gap_end.unwrap_or(i32::MAX).min(ask.to.unwrap_or(i32::MAX));
-        let order = match (ask.order, visible) {
-            (Order::Date(direction), None) => {
-                let mut kept = filtered.dated.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some((d, live, end, order)) = kept.as_ref()
-                    && (*d, *live, *end) == (direction, ask.live_first, gap_end)
+        let order = if visible.is_some() {
+            Arc::new(self.order(&filtered, ask, gap_end, visible, None))
+        } else {
+            let view = self.view(&filtered, ask, gap_end);
+            let next = view.changes.get(view.changes.partition_point(|&at| at <= ask.hour)).copied();
+            if matches!(ask.order, Order::Date(_)) {
+                let mut kept = view.dated.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(order) = kept.as_ref()
                     && order.hour <= ask.hour && order.until.is_none_or(|until| ask.hour < until)
                 {
                     Arc::clone(order)
                 } else {
-                    let order = Arc::new(self.order(&filtered, ask, gap_end, None));
-                    *kept = Some((direction, ask.live_first, gap_end, Arc::clone(&order)));
+                    let order = Arc::new(self.order(&filtered, ask, gap_end, None, next));
+                    *kept = Some(Arc::clone(&order));
                     order
                 }
+            } else {
+                Arc::new(self.order(&filtered, ask, gap_end, None, next))
             }
-            _ => Arc::new(self.order(&filtered, ask, gap_end, visible)),
         };
         let offset = ask.offset.min(order.total);
         let start = (offset as usize).min(order.ordered.len());
@@ -620,7 +671,7 @@ impl<P> Index<P> {
         Ok(Answer { hour: ask.hour, total: order.total, live: order.live, offset, rows, chips: order.chips.clone(), gaps: order.gaps.clone(), unattributed: order.unattributed, next_change })
     }
 
-    fn order(&self, filtered: &Filtered, ask: &Ask<'_>, gap_end: i32, visible: Option<&dyn Fn(&P) -> bool>) -> PageOrder {
+    fn order(&self, filtered: &Filtered, ask: &Ask<'_>, gap_end: i32, visible: Option<&dyn Fn(&P) -> bool>, next: Option<i32>) -> PageOrder {
         let hour = ask.hour;
         let from = ask.from.unwrap_or(i32::MIN);
         let mut gaps = self.visible_gaps(filtered, from, hour, gap_end);
@@ -628,10 +679,7 @@ impl<P> Index<P> {
         let mut chips = vec![0u64; ask.chips.len()];
         let mut live_rows = Vec::new();
         let mut live_count = 0u64;
-        let mut next = self.next_gap(filtered, hour, from, gap_end);
-        if visible.is_none() {
-            next = next.into_iter().chain(filtered.changes.get(filtered.changes.partition_point(|&at| at <= hour)).copied()).min();
-        }
+        let mut next = next.into_iter().chain(self.next_gap(filtered, hour, from, gap_end)).min();
         let mut history = Vec::new();
         let mut history_total = 0u64;
         let mut changing_keys = Vec::new();

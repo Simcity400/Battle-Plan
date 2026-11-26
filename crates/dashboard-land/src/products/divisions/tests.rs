@@ -380,6 +380,22 @@ fn a_service_record_of_chosen_countries_names_the_hours_whose_holders_are_not_kn
     assert!(named(&during), "{:?}", during.warnings);
     assert!(during.next_change.is_some_and(|at| at <= 105), "and where they are known again: {:?}", during.next_change);
     assert!(!named(&ask(105)), "the reason does not outlive the gap");
+
+    let no_divisions = decorated_source((100..=107).map(|hour| {
+        let mut frame = decorated_world(hour, |_| 0);
+        *frame.tables[TableId::Divisions.index()] = TableView::Complete(replay_data::rows::TableRows::Divisions(Vec::new()));
+        if (103..=104).contains(&hour) {
+            *frame.tables[TableId::DivisionHistory.index()] = TableView::Unavailable { reason: "history unread".into() };
+        }
+        frame
+    }).collect());
+    let empty = |hour| DivisionServiceRecordTail::load(&no_divisions,
+        &serde_json::from_value(json!({"branchId": "1", "hour": hour, "limit": 12})).unwrap(),
+        &LoadContext { content: None }, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+    let during = empty(103);
+    assert_eq!(during.unavailable.as_deref(), Some("The most decorated division could not be determined from the recorded census and medals."));
+    assert_eq!(during.next_change, Some(105));
+    assert!(empty(105).unavailable.is_none());
 }
 
 #[test]

@@ -63,10 +63,15 @@ fn predicates_apply_before_the_count_and_the_slice_and_chips_count_the_matching_
     assert_eq!(live.chips, [20, 20], "the running chip counts the population, not the rows shown");
     assert_eq!(ids(&index, &live), [1, 0, 99, 98], "live rows first, newest first, then history newest first");
     assert_eq!(live.rows.iter().map(|shown| (shown.ordinal, shown.live)).collect::<Vec<_>>(), [(18, true), (19, true), (20, false), (21, false)]);
+    let counts = Ask { limit: 1, states: Some(&[RUNNING]), ..ask(200) };
+    assert_eq!(index.ask(&holders(), &counts).unwrap().total, 20);
     STATE_READS.set(0);
     let deep = index.ask(&holders(), &Ask { live_first: true, offset: 95, limit: 3, chips: &chips, ..ask(200) }).unwrap();
     assert_eq!(ids(&index, &deep), [24, 23, 22]);
     assert!(STATE_READS.get() <= 3, "a deep page checked {} row states for three rows", STATE_READS.get());
+    STATE_READS.set(0);
+    assert_eq!(index.ask(&holders(), &counts).unwrap().total, 20);
+    assert_eq!(STATE_READS.get(), 1, "a second view of the same index keeps its counted population");
     let custom = Index::new((1..=3).map(|hour| Occurrence {
         id: hour as u128, date: hour, observed: hour, kind: 0, roles: Box::new([]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: hour,
     }).collect(), Vec::new(), &[]).unwrap();

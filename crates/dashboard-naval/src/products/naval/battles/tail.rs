@@ -642,7 +642,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
     let reply = NavalBattlesTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         rows,
         missing: answer.gaps,
         next_change,

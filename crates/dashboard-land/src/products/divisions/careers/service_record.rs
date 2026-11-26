@@ -876,17 +876,18 @@ fn reply(
     }
     drop(shown);
     let opening = (subject.is_some() && opens(query, hour)).then(|| hour.saturating_add(1));
-    let next_change = [answer.next_change, scope.next, leader_change, opening, division.and_then(|d| d.next_change(hour, &tail.roster, &scope))]
+    let incomplete_through = answer.gaps.iter()
+        .filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour && matches!(gap.reason.as_str(), "Division census incomplete" | "Division history incomplete"))
+        .map(|gap| gap.last_hour)
+        .max();
+    let census_change = subject.is_none().then_some(incomplete_through).flatten().and_then(|last| last.checked_add(1));
+    let next_change = [answer.next_change, scope.next, leader_change, opening, census_change, division.and_then(|d| d.next_change(hour, &tail.roster, &scope))]
         .into_iter()
         .flatten()
         .filter(|&at| at <= query.timeline.last)
         .min();
     let ambiguous = ambiguous || scope.unknown;
-    let incomplete = ambiguous
-        || query.timeline.at(hour).is_none()
-        || answer.gaps.iter().any(|gap| {
-            gap.last_hour == hour && matches!(gap.reason.as_str(), "Division census incomplete" | "Division history incomplete")
-        });
+    let incomplete = ambiguous || query.timeline.at(hour).is_none() || incomplete_through.is_some();
     let unavailable = if let Some(reason) = scope.not_known.clone().filter(|_| subject.is_none()) {
         Some(reason)
     } else if params.division.is_some() && subject.is_none() {
@@ -910,7 +911,7 @@ fn reply(
         medals,
         rows: entries,
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         missing: answer.gaps,
         next_change,
         unavailable,

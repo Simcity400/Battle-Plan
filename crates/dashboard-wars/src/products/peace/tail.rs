@@ -538,7 +538,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &PeaceDealsTailParams, 
     let reply = PeaceDealsTailReply {
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         counts: occurrences::counts(&answer, &["treaties"]),
         rows,
         missing: answer.gaps,
