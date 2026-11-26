@@ -276,6 +276,11 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       if (model.stack.hours[i]! <= hour) at = i;
       else break;
     }
+    if (at >= 0 && model.stack.reduced && model.stack.hours[at] !== hour && at + 1 < model.stack.hours.length) {
+      return model.hoverDetail?.hour === hour
+        ? []
+        : [{ label: model.measureTitle, missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour', tone: 'muted' }];
+    }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
       const totalExact = model.stack.total?.exact?.[at];

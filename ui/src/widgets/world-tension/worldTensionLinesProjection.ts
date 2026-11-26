@@ -125,7 +125,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     }
     const endHour = reply.endHour;
     const labelHour = endHour ?? hour;
-    const hasNegative = reply.bands.some(band => band.values.some(v => v !== null && v < 0));
+    const hasNegative = reply.bands.some(band => [...band.values, ...(band.minValues ?? [])].some(v => v !== null && v < 0));
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
       const id = readView.who('country', band.tag, hour);
