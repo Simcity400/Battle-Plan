@@ -405,4 +405,119 @@ test('R3-S6 & raid labels: post-gap totals carry partial state across end labels
   );
   const leftLaunched = leftGroup.series.find(s => s.id === `${countryKey(7)}\u0000launched`)!;
   assert.equal(leftLaunched.endLabel, null, 'membership ending at 130 is not extended into 132');
+
+  const topWithProvenHistory = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', {
+        ...reply,
+        rankMissing: partialReason,
+        rankMissingFrom: 110,
+        series: [{
+          slot: 7,
+          runs: [{ firstHour: 100, lastHour: 109, launched: 1, succeeded: 0 }],
+          membership: [{ firstHour: 100, lastHour: 109 }],
+        }],
+      }]]),
+      identity,
+    }),
+    { ...baseOpts, tags: [], top: 5 },
+  );
+  assert.equal(topWithProvenHistory.empty, undefined, 'proven top history before a later gap still renders the chart');
+  assert.equal(topWithProvenHistory.series.length, 2);
+  assert.equal(topWithProvenHistory.series[0]?.endLabel, null, 'withheld head has no end label');
+  assert.ok(
+    topWithProvenHistory.gaps?.some(g => g.firstHour === 110 && g.lastHour === 130 && g.reason === partialReason),
+    'uncertain top stretch from rankMissingFrom onward shows the refusal band',
+  );
+  assert.deepEqual(topWithProvenHistory.auditRows?.map(r => [r.row, r.value]), [['__rank__', partialReason]]);
+  const topLayout = layoutTimeChart(topWithProvenHistory, 600, 260, 'sans-serif', t => t.length * 6);
+  const provenTip = deriveTimeChartTooltip(topWithProvenHistory, topLayout, 'plot:105');
+  const provenRow = buildTooltipContent(provenTip!.payload!).rows.find(r => r.label === 'Alpha Republic · Launched');
+  assert.equal(provenRow?.value, '1');
+  assert.equal(provenRow?.valueState, undefined);
+  const uncertainTip = deriveTimeChartTooltip(topWithProvenHistory, topLayout, 'plot:125');
+  assert.deepEqual(
+    buildTooltipContent(uncertainTip!.payload!).rows.find(r => r.label === 'Alpha Republic · Launched')?.valueState,
+    { kind: 'missing', reason: partialReason },
+  );
+
+  const launchOnlyReason = 'Some raids up to this date have an unrecorded raider.';
+  const splitReply: RaidTallyReply = {
+    hour: 130,
+    nextChange: null,
+    available: true,
+    unavailable: null,
+    unattributed: 1,
+    series: [{
+      slot: 7,
+      runs: [{ firstHour: 100, lastHour: 130, launched: 3, succeeded: 2 }],
+      membership: null,
+    }],
+    missing: [],
+    partial: [{ firstHour: 100, lastHour: 130, reason: launchOnlyReason }],
+    partialLaunched: [{ firstHour: 100, lastHour: 130, reason: launchOnlyReason }],
+    partialSucceeded: [],
+    warnings: [],
+  };
+  const splitExactAt125: RaidTallyAtReply = {
+    branchId: '1',
+    hour: 125,
+    firstHour: 100,
+    lastHour: 130,
+    metric: 'both',
+    available: true,
+    unavailable: null,
+    missing: null,
+    partial: '1 raid(s) up to this date have an unrecorded raider',
+    rows: [{ country: 7, tag: 'AAA', launched: 3, succeeded: 2, missing: null }],
+    unattributed: 1,
+    unattributedLaunched: 1,
+    unattributedSucceeded: 0,
+    warnings: [],
+  };
+  const splitModel = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', splitReply]]),
+      identity,
+    }),
+    baseOpts,
+  );
+  const splitLaunched = splitModel.series.find(s => s.id === `${countryKey(7)}\u0000launched`)!;
+  const splitSucceeded = splitModel.series.find(s => s.id === `${countryKey(7)}\u0000succeeded`)!;
+  assert.equal(splitLaunched.endLabel?.value, '3 (partial) / 2');
+  assert.ok(splitLaunched.partialSpans?.length === 1);
+  assert.equal(splitSucceeded.partialSpans, undefined, 'succeeded stays exact when only launches are unattributed');
+  assert.equal(
+    splitModel.auditRows?.find(r => r.row === `${countryKey(7)}\u0000launched`)?.value,
+    `3 (recorded subtotal: ${launchOnlyReason})`,
+  );
+  assert.equal(splitModel.auditRows?.find(r => r.row === `${countryKey(7)}\u0000succeeded`)?.value, '2');
+  const splitSampledTip = deriveTimeChartTooltip(splitModel, layoutTimeChart(splitModel, 600, 260, 'sans-serif', t => t.length * 6), 'plot:125');
+  const splitSampledRows = buildTooltipContent(splitSampledTip!.payload!).rows;
+  assert.deepEqual(splitSampledRows.find(r => r.label === 'Alpha Republic · Launched')?.valueState, { kind: 'partial', text: '3', reason: launchOnlyReason });
+  const splitSampledSucc = splitSampledRows.find(r => r.label === 'Alpha Republic · Succeeded');
+  assert.equal(splitSampledSucc?.value, '2');
+  assert.equal(splitSampledSucc?.valueState, undefined);
+
+  const splitExactModel = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', splitReply]]),
+      hovers: new Map([['hover', { hour: 125, data: splitExactAt125 }]]),
+      identity,
+    }),
+    baseOpts,
+  );
+  const splitExactTip = deriveTimeChartTooltip(splitExactModel, layoutTimeChart(splitExactModel, 600, 260, 'sans-serif', t => t.length * 6), 'plot:125');
+  const splitExactRows = buildTooltipContent(splitExactTip!.payload!).rows;
+  assert.deepEqual(splitExactRows.find(r => r.label === 'Alpha Republic · Launched')?.valueState, {
+    kind: 'partial',
+    text: '3',
+    reason: '1 raid(s) up to this date have an unrecorded raider',
+  });
+  const splitExactSucc = splitExactRows.find(r => r.label === 'Alpha Republic · Succeeded');
+  assert.equal(splitExactSucc?.value, '2');
+  assert.equal(splitExactSucc?.valueState, undefined);
 });

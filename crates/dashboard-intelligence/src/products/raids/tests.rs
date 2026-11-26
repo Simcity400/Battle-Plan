@@ -994,7 +994,17 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
         &cancel,
     )
     .unwrap();
-    assert!(top_after_gap.series.is_empty(), "top ranking is withheld in Lines after a coverage gap");
+    assert_eq!(top_after_gap.series.len(), 1, "top history proven before a later gap is retained");
+    assert_eq!(top_after_gap.series[0].slot, 7);
+    assert_eq!(
+        top_after_gap.series[0].runs.iter().map(|r| (r.first_hour, r.last_hour, r.launched, r.succeeded)).collect::<Vec<_>>(),
+        vec![(10, 10, 1, 0)],
+    );
+    assert_eq!(
+        top_after_gap.series[0].membership.as_deref().map(|spans| spans.iter().map(|s| (s.first_hour, s.last_hour)).collect::<Vec<_>>()),
+        Some(vec![(10, 10)]),
+    );
+    assert_eq!(top_after_gap.rank_missing_from, Some(11));
     assert!(top_after_gap.rank_missing.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", top_after_gap.rank_missing);
 
     let explicit_before_gap = RaidTallyAt::load(
@@ -1190,4 +1200,71 @@ fn a_chosen_country_tally_holds_only_while_its_holder_is_known_and_names_the_hou
     let after = at(14);
     assert_eq!(after.rows[0].missing, None);
     assert!(after.first_hour >= 14, "the count after them does not reach back into them: {}", after.first_hour);
+}
+
+#[test]
+fn raid_tally_ever_group_uses_historical_slots() {
+    use super::{RaidTallyAt, RaidTallyAtParams, RaidTallyMetric};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use replay_data::rows::{FactionMemberRow, FactionRow};
+
+    let scope = RaidScope { province: 10, ..Default::default() };
+    let factions = vec![FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() }];
+    let frames: Vec<DecodedFrame> = (10..=13)
+        .map(|hour| {
+            let countries = if hour <= 11 {
+                vec![(10, 7, b"AAA".as_slice()), (20, 8, b"CCC".as_slice())]
+            } else {
+                vec![(10, 7, b"BBB".as_slice()), (20, 8, b"AAA".as_slice())]
+            };
+            let raids = match hour {
+                10 => vec![raid_row(1, 7, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))],
+                11 => vec![raid_row(1, 7, native::PHASE_ENDED, native::OUTCOME_SUCCESS, Some(10))],
+                12 => vec![
+                    raid_row(3, 8, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                    raid_row(4, 8, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10)),
+                ],
+                _ => vec![],
+            };
+            let targets: Vec<RaidTargetRow> = raids.iter().map(|r| target_row(r.id, scope.clone(), 40)).collect();
+            let mut frame = make_frame(1, hour, countries, 20, TableView::Complete(TableRows::Raids(raids)), targets);
+            *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions.clone()));
+            let members = if hour <= 11 {
+                vec![FactionMemberRow { country: 10, faction: 10, ordinal: 0 }]
+            } else {
+                Vec::new()
+            };
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "raid-ever-slots".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let ctx = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+
+    let ever = GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever };
+    let race = RaidTallyAt::load(
+        &source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: Some(ever), top: None, metric: RaidTallyMetric::Both, hour: 13 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(race.missing, None);
+    assert_eq!(
+        race.rows.iter().map(|row| (&row.country, row.tag.as_str(), row.launched, row.succeeded)).collect::<Vec<_>>(),
+        vec![(&Country::Slot(7), "BBB", 1, 1)],
+        "an ever group keeps the historical member slot instead of resolving its former tag to a successor",
+    );
+    assert!(race.first_hour >= 12 && race.last_hour <= 13, "ever group reply respects member/holder interval: {}..={}", race.first_hour, race.last_hour);
 }

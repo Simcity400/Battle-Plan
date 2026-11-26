@@ -1688,28 +1688,32 @@ impl Product for RaidTallyAt {
         let (mut first_hour, mut last_hour) = tally_interval(&cached, hour);
         let explicit_countries: Option<Vec<Country>> = if let Some(group) = &params.group {
             let groups = GroupsAt::load(source, context, &params.branch_id, Some(group))?;
-            let members = groups.members(group, hour)?;
-            if let Some(refused) = members.refused {
-                return Ok(RaidTallyAtReply {
-                    branch_id: params.branch_id.clone(),
-                    hour,
-                    first_hour: members.from.max(cached.first_hour).min(hour),
-                    last_hour: members.until.min(cached.last_hour).max(hour),
-                    metric: params.metric,
-                    available: cached.available,
-                    unavailable: cached.unavailable.clone(),
-                    rows: Vec::new(),
-                    unattributed,
-                    unattributed_launched,
-                    unattributed_succeeded,
-                    missing: Some(refused),
-                    partial: None,
-                    warnings: cached.warnings.clone(),
-                });
+            let members = groups.slots_at(group, &query.holders, hour)?;
+            match &members.slots {
+                Err(refused) => {
+                    return Ok(RaidTallyAtReply {
+                        branch_id: params.branch_id.clone(),
+                        hour,
+                        first_hour: members.from.max(cached.first_hour).min(hour),
+                        last_hour: members.until.min(cached.last_hour).max(hour),
+                        metric: params.metric,
+                        available: cached.available,
+                        unavailable: cached.unavailable.clone(),
+                        rows: Vec::new(),
+                        unattributed,
+                        unattributed_launched,
+                        unattributed_succeeded,
+                        missing: Some(refused.clone()),
+                        partial: None,
+                        warnings: cached.warnings.clone(),
+                    });
+                }
+                Ok(slots) => {
+                    first_hour = first_hour.max(members.from);
+                    last_hour = last_hour.min(members.until);
+                    Some(slots.iter().copied().map(Country::Slot).collect())
+                }
             }
-            first_hour = first_hour.max(members.from);
-            last_hour = last_hour.min(members.until);
-            Some(members.tags.into_iter().map(Country::Tag).collect())
         } else if !params.countries.is_empty() {
             Some(params.countries.clone())
         } else {

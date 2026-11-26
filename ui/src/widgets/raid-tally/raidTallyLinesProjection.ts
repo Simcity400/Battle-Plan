@@ -90,12 +90,17 @@ export function raidTallySlotLabel(readView: BoundedReadView, slot: number, hour
 }
 
 export function validateRaidTallyReply(value: unknown): RaidTallyReply {
+  const validSpans = (spans: unknown, maxHour: number): boolean => Array.isArray(spans) && spans.every(span => isRecord(span)
+    && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
+    && span.lastHour <= maxHour
+    && isText(span.reason));
   const ok = isRecord(value)
     && isInt(value.hour)
     && maybe(value.nextChange, isInt)
     && maybe(value.available, item => typeof item === 'boolean')
     && maybe(value.unavailable, isText)
     && (value.rankMissing === undefined || maybe(value.rankMissing, isText))
+    && (value.rankMissingFrom === undefined || maybe(value.rankMissingFrom, isInt))
     && isInt(value.unattributed) && value.unattributed >= 0
     && Array.isArray(value.series) && value.series.every(item => isRecord(item)
       && isInt(item.slot) && item.slot >= 0
@@ -107,14 +112,10 @@ export function validateRaidTallyReply(value: unknown): RaidTallyReply {
       && maybe(item.membership, spans => Array.isArray(spans) && spans.every(span => isRecord(span)
         && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
         && span.lastHour <= (value.hour as number))))
-    && Array.isArray(value.missing) && value.missing.every(span => isRecord(span)
-      && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
-      && span.lastHour <= (value.hour as number)
-      && isText(span.reason))
-    && (value.partial === undefined || (Array.isArray(value.partial) && value.partial.every(span => isRecord(span)
-      && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
-      && span.lastHour <= (value.hour as number)
-      && isText(span.reason))))
+    && validSpans(value.missing, value.hour)
+    && (value.partial === undefined || validSpans(value.partial, value.hour))
+    && (value.partialLaunched === undefined || maybe(value.partialLaunched, spans => validSpans(spans, value.hour as number)))
+    && (value.partialSucceeded === undefined || maybe(value.partialSucceeded, spans => validSpans(spans, value.hour as number)))
     && Array.isArray(value.warnings) && value.warnings.every(isText);
   if (!ok) throw new Error('The raid tally reply is malformed.');
   return value as unknown as RaidTallyReply;
@@ -216,34 +217,63 @@ function buildHoverDetail(
       items: [{ label: 'No raids recorded at this hour', tone: 'muted' }],
     };
   }
-  const items: TooltipListItem[] = rows.map(row => {
+  const partialReason = reply.partial ?? null;
+  const isUnattributedOnly = partialReason !== null && reply.unattributed > 0 && partialReason.includes('unrecorded raider');
+  const gapPartial = partialReason !== null && !isUnattributedOnly ? partialReason : null;
+  const launchedPartial = gapPartial
+    ?? (reply.unattributedLaunched > 0
+      ? `${formatScalar(reply.unattributedLaunched, 'integer')} raid(s) up to this date have an unrecorded raider`
+      : null);
+  const succeededPartial = gapPartial
+    ?? (reply.unattributedSucceeded > 0
+      ? `${formatScalar(reply.unattributedSucceeded, 'integer')} raid(s) up to this date have an unrecorded raider`
+      : null);
+  const items: TooltipListItem[] = [];
+  for (const row of rows) {
     const key = countryKey(row.country);
     const label = typeof row.country === 'number'
       ? raidTallySlotLabel(readView, row.country, hour)
-      : (() => {
-          return identityNameOr(readView, 'country', key, row.tag, hour);
-        })();
+      : identityNameOr(readView, 'country', key, row.tag, hour);
     const look = looks.get(key);
     const atHour = look ? seriesLookAt(look, hour) : null;
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
-    if (row.missing !== null) {
-      return {
-        label,
-        missingReason: row.missing,
-        tone: 'muted' as const,
-        ...(atHour ? { swatch: atHour.color } : {}),
-        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-      };
-    }
-    return {
-      label,
-      value: formatHoverRowValue(options.metric, row.launched, row.succeeded),
-      ...(reply.partial ? { partialReason: reply.partial } : {}),
+    const lookMeta = {
       ...(atHour ? { swatch: atHour.color } : {}),
       ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
     };
-  });
+    if (row.missing !== null) {
+      items.push({
+        label,
+        missingReason: row.missing,
+        tone: 'muted' as const,
+        ...lookMeta,
+      });
+      continue;
+    }
+    if (options.metric === 'both' && launchedPartial !== succeededPartial) {
+      items.push({
+        label: `${label} · Launched`,
+        value: formatScalar(row.launched, 'integer'),
+        ...(launchedPartial ? { partialReason: launchedPartial } : {}),
+        ...lookMeta,
+      });
+      items.push({
+        label: `${label} · Succeeded`,
+        value: formatScalar(row.succeeded, 'integer'),
+        ...(succeededPartial ? { partialReason: succeededPartial } : {}),
+        ...lookMeta,
+      });
+      continue;
+    }
+    const rowPartial = options.metric === 'succeeded' ? succeededPartial : launchedPartial;
+    items.push({
+      label,
+      value: formatHoverRowValue(options.metric, row.launched, row.succeeded),
+      ...(rowPartial ? { partialReason: rowPartial } : {}),
+      ...lookMeta,
+    });
+  }
   return { hour, replacesSeries: true, items };
 }
 
@@ -290,15 +320,32 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
     };
     const effectiveMissing = extendSpans(reply.missing);
     const effectivePartial = extendSpans(reply.partial ?? []);
+    const hasSplitPartial = reply.partialLaunched != null || reply.partialSucceeded != null;
+    const effectiveLaunchedPartial = options.metric === 'both' && hasSplitPartial
+      ? extendSpans(reply.partialLaunched ?? [])
+      : effectivePartial;
+    const effectiveSucceededPartial = options.metric === 'both' && hasSplitPartial
+      ? extendSpans(reply.partialSucceeded ?? [])
+      : effectivePartial;
     const hasEarlierGap = effectiveMissing.some(span => span.firstHour < floorHour);
     const warnings = [
       ...reply.warnings,
       ...(reply.unattributed > 0 ? [`${reply.unattributed} raids have no named raider and are not counted.`] : []),
       ...(hasEarlierGap ? ['Raids during an unrecorded stretch before this date are not counted.'] : []),
     ];
+    const rankRefusal = options.top !== null && reply.rankMissing ? reply.rankMissing : null;
+    const rankRefusalFrom = rankRefusal !== null
+      ? Math.min(floorHour, reply.rankMissingFrom ?? effectiveMissing[0]?.firstHour ?? effectivePartial[0]?.firstHour ?? floorHour)
+      : null;
+    const seriesMissing = rankRefusal !== null && rankRefusalFrom !== null
+      ? [
+          ...effectiveMissing.filter(span => span.lastHour < rankRefusalFrom),
+          { firstHour: rankRefusalFrom, lastHour: floorHour, reason: rankRefusal },
+        ]
+      : effectiveMissing;
     const gaps: ChartGap[] = [
       ...options.gaps,
-      ...effectiveMissing.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: span.reason })),
+      ...seriesMissing.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: span.reason })),
     ];
 
     if (reply.available === false) {
@@ -317,7 +364,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       };
     }
 
-    if (options.top !== null && reply.rankMissing) {
+    if (rankRefusal !== null && reply.series.length === 0) {
       return {
         kind: 'raid-tally',
         measureTitle: title,
@@ -330,16 +377,25 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         gaps: gaps.length > 0 ? gaps : undefined,
         summaryText: SUCCESS_NOTE,
         warnings,
-        empty: { message: reply.rankMissing, kind: 'unavailable' },
-        auditRows: [auditRow('__rank__', reply.rankMissing)],
+        empty: { message: rankRefusal, kind: 'unavailable' },
+        auditRows: [auditRow('__rank__', rankRefusal)],
       };
     }
 
-    const headMissing = effectiveMissing.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null;
-    const headPartial = headMissing === null
-      ? (effectivePartial.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null)
-      : null;
-    const partialSpans = effectivePartial.length ? effectivePartial : undefined;
+    const headMissing = rankRefusal ?? (effectiveMissing.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null);
+    const partialAtHead = (spans: readonly { readonly firstHour: number; readonly lastHour: number; readonly reason: string }[]) =>
+      headMissing === null ? (spans.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null) : null;
+    const headPartial = partialAtHead(effectivePartial);
+    const headLaunchedPartial = partialAtHead(effectiveLaunchedPartial);
+    const headSucceededPartial = partialAtHead(effectiveSucceededPartial);
+    const primaryPartialSpans = rankRefusal !== null
+      ? undefined
+      : options.metric === 'both'
+        ? (effectiveLaunchedPartial.length ? effectiveLaunchedPartial : undefined)
+        : (effectivePartial.length ? effectivePartial : undefined);
+    const succeededPartialSpans = rankRefusal !== null
+      ? undefined
+      : (effectiveSucceededPartial.length ? effectiveSucceededPartial : undefined);
     const orderedKeys = reply.series.map(item => countryKey(item.slot));
     const slotByKey = new Map(reply.series.map(item => [countryKey(item.slot), item.slot]));
     const rawLooks = countrySeriesLooks(orderedKeys, readView, {
@@ -360,7 +416,9 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
 
     const hoverDetail = buildHoverDetail(readView, options, looks);
     const auditRows: FamilyAuditRow[] = [];
-    if (headMissing !== null) {
+    if (rankRefusal !== null) {
+      auditRows.push(auditRow('__rank__', rankRefusal));
+    } else if (headMissing !== null) {
       auditRows.push(auditRow('__head__', headMissing));
     }
 
@@ -384,11 +442,13 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       const primaryPoints = runsToStepPoints(runs, primaryField, floorHour);
 
       if (headRun !== null) {
-        const suffix = headPartial ? ` (recorded subtotal: ${headPartial})` : '';
         if (options.metric === 'both') {
-          auditRows.push(auditRow(`${key}${LAUNCHED_SUFFIX}`, `${formatScalar(headRun.launched, 'integer')}${suffix}`));
-          auditRows.push(auditRow(`${key}${SUCCEEDED_SUFFIX}`, `${formatScalar(headRun.succeeded, 'integer')}${suffix}`));
+          const launchedSuffix = headLaunchedPartial ? ` (recorded subtotal: ${headLaunchedPartial})` : '';
+          const succeededSuffix = headSucceededPartial ? ` (recorded subtotal: ${headSucceededPartial})` : '';
+          auditRows.push(auditRow(`${key}${LAUNCHED_SUFFIX}`, `${formatScalar(headRun.launched, 'integer')}${launchedSuffix}`));
+          auditRows.push(auditRow(`${key}${SUCCEEDED_SUFFIX}`, `${formatScalar(headRun.succeeded, 'integer')}${succeededSuffix}`));
         } else {
+          const suffix = headPartial ? ` (recorded subtotal: ${headPartial})` : '';
           auditRows.push(auditRow(key, `${formatScalar(headRun[primaryField], 'integer')}${suffix}`));
         }
       }
@@ -398,7 +458,9 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       const endLabelValue = headRun === null
         ? null
         : options.metric === 'both'
-          ? `${formatScalar(headRun.launched, 'integer')} / ${formatScalar(headRun.succeeded, 'integer')}${headPartial ? ' (partial)' : ''}`
+          ? (headLaunchedPartial && headSucceededPartial
+            ? `${formatScalar(headRun.launched, 'integer')} / ${formatScalar(headRun.succeeded, 'integer')} (partial)`
+            : `${formatScalar(headRun.launched, 'integer')}${headLaunchedPartial ? ' (partial)' : ''} / ${formatScalar(headRun.succeeded, 'integer')}${headSucceededPartial ? ' (partial)' : ''}`)
           : `${formatScalar(headRun[primaryField], 'integer')}${headPartial ? ' (partial)' : ''}`;
       series.push({
         id: primaryId,
@@ -414,8 +476,8 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         identities: options.metric === 'both'
           ? look.identities.map(run => ({ ...run, name: `${run.name} · Launched` }))
           : look.identities,
-        missingSpans: effectiveMissing,
-        ...(partialSpans ? { partialSpans } : {}),
+        missingSpans: seriesMissing,
+        ...(primaryPartialSpans ? { partialSpans: primaryPartialSpans } : {}),
         endLabel: isTail || endLabelValue === null || !options.endLabels
           ? null
           : {
@@ -441,8 +503,8 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           headValue: headRun ? headRun.succeeded : null,
           headHour: hour,
           identities: look.identities.map(run => ({ ...run, name: `${run.name} · Succeeded` })),
-          missingSpans: effectiveMissing,
-          ...(partialSpans ? { partialSpans } : {}),
+          missingSpans: seriesMissing,
+          ...(succeededPartialSpans ? { partialSpans: succeededPartialSpans } : {}),
           endLabel: null,
         });
       }

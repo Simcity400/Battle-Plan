@@ -76,11 +76,20 @@ pub struct RaidTallyReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub rank_missing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub rank_missing_from: Option<i32>,
     pub unattributed: u32,
     pub series: Vec<RaidTallySlotSeries>,
     pub missing: Vec<MissingSpan>,
     #[serde(default)]
     pub partial: Vec<MissingSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub partial_launched: Option<Vec<MissingSpan>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub partial_succeeded: Option<Vec<MissingSpan>>,
     pub warnings: Vec<String>,
 }
 
@@ -635,6 +644,36 @@ fn unattributed_for_metric(
     (count, first)
 }
 
+fn metric_partial_spans(
+    metric: RaidTallyMetric,
+    segments: &[(i32, i32)],
+    missing: &[MissingSpan],
+    index: &BranchTallyIndex,
+    through: i32,
+) -> (Option<Vec<MissingSpan>>, Option<Vec<MissingSpan>>) {
+    if metric != RaidTallyMetric::Both {
+        return (None, None);
+    }
+    let (_, first_ul) = unattributed_for_metric(
+        RaidTallyMetric::Launched,
+        &index.unattributed_launched,
+        &index.unattributed_succeeded,
+        &index.unattributed_both,
+        through,
+    );
+    let (_, first_us) = unattributed_for_metric(
+        RaidTallyMetric::Succeeded,
+        &index.unattributed_launched,
+        &index.unattributed_succeeded,
+        &index.unattributed_both,
+        through,
+    );
+    (
+        Some(partial_spans(segments, missing, first_ul)),
+        Some(partial_spans(segments, missing, first_us)),
+    )
+}
+
 pub struct RaidTally;
 
 impl Product for RaidTally {
@@ -718,18 +757,49 @@ impl Product for RaidTally {
             through,
         );
         let partial = partial_spans(&segments, &bounded_missing, first_unattributed);
+        let (partial_launched, partial_succeeded) =
+            metric_partial_spans(params.metric, &segments, &bounded_missing, &index, through);
 
-        let (series, next_change, rank_missing) = if let Some(top) = params.top {
-            if let Some(gap) = bounded_missing.first() {
-                let next = compute_next_change(&index, through, true, &[], None, params.metric);
-                (Vec::new(), next, Some(format!("Raid history is incomplete up to this date: {}", gap.reason)))
-            } else if unattributed > 0 {
-                let next = compute_next_change(&index, through, true, &[], None, params.metric);
-                (
-                    Vec::new(),
-                    next,
-                    Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld")),
-                )
+        let (series, next_change, rank_missing, rank_missing_from) = if let Some(top) = params.top {
+            let first_gap = bounded_missing.first().map(|gap| {
+                (gap.first_hour, format!("Raid history is incomplete up to this date: {}", gap.reason))
+            });
+            let first_unattr = (unattributed > 0)
+                .then_some(first_unattributed)
+                .flatten()
+                .map(|u_hour| {
+                    (
+                        u_hour,
+                        format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld"),
+                    )
+                });
+            let rank_uncertain = match (first_gap, first_unattr) {
+                (Some(g), Some(u)) => Some(if g.0 <= u.0 { g } else { u }),
+                (Some(g), None) => Some(g),
+                (None, Some(u)) => Some(u),
+                (None, None) => None,
+            };
+            let next = compute_next_change(&index, through, true, &[], None, params.metric);
+            if let Some((uncertain_hour, reason)) = rank_uncertain {
+                let proven_through = uncertain_hour.saturating_sub(1);
+                let built = if proven_through >= index.branch_first {
+                    let proven_segments = recorded_segments(index.branch_first, proven_through, &bounded_missing);
+                    let proven_ev_end = index.events.partition_point(|ev| ev.hour <= proven_through);
+                    let proven_events = &index.events[..proven_ev_end];
+                    let (ordered_slots, membership_map) =
+                        compute_top_membership(proven_events, &proven_segments, top as usize, params.metric);
+                    ordered_slots
+                        .into_iter()
+                        .map(|slot| RaidTallySlotSeries {
+                            slot,
+                            runs: build_slot_runs(proven_events, slot, &proven_segments),
+                            membership: membership_map.get(&slot).cloned(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (built, next, Some(reason), Some(uncertain_hour))
             } else {
                 let (ordered_slots, membership_map) =
                     compute_top_membership(bounded_events, &segments, top as usize, params.metric);
@@ -741,8 +811,7 @@ impl Product for RaidTally {
                         membership: membership_map.get(&slot).cloned(),
                     })
                     .collect();
-                let next = compute_next_change(&index, through, true, &[], None, params.metric);
-                (built, next, None)
+                (built, next, None, None)
             }
         } else {
             let (slots, next_holder) = resolve_explicit_slots(&query, &params.countries, through);
@@ -755,7 +824,7 @@ impl Product for RaidTally {
                 })
                 .collect();
             let next = compute_next_change(&index, through, false, &slots, next_holder, params.metric);
-            (built, next, None)
+            (built, next, None, None)
         };
 
         let reply = RaidTallyReply {
@@ -764,10 +833,13 @@ impl Product for RaidTally {
             available,
             unavailable,
             rank_missing,
+            rank_missing_from,
             unattributed,
             series,
             missing: bounded_missing,
             partial,
+            partial_launched,
+            partial_succeeded,
             warnings: warnings.into_iter().collect(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;
@@ -843,5 +915,12 @@ mod tests {
         assert_eq!(metric_rank_key(RaidTallyMetric::Succeeded, 5, 1), metric_rank_key(RaidTallyMetric::Succeeded, 1, 1), "Succeeded tiebreak ignores launches");
         assert_eq!(metric_rank_key(RaidTallyMetric::Launched, 1, 5), metric_rank_key(RaidTallyMetric::Launched, 1, 0), "Launched tiebreak ignores successes");
         assert!(metric_rank_key(RaidTallyMetric::Both, 1, 2) > metric_rank_key(RaidTallyMetric::Both, 1, 1));
+
+        let (pl_11, ps_11) = metric_partial_spans(RaidTallyMetric::Both, &segs_11, &[], &index, 11);
+        assert_eq!(pl_11.as_deref().map(|s| s.iter().map(|x| (x.first_hour, x.last_hour)).collect::<Vec<_>>()), Some(vec![(10, 11)]));
+        assert_eq!(ps_11.as_deref(), Some(&[][..]), "Both mode leaves succeeded partial spans empty when only launches are unattributed");
+        let (pl_12, ps_12) = metric_partial_spans(RaidTallyMetric::Both, &segs_12, &[], &index, 12);
+        assert_eq!(pl_12.as_deref().map(|s| s.iter().map(|x| (x.first_hour, x.last_hour)).collect::<Vec<_>>()), Some(vec![(10, 12)]));
+        assert_eq!(ps_12.as_deref().map(|s| s.iter().map(|x| (x.first_hour, x.last_hour)).collect::<Vec<_>>()), Some(vec![(12, 12)]));
     }
 }

@@ -808,10 +808,11 @@ mod tests {
         assert_eq!(ranking.until, 11);
         assert_eq!(
             top_reply.lines[0].missing,
-            vec![
-                MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() },
-                MissingSpan { first_hour: 18, last_hour: 20, reason: SUBTOTAL_UNREAD.to_owned() },
-            ],
+            vec![MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() }],
+        );
+        assert_eq!(
+            top_reply.lines[0].partial,
+            vec![MissingSpan { first_hour: 18, last_hour: 20, reason: SUBTOTAL_UNREAD.to_owned() }],
             "after hours whose losses could not be credited, the line is the recorded subtotal, never an exact total"
         );
 
