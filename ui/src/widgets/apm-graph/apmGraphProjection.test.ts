@@ -38,6 +38,44 @@ function makeTiled(id: string, val: number): TiledLine {
 }
 
 describe('apm-graph projection', () => {
+  it('keeps historical duplicate-name suffixes when the exact hover arrives', () => {
+    const first = H1936, middle = first + 5, last = H1943;
+    const run = (firstHour: number, lastHour: number, name: string) => ({ firstHour, lastHour, tag: 'AAA', name, nameMissing: null });
+    const players = [
+      { id: 'user:10', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, last, 'Shared')] },
+      { id: 'user:2', name: 'Later', nameMissing: null, tags: ['AAA'], runs: [
+        run(first, middle - 1, 'Earlier'), run(middle, middle, 'Shared'), run(middle + 1, last, 'Later'),
+      ] },
+    ];
+    const tiles = players.map((p, i) => [p.id, boundTiledSeries(makeTiled(p.id, 8 + i), displayedHour(last))] as const);
+    const labels = (hour: number, exact: boolean, exactCount = players.length) => {
+      const reply: ApmReply = { available: true, players: [], warnings: [], series: players.map((p, i) => ({
+        id: p.id, name: p.runs.find(r => r.firstHour <= hour && hour <= r.lastHour)!.name, nameMissing: null, tag: 'AAA', hour,
+        summary: { apm: 8 + i, confirmedApm: 8 + i, orders: String(8 + i), confirmedOrders: String(8 + i), pausedOrders: '0',
+          unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false }, points: [],
+      })).slice(0, exactCount) };
+      const view = createBoundedReadView({
+        hour: last, series: new Map([['apm', new Map(tiles)]]),
+        hovers: exact ? new Map([['hover', { hour, data: reply }]]) : undefined,
+      });
+      const model = apmGraphProjection.project(view, {
+        group: 'player', extent: [first, last], surface: '#111111', gaps: [], yMin: null, yMax: null, available: true, players,
+      });
+      const layout = layoutTimeChart(model, 600, 260, 'sans-serif', text => text.length * 6);
+      const items = deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items ?? [];
+      return Object.fromEntries(items.filter(item => item.value).map(item => [item.value, item.label]));
+    };
+    for (const [hour, expected] of [
+      [middle - 1, { 8: 'Shared', 9: 'Earlier' }],
+      [middle, { 8: 'Shared (2)', 9: 'Shared (1)' }],
+      [middle + 1, { 8: 'Shared', 9: 'Later' }],
+    ] as const) {
+      assert.deepEqual(labels(hour, false), expected);
+      assert.deepEqual(labels(hour, true), expected);
+    }
+    assert.deepEqual(labels(middle, true, 1), { 8: 'Shared (2)' });
+  });
+
   it('uses the player and country recorded at the hovered hour for the name, flag and swatch', () => {
     const id = 'user:1', other = 'user:2';
     const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, H1943]);
