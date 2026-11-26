@@ -4,6 +4,7 @@ import type { OptionValue } from '../../dashboard/options';
 import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { auditRow } from '../auditRow.ts';
@@ -114,15 +115,36 @@ export function formatCountryValue(value: number, format: CountryLinesSpec['form
   return formatScalar(value, { decimals: 0, maxDecimals: digits ?? 2 });
 }
 
+const COUNTRY_READING_CACHE_MAX = 512;
+const countryReadingCache = new Map<string, string>();
+
 function formatCountryReading(reading: KnownHeadReading, format: CountryLinesSpec['format'], digits: number | null = null): string {
-  if (reading.raw !== undefined && reading.denominator !== undefined) {
-    if (format === 'compact') return formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
-    if (format === 'percent') {
-      return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 5, fixedDecimals: digits !== null, percent: true });
-    }
-    return formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 2 });
+  const useCache = timeChartCacheState.enabled;
+  const key = useCache
+    ? (reading.raw !== undefined && reading.denominator !== undefined
+      ? `${format}|${digits ?? ''}|r|${reading.raw}|${reading.denominator}`
+      : `${format}|${digits ?? ''}|v|${reading.value}`)
+    : '';
+  if (useCache) {
+    const cached = countryReadingCache.get(key);
+    if (cached !== undefined) return cached;
   }
-  return formatCountryValue(reading.value, format, digits);
+  let text: string;
+  if (reading.raw !== undefined && reading.denominator !== undefined) {
+    if (format === 'compact') text = formatCompactRational(reading.raw, reading.denominator, { maxDecimals: 0 }).text;
+    else if (format === 'percent') {
+      text = formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 5, fixedDecimals: digits !== null, percent: true });
+    } else {
+      text = formatRational(reading.raw, reading.denominator, { maxDecimals: digits ?? 2 });
+    }
+  } else {
+    text = formatCountryValue(reading.value, format, digits);
+  }
+  if (useCache) {
+    if (countryReadingCache.size >= COUNTRY_READING_CACHE_MAX) countryReadingCache.clear();
+    countryReadingCache.set(key, text);
+  }
+  return text;
 }
 
 export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAux>): {

@@ -7,7 +7,11 @@ import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
 import { answerRowOf, followedCountryRank } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
-import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
+import { FutureDataError, type ArtProvider, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type IdentityProvider, type SourceEntry } from '../contract.ts';
+import type { ArtResolutions } from '../art/provider.ts';
+import type { IdentityIndex } from '../identity/index.ts';
+import { sceneReadRecorder, type CapturedSceneReads } from '../scene.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 import { holderRunAt, type HolderRun, type HourRanges } from '../holders.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { identityName, LOADING_NAME } from '../table/identityCell.ts';
@@ -281,6 +285,13 @@ interface IdentityStretch {
 
 const COLOURED_SERIES = 8;
 
+interface IdentityStretchesResult {
+  readonly stretches: IdentityStretch[];
+  readonly validFrom: number;
+  readonly validThrough: number;
+  readonly pending: boolean;
+}
+
 function identityStretches(
   key: string,
   holders: readonly HolderRun[] | undefined,
@@ -288,23 +299,40 @@ function identityStretches(
   from: number,
   hour: number,
   withFlag: boolean,
-): IdentityStretch[] {
+): IdentityStretchesResult {
   const out: IdentityStretch[] = [];
   let at = Math.min(from, hour);
+  let validFrom = from;
+  let validThrough = Infinity;
+  let pending = false;
   while (at <= hour) {
     const run = holderRunAt(holders, at);
     const identityTag = run?.tag ?? key;
     const who = readView.who('country', identityTag, at);
+    if (
+      who.holder.status === 'pending'
+      || who.name.status === 'pending'
+      || who.tag?.status === 'pending'
+      || who.colour?.status === 'pending'
+      || who.flagChoice?.status === 'pending'
+    ) {
+      pending = true;
+    }
     const settled = who.name.status === 'ready' || who.name.status === 'absent';
-    let last = settled && who.validInterval[1] >= at ? Math.min(hour, who.validInterval[1]) : hour;
-    if (run) last = Math.min(last, run.lastHour);
+    let uncappedLast = settled && who.validInterval[1] >= at ? who.validInterval[1] : hour;
+    if (run) uncappedLast = Math.min(uncappedLast, run.lastHour);
     else if (holders) {
       for (const next of holders) {
         if (next.firstHour > at) {
-          last = Math.min(last, next.firstHour - 1);
+          uncappedLast = Math.min(uncappedLast, next.firstHour - 1);
           break;
         }
       }
+    }
+    const last = Math.min(hour, uncappedLast);
+    if (last === hour) {
+      validFrom = Math.max(validFrom, at);
+      validThrough = uncappedLast;
     }
     const name = who.name.status === 'ready' ? who.name.value : who.name.status === 'pending' ? LOADING_NAME : who.tag?.status === 'ready' ? who.tag.value : identityTag;
     const mapColour = who.colour?.status === 'ready' ? who.colour.value : null;
@@ -325,16 +353,89 @@ function identityStretches(
     }
     at = last + 1;
   }
+  return { stretches: out, validFrom, validThrough, pending };
+}
+
+interface CachedCountryLooks {
+  readonly identity: IdentityProvider | undefined;
+  readonly art: ArtProvider | undefined;
+  readonly index: IdentityIndex | null | undefined;
+  readonly artResolutions: ArtResolutions | undefined;
+  readonly artRevision: number;
+  readonly ordered: readonly string[];
+  readonly holdersRef: Readonly<Record<string, readonly HolderRun[]>> | null | undefined;
+  readonly holderRuns: readonly (readonly HolderRun[] | undefined)[];
+  readonly from: number;
+  readonly surface: string;
+  readonly withFlag: boolean;
+  readonly colouredCount: number | undefined;
+  readonly singleColor: string | undefined;
+  readonly tailColor: string | undefined;
+  readonly validFrom: number;
+  readonly validThrough: number;
+  readonly reads: CapturedSceneReads;
+  readonly base: ReadonlyMap<string, CountrySeriesLook>;
+  lastHour: number;
+  lastMap: ReadonlyMap<string, CountrySeriesLook>;
+}
+
+const COUNTRY_LOOKS_CACHE_MAX = 32;
+const countryLooksCache: CachedCountryLooks[] = [];
+
+function sameOrderedStrings(a: readonly string[], b: readonly string[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function sameHolderRuns(
+  entry: CachedCountryLooks,
+  ordered: readonly string[],
+  holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined,
+): boolean {
+  if (entry.holdersRef === holders) return true;
+  if (!entry.holdersRef && !holders) return true;
+  for (let i = 0; i < ordered.length; i++) {
+    if (entry.holderRuns[i] !== holders?.[ordered[i]!]) return false;
+  }
+  return true;
+}
+
+function extendLooksToHour(base: ReadonlyMap<string, CountrySeriesLook>, hour: number): ReadonlyMap<string, CountrySeriesLook> {
+  const out = new Map<string, CountrySeriesLook>();
+  for (const [tag, look] of base) {
+    const len = look.identities.length;
+    if (len === 0 || look.identities[len - 1]!.lastHour === hour) {
+      out.set(tag, look);
+    } else {
+      const identities = look.identities.slice();
+      const tail = identities[len - 1]!;
+      identities[len - 1] = { ...tail, lastHour: hour };
+      out.set(tag, { ...look, identities });
+    }
+  }
   return out;
 }
 
-export function countrySeriesLooks(
+function computeCountrySeriesLooks(
   ordered: readonly string[],
   readView: BoundedReadView,
   input: CountrySeriesLooksInput,
-): ReadonlyMap<string, CountrySeriesLook> {
+): { readonly looks: ReadonlyMap<string, CountrySeriesLook>; readonly validFrom: number; readonly validThrough: number; readonly pending: boolean } {
   const hour = readView.hour;
-  const stretches = ordered.map(tag => identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag));
+  let validFrom = input.from;
+  let validThrough = Infinity;
+  let pending = false;
+  const stretches: IdentityStretch[][] = new Array(ordered.length);
+  for (let i = 0; i < ordered.length; i++) {
+    const tag = ordered[i]!;
+    const res = identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag);
+    stretches[i] = res.stretches;
+    if (res.validFrom > validFrom) validFrom = res.validFrom;
+    if (res.validThrough < validThrough) validThrough = res.validThrough;
+    if (res.pending) pending = true;
+  }
   const coloured = stretches.slice(0, Math.min(COLOURED_SERIES, Math.max(0, input.colouredCount ?? COLOURED_SERIES)));
   const keys = ordered.slice(0, coloured.length).map(countryFromKey);
   const positions = coloured.map(() => 0);
@@ -367,7 +468,79 @@ export function countrySeriesLooks(
     const now = identities.at(-1);
     out.set(tag, { name: now?.name ?? tag, color: now?.color ?? tail, ...(now?.flag ? { flag: now.flag } : {}), identities });
   });
-  return out;
+  return { looks: out, validFrom, validThrough, pending };
+}
+
+export function countrySeriesLooks(
+  ordered: readonly string[],
+  readView: BoundedReadView,
+  input: CountrySeriesLooksInput,
+): ReadonlyMap<string, CountrySeriesLook> {
+  if (ordered.length === 0) return new Map();
+  const rec = timeChartCacheState.enabled ? sceneReadRecorder(readView) : undefined;
+  const artRevision = rec?.readers.artRevision;
+  const hour = readView.hour;
+  if (rec && artRevision !== undefined && hour >= input.from) {
+    for (let i = countryLooksCache.length - 1; i >= 0; i--) {
+      const entry = countryLooksCache[i]!;
+      if (
+        entry.artRevision === artRevision
+        && entry.identity === rec.readers.identity
+        && entry.art === rec.readers.art
+        && entry.index === rec.readers.index
+        && entry.artResolutions === rec.readers.artResolutions
+        && entry.from === input.from
+        && entry.surface === input.surface
+        && entry.withFlag === input.withFlag
+        && entry.colouredCount === input.colouredCount
+        && entry.singleColor === input.singleColor
+        && entry.tailColor === input.tailColor
+        && hour >= entry.validFrom
+        && hour <= entry.validThrough
+        && sameOrderedStrings(entry.ordered, ordered)
+        && sameHolderRuns(entry, ordered, input.holders)
+      ) {
+        rec.replay(entry.reads);
+        if (i !== countryLooksCache.length - 1) {
+          countryLooksCache.splice(i, 1);
+          countryLooksCache.push(entry);
+        }
+        if (entry.lastHour === hour) return entry.lastMap;
+        entry.lastHour = hour;
+        entry.lastMap = extendLooksToHour(entry.base, hour);
+        return entry.lastMap;
+      }
+    }
+    const captured = rec.capture(() => computeCountrySeriesLooks(ordered, readView, input));
+    const { looks, validFrom, validThrough, pending } = captured.value;
+    if (!pending && validThrough >= hour) {
+      if (countryLooksCache.length >= COUNTRY_LOOKS_CACHE_MAX) countryLooksCache.shift();
+      countryLooksCache.push({
+        identity: rec.readers.identity,
+        art: rec.readers.art,
+        index: rec.readers.index,
+        artResolutions: rec.readers.artResolutions,
+        artRevision,
+        ordered: ordered.slice(),
+        holdersRef: input.holders,
+        holderRuns: ordered.map(tag => input.holders?.[tag]),
+        from: input.from,
+        surface: input.surface,
+        withFlag: input.withFlag,
+        colouredCount: input.colouredCount,
+        singleColor: input.singleColor,
+        tailColor: input.tailColor,
+        validFrom,
+        validThrough,
+        reads: captured.reads,
+        base: looks,
+        lastHour: hour,
+        lastMap: looks,
+      });
+    }
+    return looks;
+  }
+  return computeCountrySeriesLooks(ordered, readView, input).looks;
 }
 
 export function countryNameAt(readView: BoundedReadView, key: string, hour: number): string {
@@ -465,22 +638,33 @@ export function spendMarkersOf(readView: BoundedReadView, title: string, extentS
   return { markers, warnings };
 }
 
+const missingSpansCache = new WeakMap<object, readonly ChartMissingSpan[]>();
+const partialSpansCache = new WeakMap<object, readonly ChartMissingSpan[]>();
+
 export function missingSpansOf(bounded: BoundedSeries | null | undefined): readonly ChartMissingSpan[] | undefined {
   if (!bounded || bounded.missing.length === 0) return undefined;
-  return [...bounded.missing].map(sp => ({
+  const cached = missingSpansCache.get(bounded.missing);
+  if (cached) return cached;
+  const out = [...bounded.missing].map(sp => ({
     firstHour: sp.firstHour,
     lastHour: sp.lastHour,
     reason: sp.reason ?? 'Not recorded',
   }));
+  missingSpansCache.set(bounded.missing, out);
+  return out;
 }
 
 export function partialSpansOf(bounded: BoundedSeries | null | undefined): readonly ChartMissingSpan[] | undefined {
   if (!bounded?.partial || bounded.partial.length === 0) return undefined;
-  return [...bounded.partial].map(sp => ({
+  const cached = partialSpansCache.get(bounded.partial);
+  if (cached) return cached;
+  const out = [...bounded.partial].map(sp => ({
     firstHour: sp.firstHour,
     lastHour: sp.lastHour,
     reason: sp.reason ?? 'Partial',
   }));
+  partialSpansCache.set(bounded.partial, out);
+  return out;
 }
 
 export interface CardRow {

@@ -309,11 +309,33 @@ export function sliceSpansByHour<T extends { readonly firstHour: number; readonl
   hour: DisplayedHour,
   clipTail: (item: T, h: DisplayedHour) => U | undefined,
   counter?: BoundedWorkCounter,
+  hint?: { index: number },
 ): SlicedSpanResult<T | U> {
   if (!sorted.length) {
     return { slice: emptySlice<T | U>(), validLo: -Infinity, validHi: Infinity };
   }
-  const count = upperBoundFirst(sorted, hour, counter);
+  let count: number;
+  if (hint && hint.index >= 0 && hint.index <= sorted.length) {
+    let idx = hint.index;
+    const okLeft = idx === 0 || sorted[idx - 1]!.firstHour <= hour;
+    const okRight = idx === sorted.length || sorted[idx]!.firstHour > hour;
+    if (okLeft && okRight) {
+      count = idx;
+    } else if (okLeft) {
+      let steps = 0;
+      while (idx < sorted.length && sorted[idx]!.firstHour <= hour && steps < 8) {
+        if (counter) counter.visits++;
+        idx++;
+        steps++;
+      }
+      count = idx === sorted.length || sorted[idx]!.firstHour > hour ? idx : upperBoundFirst(sorted, hour, counter);
+    } else {
+      count = upperBoundFirst(sorted, hour, counter);
+    }
+    hint.index = count;
+  } else {
+    count = upperBoundFirst(sorted, hour, counter);
+  }
   const nextItem = count < sorted.length ? sorted[count] : undefined;
   const nextStart = nextItem ? nextItem.firstHour - 1 : Infinity;
 
@@ -367,12 +389,17 @@ export function sliceRuns(
   runs: readonly Run[],
   hour: DisplayedHour,
   counter?: BoundedWorkCounter,
+  hint?: { index: number },
 ): SlicedSpanResult<Run> {
-  return sliceSpansByHour(runs, hour, clipSingleRun, counter);
+  return sliceSpansByHour(runs, hour, clipSingleRun, counter, hint);
 }
 
+const EMPTY_MISSING: MissingSpan[] = [];
+
 export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedHour): MissingSpan[] {
-  return [...sliceMissingSpans(spans, hour).slice];
+  if (spans.length === 0) return EMPTY_MISSING;
+  const sliced = sliceMissingSpans(spans, hour).slice;
+  return sliced.length === 0 ? EMPTY_MISSING : [...sliced];
 }
 
 export interface UnrecordedLine {
@@ -449,6 +476,7 @@ export interface BoundSeriesOptions {
   readonly headValue?: Value;
   readonly counter?: BoundedWorkCounter;
   readonly straddle?: StraddleResume;
+  readonly runHint?: { index: number };
 }
 
 export function boundTiledSeries(
@@ -513,7 +541,7 @@ export function boundTiledSeries(
   }
 
   const bucketsSlice = createBoundedSlice(rawBuckets, closedBuckets, straddlingBucket);
-  const runsResult = line.summary.runs ? sliceRuns(line.summary.runs, hour, counter) : undefined;
+  const runsResult = line.summary.runs ? sliceRuns(line.summary.runs, hour, counter, options?.runHint) : undefined;
   const missingResult = sliceMissingSpans(line.missing, hour, counter);
   const partialResult = line.partial?.length ? sliceMissingSpans(line.partial, hour, counter) : undefined;
   const approxResult = line.summary.approximate ? sliceSpansByHour(line.summary.approximate, hour, clipSingleHourSpan, counter) : undefined;
@@ -550,11 +578,33 @@ export function boundTiledSeries(
   };
 }
 
+function sameHeadPoint(a: WitnessedPoint | null | undefined, b: WitnessedPoint | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.hour === b.hour && Object.is(a.value, b.value) && a.breakBefore === b.breakBefore;
+}
+
+function sameHeadValue(a: Value | undefined, b: Value | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'known':
+    case 'zero':
+      return Object.is(a.value, (b as typeof a).value);
+    case 'notRecorded':
+    case 'notApplicable':
+      return a.reason === (b as typeof a).reason;
+    case 'partial':
+      return Object.is(a.value, (b as typeof a).value) && a.reason === (b as typeof a).reason;
+  }
+}
+
 export class BoundedSeriesCursor {
   private lastLine: TiledLine | null = null;
   private lastPrefixRuns: readonly Run[] | null | undefined = undefined;
   private lastPrefixPoints: readonly WitnessedPoint[] | null | undefined = undefined;
   private readonly straddle: StraddleResume = { state: null };
+  private readonly runHint = { index: 0 };
   private lastHeadPoint: WitnessedPoint | null | undefined = undefined;
   private lastHeadValue: Value | undefined = undefined;
   private cached: BoundedSeries | null = null;
@@ -566,15 +616,18 @@ export class BoundedSeriesCursor {
       && this.lastLine === line
       && this.lastPrefixRuns === options?.prefixRuns
       && this.lastPrefixPoints === options?.prefixPoints
-      && this.lastHeadPoint === options?.headPoint
-      && this.lastHeadValue === options?.headValue
+      && (this.cached.straddling === 'none' || sameHeadPoint(this.lastHeadPoint, options?.headPoint))
+      && sameHeadValue(this.lastHeadValue, options?.headValue)
       && h >= this.cached.validInterval[0]
       && h <= this.cached.validInterval[1]
     ) {
       return this.cached;
     }
-    if (this.lastLine !== line) this.straddle.state = null;
-    const next = boundTiledSeries(line, h, { ...options, straddle: this.straddle });
+    if (this.lastLine !== line) {
+      this.straddle.state = null;
+      this.runHint.index = 0;
+    }
+    const next = boundTiledSeries(line, h, { ...options, straddle: this.straddle, runHint: this.runHint });
     this.lastLine = line;
     this.lastPrefixRuns = options?.prefixRuns;
     this.lastPrefixPoints = options?.prefixPoints;

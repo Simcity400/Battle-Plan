@@ -21,6 +21,7 @@ import {
 } from '../../families/time-chart/seriesHelpers.ts';
 import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from '../../families/time-chart/settings.ts';
 import { formatRational } from '../../families/valueFormat.ts';
+import { timeChartCacheState } from '../../families/time-chart/cacheControl.ts';
 import type { OccupationDetailReply } from '../../generated/dashboard';
 import { occupationHoverItems } from './occupationLinesProjection.ts';
 import {
@@ -60,11 +61,28 @@ function clampDigits(raw: unknown): number {
   return Number.isFinite(num) ? Math.max(0, Math.min(5, Math.trunc(num))) : 2;
 }
 
+const MIX_READING_CACHE_MAX = 512;
+const mixReadingCache = new Map<string, string>();
+
 function formatReading(reading: KnownHeadReading, digits: number): string {
-  if (reading.raw !== undefined && reading.denominator !== undefined) {
-    return formatRational(reading.raw, reading.denominator, { maxDecimals: digits, fixedDecimals: true, percent: true });
+  const useCache = timeChartCacheState.enabled;
+  const key = useCache
+    ? (reading.raw !== undefined && reading.denominator !== undefined
+      ? `${digits}|r|${reading.raw}|${reading.denominator}`
+      : `${digits}|v|${reading.value}`)
+    : '';
+  if (useCache) {
+    const cached = mixReadingCache.get(key);
+    if (cached !== undefined) return cached;
   }
-  return formatCountryValue(reading.value, 'percent', digits);
+  const text = reading.raw !== undefined && reading.denominator !== undefined
+    ? formatRational(reading.raw, reading.denominator, { maxDecimals: digits, fixedDecimals: true, percent: true })
+    : formatCountryValue(reading.value, 'percent', digits);
+  if (useCache) {
+    if (mixReadingCache.size >= MIX_READING_CACHE_MAX) mixReadingCache.clear();
+    mixReadingCache.set(key, text);
+  }
+  return text;
 }
 
 function hoverDetail(

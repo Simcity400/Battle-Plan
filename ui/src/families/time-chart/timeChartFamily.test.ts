@@ -8,7 +8,10 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
-import { boundTiledSeries, createBoundedReadView, displayedHour } from '../boundedView.ts';
+import { boundTiledSeries, BoundedSeriesCursor, createBoundedReadView, displayedHour } from '../boundedView.ts';
+import { projectScene } from '../scene.ts';
+import { computeTimeAxisTicks } from '../../draw/kit.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notRecorded } from '../value.ts';
@@ -2369,4 +2372,133 @@ describe('playback cost', () => {
       assert.equal(long.played.path, short.played.path, `and makes the same path calls (${short.played.path} and ${long.played.path})`);
     });
   }
+});
+
+describe('time-chart PR 1 fixed-work caches', () => {
+  it('reuses settled countrySeriesLooks across hours while updating identity end hours, replaying reads, and invalidating on art or transition', () => {
+    const start = H1936;
+    const changeAt = start + 100;
+    let whoCalls = 0;
+    let artCalls = 0;
+    const identity = {
+      resolve: (kind: string, key: string, atHour: number) => {
+        whoCalls++;
+        assert.equal(kind, 'country');
+        if (atHour < changeAt) {
+          return {
+            kind: 'country' as const,
+            key,
+            holder: { status: 'ready' as const, value: key },
+            tag: { status: 'ready' as const, value: key },
+            name: { status: 'ready' as const, value: `${key} Early` },
+            colour: { status: 'ready' as const, value: LANE_THEME.blue },
+            flagChoice: { status: 'ready' as const, value: `${key}_early` },
+            validInterval: [start, changeAt - 1] as const,
+            nextChangeAt: changeAt,
+          };
+        }
+        return {
+          kind: 'country' as const,
+          key,
+          holder: { status: 'ready' as const, value: key },
+          tag: { status: 'ready' as const, value: key },
+          name: { status: 'ready' as const, value: `${key} Late` },
+          colour: { status: 'ready' as const, value: LANE_THEME.red },
+          flagChoice: { status: 'ready' as const, value: `${key}_late` },
+          validInterval: [changeAt, Infinity] as const,
+          nextChangeAt: Infinity,
+        };
+      },
+    };
+    const art = {
+      resolve: (handle: { readonly kind: string; readonly choice?: string }) => {
+        artCalls++;
+        const id = handle.choice ?? handle.kind;
+        return readyArt(`art://${id}`, { assetId: id, file: `${id}.png` });
+      },
+    };
+    const scene = { widget: 1, subs: [], pictures: [], model: null, hour: start, seek: 0, speed: 0, binding: { generation: 1, surfaces: [], offset: 0, pin: null }, inspect: null, now: 0 };
+    const projectAt = (hour: number, artRevision: number) => projectScene(
+      scene,
+      { sources: {} },
+      hour,
+      { identity, art, artRevision },
+      view => countrySeriesLooks(['GER', 'SOV'], view, { holders: null, from: start, surface: LANE_THEME.surface, withFlag: true }),
+    );
+    const first = projectAt(start + 10, 1);
+    assert.equal(whoCalls, 2);
+    assert.equal(artCalls, 2);
+    assert.equal(first.model.get('GER')!.identities.at(-1)!.lastHour, start + 10);
+    assert.deepEqual(first.artUrls.slice().sort(), ['art://GER_early', 'art://SOV_early']);
+
+    const second = projectAt(start + 50, 1);
+    assert.equal(whoCalls, 2, 'cache hit skips identity lookups within validInterval');
+    assert.equal(artCalls, 2, 'cache hit skips art lookups when artRevision is unchanged');
+    assert.equal(second.model.get('GER')!.identities.at(-1)!.lastHour, start + 50);
+    assert.deepEqual(second.artUrls.slice().sort(), ['art://GER_early', 'art://SOV_early']);
+    assert.equal(second.reads.identity, first.reads.identity);
+    assert.equal(second.reads.art, first.reads.art);
+
+    const artBumped = projectAt(start + 60, 2);
+    assert.equal(whoCalls, 4, 'artRevision bump invalidates cached looks');
+    assert.equal(artCalls, 4);
+    assert.equal(artBumped.model.get('GER')!.identities.at(-1)!.lastHour, start + 60);
+
+    const crossed = projectAt(changeAt + 5, 2);
+    assert.equal(crossed.model.get('GER')!.name, 'GER Late');
+    assert.equal(crossed.model.get('GER')!.identities.length, 2);
+    assert.equal(crossed.model.get('GER')!.identities[0]!.lastHour, changeAt - 1);
+    assert.equal(crossed.model.get('GER')!.identities[1]!.firstHour, changeAt);
+    assert.equal(crossed.model.get('GER')!.identities[1]!.lastHour, changeAt + 5);
+  });
+
+  it('reuses BoundedSeriesCursor when freshly boxed headValue and non-straddling headPoint carry identical values', () => {
+    const line: TiledLine = {
+      tag: 'GER',
+      head: 'h',
+      decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 47,
+        width: 2,
+        buckets: [makeBucket(H1936, H1936 + 23, 10), makeBucket(H1936 + 24, H1936 + 47, 20)],
+        tiles: { binHours: 24, valueAt: () => null },
+      },
+      missing: [],
+      parts: [],
+      marks: null,
+    };
+    const cursor = new BoundedSeriesCursor();
+    const a = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 10 }, headValue: knownValue(10) });
+    const b = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 10 }, headValue: knownValue(10) });
+    assert.equal(b, a, 'equal boxed headValue/headPoint reuses the cached BoundedSeries');
+    const c = cursor.advance(line, H1936 + 23, { headPoint: { hour: H1936 + 23, value: 15 }, headValue: knownValue(15) });
+    assert.notEqual(c, a, 'changed headValue invalidates the cached BoundedSeries');
+  });
+
+  it('caches computeTimeAxisTicks across month and year interiors and matches uncached results across boundaries', () => {
+    const probes = [
+      H1936 + 61 * 24,
+      H1936 + 62 * 24,
+      H1936 + 63 * 24,
+      H1936 + 95 * 24,
+      H1936 + 729 * 24,
+      H1936 + 730 * 24,
+      H1936 + 731 * 24,
+      H1936 + 900 * 24,
+      H1936 + 1100 * 24,
+    ];
+    for (const end of probes) {
+      const cached = computeTimeAxisTicks(H1936, end, 640);
+      timeChartCacheState.enabled = false;
+      const uncached = (() => {
+        try { return computeTimeAxisTicks(H1936, end, 640); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `ticks match uncached at end=${end}`);
+    }
+    const y1 = computeTimeAxisTicks(H1936, H1936 + 800 * 24, 640);
+    const y2 = computeTimeAxisTicks(H1936, H1936 + 850 * 24, 640);
+    assert.equal(y1, y2, 'ticks inside the same year return the same cached array');
+  });
 });

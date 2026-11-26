@@ -1,9 +1,10 @@
 import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
-import type { MeasureText } from '../../charts/textWidth.ts';
+import { textWidthRevision, type MeasureText } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
 import { computeTimeAxisTicks, type TimeAxisTick } from '../../draw/kit.ts';
 import type { BoundedSeries } from '../plan.ts';
+import { timeChartCacheState } from './cacheControl.ts';
 import { closedExtent, historyFits } from './history.ts';
 import { layoutChartRows, type RowsFrame } from './rows.ts';
 import { formatCompactScalar, formatDateOnly, formatScalar } from '../valueFormat.ts';
@@ -86,6 +87,8 @@ export interface PlacedEndLabel {
   readonly flag?: TimeChartSeriesModel['flag'];
   readonly icon?: TimeChartSeriesModel['icon'];
   readonly name: string | null;
+  readonly nameWidth?: number;
+  readonly nameFont?: string;
   readonly fullName: string;
   readonly value: string;
   readonly valueColor?: string;
@@ -151,6 +154,7 @@ export interface TimeChartLayout {
   readonly logShown: boolean;
   readonly logRefused: boolean;
   readonly yTicks: readonly number[];
+  readonly yTickLabels?: readonly string[];
   readonly playheadX: number;
   readonly dateTabText: string;
   readonly dateTabX: number;
@@ -173,6 +177,62 @@ const END_LABEL_GAP = 2;
 const END_LABEL_MAX_NAME_PX = 150;
 const FOLD_SLOT_WIDTH = 46;
 const MARKER_MIN_ICON_GAP = 21;
+
+interface CachedYAxis {
+  readonly yTicks: readonly number[];
+  readonly yTickLabels: readonly string[];
+  readonly left: number;
+}
+
+interface CachedEllipsis {
+  readonly text: string;
+  readonly width: number;
+}
+
+interface MeasureCacheBucket {
+  revision: number;
+  readonly yAxis: Map<string, CachedYAxis>;
+  readonly ellipsis: Map<string, CachedEllipsis>;
+}
+
+const Y_AXIS_CACHE_MAX = 64;
+const ELLIPSIS_CACHE_MAX = 256;
+const measureCaches = new WeakMap<MeasureText, MeasureCacheBucket>();
+
+function measureCacheOf(measure: MeasureText): MeasureCacheBucket {
+  const rev = textWidthRevision();
+  let bucket = measureCaches.get(measure);
+  if (!bucket) {
+    bucket = { revision: rev, yAxis: new Map(), ellipsis: new Map() };
+    measureCaches.set(measure, bucket);
+  } else if (bucket.revision !== rev) {
+    bucket.revision = rev;
+    bucket.yAxis.clear();
+    bucket.ellipsis.clear();
+  }
+  return bucket;
+}
+
+function cachedEllipsise(
+  text: string,
+  maxWidth: number,
+  font: string,
+  measure: MeasureText,
+  bucket: MeasureCacheBucket | null,
+): CachedEllipsis {
+  if (!bucket) {
+    const fitted = ellipsise(text, maxWidth, s => measure(s, font));
+    return { text: fitted, width: measure(fitted, font) };
+  }
+  const key = `${font}\u0000${maxWidth}\u0000${text}`;
+  const hit = bucket.ellipsis.get(key);
+  if (hit !== undefined) return hit;
+  const fitted = ellipsise(text, maxWidth, s => measure(s, font));
+  const entry: CachedEllipsis = { text: fitted, width: measure(fitted, font) };
+  if (bucket.ellipsis.size >= ELLIPSIS_CACHE_MAX) bucket.ellipsis.clear();
+  bucket.ellipsis.set(key, entry);
+  return entry;
+}
 
 function boundedExtent(bounded: BoundedSeries, xDomain: readonly [number, number], scale: number, headInView: boolean): readonly [number, number] | null {
   let low = Infinity;
@@ -500,20 +560,45 @@ export function layoutTimeChart(
     yHi = model.yAxis.max ?? 1;
   }
   const yDomain: readonly [number, number] = [yLo, yHi];
-  const decadeHeight = Math.max(1, height - 44) / Math.max(1e-9, Math.log10(yHi) - Math.log10(yLo));
-  const yTicks = model.yAxis.ticks
-    ? [...model.yAxis.ticks]
-    : logShown
-      ? thinLogTicks(wholeAxis ? logTicks(Math.max(1, yLo), yHi).filter(Number.isInteger) : logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
-      : model.yAxis.fixed || fullPercent
-      ? linearTicks(yLo, yHi, small ? 2 : 4, wholeAxis)
-      : linearTicks(yLo, yHi, small ? 3 : 5, wholeAxis);
-
-  let maxYLabelW = 0;
-  for (const t of yTicks) {
-    maxYLabelW = Math.max(maxYLabelW, measure(formatChartAxisValue(t, model.yAxis.format, yTicks), smallFont));
+  const cacheBucket = timeChartCacheState.enabled ? measureCacheOf(measure) : null;
+  let yTicks: readonly number[];
+  let yTickLabels: readonly string[];
+  let left: number;
+  const fixedOrFull = Boolean(model.yAxis.fixed || fullPercent);
+  const yCacheKey = cacheBucket && !model.yAxis.ticks
+    ? `${yLo}\u0000${yHi}\u0000${model.yAxis.format}\u0000${wholeAxis ? 1 : 0}\u0000${logShown ? 1 : 0}\u0000${fixedOrFull ? 1 : 0}\u0000${logShown ? height : 0}\u0000${small ? 1 : 0}\u0000${smallFont}`
+    : '';
+  const cachedYAxis = yCacheKey ? cacheBucket!.yAxis.get(yCacheKey) : undefined;
+  if (cachedYAxis) {
+    yTicks = cachedYAxis.yTicks;
+    yTickLabels = cachedYAxis.yTickLabels;
+    left = cachedYAxis.left;
+  } else {
+    const decadeHeight = Math.max(1, height - 44) / Math.max(1e-9, Math.log10(yHi) - Math.log10(yLo));
+    yTicks = model.yAxis.ticks
+      ? [...model.yAxis.ticks]
+      : logShown
+        ? thinLogTicks(wholeAxis ? logTicks(Math.max(1, yLo), yHi).filter(Number.isInteger) : logTicks(yLo, yHi), value => Math.log10(value) * decadeHeight, 18)
+        : fixedOrFull
+          ? linearTicks(yLo, yHi, small ? 2 : 4, wholeAxis)
+          : linearTicks(yLo, yHi, small ? 3 : 5, wholeAxis);
+    const labels: string[] = new Array(yTicks.length);
+    let maxYLabelW = 0;
+    for (let i = 0; i < yTicks.length; i++) {
+      const text = formatChartAxisValue(yTicks[i]!, model.yAxis.format, yTicks);
+      labels[i] = text;
+      maxYLabelW = Math.max(maxYLabelW, measure(text, smallFont));
+    }
+    yTickLabels = labels;
+    left = Math.ceil(Math.max(30, maxYLabelW + 16));
+    if (yCacheKey) {
+      if (cacheBucket!.yAxis.size >= Y_AXIS_CACHE_MAX) {
+        const oldest = cacheBucket!.yAxis.keys().next().value;
+        if (oldest !== undefined) cacheBucket!.yAxis.delete(oldest);
+      }
+      cacheBucket!.yAxis.set(yCacheKey, { yTicks, yTickLabels, left });
+    }
   }
-  const left = Math.ceil(Math.max(30, maxYLabelW + 16));
 
   const hasLegend = !!(model.legend && model.legend.length > 0 && (!small || model.mode !== 'columns'));
   const top = hasLegend ? 32 : 10;
@@ -533,6 +618,7 @@ export function layoutTimeChart(
     flag?: TimeChartSeriesModel['flag'];
     icon?: TimeChartSeriesModel['icon'];
     name: string | null;
+    nameWidth: number;
     fullName: string;
     value: string;
     valueColor?: string;
@@ -541,8 +627,6 @@ export function layoutTimeChart(
     fixedWidth: number;
     estWidth: number;
   }[] = [];
-
-  const measureName = (text: string) => measure(text, labelNameFont);
 
   const playheadInView = xDomain[1] >= model.hour;
   if (model.mode === 'lines' && playheadInView) {
@@ -554,13 +638,15 @@ export function layoutTimeChart(
         ? s.endLabel.shortName
         : s.endLabel.name;
       const showName = !!(rawName && (!small || s.endLabel.shortName !== undefined || (!s.endLabel.flag && !s.endLabel.icon)));
-      const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
+      const fittedNameEntry = showName ? cachedEllipsise(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure, cacheBucket) : null;
+      const nameText = fittedNameEntry ? fittedNameEntry.text : null;
       const artW = s.endLabel.flag && s.endLabel.flag.art.status !== 'noArtExpected'
         ? 24
         : s.endLabel.icon && s.endLabel.icon.art.status !== 'noArtExpected'
           ? 22
           : 0;
-      const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
+      const rawNameW = fittedNameEntry ? fittedNameEntry.width : 0;
+      const nameW = nameText ? rawNameW + 6 : 0;
       const valW = measure(s.endLabel.value, labelValueFont);
       const fixedWidth = artW + valW;
       const estWidth = fixedWidth + nameW + 8;
@@ -574,6 +660,7 @@ export function layoutTimeChart(
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
         name: nameText,
+        nameWidth: rawNameW,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
         valueColor: s.endLabel.valueColor,
@@ -618,10 +705,12 @@ export function layoutTimeChart(
           ? band.endLabel.shortName
           : band.endLabel.name;
         const showName = !!(rawName && (!narrow || !band.endLabel.flag));
-        const nameText = showName ? ellipsise(rawName!, END_LABEL_MAX_NAME_PX, measureName) : null;
+        const fittedNameEntry = showName ? cachedEllipsise(rawName!, END_LABEL_MAX_NAME_PX, labelNameFont, measure, cacheBucket) : null;
+        const nameText = fittedNameEntry ? fittedNameEntry.text : null;
         const barW = 9;
         const artW = band.endLabel.flag && band.endLabel.flag.art.status !== 'noArtExpected' ? 24 : 0;
-        const nameW = nameText ? measure(nameText, labelNameFont) + 6 : 0;
+        const rawNameW = fittedNameEntry ? fittedNameEntry.width : 0;
+        const nameW = nameText ? rawNameW + 6 : 0;
         const valW = measure(band.endLabel.value, labelValueFont);
         const fixedWidth = barW + artW + valW;
         rawEndLabels.push({
@@ -633,6 +722,7 @@ export function layoutTimeChart(
           colorBar: band.color,
           flag: band.endLabel.flag,
           name: nameText,
+          nameWidth: rawNameW,
           fullName: band.endLabel.fullName ?? band.name,
           value: band.endLabel.value,
           valueColor: band.endLabel.valueColor,
@@ -654,6 +744,7 @@ export function layoutTimeChart(
           faded: false,
           icon: el.icon,
           name: null,
+          nameWidth: 0,
           fullName: model.measureTitle,
           value: el.value,
           valueColor: el.valueColor,
@@ -706,15 +797,19 @@ export function layoutTimeChart(
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
       let fittedName = l.name;
+      let fittedNameW = l.nameWidth;
       if (fittedName) {
         const nameBudget = availWidth - l.fixedWidth - 6;
         if (nameBudget < minEllipsis) {
           fittedName = null;
-        } else if (measureName(fittedName) > nameBudget) {
-          fittedName = ellipsise(fittedName, nameBudget, measureName);
+          fittedNameW = 0;
+        } else if (fittedNameW > nameBudget) {
+          const entry = cachedEllipsise(fittedName, nameBudget, labelNameFont, measure, cacheBucket);
+          fittedName = entry.text;
+          fittedNameW = entry.width;
         }
       }
-      const fittedWidth = l.fixedWidth + (fittedName ? measureName(fittedName) + 6 : 0) + 8;
+      const fittedWidth = l.fixedWidth + (fittedName ? fittedNameW + 6 : 0) + 8;
       endLabels.push({
         id: l.id,
         seriesId: l.seriesId,
@@ -729,6 +824,7 @@ export function layoutTimeChart(
         flag: l.flag,
         icon: l.icon,
         name: fittedName,
+        ...(fittedName ? { nameWidth: fittedNameW, nameFont: labelNameFont } : {}),
         fullName: l.fullName,
         value: l.value,
         valueColor: l.valueColor,
@@ -804,6 +900,7 @@ export function layoutTimeChart(
     logShown,
     logRefused: logAsked && !logShown,
     yTicks,
+    yTickLabels,
     playheadX,
     dateTabText,
     dateTabX,

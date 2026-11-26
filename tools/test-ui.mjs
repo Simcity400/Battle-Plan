@@ -23,6 +23,7 @@ export const browserTests = [
   'ui/src/families/host/host.dom.test.ts',
   'ui/src/families/host/pixelExact.dom.test.ts',
   'ui/src/families/table/tableFamily.dom.test.ts',
+  'ui/src/families/time-chart/pixelParity.dom.test.ts',
   'ui/src/dashboard/prepareLane.dom.test.ts',
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',

@@ -18,6 +18,11 @@ export function isEngineHour(hour: number): boolean {
   return Number.isInteger(hour) && hour >= MIN_HOUR && hour <= MAX_HOUR;
 }
 
+export function gameYear(engineHour: number): number | null {
+  if (!isEngineHour(engineHour) || engineHour < HOUR_EPOCH) return null;
+  return Math.floor(Math.floor((engineHour - HOUR_EPOCH) / HOURS_PER_DAY) / DAYS_PER_YEAR);
+}
+
 export function gameDate(engineHour: number): GameDate | null {
   if (!isEngineHour(engineHour) || engineHour < HOUR_EPOCH) return null;
   const elapsed = engineHour - HOUR_EPOCH;
@@ -54,9 +59,20 @@ export function formatDateTime(hour: number): string {
     : isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
 }
 
+const DAY_CACHE_MAX = 4096;
+const dayCache = new Map<number, string>();
+
 export function formatDay(hour: number): string {
-  const date = gameDate(hour);
-  return date ? formatDate(date) : isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
+  if (isEngineHour(hour) && hour >= HOUR_EPOCH) {
+    const dayIdx = Math.floor((hour - HOUR_EPOCH) / HOURS_PER_DAY);
+    const cached = dayCache.get(dayIdx);
+    if (cached !== undefined) return cached;
+    const formatted = formatDate(gameDate(hour)!);
+    if (dayCache.size >= DAY_CACHE_MAX) dayCache.clear();
+    dayCache.set(dayIdx, formatted);
+    return formatted;
+  }
+  return isEngineHour(hour) ? `Hour ${usNumber.format(hour)}` : 'Unavailable date';
 }
 
 export function formatDateRange(firstHour: number, lastHour: number): string {
