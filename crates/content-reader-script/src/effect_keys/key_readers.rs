@@ -182,26 +182,50 @@ pub(super) fn random_member_fields(items: &[content_reader_parser::parser::Item]
         .collect()
 }
 
-pub fn is_own_field(effect: &[u8], key: &[u8]) -> Result<bool, String> {
-    let unknown = || format!(
-        "no verified reader for effect {} field {}",
-        String::from_utf8_lossy(effect), String::from_utf8_lossy(key)
-    );
+#[derive(PartialEq, Eq)]
+enum FieldRole {
+    Own,
+    ScopeChain,
+    Other,
+}
+
+fn field_role(effect: &[u8], key: &[u8]) -> Result<FieldRole, String> {
+    let unknown = || {
+        format!(
+            "no verified reader for effect {} field {}",
+            String::from_utf8_lossy(effect),
+            String::from_utf8_lossy(key)
+        )
+    };
     let token = super::registered(effect).ok_or_else(unknown)?;
     let field = key.to_ascii_lowercase();
     if let Some(reader) = reader(token) {
-        return Ok(matches!(reader, KeyReader::Keys(keys, _) if keys(Some(&field)).is_some()));
+        return Ok(match reader {
+            KeyReader::Keys(keys, _) => match keys(Some(&field)) {
+                Some(ValueReader::ScopeSelectorChain) => FieldRole::ScopeChain,
+                Some(_) => FieldRole::Own,
+                None => FieldRole::Other,
+            },
+            _ => FieldRole::Other,
+        });
     }
     let (value, fields) = super::class(token).ok_or_else(unknown)?;
     match (value, fields) {
-        (super::READ_VALUE, _) | (READ_SCRIPT, READ_EFFECT) => Ok(false),
-        _ => super::value_readers::is_own_field(value, fields, effect, &field).ok_or_else(unknown),
+        (super::READ_VALUE, _) | (READ_SCRIPT, READ_EFFECT) => Ok(FieldRole::Other),
+        _ => match super::value_readers::is_own_field(value, fields, effect, &field) {
+            Some(true) => Ok(FieldRole::Own),
+            Some(false) => Ok(FieldRole::Other),
+            None => Err(unknown()),
+        },
     }
 }
 
-pub fn reads_scope_chain(effect: &[u8], key: &[u8]) -> bool {
-    matches!(super::registered(effect).and_then(reader), Some(KeyReader::Keys(keys, _))
-        if matches!(keys(Some(key)), Some(ValueReader::ScopeSelectorChain)))
+pub fn is_own_field(effect: &[u8], key: &[u8]) -> Result<bool, String> {
+    Ok(field_role(effect, key)? != FieldRole::Other)
+}
+
+pub fn reads_scope_chain(effect: &[u8], key: &[u8]) -> Result<bool, String> {
+    Ok(field_role(effect, key)? == FieldRole::ScopeChain)
 }
 
 pub(crate) fn requires_block(token: u32) -> bool {

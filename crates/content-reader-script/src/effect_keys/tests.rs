@@ -395,12 +395,18 @@ fn country_target_fields_follow_the_registered_reader_identity() {
     crate::test_game::with(|game| {
         let game = EffectShape::MAKE_SUBJECT.register(game, "fixture_named_target", 11);
         let game = EffectShape::SCALAR.register(game, "fixture_plain_operand", 22);
-        game.effect("fixture_unknown_reader", 33, 44, 55)
+        let game = EffectShape::TARGET_VALUE.register(game, "fixture_target_value", 66);
+        game.effect("fixture_unknown_reader", 33, super::READ_EFFECT, 55)
     });
     assert_eq!(is_own_field(b"fixture_named_target", b"TaRgEt"), Ok(true));
+    assert_eq!(is_own_field(b"fixture_target_value", b"target"), Ok(true));
     assert_eq!(is_own_field(b"fixture_plain_operand", b"target"), Ok(false));
     assert_eq!(
         is_own_field(b"fixture_unknown_reader", b"target"),
+        Err("no verified reader for effect fixture_unknown_reader field target".into()),
+    );
+    assert_eq!(
+        reads_scope_chain(b"fixture_unknown_reader", b"target"),
         Err("no verified reader for effect fixture_unknown_reader field target".into()),
     );
 }

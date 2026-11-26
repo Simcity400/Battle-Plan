@@ -668,11 +668,19 @@ fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader
 }
 
 pub(super) fn is_own_field(value: u64, key: u64, effect: &[u8], field: &[u8]) -> Option<bool> {
-    let address = match value_form(value)? {
-        Form::CurrentOrKeys(source) | Form::ScalarOrKeys(source) | Form::StringOrKeys(source)
-        | Form::Keys(source) | Form::AlwaysKeys(source) | Form::RoleKeys(source) => source.address(value, key),
-        Form::Persistent(address) => address,
-        _ => return Some(false),
+    let address = match value_form(value) {
+        Some(
+            Form::CurrentOrKeys(source)
+            | Form::ScalarOrKeys(source)
+            | Form::StringOrKeys(source)
+            | Form::Keys(source)
+            | Form::AlwaysKeys(source)
+            | Form::RoleKeys(source),
+        ) => source.address(value, key),
+        Some(Form::Persistent(address)) => address,
+        Some(_) => return Some(false),
+        None if value == super::READ_SCRIPT => key,
+        None => return None,
     };
     if address == super::READ_EFFECT {
         return Some(false);
@@ -1356,6 +1364,7 @@ impl crate::effect_keys::EffectShape {
     pub const EQUIPMENT_DELIVERY: Self = Self(SCRIPT_VALUE, EQUIPMENT_AMOUNT_KEYS);
     pub const TEMPLATE_MEMBERS: Self = Self(SCRIPT_VALUE, ADD_TEMPLATE_UNITS_KEYS);
     pub const SEND_SHARE: Self = Self(SCRIPT_VALUE, EQUIPMENT_AMOUNT_KEYS);
+    pub const TARGET_VALUE: Self = Self(SCRIPT_VALUE, TARGET_VALUE_KEYS);
     pub const MOVE_SHARE: Self = Self(SCRIPT_VALUE, TRANSFER_LEADERS_KEYS);
     pub const LOCK_COUNTRY_TEMPLATES: Self = Self(ASSIGNMENT_VALUE, TEMPLATE_LOCK_KEYS);
     pub const IDEA_EXCHANGE: Self = Self(SWAP_IDEAS, 0);

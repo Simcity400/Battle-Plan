@@ -1291,6 +1291,56 @@ fn event_option_tooltip_trims_only_ascii_whitespace() {
 }
 
 #[test]
+fn deep_scripted_templates_render_through_tooltips_event_options_and_iterator_probes() {
+    use std::fmt::Write as _;
+    game::enter();
+    let mut templates =
+        String::from("synth_root={fixture_pick_state={prioritize={3} synth_step_0=yes}}\n");
+    let mut events = String::from("add_namespace=synth country_event={id=synth.1 ");
+    for i in 0..4096 {
+        let next = format!("synth_step_{}=yes", i + 1);
+        let step = match i % 4 {
+            _ if i < 2048 => next,
+            0 => next,
+            1 => format!("fixture_override_text={{{next}}}"),
+            2 => {
+                write!(events, "option={{name=synth_choice_{i} {next}}} ").unwrap();
+                format!("fixture_option_details=synth_choice_{i}")
+            }
+            _ => format!("if={{limit={{always=yes}} {next}}}"),
+        };
+        writeln!(templates, "synth_step_{i}={{{step}}}").unwrap();
+    }
+    templates.push_str("synth_step_4096={fixture_written_tooltip=SYN_FIRST fixture_written_tooltip=SYN_MIDDLE fixture_written_tooltip=SYN_LAST}");
+    events.push('}');
+    let (fixture, _, _folder) = event_files_fixture(&[
+        ("events/synth.txt", &events),
+        ("common/scripted_effects/synth.txt", &templates),
+        (
+            "localisation/synth_l_english.yml",
+            "\u{feff}l_english:\n SYN_FIRST:0 \"first [THIS.GetID]\"\n SYN_MIDDLE:0 \"middle\"\n SYN_LAST:0 \"last\"\n",
+        ),
+    ]);
+    let scripts = fixture.catalogue.scripted_content().unwrap();
+    let names = scripts.layers.layers.key_names().unwrap();
+    let effects =
+        content_reader_key_names::scripted_effects::read(&scripts.layers.layers, &names).unwrap();
+    let result = fixture.render_native(
+        "synth_root=yes",
+        &mut super::super::tests::fresh(),
+        Content {
+            key_names: Some(&names),
+            scripted_effects: Some(&effects),
+            ..Default::default()
+        },
+    );
+    assert!(result.refusals.is_empty(), "{:?}", result.refusals);
+    let mut lines = result.text.lines().map(str::trim);
+    assert!(lines.next().unwrap().contains(':'));
+    assert_eq!(lines.collect::<Vec<_>>(), ["first 3", "middle", "last"]);
+}
+
+#[test]
 fn event_option_tooltip_does_not_visit_scripted_templates_or_operand_text() {
     game::enter();
     let (fixture, _, _folder) = event_files_fixture(&[

@@ -135,7 +135,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let items = content_reader_parser::parser::parse(body.as_bytes())
