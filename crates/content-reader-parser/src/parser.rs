@@ -660,7 +660,7 @@ impl<'a> Parser<'a> {
         let empty = || (Value::Scalar(Vec::new()), Kind::Bare);
         let bytes = self.lexer.bytes;
         let later_line = |at: usize| bytes.get(operator..at).is_some_and(|between| between.contains(&b'\n'));
-        let next = self.peek()?.map(|token| (matches!(token.kind, TokenKind::Close), matches!(token.kind, TokenKind::Operator(_)), matches!(token.kind, TokenKind::Scalar { .. }), token.offset));
+        let next = self.peek()?.map(|token| (matches!(token.kind, TokenKind::Close), matches!(token.kind, TokenKind::Operator(Operator::Equals)), matches!(token.kind, TokenKind::Scalar { .. }), token.offset));
         match next {
             None | Some((true, ..)) => Ok(empty()),
             Some((_, true, _, at)) if later_line(at) => Ok(empty()),
