@@ -118,3 +118,18 @@ fn a_reason_for_no_name_uses_only_what_was_known_at_its_hour() {
     assert_eq!(said(145), format!("Who holds {} is not known: a recorded tag's country was not resolved at this hour", country.key()), "R5-S8: a tag whose country is unresolved could be this slot's");
     assert_eq!(said(150), NOT_HELD_AT_HOUR, "once every recorded tag is resolved, the slot holds none");
 }
+
+#[test]
+fn an_hour_whose_holders_are_not_known_answers_unknown_never_no_holder() {
+    let reason = "Countries was not complete at these hours";
+    let holders = Holders::new([("GER".to_owned(), vec![run(100, 109, GER), run(113, 119, GER)])].into(), vec![(110, 112, reason.to_owned())]);
+    assert_eq!(holders.at("GER", 111).map(|run| (run.first, run.last, run.holder)), Some((110, 112, Holder::Unresolved)), "inside the unknown hours GER is held by someone not known");
+    assert_eq!(holders.at("ITA", 111).map(|run| run.holder), Some(Holder::Unresolved), "every country is unknown there, even one never seen");
+    assert_eq!(holders.at(&Country::Slot(5), 111).map(|run| run.holder), Some(Holder::Unresolved), "and every slot");
+    assert_eq!(holders.unnamed(&Country::from("GER"), 111), format!("Who holds GER is not known: {reason}"));
+    assert_eq!((holders.unknown_reason(111), holders.unknown_reason(113)), (Some(reason), None));
+    assert_eq!(holders.not_known(&Country::from("GER"), 111), Some(format!("Who holds GER is not known: {reason}")));
+    assert_eq!(holders.not_known(&Country::from("GER"), 113), None, "a known hour has no such reason");
+    assert!(holders.at("GER", 125).is_none(), "outside them an hour no run holds is still no holder");
+    assert_eq!(holders.at("GER", 105).map(|run| run.holder), Some(GER));
+}

@@ -346,7 +346,7 @@ pub(crate) fn select_explicit<T: replay_data::rows::TableSchema>(
                 tag,
                 total: None,
                 reference_total: absent_reference.map(|_| None),
-                missing: Some("Country holder could not be resolved at this hour".into()),
+                missing: Some(holders.not_known(country, hour).unwrap_or_else(|| "Country holder could not be resolved at this hour".into())),
             }),
         }
     }

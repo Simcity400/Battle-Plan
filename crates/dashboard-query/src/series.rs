@@ -954,7 +954,7 @@ impl<'q, 'a> Line<'q, 'a> {
             return country.tag().and_then(|tag| self.series.key.fixed(tag)).is_none().then(|| self.query.holders.say(country, hour, |name| format!("{name} names no row of {}", self.series.kind)));
         }
         let Some(name) = self.query.holders.label(country, hour) else { return Some(self.query.holders.unnamed(country, hour)) };
-        if let Some((_, _, reason)) = self.query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
+        if let Some(reason) = self.query.holders.unknown_reason(hour) {
             return Some(format!("Who holds {name} is not known: {reason}"));
         }
         match self.query.holders.at(country, hour) {

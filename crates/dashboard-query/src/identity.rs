@@ -126,6 +126,7 @@ pub struct Holders {
     slots: OnceLock<BTreeMap<u32, SlotHistory>>,
     edges: OnceLock<Vec<i32>>,
     unlinked: OnceLock<Vec<(i32, i32)>>,
+    unknown_runs: OnceLock<Vec<HolderRun>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -136,7 +137,7 @@ struct SlotHistory {
 
 impl Holders {
     pub fn new(tags: BTreeMap<String, Vec<HolderRun>>, unknown: Vec<(i32, i32, String)>) -> Self {
-        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new(), unlinked: OnceLock::new() }
+        Self { tags, unknown, slots: OnceLock::new(), edges: OnceLock::new(), unlinked: OnceLock::new(), unknown_runs: OnceLock::new() }
     }
 
     fn edges(&self) -> &[i32] {
@@ -196,6 +197,16 @@ impl Holders {
     pub fn at<K: Key + ?Sized>(&self, country: &K, hour: i32) -> Option<&HolderRun> {
         let runs = country.runs(self);
         let at = runs.partition_point(|run| run.last < hour);
+        runs.get(at).filter(|run| run.first <= hour).or_else(|| self.unknown_at(hour))
+    }
+
+    fn unknown_at(&self, hour: i32) -> Option<&HolderRun> {
+        let runs = self.unknown_runs.get_or_init(|| {
+            let mut runs: Vec<HolderRun> = self.unknown.iter().map(|&(first, last, _)| HolderRun { first, last, holder: Holder::Unresolved, starts_segment: true }).collect();
+            runs.sort_unstable_by_key(|run| run.first);
+            runs
+        });
+        let at = runs.partition_point(|run| run.last < hour);
         runs.get(at).filter(|run| run.first <= hour)
     }
 
@@ -231,9 +242,17 @@ impl Holders {
         self.tag_at(country, hour).map(str::to_owned)
     }
 
+    pub fn unknown_reason(&self, hour: i32) -> Option<&str> {
+        self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last).map(|(_, _, reason)| reason.as_str())
+    }
+
+    pub fn not_known(&self, country: &Country, hour: i32) -> Option<String> {
+        self.unknown_reason(hour).map(|reason| format!("Who holds {} is not known: {reason}", self.label(country, hour).unwrap_or_else(|| country.key().into_owned())))
+    }
+
     pub fn unnamed(&self, country: &Country, hour: i32) -> String {
-        if let Some((_, _, reason)) = self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
-            return format!("Who holds {} is not known: {reason}", country.key());
+        if let Some(reason) = self.not_known(country, hour) {
+            return reason;
         }
         if matches!(country, Country::Slot(_)) {
             let unlinked = self.unlinked();

@@ -540,7 +540,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                     tag,
                     total: None,
                     reference_total: None,
-                    missing: Some("Country holder could not be resolved at this hour".into()),
+                    missing: Some(query.holders.not_known(country, hour).unwrap_or_else(|| "Country holder could not be resolved at this hour".into())),
                     values: vec![None; kinds.len()],
                     parts_missing: None,
                 }),

@@ -132,3 +132,19 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     let twice = AirForceAtParams { countries: vec![Country::from("GER"), Country::Slot(1)], ..truncated_params };
     assert_eq!(AirForceAt::reply(&frame, &twice, &at).unwrap().rows.len(), 1, "a holder asked by tag and by slot is one row");
 }
+
+#[test]
+fn a_chosen_country_whose_holder_is_not_known_at_the_hour_is_kept_as_not_recorded_with_the_recorded_reason() {
+    use dashboard_query::identity::{Country, Holder, HolderRun, Holders};
+    use replay_data::rows::tables;
+    use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView};
+
+    let mut holders = Holders::default();
+    holders.tags.insert("GER".into(), vec![HolderRun { first: 0, last: 9, holder: Holder::Found { slot: 1, id: 10 }, starts_segment: true }]);
+    holders.unknown.push((10, 12, "Countries was not complete at these hours".into()));
+    let tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
+    let frame = DecodedFrame { branch: 1, hour: 11, tables, metrics: Metrics::default() };
+    let rows = super::at_hour::select_explicit::<tables::AirForceTotals>(&frame, &[Country::from("GER")], |_| None, |_| None, None, &holders, 11, "planes");
+    assert_eq!(rows.len(), 1, "the chosen country is kept");
+    assert_eq!((rows[0].slot, rows[0].total, rows[0].missing.as_deref()), (None, None, Some("Who holds GER is not known: Countries was not complete at these hours")));
+}
