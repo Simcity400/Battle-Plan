@@ -1182,6 +1182,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         engine_executable::executable_tables::enter(document.content.tables);
         document.icons.lazy.set_background(false);
+        let _art = viewer_native_gui::native_resources::SynchronousWindowArt::enter();
         let dump_head = Some(dump_head::open(&document)?);
         if let Some(head) = &dump_head {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
@@ -1737,6 +1738,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for (reason, count) in &text.refused {
                 println!("Province {province} hover refused ({count}): {reason}");
             }
+        }
+        for warning in document.icons.combat.gui.window_warnings().into_iter().chain(document.icons.counters.gui.window_warnings()) {
+            eprintln!("Warning: {warning}");
+            combat_warnings.push(warning);
         }
         if let Some(path) = &options.counters_json {
             let mut census =

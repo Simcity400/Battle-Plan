@@ -144,15 +144,21 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     }
     let localisation = content_reader_localisation::localisation::read(&shared, "english").unwrap();
     let (extra, _) = combat.localisation_assets(&localisation);
-    combat.defer_window_art(&shared, &localisation, &extra, &lazy);
+    let warnings = combat.defer_window_art(&shared, &localisation, &extra, &lazy);
+    assert_eq!(warnings.iter().filter(|note| note.contains("GFX_FIXTURE_MISSING")).count(), 1);
     assert!(!combat.gui.loading_window_art());
-    assert!(combat.gui.sheet(b"GFX_fixture_late").is_none());
+    let misses = combat.gui.window_art_misses();
+    std::thread::scope(|threads| {
+        threads.spawn(|| assert!(combat.gui.sheet(b"GFX_fixture_late").is_none())).join().unwrap();
+    });
+    assert_eq!(combat.gui.window_art_misses(), misses, "a background request cannot invalidate this draw");
     assert!(combat.gui.loading_window_art());
     assert!(combat.gui.sprite(b"GFX_FIXTURE_TEXTURE").is_none());
     assert!(lazy.settle());
     assert!(!combat.gui.loading_window_art());
     assert_eq!(combat.gui.sheet(b"GFX_fixture_late").unwrap().size, [3, 7]);
     assert!(combat.gui.sprite(b"GFX_FIXTURE_TEXTURE").unwrap().missing.is_some());
+    assert_eq!(combat.gui.window_warnings().iter().filter(|note| note.contains("gfx/missing.tga")).count(), 1);
     let map_assets = viewer_counters::counters::gui_assets(
         &windows,
         &interface.registry,
@@ -165,7 +171,10 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         [10, 10],
         Decode::default(),
     );
-    map_gui.load(&shared, &map_assets, &mut images).unwrap();
+    map_gui.load(&shared, &native_gui::Assets::default(), &mut images).unwrap();
+    map_gui.defer_window_art(&shared, &map_assets, &lazy);
+    assert!(map_gui.loaded_sheet(b"GFX_ESCAPE").is_none());
+    let _art = viewer_native_gui::native_resources::SynchronousWindowArt::enter();
     let inventory = CombatGuiAssets::new(&combat, &Bindings::default());
     let resources =
         CombatGuiResources::new(&combat, &windows, &localisation, &flags, &flags, &inventory);

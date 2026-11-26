@@ -185,9 +185,9 @@ impl MapIcons {
         layers: &ResolvedLayers,
         localisation: &content_reader_localisation::localisation::Localisation,
     ) -> Vec<String> {
-        let (extra, warnings) = combat.localisation_assets(localisation);
-        combat.defer_window_art(layers, localisation, &extra, textures);
-        counters.defer_window_art(layers, localisation, extra, textures);
+        let (extra, mut warnings) = combat.localisation_assets(localisation);
+        warnings.extend(combat.defer_window_art(layers, localisation, &extra, textures));
+        warnings.extend(counters.defer_window_art(layers, localisation, extra, textures));
         warnings
     }
 }

@@ -97,6 +97,7 @@ fn plain_info(
 }
 
 mod window_art;
+pub use window_art::SynchronousWindowArt;
 use window_art::WindowArt;
 use crate::lazy_icons::LazyTextures;
 
@@ -179,15 +180,22 @@ impl GuiResources {
     pub fn defer_window_art(&mut self, layers: &ResolvedLayers, assets: &Assets, textures: &Arc<LazyTextures>) {
         let mut reader = Self::unloaded(Arc::clone(&self.registry), &self.language, self.globals.clone(), self.decode);
         reader.recorded_registry.clone_from(&self.recorded_registry);
+        reader.effects.clone_from(&self.effects);
+        reader.compiler = self.compiler.take();
         reader.uploads = Some(Arc::clone(textures));
         self.window = Some(WindowArt::new(reader, layers.clone(), assets, textures));
     }
 
-    pub fn with_ready_window_art<T>(&self, mut read: impl FnMut() -> T) -> T {
-        match &self.window {
-            Some(art) => art.resolve(read),
-            None => read(),
+    pub fn window_warnings(&self) -> Vec<String> {
+        self.window.as_ref().map(|art| art.warnings()).unwrap_or_default()
+    }
+
+    pub fn loaded_font_warnings(&self, names: &BTreeSet<Vec<u8>>) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for name in names {
+            if let Some(font) = self.loaded_font(name) { font_warnings(name, Some(font), &mut warnings); }
         }
+        warnings
     }
 
     pub fn window_art_misses(&self) -> u64 {
@@ -1139,6 +1147,29 @@ impl GuiResources {
             )
             .collect()
     }
+}
+
+fn font_warnings(name: &[u8], font: Option<&native_text::Font>, warnings: &mut Vec<String>) {
+    let name = lossy(name);
+    let Some(font) = font else {
+        warnings.push(format!("Map window art: font {name} is unavailable (1 missing_font)."));
+        return;
+    };
+    for file in &font.glyphs.missing {
+        warnings.push(format!("Map window art: font {name}: missing font file {file} (1 missing_font_file)."));
+    }
+    for (file, page) in font.glyphs.pages.iter().zip(&font.pages) {
+        if page.is_none() {
+            warnings.push(format!("Map window art: font {name}: page {} did not load (1 missing_font_page).", lossy(file)));
+        }
+    }
+    if font.glyphs.glyphs.is_empty() {
+        warnings.push(format!("Map window art: font {name} loads no characters (1 empty_font)."));
+    }
+    if font.glyphs.line_height.is_none() || font.glyphs.base.is_none() {
+        warnings.push(format!("Map window art: font {name} has no first-file lineHeight or base (1 missing_font_metrics)."));
+    }
+    warnings.extend(font.refusals.iter().map(|(kind, why)| format!("Map window art: font {name}: {why} (1 {}).", kind.name())));
 }
 
 impl Sheets for GuiResources {

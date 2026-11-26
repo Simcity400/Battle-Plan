@@ -1120,7 +1120,8 @@ enum Want {
 }
 
 fn read(request: &Request) -> io::Result<Fresh> {
-    request.content.assets.gui.with_ready_window_art(|| read_window(request))
+    let _art = viewer_native_gui::native_resources::SynchronousWindowArt::enter();
+    read_window(request)
 }
 
 fn read_window(request: &Request) -> io::Result<Fresh> {

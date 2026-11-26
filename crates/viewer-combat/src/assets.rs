@@ -149,18 +149,24 @@ impl Assets {
         localisation: &content_reader_localisation::localisation::Localisation,
         extra: &native_gui::Assets,
         textures: &Arc<LazyTextures>,
-    ) {
+    ) -> Vec<String> {
         let mut assets = native_window_assets(&self.native_windows, localisation);
         assets.extend(extra.clone());
-        self.window_sprites.extend(assets.sprites.iter().filter(|name| {
-            std::str::from_utf8(name).ok().is_some_and(|name| self.lazy_sprites.contains_key(name))
-        }).cloned());
+        self.window_sprites.extend(assets.sprites.iter().cloned());
         assets.sprites.retain(|name| {
             std::str::from_utf8(name)
                 .ok()
                 .is_none_or(|name| !self.lazy_sprites.contains_key(name))
         });
+        let mut warnings = self.gui.loaded_font_warnings(&assets.fonts);
+        warnings.extend(self.gui.missing_textures().into_iter().map(|(name, why)| format!("Combat UI: texture {name}: {why} (1 missing_texture).")));
+        for name in shortcut_assets(&self.native_windows).sprites {
+            if self.gui.registry().sprite(&name).is_none() {
+                warnings.push(format!("Combat UI: sprite {} is unavailable (1 missing_sprite).", String::from_utf8_lossy(&name)));
+            }
+        }
         self.gui.defer_window_art(layers, &assets, textures);
+        warnings
     }
 
     pub fn localisation_assets(

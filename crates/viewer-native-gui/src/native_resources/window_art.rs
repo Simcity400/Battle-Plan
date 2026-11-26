@@ -1,9 +1,30 @@
 use super::*;
 use crate::lazy_icons::PendingLoad;
+use std::cell::Cell;
 use std::sync::{
     Mutex, Once, OnceLock, Weak,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
+
+thread_local! {
+    static MISSES: Cell<u64> = const { Cell::new(0) };
+    static SYNCHRONOUS: Cell<bool> = const { Cell::new(false) };
+}
+
+#[must_use]
+pub struct SynchronousWindowArt(bool, std::marker::PhantomData<std::rc::Rc<()>>);
+
+impl SynchronousWindowArt {
+    pub fn enter() -> Self {
+        Self(SYNCHRONOUS.replace(true), std::marker::PhantomData)
+    }
+}
+
+impl Drop for SynchronousWindowArt {
+    fn drop(&mut self) {
+        SYNCHRONOUS.set(self.0);
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -14,7 +35,7 @@ enum Kind {
 
 struct Slot {
     requested: Once,
-    ready: OnceLock<Option<(Box<Item>, Diagnostics)>>,
+    ready: OnceLock<(Option<Box<Item>>, Diagnostics)>,
 }
 
 enum Item {
@@ -27,7 +48,7 @@ pub(super) struct WindowArt {
     items: [HashMap<Vec<u8>, Slot>; 3],
     queue: Mutex<Vec<(Kind, Vec<u8>)>>,
     loading: AtomicUsize,
-    missed: AtomicU64,
+    warnings: Mutex<BTreeSet<String>>,
     reader: Mutex<GuiResources>,
     layers: ResolvedLayers,
     textures: Arc<LazyTextures>,
@@ -58,7 +79,7 @@ impl WindowArt {
             items,
             queue: Mutex::default(),
             loading: AtomicUsize::new(0),
-            missed: AtomicU64::new(0),
+            warnings: Mutex::default(),
             reader: Mutex::new(reader),
             layers,
             textures: Arc::clone(textures),
@@ -71,19 +92,17 @@ impl WindowArt {
         self.loading.load(Ordering::Acquire) != 0
     }
 
-    pub(super) fn resolve<T>(&self, mut read: impl FnMut() -> T) -> T {
-        loop {
-            let before = self.missed.load(Ordering::Relaxed);
-            let value = read();
-            if before == self.missed.load(Ordering::Relaxed) {
-                return value;
-            }
-            self.load_pending();
-        }
+    pub(super) fn warnings(&self) -> Vec<String> {
+        self.warnings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub(super) fn misses(&self) -> u64 {
-        self.missed.load(Ordering::Relaxed)
+        MISSES.get()
     }
 
     fn get(&self, kind: Kind, name: &[u8], request: bool) -> Option<&Item> {
@@ -95,18 +114,23 @@ impl WindowArt {
                     .lock()
                     .unwrap_or_else(|err| err.into_inner())
                     .push((kind, name.to_vec()));
-                LazyTextures::schedule(&self.textures);
+                if !SYNCHRONOUS.get() {
+                    LazyTextures::schedule(&self.textures);
+                }
             });
+            if slot.ready.get().is_none() && SYNCHRONOUS.get() {
+                self.load_pending();
+            }
         }
         let Some(ready) = slot.ready.get() else {
             if request {
-                self.missed.fetch_add(1, Ordering::Relaxed);
+                MISSES.set(MISSES.get().wrapping_add(1));
             }
             return None;
         };
-        let (item, notes) = ready.as_ref()?;
+        let (item, notes) = ready;
         notes.credit();
-        Some(item)
+        item.as_deref()
     }
 
     pub(super) fn sprite(
@@ -178,7 +202,11 @@ impl PendingLoad for WindowArt {
         }
         let mut reader = self.reader.lock().unwrap_or_else(|err| err.into_inner());
         let batch = std::mem::take(&mut *self.queue.lock().unwrap_or_else(|err| err.into_inner()));
-        let changed = !batch.is_empty();
+        let count = batch.len();
+        if count == 0 {
+            return false;
+        }
+        let mut warnings = Vec::new();
         for (kind, name) in batch {
             let (result, notes) = diagnostics::capture(|| {
                 self.layers.artwork("map window art", |layers| {
@@ -188,16 +216,40 @@ impl PendingLoad for WindowArt {
             let item = match result {
                 Ok(item) => item,
                 Err(error) => {
-                    eprintln!("Map window art {} could not be read: {error}", lossy(&name));
+                    warnings.push(format!(
+                        "Map window art {} could not be read: {error}",
+                        lossy(&name)
+                    ));
                     None
                 }
             };
+            if matches!(kind, Kind::Font) {
+                font_warnings(
+                    &name,
+                    item.as_ref().and_then(|item| match item {
+                        Item::Font(font) => Some(font),
+                        _ => None,
+                    }),
+                    &mut warnings,
+                );
+            }
             let _ = self.items[kind as usize][&name]
                 .ready
-                .set(item.map(|item| (Box::new(item), notes)));
-            self.textures.bump();
-            self.loading.fetch_sub(1, Ordering::Release);
+                .set((item.map(Box::new), notes));
         }
-        changed
+        warnings.extend(
+            reader
+                .missing_textures()
+                .into_iter()
+                .map(|(name, why)| format!("Map window art: {name}: {why}")),
+        );
+        warnings.extend(std::mem::take(&mut reader.uncovered).iter().map(|path| format!("Map window art: {} is outside the content coverage policy and is not hash-verified.", lossy(path))));
+        self.warnings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(warnings);
+        self.textures.bump();
+        self.loading.fetch_sub(count, Ordering::Release);
+        true
     }
 }

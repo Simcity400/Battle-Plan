@@ -2612,7 +2612,7 @@ impl CounterAssets {
         localisation: &content_reader_localisation::localisation::Localisation,
         tooltip_assets: Assets,
         textures: &Arc<LazyTextures>,
-    ) {
+    ) -> Vec<String> {
         let assets = gui_assets(
             &self.windows,
             self.gui.registry(),
@@ -2621,5 +2621,8 @@ impl CounterAssets {
         );
         self.gui.defer_window_art(layers, &assets, textures);
         self.gui_assets = assets;
+        self.gui.missing_textures().into_iter().map(|(texture, why)| {
+            format!("{texture} does not load for the map-icon windows ({why}); what shows it draws nothing, as the game draws nothing.")
+        }).chain(self.gui.uncovered_note("Map-icon windows")).collect()
     }
 }

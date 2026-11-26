@@ -470,6 +470,7 @@ impl Held {
                 self.answered_sequence = self.at_sequence;
                 self.refused = None;
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
+                self.notes.extend(self.document.icons.combat.gui.window_warnings());
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
