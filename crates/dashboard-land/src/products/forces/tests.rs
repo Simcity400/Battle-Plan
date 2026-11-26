@@ -147,7 +147,7 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(after.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), vec!["FRA", "GER"]);
     let unknown = AirForceAt::reply(&at_hour(55), &grouped, &grouped_at(55)).unwrap();
     assert_eq!((unknown.rows.len(), unknown.missing.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is never a guess");
-    let mut ever = grouped.clone();
+    let mut ever = grouped;
     ever.group.as_mut().unwrap().membership = GroupMembership::Ever;
     let renamed = AirForceAt::reply(&at_hour(40), &ever, &grouped_at(40)).unwrap();
     assert!(renamed.rows.iter().any(|row| row.slot == Some(1) && row.tag == "DDR" && row.total == Some(50)));
