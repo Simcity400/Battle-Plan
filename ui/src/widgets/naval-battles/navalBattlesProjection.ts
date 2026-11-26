@@ -20,6 +20,25 @@ export interface NavalBattleSubject {
   readonly sides: ReturnType<typeof resolveIdentity>[][];
 }
 
+export interface NavalBattleClock {
+  readonly liveEnd: number | null;
+  readonly live: readonly (readonly [number, number])[];
+  readonly span: { readonly first: number; readonly last: number } | null;
+  readonly noteFrom: number | null;
+}
+
+export function navalBattleClock(row: NavalBattleLogRow, hour: number, firstHour: number, lastHour: number): NavalBattleClock {
+  const ongoing = row.result === 'ongoing';
+  const first = Math.max(row.hour, firstHour);
+  const liveEnd = ongoing ? hour : row.lastLiveHour;
+  const resultRead = row.detailId.startsWith('result:') && row.detailHour !== null;
+  const ending = ongoing || liveEnd === null ? null : resultRead ? Math.min(liveEnd + 1, row.detailHour!) : liveEnd + 1;
+  const end = ongoing ? hour : ending;
+  const span = end === null ? null : { first, last: Math.max(first, Math.min(end, hour, lastHour)) };
+  const noteFrom = span !== null && ending !== null && ending <= span.last ? ending : null;
+  return { liveEnd, live: liveEnd === null ? [] : [[first, Math.max(first, liveEnd)]], span, noteFrom };
+}
+
 function countValue(n: number | null, label: string, lowerBound?: string): Value<number> {
   if (n === null) return notRecorded(`${label} not recorded`);
   return lowerBound ? partialValue(n, lowerBound, { atLeast: true }) : knownValue(n);

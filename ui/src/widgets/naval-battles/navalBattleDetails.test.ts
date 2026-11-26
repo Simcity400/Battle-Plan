@@ -4,7 +4,7 @@ import { navalDetailTooltip, validateNavalBattleDetails } from './navalBattleDet
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
 import { ART_STATUS_ROW, deriveRowTooltip } from '../../families/table/model.ts';
-import { navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
+import { navalBattleClock, navalBattlesProjection, type NavalBattleSubject } from './navalBattlesProjection.ts';
 import type { NavalBattleDetail, NavalBattleLogRow, NavalBattlesTailReply } from '../../generated/dashboard';
 
 const detail: NavalBattleDetail = { id: 'result:15', hour: 43, rosterHour: 8,
@@ -83,6 +83,16 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
   assert.equal(row.live, true);
   assert.deepEqual(JSON.parse(row.tooltipScrollId!), ['test', 'combat:9:10', 15]);
   assert.deepEqual(JSON.parse(project(false).tooltipScrollId!), ['test', 'combat:9:10', 18]);
+});
+
+test('a naval battle plays its live hours and reaches its end note, also when its result is read at the last recorded hour', () => {
+  const row: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
+    readHour: 10, detailId: 'result:5', detailHour: 10, lastLiveHour: 10, endSeen: false, shipsSunk: [1, 0], convoysSunk: [0, 0], icLost: [5, 0], ships: [3, 2], convoys: [0, 0], result: 'attackerWon' };
+  assert.deepEqual(navalBattleClock(row, 10, 0, 10), { liveEnd: 10, live: [[10, 10]], span: { first: 10, last: 10 }, noteFrom: 10 });
+  assert.deepEqual(navalBattleClock({ ...row, detailHour: 25, lastLiveHour: 19 }, 40, 0, 40), { liveEnd: 19, live: [[10, 19]], span: { first: 10, last: 20 }, noteFrom: 20 });
+  assert.deepEqual(navalBattleClock({ ...row, detailId: 'combat:9:10', detailHour: 19, lastLiveHour: 19, endSeen: true, result: 'unknown' }, 40, 0, 40).noteFrom, 20);
+  assert.deepEqual(navalBattleClock({ ...row, result: 'ongoing', lastLiveHour: null }, 14, 0, 40), { liveEnd: 14, live: [[10, 14]], span: { first: 10, last: 14 }, noteFrom: null });
+  assert.equal(navalBattleClock({ ...row, lastLiveHour: null }, 40, 0, 40).span, null);
 });
 
 test('convoy-only sides show convoy counts and live zero sinkings stay qualified as partial lower bounds', () => {

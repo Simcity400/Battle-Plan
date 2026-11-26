@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type ReactNode, type RefObject } from 'react';
-import { BattleGameWindow, BattleViewer, type BattleSpan, type BattleView } from '../../components/BattleViewer.tsx';
+import { BattleGameWindow, BattleViewer, type BattleView } from '../../components/BattleViewer.tsx';
 import type { BattleClock } from '../../components/battleClock.ts';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { formatDateRange, formatDateTime, formatDay } from '../../dashboard/calendar';
@@ -8,7 +8,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useKeyLabelsAt, useKeyTagsAt } from '../../dashboard/useKeyTagsAt.ts';
 import { mirrorRowSelector } from '../../families/host/mirror.ts';
-import type { NavalBattleSubject } from './navalBattlesProjection.ts';
+import { navalBattleClock, type NavalBattleSubject } from './navalBattlesProjection.ts';
 
 export interface OpenedNavalBattle {
   readonly scope: string;
@@ -19,7 +19,6 @@ export interface OpenedNavalBattle {
 const ROLES = ['Attacker', 'Defender'] as const;
 const VIEWS: readonly BattleView[] = ['battle'];
 const NO_RESULT = 'The game keeps a winner only for battles a player takes part in.';
-const NO_LIVE: readonly (readonly [number, number])[] = [];
 
 function Side({ runtime, track, index, slots, hour }: {
   readonly runtime: WidgetRuntime;
@@ -60,13 +59,9 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const { row } = subject;
   const ongoing = row.result === 'ongoing';
   const resultRead = row.detailId.startsWith('result:') && row.detailHour !== null;
-  const first = Math.max(row.hour, track.branch.firstHour);
-  const liveEnd = ongoing ? opened.hour : row.lastLiveHour;
-  const ending = ongoing || liveEnd === null ? null : liveEnd + 1;
-  const end = ongoing ? opened.hour : ending;
-  const live = useMemo<readonly (readonly [number, number])[]>(() => liveEnd === null ? NO_LIVE : [[first, Math.max(first, liveEnd)]], [first, liveEnd]);
-  const span = useMemo<BattleSpan | null>(() => end === null ? null : { first, last: Math.max(first, Math.min(end, opened.hour, track.branch.lastHour)) },
-    [end, first, opened.hour, track.branch.lastHour]);
+  const { liveEnd, live, span, noteFrom } = useMemo(() => navalBattleClock(row, opened.hour, track.branch.firstHour, track.branch.lastHour),
+    [row, opened.hour, track.branch.firstHour, track.branch.lastHour]);
+  const first = span?.first ?? Math.max(row.hour, track.branch.firstHour);
   const leadSlot = row.countries[0][0];
   const leadKeys = useMemo(() => leadSlot === undefined ? [] : [countryKey(leadSlot)], [leadSlot]);
   const leadHour = useCallback(() => row.countriesHour[0], [row]);
@@ -75,20 +70,19 @@ export default function NavalBattleWindow({ opened, track, runtime, anchor, onCl
   const lead = leadSlot !== undefined && leadTag ? { slot: leadSlot, tag: leadTag } : null;
   const combat = row.key.startsWith('combat:') ? row.key.split(':')[1] ?? null : null;
   const result = row.result === 'attackerWon' ? 'Attacker won' : row.result === 'defenderWon' ? 'Defender won' : null;
-  const shownEnd = ongoing ? opened.hour : resultRead ? row.detailHour : row.endSeen ? ending : liveEnd;
+  const shownEnd = ongoing ? opened.hour : resultRead ? row.detailHour : row.endSeen && liveEnd !== null ? liveEnd + 1 : liveEnd;
   const day = <span className="bv-when"><time>{shownEnd !== null ? formatDateRange(row.hour, shownEnd) : formatDay(row.hour)}</time></span>;
   const unplayable = <span className="bv-missing" data-tooltip="The recording does not give this battle's last hour." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />End not recorded</span>;
 
   const battle = (hour: number, clock: BattleClock | null): ReactNode => {
-    const finished = !ongoing && span !== null && ending !== null && liveEnd !== null && ending <= span.last;
-    const until = finished ? Math.max(span.first, liveEnd) : null;
+    const until = noteFrom !== null && span !== null && liveEnd !== null ? Math.max(span.first, liveEnd) : null;
     const headline = resultRead ? `The battle’s result was recorded on ${formatDay(row.detailHour!)}.`
-      : row.endSeen ? `The battle ended on ${formatDay(ending!)}.`
+      : row.endSeen ? `The battle ended on ${formatDay(liveEnd! + 1)}.`
         : `The battle was last recorded on ${formatDateTime(liveEnd!)}; the recording does not show when it ended.`;
     const winner = result ? <span>{result}</span>
       : resultRead ? <span className="bv-missing" data-tooltip="The recorded result names no winning side." tabIndex={0}><i className="bv-hatch" aria-hidden="true" />No winner recorded</span>
         : <span className="bv-missing" data-tooltip={NO_RESULT} tabIndex={0}><i className="bv-hatch" aria-hidden="true" />Result not recorded</span>;
-    const ended = finished && hour >= ending ? <div className="bv-battle"><div className="bv-battle-note">
+    const ended = until !== null && hour >= noteFrom! ? <div className="bv-battle"><div className="bv-battle-note">
       <strong>{headline}</strong>{winner}
     </div></div> : null;
     if (!combat || !lead || !clock) return ended ?? <div className="bv-battle"><div className="bv-battle-note">
