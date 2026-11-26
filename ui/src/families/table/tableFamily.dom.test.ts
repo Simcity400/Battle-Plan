@@ -13,6 +13,8 @@ test('table family plays live with zero React commits, zero layout reads on inst
       playingDuringAdvance: boolean;
       playingBeforePause: boolean;
       beforePauseTop: string | null;
+      beforePauseHeld: string | null;
+      beforePauseMirrorHour: string | null;
       pendingTimersBeforePause: number;
       pendingTimersAfterPause: number;
       timerFiredBeforePause: number;
@@ -26,14 +28,16 @@ test('table family plays live with zero React commits, zero layout reads on inst
       finalHour: number | null;
       mirrorRows: { key: string | null; cells: (string | null)[] }[];
     }>('playLive(22)');
-    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, pendingBefore=${played.pendingTimersBeforePause}, pendingAfter=${played.pendingTimersAfterPause}, timerFired=${played.timerFiredBeforePause}/${played.timerFiredAfterPause}, flushedOnPause=${played.flushedOnPause}`);
+    t.diagnostic(`live playback: ${played.commits} commits, ${played.totalInstallReads} play reads, ${played.pauseInstallReads} pause reads, ${played.installs} installs, beforePauseTop=${played.beforePauseTop}, beforePauseHeld=${played.beforePauseHeld}, pendingBefore=${played.pendingTimersBeforePause}, pendingAfter=${played.pendingTimersAfterPause}, timerFired=${played.timerFiredBeforePause}/${played.timerFiredAfterPause}, flushedOnPause=${played.flushedOnPause}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during frame advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
-    assert.equal(played.beforePauseTop, null, 'S8: while its cadence is held, the outdated GER mirror is withheld, not left exposed (R2-S6)');
-    assert.ok(played.pendingTimersBeforePause > 0, 'S8: trailing flush timer was armed and held before pause');
-    assert.equal(played.timerFiredBeforePause, 0, 'S8: trailing timer did not fire before pause');
-    assert.equal(played.timerFiredAfterPause, 0, 'S8: pause flushed the mirror without the trailing timer firing');
-    assert.equal(played.pendingTimersAfterPause, 0, 'S8: pause cancelled the pending trailing timer');
+    assert.equal(played.beforePauseTop, 'GER', 'S8: unfocused playback keeps pre-playback mirror rows intact without DOM thrashing');
+    assert.equal(played.beforePauseHeld, 'stale', 'S8: unfocused playback marks the deferred mirror stale');
+    assert.equal(played.beforePauseMirrorHour, '10', 'S8: deferred mirror preserves its pre-playback data-mirror-hour');
+    assert.equal(played.pendingTimersBeforePause, 0, 'S8: unfocused playback arms zero mirror cadence timers');
+    assert.equal(played.timerFiredBeforePause, 0, 'S8: no mirror cadence timer fired before pause');
+    assert.equal(played.timerFiredAfterPause, 0, 'S8: pause flushed the mirror without any cadence timer');
+    assert.equal(played.pendingTimersAfterPause, 0, 'S8: no pending timers remain after pause');
     assert.equal(played.commits, 0, `zero React commits across live playback with unchanged structure: ${played.commits}`);
     assert.equal(played.totalInstallReads, 0, `zero layout/style reads during live playback install: ${played.totalInstallReads}`);
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);
@@ -51,11 +55,11 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.ok(played.mirrorRows.at(-1)?.cells.some(c => c?.includes('Not recorded: ENG factories not recorded')), 'mirror speaks missing reason');
 
     const parked = await act<{ key: string; withheld: boolean; parked: boolean; returned: boolean; restored: string | null; afterDown: string | null }>('focusAcrossWithheldMirror()');
-    assert.equal(parked.withheld, true, 'R4-S2: playback with a held cadence withholds the mirror and clears its rows');
-    assert.equal(parked.parked, true, 'R4-S2: clearing the mirror under a focused row parks focus on the table, not the document');
-    assert.equal(parked.returned, true, 'R4-S2: pausing brings the mirror rows back');
-    assert.equal(parked.restored, parked.key, `R4-S2: the table still owns focus, so the focused row ${parked.key} gets it back`);
-    assert.ok(parked.afterDown !== null && parked.afterDown !== parked.key, `R4-S2: ArrowDown still reaches the table (${parked.afterDown})`);
+    assert.equal(parked.withheld, true, 'R4-S2: a focused table keeps its mirror live during playback');
+    assert.equal(parked.parked, true, 'R4-S2: keyboard focus stays on the focused row during playback without stale hold');
+    assert.equal(parked.returned, true, 'R4-S2: mirror rows remain present on pause');
+    assert.equal(parked.restored, parked.key, `R4-S2: focus stays on row ${parked.key}`);
+    assert.ok(parked.afterDown !== null && parked.afterDown !== parked.key, `R4-S2: ArrowDown moves focus off ${parked.key} (${parked.afterDown})`);
 
     const heldCheck = await act<{ pixelsChanged: boolean; dim: boolean; held: boolean; recovered: boolean; through: number | null; expectedThrough: number }>('verifyRepaintAndHeld()');
     assert.equal(heldCheck.pixelsChanged, true, 'same-layout value change repaints canvas pixels');

@@ -188,7 +188,7 @@ test('a held model ends where a bounded series it was given ends, even while its
   }
 });
 
-test('a dirty mirror or tooltip arms one wake per boundary, never one per hour', () => {
+test('an unfocused mirror arms zero playback timers and synchronises on seek, focus or pause', () => {
   reset();
   const set: number[] = [];
   const pending: (() => void)[] = [];
@@ -200,12 +200,60 @@ test('a dirty mirror or tooltip arms one wake per boundary, never one per hour',
   const recording = installRecordingCanvas();
   try {
     const lane = driveLane(createLaneView(family, () => { wakes++; }, { timers }), recording.canvases);
-    lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12, speed: 24, inspect: 'A' });
-    assert.equal(set.length, 0, 'the first paint emits at once');
-    for (let hour = 20; hour < 60; hour += 10) lane.paint({ label: `hour ${hour}`, binding: binding(rowsAt([{ key: 'A', v: hour }])), hour, speed: 24, inspect: 'A' });
-    assert.equal(set.length, 1, 'several changed hours inside one cadence arm one timer');
-    pending[0]!();
-    assert.equal(wakes, 1);
+    const first = lane.paint({ label: 'first', binding: binding(rowsAt([{ key: 'A', v: 1 }])), hour: 12, speed: 24, seek: 1, inspect: 'A' });
+    assert.deepEqual(first.fields.mirror?.value, ['A 1'], 'the first paint emits its initial mirror at once');
+    assert.equal(set.length, 0, 'the first paint arms no timer');
+    for (let hour = 20; hour < 60; hour += 10) {
+      const played = lane.paint({ label: `hour ${hour}`, binding: binding(rowsAt([{ key: 'A', v: hour }])), hour, speed: 24, seek: 1, inspect: 'A' });
+      assert.equal(played.fields.mirror, undefined, 'unfocused played hours defer mirror derivation');
+    }
+    assert.equal(set.length, 0, 'unfocused played hours arm zero cadence timers');
+    assert.equal(wakes, 0);
+    const sought = lane.paint({ label: 'seek', binding: binding(rowsAt([{ key: 'A', v: 60 }])), hour: 60, speed: 24, seek: 2, inspect: 'A' });
+    assert.deepEqual(sought.fields.mirror?.value, ['A 60'], 'a seek settles the mirror once');
+    const focused = lane.paint({ label: 'focused', binding: binding(rowsAt([{ key: 'A', v: 70 }]), { order: 'down' }, { focusedKey: 'A' }), hour: 70, speed: 24, seek: 2, inspect: 'A' });
+    assert.deepEqual(focused.fields.mirror?.value, ['A 70'], 'focusing updates the mirror live during playback');
+    const paused = lane.paint({ label: 'paused', binding: binding(rowsAt([{ key: 'A', v: 80 }])), hour: 80, speed: 0, seek: 2, inspect: 'A' });
+    assert.deepEqual(paused.fields.mirror?.value, ['A 80'], 'pausing flushes the mirror immediately');
+
+    const switchedOwner = lane.paint({ label: 'owner-switch', binding: binding(rowsAt([{ key: 'B', v: 1 }])), hour: 90, speed: 24, seek: 2, owner: 'owner-2' });
+    assert.deepEqual(switchedOwner.fields.mirror?.value, ['B 1'], 'switching owner at the same seek publishes the new owner’s initial mirror');
+    const afterSwitch = lane.paint({ label: 'after-switch', binding: binding(rowsAt([{ key: 'B', v: 2 }])), hour: 100, speed: 24, seek: 2, owner: 'owner-2' });
+    assert.equal(afterSwitch.fields.mirror, undefined, 'played frames after owner switch resume deferring');
+    const requested = lane.paint({ label: 'mirror-request', binding: binding(rowsAt([{ key: 'B', v: 3 }]), DOWN, { mirrorRequest: 1 }), hour: 110, speed: 24, seek: 2, owner: 'owner-2' });
+    assert.deepEqual(requested.fields.mirror?.value, ['B 3'], 'host mirrorRequest publishes a fresh mirror once at the same seek');
+    const afterRequest = lane.paint({ label: 'after-request', binding: binding(rowsAt([{ key: 'B', v: 4 }]), DOWN, { mirrorRequest: 1 }), hour: 120, speed: 24, seek: 2, owner: 'owner-2' });
+    assert.equal(afterRequest.fields.mirror, undefined, 'played frames after mirrorRequest resume deferring');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('an empty mirror gaining its first row during playback and a refused widget recovering at the same seek both publish their mirror', () => {
+  reset();
+  let refuse = false;
+  const stateful: LaneFamily<Binding, Model, Layout> = {
+    ...family,
+    status: () => (refuse ? { refused: 'temporarily unavailable' } : 'picture'),
+  };
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(stateful, () => {}), recording.canvases);
+    const empty = lane.paint({ label: 'empty', binding: binding(rowsAt([])), hour: 10, speed: 24, seek: 1 });
+    assert.deepEqual(empty.fields.mirror?.value, [], 'initial empty mirror is emitted');
+    const firstRow = lane.paint({ label: 'first-row', binding: binding(rowsAt([{ key: 'E1', v: 1 }])), hour: 20, speed: 24, seek: 1 });
+    assert.deepEqual(firstRow.fields.mirror?.value, ['E1 1'], 'transition from empty mirror to first row publishes a focusable mirror during playback');
+    const secondRow = lane.paint({ label: 'second-row', binding: binding(rowsAt([{ key: 'E1', v: 1 }, { key: 'E2', v: 2 }])), hour: 30, speed: 24, seek: 1 });
+    assert.equal(secondRow.fields.mirror, undefined, 'subsequent rows once populated defer during unfocused playback');
+
+    refuse = true;
+    const refused = lane.paint({ label: 'refused', binding: binding(rowsAt([{ key: 'E1', v: 1 }])), hour: 40, speed: 24, seek: 1 });
+    assert.equal(refused.mode, 'refused');
+    refuse = false;
+    const recovered = lane.paint({ label: 'recovered', binding: binding(rowsAt([{ key: 'E1', v: 9 }])), hour: 50, speed: 24, seek: 1 });
+    assert.deepEqual(recovered.fields.mirror?.value, ['E1 9'], 'recovery from refusal at the same seek publishes a fresh mirror');
+    const afterRecovery = lane.paint({ label: 'after-recovery', binding: binding(rowsAt([{ key: 'E1', v: 10 }])), hour: 60, speed: 24, seek: 1 });
+    assert.equal(afterRecovery.fields.mirror, undefined, 'subsequent played frames after recovery resume deferring');
   } finally {
     recording.restore();
   }

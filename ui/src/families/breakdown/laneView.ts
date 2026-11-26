@@ -1,6 +1,5 @@
 import { canvasMeasureText } from '../../charts/textWidth.ts';
 import { collectArtUrls } from '../art/provider.ts';
-import type { MirrorModel } from '../contract.ts';
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
 import type { BreakdownViewOptions } from './declaration.ts';
@@ -12,7 +11,7 @@ import {
 } from './model.ts';
 import { hitTestBreakdown, layoutBreakdown, type BreakdownLayout } from './layout.ts';
 import { drawBreakdown } from './painter.ts';
-import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
+import { deriveBreakdownAudit, deriveBreakdownMirror, deriveBreakdownNav } from './structure.ts';
 
 export interface FamilyBreakdownBinding<TOptions extends BreakdownViewOptions = BreakdownViewOptions> extends LaneBinding<TOptions> {
   readonly family: 'breakdown';
@@ -26,7 +25,6 @@ interface BreakdownFrameLayout {
   readonly layout: BreakdownLayout;
   readonly contentHeight: number;
   readonly nav: readonly FamilyNavTuple[];
-  readonly mirror: MirrorModel;
 }
 
 const drawnArt = new WeakMap<BreakdownFrameLayout, readonly string[]>();
@@ -63,8 +61,8 @@ export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, B
       userExpanded: binding.expanded,
       measure: canvasMeasureText(measure),
     });
-    const { nav, mirror } = deriveBreakdownNavAndMirror(layout, level.total);
-    return { level, layout, contentHeight: layout.contentHeight, nav, mirror };
+    const nav = deriveBreakdownNav(layout);
+    return { level, layout, contentHeight: layout.contentHeight, nav };
   },
   paint(ctx, frame) {
     drawBreakdown(ctx, {
@@ -98,7 +96,7 @@ export const breakdownLane: LaneFamily<FamilyBreakdownBinding, BreakdownModel, B
       nav: layout.nav,
     };
   },
-  mirror: frame => frame.layout.mirror,
+  mirror: frame => deriveBreakdownMirror(frame.layout.layout, frame.layout.level.total),
   audit: frame => deriveBreakdownAudit(frame.model, frame.layout.layout),
   visibleArt: frame => drawnArtOf(frame.layout),
 };
