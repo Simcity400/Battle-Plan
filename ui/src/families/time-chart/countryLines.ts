@@ -194,7 +194,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const tags = tileHeads
         ? [...tileHeads].sort(([a, left], [b, right]) => {
             if (left && right) return right.value - left.value || compareTags(a, b);
-            return left ? -1 : right ? 1 : compareTags(a, b);
+            return left ? -1 : right ? 1 : 0;
           }).map(([tag]) => tag)
         : top ? [...(population?.rows.keys() ?? [])] : options.tags;
       if (top && (drawn !== undefined || population !== null) && tags.length === 0) {
@@ -215,11 +215,15 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const presentSet = new Set(present);
       const ranking = rankedOrder(readView, present);
       const ordered = [...ranking.order, ...tags.filter(tag => !presentSet.has(tag))];
+      const colouredCount = tileHeads
+        ? ordered.slice(0, COLOURED).filter(tag => presentSet.has(tag) && tileHeads.get(tag)).length
+        : COLOURED;
       const looks = unnamedLooks(countrySeriesLooks(ordered, readView, {
         holders: options.holders,
         from: options.extent[0],
         surface: options.surface,
         withFlag: true,
+        colouredCount,
         tailColor: tailColour(options.surface),
       }), population?.unnamed ?? ranking.unnamed, hour, population?.tags);
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
@@ -230,7 +234,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const format = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format, options.digits);
       const recorded = (reading: KnownHeadReading) => formatCountryReading(reading, spec.format === 'percent' ? 'percent' : 'number', spec.format === 'percent' ? null : options.decimals);
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
-        const isTail = rank >= COLOURED;
+        const isTail = rank >= colouredCount;
         const bounded = drawn?.get(tag) ?? null;
         const headKey = { tag, rankRow: population?.rows.get(tag) };
         const reading = presentSet.has(tag) ? headReading(readView, 'main', headKey, options.decimals) ?? tileHeads?.get(tag) ?? null : undefined;

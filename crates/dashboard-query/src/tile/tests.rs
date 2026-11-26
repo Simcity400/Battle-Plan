@@ -497,7 +497,22 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     for (asked_at, expected) in [(FIRST + 2 * UNIT_HOURS, (FIRST, ITA_FROM - 1)), (ITA_FROM + 2 * UNIT_HOURS, (ITA_FROM, LONG_SECOND - GAP - 1))] {
         let request = serde_json::json!({ "binHours": bin_hours, "index": i64::from(asked_at).div_euclid(BINS as i64 * bin_hours), "top": 2, "hour": asked_at });
         let ranking = reply(&other, "1", &request, &|| Ok(())).unwrap().ranking.unwrap();
-        assert_eq!((ranking.from, ranking.until), expected, "the measured zeroes hold until another country enters or the recording stops");
+        assert_eq!((ranking.from, ranking.until), expected, "the set holds through measured zeroes and a reordering until a country enters or the recording stops");
+    }
+    for least in [false, true] {
+        let change = if least { COMMAND_TIE + 1 } else { COMMAND_TIE };
+        for (at, expected) in [
+            (change - 2 * UNIT_HOURS, (if least { FIRST } else { COMMAND_FROM }, change - 1)),
+            (change + 2 * UNIT_HOURS, (change, LONG_SECOND - GAP - 1)),
+        ] {
+            let request = serde_json::json!({ "binHours": bin_hours, "index": i64::from(at).div_euclid(BINS as i64 * bin_hours), "top": 1, "least": least, "hour": at });
+            let ranking = reply(&other, "1", &request, &|| Ok(())).unwrap().ranking.unwrap();
+            assert_eq!((ranking.from, ranking.until), expected, "the one-hour tie at the bucket edge belongs to the first tag (least {least}, asked {at})");
+            let winner = other.rank_at(at, 1, least).unwrap().unwrap();
+            for hour in expected.0..=expected.1 {
+                assert_eq!(other.rank_at(hour, 1, least).unwrap().unwrap(), winner, "rank at {hour}, least {least}");
+            }
+        }
     }
     let hour = FIRST + 24;
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);

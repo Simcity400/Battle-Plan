@@ -29,6 +29,8 @@ pub const SECOND: i32 = FIRST + FIRST_HOURS + GAP;
 pub const SECOND_HOURS: i32 = UNIT_HOURS;
 pub const LAST: i32 = SECOND + SECOND_HOURS - 1;
 pub const ITA_FROM: i32 = FIRST + 5_000;
+pub const COMMAND_FROM: i32 = ITA_FROM + UNIT_HOURS;
+pub const COMMAND_TIE: i32 = (ITA_FROM / 96 + 30) * 96 - 1;
 pub const GAP_REASON: &str = "The game was not recorded here";
 pub const TAGS: [&str; 2] = ["GER", "ITA"];
 
@@ -142,6 +144,12 @@ fn country_rows(frame: &mut Synthetic, hour: i32, with_power: bool) -> io::Resul
             canonical_slot,
             tag: tag_of(id).as_bytes().to_vec(),
             political_power_raw: if with_power { power(id, hour) } else { None },
+            command_power_raw: match (id, hour) {
+                _ if !with_power || hour < COMMAND_FROM => 0,
+                (9001, _) | (_, COMMAND_TIE) => 1,
+                _ if hour < COMMAND_TIE => 2,
+                _ => 0,
+            },
             ..CountryRow::default()
         })
         .collect();

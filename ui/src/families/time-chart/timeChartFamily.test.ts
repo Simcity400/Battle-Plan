@@ -1508,6 +1508,7 @@ describe('several countries, one measure', () => {
       boundTiledSeries(makeTiledLine(tag, [makeBucket(base, last, value)]), displayedHour(hour));
     const named = new Map([
       ['A07', bounded('A07', 7000)], ['A01', bounded('A01', 1000)], ['A03', bounded('A03', 3000)],
+      ['A06', bounded('A06', 12000, hour + 45)],
       ['A02', bounded('A02', 9000, hour - 1)],
     ]);
     const hovers = new Map([['hover', { hour: base + 10, data: { states: [
@@ -1516,9 +1517,13 @@ describe('several countries, one measure', () => {
       { country: 'A03', hour: base + 10, run: null, missing: 'Country did not exist' },
     ] } }]]);
     const model = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', named]]), hovers }),
-      { tags: [], top: 4, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
-    assert.deepEqual(model.series.map(s => s.id), ['A07', 'A03', 'A01', 'A02'], 'the displayed hour orders the countries, and an earlier reading cannot rank');
-    assert.equal(model.series.at(-1)!.endLabel, null);
+      { tags: [], top: 5, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.deepEqual(model.series.map(s => s.id), ['A07', 'A03', 'A01', 'A06', 'A02'], 'only readings witnessed at the displayed hour determine rank');
+    for (const unknown of model.series.slice(3)) {
+      assert.equal(unknown.headValue, null);
+      assert.equal(unknown.endLabel, null);
+      assert.equal(unknown.role, 'tail');
+    }
     assert.equal(model.series.find(s => s.id === 'A07')!.exact, null);
     assert.deepEqual(model.series.find(s => s.id === 'A01')!.exact, { hour: base + 10, value: 1234, raw: 1234n, denominator: 1n });
     assert.deepEqual(model.series.find(s => s.id === 'A03')!.exact, { hour: base + 10, value: null, reason: 'Country did not exist' });
