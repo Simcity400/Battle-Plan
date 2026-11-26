@@ -1,9 +1,8 @@
 use super::{Election, IdeologyInfo, LeaderRun, PartOwnership, PartySeries, RulingRun, read, stack_order};
-use dashboard_base::{Source, test_fixtures::{CAMPAIGN, records, source}};
-use replay::campaign::Replay;
+use dashboard_base::{products::Product, test_fixtures::{source, source_with_mods, visual_mods::Machine}};
 use replay_data::rows::{CountryAppearanceRow, PoliticalPartyRow, PoliticsRow, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::atomic::AtomicBool;
 
 const FIRST: i32 = 100;
 const LAST: i32 = 130;
@@ -37,6 +36,9 @@ fn frame(hour: i32) -> DecodedFrame {
     } else {
         set(&mut frame, TableId::PoliticalParties, TableRows::PoliticalParties(parties));
     }
+    set(&mut frame, TableId::Characters, TableRows::Characters(vec![replay_data::rows::CharacterRow {
+        id: 701, name_token_id: -1, token: b"TEST_LEADER_NAME".to_vec(), ..Default::default()
+    }]));
     let look = CountryAppearanceRow { country: GER, leader_ideology: b"liberalism".to_vec(), leader_character: (hour >= 105).then_some(701), ..Default::default() };
     set(&mut frame, TableId::CountryAppearance, TableRows::CountryAppearance(vec![look]));
     let date = match hour {
@@ -49,17 +51,19 @@ fn frame(hour: i32) -> DecodedFrame {
     frame
 }
 
-fn recording() -> Source {
-    let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
-    Source::from_replay(dashboard_base::SourceKey { source_id: "parties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
-}
-
 #[test]
 fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_bridge_a_gap() {
-    let source = recording();
+    let machine = Machine::new("ruling-party-marker-names");
+    machine.write("common/defines/base.lua", b"NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write_mod("probe", "localisation/test_l_english.yml", "\u{feff}l_english:\n TEST_LEADER_NAME:0 \"A\u{a4}B\"\n".as_bytes());
+    let (source, load) = source_with_mods((FIRST..=LAST).map(frame).collect(), &machine.root, &["mod/probe.mod"]);
     let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let parties = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
+    let parties = read(&query, &"GER".into(), super::PartyRead::Full, &AtomicBool::new(false)).unwrap();
+    let ruling_only = read(&query, &"GER".into(), super::PartyRead::Ruling, &AtomicBool::new(false)).unwrap();
+    assert_eq!(parties.ruling.runs, ruling_only.ruling.runs);
+    assert_eq!(parties.ruling.name_runs, ruling_only.ruling.name_runs);
+    assert_eq!(parties.unobserved, ruling_only.unobserved);
+    assert!(ruling_only.leaders.is_empty() && ruling_only.people.is_empty() && ruling_only.elections.is_empty());
     let owned = |part, first_hour, last_hour| PartOwnership { part, first_hour, last_hour };
     assert_eq!(parties.parties["democratic"].parts, [owned(1, 100, 114), owned(1, 116, 123), owned(1, 126, 127)], "a part is owned only over the hours it was read");
     assert_eq!(parties.parties["communism"].parts, [owned(1, 128, LAST)], "a reused part id belongs to its new token only from its first reading");
@@ -79,15 +83,27 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert_eq!(parties.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(115, 115), (124, 125)]);
     assert_eq!(parties.ruling.name_runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>(), [(100, 109), (110, 114), (116, 123), (126, LAST)]);
     assert!(parties.ruling.namings.iter().all(|(naming, _)| naming.key.is_none() && naming.tag.as_deref() == Some("GER")));
-    let (_stack, recorded, load) = dashboard_base::test_fixtures::recorded_mod_defines(
-        "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
-        "",
-        &[],
-    );
-    let politics = super::politics_content(&recorded, load.content().unwrap()).unwrap();
+    let politics = super::politics_content(&source, load.content().unwrap()).unwrap();
     let params = dashboard_base::products::CountryParams { branch_id: "1".into(), country: "GER".into() };
-    let reply = super::present(Ok(&politics), &params, "GER", &parties, &AtomicBool::new(false)).unwrap();
-    assert!(reply.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
+    let reply = dashboard_text::catalogue::own_refusals(&mut Default::default(), || {
+        super::present(Ok(&politics), &params, "GER", &parties, &AtomicBool::new(false))
+    }).unwrap();
+    let narrow = dashboard_text::catalogue::own_refusals(&mut Default::default(), || super::present_ruling(Ok(&politics), "GER", &ruling_only));
+    let leader_warning = "1 texts are not shown: localisation TEST_LEADER_NAME holds the control byte 0x14 (an authored `\u{a4}`), which plain text cannot show; TEST_LEADER_NAME";
+    let (leader, marker): (Vec<_>, Vec<_>) = reply.warnings.iter().map(String::as_str).partition(|warning| *warning == leader_warning);
+    assert_eq!(leader, [leader_warning]);
+    assert_eq!(narrow.warnings, marker);
+    assert_eq!(narrow.runs, reply.ruling);
+    assert_eq!(narrow.unobserved, reply.unobserved);
+    assert_eq!(narrow.ideologies, reply.ideologies);
+    assert!(narrow.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
+    let marker_params = crate::products::stability_markers::StabilityMarkersParams { branch_id: "1".into(), country: "GER".into(), hour: LAST, focus: false, government: true, wars: false, factions: false };
+    let markers = dashboard_text::catalogue::own_refusals(&mut Default::default(), || {
+        crate::products::stability_markers::StabilityMarkers::load(&source, &marker_params, &load, &AtomicBool::new(false))
+    }).unwrap();
+    assert!(markers.markers.iter().any(|marker| marker.id.starts_with("party:")));
+    assert!(markers.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
+    assert!(!markers.warnings.iter().any(|warning| warning == leader_warning));
 }
 
 #[test]
