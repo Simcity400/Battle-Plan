@@ -2873,6 +2873,7 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
     assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future run beyond requested hour never injects an early gap');
     assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before run 2');
     assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the run gap');
 
     const futureBucketTiled: TiledLine = {
       tag: 'FB', head: 'h', decimals: 0,
@@ -2894,6 +2895,52 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
     assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future bucket beyond requested hour never injects an early gap');
     assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before bucket 2');
     assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the bucket lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the bucket gap');
+
+    const clippedRunTiled: TiledLine = {
+      tag: 'CR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936 + 10, value: 15 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const clippedAt4 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 4));
+    const clippedAt5 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt4 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 4, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 5, H1936 + 6],
+      'clipped tail run endpoint never becomes a permanent cached row',
+    );
+
+    const nullWithMissingTiled: TiledLine = {
+      tag: 'NM', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 11, width: 1, buckets: [null], tiles: { binHours: 12, valueAt: () => null } },
+      missing: [
+        { firstHour: H1936, lastHour: H1936, reason: 'gap0' },
+        { firstHour: H1936 + 3, lastHour: H1936 + 3, reason: 'gap3' },
+      ],
+      parts: [], marks: null,
+    };
+    const nmAt1 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 1));
+    const nmAt5 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt1 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 3, H1936 + 6],
+      'all-null bucket never hides a newly visible missing span',
+    );
 
     const withinTiled: TiledLine = {
       tag: 'W', head: 'h', decimals: 0,
@@ -2951,5 +2998,33 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
     denseReads = 0;
     stepDenseWith(nullTiled, nCur, H1936 + 999);
     assert.ok(denseReads < 40, `all-null band does not force dense band resample (reads=${denseReads})`);
+
+    const trailingNullTiled: TiledLine = {
+      tag: 'TN', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 1004,
+        width: 1005,
+        buckets: [makeBucket(H1936, H1936, 7), ...Array.from({ length: 999 }, () => null), makeBucket(H1936 + 1000, H1936 + 1000, 9), ...Array.from({ length: 4 }, () => null)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const tnCur = new BoundedSeriesCursor();
+    const stepTrailing = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'tn', key: 'tn', name: 'TN', color: LANE_THEME.amber, parts: [{ series: tnCur.advance(trailingNullTiled, h, { headValue: knownValue(7) }), within: [[H1936, H1936]] }], head: { value: 7 } },
+    ], h);
+    stepTrailing(H1936 + 998);
+    denseReads = 0;
+    stepTrailing(H1936 + 999);
+    assert.ok(denseReads < 40, `trailing nulls after early observation do not force dense band resample (reads=${denseReads})`);
+    const wakeCached = stepTrailing(H1936 + 1001);
+    const wakeUncached = (() => {
+      timeChartCacheState.enabled = false;
+      try { return stepTrailing(H1936 + 1001); }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(wakeCached, wakeUncached, 'waking up after trailing nulls matches uncached');
   });
 });

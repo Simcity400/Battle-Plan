@@ -913,9 +913,8 @@ interface CachedStackPart {
   readonly within: readonly (readonly [number, number])[] | null;
   scannedClosed: number;
   prevLast: number;
-  lastNonNullClosedIdx: number;
-  checkedClosedLen: number;
   nextMissingIdx: number;
+  straddlingBucketIdx: number;
   tailRunActive: boolean;
   tailRunIdx: number;
   tailRunFirst: number;
@@ -934,7 +933,6 @@ interface CachedBoundedStack {
   hasClosedPrefix: boolean;
   closedThrough: number;
   lastHour: number;
-  shared: boolean;
   hours: number[];
   valuesByBand: (number | null)[][];
   outsideByBand: (boolean[] | null)[];
@@ -999,9 +997,8 @@ function createStackCacheEntry(inputs: readonly BoundedStackBandInput[]): Cached
         within: part.within !== undefined ? part.within.map(([a, b]) => [a, b] as const) : null,
         scannedClosed: 0,
         prevLast: -Infinity,
-        lastNonNullClosedIdx: -1,
-        checkedClosedLen: 0,
         nextMissingIdx: 0,
+        straddlingBucketIdx: -1,
         tailRunActive: false,
         tailRunIdx: -1,
         tailRunFirst: 0,
@@ -1016,7 +1013,6 @@ function createStackCacheEntry(inputs: readonly BoundedStackBandInput[]): Cached
     hasClosedPrefix: false,
     closedThrough: -Infinity,
     lastHour: -Infinity,
-    shared: false,
     hours: [],
     valuesByBand: inputs.map(() => []),
     outsideByBand: inputs.map(() => null),
@@ -1027,7 +1023,6 @@ function resetStackCacheEntry(entry: CachedBoundedStack): void {
   entry.hasClosedPrefix = false;
   entry.closedThrough = -Infinity;
   entry.lastHour = -Infinity;
-  entry.shared = false;
   entry.hours = [];
   for (let b = 0; b < entry.bands.length; b++) {
     entry.valuesByBand[b] = [];
@@ -1035,9 +1030,8 @@ function resetStackCacheEntry(entry: CachedBoundedStack): void {
     for (const part of entry.bands[b]!.parts) {
       part.scannedClosed = 0;
       part.prevLast = -Infinity;
-      part.lastNonNullClosedIdx = -1;
-      part.checkedClosedLen = 0;
       part.nextMissingIdx = 0;
+      part.straddlingBucketIdx = -1;
       part.tailRunActive = false;
       part.tailRunIdx = -1;
       part.tailRunMinLast = -Infinity;
@@ -1045,15 +1039,58 @@ function resetStackCacheEntry(entry: CachedBoundedStack): void {
   }
 }
 
-function detachSharedStackPrefix(entry: CachedBoundedStack): void {
-  if (!entry.shared) return;
-  entry.hours = entry.hours.slice();
-  for (let b = 0; b < entry.valuesByBand.length; b++) {
-    entry.valuesByBand[b] = entry.valuesByBand[b]!.slice();
-    const out = entry.outsideByBand[b];
-    if (out) entry.outsideByBand[b] = out.slice();
+function hasHourSorted(sorted: readonly number[], target: number): boolean {
+  let lo = 0;
+  let hi = sorted.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const v = sorted[mid]!;
+    if (v === target) return true;
+    if (v < target) lo = mid + 1;
+    else hi = mid - 1;
   }
-  entry.shared = false;
+  return false;
+}
+
+function computeStackClosedThrough(
+  entry: CachedBoundedStack,
+  inputs: readonly BoundedStackBandInput[],
+  hour: number,
+): number {
+  const maxClosed = Math.floor(hour) - 1;
+  let closedThrough = maxClosed;
+  for (let b = 0; b < inputs.length; b++) {
+    const input = inputs[b]!;
+    const cb = entry.bands[b]!;
+    for (let p = 0; p < input.parts.length; p++) {
+      const s = input.parts[p]!.series;
+      if (!s) continue;
+      const cp = cb.parts[p]!;
+      if (Number.isFinite(s.validInterval[1])) {
+        const validHi = Math.floor(s.validInterval[1]);
+        if (validHi < closedThrough) closedThrough = validHi;
+      }
+      const missingTail = s.missing.tail;
+      if (missingTail && missingTail.firstHour <= maxClosed && missingTail.lastHour < closedThrough) {
+        closedThrough = missingTail.lastHour;
+      }
+      if (cp.useRuns) {
+        const tail = s.runs!.tail;
+        if (tail && tail.firstHour <= maxClosed) {
+          const tailLimit = tail.lastHour - 1;
+          if (tailLimit < closedThrough) closedThrough = tailLimit;
+        }
+      } else {
+        const buckets = s.buckets;
+        const closed = buckets.closedLength;
+        if (closed > 0 || buckets.tail !== undefined) {
+          const binEnd = s.from + closed * s.binHours - 1;
+          if (binEnd < closedThrough) closedThrough = binEnd;
+        }
+      }
+    }
+  }
+  return closedThrough;
 }
 
 function collectSeriesHoursWindow(
@@ -1065,7 +1102,8 @@ function collectSeriesHoursWindow(
   clampHour: number,
   commitClosed: boolean,
   target: Set<number>,
-): void {
+  prefixHours: readonly number[],
+): boolean {
   const add = (h: number) => {
     if ((!hasAfter || h > afterHour) && h <= untilHour) target.add(h);
   };
@@ -1081,7 +1119,13 @@ function collectSeriesHoursWindow(
       if (run.firstHour > clampHour) break;
       if (pLast !== -Infinity && (run.breakBefore || run.firstHour > pLast + 1)) {
         const gapHour = Math.min(clampHour, pLast + 1);
-        if (gapHour < run.firstHour) add(gapHour);
+        if (gapHour < run.firstHour) {
+          if (hasAfter && gapHour <= afterHour) {
+            if (!hasHourSorted(prefixHours, gapHour)) return true;
+          } else {
+            add(gapHour);
+          }
+        }
       }
       if (run.firstHour > untilHour) {
         if (commitClosed && i === closedLen) {
@@ -1094,6 +1138,7 @@ function collectSeriesHoursWindow(
         }
         break;
       }
+      if (hasAfter && run.firstHour <= afterHour && !(cp.tailRunActive && i === cp.tailRunIdx)) return true;
       add(run.firstHour);
       const end = Math.min(clampHour, run.lastHour);
       if (end > run.firstHour) add(end);
@@ -1108,7 +1153,7 @@ function collectSeriesHoursWindow(
         }
       } else {
         canAdvance = false;
-        if (commitClosed && i === closedLen) {
+        if (commitClosed && (!cp.tailRunActive || i === cp.tailRunIdx)) {
           cp.tailRunActive = true;
           cp.tailRunIdx = i;
           cp.tailRunFirst = run.firstHour;
@@ -1137,9 +1182,16 @@ function collectSeriesHoursWindow(
       if (b.firstHour > clampHour) break;
       if (pLast !== -Infinity && (b.firstBreak || b.firstHour > pLast + minStep)) {
         const gapHour = Math.min(clampHour, pLast + 1);
-        if (gapHour < b.firstHour) add(gapHour);
+        if (gapHour < b.firstHour) {
+          if (hasAfter && gapHour <= afterHour) {
+            if (!hasHourSorted(prefixHours, gapHour)) return true;
+          } else {
+            add(gapHour);
+          }
+        }
       }
       if (b.firstHour > untilHour) break;
+      if (hasAfter && b.firstHour <= afterHour && i !== cp.straddlingBucketIdx) return true;
       add(b.firstHour);
       if (!b.hasBreak) {
         const end = Math.min(clampHour, b.lastHour);
@@ -1149,8 +1201,10 @@ function collectSeriesHoursWindow(
       if (canAdvance && b.lastHour <= untilHour) {
         nextScanned = i + 1;
         cp.prevLast = b.lastHour;
+        if (cp.straddlingBucketIdx === i) cp.straddlingBucketIdx = -1;
       } else {
         canAdvance = false;
+        if (commitClosed && cp.straddlingBucketIdx === -1) cp.straddlingBucketIdx = i;
       }
     }
     if (commitClosed) cp.scannedClosed = nextScanned;
@@ -1161,7 +1215,12 @@ function collectSeriesHoursWindow(
   let advanceMissing = commitClosed;
   for (let i = cp.nextMissingIdx; i < mLen; i++) {
     const span = missing.at(i)!;
-    if (span.firstHour > clampHour || span.firstHour > untilHour) {
+    if (span.firstHour > clampHour) {
+      advanceMissing = false;
+      continue;
+    }
+    if (hasAfter && span.firstHour <= afterHour) return true;
+    if (span.firstHour > untilHour) {
       advanceMissing = false;
       continue;
     }
@@ -1169,6 +1228,7 @@ function collectSeriesHoursWindow(
     if (advanceMissing) nextMissing = i + 1;
   }
   if (commitClosed) cp.nextMissingIdx = nextMissing;
+  return false;
 }
 
 function collectWithinHoursWindow(
@@ -1261,10 +1321,12 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
     stackPrefixCache.push(entry);
   }
 
-  const maxClosed = Math.floor(hour) - 1;
-  let closedThrough = maxClosed;
+  if (entry.hasClosedPrefix && hour < entry.lastHour) {
+    resetStackCacheEntry(entry);
+  }
+
   let shrunk = false;
-  for (let b = 0; b < inputs.length; b++) {
+  for (let b = 0; b < inputs.length && !shrunk; b++) {
     const input = inputs[b]!;
     const cb = entry.bands[b]!;
     for (let p = 0; p < input.parts.length; p++) {
@@ -1273,8 +1335,7 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
       const cp = cb.parts[p]!;
       if (cp.useRuns) {
         const runs = s.runs!;
-        const closed = runs.closedLength;
-        if (closed < cp.scannedClosed) shrunk = true;
+        if (runs.closedLength < cp.scannedClosed) { shrunk = true; break; }
         if (cp.tailRunActive) {
           const checkRun = cp.tailRunIdx < runs.length ? runs.at(cp.tailRunIdx) : undefined;
           if (
@@ -1285,92 +1346,28 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
             || (checkRun.breakBefore === true) !== cp.tailRunBreakBefore
           ) {
             shrunk = true;
+            break;
           }
         }
-        const tail = runs.tail;
-        if (tail && tail.firstHour <= maxClosed) {
-          const tailLimit = Math.min(maxClosed, tail.lastHour);
-          if (tailLimit < closedThrough) closedThrough = tailLimit;
-        } else if (closed > 0) {
-          let visIdx = closed - 1;
-          while (visIdx >= 0 && runs.at(visIdx)!.firstHour > hour) visIdx--;
-          if (visIdx >= 0) {
-            const last = runs.at(visIdx)!.lastHour;
-            if (last < closedThrough) closedThrough = last;
-          } else {
-            closedThrough = -Infinity;
-          }
-        } else {
-          closedThrough = -Infinity;
-        }
-      } else {
-        const buckets = s.buckets;
-        const closed = buckets.closedLength;
-        if (closed < cp.scannedClosed || closed < cp.checkedClosedLen || closed - 1 < cp.lastNonNullClosedIdx) {
-          shrunk = true;
-          cp.lastNonNullClosedIdx = -1;
-          cp.checkedClosedLen = 0;
-        }
-        let lastIdx = cp.lastNonNullClosedIdx;
-        let nextChecked = closed;
-        for (let i = closed - 1; i >= cp.checkedClosedLen; i--) {
-          const b = buckets.at(i);
-          if (b == null) continue;
-          if (b.firstHour > hour) {
-            nextChecked = i;
-            continue;
-          }
-          lastIdx = i;
-          break;
-        }
-        cp.lastNonNullClosedIdx = lastIdx;
-        cp.checkedClosedLen = nextChecked;
-        if (lastIdx >= 0) {
-          const last = buckets.at(lastIdx)!.lastHour;
-          if (last < closedThrough) closedThrough = last;
-        } else if (closed > 0) {
-          const binEnd = s.from + closed * s.binHours - 1;
-          if (binEnd < closedThrough) closedThrough = binEnd;
-        } else {
-          closedThrough = -Infinity;
-        }
+      } else if (s.buckets.closedLength < cp.scannedClosed) {
+        shrunk = true;
+        break;
       }
-      if (s.missing.length < cp.nextMissingIdx) shrunk = true;
+      if (s.missing.length < cp.nextMissingIdx) { shrunk = true; break; }
     }
   }
 
-  if (shrunk || (entry.hasClosedPrefix && (closedThrough < entry.closedThrough || hour < entry.lastHour))) {
+  const closedThrough = computeStackClosedThrough(entry, inputs, hour);
+  if (shrunk || (entry.hasClosedPrefix && closedThrough < entry.closedThrough)) {
     resetStackCacheEntry(entry);
-    for (let b = 0; b < inputs.length; b++) {
-      const input = inputs[b]!;
-      const cb = entry.bands[b]!;
-      for (let p = 0; p < input.parts.length; p++) {
-        const s = input.parts[p]!.series;
-        if (!s || cb.parts[p]!.useRuns) continue;
-        const closed = s.buckets.closedLength;
-        let lastIdx = -1;
-        let nextChecked = closed;
-        for (let i = closed - 1; i >= 0; i--) {
-          const b = s.buckets.at(i);
-          if (b == null) continue;
-          if (b.firstHour > hour) {
-            nextChecked = i;
-            continue;
-          }
-          lastIdx = i;
-          break;
-        }
-        cb.parts[p]!.lastNonNullClosedIdx = lastIdx;
-        cb.parts[p]!.checkedClosedLen = nextChecked;
-      }
-    }
   }
 
   const bandCount = inputs.length;
   const row = new Array<number>(bandCount);
   const outsideFlags = new Array<boolean>(bandCount);
 
-  if (Number.isFinite(closedThrough) && (!entry.hasClosedPrefix || closedThrough > entry.closedThrough)) {
+  const commitPrefix = () => {
+    if (!Number.isFinite(closedThrough) || (entry.hasClosedPrefix && closedThrough <= entry.closedThrough)) return false;
     const newSet = new Set<number>();
     const prevHasClosed = entry.hasClosedPrefix;
     const prevClosed = entry.closedThrough;
@@ -1380,12 +1377,13 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
       for (let p = 0; p < input.parts.length; p++) {
         const part = input.parts[p]!;
         const cp = cb.parts[p]!;
-        if (part.series) collectSeriesHoursWindow(part.series, cp, prevHasClosed, prevClosed, closedThrough, hour, true, newSet);
+        if (part.series && collectSeriesHoursWindow(part.series, cp, prevHasClosed, prevClosed, closedThrough, hour, true, newSet, entry.hours)) {
+          return true;
+        }
         collectWithinHoursWindow(cp.within, prevHasClosed, prevClosed, closedThrough, hour, newSet);
       }
     }
     if (newSet.size > 0) {
-      detachSharedStackPrefix(entry);
       const added = [...newSet].sort((a, b) => a - b);
       for (let i = 0; i < added.length; i++) {
         const h = added[i]!;
@@ -1411,72 +1409,73 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
     }
     entry.hasClosedPrefix = true;
     entry.closedThrough = closedThrough;
+    return false;
+  };
+
+  const collectTail = (tailSet: Set<number>) => {
+    const hasClosed = entry.hasClosedPrefix;
+    const afterClosed = entry.closedThrough;
+    for (let b = 0; b < bandCount; b++) {
+      const input = inputs[b]!;
+      const cb = entry.bands[b]!;
+      for (let p = 0; p < input.parts.length; p++) {
+        const part = input.parts[p]!;
+        const cp = cb.parts[p]!;
+        if (part.series && collectSeriesHoursWindow(part.series, cp, hasClosed, afterClosed, hour, hour, false, tailSet, entry.hours)) {
+          return true;
+        }
+        collectWithinHoursWindow(cp.within, hasClosed, afterClosed, hour, hour, tailSet);
+      }
+    }
+    return false;
+  };
+
+  let tailSet = new Set<number>();
+  if (commitPrefix() || collectTail(tailSet)) {
+    resetStackCacheEntry(entry);
+    tailSet = new Set<number>();
+    commitPrefix();
+    collectTail(tailSet);
   }
   entry.lastHour = hour;
 
-  const tailSet = new Set<number>();
   const hasClosed = entry.hasClosedPrefix;
   const afterClosed = entry.closedThrough;
-  for (let b = 0; b < bandCount; b++) {
-    const input = inputs[b]!;
-    const cb = entry.bands[b]!;
-    for (let p = 0; p < input.parts.length; p++) {
-      const part = input.parts[p]!;
-      const cp = cb.parts[p]!;
-      if (part.series) collectSeriesHoursWindow(part.series, cp, hasClosed, afterClosed, hour, hour, false, tailSet);
-      collectWithinHoursWindow(cp.within, hasClosed, afterClosed, hour, hour, tailSet);
-    }
-  }
   if ((entry.hours.length > 0 || tailSet.size > 0 || inputs.some(input => input.head)) && (!hasClosed || hour > afterClosed)) {
     tailSet.add(hour);
   }
   const tailHours = tailSet.size > 1 ? [...tailSet].sort((a, b) => a - b) : [...tailSet];
   const prefixLen = entry.hours.length;
+  const totalLen = prefixLen + tailHours.length;
+  const hours = entry.hours.slice();
+  for (let i = 0; i < tailHours.length; i++) hours.push(tailHours[i]!);
 
-  let hours: readonly number[];
-  let valuesByBand: readonly (readonly (number | null)[])[];
-  let outsideByBand: readonly (readonly boolean[] | null)[];
+  const valuesByBand: (number | null)[][] = new Array(bandCount);
+  const outsideByBand: (boolean[] | null)[] = new Array(bandCount);
+  for (let b = 0; b < bandCount; b++) {
+    const dstVals = entry.valuesByBand[b]!.slice();
+    for (let i = 0; i < tailHours.length; i++) dstVals.push(null);
+    valuesByBand[b] = dstVals;
+    const srcOut = entry.outsideByBand[b];
+    if (srcOut) {
+      const dstOut = srcOut.slice();
+      for (let i = 0; i < tailHours.length; i++) dstOut.push(false);
+      outsideByBand[b] = dstOut;
+    } else {
+      outsideByBand[b] = null;
+    }
+  }
 
-  if (tailHours.length === 0) {
-    entry.shared = true;
-    hours = entry.hours;
-    valuesByBand = entry.valuesByBand;
-    outsideByBand = entry.outsideByBand;
-  } else {
-    const nextHours = entry.hours.slice();
-    for (let i = 0; i < tailHours.length; i++) nextHours.push(tailHours[i]!);
-    hours = nextHours;
-
-    const totalLen = prefixLen + tailHours.length;
-    const nextVals: (number | null)[][] = new Array(bandCount);
-    const nextOut: (boolean[] | null)[] = new Array(bandCount);
+  for (let i = 0; i < tailHours.length; i++) {
+    const h = tailHours[i]!;
+    const idx = prefixLen + i;
+    const valid = sampleStackRow(inputs, h, hour, row, outsideFlags);
     for (let b = 0; b < bandCount; b++) {
-      const dstVals = entry.valuesByBand[b]!.slice();
-      for (let i = 0; i < tailHours.length; i++) dstVals.push(null);
-      nextVals[b] = dstVals;
-      const srcOut = entry.outsideByBand[b];
-      if (srcOut) {
-        const dstOut = srcOut.slice();
-        for (let i = 0; i < tailHours.length; i++) dstOut.push(false);
-        nextOut[b] = dstOut;
-      } else {
-        nextOut[b] = null;
+      if (outsideFlags[b]) {
+        (outsideByBand[b] ??= new Array<boolean>(totalLen).fill(false))[idx] = true;
       }
+      if (valid) valuesByBand[b]![idx] = row[b]!;
     }
-
-    for (let i = 0; i < tailHours.length; i++) {
-      const h = tailHours[i]!;
-      const idx = prefixLen + i;
-      const valid = sampleStackRow(inputs, h, hour, row, outsideFlags);
-      for (let b = 0; b < bandCount; b++) {
-        if (outsideFlags[b]) {
-          (nextOut[b] ??= new Array<boolean>(totalLen).fill(false))[idx] = true;
-        }
-        if (valid) nextVals[b]![idx] = row[b]!;
-      }
-    }
-    valuesByBand = nextVals;
-    outsideByBand = nextOut;
   }
 
   const bands: ChartStackBand[] = inputs.map((input, idx) => ({

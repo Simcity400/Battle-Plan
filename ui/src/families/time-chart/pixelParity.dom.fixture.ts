@@ -9,7 +9,7 @@ import { boundTiledSeries, BoundedSeriesCursor, displayedHour } from '../bounded
 import type { ArtHandle, FamilyTheme, IdentityResult } from '../contract.ts';
 import { projectScene } from '../scene.ts';
 import { knownValue } from '../value.ts';
-import { drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
+import { drawGapBand, drawPlayheadLine, drawSeriesMissingStrip, drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
 import { DEFAULT_SEEDS, deriveColors, type ThemeMode } from '../../shell/appearance/themes.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { chartNavStops } from './laneView.ts';
@@ -763,6 +763,9 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   const stepRefC = new OffscreenCanvas(Math.round(stepW * dpr), Math.round(stepH * dpr));
   const stepRefCtx = stepRefC.getContext('2d', { willReadFrequently: true })!;
   stepRefCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  for (const g of stepLay.gaps) {
+    drawGapBand(stepRefCtx, g.x0, stepLay.top, g.x1 - g.x0, stepLay.plotHeight, darkTheme);
+  }
   const stepRuns = [
     { start: 0, end: 9, endHour: stepHours[10]! },
     { start: 11, end: 15, endHour: stepGap.firstHour },
@@ -860,20 +863,42 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   stepRefCtx.lineTo(stepLay.left + stepLay.plotWidth, stepZeroY);
   stepRefCtx.stroke();
   stepRefCtx.restore();
-  const sLeft = Math.round((stepLay.left + 2) * dpr);
-  const sTop = Math.round((stepLay.top + 2) * dpr);
-  const sGapLeft = Math.round((stepLay.toX(stepGap.firstHour) - 2) * dpr);
-  const sGapRight = Math.round((stepLay.toX(stepGap.lastHour) + 2) * dpr);
-  const sRight = Math.round((stepLay.left + stepLay.plotWidth - 4) * dpr);
-  const sHeight = Math.round((stepLay.plotHeight - 4) * dpr);
-  let stepDiff = 0;
-  for (const [rx0, rx1] of [[sLeft, sGapLeft], [sGapRight, sRight]] as const) {
-    const rw = Math.max(0, rx1 - rx0);
-    if (rw === 0) continue;
-    const pData = stepProdCtx.getImageData(rx0, sTop, rw, sHeight).data;
-    const rData = stepRefCtx.getImageData(rx0, sTop, rw, sHeight).data;
-    for (let i = 0; i < pData.length; i++) if (pData[i] !== rData[i]) stepDiff++;
+  drawPlayheadLine(stepRefCtx, stepLay.playheadX, stepLay.top - 2, stepLay.baseY + stepLay.markerLaneHeight, darkTheme);
+  stepRefCtx.save();
+  stepRefCtx.strokeStyle = tokens.zeroLine;
+  stepRefCtx.lineWidth = 1;
+  stepRefCtx.beginPath();
+  stepRefCtx.moveTo(stepLay.left, stepLay.axisY + 0.5);
+  stepRefCtx.lineTo(stepLay.left + stepLay.plotWidth, stepLay.axisY + 0.5);
+  stepRefCtx.stroke();
+  stepRefCtx.restore();
+  for (const g of stepLay.gaps) {
+    drawSeriesMissingStrip(stepRefCtx, g.x0, stepLay.axisY - 2, g.x1 - g.x0, darkTheme.hatch, darkTheme, 5);
   }
+  drawTimeAxis(stepRefCtx, stepLay.rawAxisTicks, {
+    plotLeft: stepLay.left,
+    plotRight: stepLay.left + stepLay.plotWidth,
+    startHour: stepLay.xDomain[0],
+    endHour: stepLay.xDomain[1],
+    toX: stepLay.toX,
+    axisTop: stepLay.axisY,
+    playhead: stepStackModel.hour,
+    playheadLabel: stepLay.dateTabText,
+    hover: null,
+    hoverLabel: undefined,
+    playheadLineTop: null,
+    hairline: 'none',
+    tickColor: tokens.zeroLine,
+    firstLabelOnly: stepLay.small,
+    tabBounds: { left: stepLay.left, right: stepLay.width - 6 },
+    tabY: stepLay.axisY + 3,
+    labelY: stepLay.axisY + 12,
+    theme: darkTheme,
+  });
+  const stepProdImg = stepProdCtx.getImageData(0, 0, stepProdC.width, stepProdC.height).data;
+  const stepRefImg = stepRefCtx.getImageData(0, 0, stepRefC.width, stepRefC.height).data;
+  let stepDiff = 0;
+  for (let i = 0; i < stepProdImg.length; i++) if (stepProdImg[i] !== stepRefImg[i]) stepDiff++;
   if (stepDiff > 0) failures.push({ label: 'step-stack-signed-gaps-total-dpr125', diffBytes: stepDiff, firstDiff: null, navEqual: true, looksEqual: true });
 
   return { checked: steps.length, failures };
