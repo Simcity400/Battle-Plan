@@ -249,46 +249,31 @@ impl Default for Minutes {
     }
 }
 
+const MINUTES_OVERFLOW: &str = "The exact unpaused time for this window exceeds the supported range.";
+
 impl Minutes {
-    pub(super) fn add_ticks(&mut self, ticks: u128, frequency: u64) {
+    fn add_ticks(&mut self, ticks: u128, frequency: u64) -> Result<(), &'static str> {
         if ticks == 0 || frequency == 0 {
-            return;
+            return Ok(());
         }
-        self.add_rational(ticks, u128::from(frequency) * 60);
+        let den = u128::from(frequency) * 60;
+        let divisor = gcd(ticks, den);
+        let other = Self { num: ticks / divisor, den: den / divisor };
+        *self = self.combine(other, u128::checked_add).ok_or(MINUTES_OVERFLOW)?;
+        Ok(())
     }
 
-    pub(super) fn add_rational(&mut self, num: u128, den: u128) {
-        if num == 0 || den == 0 {
-            return;
+    fn combine(self, other: Self, operation: fn(u128, u128) -> Option<u128>) -> Option<Self> {
+        if other.num == 0 {
+            return Some(self);
         }
-        let g_in = gcd(num, den);
-        let num = num / g_in;
-        let den = den / g_in;
-        if self.num == 0 {
-            self.num = num;
-            self.den = den;
-            return;
-        }
-        if self.den == den {
-            if let Some(sum) = self.num.checked_add(num) {
-                let g = gcd(sum, self.den);
-                self.num = sum / g;
-                self.den /= g;
-                return;
-            }
-        }
-        let g = gcd(self.den, den);
-        let a = self.den / g;
-        let b = den / g;
-        if let Some(lhs) = self.num.checked_mul(b)
-            && let Some(rhs) = num.checked_mul(a)
-            && let Some(next_num) = lhs.checked_add(rhs)
-            && let Some(next_den) = a.checked_mul(den)
-        {
-            let g2 = gcd(next_num, next_den);
-            self.num = next_num / g2;
-            self.den = next_den / g2;
-        }
+        let divisor = gcd(self.den, other.den);
+        let left = self.num.checked_mul(other.den / divisor)?;
+        let right = other.num.checked_mul(self.den / divisor)?;
+        let num = operation(left, right)?;
+        let den = (self.den / divisor).checked_mul(other.den)?;
+        let reduce = gcd(num, den);
+        Some(Self { num: num / reduce, den: den / reduce })
     }
 
     pub(super) fn is_positive(&self) -> bool {
@@ -300,34 +285,38 @@ impl Minutes {
     }
 }
 
-pub(super) fn compare_apm_desc(a: &ApmValue, b: &ApmValue) -> std::cmp::Ordering {
-    match (a.apm, b.apm) {
-        (Some(x), Some(y)) => {
-            let exact = a
-                .orders
-                .as_deref()
-                .and_then(|s| s.parse::<u128>().ok())
-                .zip(a.unpaused_minutes_num.as_deref().and_then(|s| s.parse::<u128>().ok()))
-                .zip(a.unpaused_minutes_den.as_deref().and_then(|s| s.parse::<u128>().ok()))
-                .zip(
-                    b.orders
-                        .as_deref()
-                        .and_then(|s| s.parse::<u128>().ok())
-                        .zip(b.unpaused_minutes_num.as_deref().and_then(|s| s.parse::<u128>().ok()))
-                        .zip(b.unpaused_minutes_den.as_deref().and_then(|s| s.parse::<u128>().ok())),
-                )
-                .and_then(|(((ao, an), ad), ((bo, bn), bd))| {
-                    let lhs = ao.checked_mul(ad)?.checked_mul(bn)?;
-                    let rhs = bo.checked_mul(bd)?.checked_mul(an)?;
-                    Some(rhs.cmp(&lhs))
-                });
-            exact.unwrap_or_else(|| y.total_cmp(&x))
-        }
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+#[derive(Clone, Copy)]
+struct Rate {
+    orders: u64,
+    minutes: Minutes,
+}
+
+impl Ord for Rate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let product = |orders: u64, den: u128, num: u128| {
+            let orders = u128::from(orders);
+            if let Some(value) = orders.checked_mul(den).and_then(|pair| pair.checked_mul(num)) {
+                return (0, 0, value);
+            }
+            let (low, high) = den.carrying_mul(num, 0);
+            let (low, carry) = low.carrying_mul(orders, 0);
+            let (middle, high) = high.carrying_mul(orders, carry);
+            (high, middle, low)
+        };
+        product(self.orders, self.minutes.den, other.minutes.num)
+            .cmp(&product(other.orders, other.minutes.den, self.minutes.num))
     }
 }
+
+impl PartialOrd for Rate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+
+impl PartialEq for Rate {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() }
+}
+
+impl Eq for Rate {}
 
 #[derive(Clone, Default)]
 pub(super) struct Amount {
@@ -341,8 +330,8 @@ pub(super) struct Amount {
 }
 
 impl Amount {
-    fn observe(&mut self, measured: &commands::Measurement) {
-        self.minutes.add_ticks(measured.ticks, measured.frequency);
+    fn observe(&mut self, measured: &commands::Measurement) -> io::Result<()> {
+        self.minutes.add_ticks(measured.ticks, measured.frequency).map_err(io::Error::other)?;
         self.incomplete |= !measured.complete;
         self.first_hour = Some(
             self.first_hour
@@ -352,14 +341,27 @@ impl Amount {
             self.last_hour
                 .map_or(measured.last_hour, |last| last.max(measured.last_hour)),
         );
+        Ok(())
+    }
+
+    fn complete(&self) -> bool {
+        !self.incomplete && self.first_hour.is_some()
+    }
+
+    fn orders_known(&self) -> bool {
+        self.complete() && self.counts.unresolved == 0 && self.counts.unclassified == 0
+    }
+
+    fn rate(&self) -> Option<Rate> {
+        (self.orders_known() && self.minutes.is_positive()).then_some(Rate { orders: self.counts.orders, minutes: self.minutes })
     }
 
     fn value(&self) -> ApmValue {
-        let complete = !self.incomplete && self.first_hour.is_some();
+        let complete = self.complete();
         let minutes_f64 = self.minutes.as_f64();
         let confirmed_apm =
             (complete && self.minutes.is_positive()).then(|| self.counts.orders as f64 / minutes_f64);
-        let known = complete && self.counts.unresolved == 0 && self.counts.unclassified == 0;
+        let known = self.orders_known();
         ApmValue {
             apm: confirmed_apm.filter(|_| known),
             confirmed_apm,
@@ -569,7 +571,7 @@ pub(super) fn hourly_amounts(
                 for &(from, to) in &ranges {
                     if let Some(measured) = timeline.measure(h, h, from, to) {
                         let slot = entry.entry(h).or_default();
-                        slot.observe(&measured);
+                        slot.observe(&measured)?;
                         slot.paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(h..=h)
@@ -870,7 +872,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                 }
                 for &(from, to) in &ranges {
                     if let Some(measured) = timeline.measure(from_hour, to_hour, from, to) {
-                        item.total.observe(&measured);
+                        item.total.observe(&measured)?;
                         item.total.paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(measured.first_hour..=measured.last_hour)
@@ -893,7 +895,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                         let Some(measured) = timeline.measure(from_hour, to_hour, from, to) else {
                             continue;
                         };
-                        item.buckets.entry(position).or_default().observe(&measured);
+                        item.buckets.entry(position).or_default().observe(&measured)?;
                         item.buckets.entry(position).or_default().paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(measured.first_hour..=measured.last_hour)
@@ -945,9 +947,9 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
     }
     let coverage = Coverage::new(index, first, last)?;
     let whole = coverage.observed(first, last);
-    reply.series = series
-        .into_iter()
-        .filter(|(_, series)| series.total.first_hour.is_some())
+    let mut ranked: Vec<_> = series.into_iter().filter(|(_, series)| series.total.first_hour.is_some()).collect();
+    ranked.sort_by_cached_key(|(_, series)| std::cmp::Reverse(series.total.rate()));
+    reply.series = ranked.into_iter()
         .map(|(id, mut series)| {
             series.total.gaps |= !whole;
             ApmSeries {
@@ -975,9 +977,6 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
             }
         })
         .collect();
-    reply.series.sort_by(|a, b| {
-        compare_apm_desc(&a.summary, &b.summary).then_with(|| a.id.cmp(&b.id))
-    });
     check_reply_budget(&reply)?;
     Ok(reply)
 }
@@ -1424,7 +1423,7 @@ mod tests {
 
     #[test]
     fn exact_recorded_operands_preserve_rational_rate_without_float_drift() {
-        let (session, mut batch) = fixture(|batch| {
+        let (session, batch) = fixture(|batch| {
             batch.actors.truncate(1);
             batch.spans = vec![Span {
                 from_qpc: 0,
@@ -1455,5 +1454,7 @@ mod tests {
         assert_eq!(summary.unpaused_minutes_num.as_deref(), Some("3"));
         assert_eq!(summary.unpaused_minutes_den.as_deref(), Some("10"));
         assert_eq!(summary.apm, Some(3.0 / (3.0 / 10.0)));
+        let rate = |orders| Rate { orders, minutes: Minutes { num: u128::MAX - 1, den: u128::MAX } };
+        assert!(rate(u64::MAX - 1) < rate(u64::MAX));
     }
 }
