@@ -528,7 +528,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         .collect();
     let mut mapped: HashMap<u32, Vec<(i32, i32, Option<u32>)>> = HashMap::new();
     let mut appearance: HashMap<u32, Vec<i32>> = HashMap::new();
-    let mut unread: Option<String> = None;
+    let mut appearance_coverage: Vec<i32> = Vec::new();
+    let (mut links_unread, mut looks_unread): (Option<String>, Option<String>) = (None, None);
     if !wanted.is_empty() {
         let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
         let looks = [dashboard_declare::field(TableId::CountryAppearance, "name_tag")?, dashboard_declare::field(TableId::CountryAppearance, "original_tag")?];
@@ -536,26 +537,32 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             Ok(history) => Some(history),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(error) => {
-                unread = Some(format!("Country links were not read for design names: {error}"));
+                links_unread = Some(format!("Country links were not read for design names: {error}"));
                 None
             }
         };
-        let looks_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::These(&wanted), span.first, span.last)) {
+        let looks_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::All, span.first, span.last)) {
             Ok(history) => Some(history),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(error) => {
-                unread.get_or_insert_with(|| format!("Country appearance was not read for design names: {error}"));
+                looks_unread = Some(format!("Country appearance was not read for design names: {error}"));
                 None
             }
         };
         if let Some(history) = &looks_history {
+            let mut raw_slot: HashMap<u32, u32> = HashMap::new();
+            if let Ok(rows) = frame.complete::<tables::Countries>() {
+                raw_slot.extend(rows.iter().map(|row| (row.id, row.canonical_slot)));
+            }
+            if let Ok(rows) = frame.complete::<tables::CountryLinks>() {
+                raw_slot.extend(rows.iter().map(|row| (row.id, row.canonical_slot)));
+            }
             for (key, steps) in &history.keys {
-                appearance.entry(*key as u32).or_default().extend(steps.iter().map(|step| step.hour));
+                if let Some(&slot) = raw_slot.get(&(*key as u32)) {
+                    appearance.entry(slot).or_default().extend(steps.iter().map(|step| step.hour));
+                }
             }
-            let edges: Vec<i32> = history.statuses.iter().map(|status| status.first).collect();
-            for &key in &wanted {
-                appearance.entry(key as u32).or_default().extend(edges.iter().copied());
-            }
+            appearance_coverage.extend(history.statuses.iter().map(|status| status.first));
         }
         let history = links_history.unwrap_or_default();
         for (key, steps) in &history.keys {
@@ -574,24 +581,25 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             mapped.insert(*key as u32, pieces);
         }
     }
-    if let Some(why) = &unread {
+    for why in [&links_unread, &looks_unread].into_iter().flatten() {
         notes.insert(why.clone());
     }
+    let created = |fields: &NameFields| (fields.origin_link as i32) < 1;
+    let withheld = |fields: &NameFields| fields.display_name.is_empty() && (links_unread.is_some() || (looks_unread.is_some() && created(fields)));
     for held in entries.values_mut() {
-        if unread.is_some() {
-            for entry in held.iter_mut() {
-                if entry.1.as_ref().is_some_and(|fields| fields.display_name.is_empty()) {
-                    entry.1 = None;
-                }
+        for entry in held.iter_mut() {
+            if entry.1.as_ref().is_some_and(withheld) {
+                entry.1 = None;
             }
-            continue;
         }
         let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
         for (at, (hour, fields)) in held.iter().enumerate() {
             let Some(fields) = fields.as_ref().filter(|fields| fields.display_name.is_empty()) else { continue };
             let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
             let mut edges: BTreeSet<i32> = BTreeSet::new();
-            edges.extend(appearance.get(&naming_link(fields)).into_iter().flatten().copied().filter(|&edge| edge > *hour && edge <= until));
+            if created(fields) {
+                edges.extend(appearance_coverage.iter().copied().filter(|&edge| edge > *hour && edge <= until));
+            }
             for &(from, to, slot) in mapped.get(&naming_link(fields)).map_or(&[][..], Vec::as_slice) {
                 let (low, high) = (from.max(*hour), to.min(until));
                 if low > high {
@@ -604,6 +612,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                     for (first, last) in query.holders.naming_spans(&Country::Slot(slot)) {
                         edges.extend([first, last.saturating_add(1)].into_iter().filter(|&edge| edge > low && edge <= high));
                     }
+                    edges.extend(appearance.get(&slot).into_iter().flatten().copied().filter(|&edge| edge > low && edge <= high));
                 }
             }
             retagged.extend(edges.into_iter().map(|edge| (edge, Some(fields.clone()))));
