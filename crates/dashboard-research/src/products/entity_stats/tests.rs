@@ -212,12 +212,23 @@ fn recording() -> Source {
 
 #[test]
 fn stats_without_the_recorded_content_are_withheld_by_name() {
-    let request = json!({ "branchId": "1", "kind": "equipment", "token": "infantry_equipment_1", "hour": 25 });
-    let text = (entry::<EntityStatsAt>().load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let source = Arc::new(recording());
+    let load = LoadContext { content: None };
+    let request = json!({ "branchId": "1", "kind": "equipment", "token": "infantry_equipment_1" });
+    let mut at = request.clone();
+    at["hour"] = 25.into();
+    let text = (entry::<EntityStatsAt>().load)(&source, "lease", at, &load, &AtomicBool::new(false)).unwrap();
     let reply: Value = serde_json::from_str::<Value>(&text).unwrap()["data"].take();
     assert_eq!(reply["stats"], json!([]));
     assert_eq!(reply["kind"], "equipment");
     assert!(reply["unavailable"].as_str().unwrap().contains("recorded content"), "{reply}");
+    let panel = (crate::registrations::ENTITY_STATS_ENTITYSTATSAT.panel.unwrap().open)(&source, &load, &request).unwrap();
+    let reader = panel.exact().unwrap();
+    for step in dashboard_base::test_fixtures::played(source.replay_ref(), reader, 20, 30) {
+        assert_eq!(step.value.as_ref().as_ref().unwrap(), &reply);
+        if step.hour > 20 { assert_eq!(step.product_calls, 0); }
+    }
+    assert_eq!((reader.advance)(24, true, &false.into(), None).value.as_ref().as_ref().unwrap(), &reply);
 }
 
 #[test]

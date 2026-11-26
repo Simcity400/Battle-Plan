@@ -322,6 +322,35 @@ class Verdict(unittest.TestCase):
         self.assertEqual(ci.not_run_here(log), ["not run here: installation comparison (no game installation)"])
         self.assertEqual(ci.not_run_here("  not run here: indented output is not a note\n"), [])
 
+    def test_runner_surfaces_not_run_here_notes_for_both_pass_and_fail_outcomes(self):
+        job = next(item for item in ci.load_pipeline(PIPELINE).jobs if item.name == "scan")
+        cases = [
+            ("current", 0, "installation comparison: 2 game and mod folders, 1 files\n", "pass", "success", []),
+            ("no-install", 0, "not run here: installation comparison (no game installation)\n", "pass", "success",
+             ["not run here: installation comparison (no game installation)"]),
+            ("tree-only", 0, "not run here: installation comparison (--tree-only)\n", "pass", "success",
+             ["not run here: installation comparison (--tree-only)"]),
+            ("no-index", 1, "not run here: installation comparison (no index at /tmp/index.sqlite3; run python tools/check-game-content.py)\n",
+             "fail", "failure", ["not run here: installation comparison (no index at /tmp/index.sqlite3; run python tools/check-game-content.py)", "exit 1"]),
+            ("stale-mod", 1, "not run here: installation comparison for mod extra (index out of date; run python tools/check-game-content.py)\n",
+             "fail", "failure", ["not run here: installation comparison for mod extra (index out of date; run python tools/check-game-content.py)", "exit 1"]),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            runner = ci.Runner(Path(folder), {}, {}, local=True)
+            for label, code, output, state, expected_verdict, snippets in cases:
+                with self.subTest(case=label):
+                    def ran(_command, log, text=output, exit_code=code):
+                        Path(log).write_text(text, encoding="utf-8")
+                        return exit_code
+                    with patch.object(runner, "execute", side_effect=ran):
+                        outcome = runner.run(ci.Decision(job, "run"))
+                    self.assertEqual(outcome.state, state)
+                    self.assertEqual(ci.verdict([outcome]), expected_verdict)
+                    for snippet in snippets:
+                        self.assertIn(snippet, outcome.detail)
+                    if not snippets:
+                        self.assertEqual(outcome.detail, "")
+
     def test_every_junit_failure_is_reported_with_its_output(self):
         report = """<testsuites><testsuite name="dashboard-base">
             <testcase name="ready"/><testcase name="ignored"><skipped/></testcase>

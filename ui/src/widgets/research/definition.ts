@@ -10,5 +10,4 @@ export const definition = {
   description: 'The technologies each research slot worked through over time, when each finished and when slots opened.',
   timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 12 }, options: OPTIONS,
-  migrate: (from, widget) => from < 2 && widget.title === 'Research' ? { ...widget, title: 'Research history' } : widget,
 } as const satisfies WidgetMeta;

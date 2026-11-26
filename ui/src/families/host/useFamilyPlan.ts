@@ -11,6 +11,7 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { ambiguousHolderRanges, cumulativeEverMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -403,6 +404,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }));
   }, [effectiveMulti?.membership]);
 
+  const datedAtHour = isMulti && policy.datedAtHour === true;
+
+  const cumulativeMembership = useMemo(
+    () => (datedAtHour && fetchGroups ? cumulativeEverMembership(widget.countries, groups.data, lastHour) : null),
+    [datedAtHour, fetchGroups, widget.countries, groups.data, lastHour],
+  );
+
   const factionData = useMemo(
     () => extractFactionData(groups.data, isMulti && policy.factions === true),
     [isMulti, policy, groups.data],
@@ -457,6 +465,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
   }, [isFilter, isMulti, widget.countries, selectedFallback, groups.data]);
 
+  const ambiguousHolders = useMemo(
+    () => (datedAtHour && fetchGroups ? ambiguousHolderRanges(groups.data?.countryIdentities) : null),
+    [datedAtHour, fetchGroups, groups.data],
+  );
+
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
     tags: effectiveMulti?.tags ?? NO_TAGS,
@@ -465,7 +478,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     every: allTags,
     top: effectiveMulti?.top ?? null,
     membership,
+    cumulativeMembership,
     membershipRuns,
+    ambiguousHolders,
     unobserved,
     filter,
     factions: factionData.runs,
@@ -475,7 +490,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, ambiguousHolders, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
@@ -590,9 +605,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const gateRecordedRef = useRef(gate.recorded);
   gateRecordedRef.current = gate.recorded;
 
+  const applySeriesViewportRef = useRef<((vp: TileViewport) => void) | null>(null);
+
   useEffect(() => {
     const currentPlan = planForTilesRef.current;
     if (!active || !pixelBinnedKey || !currentPlan) {
+      applySeriesViewportRef.current = null;
       for (const view of tileViewsRef.current.values()) view.close();
       tileViewsRef.current.clear();
       return;
@@ -602,18 +620,27 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     );
     const views = new Map<string, TileView>();
     let disposed = false;
+    let batching = false;
+    let dirty = false;
     let rev = 0;
     let heldSeries = NO_TILED_SERIES;
 
     const publish = () => {
       if (disposed) return;
-      heldSeries = reuseTiledSeries(heldSeries, views);
+      if (batching) {
+        dirty = true;
+        return;
+      }
       let firstError: unknown = null;
       let topRefused: string | null = null;
+      let allReady = views.size > 0;
       for (const tv of views.values()) {
+        if (!tv.settled) allReady = false;
         if (firstError === null && tv.error !== null) firstError = tv.error;
         topRefused ??= tv.top?.refused ?? null;
       }
+      if (!allReady && firstError === null && topRefused === null) return;
+      heldSeries = allReady ? reuseTiledSeries(heldSeries, views) : NO_TILED_SERIES;
       rev++;
       const snapshot = { key: pixelBinnedKey, series: heldSeries, revision: rev, error: firstError, topRefused };
       inFrame(() => {
@@ -681,11 +708,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         publish,
       );
       views.set(entry.name, tv);
-      if (seriesViewportRef.current) tv.setView(seriesViewportRef.current);
     }
     tileViewsRef.current = views;
+    const applyViewport = (vp: TileViewport) => {
+      batching = true;
+      dirty = false;
+      for (const tv of views.values()) tv.setView(vp);
+      batching = false;
+      if (dirty) publish();
+    };
+    applySeriesViewportRef.current = applyViewport;
+    if (seriesViewportRef.current) applyViewport(seriesViewportRef.current);
     return () => {
       disposed = true;
+      if (applySeriesViewportRef.current === applyViewport) applySeriesViewportRef.current = null;
       for (const tv of views.values()) tv.close();
       if (tileViewsRef.current === views) tileViewsRef.current = new Map();
     };
@@ -693,7 +729,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
     seriesViewportRef.current = nextViewport;
-    for (const tv of tileViewsRef.current.values()) tv.setView(nextViewport);
+    if (applySeriesViewportRef.current) applySeriesViewportRef.current(nextViewport);
+    else for (const tv of tileViewsRef.current.values()) tv.setView(nextViewport);
   }, []);
 
   const retryTiles = useCallback(() => {
@@ -1055,6 +1092,28 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [everKind],
   );
 
+  const datedIncomplete = useMemo(
+    () => (datedAtHour && widget.countries.kind === 'group' && widget.countries.membership === 'hour' && groups.data && effectiveMulti && !effectiveMulti.tags.length && unobserved.length > 0 ? unobserved : null),
+    [datedAtHour, widget.countries, groups.data, effectiveMulti, unobserved],
+  );
+  const incompleteClock = useMemo(() => {
+    const at = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment);
+    return {
+      subscribe: (changed: () => void) => (datedIncomplete && following && active
+        ? watchBoundary(runtime.clock, axis => {
+            const state = incompleteHourStateAt(datedIncomplete, Math.floor(axis) + trackOffset);
+            return [state.from - trackOffset, state.until + 1 - trackOffset];
+          }, changed)
+        : () => {}),
+      read: () => (datedIncomplete ? incompleteHourStateAt(datedIncomplete, at()).kind : null),
+    };
+  }, [datedIncomplete, following, active, runtime.clock, trackOffset, moment]);
+  const incompleteKind = useSyncExternalStore(incompleteClock.subscribe, incompleteClock.read, incompleteClock.read);
+  const incompleteBody = useMemo<FamilyBodyStatus | null>(
+    () => incompleteGroupBodyStatus(incompleteKind, following),
+    [incompleteKind, following],
+  );
+
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
     if (isSingle) {
@@ -1103,14 +1162,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
         return { kind: 'loading', label: loadingLabel };
       }
+      if (incompleteBody) return incompleteBody;
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (everBody) return everBody;
       if (effectiveMulti && !following) {
-        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
-        if (none) return { kind: 'no-members', reason: none.reason };
-        if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
-          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
-          return { kind: 'refused', reason: why ?? (widget.countries.kind === 'group' ? NO_MEMBERS.date : 'No countries available for this selection.') };
+        if (datedAtHour) {
+          const staticStatus = staticDatedGroupBodyStatus(widget.countries, effectiveMulti, groups.data, membership, moment, countriesState.rankedAt(moment));
+          if (staticStatus) return staticStatus;
+        } else {
+          const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
+          if (none) return { kind: 'no-members', reason: none.reason };
+          if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
+            const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
+            return { kind: 'refused', reason: why ?? (widget.countries.kind === 'group' ? NO_MEMBERS.date : 'No countries available for this selection.') };
+          }
         }
       }
     }
@@ -1173,15 +1238,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     filterMatch,
     countriesState,
     isMulti,
+    datedAtHour,
     needsSlots,
     slotState.failure,
     slotState.retry,
     slots,
     effectiveMulti,
+    membership,
     following,
     widget.countries,
     moment,
     everBody,
+    incompleteBody,
     lastHour,
     window,
     pinHour,

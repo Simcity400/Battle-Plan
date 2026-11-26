@@ -82,10 +82,12 @@ struct MapView {
     loading: Option<SceneLoad>,
     error: Option<String>,
     admission_error: Option<String>,
+    battle: crate::battle_view::BattleView,
 }
 
 impl MapView {
     fn retire(&mut self, frame: &eframe::Frame) {
+        self.battle.retire(frame);
         self.viewer.export_closed("its map widget let its map go before its picture was saved");
         let load = self.loading.take();
         if let Some(load) = &load {
@@ -98,6 +100,9 @@ impl MapView {
 
     fn state(&self) -> DashboardMapState {
         let error = self.admission_error.as_ref().or(self.error.as_ref());
+        if error.is_none() && self.target.battle.is_some() {
+            return self.battle.state(&self.target);
+        }
         if error.is_none() && self.viewer.has_map() {
             let tables = self.viewer.tables();
             return engine_executable::executable_tables::scope(tables, || {
@@ -112,6 +117,7 @@ impl MapView {
             requested_sequence: self.target.sequence,
             loading: error.is_none(),
             error: error.cloned(),
+            keys: self.battle.pressed(),
             ..Default::default()
         }
     }
@@ -571,6 +577,7 @@ impl DashboardMaps {
                     if !view.target.visible && target.visible {
                         view.error = None;
                         view.viewer.retry_map();
+                        view.battle.retry();
                         let requested = RequestedSource::target(&target);
                         if self
                             .source_bindings
@@ -603,6 +610,7 @@ impl DashboardMaps {
                     error,
                     loading: None,
                     admission_error: None,
+                    battle: Default::default(),
                     viewer: Box::new(Viewer::map_view(
                         self.config.clone(),
                         self.options.clone(),
@@ -655,12 +663,14 @@ impl DashboardMaps {
             let shown =
                 view.target.visible && view.target.clip.width > 0 && view.target.clip.height > 0;
             let size = view.target.bounds;
-            view.admission_error = (size.width > self.limits.dimension
-                || size.height > self.limits.dimension)
-                .then(|| {
+            view.admission_error = if self.limits.dimension == 0 {
+                Some("The native graphics device is unavailable".to_owned())
+            } else {
+                (size.width > self.limits.dimension || size.height > self.limits.dimension).then(|| {
                     "This map exceeds the graphics device's texture dimensions. Resize the widget."
                         .to_owned()
-                });
+                })
+            };
             if view.admission_error.is_some() {
                 view.retire(frame);
             } else if !shown {
@@ -923,6 +933,9 @@ impl DashboardMaps {
             let Some(content) = source.content.as_ref() else {
                 continue;
             };
+            if view.target.battle.is_some() {
+                continue;
+            }
             let Some((device, queue)) = self.gpu.clone() else {
                 view.error = Some("The native graphics device is unavailable".into());
                 continue;
@@ -1134,9 +1147,30 @@ impl DashboardMaps {
             if RECORDING {
                 view.viewer.reset_drawn_frame();
             }
+            let battle = view.target.battle.clone();
+            if battle.is_some() {
+                view.battle.keys(&map_ui);
+            }
+            let held = view
+                .source
+                .as_ref()
+                .and_then(|key| self.sources.get(key))
+                .and_then(|source| Some((&source.source, source.content.as_ref()?)));
             if let Some(error) = view.admission_error.as_ref().or(view.error.as_ref()) {
                 map_ui.centered_and_justified(|ui| {
                     ui.colored_label(egui::Color32::LIGHT_RED, error);
+                });
+            } else if let (Some(battle), Some((source, content)), Some(gpu)) = (&battle, held, &self.gpu) {
+                engine_executable::executable_tables::scope(content.tables, || {
+                    view.battle.ui(&mut map_ui, frame, &view.target, battle, body, source, content, gpu, &self.pool);
+                });
+            } else if battle.is_some() && self.gpu.is_none() {
+                map_ui.centered_and_justified(|ui| {
+                    ui.colored_label(egui::Color32::LIGHT_RED, "The native graphics device is unavailable");
+                });
+            } else if battle.is_some() {
+                map_ui.centered_and_justified(|ui| {
+                    ui.spinner();
                 });
             } else if view.viewer.has_map() {
                 if let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) {
@@ -1172,7 +1206,7 @@ impl DashboardMaps {
             if RECORDING {
                 recording.expect("recording pass").record(
                     state.hour.zip(state.fraction),
-                    view.viewer.drew_frame(),
+                    view.viewer.drew_frame() || view.battle.painted(),
                     state.id,
                 );
                 recorded = true;
@@ -1197,9 +1231,10 @@ impl DashboardMaps {
                         }
                     }
                     if state.loading {
+                        let doing = if view.target.battle.is_some() { "drawing" } else { "Loading" };
                         ui.label(match state.hour {
                             Some(hour) => format!(
-                                "Showing {} · Loading {}",
+                                "Showing {} · {doing} {}",
                                 date(hour),
                                 date(view.target.hour)
                             ),
@@ -1365,6 +1400,8 @@ mod tests {
                 height: 100,
             },
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         assert!(service.source(&target.source_id).is_err());
         let requested = RequestedSource::target(&target);
@@ -1441,6 +1478,8 @@ mod tests {
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         let ctx = egui::Context::default();
         let frame = eframe::Frame::_new_kittest();
@@ -1495,6 +1534,8 @@ mod tests {
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
@@ -1572,6 +1613,8 @@ mod tests {
             bounds: bounds(0),
             clip: bounds(0),
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         let panel = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(200.0, 200.0));
         assert!(super::drawn_clip(&target, 1.0, panel).is_some());
@@ -1622,6 +1665,8 @@ mod tests {
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         let ctx = egui::Context::default();
         let frame = eframe::Frame::_new_kittest();

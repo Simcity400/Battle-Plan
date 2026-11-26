@@ -420,6 +420,66 @@ fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stret
 }
 
 #[test]
+fn elections_follow_only_schedule_and_eligibility_changes_on_the_selected_branch() {
+    use dashboard_base::products::at_hour::frame_panel;
+    use dashboard_base::test_fixtures::{materialized_frame, played};
+    use serde_json::json;
+
+    let branches: Vec<_> = [1, 2].map(|branch| {
+        let frames = (FIRST..=LAST).map(|hour| {
+            let mut frame = frame(hour);
+            frame.branch = branch;
+            let mut politics = frame.complete::<replay_data::rows::tables::Politics>().unwrap().to_vec();
+            politics[0].capital = hour;
+            politics[0].election_interval = (48 + branch as i32 + i32::from(hour >= 108)).into();
+            politics[1].ruling_party = Some(hour as u32);
+            if (120..123).contains(&hour) {
+                *frame.tables[TableId::Politics.index()] = TableView::Unavailable { reason: "damaged election schedule".into() };
+            } else if (125..129).contains(&hour) {
+                *frame.tables[TableId::Politics.index()] = TableView::Truncated { rows: TableRows::Politics(vec![politics.remove(0)]), missing: 1 };
+            } else {
+                set(&mut frame, TableId::Politics, TableRows::Politics(politics));
+            }
+            let mut counters = frame.complete::<replay_data::rows::tables::CountryCounterInputs>().unwrap().to_vec();
+            if counters[0].owned_state_count > 0 { counters[0].owned_state_count += hour; }
+            if matches!(hour, 125 | 126 | 128) { counters[0].owned_state_count = 1; }
+            set(&mut frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(counters));
+            frame
+        }).collect();
+        let mut records = snapshot_records(branch, frames);
+        for record in &mut records {
+            if let replay_capture_spool::spool::Record::Frame(frame) = record && (125..129).contains(&frame.hour) { frame.keyframe = false; }
+        }
+        records
+    }).into();
+    let load = dashboard_base::products::LoadContext { content: None };
+    for branch in [1, 2] {
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &branches[..branch as usize]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Arc::new(Source::from_replay(dashboard_base::SourceKey { source_id: "elections".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+        for mut params in [json!({}), json!({"countries":["GER"]})] {
+            params["branchId"] = branch.to_string().into();
+            let panel = (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.panel.unwrap().open)(&source, &load, &params).unwrap();
+            let exact = panel.exact().unwrap();
+            let mut whole = frame_panel::<super::elections::NextElections>(&source, &load, &params).unwrap();
+            let fresh = |panel: &mut dyn dashboard_follow::panel::Panel, hour| materialized_frame(panel, source.replay_ref(), branch, hour);
+            if branch == 1 {
+                let mut previous = None;
+                for step in played(source.replay_ref(), exact, FIRST, LAST) {
+                    let expected = fresh(&mut *whole, step.hour);
+                    assert_eq!(*step.value, expected, "hour {}", step.hour);
+                    if let Some(prior) = &previous { assert_eq!(step.product_calls, u64::from(prior != &expected), "hour {}", step.hour); }
+                    previous = Some(expected);
+                }
+            }
+            for hour in [109, 103, 121] {
+                let seek = (exact.advance)(hour, true, &false.into(), None);
+                assert_eq!(*seek.value, fresh(&mut *whole, hour));
+            }
+        }
+    }
+}
+
+#[test]
 fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusals() {
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         ("common/country_tags/synthetic.txt", "GER=\"countries/ger.txt\" ENG=\"countries/eng.txt\""),

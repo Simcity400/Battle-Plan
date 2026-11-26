@@ -481,7 +481,6 @@ impl AtHour for FactionPools {
     const TITLE: &'static str = "Faction pooled strength";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: Clock = Clock::InputsOnly;
-    const REPLY_NAMES_NO_HOUR: bool = true;
     type Params = FactionPoolsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, faction, pool];
     type Reply = FactionPoolsReply;

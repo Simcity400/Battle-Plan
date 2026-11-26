@@ -1,18 +1,16 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import type { FamilyViewProps } from '../../dashboard/definitions';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
 import { at, SPEC } from '../../dashboard/regionTime';
-import { productRequest } from '../../dashboard/request.ts';
 import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/index.ts';
 import type { SpecialProjectsReply } from '../../generated/dashboard';
 import ProjectDetails from './ProjectDetails';
 import { ProjectDossier } from './ProjectWindow';
-import { shownCard, unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
+import { projectWindowRequest, shownCard, unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import { openedProject } from './specialProjectsProjection.ts';
 
@@ -33,11 +31,8 @@ export default function CurrentProjectsView(props: FamilyViewProps) {
   }, [on, tag]);
   const action = useMemo(() => shown ? at(shown.hour) : SPEC, [shown?.hour]);
   const gate = useGate(runtime, widget, action, active && !!shown);
-  const recorded = shown ? gate.recorded(shown.hour) : null;
-  const request = useMemo(() => (shown && track && recorded !== null
-    ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-      params: { branchId: track.branch.id, country: countryFromKey(shown.tag), hour: recorded } })
-    : null), [shown, track, recorded]);
+  const request = useMemo(() => shown && track ? projectWindowRequest(track.source, track.branch.id, shown, gate.recorded) : null, [shown, track, gate.recorded]);
+  const recorded = request?.params.hour ?? null;
   const reply = useProduct<SpecialProjectsReply>(runtime.client, request, active && !!shown, validateSpecialProjectsReply, track?.source);
   const data = reply.data;
   const card = shown && data ? shownCard(data, shown.hour, shown.id) : null;

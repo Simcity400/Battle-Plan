@@ -8,6 +8,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { boundTiledSeries, BoundedSeriesCursor, clipMissingSpans, createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { projectScene, sceneReadRecorder } from '../scene.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
@@ -34,7 +35,7 @@ import { addPathCalls, pathAllocations, pathCalls } from './path2d.fixture.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, countrySeriesLooks, headReading, headValueOf } from './seriesHelpers.ts';
-import { timeAxisLabels } from '../../draw/kit.ts';
+import { resolveKitTokens, timeAxisLabels } from '../../draw/kit.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesDeclaration, navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
@@ -2776,5 +2777,801 @@ describe('time-chart PR 2 lines zero-Path2D drawing', () => {
     assert.equal(pathAllocations.count, 0);
     assert.equal(addPathCalls.count, 0);
     assert.equal(clips, 1, '10 plain lines share exactly one hoisted plot clip');
+  });
+});
+
+describe('time-chart PR 3 incremental buildBoundedStack', () => {
+  it('matches uncached buildBoundedStack across playback, null gaps, missing spans, within ranges, backward seek, and runs', () => {
+    const binA = 24;
+    const binB = 48;
+    const bucketsA: (ChartBucket | null)[] = Array.from({ length: 30 }, (_, i) => (
+      i === 8 || i === 9 ? null : makeBucket(H1936 + i * binA, H1936 + (i + 1) * binA - 1, 30 + (i % 5) * 4, 25, 50, 32 + (i % 4) * 3)
+    ));
+    const bucketsB: (ChartBucket | null)[] = Array.from({ length: 15 }, (_, i) => (
+      i === 5 ? null : makeBucket(H1936 + i * binB, H1936 + (i + 1) * binB - 1, 40 - (i % 4) * 5, 20, 45, 38 - (i % 3) * 4)
+    ));
+    const missingA = [{ firstHour: H1936 + 12 * binA, lastHour: H1936 + 13 * binA, reason: 'gap' }];
+    const tiledA: TiledLine = {
+      tag: 'A', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 30 * binA - 1, width: 30, buckets: bucketsA, tiles: { binHours: binA, valueAt: () => null } },
+      missing: missingA, parts: [], marks: null,
+    };
+    const tiledB: TiledLine = {
+      tag: 'B', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 15 * binB - 1, width: 15, buckets: bucketsB, tiles: { binHours: binB, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const cursorA = new BoundedSeriesCursor();
+    const cursorB = new BoundedSeriesCursor();
+    const withinB: readonly (readonly [number, number])[] = [[H1936 + 3 * binA, H1936 + 18 * binA]];
+    const checkHours = [
+      H1936 + 2 * binA + 6,
+      H1936 + 5 * binA + 12,
+      H1936 + 10 * binA + 3,
+      H1936 + 14 * binA + 18,
+      H1936 + 18 * binA + 1,
+      H1936 + 24 * binA + 5.5,
+      H1936 + 7 * binA + 4,
+      H1936 + 26 * binA + 9,
+    ];
+    for (const hour of checkHours) {
+      const bA = cursorA.advance(tiledA, hour, { headValue: knownValue(35) });
+      const bB = cursorB.advance(tiledB, hour, { headValue: knownValue(40) });
+      const inputs = [
+        { id: 'a', key: 'a', name: 'A', color: LANE_THEME.blue, parts: [{ series: bA }], head: { value: 35 } },
+        { id: 'b', key: 'b', name: 'B', color: LANE_THEME.amber, parts: [{ series: bB, within: withinB }], head: { value: 40 } },
+      ];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `stack parity failed at offset ${hour - H1936}`);
+    }
+
+    const runs: Run[] = Array.from({ length: 20 }, (_, i) => ({
+      firstHour: H1936 + i * 24,
+      lastHour: H1936 + i * 24 + (i === 6 ? 10 : 23),
+      value: 20 + (i % 6) * 5,
+      ...(i === 10 ? { breakBefore: true } : {}),
+    }));
+    const runTiled: TiledLine = {
+      tag: 'R', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 20 * 24 - 1, width: 20, buckets: [], runs, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const runCursor = new BoundedSeriesCursor();
+    for (const hour of [H1936 + 30, H1936 + 160, H1936 + 250, H1936 + 420, H1936 + 90]) {
+      const bR = runCursor.advance(runTiled, hour, { headValue: knownValue(25) });
+      const inputs = [{ id: 'r', key: 'r', name: 'R', color: LANE_THEME.green, parts: [{ series: bR }], head: { value: 25 } }];
+      const cached = buildBoundedStack(inputs, hour);
+      const uncached = (() => {
+        timeChartCacheState.enabled = false;
+        try { return buildBoundedStack(inputs, hour); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(cached, uncached, `run stack parity failed at offset ${hour - H1936}`);
+    }
+
+    const futureRunTiled: TiledLine = {
+      tag: 'FR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 10,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 10 },
+          { firstHour: H1936 + 6, lastHour: H1936 + 6, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedAt6 = boundTiledSeries(futureRunTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureInputs = [{ id: 'fr', key: 'fr', name: 'FR', color: LANE_THEME.blue, parts: [{ series: boundedAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future run beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before run 2');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the run gap');
+
+    const futureBucketTiled: TiledLine = {
+      tag: 'FB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [
+          makeBucket(H1936, H1936, 10),
+          null, null, null, null, null,
+          makeBucket(H1936 + 6, H1936 + 6, 20),
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedBucketAt6 = boundTiledSeries(futureBucketTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureBucketInputs = [{ id: 'fb', key: 'fb', name: 'FB', color: LANE_THEME.blue, parts: [{ series: boundedBucketAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future bucket beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before bucket 2');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the bucket lookahead gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'second forward advance to 6 keeps the bucket gap');
+
+    const clippedRunTiled: TiledLine = {
+      tag: 'CR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936 + 10, value: 15 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const clippedAt4 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 4));
+    const clippedAt5 = boundTiledSeries(clippedRunTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt4 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 4, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'cr', key: 'cr', name: 'CR', color: LANE_THEME.blue, parts: [{ series: clippedAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 5, H1936 + 6],
+      'clipped tail run endpoint never becomes a permanent cached row',
+    );
+
+    const nullWithMissingTiled: TiledLine = {
+      tag: 'NM', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 11, width: 1, buckets: [null], tiles: { binHours: 12, valueAt: () => null } },
+      missing: [
+        { firstHour: H1936, lastHour: H1936, reason: 'gap0' },
+        { firstHour: H1936 + 3, lastHour: H1936 + 3, reason: 'gap3' },
+      ],
+      parts: [], marks: null,
+    };
+    const nmAt1 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 1));
+    const nmAt5 = boundTiledSeries(nullWithMissingTiled, displayedHour(H1936 + 5));
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt1 }] }], H1936 + 5).hours,
+      [H1936, H1936 + 5],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'nm', key: 'nm', name: 'NM', color: LANE_THEME.blue, parts: [{ series: nmAt5 }] }], H1936 + 6).hours,
+      [H1936, H1936 + 3, H1936 + 6],
+      'all-null bucket never hides a newly visible missing span',
+    );
+
+    const withinTiled: TiledLine = {
+      tag: 'W', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 24, width: 1, buckets: [makeBucket(H1936, H1936 + 23, 5)], tiles: { binHours: 24, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const bW = boundTiledSeries(withinTiled, displayedHour(H1936 + 24));
+    const unrestricted = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW }] }], H1936 + 24);
+    const emptyWithin = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW, within: [] }] }], H1936 + 24);
+    assert.deepEqual(unrestricted.bands[0]!.values, [5, 5, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.values, [null, null, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.outside, [true, true, true]);
+
+    const negZero = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: 0, parts: [{ series: bW }] }], H1936 + 24);
+    const negZeroMinus = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: -0, parts: [{ series: bW }] }], H1936 + 24);
+    assert.equal(Object.is(negZero.bands[0]!.values[0], 0), true);
+    assert.equal(Object.is(negZeroMinus.bands[0]!.values[0], -0), true);
+
+    const openEnded = buildBoundedStack([{ id: 'o', key: 'o', name: 'O', color: LANE_THEME.blue, parts: [{ within: [[-Infinity, Infinity]] }] }], 2);
+    assert.deepEqual(openEnded.hours, [-Infinity, 2]);
+
+    let denseReads = 0;
+    const denseBuckets = Array.from({ length: 1005 }, (_, i) => {
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 5));
+      return new Proxy(b, { get: (target, prop) => { denseReads++; return Reflect.get(target, prop); } });
+    });
+    const denseTiled: TiledLine = {
+      tag: 'D', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: denseBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const longRunTiled: TiledLine = {
+      tag: 'LR', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: [], runs: [{ firstHour: H1936, lastHour: H1936 + 1004, value: 42 }], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const nullTiled: TiledLine = {
+      tag: 'N', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: Array.from({ length: 1005 }, () => null), tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const dCur = new BoundedSeriesCursor();
+    const lCur = new BoundedSeriesCursor();
+    const nCur = new BoundedSeriesCursor();
+    const stepDenseWith = (other: TiledLine, oCur: BoundedSeriesCursor, h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'o', key: 'o', name: 'O', color: LANE_THEME.amber, parts: [{ series: oCur.advance(other, h, { headValue: knownValue(42) }) }], head: { value: 42 } },
+    ], h);
+    stepDenseWith(longRunTiled, lCur, H1936 + 998);
+    denseReads = 0;
+    const step999Run = stepDenseWith(longRunTiled, lCur, H1936 + 999);
+    assert.ok(denseReads < 40, `long straddling run does not force dense band resample (reads=${denseReads})`);
+    assert.equal(step999Run.hours[step999Run.hours.length - 1], H1936 + 999);
+    stepDenseWith(nullTiled, nCur, H1936 + 998);
+    denseReads = 0;
+    stepDenseWith(nullTiled, nCur, H1936 + 999);
+    assert.ok(denseReads < 40, `all-null band does not force dense band resample (reads=${denseReads})`);
+
+    const trailingNullTiled: TiledLine = {
+      tag: 'TN', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 1004,
+        width: 1005,
+        buckets: [makeBucket(H1936, H1936, 7), ...Array.from({ length: 999 }, () => null), makeBucket(H1936 + 1000, H1936 + 1000, 9), ...Array.from({ length: 4 }, () => null)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const tnCur = new BoundedSeriesCursor();
+    const stepTrailing = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'tn', key: 'tn', name: 'TN', color: LANE_THEME.amber, parts: [{ series: tnCur.advance(trailingNullTiled, h, { headValue: knownValue(7) }), within: [[H1936, H1936]] }], head: { value: 7 } },
+    ], h);
+    stepTrailing(H1936 + 998);
+    denseReads = 0;
+    stepTrailing(H1936 + 999);
+    assert.ok(denseReads < 40, `trailing nulls after early observation do not force dense band resample (reads=${denseReads})`);
+    const wakeCached = stepTrailing(H1936 + 1001);
+    const wakeUncached = (() => {
+      timeChartCacheState.enabled = false;
+      try { return stepTrailing(H1936 + 1001); }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(wakeCached, wakeUncached, 'waking up after trailing nulls matches uncached');
+
+    const firstBreakTiled: TiledLine = {
+      tag: 'FBRK', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 19,
+        width: 2,
+        buckets: [
+          makeBucket(H1936, H1936, 3),
+          { ...makeBucket(H1936 + 10, H1936 + 19, 5), firstBreak: true },
+        ],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 3 },
+          { firstHour: H1936 + 12, lastHour: H1936 + 19, value: 5, breakBefore: true },
+        ],
+        tiles: { binHours: 10, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const fbSeries = boundTiledSeries({ ...firstBreakTiled, summary: { ...firstBreakTiled.summary, runs: undefined } }, displayedHour(H1936 + 12), {
+      prefixRuns: firstBreakTiled.summary.runs,
+    });
+    const fbRes = buildBoundedStack([{ id: 'fbk', key: 'fbk', name: 'FBK', color: LANE_THEME.blue, parts: [{ series: fbSeries }] }], H1936 + 12);
+    assert.deepEqual(fbRes.hours, [H1936, H1936 + 1, H1936 + 12], 'clipped firstBreak bucket preserves the gap on first render');
+    assert.deepEqual(fbRes.bands[0]!.values, [3, null, 5]);
+
+    const mixedRunTiled: TiledLine = {
+      tag: 'MR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 30,
+        width: 31,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936 + 10, value: 10 },
+          { firstHour: H1936 + 11, lastHour: H1936 + 30, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedBucketTiled: TiledLine = {
+      tag: 'MB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 17,
+        width: 2,
+        buckets: [makeBucket(H1936, H1936 + 8, 5), makeBucket(H1936 + 9, H1936 + 17, 6)],
+        tiles: { binHours: 9, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedInputs = [
+      { id: 'mr', key: 'mr', name: 'MR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(mixedRunTiled, displayedHour(H1936 + 15)) }] },
+      { id: 'mb', key: 'mb', name: 'MB', color: LANE_THEME.amber, parts: [{ series: boundTiledSeries(mixedBucketTiled, displayedHour(H1936 + 15), { prefixRuns: [{ firstHour: H1936 + 9, lastHour: H1936 + 15, value: 6 }] }) }] },
+    ];
+    assert.deepEqual(buildBoundedStack(mixedInputs, H1936 + 15).hours, [H1936, H1936 + 8, H1936 + 9, H1936 + 10, H1936 + 11, H1936 + 15], 'mixed run and bucket bands preserve run transitions across prefix boundary');
+
+    const shrinkRunTiled: TiledLine = {
+      tag: 'SR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936, value: 1 }, { firstHour: H1936 + 10, lastHour: H1936 + 10, value: 2 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking run slice drops gap revealed by removed observation',
+    );
+    const shrinkBucketTiled: TiledLine = {
+      tag: 'SB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [makeBucket(H1936, H1936, 1), ...Array.from({ length: 9 }, () => null), makeBucket(H1936 + 10, H1936 + 10, 2)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking bucket slice drops gap revealed by removed observation',
+    );
+
+    const shortBandTiled: TiledLine = {
+      tag: 'SHORT', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936, width: 1, buckets: [makeBucket(H1936, H1936, 5)], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const shCur = new BoundedSeriesCursor();
+    const stepShort = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'sh', key: 'sh', name: 'SH', color: LANE_THEME.amber, parts: [{ series: shCur.advance(shortBandTiled, h), within: [[H1936, H1936]] }] },
+    ], h);
+    stepShort(H1936 + 998);
+    denseReads = 0;
+    stepShort(H1936 + 999);
+    assert.ok(denseReads < 40, `exhausted short band does not force dense band resample (reads=${denseReads})`);
+
+    let periodicReads = 0;
+    const periodicBuckets = Array.from({ length: 1005 }, (_, i) => {
+      if (i % 3 !== 0) return null;
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 7));
+      return new Proxy(b, { get: (target, prop) => { periodicReads++; return Reflect.get(target, prop); } });
+    });
+    const periodicTiled: TiledLine = {
+      tag: 'PER', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: periodicBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const perCur = new BoundedSeriesCursor();
+    const stepPeriodic = (h: number) => buildBoundedStack([
+      { id: 'p', key: 'p', name: 'P', color: LANE_THEME.blue, parts: [{ series: perCur.advance(periodicTiled, h) }] },
+    ], h);
+    stepPeriodic(H1936 + 998);
+    for (const offset of [999, 1000, 1001, 1002]) {
+      periodicReads = 0;
+      const got = stepPeriodic(H1936 + offset);
+      assert.ok(periodicReads < 30, `periodic gaps stay O(1) at offset ${offset} (reads=${periodicReads})`);
+      const ref = (() => {
+        timeChartCacheState.enabled = false;
+        try { return stepPeriodic(H1936 + offset); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(got, ref, `periodic gaps match uncached at offset ${offset}`);
+    }
+
+    let wideReads = 0;
+    const wideRaw = Array.from({ length: 10000 }, (_, i) => (i === 0 ? makeBucket(H1936, H1936, 1) : i === 9999 ? makeBucket(H1936 + 9999, H1936 + 9999, 2) : null));
+    const wideBuckets = new Proxy(wideRaw, {
+      get: (target, prop) => {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) wideReads++;
+        return Reflect.get(target, prop);
+      },
+    });
+    const wideTiled: TiledLine = {
+      tag: 'WIDE', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 9999, width: 10000, buckets: wideBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const wideSlice = boundTiledSeries(wideTiled, displayedHour(H1936 + 9999));
+    const wideInputs = [{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: wideSlice }] }];
+    buildBoundedStack(wideInputs, H1936 + 3);
+    wideReads = 0;
+    const wideAt4 = buildBoundedStack(wideInputs, H1936 + 4);
+    assert.deepEqual(wideAt4.hours, [H1936, H1936 + 4]);
+    assert.ok(wideReads < 20, `wide slice caps null-bucket scan at requested hour (reads=${wideReads})`);
+  });
+});
+
+describe('time-chart PR 4 backdrop cache & hover layout reuse', () => {
+  it('reuses hovered layout while scrubbing along one line and updates when switching series', () => {
+    const model: TimeChartModel = {
+      kind: 'hover-reuse',
+      measureTitle: 'Hover reuse',
+      mode: 'lines',
+      hour: H1936 + 10,
+      extent: [H1936, H1936 + 10],
+      yAxis: { format: 'number', fixed: [0, 100] },
+      series: [
+        { id: 'A', key: 'A', name: 'Alpha', color: LANE_THEME.blue, role: 'primary', points: [{ hour: H1936, value: 20 }, { hour: H1936 + 10, value: 40 }], headValue: 40, endLabel: { name: 'Alpha', fullName: 'Alpha', value: '40' } },
+        { id: 'B', key: 'B', name: 'Beta', color: LANE_THEME.amber, role: 'primary', points: [{ hour: H1936, value: 30 }, { hour: H1936 + 10, value: 60 }], headValue: 60, endLabel: { name: 'Beta', fullName: 'Beta', value: '60' } },
+      ],
+    };
+    const surface = { width: 520, height: 240, dpr: 1 };
+    const binding = { kind: 'hover-reuse' as const, zoom: null };
+    const measureCtx = { measureText: (s: string) => ({ width: s.length * 7 }) } as unknown as OffscreenCanvasRenderingContext2D;
+    const layout = timeChartLane.layout(model, binding as never, surface, LANE_THEME, measureCtx, null as never, null as never);
+    const art = new LaneArtCache();
+    const endLabels = layout.base!.endLabels;
+    let endLabelMaps = 0;
+    const origMap = endLabels.map.bind(endLabels);
+    (endLabels as { map: typeof endLabels.map }).map = ((...args: Parameters<typeof endLabels.map>) => {
+      endLabelMaps++;
+      return origMap(...args);
+    }) as typeof endLabels.map;
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:A@${H1936 + 2}`, art } as never, [200, 120]);
+    assert.equal(endLabelMaps, 1, 'first hover on series A builds faded endLabels once');
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:A@${H1936 + 8}`, art } as never, [260, 120]);
+    assert.equal(endLabelMaps, 1, 'scrubbing along series A reuses the cached hovered layout');
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:B@${H1936 + 8}`, art } as never, [260, 120]);
+    assert.equal(endLabelMaps, 2, 'switching to series B rebuilds the hovered layout');
+    art.dispose();
+  });
+});
+
+describe('time-chart selectedHour pinned day marker', () => {
+  it('adds zero draw calls when absent, paints with theme.selectedHour distinct from playhead when present, and skips repaints when pinned', () => {
+    const baseModel = (mode: 'lines' | 'stack', selectedHour?: number | null): TimeChartModel => ({
+      kind: 'selected-hour-fixture',
+      measureTitle: 'Pinned fixture',
+      mode,
+      hour: 200,
+      ...(selectedHour !== undefined ? { selectedHour } : {}),
+      extent: [100, 200],
+      yAxis: { format: 'number' },
+      series: mode === 'lines'
+        ? [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', role: 'primary', points: [{ hour: 100, value: 10 }, { hour: 200, value: 20 }], headValue: 20, headHour: 200 }]
+        : [],
+      ...(mode === 'stack' ? { stack: { hours: [100, 200], bands: [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', values: [10, 20] }], step: true } } : {}),
+    });
+
+    for (const mode of ['lines', 'stack'] as const) {
+      const absent = baseModel(mode);
+      const absentLayout = layoutTimeChart(absent, 600, 220, FONT, measure);
+      assert.equal(absentLayout.selectedX, null);
+      const outOfViewLayout = layoutTimeChart(baseModel(mode, 50), 600, 220, FONT, measure);
+      assert.equal(outOfViewLayout.selectedX, null);
+
+      const present = baseModel(mode, 150);
+      const presentLayout = layoutTimeChart(present, 600, 220, FONT, measure);
+      assert.equal(presentLayout.selectedX, presentLayout.toX(150));
+
+      const paintStyles = (model: TimeChartModel, layout: ReturnType<typeof layoutTimeChart>) => {
+        const { ctx, ops } = mockCanvas(600, 220);
+        const strokes: string[] = [];
+        const fills: string[] = [];
+        const origStroke = ctx.stroke.bind(ctx);
+        const origFill = ctx.fill.bind(ctx);
+        ctx.stroke = () => { strokes.push(String(ctx.strokeStyle)); origStroke(); };
+        ctx.fill = () => { fills.push(String(ctx.fillStyle)); origFill(); };
+        drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+        return { ops: ops.length, strokes, fills };
+      };
+      const withoutMarker = paintStyles(absent, absentLayout);
+      const withMarker = paintStyles(present, presentLayout);
+      const tokens = resolveKitTokens(LANE_THEME);
+      assert.ok(withMarker.ops > withoutMarker.ops);
+      assert.notEqual(tokens.selectedHour, tokens.playhead, 'selectedHour colour is distinct from playhead');
+      assert.ok(withMarker.strokes.includes(tokens.selectedHour), `${mode}: selectedHour line uses theme accent token`);
+      assert.ok(withMarker.fills.includes(LANE_THEME.accent), `${mode}: selectedHour caret uses theme accent`);
+      assert.ok(!withoutMarker.strokes.includes(tokens.selectedHour), `${mode}: absent selectedHour draws no marker`);
+    }
+
+    const counts = { paints: 0 };
+    registerFamilyProjection({
+      kind: 'selected-hour-pinned-fixture',
+      family: 'time-chart',
+      project: (view: { readonly hour: number }, opts: { readonly selectedHour: number }) => ({
+        kind: 'selected-hour-pinned-fixture',
+        measureTitle: 'Pinned',
+        mode: 'stack',
+        hour: view.hour,
+        selectedHour: opts.selectedHour,
+        extent: [100, 300],
+        yAxis: { format: 'number' },
+        series: [],
+        stack: { hours: [100, 300], bands: [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', values: [10, 20] }], step: true },
+      }),
+    } as never);
+    const lane = {
+      ...timeChartLane,
+      paint: (...args: Parameters<typeof timeChartLane.paint>) => { counts.paints++; return timeChartLane.paint(...args); },
+    };
+    const recording = installRecordingCanvas();
+    try {
+      const view = createLaneView(lane, () => {});
+      const binding = new LaneTransport().carry({
+        family: 'time-chart',
+        kind: 'selected-hour-pinned-fixture',
+        options: { selectedHour: 150 },
+        sources: {},
+        extent: [100, 300],
+        width: 600,
+        height: 220,
+        scrollTop: 0,
+        theme: LANE_THEME,
+      } as TimeChartBinding);
+      const state = new Map<string, unknown>();
+      let seq = 0;
+      const paintAt = (hour: number) => view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: binding,
+        hour,
+        seek: 0,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 600, height: 220, dpr: 1 }], offset: 0, pin: 200 },
+        inspect: null,
+        now: 1000,
+      }, state, () => `c${++seq}`);
+      paintAt(200);
+      assert.equal(counts.paints, 1);
+      counts.paints = 0;
+      for (let h = 201; h <= 224; h++) paintAt(200);
+      assert.equal(counts.paints, 0, 'pinned chart with unchanged selectedHour does zero repaints across 24 played hours');
+    } finally {
+      recording.restore();
+    }
+  });
+
+  it('keeps zoomed step-stack y-domain anchored on held runs and exposes recorded change hours to keyboard navigation', () => {
+    const model: TimeChartModel = {
+      kind: 'step-stack-zoom-fixture',
+      measureTitle: 'Consumption',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      view: { x: [101, 200] },
+      yAxis: { format: 'number', min: 0 },
+      series: [],
+      stack: {
+        hours: [0, 145],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [0, 150] }],
+        step: true,
+      },
+    };
+    const constantZoom: TimeChartModel = {
+      ...model,
+      stack: {
+        hours: [0],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [123] }],
+        step: true,
+      },
+    };
+    const zoomedLayout = layoutTimeChart(constantZoom, 600, 220, FONT, measure);
+    assert.ok(zoomedLayout.yDomain[1] >= 123, `zoomed step-stack keeps held value 123 on y-axis (got ${zoomedLayout.yDomain.join('..')})`);
+
+    const navLayout = layoutTimeChart(model, 600, 220, FONT, measure);
+    const stops = chartNavStops(model, navLayout);
+    assert.ok(stops.some(([key]) => key === 'plot:145'), `keyboard navigation stops include recorded change hour 145 (got ${stops.map(s => s[0]).join(',')})`);
+    const structure = timeChartLane.structure!({ layout: { model, base: navLayout } } as Parameters<NonNullable<typeof timeChartLane.structure>>[0]);
+    assert.deepEqual(structure.nav, stops, 'lane structure exposes recorded change hour 145');
+
+    const reducedWorldTension: TimeChartModel = {
+      kind: 'world-tension-fixture',
+      measureTitle: 'World tension',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      yAxis: { format: 'percent' },
+      series: [],
+      stack: {
+        reduced: true,
+        hours: [0, 100, 200],
+        total: { values: [0, 25, 60] },
+        bands: [{ id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', values: [0, 25, 60] }],
+        step: true,
+      },
+      hoverDetail: { hour: 200, items: [{ label: 'World tension', value: '60%', strong: true }] },
+    };
+    const wtLayout = layoutTimeChart(reducedWorldTension, 600, 220, FONT, measure);
+    const totalTip = deriveTimeChartTooltip(reducedWorldTension, wtLayout, 'label:__total__');
+    const bandTip = deriveTimeChartTooltip(reducedWorldTension, wtLayout, 'label:GER');
+    assert.ok((totalTip?.payload?.items?.length ?? 0) >= 2, 'reduced World Tension total end-label keeps its tooltip items');
+    assert.ok((bandTip?.payload?.items?.length ?? 0) >= 1, 'reduced World Tension band end-label keeps its tooltip items');
+
+    const fractionalZoom: TimeChartModel = {
+      kind: 'fractional-zoom-end',
+      measureTitle: 'Fuel burned',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      view: { x: [0, 15.6] },
+      yAxis: { format: 'compact' },
+      series: [],
+      stack: {
+        reduced: true,
+        bucketed: true,
+        hours: [0, 15],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [10, 20] }],
+        step: true,
+      },
+      hoverDetail: { hour: 15, items: [{ label: 'Army', value: '20' }], replacesSeries: true },
+    };
+    const fracLayout = layoutTimeChart(fractionalZoom, 600, 220, FONT, measure);
+    const fracTip = deriveTimeChartTooltip(fractionalZoom, fracLayout, 'plot:15.6');
+    assert.equal(fracTip?.payload?.items?.[0]?.value, '20', 'fractional plot key matches exact hoverDetail at floored integer hour 15');
+
+    const disjointLine = makeTiledLine('GER', [makeBucket(0, 17, 10, 10, 10, 10, 0)]);
+    const disjointBounded = boundTiledSeries(disjointLine, displayedHour(10), {
+      prefixRuns: [
+        { firstHour: 0, lastHour: 0, value: 10 },
+        { firstHour: 8, lastHour: 10, value: 10, breakBefore: true },
+      ],
+    });
+    const disjointSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: disjointBounded };
+    const disjointModel: TimeChartModel = {
+      kind: 'disjoint-open-bucket',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 10,
+      extent: [0, 17],
+      yAxis: { format: 'number' },
+      series: [disjointSeries],
+    };
+    const disjointLayout = layoutTimeChart(disjointModel, 600, 220, FONT, measure);
+    const { subpaths } = buildLineSubpaths(disjointSeries, disjointLayout, 10);
+    assert.equal(subpaths.length, 2, 'disjoint straddlingRuns paint as separate subpaths without connecting across the gap');
+    assert.equal(sampleSeriesValueAt(disjointSeries, 4, 10), null, 'hour 4 between disjoint straddlingRuns does not report an exact 10');
+    assert.equal(sampleSeriesValueAt(disjointSeries, 9, 10)?.value, 10);
+
+    const gappedRaw = makeTiledLine('GER', [
+      makeBucket(0, 17, 10, 10, 10, 10, 0),
+      { ...makeBucket(18, 35, 10, 10, 10, 10, 18), firstBreak: true },
+    ]);
+    const gappedLine = { ...gappedRaw, summary: { ...gappedRaw.summary, tiles: { binHours: 18, valueAt: () => null } } };
+    const gappedBounded = boundTiledSeries(gappedLine, displayedHour(35 - 1), {
+      prefixRuns: [{ firstHour: 30, lastHour: 34, value: 10 }],
+    });
+    const gappedSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: gappedBounded };
+    const gappedModel: TimeChartModel = {
+      kind: 'gapped-closed-to-open',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 34,
+      extent: [0, 35],
+      yAxis: { format: 'number' },
+      series: [gappedSeries],
+    };
+    const gappedLayout = layoutTimeChart(gappedModel, 600, 220, FONT, measure);
+    assert.equal(buildLineSubpaths(gappedSeries, gappedLayout, 34).subpaths.length, 2, 'closed bucket does not connect across gap to straddling run');
+
+    const flatBreakLine = makeTiledLine('GER', [{ ...makeBucket(0, 17, 3, 3, 3, 3, 0), hasBreak: true }]);
+    const flatBreakSeries = {
+      id: 'GER',
+      key: 'GER',
+      name: 'German Reich',
+      color: '#3366cc',
+      role: 'primary' as const,
+      bounded: boundTiledSeries(flatBreakLine, displayedHour(17)),
+    };
+    const flatBreakModel: TimeChartModel = {
+      kind: 'flat-break-tooltip',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 17,
+      extent: [0, 17],
+      yAxis: { format: 'number' },
+      series: [flatBreakSeries],
+    };
+    const flatBreakTip = deriveTimeChartTooltip(flatBreakModel, layoutTimeChart(flatBreakModel, 600, 220, FONT, measure), 'plot:5');
+    assert.equal(flatBreakTip?.payload?.items?.[0]?.value, undefined, 'flat bucket with internal break does not display exact value 3 before exact read');
+    assert.equal(flatBreakTip?.payload?.items?.[0]?.missingReason, 'This hour is inside a grouped span; its figures come from the read of this hour');
+
+    const continuousBuckets = [
+      makeBucket(0, 23, 10, 10, 10, 10, 0),
+      makeBucket(24, 47, 10, 10, 10, 10, 24),
+    ];
+    const continuousRaw = makeTiledLine('GER', continuousBuckets);
+    const continuousLine: TiledLine = {
+      ...continuousRaw,
+      summary: { ...continuousRaw.summary, tiles: { binHours: 24, valueAt: () => null } },
+    };
+    const continuousBounded = boundTiledSeries(continuousLine, displayedHour(30), {
+      prefixRuns: [{ firstHour: 0, lastHour: 47, value: 10, breakBefore: true }],
+    });
+    assert.notEqual(continuousBounded.straddlingRuns?.[0]?.breakBefore, true, 'clipping a run at bucket start drops an earlier segment-start break');
+    assert.equal(continuousBounded.buckets.at(1)?.firstBreak, false, 'cut straddling bucket drops an earlier segment-start break');
+    const continuousSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: continuousBounded };
+    const continuousModel: TimeChartModel = {
+      kind: 'continuous-straddle-boundary',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 30,
+      extent: [0, 47],
+      yAxis: { format: 'number' },
+      series: [continuousSeries],
+    };
+    const continuousLayout = layoutTimeChart(continuousModel, 600, 220, FONT, measure);
+    assert.equal(buildLineSubpaths(continuousSeries, continuousLayout, 30).subpaths.length, 1, 'continuous 0-47 run does not split at hour 24 bucket boundary');
+  });
+
+  it('reuses coarse BoundedSeries and source maps across identical ticks when head produces prefixRuns', () => {
+    const continuousBuckets = [
+      makeBucket(0, 23, 10, 10, 10, 10, 0),
+      makeBucket(24, 47, 10, 10, 10, 10, 24),
+    ];
+    const sceneTiles = new SceneTiles();
+    const wireLine = {
+      source: 'main',
+      tag: 'GER',
+      head: 'h',
+      decimals: 0,
+      binHours: 24,
+      from: 0,
+      to: 47,
+      width: 2,
+      buckets: continuousBuckets,
+      missing: [],
+      parts: [],
+    };
+    const staticScene = {
+      widget: 1,
+      subs: [{ id: 1, product: 'series-state', channel: 'pinned' as const }],
+      pictures: [{
+        h: 30,
+        c: 30,
+        parts: [{
+          h: 30,
+          c: 30,
+          value: {
+            kind: 'panel' as const,
+            bytes: null,
+            data: {
+              decimals: 0,
+              states: [{ tag: 'GER', run: { firstHour: 0, lastHour: 47, valueRaw: '10', startsSegment: true } }],
+            },
+            refused: null,
+          },
+          refused: null,
+          cells: [],
+          seeds: new Map(),
+          channel: 'pinned' as const,
+          version: 1,
+          bytes: 0,
+        }],
+        value: {
+          kind: 'panel' as const,
+          bytes: null,
+          data: {
+            decimals: 0,
+            states: [{ tag: 'GER', run: { firstHour: 0, lastHour: 47, valueRaw: '10', startsSegment: true } }],
+          },
+          refused: null,
+        },
+        refused: null,
+      }],
+      model: null,
+    };
+    const staticSources = { sources: { main: 1 } };
+    const staticBinding = {
+      tiledBySource: { main: { GER: wireLine } },
+      headSourceBySeries: { main: { answerName: 'main', tags: ['GER'] } },
+    };
+    const firstSeries = sceneTiles.series(staticScene as never, staticSources, staticBinding, 30);
+    const secondSeries = sceneTiles.series(staticScene as never, staticSources, staticBinding, 30);
+    assert.strictEqual(secondSeries?.get('main')?.get('GER'), firstSeries?.get('main')?.get('GER'), 'unchanged coarse series reuses BoundedSeries across identical ticks');
+    assert.strictEqual(secondSeries, firstSeries, 'unchanged coarse series reuses source map across identical ticks');
   });
 });

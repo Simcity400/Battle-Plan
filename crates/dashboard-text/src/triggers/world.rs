@@ -573,8 +573,16 @@ pub struct World<'a> {
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
-    accepted_projects: Option<Arc<AcceptedProjects>>,
+    accepted_projects: Option<ProjectReads<'a>>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProjectScope {
+    Owner(u32),
+    Country(u32),
+}
+
+pub type ProjectReads<'a> = &'a (dyn Fn(ProjectScope) -> Arc<AcceptedProjects> + Sync);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AcceptedProjects {
@@ -954,6 +962,7 @@ pub enum Query {
     CountryScientists(u32),
     ScientistActive(u32),
     ScientistLevel(u32, u32),
+    ResearchStatus(Vec<u64>),
 }
 
 impl World<'_> {
@@ -1000,6 +1009,7 @@ impl World<'_> {
             }
             Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
+            Query::ResearchStatus(keys) => super::inputs::digest(&self.research_status_rows(keys)),
             Query::Tag(slot) => super::inputs::digest(&self.tag_unrecorded(*slot)),
             Query::StateRow(state) => super::inputs::digest(&self.state_row_unrecorded(*state)),
             Query::ProvinceRow(province) => {
@@ -1618,13 +1628,13 @@ impl<'a> World<'a> {
         }
     }
 
-    pub fn with_accepted_projects(mut self, accepted: Option<Arc<AcceptedProjects>>) -> Self {
+    pub fn with_accepted_projects(mut self, accepted: Option<ProjectReads<'a>>) -> Self {
         self.accepted_projects = accepted;
         self
     }
 
-    pub(crate) fn accepted_projects(&self) -> Option<&AcceptedProjects> {
-        self.accepted_projects.as_deref()
+    pub(crate) fn accepted_projects(&self, scope: ProjectScope) -> Option<Arc<AcceptedProjects>> {
+        self.accepted_projects.map(|read| read(scope))
     }
 
     #[cfg(test)]
@@ -2374,7 +2384,7 @@ impl<'a> World<'a> {
         const COMPLETED: u64 =
             mask::<replay_data::rows::ProjectRow>(&["completed", "definition_id"]);
         let token = self.token_of(name)?;
-        if let Some(accepted) = self.accepted_projects() {
+        if let Some(accepted) = self.accepted_projects(ProjectScope::Country(slot)) {
             let Some(token) = token else {
                 return Err(format!("project {} has no recorded spelling at this hour, so whether it was completed is not recorded", String::from_utf8_lossy(name)).into());
             };
@@ -2407,6 +2417,22 @@ impl<'a> World<'a> {
             Ok((out, unresolved))
         })?;
         Ok(linked(projects.contains(&(slot, token)).then_some(()), unresolved)?.is_some())
+    }
+
+    pub fn research_status(&self, country: u32, database_index: i32) -> Result<bool, String> {
+        super::inputs::fields(self.frame, tables::CountryLinks::ID, &["canonical_slot"]);
+        let keys: Vec<_> = self.slot_links(country).iter()
+            .map(|&raw| u64::from(raw) << 32 | u64::from(database_index as u32))
+            .collect();
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::ResearchStatus(keys.clone())),
+            || self.research_status_rows(&keys),
+        )
+    }
+
+    fn research_status_rows(&self, keys: &[u64]) -> Result<bool, String> {
+        let rows = self.frame.complete::<tables::ResearchTechnologies>(0).map_err(|why| why.to_string())?;
+        Ok(rows.keys().any(|key| keys.contains(&(key as u64))))
     }
 
     fn slot_links(&self, slot: u32) -> &[u32] {

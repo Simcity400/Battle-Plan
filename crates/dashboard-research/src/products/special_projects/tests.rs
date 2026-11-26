@@ -1192,6 +1192,23 @@ fn the_current_view_carries_only_the_status_at_the_hour_and_the_one_before_it_wh
     assert_eq!(shown_runs(&relooked, 30), Some(0..=2), "completed statuses that follow each other keep the attempt before them");
 }
 
+fn materialized_at(mut reply: serde_json::Value, hour: i32) -> serde_json::Value {
+    fn clip(spans: &mut serde_json::Value, hour: i32) {
+        for span in spans.as_array_mut().unwrap() {
+            assert!(span["firstHour"].as_i64().unwrap() <= i64::from(hour));
+            if span["lastHour"].as_i64().unwrap() > i64::from(hour) { span["lastHour"] = hour.into(); }
+        }
+    }
+    for key in ["identities", "unresolved", "available", "partial", "reads"] {
+        clip(&mut reply[key], hour);
+    }
+    for project in reply["projects"].as_array_mut().unwrap() {
+        clip(&mut project["statuses"], hour);
+    }
+    reply["shown"]["through"] = hour.into();
+    reply
+}
+
 #[test]
 fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hour() {
     dashboard_core::test_fixtures::game::enter();
@@ -1250,7 +1267,7 @@ fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hou
         for at in [24, 25, 26, 27, 28] {
             let followed = (exact.advance)(at, at == 24, &cancelled, None).value.as_ref().as_ref().unwrap().clone();
             let direct = (exact.cold)(at, &cancelled).unwrap();
-            assert_eq!(followed, direct, "followed matches direct at hour {at} for {country:?}");
+            assert_eq!(materialized_at(followed, at), direct, "followed matches direct at hour {at} for {country:?}");
             if at == 25 {
                 let why = direct["unavailable"].as_str().expect("unknown holder hour must explain why Current is unavailable");
                 assert_eq!(why, format!("Who holds {subject} is not known: Countries was not complete at these hours"));
@@ -1261,6 +1278,32 @@ fn current_special_projects_names_the_unknown_holder_reason_at_the_requested_hou
                 assert_eq!(direct["unavailable"], serde_json::Value::Null, "known hour {at} should be available: {direct}");
             }
         }
+    }
+    let fixed = build("played-project-reads", (20..=35).map(|at| {
+        let stamp = if at < 25 { 20 } else if at < 32 { 25 } else { 32 };
+        let state = if stamp == 20 { (0x168, 1, 1, 0) } else { COMPLETED };
+        let mut frame = frame(at, &hour(stamp, state));
+        if let TableView::Complete(TableRows::SliceReads(rows)) = &mut *frame.tables[TableId::SliceReads.index()] {
+            for row in rows { row.sample_hour = stamp; }
+        }
+        if (29..=31).contains(&at) {
+            *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "Damaged project custody".into() };
+        }
+        frame
+    }).collect());
+    for current in [true, false] {
+        let asked = serde_json::json!({"branchId":"1", "country":"GER", "current":current});
+        let panel = dated_panel(&fixed, &load, &asked).unwrap();
+        let exact = panel.exact().unwrap();
+        for step in dashboard_base::test_fixtures::played(fixed.replay_ref(), exact, 20, 35) {
+            let at = step.hour;
+            let data = step.value.as_ref().as_ref().unwrap().clone();
+            assert_eq!(materialized_at(data, at), (exact.cold)(at, &cancelled).unwrap(), "current={current} at {at}");
+            assert_eq!(step.product_calls, u64::from(matches!(at, 20 | 25 | 29 | 32)), "current={current} at {at}");
+        }
+        let sought = (exact.advance)(22, true, &cancelled, None);
+        assert!(sought.fresh);
+        assert_eq!(materialized_at(sought.value.as_ref().clone().unwrap(), 22), (exact.cold)(22, &cancelled).unwrap());
     }
     let history = SpecialProjects::load(
         &source,

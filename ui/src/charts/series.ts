@@ -22,8 +22,6 @@ export function isOrderedSpans(value: unknown): value is (Record<string, unknown
 
 export type Breakable = Span & { breakBefore?: boolean; startsSegment?: boolean };
 
-export const breaksBefore = (run: Breakable) => run.breakBefore === true || run.startsSegment === true;
-
 export function runIndexAt(runs: readonly Span[], hour: number): number {
   let low = 0;
   let high = runs.length - 1;

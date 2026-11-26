@@ -208,7 +208,7 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     for (const [, callback] of queued) callback(0);
   };
   const rect = () => ({ left: 0, top: 0, right: 200, bottom: 200 });
-  const element = { getBoundingClientRect: rect } as unknown as HTMLElement;
+  const element = { getBoundingClientRect: rect, setAttribute() {}, removeAttribute() {}, closest: () => null } as unknown as HTMLElement;
   class FakeResizeObserver {
     observe() {}
     unobserve() {}

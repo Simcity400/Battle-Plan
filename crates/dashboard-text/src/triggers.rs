@@ -36,7 +36,7 @@ pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_b
 pub use variables::{Store, Temps};
 pub(crate) use world::{AuthoredStates, GeographyInputs, PreparedContent};
 pub use world::{
-    AcceptedProjects, ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
+    AcceptedProjects, ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, ProjectReads, ProjectScope, RecordedTemplate, World,
     required_invasion_hours,
 };
 pub use world::{LeaderVisibility, core_gap, fixed_round};

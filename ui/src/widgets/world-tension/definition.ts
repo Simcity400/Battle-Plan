@@ -51,10 +51,6 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   options: OPTIONS,
   viewSwitch: { option: 'view' },
-  migrate: (_from, { options = {}, ...widget }) => ({
-    ...widget,
-    options: { ...options, view: typeof options.view === 'string' && ['tension', 'race', 'lines', 'events'].includes(options.view) ? options.view : 'tension' },
-  }),
   variants: [
     ...choiceVariants(OPTIONS.find(field => field.key === 'values'), () => 'World tension contributions'),
     ...choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => choice.value === 'tension' ? 'World tension' : `World tension: ${choice.label}`),

@@ -21,6 +21,7 @@ import { worldTensionEventsDeclaration, worldTensionEventsProjection } from './w
 import { worldTensionLinesDeclaration, worldTensionLinesProjection } from './worldTensionLinesProjection.ts';
 import { worldTensionDeclaration, worldTensionProjection } from './worldTensionProjection.ts';
 import { DEFAULT_FAMILY_THEME } from '../../families/theme.fixture.ts';
+import { tensionStackAt } from './stackHistory.ts';
 
 const H1936 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const H1941 = engineHour({ year: 1941, month: 9, day: 15, hour: 1 })!;
@@ -86,6 +87,24 @@ function sampleStack(): WorldTensionStackReply {
 }
 
 describe('world-tension projections', () => {
+  it('combines the closed samples with the dated edge in rank and event order after a seek', () => {
+    const full = sampleStack();
+    const pieces = ([true, false] as const).map(closed => {
+      const take = <T>(values: T[]) => closed ? values.slice(0, 1) : values.slice(1);
+      return {
+        ...full, pieceStart: H1941, events: [full.events[closed ? 1 : 0]!],
+        hours: take(full.hours), total: take(full.total), totalRaw: take(full.totalRaw), sumRaw: take(full.sumRaw),
+        bands: full.bands.map(band => ({ ...band, holders: closed ? [] : band.holders,
+          values: take(band.values), valuesRaw: take(band.valuesRaw) })),
+        other: { ...full.other!, values: take(full.other!.values), valuesRaw: take(full.other!.valuesRaw) },
+      };
+    });
+    const history = { ...pieces[0]!, bands: [...pieces[0]!.bands].reverse() };
+    const edge = { ...pieces[1]!, eventPositions: [0] };
+    assert.deepEqual(tensionStackAt(history, edge), full);
+    assert.equal(tensionStackAt({ ...history, branchId: '2' }, edge), null);
+    assert.equal(tensionStackAt({ ...history, pieceStart: H1936 }, edge), null);
+  });
   it('hovers only installed contributors and Other in Share mode and withholds pre-membership readings', () => {
     const at = H1936 + 5;
     const base = sampleStack();
@@ -687,6 +706,9 @@ describe('world-tension projections', () => {
     } as never);
 
     const topCtx = mkCtx({ all: false, tags: [], top: 3 }, { kind: 'top', count: 3 });
+    const playing = worldTensionDeclaration.sources(topCtx, { ...viewReq, following: true });
+    assert.deepEqual(playing.entries.filter(entry => entry.read.shape === 'point' && entry.read.followQuery)
+      .map(entry => entry.name), ['history', 'main']);
     const stackTopParams = (worldTensionDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
     const linesTopParams = (worldTensionLinesDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;
     const eventsTopParams = (worldTensionEventsDeclaration.sources(topCtx, viewReq).entries[0]!.read as { params: Record<string, unknown> }).params;

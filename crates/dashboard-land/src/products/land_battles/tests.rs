@@ -111,7 +111,7 @@ fn unread_end_kind_hour_side_lists_and_lengths_stay_unknown_in_the_course() {
     census.insert(12, vec![(10, Some(CensusRead { province: Some(7), counts: Some([2, 2]) }))]);
     let mut durations = HashMap::new();
     durations.insert(12, vec![(10, Some(1)), (11, Some(2)), (12, None), (14, Some(5)), (15, Some(6)), (16, Some(9)), (18, Some(10)), (19, Some(11)), (20, Some(12)), (22, None)]);
-    let data = Combats { from: 10, census, sides: HashMap::new(), losses: HashMap::new(), durations };
+    let data = Combats { from: 10, census, sides: HashMap::new(), leads: HashMap::new(), losses: HashMap::new(), durations };
     let names = Names::new(&Holders::default());
     let links = dashboard_base::queries::country_ids::RunLinks { slots: HashMap::new() };
 
@@ -150,6 +150,30 @@ fn unread_end_kind_hour_side_lists_and_lengths_stay_unknown_in_the_course() {
     let lengths = Battle { combat: 12, start: 10, exact: true, live: vec![(10, 22)], ..Battle::default() };
     let runs: Vec<(i32, i32, Option<i32>)> = shape(&lengths, &data, &names, &links, 1, 30).battle.runs.iter().map(|run| (run.first_hour, run.last_hour, run.duration)).collect();
     assert_eq!(runs, [(10, 11, Some(1)), (12, 13, None), (14, 15, Some(5)), (16, 16, Some(9)), (17, 20, Some(9)), (21, 21, Some(12)), (22, 22, None)], "a length that turns unread at an unchanged census is missing for those hours, never carried on, and a jump or a hold starts a run of its own");
+
+    let split = Battle { combat: 12, start: 10, exact: true, live: vec![(10, 12), (16, 18)], ..Battle::default() };
+    let spans: Vec<(i32, i32)> = shape(&split, &data, &names, &links, 1, 30).battle.runs.iter().map(|run| (run.first_hour, run.last_hour)).collect();
+    assert_eq!(spans.first().map(|span| span.0), Some(10));
+    assert_eq!(spans.last().map(|span| span.1), Some(18));
+    assert!(spans.iter().all(|&(first, last)| last < 13 || first > 15), "the hours between a battle's live stretches are no run, so they show as not recorded: {spans:?}");
+
+    let result_only_runs = &result_only.runs;
+    assert!(result_only_runs.iter().all(|run| run.roster_unknown && run.counts == [0, 0] && run.countries_unknown == [true, true]), "a result-only key never borrows a live battle's divisions or countries: {result_only_runs:?}");
+
+    let mut sides = HashMap::new();
+    sides.insert(13, vec![(10, Some([Some(vec![7]), Some(vec![8])]))]);
+    let mut leads = HashMap::new();
+    leads.insert((10, 13), [Some(7), Some(8)]);
+    let relinked = Combats { from: 10, census: HashMap::new(), sides, leads, losses: HashMap::new(), durations: HashMap::new() };
+    let links = dashboard_base::queries::country_ids::RunLinks { slots: HashMap::from([(7, vec![(10, 14, Some(3)), (15, 30, Some(4))]), (8, vec![(10, 30, Some(5))])]) };
+    let names = Names { slots: HashMap::from([(3, vec![("AAA".to_owned(), 10, 30)]), (4, vec![("BBB".to_owned(), 10, 30)]), (5, vec![("CCC".to_owned(), 10, 17), ("DDD".to_owned(), 18, 30)])]) };
+    let battle = Battle { combat: 13, start: 10, exact: true, live: vec![(10, 20)], ..Battle::default() };
+    let runs: Vec<(i32, i32, Option<u32>, [Vec<String>; 2])> = shape(&battle, &relinked, &names, &links, 1, 30).battle.runs.into_iter().map(|run| (run.first_hour, run.last_hour, run.leads[0].as_ref().map(|lead| lead.slot), run.countries)).collect();
+    assert_eq!(runs, [
+        (10, 14, Some(3), [vec!["AAA".to_owned()], vec!["CCC".to_owned()]]),
+        (15, 17, Some(4), [vec!["BBB".to_owned()], vec!["CCC".to_owned()]]),
+        (18, 20, Some(4), [vec!["BBB".to_owned()], vec!["DDD".to_owned()]]),
+    ], "a country's slot or tag changing in the battle starts a run, so its lead and countries are read at their own hour");
 
 }
 
@@ -290,4 +314,53 @@ fn the_battle_log_shows_only_observed_losses_and_keeps_final_results_and_gaps() 
     let course = LandBattleCourses::load(&source, &serde_json::from_value(serde_json::json!({ "branchId": "1", "id": "1:32:103:104" })).unwrap(), &LoadContext { content: None }, &cancel).unwrap();
     let terminal = course.battle.losses.last().expect("agreed equipment losses are a result's losses though both manpower totals disagree");
     assert!(terminal.terminal && matches!(&terminal.sides, LandLossSides::Read([LandLossSide::Variants { manpower: LandManpower::Unknown(_), .. }, _])), "{terminal:?}");
+}
+
+#[test]
+fn a_sides_men_are_its_divisions_manpower_and_one_unread_division_leaves_them_unrecorded() {
+    let members = vec![(10, Some([Some(vec![1, 2, 1]), Some(vec![3])])), (12, Some([Some(vec![1]), Some(vec![3, 4])])), (14, None), (15, Some([Some(vec![1]), None]))];
+    let manpower = HashMap::from([
+        (1, vec![(10, Some(9000)), (11, Some(8700))]),
+        (2, vec![(10, Some(500))]),
+        (3, vec![(10, Some(4000))]),
+        (4, vec![(13, Some(100))]),
+    ]);
+    assert_eq!(
+        men_reads(&members, &manpower, 10, 16),
+        [
+            LandMenRead { hour: 10, sides: [Some(9500), Some(4000)] },
+            LandMenRead { hour: 11, sides: [Some(9200), Some(4000)] },
+            LandMenRead { hour: 12, sides: [Some(8700), None] },
+            LandMenRead { hour: 13, sides: [Some(8700), Some(4100)] },
+            LandMenRead { hour: 14, sides: [None, None] },
+            LandMenRead { hour: 15, sides: [Some(8700), None] },
+        ],
+        "an unread side list leaves only that side's men unrecorded"
+    );
+    assert_eq!(men_reads(&[], &HashMap::new(), 10, 12), [LandMenRead { hour: 10, sides: [None, None] }], "no roster read is no men, never zero");
+    assert_eq!(
+        men_reads(&[(10, Some([Some(Vec::new()), Some(vec![3])]))], &HashMap::new(), 10, 10),
+        [LandMenRead { hour: 10, sides: [Some(0), None] }],
+        "a side with no divisions has no men without any manpower read"
+    );
+}
+
+#[test]
+fn ic_lost_follows_a_build_cost_recorded_after_the_loss_without_a_new_loss_read() {
+    let step = |hour, price: Option<i64>| lanes::Step { hour, cells: price.map(|price| vec![Cell::Number(price)].into_boxed_slice()) };
+    let costs = lanes::History {
+        keys: vec![(7, vec![step(10, None), step(14, Some(300_000))])],
+        statuses: vec![lanes::StatusRun { first: 10, last: 20, status: replay_columnar::manifest::Status::Complete }],
+        ..lanes::History::default()
+    };
+    let lost = Losses { manpower: [Some(5), Some(0)], equipment: [Some(vec![LandEquipmentLoss { variant: 7, amount_raw: 200_000 }]), Some(Vec::new())] };
+    let course = vec![(10, false, Some(lost)), (18, false, None)];
+    assert_eq!(
+        ic_reads(&course, &costs),
+        [
+            LandIcRead { hour: 10, sides: [None, Some(0.0)] },
+            LandIcRead { hour: 14, sides: [Some(6.0), Some(0.0)] },
+            LandIcRead { hour: 18, sides: [None, None] },
+        ]
+    );
 }

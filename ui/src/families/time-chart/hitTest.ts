@@ -86,9 +86,19 @@ function sampleBoundedAt(
   }
   const idx = Math.floor((hour - bounded.from) / bounded.binHours);
   if (idx < 0 || idx >= bounded.buckets.length) return null;
+  if (idx === bounded.buckets.closedLength && bounded.straddling === 'cut' && bounded.straddlingRuns?.length) {
+    for (const run of bounded.straddlingRuns) {
+      if (hour < run.firstHour) break;
+      if (hour <= run.lastHour) {
+        const v = run.value * scale;
+        return { value: v, min: v, max: v, exact: true };
+      }
+    }
+    return null;
+  }
   const bucket = bounded.buckets.at(idx);
   if (!bucket || hour < bucket.firstHour || hour > bucket.lastHour) return null;
-  const exact = bucket.firstHour === bucket.lastHour || bucket.minValue === bucket.maxValue;
+  const exact = !bucket.hasBreak && (bucket.firstHour === bucket.lastHour || bucket.minValue === bucket.maxValue);
   return { value: bucket.lastValue * scale, min: bucket.minValue * scale, max: bucket.maxValue * scale, exact };
 }
 
@@ -279,18 +289,35 @@ function artUrlOf(slot: { readonly art: { readonly status: string; readonly url?
   return slot?.art.status === 'ready' ? slot.art.url : undefined;
 }
 
-function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string): TooltipListItem[] {
+function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string, mergeHover = false): TooltipListItem[] {
   const entries: { readonly sortVal: number; readonly item: TooltipListItem }[] = [];
   if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
+    if (hour > model.hour) return [];
     let at = -1;
     for (let i = 0; i < model.stack.hours.length; i++) {
       if (model.stack.hours[i]! <= hour) at = i;
       else break;
     }
-    if (at >= 0 && model.stack.reduced && model.stack.hours[at] !== hour && at + 1 < model.stack.hours.length) {
-      return model.hoverDetail?.hour === hour
+    const anyBandAt = at >= 0 && model.stack.bands.some(band => (
+      (band.values[at] !== null && band.values[at] !== undefined && Number.isFinite(band.values[at]) && !band.outside?.[at])
+      || Boolean(!band.outside?.[at] && band.missingReason?.[at])
+    ));
+    if (at >= 0 && !anyBandAt && !(model.stack.total?.values[at] != null)) {
+      return [];
+    }
+    const insideGrouped = model.stack.bucketed
+      ? true
+      : Boolean(model.stack.reduced && model.stack.hours[at] !== hour && at + 1 < model.stack.hours.length);
+    if (at >= 0 && (insideGrouped || model.stack.hoverPendingMessage)) {
+      return mergeHover && model.hoverDetail?.hour === hour
         ? []
-        : [{ label: model.measureTitle, missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour', tone: 'muted' }];
+        : [{
+            label: model.measureTitle,
+            missingReason: insideGrouped
+              ? 'This hour is inside a grouped span; its figures come from the read of this hour'
+              : model.stack.hoverPendingMessage!,
+            tone: 'muted',
+          }];
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
@@ -301,10 +328,40 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       for (const band of model.stack.bands) {
         if (only !== undefined && band.id !== only) continue;
         const v = band.values[at];
-        if (v === null || v === undefined || !Number.isFinite(v) || band.outside?.[at]) continue;
+        if (v === null || v === undefined || !Number.isFinite(v) || band.outside?.[at]) {
+          const reason = !band.outside?.[at] ? band.missingReason?.[at] : null;
+          if (reason) {
+            const look = seriesLookAt(band, hour);
+            const flagUrl = artUrlOf(look.flag);
+            entries.push({
+              sortVal: -Infinity,
+              item: {
+                label: look.name,
+                missingReason: reason,
+                swatch: look.color,
+                tone: 'muted',
+                ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+              },
+            });
+          }
+          continue;
+        }
         const bandExact = band.exact?.[at];
         const look = seriesLookAt(band, hour);
         const flagUrl = artUrlOf(look.flag);
+        if (v === 0 && band.clampedZeroReason) {
+          entries.push({
+            sortVal: -Infinity,
+            item: {
+              label: look.name,
+              missingReason: band.clampedZeroReason,
+              swatch: look.color,
+              tone: 'muted',
+              ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+            },
+          });
+          continue;
+        }
         entries.push({
           sortVal: v,
           item: {
@@ -387,8 +444,22 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         }
         continue;
       }
+      if (!sampled.exact && sampled.min === sampled.max) {
+        entries.push({
+          sortVal: -Infinity,
+          item: {
+            label: look.name,
+            missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour',
+            swatch: look.color,
+            tone: 'muted',
+            ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+            ...(iconUrl ? { icon: iconUrl } : {}),
+          },
+        });
+        continue;
+      }
       const partialSpan = s.partialSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
-      const text = sampled.exact || sampled.min === sampled.max
+      const text = sampled.exact
         ? formatExactFigure(sampled.value, model, model.yAxis.format, sampled.raw, sampled.denominator)
         : `${formatChartAxisValue(sampled.min, model.yAxis.format)}\u2013${formatChartAxisValue(sampled.max, model.yAxis.format)}`;
       entries.push({
@@ -589,9 +660,9 @@ export function deriveTimeChartTooltip(
     };
   }
 
-  const hour = parsed.hour;
+  const hour = Math.floor(parsed.hour);
   const atHour = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail : null;
-  const items = atHour?.replacesSeries ? [] : seriesTooltipItemsAt(model, hour);
+  const items = atHour?.replacesSeries ? [] : seriesTooltipItemsAt(model, hour, undefined, Boolean(atHour));
   const detail = (parsed.kind === 'line' ? atHour?.itemsBySeries?.get(parsed.seriesId) : undefined) ?? atHour?.items;
   if (detail?.length) {
     if (items.length) items.push({ ...detail[0]!, divider: true }, ...detail.slice(1));

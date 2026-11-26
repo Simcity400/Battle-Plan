@@ -296,40 +296,12 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
         context: (),
         content_warnings: Vec::new(),
         live: None,
-        answered: None,
         executable: Some(executable),
         product: PhantomData,
     };
     let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, FIRST, Some(&[TableId::Countries])).unwrap() else { panic!("hour {FIRST} is recorded") };
     let data = std::thread::scope(|threads| threads.spawn(|| panel.data(&frame)).join().unwrap());
     assert_eq!(data.unwrap()["scoped"], true, "a panel reading recorded keywords or registries would find them withheld");
-}
-
-struct Static;
-
-impl AtHour for Static {
-    const KEY: &'static str = "test-static";
-    const TITLE: &'static str = "Static";
-    const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
-    const REPLY_NAMES_NO_HOUR: bool = true;
-    type Params = ScopedParams;
-    const FIELDS: crate::products::Fields = crate::fields![branchId];
-    type Reply = ScopedReply;
-    type Context = std::sync::atomic::AtomicUsize;
-
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        Vec::new()
-    }
-
-    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(0.into())
-    }
-
-    fn reply(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(ScopedReply { scoped: false, warnings: Vec::new() })
-    }
 }
 
 #[test]

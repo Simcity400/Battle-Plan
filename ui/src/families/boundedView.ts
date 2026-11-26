@@ -214,12 +214,13 @@ function observeSpan(st: StraddleState, hour: number, from: number, to: number, 
   const start = Math.max(st.coarse.firstHour, from);
   const end = Math.min(hour, to);
   if (start > end) return;
+  const startsBreak = breakBefore && start === from;
   if (!st.found) {
     st.found = true;
     st.firstHour = start;
     st.firstValue = val;
-    st.firstBreak = st.coarse.firstBreak || breakBefore;
-  } else if (breakBefore || start > st.prevLast + 1) {
+    st.firstBreak = st.coarse.firstBreak || startsBreak;
+  } else if (startsBreak || start > st.prevLast + 1) {
     st.hasBreak = true;
   }
   if (end > st.lastHour || (end === st.lastHour && start >= st.lastValueHour)) {
@@ -505,6 +506,7 @@ export function boundTiledSeries(
   let closedBuckets = 0;
   let straddlingBucket: ChartBucket | undefined;
   let straddling: BoundedSeries['straddling'] = 'none';
+  let straddlingRuns: readonly Run[] | undefined;
   let bucketValidLo = -Infinity;
   let bucketValidHi = Infinity;
 
@@ -547,6 +549,21 @@ export function boundTiledSeries(
         );
         straddling = cut.straddling;
         if (cut.bucket) straddlingBucket = cut.bucket;
+        if (cut.straddling === 'cut' && options?.prefixRuns?.length) {
+          const clippedRuns: Run[] = [];
+          for (const run of options.prefixRuns) {
+            const firstHour = Math.max(candidate.firstHour, run.firstHour);
+            const lastHour = Math.min(hour, run.lastHour);
+            if (firstHour > lastHour) continue;
+            clippedRuns.push({
+              firstHour,
+              lastHour,
+              value: run.value,
+              ...(run.breakBefore && firstHour === run.firstHour ? { breakBefore: true } : {}),
+            });
+          }
+          if (clippedRuns.length) straddlingRuns = clippedRuns;
+        }
         bucketValidLo = hour;
         bucketValidHi = hour;
       }
@@ -583,6 +600,7 @@ export function boundTiledSeries(
     buckets: bucketsSlice,
     ...(runsResult ? { runs: runsResult.slice } : {}),
     straddling,
+    ...(straddlingRuns ? { straddlingRuns } : {}),
     ...(options?.headValue ? { headValue: options.headValue } : {}),
     missing: missingResult.slice,
     ...(partialResult ? { partial: partialResult.slice } : {}),
@@ -610,6 +628,18 @@ function sameHeadValue(a: Value | undefined, b: Value | undefined): boolean {
     case 'partial':
       return Object.is(a.value, (b as typeof a).value) && a.reason === (b as typeof a).reason && a.atLeast === (b as typeof a).atLeast;
   }
+}
+
+function samePrefixRuns(a: readonly Run[] | null | undefined, b: readonly Run[] | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!, y = b[i]!;
+    if (x.firstHour !== y.firstHour || x.lastHour !== y.lastHour || !Object.is(x.value, y.value) || x.breakBefore !== y.breakBefore) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export class BoundedSeriesCursor {
@@ -640,7 +670,7 @@ export class BoundedSeriesCursor {
     if (
       this.cached
       && this.lastLine === line
-      && this.lastPrefixRuns === options?.prefixRuns
+      && samePrefixRuns(this.lastPrefixRuns, options?.prefixRuns)
       && this.lastPrefixPoints === options?.prefixPoints
       && (this.cached.straddling === 'none' || sameHeadPoint(this.lastHeadPoint, options?.headPoint))
       && sameHeadValue(this.lastHeadValue, options?.headValue)

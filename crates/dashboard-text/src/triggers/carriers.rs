@@ -12,7 +12,7 @@ const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordina
 
 impl<'a> World<'a> {
     pub fn project(&self, owner: u32, id: u32) -> Result<Cow<'a, ProjectRow>, Failure> {
-        if let Some(accepted) = self.accepted_projects() {
+        if let Some(accepted) = self.accepted_projects(super::ProjectScope::Owner(owner)) {
             return match accepted.rows.get(&(owner, id)) {
                 Some(row) => Ok(Cow::Owned(row.clone())),
                 None if accepted.owners.contains(&owner) => Err(super::refusal::missing_reference(replay_data::rows::TableId::Projects, None)),

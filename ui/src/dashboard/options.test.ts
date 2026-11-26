@@ -5,9 +5,9 @@ import { choiceVariants, contentKey, contentSet, MAX_OPTION_KEYS, parseStoredOpt
 import type { OptionField } from './options';
 import { settingsSections, SETTINGS_SECTIONS } from './settingsSections.ts';
 import type { WidgetMeta } from './definitions';
-import { mergeViewPreferences, migrateWidget } from './model.ts';
+import { mergeViewPreferences } from './model.ts';
 import type { WidgetSpec } from './model';
-import { registerWidgets } from './definitions.ts';
+import { registerWidgets, widgetUnavailable } from './definitions.ts';
 
 const FIELDS: readonly OptionField[] = [
   { key: 'ticks', section: 'options', label: 'Spend ticks', kind: 'toggle', default: true },
@@ -71,8 +71,7 @@ test('a field that does nothing in a time mode is hidden in that mode, and its s
 });
 
 const META: WidgetMeta = { kind: 'test-options', version: 2, title: 'Test', icon: 'grid', timeModes: ['follow', 'campaign'], defaultTime: 'campaign',
-  scope: 'history', data: true, history: true, minSize: { w: 2, h: 2 }, defaultSize: { w: 4, h: 4 }, options: FIELDS,
-  migrate: (from, widget) => from === 1 ? { ...widget, options: { order: 'size' } } : null };
+  scope: 'history', data: true, history: true, minSize: { w: 2, h: 2 }, defaultSize: { w: 4, h: 4 }, options: FIELDS };
 registerWidgets([META]);
 
 test('a content set stores distinct tokens and empties back to automatic', () => {
@@ -134,10 +133,14 @@ function spec(extra: Partial<WidgetSpec> = {}): WidgetSpec {
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, contentScale: 100, ...extra };
 }
 
-test('older settings migrate through the definition; a declined migration keeps them unchanged', () => {
-  assert.deepEqual(migrateWidget(spec({ configVersion: 1 })), spec({ options: { order: 'size' } }));
-  assert.deepEqual(migrateWidget(spec({ configVersion: 0 })), spec({ configVersion: 0 }));
-  assert.deepEqual(migrateWidget(spec()), spec());
+test('unknown or removed widget options fall back to defaults, older versions load and newer versions stay unsupported', () => {
+  const stored = parseStoredOptions({ breakdownOpens: 'drawer', order: 'removed', ticks: false, window: 30 });
+  assert.ok(stored);
+  assert.deepEqual(resolveOptions(FIELDS, stored), { order: 'game', ticks: false, window: 30, yMax: null });
+  assert.equal('breakdownOpens' in resolveOptions(FIELDS, stored), false);
+  assert.equal(widgetUnavailable(spec({ configVersion: 1 })), null);
+  assert.equal(widgetUnavailable(spec()), null);
+  assert.match(widgetUnavailable(spec({ configVersion: 3 }))!, /version 3 is unsupported/);
 });
 
 test('view preferences save settings but leave unknown campaigns and pins as drafts', () => {

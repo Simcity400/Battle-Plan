@@ -20,12 +20,150 @@ fn key(kind: u8, identity: &[u8]) -> StabilityPartKeyRow {
 const COUNTRY: IdeaCountry<'static> = IdeaCountry { tag: "AAA", slot: 1, look: None };
 
 #[test]
+fn a_country_breakdown_subtracts_only_its_own_lines_for_a_shared_modifier() {
+    use replay_data::rows::{SliceReadRow, TableRows};
+    use replay_frame::frame::TableView;
+
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, None);
+    let owners = [(5, 40, 9), (7, 90, 14)];
+    let inputs = owners.map(|(country, total, _)| {
+        let mut keys = vec![u32::MAX; CountryStabilityInputRow::KEY_NAMES.len()];
+        keys[0] = 3;
+        CountryStabilityInputRow { country, stability_factor: Some(total), keys, ..Default::default() }
+    });
+    let lines = owners.map(|(country, _, value)| CountryStabilityLineRow {
+        country, key: 3, value, kind: CountryStabilityLineRow::STATIC, ..Default::default()
+    });
+    let reads = owners.map(|(owner, _, _)| SliceReadRow {
+        owner, table: TableId::CountryStabilityInputs.index() as u32, sample_hour: 100,
+    });
+    for (table, rows) in [
+        (TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(inputs.into())),
+        (TableId::CountryStabilityLines, TableRows::CountryStabilityLines(lines.into())),
+        (TableId::SliceReads, TableRows::SliceReads(reads.into())),
+    ] {
+        *frame.tables[table.index()] = TableView::Complete(rows);
+    }
+    for (id, total, own) in owners {
+        let reply = breakdown_at(&frame, Owner { id, slot: id }, "AAA", &None, &mut Vec::new()).unwrap();
+        let modifier = &reply.modifiers[0];
+        assert_eq!(modifier.lines.iter().map(|line| &line.value_raw).collect::<Vec<_>>(), [&own.to_string()]);
+        assert_eq!(modifier.remainder_raw, Some((total - own).to_string()));
+    }
+}
+
+#[test]
 fn a_part_is_asked_by_its_measure_and_handle_and_nothing_past_war_support() {
     assert_eq!(part_of("7"), Some((StabilityPartRow::STABILITY, 7)));
     assert_eq!(part_of(&((1u64 << 32) | 9).to_string()), Some((StabilityPartRow::WAR_SUPPORT, 9)));
     assert_eq!(part_of(&(2u64 << 32).to_string()), None);
     assert_eq!(part_of("-1"), None);
     assert_eq!(part_of("x"), None);
+}
+
+#[test]
+fn stability_panels_hold_quiet_hours_and_seed_the_requested_country_at_each_seek() {
+    use dashboard_base::{SourceKey, products::at_hour::frame_panel, test_fixtures::{CAMPAIGN, materialized_frame, played, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryAppearanceRow, CountryCommandPowerRow, ModifierDefinitionRow, SliceReadRow, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::{Value, json};
+
+    let frames: Vec<_> = [1, 2].map(|branch| {
+        let hours = (100..=115).map(|hour| {
+            let mut frame = source(branch, hour, Some(i64::from(hour)));
+            let mut keys = vec![u32::MAX; 10];
+            keys[0] = 3;
+            let row = CountryStabilityInputRow {
+                country: 9001, stability_raw: 30_000, max_stability: 100_000, max_war_support: 100_000,
+                stability_factor: Some(40 + branch as i64), recruitment_ratio: Recorded::Value(Some(i64::from(hour))), keys, ..Default::default()
+            };
+            let line = |country, value| CountryStabilityLineRow {
+                country, key: 3, value, kind: CountryStabilityLineRow::IDEA,
+                identity: format!("idea_{branch}_{}", if hour < 107 { 1 } else { 2 }).into_bytes(), ..Default::default()
+            };
+            let slices = [TableId::CountryStabilityInputs, TableId::CountryStabilityLines].map(|table| SliceReadRow {
+                owner: 9001, table: table.index() as u32, sample_hour: if hour >= 107 { 107 } else { 100 },
+            });
+            for (table, rows) in [
+                (TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(vec![row])),
+                (TableId::CountryStabilityLines, TableRows::CountryStabilityLines(vec![line(44, i64::from(hour)), line(9001, 9 + i64::from(hour >= 105))])),
+                (TableId::CountryAppearance, TableRows::CountryAppearance(vec![CountryAppearanceRow { country: 9001, ..Default::default() }])),
+                (TableId::CountryCommandPower, TableRows::CountryCommandPower(vec![CountryCommandPowerRow { canonical_slot: 7, ..Default::default() }])),
+                (TableId::ModifierDefinitions, TableRows::ModifierDefinitions(vec![ModifierDefinitionRow { index: 3, flags: if hour >= 109 { GOOD_FLAG } else { 0 }, ..Default::default() }])),
+                (TableId::Characters, TableRows::Characters(Vec::new())),
+                (TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new())),
+                (TableId::SliceReads, TableRows::SliceReads(slices.into())),
+            ] { *frame.tables[table.index()] = TableView::Complete(rows); }
+            if (111..114).contains(&hour) {
+                *frame.tables[TableId::CountryStabilityLines.index()] = TableView::Unavailable { reason: "damaged stability lines".into() };
+            }
+            frame
+        }).collect();
+        records(branch, hours)
+    }).into();
+    let load = LoadContext { content: None };
+    for branch in [1, 2] {
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &frames[..branch as usize]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Arc::new(Source::from_replay(SourceKey { source_id: "stability".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+        for parts in [false, true] {
+            let mut request = json!({"branchId":branch.to_string(), "country":"GER"});
+            let (registration, mut original) = if parts {
+                request["parts"] = json!((0..12).map(|key| key.to_string()).collect::<Vec<_>>());
+                (crate::registrations::STABILITY_STABILITYPARTNAMES, frame_panel::<StabilityPartNames>(&source, &load, &request).unwrap())
+            } else {
+                (crate::registrations::STABILITY_COUNTRYSTABILITYBREAKDOWN, frame_panel::<CountryStabilityBreakdown>(&source, &load, &request).unwrap())
+            };
+            let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
+            let exact = panel.exact().unwrap();
+            if branch == 1 {
+                let mut previous = None;
+                for step in played(source.replay_ref(), exact, 100, 115) {
+                    let mut expected = materialized_frame(&mut *original, source.replay_ref(), branch, step.hour).unwrap();
+                    let mut materialized = step.value.as_ref().as_ref().unwrap().clone();
+                    let date = |reply: &mut Value, hour| {
+                        reply["hour"] = Value::from(hour);
+                        if let Some(inner) = reply.get_mut("breakdown").filter(|v| v.is_object()) { inner["hour"] = Value::from(hour); }
+                    };
+                    if !step.fresh { date(&mut materialized, step.hour); }
+                    assert_eq!(materialized, expected, "{} at {}", registration.key, step.hour);
+                    date(&mut expected, 0);
+                    if let Some(prior) = &previous { assert_eq!(step.product_calls, u64::from(prior != &expected), "{} at {}", registration.key, step.hour); }
+                    previous = Some(expected);
+                }
+            }
+            for hour in [114, 101, 104, 106, 112] {
+                let read = (exact.advance)(hour, true, &false.into(), None);
+                assert!(read.fresh);
+                assert_eq!(*read.value, materialized_frame(&mut *original, source.replay_ref(), branch, hour), "{} branch {branch} at {hour}", registration.key);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_dynamic_idea_name_stops_using_the_civil_war_look_when_the_recorded_relation_ends() {
+    use replay_data::rows::{CountryAppearanceRow, CountryCivilWarRow, CountryCounterInputRow, CountryLinkRow, CountryRow, TableRows, WarRelationRow};
+    use replay_frame::frame::TableView;
+    let owner = Owner { slot: 7, id: 9001 };
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, None);
+    for (table, rows) in [
+        (TableId::Countries, TableRows::Countries(vec![
+            CountryRow { id: owner.id, canonical_slot: owner.slot, ..Default::default() },
+            CountryRow { id: 9002, canonical_slot: 8, ..Default::default() },
+        ])),
+        (TableId::CountryAppearance, TableRows::CountryAppearance(vec![CountryAppearanceRow { country: owner.id, name_tag: b"D01".to_vec(), ..Default::default() }])),
+        (TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: owner.id, canonical_slot: owner.slot }, CountryLinkRow { id: 9002, canonical_slot: 8 }])),
+        (TableId::CountryCivilWars, TableRows::CountryCivilWars(vec![CountryCivilWarRow { country: 9002, target: owner.id, ..Default::default() }])),
+        (TableId::CountryCounterInputs, TableRows::CountryCounterInputs(vec![CountryCounterInputRow { country: 9002, owned_state_count: 1, ..Default::default() }])),
+        (TableId::CountryWars, TableRows::CountryWars(Vec::new())),
+        (TableId::WarRelations, TableRows::WarRelations(vec![WarRelationRow { first_country: owner.id, second_country: 9002, start_hour: 95, end_hour: 105, ..Default::default() }])),
+    ] { *frame.tables[table.index()] = TableView::Complete(rows); }
+    assert_eq!(look(&frame, owner).unwrap().civil_war, Ok(true));
+    assert_eq!(naming_through(&frame, Some(owner)), 104);
+    frame.hour = 105;
+    assert_eq!(look(&frame, owner).unwrap().civil_war, Ok(false));
+    assert_eq!(naming_through(&frame, Some(owner)), i32::MAX);
 }
 
 #[test]

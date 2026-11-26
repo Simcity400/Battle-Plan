@@ -10,9 +10,7 @@ import type { TableModel, TableProjection, TableRow, TooltipExtraRow } from '../
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, partialValue, type Value } from '../../families/value.ts';
 import type { LandBattleLogRow, LandBattlesTailReply } from '../../generated/dashboard';
-import { LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
-
-const IC_UNRECORDED = 'IC lost not recorded: a lost design has no recorded build cost, or the equipment lost was not read';
+import { IC_UNRECORDED, LAND_BATTLES_COLUMNS, LOSSES_SO_FAR } from './definition.ts';
 
 function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], unknown: boolean): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');

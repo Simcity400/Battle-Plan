@@ -532,7 +532,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour)].into_iter().flatten().min(),
+        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour), feed.unsettled().then(|| hour.saturating_add(1))].into_iter().flatten().min(),
         missing: answer.gaps,
         unavailable: notices.into_list(),
         warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
@@ -767,17 +767,32 @@ fn parse<P: serde::de::DeserializeOwned>(name: &str, asked: &serde_json::Value) 
     dashboard_query::named::named(&request).map_err(|error| format!("Invalid {name} panel: {error}"))
 }
 
-pub fn event_feed_dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
+pub fn event_feed_dated_panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn Panel>, String> {
     let params: EventFeedTailParams = parse(EventFeedTail::KEY, asked)?;
     EventFeedTail::validate(&params)?;
     let branch = branch_id(&params.branch_id).map_err(|error| error.to_string())?;
     let query = dashboard_base::queries::query(source, branch).map_err(|error| error.to_string())?;
     let prepared = prepare(source, &query, branch, load, None, (params.countries.as_deref(), params.group.as_ref()), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let held = Mutex::new(Arc::new(prepared));
     let owned = Owned::of(&query, source.replay());
-    Ok(occurrences::occurrence_panel(source.tables(), move |hour, cancelled| {
+    let (shared, load) = (Arc::clone(source), LoadContext { content: load.content.clone() });
+    Ok(dashboard_base::products::at_hour::interval_panel(source.tables(), move |hour, cancelled| {
         let query = owned.query();
         let hour = occurrences::cutoff(&query, Some(hour))?;
-        load_feed_at(&prepared, &query, &params, hour, cancelled)
+        let prepared = {
+            let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if held.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+                *held = Arc::new(prepare(&shared, &query, branch, &load, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?);
+            }
+            Arc::clone(&held)
+        };
+        let reply = load_feed_at(&prepared, &query, &params, hour, cancelled)?;
+        let through = match prepared.feed.as_ref().is_some_and(|feed| feed.unsettled()) {
+            true => hour.saturating_sub(1),
+            false => reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1)),
+        };
+        let rows = reply.row_count() as u64;
+        Ok((serde_json::to_value(reply)?, through, rows))
     }))
 }
 

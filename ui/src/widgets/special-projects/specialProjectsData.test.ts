@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ProjectEntry, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
-import { runtimeProject, shownCard, episodeBound, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { runtimeProject, shownCard, episodeBound, projectWindowRequest, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import type { GatedHour } from '../../dashboard/regionTime';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -39,7 +40,7 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.reads=[{owner:9,firstHour:100,lastHour:120,readHour:100},{owner:9,firstHour:110,lastHour:130,readHour:110}];},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
 });
-test('View is also a setting, and saved layouts drop the retired completed-project retention', () => {
+test('View is also a setting, and removed options are ignored while current options load', () => {
   const view = OPTIONS.find(field => field.key === 'view')!;
   assert.equal(view.visibleWhen, undefined, 'View stays reachable when the header is narrow');
   for (const saved of ['live', 'history']) {
@@ -48,13 +49,9 @@ test('View is also a setting, and saved layouts drop the retired completed-proje
     assert.equal('completedRetentionDays' in options, false);
     assert.equal('grow' in options, false, 'the timeline family sets the History axis; grow is no longer an option');
   }
+  assert.equal(resolveOptions(OPTIONS, { view: 'retired-view', completedRetentionDays: 30 }).view, 'live');
   assert.equal(OPTIONS.some(field => field.key === 'completedRetentionDays'), false);
   assert.equal(definition.version, 2);
-  const stored = (options?: Record<string, string | number | boolean>) => ({ id: 'projects', kind: 'special-projects', configVersion: 1, title: 'Special projects', trackIds: ['main'],
-    countries: { kind: 'selected' }, time: { mode: 'campaign' }, ...(options ? { options } : {}) }) as unknown as Parameters<typeof definition.migrate>[1];
-  assert.deepEqual(definition.migrate(1, stored({ completedRetentionDays: 12, view: 'history', grow: true }))?.options, { view: 'history', grow: true });
-  assert.equal('options' in definition.migrate(1, stored({ completedRetentionDays: 30 }))!, false, 'a widget left with no options stores none');
-  assert.equal(definition.migrate(1, stored())?.title, 'Special projects');
 });
 
 
@@ -75,14 +72,55 @@ test('a project window joins its runtime project on the owner and local id, read
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);
   const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],statuses:[data.projects[0].statuses[0]],entries:[]}]};
   const running=shownCard(open,147,open.projects[0].id)!;
-  for (const through of [null, 147]) {
-    const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,through));
-    assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
-      'a running project read after the list stands is not yet joined');
+  const playhead = 147;
+  const pinnedRequest = projectWindowRequest({ id: 'campaign', revision: '1' }, '1', { tag: 'GER', hour: 120 },
+    hour => typeof hour === 'number' && hour <= playhead ? hour as GatedHour : null);
+  assert.equal(pinnedRequest?.params.hour, 120);
+  const pinned = shownCard(open, pinnedRequest!.params.hour!, running.project.id)!;
+  const pinnedBound = episodeBound(open, pinned.project, 120);
+  assert.deepEqual(pinnedBound, { through: 120, open: true });
+  assert.equal(runtimeProject(details([runtime(9, 3, 'Later reward', 140)], 140), pinned, 120, pinnedBound), null);
+  assert.deepEqual(runtimeProject(details([runtime(9, 3, 'Pinned reward', 120)], 120), pinned, 120, pinnedBound), joined(runtime(9, 3, 'Pinned reward', 120)));
+  const shown = runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,160));
+  assert.equal(shown, `Project rewards were read ${dayLabel(160)}, after the project list is known current (${dayLabel(147)}).`,
+    'a running project read after the list stands is not yet joined');
+  assert.deepEqual(episodeBound(data,card.project,205), { through: 199, open: false }, 'a project no longer listed keeps its last status');
+});
+
+test('the card, text mirror, history and hover show the played hour inside a held project span, including after a backward seek', async () => {
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const { deriveCardMirror } = await import('../../families/card/model.ts');
+  const { specialProjectsProjection } = await import('./specialProjectsProjection.ts');
+  const { specialProjectsHistoryProjection: history } = await import('./historyProjection.ts');
+  const options = { tags: ['GER'], membership: null, firstHour: 100, branchFirstHour: 100, surface: '#111111' };
+  const until = (lastHour: number) => {
+    const reply = fixture();
+    reply.tag = 'GER';
+    reply.available = [{ firstHour: 100, lastHour }];
+    reply.identities = [{ firstHour: 100, lastHour, slot: 5, countryId: 10 }];
+    reply.projects[0]!.statuses = [{ ...reply.projects[0]!.statuses[0]!, lastHour }];
+    reply.projects[0]!.entries = [];
+    reply.shown = { through: lastHour, running: [0], completed: [], unknown: [], undated: 0 };
+    return reply;
+  };
+  const held = until(147);
+  for (const hour of [100, 143, 118]) {
+    const view = (reply: SpecialProjectsReply) => createBoundedReadView({ hour, panels: new Map([['main', reply], ['projects:GER', reply]]) });
+    const current = view(held);
+    const cold = view(until(hour));
+    const card = specialProjectsProjection.project(current, {});
+    assert.deepEqual(card, specialProjectsProjection.project(cold, {}));
+    assert.ok(card.rows.some(row => row.kind === 'item'));
+    assert.deepEqual(deriveCardMirror(card), deriveCardMirror(specialProjectsProjection.project(cold, {})));
+    const model = history.project(current, options);
+    const direct = history.project(cold, options);
+    assert.deepEqual(model.lanes, direct.lanes);
+    const lane = model.lanes[0]!;
+    assert.equal(lane.spans[0]!.lastHour, hour);
+    const hit = { kind: 'span' as const, laneKey: lane.key, spanId: lane.spans[0]!.id, hour };
+    assert.deepEqual(history.tooltip!(model, hit, current, options), history.tooltip!(direct, hit, cold, options));
+    assert.deepEqual(history.tooltip!(model, { ...hit, hour: hour + 1 }, current, options), history.tooltip!(direct, hit, cold, options));
   }
-  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeBound(open,running.project,170)), joined(runtime(9,3,'Mod project name',160)),
-    'a running project the list still covers takes its later read');
-  assert.deepEqual(episodeBound(data,card.project,170), { through: 199, open: false }, 'a project no longer listed keeps its last status');
 });
 
 test('a pop-up joins only reads and choices made while the project was recorded', () => {

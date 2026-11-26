@@ -6,6 +6,6 @@ Plot summaries estimate intervals from the contribution, tension and sum lines. 
 
 The live chart uses pushed head cells with tiled history. Ordinary views render when the displayed layer structure changes. The breakdown renders for changes to its full contributor list and keeps label reads stable while that list holds. Names and flags are resolved at the latest structural change. Values beside the chart paint from the head and report their actual hour. The plot's callback ref keeps its identity across renders to avoid a detach and reattach triggering another commit.
 
-Event markers use the recorded creation hour. A marker uses each event's latest reading witnessed by its creation hour. An event first read later has no recorded amount at the marker. Distinct events with equal creation hour, first read and cause keep service order so their identities remain stable across replies. Version 1 and 2 widget options still migrate, and unknown display modes use the stacked view.
+Event markers use the recorded creation hour. A marker uses each event's latest reading witnessed by its creation hour. An event first read later has no recorded amount at the marker. Distinct events with equal creation hour, first read and cause keep service order so their identities remain stable across replies. Unknown display modes fall back to the stacked view.
 
 [Tension data](../../ui/src/widgets/world-tension/tensionData.ts) · [Chart](../../ui/src/widgets/world-tension/TensionChart.tsx) · [Widget](../../ui/src/widgets/world-tension/WorldTensionWidget.tsx)

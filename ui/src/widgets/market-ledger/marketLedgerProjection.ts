@@ -21,9 +21,9 @@ import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow 
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
-import { formatFixed5Amount } from '../../families/valueFormat.ts';
-import type { MarketContractEvent, MarketContractItem, MarketContractRow, MarketContractStatus } from '../../generated/dashboard';
+import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
+import { formatFixed5Amount, formatScalar } from '../../families/valueFormat.ts';
+import type { MarketContractEvent, MarketContractItem, MarketContractRow, MarketContractStatus, MarketEventsMore, MarketLedgerLine } from '../../generated/dashboard';
 import { MARKET_LEDGER_COLUMNS } from './definition.ts';
 
 export interface MarketLedgerProjectionOptions {
@@ -44,6 +44,13 @@ const CONTRACT_STATUS_TEXT: Record<MarketContractStatus, { readonly label: strin
   notRecorded: { label: 'Not recorded', mark: 'ended', muted: true },
 };
 
+const LIFECYCLE_TEXT: Record<'requestPosted' | 'contractStarted' | 'contractEnded' | 'requestEnded', { readonly label: string; readonly mark: 'running' | 'waiting' | 'ended'; readonly muted?: boolean }> = {
+  requestPosted: { label: 'Request posted', mark: 'waiting' },
+  contractStarted: { label: 'Contract started', mark: 'running' },
+  contractEnded: { label: 'Contract ended', mark: 'ended', muted: true },
+  requestEnded: { label: 'Request ended', mark: 'ended', muted: true },
+};
+
 function formatUnits(raw: string): string {
   const n = BigInt(raw);
   return formatFixed5Amount(n < 0n ? -n : n);
@@ -57,11 +64,15 @@ function formatCic(raw: string, sign: -1 | 0 | 1): string {
   return mag;
 }
 
-function perspectiveSign(contract: MarketContractRow, perspective: string | null): -1 | 0 | 1 {
+function perspectiveSign(parties: { readonly seller: string | null; readonly buyer: string | null }, perspective: string | null): -1 | 0 | 1 {
   if (!perspective) return 0;
-  if (contract.buyer === perspective && contract.seller !== perspective) return -1;
-  if (contract.seller === perspective && contract.buyer !== perspective) return 1;
+  if (parties.buyer === perspective && parties.seller !== perspective) return -1;
+  if (parties.seller === perspective && parties.buyer !== perspective) return 1;
   return 0;
+}
+
+function units(amount: bigint): 'unit' | 'units' {
+  return amount === FIXED5 ? 'unit' : 'units';
 }
 
 function contractParties(
@@ -100,7 +111,9 @@ function primaryItemSummary(items: readonly MarketContractItem[]): {
   if (!items.length) return { label: null, missing: 'Contract equipment was not recorded', iconUrl: null };
   const first = items[0]!;
   const label = first.name ?? null;
-  const subtext = items.length > 1 ? `+${items.length - 1} more` : undefined;
+  const more = items.length > 1 ? `+${items.length - 1} more` : undefined;
+  const design = first.name === null ? `Design ${first.variant}` : undefined;
+  const subtext = design && more ? `${design} · ${more}` : (design ?? more);
   return {
     label,
     ...(subtext ? { subtext } : {}),
@@ -110,35 +123,41 @@ function primaryItemSummary(items: readonly MarketContractItem[]): {
 }
 
 function deliveredCell(items: readonly MarketContractItem[], missing: string | null): TableCell {
-  if (missing !== null) return { value: notRecorded(missing) };
-  if (!items.length) return { value: notApplicable('No deliveries yet') };
+  let reason = missing;
   let deliveredSum = 0n;
   let contractedSum = 0n;
   let allContracted = true;
   for (const item of items) {
-    if (item.deliveryUnavailable !== null || item.deliveredRaw === null) {
-      return { value: notRecorded(item.deliveryUnavailable ?? 'Delivery amount was not recorded') };
-    }
-    deliveredSum += BigInt(item.deliveredRaw);
+    reason ??= item.deliveryUnavailable;
+    if (item.deliveredRaw !== null) deliveredSum += BigInt(item.deliveredRaw);
     if (item.contractedRaw === null) allContracted = false;
     else contractedSum += BigInt(item.contractedRaw);
   }
+  if (reason !== null) {
+    if (deliveredSum === 0n) return { value: notRecorded(reason) };
+    return { value: partialValue(formatFixed5Amount(deliveredSum), reason, { atLeast: true }), unitSuffix: units(deliveredSum) };
+  }
+  if (!items.length) return { value: notApplicable('No deliveries yet') };
   const deliveredText = formatFixed5Amount(deliveredSum);
   if (allContracted && contractedSum > 0n) {
     return {
       value: knownValue(`${deliveredText} / ${formatFixed5Amount(contractedSum)}`),
-      unitSuffix: contractedSum === FIXED5 ? 'unit' : 'units',
+      unitSuffix: units(contractedSum),
     };
   }
   if (deliveredSum === 0n) return { value: notApplicable('No deliveries yet') };
   return {
     value: knownValue(deliveredText),
-    unitSuffix: deliveredSum === FIXED5 ? 'unit' : 'units',
+    unitSuffix: units(deliveredSum),
   };
 }
 
 function paidCell(contract: MarketContractRow, sign: -1 | 0 | 1): TableCell {
-  if (contract.paidMissing !== null) return { value: notRecorded(contract.paidMissing) };
+  if (contract.paidMissing !== null) {
+    return contract.paidRaw === null
+      ? { value: notRecorded(contract.paidMissing) }
+      : { value: partialValue(formatCic(contract.paidRaw, sign), contract.paidMissing, { atLeast: true }), unitSuffix: 'CIC' };
+  }
   if (contract.paidRaw === null) return { value: notApplicable('No payments yet'), blank: true };
   return {
     value: knownValue(formatCic(contract.paidRaw, sign)),
@@ -146,23 +165,47 @@ function paidCell(contract: MarketContractRow, sign: -1 | 0 | 1): TableCell {
   };
 }
 
-function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): TableRow {
+function buildMoreRow(more: MarketEventsMore): TableRow {
+  const blank: TableCell = { value: notApplicable('Not applicable to this contract event'), blank: true };
+  const hidden = Number(more.hidden);
+  const name = hidden > 0 ? `Show all ${formatScalar(Number(more.total))} events \u00b7 ${formatScalar(hidden)} more` : 'Show fewer events';
+  return {
+    key: `all:${GROUP}${more.contract}`,
+    name,
+    rowHour: more.hour,
+    muted: true,
+    pageParent: `${GROUP}${more.contract}`,
+    cells: { date: blank, kind: blank, country: blank, item: { value: knownValue(name) }, delivered: blank, paid: blank, status: blank, action: blank },
+  };
+}
+
+function buildChildEventRow(event: MarketContractEvent, perspective: string | null): TableRow {
+  const sign = perspectiveSign(event, perspective);
+  const parent = { pageParent: `${GROUP}${event.contract}` };
   const baseDate = logDateCell(event.hour);
   const blank: TableCell = { value: notApplicable('Not applicable to this contract event'), blank: true };
   if (event.kind === 'delivery') {
-    const label = event.equipment ?? 'Delivery';
+    const design = event.variant !== null ? `Design ${event.variant}` : null;
+    const label = event.equipment ?? (design ? `${design} delivery` : 'Delivery');
+    const itemCell: TableCell = event.equipment !== null
+      ? { value: knownValue(event.equipment), inlineSubtext: 'Delivery' }
+      : {
+          value: notRecorded(event.equipmentMissing ?? 'Equipment design not recorded'),
+          inlineSubtext: design ? `${design} · Delivery` : 'Delivery',
+        };
     const qtyCell: TableCell = event.amountRaw !== null
       ? { value: knownValue(formatUnits(event.amountRaw)), unitSuffix: BigInt(event.amountRaw) === FIXED5 ? 'unit' : 'units' }
-      : { value: notRecorded('Delivery amount was not recorded') };
+      : { value: notRecorded(event.reason ?? 'Delivery amount was not recorded') };
     return {
       key: `ev:${event.key}`,
       name: label,
       rowHour: event.hour,
+      ...parent,
       cells: {
         date: baseDate,
         kind: blank,
         country: blank,
-        item: { value: knownValue(label), ...(event.equipment ? { inlineSubtext: 'Delivery' } : {}) },
+        item: itemCell,
         delivered: qtyCell,
         paid: blank,
         status: logStatusCell(sign < 0 ? 'Bought' : sign > 0 ? 'Sold' : 'Delivered', 'finished'),
@@ -171,17 +214,25 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
     };
   }
   if (event.kind === 'deliveryUnavailable') {
-    const label = event.equipment ?? 'Delivery';
+    const design = event.variant !== null ? `Design ${event.variant}` : null;
+    const label = event.equipment ?? (design ? `${design} delivery` : 'Delivery');
+    const itemCell: TableCell = event.equipment !== null
+      ? { value: knownValue(event.equipment), inlineSubtext: 'Delivery' }
+      : {
+          value: notRecorded(event.equipmentMissing ?? 'Equipment design not recorded'),
+          inlineSubtext: design ? `${design} · Delivery` : 'Delivery',
+        };
     return {
       key: `ev:${event.key}`,
       name: label,
       rowHour: event.hour,
+      ...parent,
       muted: true,
       cells: {
         date: baseDate,
         kind: blank,
         country: blank,
-        item: { value: knownValue(label), inlineSubtext: 'Delivery' },
+        item: itemCell,
         delivered: { value: notRecorded(event.reason ?? 'Delivery amount unavailable') },
         paid: blank,
         status: logStatusCell('Unavailable', 'ended', 'muted'),
@@ -192,11 +243,12 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
   if (event.kind === 'payment') {
     const cicCell: TableCell = event.amountRaw !== null
       ? { value: knownValue(formatCic(event.amountRaw, sign)), unitSuffix: 'CIC' }
-      : { value: notRecorded('Payment amount was not recorded') };
+      : { value: notRecorded(event.reason ?? 'Payment amount was not recorded') };
     return {
       key: `ev:${event.key}`,
       name: 'Payment',
       rowHour: event.hour,
+      ...parent,
       cells: {
         date: baseDate,
         kind: blank,
@@ -209,25 +261,21 @@ function buildChildEventRow(event: MarketContractEvent, sign: -1 | 0 | 1): Table
       },
     };
   }
-  const lifecycleLabel = event.kind === 'contractStarted'
-    ? 'Contract started'
-    : event.kind === 'requestPosted'
-      ? 'Request posted'
-      : 'Contract ended';
-  const mark = event.kind === 'contractStarted' ? 'running' : event.kind === 'requestPosted' ? 'waiting' : 'ended';
+  const lifecycle = LIFECYCLE_TEXT[event.kind];
   return {
     key: `ev:${event.key}`,
-    name: lifecycleLabel,
+    name: lifecycle.label,
     rowHour: event.hour,
-    muted: event.kind === 'contractEnded',
+    ...parent,
+    muted: lifecycle.muted === true,
     cells: {
       date: baseDate,
       kind: blank,
       country: blank,
-      item: { value: knownValue(lifecycleLabel) },
+      item: { value: knownValue(lifecycle.label) },
       delivered: blank,
       paid: blank,
-      status: logStatusCell(lifecycleLabel, mark, event.kind === 'contractEnded' ? 'muted' : undefined),
+      status: logStatusCell(lifecycle.label, lifecycle.mark, lifecycle.muted ? 'muted' : undefined),
       action: blank,
     },
   };
@@ -246,8 +294,7 @@ function buildContractRow(
   const art = artHandle ? readView.art(artHandle) : unavailableArt(summary.missing ?? 'The product drew no icon for this item');
 
   const statusInfo = CONTRACT_STATUS_TEXT[contract.status];
-  const children = contract.events.map(ev => buildChildEventRow(ev, sign));
-  const title = summary.label ?? `Contract ${contract.key.slice(-6)}`;
+  const title = summary.label ?? (contract.items[0] ? `Design ${contract.items[0].variant}` : `Contract ${contract.key.slice(-6)}`);
 
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
@@ -255,21 +302,30 @@ function buildContractRow(
       { label: 'Seller', value: contract.seller ? knownValue(contract.seller) : notRecorded(contract.sellerNotRecorded ? 'Seller not recorded' : 'Seller name unavailable') },
       { label: 'Buyer', value: contract.buyer ? knownValue(contract.buyer) : notRecorded(contract.buyerNotRecorded ? 'Buyer not recorded' : 'Buyer name unavailable') },
     ];
+    if (!contract.exact) out.push({ label: 'First seen', value: knownValue(formatDateTime(contract.observed)) });
     if (contract.startedHour !== null) out.push({ label: 'Started', value: knownValue(formatDateTime(contract.startedHour)) });
+    else if (!contract.request) out.push({ label: 'Started', value: notRecorded('The contract began before its first recorded event') });
     if (contract.endedHour !== null) out.push({ label: 'Ended', value: knownValue(formatDateTime(contract.endedHour)) });
     if (contract.requestedHour !== null) out.push({ label: 'Requested', value: knownValue(formatDateTime(contract.requestedHour)) });
     for (const quote of contract.quotes) {
-      out.push({ label: `Price (${quote.name ?? `Design ${quote.variant}`})`, value: knownValue(`${formatFixed5Amount(BigInt(quote.priceRaw))} CIC`) });
+      const quoteLabel = quote.name ?? `Design ${quote.variant}`;
+      out.push({ label: `Price (${quoteLabel})`, value: knownValue(`${formatFixed5Amount(BigInt(quote.priceRaw))} CIC`) });
+      if (quote.name === null && quote.nameMissing !== null) {
+        out.push({ label: quoteLabel, value: notRecorded(quote.nameMissing) });
+      }
     }
     if (contract.termsMissing !== null) out.push({ label: 'Terms', value: notRecorded(contract.termsMissing) });
     for (const item of contract.items) {
       const itemLabel = item.name ?? `Design ${item.variant}`;
-      const progress = item.deliveryUnavailable
-        ? `Not recorded (${item.deliveryUnavailable})`
-        : item.contractedRaw !== null
+      if (item.name === null && item.nameMissing !== null) {
+        out.push({ label: `${itemLabel} name`, value: notRecorded(item.nameMissing) });
+      }
+      const progress = item.deliveryUnavailable !== null
+        ? item.deliveredRaw !== null ? partialValue(`${formatUnits(item.deliveredRaw)} units`, item.deliveryUnavailable, { atLeast: true }) : notRecorded(item.deliveryUnavailable)
+        : knownValue(item.contractedRaw !== null
           ? `${formatUnits(item.deliveredRaw ?? '0')} / ${formatUnits(item.contractedRaw)} units`
-          : `${formatUnits(item.deliveredRaw ?? '0')} units`;
-      out.push({ label: itemLabel, value: knownValue(progress) });
+          : `${formatUnits(item.deliveredRaw ?? '0')} units`);
+      out.push({ label: itemLabel, value: progress });
     }
     return out;
   };
@@ -292,14 +348,13 @@ function buildContractRow(
       country: contractParties(readView, contract, perspective, boundary),
       item: summary.label !== null
         ? { value: knownValue(summary.label), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) }
-        : { value: notRecorded(summary.missing ?? 'Equipment design not recorded') },
+        : { value: notRecorded(summary.missing ?? 'Equipment design not recorded'), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) },
       delivered: deliveredCell(contract.items, contract.deliveryMissing),
       paid: paidCell(contract, sign),
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),
       action: { value: notApplicable('Expand contract'), blank: true },
     },
     ...(events > 0 ? { pageGroup: { members: events, open: expanded.includes(`${GROUP}${contract.key}`) } } : {}),
-    ...(children.length > 0 ? { children } : {}),
     tooltipTitle: title,
     tooltipExtra,
   };
@@ -326,7 +381,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
     if (refused !== undefined) {
       return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true, refused };
     }
-    const source = readView.rows<MarketContractRow & DatedLogRow>('main');
+    const source = readView.rows<MarketLedgerLine & DatedLogRow>('main');
     if (!source) {
       return { columns: MARKET_LEDGER_COLUMNS, rows: [], hour, hideHeader: true, unsorted: true, dateGrouped: true };
     }
@@ -338,7 +393,9 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       source,
       hour,
       readView.rowWindow,
-      contract => buildContractRow(readView, contract, options.perspective, boundary, options.expanded ?? []),
+      line => line.line === 'contract'
+        ? buildContractRow(readView, line, options.perspective, boundary, options.expanded ?? [])
+        : line.line === 'event' ? buildChildEventRow(line, options.perspective) : buildMoreRow(line),
     );
     const rawHead = source.rawHead as { readonly warnings?: readonly string[] } | undefined;
     return {
@@ -383,9 +440,11 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     if (ctx.options.showRequests !== false) statuses.push('requested');
     if (ctx.options.showEnded !== false) statuses.push('ended', 'requestEnded');
     const selection = occurrenceSelection(ctx);
-    const expanded = contentSet(ctx.options.expanded).filter(key => key.startsWith(GROUP)).map(key => key.slice(GROUP.length));
+    const opened = contentSet(ctx.options.expanded).filter(key => key.startsWith(GROUP));
+    const expanded = opened.map(key => key.slice(GROUP.length));
+    const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -397,7 +456,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}) },
+            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}), ...(full.length ? { full } : {}) },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,

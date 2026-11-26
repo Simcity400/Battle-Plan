@@ -1,14 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
-import { resolveOptions, setOption, type OptionField } from './options.ts';
+import { widgetDefinition, widgetUnavailable } from './definitions.ts';
+import { createWidget, defaultTemplate, WIDGET_CONTENT_SCALES, type CountrySelection, type WidgetSpec } from './model.ts';
+import { clearLayouts, doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { resolveOptions, setOption, type OptionField, type WidgetOptions } from './options.ts';
 import { viewOwnedFields } from '../families/manifest.ts';
+import { resolveWidgetActiveView, widgetViewOptions } from '../widgets/manifest.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();
-  return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  return {
+    values,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
 }
 
 test('a page is at its default until its saved layouts differ from the designed arrangement', () => {
@@ -75,28 +82,215 @@ test('widget content scales migrate, persist independently and reject invalid sa
   }
 });
 
-test('migrates a single saved layout without overwriting the original', () => {
+test('legacy single-layout keys and unreadable old-format saves return defaults without touching stored data', () => {
   const storage = memoryStorage();
   const legacy = JSON.stringify({ ...defaultTemplate(), name: 'My campaign' });
   storage.setItem('battleplan.workspace-template.v1', legacy);
-  const { library, warning } = loadLayouts(storage);
+  const readKeys: string[] = [];
+  const writtenKeys: string[] = [];
+  const tracked = {
+    getItem: (key: string) => { readKeys.push(key); return storage.getItem(key); },
+    setItem: (key: string, value: string) => { writtenKeys.push(key); storage.setItem(key, value); },
+  };
+  const { library, warning } = loadLayouts(tracked);
   assert.equal(warning, null);
-  assert.equal(library.layouts[0].template.name, 'My campaign');
-  assert.equal(saveLayouts(library, storage), null);
+  assert.equal(library.layouts[0].template.name, 'Default layout');
+  assert.deepEqual(readKeys, ['battleplan.workspace-layouts.v1']);
+  assert.deepEqual(writtenKeys, []);
   assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
-  assert.deepEqual(loadLayouts(storage).library, library);
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), null);
+
+  clearLayouts('overview', storage);
+  assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
+
+  storage.setItem('battleplan.workspace-layouts.v1', legacy);
+  const bad = loadLayouts(tracked);
+  assert.ok(bad.warning);
+  assert.equal(bad.library.layouts[0].template.name, 'Default layout');
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), legacy);
+  assert.deepEqual(writtenKeys, []);
+
+  const current = { ...library, layouts: [{ id: 'default', template: { ...defaultTemplate(), name: 'Current layout' } }] };
+  assert.equal(saveLayouts(current, storage), null);
+  const restored = loadLayouts(storage);
+  assert.equal(restored.warning, null);
+  assert.equal(restored.library.layouts[0].template.name, 'Current layout');
+  assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
 });
 
-test('renames the original default without changing custom layouts or creating duplicate names', () => {
+test('older saved widgets load with current defaults and save at the current version while newer versions stay unsupported', () => {
+  const cases: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly title?: string;
+    readonly countries?: CountrySelection;
+    readonly options: WidgetOptions;
+    readonly expectedView: string;
+    readonly expectedOptions: Readonly<Record<string, unknown>>;
+    readonly ignoredKeys: readonly string[];
+  }[] = [
+    {
+      id: 'w-army',
+      kind: 'army-size',
+      options: { show: 'breakdown' },
+      expectedView: 'race',
+      expectedOptions: { view: 'race' },
+      ignoredKeys: ['show'],
+    },
+    {
+      id: 'w-factories',
+      kind: 'factories',
+      options: { view: 'table' },
+      expectedView: 'race',
+      expectedOptions: { view: 'race' },
+      ignoredKeys: [],
+    },
+    {
+      id: 'w-tension',
+      kind: 'world-tension',
+      options: { view: 'breakdown' },
+      expectedView: 'tension',
+      expectedOptions: { view: 'tension' },
+      ignoredKeys: [],
+    },
+    {
+      id: 'w-score',
+      kind: 'game-score',
+      options: { view: 'race', multiplierPrecision: 2, tableSort: 'army', topMeasure: 'score:army', split: 'legacy' },
+      expectedView: 'race',
+      expectedOptions: { view: 'race', topMeasure: 'total', split: true },
+      ignoredKeys: ['multiplierPrecision', 'tableSort'],
+    },
+    {
+      id: 'w-projects',
+      kind: 'special-projects',
+      options: { completedRetentionDays: 30, view: 'removed' },
+      expectedView: 'live',
+      expectedOptions: { view: 'live' },
+      ignoredKeys: ['completedRetentionDays'],
+    },
+    {
+      id: 'w-wars',
+      kind: 'wars',
+      countries: { kind: 'tags', tags: ['GER'] },
+      options: { viewpoint: 'country', view: 'removed' },
+      expectedView: 'gantt',
+      expectedOptions: { view: 'gantt', colour: 'war' },
+      ignoredKeys: ['viewpoint'],
+    },
+    {
+      id: 'w-research',
+      kind: 'research',
+      title: 'Research',
+      options: { folders: 'infantry_folder', removedOption: 1 },
+      expectedView: 'default',
+      expectedOptions: { folders: 'infantry_folder' },
+      ignoredKeys: ['removedOption'],
+    },
+  ];
+
+  const base = defaultTemplate();
+  const olderWidgets: WidgetSpec[] = cases.map(entry => {
+    const widget = createWidget(entry.kind, 'main', entry.id);
+    const oldest: WidgetSpec = {
+      ...widget,
+      configVersion: 1,
+      ...(entry.title !== undefined ? { title: entry.title } : {}),
+      ...(entry.countries !== undefined ? { countries: entry.countries } : {}),
+      options: entry.options,
+    };
+    assert.equal(widgetUnavailable(oldest), null, entry.kind);
+    return oldest;
+  });
+  const futureVersion = widgetDefinition('army-size')!.version + 1;
+  const newerWidget: WidgetSpec = {
+    ...createWidget('army-size', 'main', 'w-future'),
+    configVersion: futureVersion,
+    options: { futureSetting: 'keep' },
+  };
+  const allWidgets = [...olderWidgets, newerWidget];
+  const rawLibrary = {
+    version: 1,
+    activeId: 'default',
+    layouts: [{
+      id: 'default',
+      template: {
+        ...base,
+        widgets: allWidgets,
+        layouts: { lg: allWidgets.map((widget, index) => ({ i: widget.id, x: 0, y: index * 6, w: 6, h: 6 })) },
+      },
+    }],
+  };
+
+  const storage = memoryStorage();
+  const rawSaved = JSON.stringify(rawLibrary);
+  storage.setItem('battleplan.workspace-layouts.v1', rawSaved);
+  const writtenKeys: string[] = [];
+  const tracked = {
+    getItem: (key: string) => storage.getItem(key),
+    setItem: (key: string, value: string) => { writtenKeys.push(key); storage.setItem(key, value); },
+  };
+
+  const loaded = loadLayouts(tracked);
+  assert.equal(loaded.warning, null);
+  assert.deepEqual(writtenKeys, []);
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), rawSaved);
+
+  const loadedWidgets = new Map(loaded.library.layouts[0].template.widgets.map(widget => [widget.id, widget]));
+  for (const entry of cases) {
+    const widget = loadedWidgets.get(entry.id)!;
+    const definition = widgetDefinition(entry.kind)!;
+    assert.equal(widgetUnavailable(widget), null, entry.kind);
+    assert.equal(widget.configVersion, definition.version, entry.kind);
+    assert.equal(resolveWidgetActiveView(entry.kind, widget.options), entry.expectedView, entry.kind);
+    const resolved = widgetViewOptions(entry.kind, widget.options);
+    const flat = resolveOptions(definition.options, widget.options);
+    for (const [key, expected] of Object.entries(entry.expectedOptions)) {
+      assert.equal(resolved[key], expected, `${entry.kind}.${key}`);
+      assert.equal(flat[key], expected, `${entry.kind}.flat.${key}`);
+    }
+    for (const key of entry.ignoredKeys) {
+      assert.equal(key in resolved, false, `${entry.kind} ignores ${key}`);
+      assert.equal(key in flat, false, `${entry.kind} flat ignores ${key}`);
+    }
+    if (entry.title !== undefined) assert.equal(widget.title, entry.title, entry.kind);
+    if (entry.countries !== undefined) assert.deepEqual(widget.countries, entry.countries, entry.kind);
+  }
+
+  const loadedNewer = loadedWidgets.get('w-future')!;
+  assert.equal(loadedNewer.configVersion, futureVersion);
+  assert.deepEqual(loadedNewer.options, { futureSetting: 'keep' });
+  assert.match(widgetUnavailable(loadedNewer)!, new RegExp(`version ${futureVersion} is unsupported`));
+
+  assert.equal(saveLayouts(loaded.library, storage), null);
+  const persisted = JSON.parse(storage.getItem('battleplan.workspace-layouts.v1')!) as {
+    layouts: { template: { widgets: WidgetSpec[] } }[];
+  };
+  const persistedById = new Map(persisted.layouts[0].template.widgets.map(widget => [widget.id, widget]));
+  for (const entry of cases) {
+    assert.equal(persistedById.get(entry.id)!.configVersion, widgetDefinition(entry.kind)!.version, entry.kind);
+  }
+  assert.equal(persistedById.get('w-future')!.configVersion, futureVersion);
+  assert.deepEqual(persistedById.get('w-future')!.options, { futureSetting: 'keep' });
+
+  const reloaded = loadLayouts(storage).library.layouts[0].template.widgets;
+  const reloadedById = new Map(reloaded.map(widget => [widget.id, widget]));
+  for (const entry of cases) {
+    assert.equal(reloadedById.get(entry.id)!.configVersion, widgetDefinition(entry.kind)!.version, entry.kind);
+    assert.equal(widgetUnavailable(reloadedById.get(entry.id)!), null, entry.kind);
+  }
+  assert.equal(reloadedById.get('w-future')!.configVersion, futureVersion);
+  assert.deepEqual(reloadedById.get('w-future')!.options, { futureSetting: 'keep' });
+  assert.match(widgetUnavailable(reloadedById.get('w-future')!)!, new RegExp(`version ${futureVersion} is unsupported`));
+});
+
+test('saved layout names are kept as stored without renaming', () => {
   const storage = memoryStorage();
   const { library } = loadLayouts(storage);
   library.layouts[0].template.name = 'Campaign overview';
   library.layouts.push({ id: 'custom', template: { ...defaultTemplate(), name: 'My layout' } });
   assert.equal(saveLayouts(library, storage), null);
-  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Default layout', 'My layout']);
-  library.layouts[1].template.name = 'Default layout';
-  assert.equal(saveLayouts(library, storage), null);
-  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Campaign overview', 'Default layout']);
+  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Campaign overview', 'My layout']);
 });
 
 test('multiple layouts, updates and active selection survive reload independently', () => {
@@ -283,10 +477,6 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   const before = storage.getItem('battleplan.workspace-layouts.v1');
   assert.match(saveLayouts(raw, storage)!, /3 country tag entries couldn’t be saved/);
   assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), before);
-  storage.values.delete('battleplan.workspace-layouts.v1');
-  storage.setItem('battleplan.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
-  assert.equal(loadLayouts(storage).droppedTags, 3);
-  assert.match(loadLayouts(storage).warning!, /3 country tag entries were left out/);
 });
 
 test('restoration drops non-string tag entries and counts notes across layouts', () => {

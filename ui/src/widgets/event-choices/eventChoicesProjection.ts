@@ -199,7 +199,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
     const readAt = source.at ?? hour;
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
-      hour,
+      readAt,
       readView.rowWindow,
       rawRow => {
         if (!rawRow.occurrence) return null;
@@ -237,6 +237,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       ...(rawHead?.unavailable ?? []).map(u => `${u.label}: ${u.reason}`),
     ];
 
+    const hasMissing = source.missing.some(span => span.firstHour <= readAt);
+
     return {
       columns: EVENT_CHOICES_COLUMNS,
       rows,
@@ -251,7 +253,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       nextChangeAt: Math.min(boundary.next, nextAwaitingChange),
       rowTimeBoundaries: false,
       titleSummary,
-      ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
+      ...(hasMissing && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings.length ? { warnings } : {}),
       ...(slots.length === 0 ? { empty: 'No recorded events match these settings.' } : {}),
     };

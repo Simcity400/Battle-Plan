@@ -115,6 +115,8 @@ export interface ChartStackBand {
   readonly opacity?: number;
   readonly values: readonly (number | null)[];
   readonly outside?: readonly boolean[];
+  readonly missingReason?: readonly (string | null)[];
+  readonly clampedZeroReason?: string;
   readonly exact?: readonly (ChartExactRational | null)[];
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
@@ -124,6 +126,8 @@ export interface ChartStackBand {
 export interface ChartStackModel {
   readonly hours: readonly number[];
   readonly reduced?: boolean;
+  readonly bucketed?: boolean;
+  readonly hoverPendingMessage?: string;
   readonly bands: readonly ChartStackBand[];
   readonly bandFormat?: ChartValueFormat;
   readonly step?: boolean;
@@ -247,6 +251,7 @@ export interface TimeChartModel {
   readonly measureTitle: string;
   readonly mode: 'lines' | 'stack' | 'columns' | 'rows';
   readonly hour: number;
+  readonly selectedHour?: number | null;
   readonly extent: readonly [number, number];
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly yAxis: ChartYAxisSpec;

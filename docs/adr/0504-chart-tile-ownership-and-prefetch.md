@@ -8,4 +8,4 @@ Decode the binary sections with aligned typed arrays. A binned tile has presence
 
 Register follows by logical line so they survive tile arrivals and assembly changes. At the live head, prefer the followed value and preserve the difference between a pending answer and an explicit missing value. Otherwise the previous known bin can supply the head extension. A gap stops that extension. Choose the dominant unrecorded reason only when all relevant line ranges are covered by missing spans.
 
-[Tile wire reader](../../ui/src/dashboard/tiles/tile.ts) · [Cache](../../ui/src/dashboard/tiles/cache.ts) · [Viewport and assembly](../../ui/src/dashboard/tiles/view.ts) · [Followed head](../../ui/src/dashboard/tiles/head.ts) · [Consumer](../../ui/src/dashboard/tiles/useTiles.ts)
+[Tile wire reader](../../ui/src/dashboard/tiles/tile.ts) · [Cache](../../ui/src/dashboard/tiles/cache.ts) · [Viewport and assembly](../../ui/src/dashboard/tiles/view.ts) · [Followed head](../../ui/src/dashboard/tiles/head.ts) · [Family plan](../../ui/src/families/host/useFamilyPlan.ts)

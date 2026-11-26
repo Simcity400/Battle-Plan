@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayAmounts, fuelParts, fuelTooltips, partsStructure, percentFull, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData.ts';
+import { dayAmounts, fuelParts, fuelTooltips, percentFull, validateCountryFuel, validateFuelAwardHistory, validateFuelAwards } from './fuelData.ts';
 import type { CountryFuelReply, FuelLabel, FuelReadAt } from '../../generated/dashboard';
 
 const label = (key: string, template: string | null = `${key}: {NUM}`): FuelLabel => ({ key, template, arguments: ['NUM'], reason: template ? null : 'absent' });
@@ -54,13 +54,6 @@ test('a burned day splits into consumers, transfers, other and the conversion re
   assert.equal(gain.transfer?.raw, 8192n, 'incoming lend-lease apart from own production');
   const ring = fuelParts(reply(), read(), 'gain')!;
   assert.deepEqual([ring.parts.map(part => part.id), ring.reason], [['unidentified'], 'Applied fuel updates were not recorded']);
-});
-
-test('a breakdown renders again only when which parts it shows or their names change', () => {
-  const before = partsStructure(reply(), 'burn');
-  assert.equal(partsStructure(reply({ read: read({ fuelRaw: '1', day: { ...read().day!, burnedRaw: '999999' } }) }), 'burn'), before);
-  assert.notEqual(partsStructure(reply({ read: applied() }), 'burn'), before);
-  assert.notEqual(partsStructure(reply({ read: read({ day: null, leftOut: 'notUpdated' }) }), 'burn'), before);
 });
 
 test('the tooltip says why a day is left out and never shows a zero for it', () => {

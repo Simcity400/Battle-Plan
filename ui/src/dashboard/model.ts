@@ -74,8 +74,10 @@ export function createWidget(kind: WidgetKind, trackId: string, id: string = new
 }
 
 export function widgetAtDefault(widget: WidgetSpec, trackId: string): boolean {
-  const fields = widgetDefinition(widget.kind)?.options;
-  const shown = (spec: WidgetSpec) => ({ configVersion: spec.configVersion, title: spec.title, contentScale: spec.contentScale ?? 100, countries: spec.countries, time: spec.time,
+  const definition = widgetDefinition(widget.kind);
+  const fields = definition?.options;
+  const shown = (spec: WidgetSpec) => ({ configVersion: definition && spec.configVersion < definition.version ? definition.version : spec.configVersion,
+    title: spec.title, contentScale: spec.contentScale ?? 100, countries: spec.countries, time: spec.time,
     campaign: spec.campaign ?? 'default', trackIds: spec.campaign === 'tracks' ? spec.trackIds : null, options: resolveOptions(fields, spec.options) });
   return stableJson(shown(widget)) === stableJson(shown(createWidget(widget.kind, trackId, widget.id)));
 }
@@ -184,13 +186,6 @@ export function recordingEndTime(meta: { timeModes: readonly WidgetTime['mode'][
     windows[track.id] = { firstOffset: meta.scope === 'history' ? 0 : end, lastOffset: end };
   }
   return { mode: 'pin', windows };
-}
-
-export function migrateWidget(widget: WidgetSpec): WidgetSpec {
-  const definition = widgetDefinition(widget.kind);
-  if (!definition?.migrate || widget.configVersion >= definition.version) return widget;
-  const migrated = definition.migrate(widget.configVersion, widget);
-  return migrated && migrated.id === widget.id && migrated.kind === widget.kind ? { ...migrated, configVersion: definition.version } : widget;
 }
 
 export function rebaseWidget(current: WidgetSpec, base: WidgetSpec, next: WidgetSpec): WidgetSpec {

@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::at_hour::{At, AtHour, Keys, Owner, Read};
+use dashboard_base::products::at_hour::{At, AtHour, Clock, Keys, Owner, Read, at_hour, before, field_columns, warnings_through};
 use dashboard_base::products::LoadContext;
 use dashboard_base::Source;
 use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
@@ -212,6 +212,39 @@ fn dynamic(held: &DecodedFrame, owner: Owner) -> bool {
         .is_ok_and(|rows| rows.iter().any(|row| row.country == owner.id && !row.name_tag.is_empty()))
 }
 
+fn stability_columns(table: TableId) -> Option<Vec<usize>> {
+    let fields: &[&str] = match table {
+        TableId::Countries => &["canonical_slot", "tag"],
+        TableId::CountryAppearance => &["name_tag", "cosmetic_tag", "original_tag", "original_tag_reference"],
+        TableId::CountryLinks => &["canonical_slot"],
+        TableId::CountryCivilWars => &["target"],
+        TableId::CountryCounterInputs => &["owned_state_count"],
+        TableId::CountryWars => &["enemies_read", "enemies"],
+        TableId::WarRelations => &["start_hour", "end_hour"],
+        TableId::CountryCommandPower => &["max_command_power", "max_command_power_factor", "allocated_command_power_raw"],
+        TableId::ModifierDefinitions => &["flags"],
+        TableId::Characters => &["name_token_id", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"],
+        TableId::CountryStabilityInputs => &[
+            "stability_raw", "war_support_raw", "at_war", "offensive_war", "defensive_war", "ruling_party_popularity_raw",
+            "propaganda_stability_q15", "coastal_protection_stability_raw", "bombing_war_support_q15", "heroes_war_support_q15",
+            "convoys_war_support_q15", "propaganda_war_support_q15", "interception_sum_raw", "interception_bombing_war_support_impact",
+            "interception_war_support_scale_q15", "world_tension_raw", "base_stability_war_factor", "base_stability_party_popularity_factor",
+            "min_stability", "max_stability", "war_support_offensive_war", "war_support_defensive_war", "war_support_tension_impact",
+            "min_war_support", "max_war_support", "base_max_command_power", "stability_factor", "party_popularity_stability_factor",
+            "war_stability_factor", "offensive_war_stability_factor", "defensive_war_stability_factor", "war_support_factor",
+            "stability_weekly", "war_support_weekly", "language", "keys",
+        ],
+        _ => return None,
+    };
+    Some(field_columns(table, fields))
+}
+
+fn naming_through(frame: &DecodedFrame, owner: Option<Owner>) -> i32 {
+    if !owner.is_some_and(|owner| dynamic(frame, owner)) { return i32::MAX; }
+    before(frame.complete::<tables::WarRelations>().ok().into_iter().flatten()
+        .filter(|row| row.end_hour > row.start_hour && row.end_hour > frame.hour).map(|row| row.end_hour).min())
+}
+
 fn look(frame: &DecodedFrame, owner: Owner) -> Option<Look> {
     let countries = frame.complete::<tables::Countries>().ok()?;
     let row = countries.iter().find(|row| row.id == owner.id)?;
@@ -328,8 +361,11 @@ fn is_character(kind: u8) -> bool {
     kind == CountryStabilityLineRow::ADVISOR || kind == CountryStabilityLineRow::COUNTRY_LEADER
 }
 
-fn owner_lines(frame: &DecodedFrame) -> Option<&[CountryStabilityLineRow]> {
-    frame.complete::<tables::CountryStabilityLines>().ok()
+fn owner_lines(frame: &DecodedFrame, owner: Owner) -> Option<&[CountryStabilityLineRow]> {
+    let lines = frame.complete::<tables::CountryStabilityLines>().ok()?;
+    let first = lines.partition_point(|line| line.country < owner.id);
+    let last = lines.partition_point(|line| line.country <= owner.id);
+    Some(&lines[first..last])
 }
 
 pub struct CountryStabilityBreakdown;
@@ -338,7 +374,11 @@ impl AtHour for CountryStabilityBreakdown {
     const KEY: &'static str = "country-stability-breakdown";
     const TITLE: &'static str = "Stability breakdown";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into StabilityBreakdownReply.hour and missing-inputs warning");
+    const CLOCK: Clock = Clock::Boundaries;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(|reply, hour| {
+        at_hour(reply, hour);
+        if let Some(breakdown) = reply.get_mut("breakdown").filter(|value| value.is_object()) { at_hour(breakdown, hour); }
+    });
     type Params = StabilityBreakdownParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = StabilityBreakdownReply;
@@ -393,17 +433,19 @@ impl AtHour for CountryStabilityBreakdown {
                 Read { table: TableId::CountryStabilityLines, keys: Keys::Range(id << 64, id << 64 | u128::from(u64::MAX)) },
                 Read::these(TableId::SliceReads, [sliced(TableId::CountryStabilityInputs, owner.id), sliced(TableId::CountryStabilityLines, owner.id)]),
                 Read::these(TableId::CountryCommandPower, [u128::from(owner.slot)]),
-                Read::all(TableId::ModifierDefinitions),
                 Read::these(TableId::CountryAppearance, [id]),
             ],
             1 => {
-                let characters: BTreeSet<u128> = owner_lines(held)
+                let characters: BTreeSet<u128> = owner_lines(held, owner)
                     .into_iter()
                     .flatten()
                     .filter(|line| is_character(line.kind))
                     .map(|line| u128::from(line.identity_id))
                     .collect();
-                let mut reads = vec![Read::these(TableId::Characters, characters)];
+                let modifiers = held.complete::<tables::CountryStabilityInputs>().into_iter().flatten()
+                    .filter(|row| row.country == owner.id).flat_map(|row| row.keys.iter().copied())
+                    .filter(|&key| key != u32::MAX).map(u128::from);
+                let mut reads = vec![Read::these(TableId::Characters, characters), Read::these(TableId::ModifierDefinitions, modifiers)];
                 if dynamic(held, owner) {
                     reads.extend(CIVIL_WAR.map(Read::all));
                 }
@@ -429,6 +471,12 @@ impl AtHour for CountryStabilityBreakdown {
         naming(source, load)
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> { stability_columns(table) }
+
+    fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
+        naming_through(frame, at.owner).min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
+    }
+
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Stability breakdown country is unavailable at this hour"))?;
         let mut warnings = Vec::new();
@@ -450,7 +498,7 @@ fn breakdown_at(frame: &DecodedFrame, owner: Owner, tag: &str, content: &Option<
     let read = replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, owner.id)
         .ok_or_else(|| "The read behind this hour's values is not recorded.".to_owned())?;
     let lines_read = replay_data::sliced::read_hour(reads, TableId::CountryStabilityLines, owner.id);
-    let lines = owner_lines(frame).filter(|_| lines_read.is_none_or(|lines_read| lines_read == read));
+    let lines = owner_lines(frame, owner).filter(|_| lines_read.is_none_or(|lines_read| lines_read == read));
     if lines.is_none() {
         warnings.push(format!("{tag}: the stability lines of hour {} were not recorded with its inputs", frame.hour));
     }
@@ -481,7 +529,8 @@ impl AtHour for StabilityPartNames {
     const KEY: &'static str = "stability-part-names";
     const TITLE: &'static str = "Stability parts";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps frame.hour into StabilityPartNamesReply.hour");
+    const CLOCK: Clock = Clock::Boundaries;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = StabilityPartNamesParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, parts];
     type Reply = StabilityPartNamesReply;
@@ -510,6 +559,12 @@ impl AtHour for StabilityPartNames {
         let mut tables = vec![TableId::StabilityPartKeys, TableId::CountryAppearance];
         tables.extend(CIVIL_WAR);
         tables
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> { stability_columns(table) }
+
+    fn valid_reply_through(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _: bool) -> i32 {
+        naming_through(frame, at.owner).min(warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn reads(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {

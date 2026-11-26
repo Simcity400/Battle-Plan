@@ -6,7 +6,7 @@ import { rowAmount } from '../dashboard/follow/painters.ts';
 import { followedRow, keyId } from '../dashboard/keyedSeriesData.ts';
 import type { TiledLine } from '../dashboard/tiles/view';
 import type { Scene } from '../draw/lane.ts';
-import type { MissingSpan, TilePart } from '../generated/dashboard';
+import type { HourSpan, MissingSpan, TilePart } from '../generated/dashboard';
 import { BoundedSeriesCursor, type WitnessedPoint } from './boundedView.ts';
 import type { BoundedReadView, BoundedSeries } from './contract.ts';
 import { sceneReadView, type SceneSources } from './scene.ts';
@@ -35,6 +35,7 @@ export interface SeriesHeadSource {
   readonly keys?: readonly { readonly tag: string; readonly part: string }[];
   readonly partBits?: number;
   readonly decimals?: number;
+  readonly within?: Readonly<Record<string, readonly HourSpan[]>>;
 }
 
 export interface TiledSources {
@@ -174,6 +175,83 @@ interface CursorSlot {
   gen: number;
 }
 
+function clipHeadToWithin(
+  runFirst: number,
+  runLast: number,
+  value: number,
+  breakBefore: boolean,
+  spans: readonly HourSpan[] | undefined,
+  floored: number,
+): { readonly headPoint: WitnessedPoint | null; readonly headValue: Value | undefined; readonly prefixRuns?: readonly Run[] } {
+  const hi = Math.min(runLast, floored);
+  if (!spans) {
+    const prefixRuns = runFirst <= hi
+      ? [{ firstHour: runFirst, lastHour: hi, value, ...(breakBefore ? { breakBefore: true } : {}) }]
+      : undefined;
+    return { headPoint: { hour: floored, value }, headValue: knownValue(value), ...(prefixRuns ? { prefixRuns } : {}) };
+  }
+  const clipped: Run[] = [];
+  for (const span of spans) {
+    const firstHour = Math.max(runFirst, span.firstHour);
+    const lastHour = Math.min(hi, span.lastHour);
+    if (firstHour > lastHour) continue;
+    clipped.push({
+      firstHour,
+      lastHour,
+      value,
+      ...(clipped.length > 0 || breakBefore ? { breakBefore: true } : {}),
+    });
+  }
+  const coveredAtHead = spans.some(span => span.firstHour <= floored && floored <= span.lastHour);
+  return {
+    headPoint: coveredAtHead ? { hour: floored, value } : null,
+    headValue: coveredAtHead ? knownValue(value) : undefined,
+    ...(clipped.length ? { prefixRuns: clipped } : {}),
+  };
+}
+
+interface StaticPanelState {
+  readonly country?: number | string;
+  readonly tag?: string;
+  readonly part?: string | null;
+  readonly run?: {
+    readonly firstHour?: number;
+    readonly lastHour?: number;
+    readonly valueRaw: string;
+    readonly slot?: number;
+    readonly startsSegment?: boolean;
+  } | null;
+}
+
+const staticStateIndexes = new WeakMap<readonly StaticPanelState[], ReadonlyMap<string, StaticPanelState>>();
+
+function indexStaticStates(states: readonly StaticPanelState[]): ReadonlyMap<string, StaticPanelState> {
+  const cached = staticStateIndexes.get(states);
+  if (cached) return cached;
+  const map = new Map<string, StaticPanelState>();
+  for (const state of states) {
+    const countryTag = state.country !== undefined
+      ? (typeof state.country === 'number' ? countryKey(state.country) : state.country)
+      : state.tag ?? null;
+    const slotTag = state.run?.slot !== undefined ? countryKey(state.run.slot) : null;
+    if (state.part != null) {
+      if (countryTag !== null) {
+        const key = keyId({ tag: countryTag, part: state.part });
+        if (!map.has(key)) map.set(key, state);
+      }
+      if (slotTag !== null) {
+        const key = keyId({ tag: slotTag, part: state.part });
+        if (!map.has(key)) map.set(key, state);
+      }
+    } else {
+      if (countryTag !== null && !map.has(countryTag)) map.set(countryTag, state);
+      if (slotTag !== null && !map.has(slotTag)) map.set(slotTag, state);
+    }
+  }
+  staticStateIndexes.set(states, map);
+  return map;
+}
+
 export class SceneTiles {
   private readonly cursors = new Map<string, Map<string, CursorSlot>>();
   private gen = 0;
@@ -192,6 +270,7 @@ export class SceneTiles {
     const prevSourceKeys = this.lastBySource ? this.lastBySource.keys() : null;
     let sourceCount = 0;
     const nextBySource = new Map<string, ReadonlyMap<string, BoundedSeries>>();
+    const floored = Math.floor(hour);
     for (const source in tiledBySource) {
       if (!Object.hasOwn(tiledBySource, source)) continue;
       sourceCount++;
@@ -200,13 +279,23 @@ export class SceneTiles {
       let sourceSlots = this.cursors.get(source);
       if (!sourceSlots) this.cursors.set(source, sourceSlots = new Map());
       const head = binding.headSourceBySeries?.[source];
-      const answer = head ? (answers ??= sceneReadView(scene, sources, hour)).answer(head.answerName) : undefined;
+      const view = head ? (answers ??= sceneReadView(scene, sources, hour)) : undefined;
+      const answer = head ? view?.answer(head.answerName) : undefined;
+      const subId = head && answer ? sources.sources[head.answerName] : undefined;
+      const subIdx = subId !== undefined ? scene.subs.findIndex(sub => sub.id === subId) : -1;
+      const picture = subIdx >= 0 ? scene.pictures[subIdx] : undefined;
+      const panel = head && !answer
+        ? view?.panel<{
+            readonly decimals?: number;
+            readonly states?: readonly StaticPanelState[];
+          }>(head.answerName)
+        : undefined;
+      const staticStates = panel && Array.isArray(panel.states) ? indexStaticStates(panel.states) : null;
       const prevByTag = this.lastBySource?.get(source);
       let allTagsSame = prevByTag !== undefined;
       const prevTagKeys = prevByTag ? prevByTag.keys() : null;
       let tagCount = 0;
       let byTag: Map<string, BoundedSeries> | null = null;
-      const floorHour = Math.floor(hour);
       for (const tag in lines) {
         if (!Object.hasOwn(lines, tag)) continue;
         tagCount++;
@@ -215,19 +304,40 @@ export class SceneTiles {
         let slot = sourceSlots.get(tag);
         if (!slot) sourceSlots.set(tag, slot = { cursor: new BoundedSeriesCursor(), gen });
         else slot.gen = gen;
+        const spans = head?.within ? head.within[tag] ?? [] : undefined;
         let headPoint: WitnessedPoint | null = null;
         let headValue: Value | undefined;
+        let prefixRuns: readonly Run[] | undefined;
         if (answer && head) {
           const row = headRow(answer, head, tag);
           const value = row >= 0 ? rowAmount(answer, row, head.decimals ?? line.decimals) : null;
           if (value !== undefined && value !== null && Number.isFinite(value)) {
-            headPoint = { hour: floorHour, value };
-            headValue = knownValue(value);
+            const runFirst = picture && Number.isFinite(picture.h) && picture.h <= floored ? Math.floor(picture.h) : floored;
+            const runLast = picture && Number.isFinite(picture.c) && picture.c >= runFirst ? Math.floor(picture.c) : floored;
+            const clipped = clipHeadToWithin(runFirst, runLast, value, false, spans, floored);
+            headPoint = clipped.headPoint;
+            headValue = clipped.headValue;
+            prefixRuns = clipped.prefixRuns;
           } else {
-            headValue = valueFromWireCell(answer, row, 0);
+            const coveredAtHead = !spans || spans.some(span => span.firstHour <= floored && floored <= span.lastHour);
+            headValue = coveredAtHead ? valueFromWireCell(answer, row, 0) : undefined;
+          }
+        } else if (staticStates && head && panel) {
+          const found = staticStates.get(tag);
+          if (found?.run) {
+            const decimals = head.decimals ?? panel.decimals ?? line.decimals;
+            const value = Number(BigInt(found.run.valueRaw)) / 10 ** decimals;
+            if (Number.isFinite(value)) {
+              const runFirst = found.run.firstHour !== undefined ? found.run.firstHour : floored;
+              const runLast = found.run.lastHour !== undefined ? found.run.lastHour : floored;
+              const clipped = clipHeadToWithin(runFirst, runLast, value, found.run.startsSegment === true, spans, floored);
+              headPoint = clipped.headPoint;
+              headValue = clipped.headValue;
+              prefixRuns = clipped.prefixRuns;
+            }
           }
         }
-        const bounded = slot.cursor.advance(line, hour, { headPoint, headValue });
+        const bounded = slot.cursor.advance(line, hour, { headPoint, headValue, ...(prefixRuns && !raw.runs ? { prefixRuns } : {}) });
         if (allTagsSame && prevTagKeys!.next().value === tag && prevByTag!.get(tag) === bounded) continue;
         if (allTagsSame) {
           allTagsSame = false;

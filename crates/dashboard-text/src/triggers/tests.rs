@@ -203,7 +203,8 @@ fn with_world<T>(
 }
 
 fn with_world_accepted<T>(frame: &DecodedFrame, accepted: AcceptedProjects, run: impl FnOnce(&World) -> T) -> T {
-    with_world_traits(frame, "", Err("none"), Err("none"), Some(Arc::new(accepted)), run)
+    let accepted = Arc::new(accepted);
+    with_world_traits(frame, "", Err("none"), Err("none"), Some(&|_| Arc::clone(&accepted)), run)
 }
 
 fn with_world_traits<T>(
@@ -217,7 +218,7 @@ fn with_world_traits<T>(
         ),
         &str,
     >,
-    accepted: Option<Arc<AcceptedProjects>>,
+    accepted: Option<ProjectReads<'_>>,
     run: impl FnOnce(&World) -> T,
 ) -> T {
     let aliases: Arc<TagAliases> = Arc::new(content_reader_key_names::tag_aliases::parse(

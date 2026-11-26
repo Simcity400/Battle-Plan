@@ -22,15 +22,18 @@ BATTLEPLAN_USER_DIR, else the Paradox user folder):
   obviously made-up one, or read the number from a fixture we wrote when the test is about it.
 It reads the installation and writes nothing there. Its index lives outside the repository in
 --cache (default: the user's cache folder) and is rebuilt per game or mod only when Steam's
-manifest for it, or the size or time of a file of a mod outside Steam, changes; under `--against`
-an out-of-date index is reported as `not run here`, never rebuilt in the push check. Where no
-installation is found it prints `not run here` and why, and reports only the tree checks.
+manifest for it, or the size or time of a file of a mod outside Steam, changes; an explicit run
+without `--against` also replaces a corrupt index. Under `--against` a missing, unreadable or
+out-of-date index fails and names `python tools/check-game-content.py` to build or refresh it,
+never rebuilding in the push check. Where no installation is found, or when `--tree-only` is
+passed, it prints `not run here` and why, and reports only the tree checks.
 `--against REF` (as `ci.py check` runs it) compares only the files changed since the merge base
 with REF; without it the whole tree is compared.
 
 Findings print as `<file>:<line>: <kind> <detail>` and never quote game text. Exits 1 on any.
 """
 import argparse
+from collections import Counter
 from contextlib import closing
 import hashlib
 import os
@@ -336,7 +339,22 @@ def locate(args):
                 if target.is_dir() and folded not in covered:
                     covered.add(folded)
                     roots.append((f"mod {target.name}", target, None))
-    return roots, None
+    counts = Counter(key for key, _, _ in roots)
+    used = {key for key, count in counts.items() if count == 1}
+    unique = []
+    for key, folder, stamp in roots:
+        if counts[key] > 1:
+            digest = hashlib.sha256(os.path.normcase(str(folder.resolve())).encode()).hexdigest()
+            width = 8
+            while True:
+                candidate = f"{key} ({digest[:width] if width <= len(digest) else f'{digest}-{width}'})"
+                if candidate not in used:
+                    key = candidate
+                    used.add(key)
+                    break
+                width += 2
+        unique.append((key, folder, stamp))
+    return unique, None
 
 
 def user_directory():
@@ -371,14 +389,18 @@ class Index:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
-        self.db.executescript("""
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS roots(id INTEGER PRIMARY KEY, key TEXT UNIQUE, folder TEXT, stamp TEXT);
-            CREATE TABLE IF NOT EXISTS files(root INTEGER, path TEXT, size INTEGER, head INTEGER);
-            CREATE INDEX IF NOT EXISTS files_by_head ON files(size, head);
-            CREATE TABLE IF NOT EXISTS segments(hash INTEGER, root INTEGER, PRIMARY KEY(hash, root)) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS defines(root INTEGER, key TEXT, value REAL);
-        """)
+        try:
+            self.db.executescript("""
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS roots(id INTEGER PRIMARY KEY, key TEXT UNIQUE, folder TEXT, stamp TEXT);
+                CREATE TABLE IF NOT EXISTS files(root INTEGER, path TEXT, size INTEGER, head INTEGER);
+                CREATE INDEX IF NOT EXISTS files_by_head ON files(size, head);
+                CREATE TABLE IF NOT EXISTS segments(hash INTEGER, root INTEGER, PRIMARY KEY(hash, root)) WITHOUT ROWID;
+                CREATE TABLE IF NOT EXISTS defines(root INTEGER, key TEXT, value REAL);
+            """)
+        except Exception:
+            self.db.close()
+            raise
 
     def current(self, key, folder, stamp):
         """(root id or None when the index is not of this stamp, full stamp, walked listing or None)."""
@@ -503,26 +525,53 @@ def compare_installation(args, files, rules, say):
     if not roots:
         say(f"not run here: installation comparison ({reason})")
         return []
-    cache = ((args.cache or default_cache()) / f"index-v{INDEX_VERSION}.sqlite3").resolve()
-    if cache.is_relative_to(ROOT) or any(cache.is_relative_to(folder.resolve()) for _, folder, _ in roots):
-        return ["installation index must be outside the worktree, game and mod folders"]
-    if args.against and not cache.is_file():
-        say("not run here: installation comparison (no index yet; run python tools/check-game-content.py once)")
-        return []
-    index = Index(cache, readonly=bool(args.against))
-    with closing(index.db):
-        if args.against:
-            index.db.execute("BEGIN")
-            current = {key: index.current(key, folder, stamp)[0] for key, folder, stamp in roots}
-            stale = [key for key, root in current.items() if root is None]
-            if stale:
-                say("not run here: installation comparison for " + ", ".join(stale)
-                    + " (index out of date; run python tools/check-game-content.py once)")
-            active = set(current.values()) - {None}
-        else:
-            active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
-            index.drop_others(active)
-        findings = install_findings(index, files, rules, active) if active else []
+    cache_path = (args.cache or default_cache()) / f"index-v{INDEX_VERSION}.sqlite3"
+    try:
+        cache = cache_path.resolve()
+        if cache.is_relative_to(ROOT) or any(cache.is_relative_to(folder.resolve()) for _, folder, _ in roots):
+            return ["installation index must be outside the worktree, game and mod folders"]
+        exists = cache.is_file()
+    except OSError as error:
+        if not args.against:
+            raise
+        detail = f"cache inaccessible at {cache_path}: {error}; run python tools/check-game-content.py"
+        say(f"not run here: installation comparison ({detail})")
+        return [f"installation comparison: {detail}"]
+    if args.against and not exists:
+        detail = f"no index at {cache}; run python tools/check-game-content.py"
+        say(f"not run here: installation comparison ({detail})")
+        return [f"installation comparison: {detail}"]
+    if args.against:
+        try:
+            index = Index(cache, readonly=True)
+            with closing(index.db):
+                index.db.execute("BEGIN")
+                checked = [(key, index.current(key, folder, stamp)[0]) for key, folder, stamp in roots]
+                stale = [key for key, root in checked if root is None]
+                active = {root for _, root in checked if root is not None}
+                findings = install_findings(index, files, rules, active) if active else []
+        except (sqlite3.Error, OSError) as error:
+            detail = f"unreadable index at {cache}: {error}; run python tools/check-game-content.py"
+            say(f"not run here: installation comparison ({detail})")
+            return [f"installation comparison: {detail}"]
+        if stale:
+            missing = ", ".join(stale)
+            say(f"not run here: installation comparison for {missing} (index out of date; run python tools/check-game-content.py)")
+            findings.append(f"installation comparison: index out of date for {missing}; run python tools/check-game-content.py")
+    else:
+        for attempt in range(2):
+            try:
+                index = Index(cache)
+                with closing(index.db):
+                    active = {index.refresh(key, folder, stamp, say) for key, folder, stamp in roots}
+                    index.drop_others(active)
+                    findings = install_findings(index, files, rules, active) if active else []
+                break
+            except sqlite3.DatabaseError as error:
+                if attempt or type(error) is not sqlite3.DatabaseError:
+                    raise
+                for suffix in ("", "-wal", "-shm"):
+                    Path(f"{cache}{suffix}").unlink(missing_ok=True)
     say(f"installation comparison: {len(active)} game and mod folders, {len(files)} files"
         + (f" changed since {args.against}" if args.against else ""))
     return findings

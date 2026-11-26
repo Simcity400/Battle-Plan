@@ -1,43 +1,9 @@
-.lb-window {
-  --lb-ink: color-mix(in srgb, var(--text) 86%, var(--surface));
-  --lb-label: color-mix(in srgb, var(--text) 90%, var(--surface));
-  --lb-hair: color-mix(in srgb, var(--text) 6%, transparent);
-  width: min(960px, calc(100vw - 24px));
-  height: min(560px, calc(100dvh - 24px));
-}
-.lb-window .detail-window-header { flex: none; flex-wrap: nowrap; gap: 10px; height: 44px; padding: 0 8px 0 18px; border-bottom: 0; }
-.lb-window .detail-window-header > strong { min-width: 0; overflow: hidden; font-size: 14.5px; font-weight: 600; letter-spacing: -0.005em; text-overflow: ellipsis; white-space: nowrap; }
-.lb-window .detail-window-day { flex: none; font-size: 12.5px; white-space: nowrap; }
-.lb-window .detail-window-actions { gap: 16px; }
-.lb-window .detail-window-actions .icon-button { width: 30px; height: 30px; border-radius: 8px; }
-.lb-window .detail-window-body { padding: 0; overflow: hidden; }
-
-.lb-when { display: inline-flex; align-items: baseline; }
-.lb-terrain::before { content: "·"; margin: 0 7px; }
-.lb-result { display: inline-flex; align-items: center; gap: 8px; color: var(--lb-ink); font-size: 12.5px; white-space: nowrap; }
-.lb-result::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.lb-result.is-running::before { background: var(--accent); }
-
-.lb-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.lb-sides { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 10px 28px; max-height: 45%; overflow: auto; padding: 2px 18px 14px; }
-.lb-side { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
-.lb-side.is-defender { align-items: flex-end; }
-.lb-who { display: flex; align-items: center; gap: 10px; max-width: 100%; min-width: 0; }
-.lb-countries { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-width: 0; margin: 0; padding: 0; list-style: none; }
-.lb-countries li { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
-.lb-side.is-defender .lb-who,
-.lb-side.is-defender .lb-countries,
-.lb-side.is-defender .lb-countries li,
-.lb-side.is-defender .lb-figures { flex-direction: row-reverse; }
-.lb-flag { width: 30px; height: 20px; flex: 0 0 30px; border-radius: 3px; object-fit: cover; }
-.lb-country { min-width: 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.lb-role { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.lb-figures { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; font-variant-numeric: tabular-nums; }
-.lb-figure { display: flex; flex-direction: row-reverse; align-items: baseline; gap: 4px; white-space: nowrap; }
-.lb-figure dt { color: var(--muted); font-size: 12.5px; }
-.lb-figure dd { display: inline-flex; align-self: center; margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
-
-.lb-body { display: flex; flex: 1; flex-direction: column; gap: 20px; min-height: 0; overflow: auto; padding: 14px 18px 18px; border-top: 1px solid var(--lb-hair); }
+.lb-details { --lb-label: color-mix(in srgb, var(--text) 90%, var(--surface)); display: flex; flex-direction: column; gap: 20px; padding: 14px 18px 18px; }
+.lb-facts { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 0; font-size: 12.5px; }
+.lb-facts > div { display: flex; align-items: baseline; gap: 8px; }
+.lb-facts dt { color: var(--muted); }
+.lb-facts dd { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text); font-weight: 600; }
+.lb-facts dd.is-running::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .lb-courses { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
 .lb-course { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; }
 .lb-course figcaption, .lb-equipment h3 { margin: 0; color: var(--lb-label); font-size: 12px; font-weight: 600; }
@@ -60,17 +26,7 @@
 .lb-designs tbody tr[data-tooltip]:hover > * { background: color-mix(in srgb, var(--text) 4.5%, transparent); }
 
 .lb-note { color: var(--muted); font-size: 12px; }
-.lb-missing { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
-.lb-hatch, .lb-name-missing { display: inline-block; flex: none; border-radius: 2px; background: repeating-linear-gradient(135deg, var(--hatch) 0 1.2px, transparent 1.2px 4px); box-shadow: inset 0 0 0 1px var(--hatch-edge); }
-.lb-hatch { width: 10px; height: 10px; }
-.lb-name-missing { width: 64px; height: 12px; border-radius: 3px; }
-.lb-skeleton { display: inline-block; width: 22px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); }
 
 @media (max-width: 720px) {
-  .lb-sides, .lb-courses, .lb-equipment-sides { grid-template-columns: minmax(0, 1fr); }
-  .lb-side.is-defender { align-items: flex-start; }
-  .lb-side.is-defender .lb-who,
-  .lb-side.is-defender .lb-countries,
-  .lb-side.is-defender .lb-countries li,
-  .lb-side.is-defender .lb-figures { flex-direction: row; }
+  .lb-courses, .lb-equipment-sides { grid-template-columns: minmax(0, 1fr); }
 }

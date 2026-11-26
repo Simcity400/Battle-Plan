@@ -156,6 +156,7 @@ export interface TimeChartLayout {
   readonly yTicks: readonly number[];
   readonly yTickLabels?: readonly string[];
   readonly playheadX: number;
+  readonly selectedX: number | null;
   readonly dateTabText: string;
   readonly dateTabX: number;
   readonly dateTabWidth: number;
@@ -454,7 +455,7 @@ function rowsChartLayout(model: TimeChartModel, width: number, height: number, s
   return {
     width, height, small, left: frame.left, right: width - frame.left - frame.plotWidth, top: frame.top, bottom: height - frame.axisY,
     plotWidth: frame.plotWidth, plotHeight: frame.axisY - frame.top, baseY: frame.axisY, markerLaneHeight: 0, axisY: frame.axisY,
-    xDomain: frame.xDomain, yDomain: [0, 1], yTicks: [], playheadX: frame.toX(model.hour + 1), dateTabText: '', dateTabX: 0, dateTabWidth: 0,
+    xDomain: frame.xDomain, yDomain: [0, 1], yTicks: [], playheadX: frame.toX(model.hour + 1), selectedX: null, dateTabText: '', dateTabX: 0, dateTabWidth: 0,
     rawAxisTicks: frame.axisTicks, endLabels: [], markers: [], gaps: [], columns: [], rows: frame, legendTop: null,
     logShown: false, logRefused: false, toX: frame.toX, toY: () => frame.axisY, fromX: px => frame.xDomain[0] + ((px - frame.left) / frame.plotWidth) * span,
   };
@@ -499,11 +500,19 @@ export function layoutTimeChart(
       if (hi > dataMax) dataMax = hi;
     }
   } else if (model.mode === 'stack' && model.stack) {
-    const { hours, bands, total } = model.stack;
-    for (let i = 0; i < hours.length; i++) {
+    const { hours, bands, total, step } = model.stack;
+    let startIdx = 0;
+    if (step) {
+      for (let i = 0; i < hours.length; i++) {
+        if (hours[i]! <= xDomain[0]) startIdx = i;
+        else break;
+      }
+    }
+    const cutoff = Math.min(model.hour, xDomain[1]);
+    for (let i = startIdx; i < hours.length; i++) {
       const h = hours[i]!;
-      if (h > model.hour) break;
-      if (h < xDomain[0]) continue;
+      if (h > cutoff) break;
+      if (h < xDomain[0] && !(step && i === startIdx)) continue;
       let posSum = 0;
       let negSum = 0;
       for (const band of bands) {
@@ -786,6 +795,12 @@ export function layoutTimeChart(
     ? columns[columns.length - 1]!.x + columns[columns.length - 1]!.width / 2
     : Math.max(left, Math.min(left + plotWidth, toX(model.hour)));
 
+  const rawSelected = model.selectedHour;
+  const selectedX = rawSelected != null && Number.isFinite(rawSelected) && model.mode !== 'columns'
+    && rawSelected >= xDomain[0] && rawSelected <= xDomain[1]
+    ? toX(rawSelected)
+    : null;
+
   const endLabels: PlacedEndLabel[] = [];
   if (rawEndLabels.length > 0) {
     const anchors = rawEndLabels.map(l => ({ id: l.id, y: toY(l.anchorVal), height: END_LABEL_HEIGHT }));
@@ -902,6 +917,7 @@ export function layoutTimeChart(
     yTicks,
     yTickLabels,
     playheadX,
+    selectedX,
     dateTabText,
     dateTabX,
     dateTabWidth,

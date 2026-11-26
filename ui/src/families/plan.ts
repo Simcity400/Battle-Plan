@@ -190,6 +190,7 @@ export interface BoundedSeries {
   readonly buckets: BoundedSlice<ChartBucket | null>;
   readonly runs?: BoundedSlice<Run>;
   readonly straddling: 'none' | 'cut' | 'loading';
+  readonly straddlingRuns?: readonly Run[];
   readonly headValue?: Value;
   readonly missing: BoundedSlice<MissingSpan>;
   readonly partial?: BoundedSlice<MissingSpan>;
@@ -377,7 +378,9 @@ export interface DeclaredCountryState {
   readonly every: readonly string[];
   readonly top: number | null;
   readonly membership: Readonly<Record<string, HourRanges>> | null;
+  readonly cumulativeMembership?: Readonly<Record<string, HourRanges>> | null;
   readonly membershipRuns: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[] | null;
+  readonly ambiguousHolders?: Readonly<Record<string, HourRanges>> | null;
   readonly unobserved: HourRanges;
   readonly filter: DeclaredCountryFilter;
   readonly factions: readonly FamilyFactionRun[] | null;
@@ -398,6 +401,7 @@ export type CountryPolicy =
       readonly factions?: boolean;
       readonly allowSlots?: boolean;
       readonly allowSingleSlot?: boolean;
+      readonly datedAtHour?: boolean;
       readonly everyOnTop?: boolean;
       readonly requireGroupsWhen?: (widget: WidgetSpec, options: Readonly<Record<string, OptionValue>>) => boolean;
     };

@@ -538,6 +538,31 @@ pub struct DashboardMapView {
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
     pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_province: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battle: Option<BattleWindow>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BattleWindow {
+    pub combat: String,
+    pub country: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country_slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub played_from: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live: Vec<[i32; 2]>,
+    pub canvas: [u8; 3],
+    pub text: [u8; 3],
+}
+
+impl BattleWindow {
+    pub fn handle(&self) -> Option<u64> {
+        self.combat.parse().ok().filter(|_| self.combat.bytes().all(|byte| byte.is_ascii_digit()))
+    }
 }
 
 impl DashboardMapView {
@@ -546,6 +571,11 @@ impl DashboardMapView {
             options: self.options.clone(),
         }
         .validate()?;
+        if let Some(battle) = &self.battle
+            && (battle.handle().is_none() || validate_tag(&battle.country).is_err() || battle.live.len() > 100_000 || battle.live.iter().any(|[first, last]| first > last))
+        {
+            return Err("A battle window names a full combat handle and one country tag");
+        }
         for text in [&self.id, &self.source_id, &self.revision] {
             if text.is_empty() || text.len() > 128 || text.contains('\0') {
                 return Err("Map identity is missing or exceeds its control budget");
@@ -650,6 +680,12 @@ pub struct DashboardMapState {
     pub center: Option<[f32; 2]>,
     pub options: Option<MapOptions>,
     pub applied: Option<AppliedMapSettings>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -838,6 +874,12 @@ mod tests {
         view.validate().unwrap();
         view.seek_sequence = Some(9_007_199_254_740_992);
         assert!(view.validate().is_err());
+        view.seek_sequence = None;
+        let battle = |combat: &str, country: &str| super::BattleWindow { combat: combat.into(), country: country.into(), country_slot: Some(7), played_from: None, live: Vec::new(), canvas: [0; 3], text: [255; 3] };
+        for (combat, country, valid) in [("12747462934590", "GER", true), ("12747462934590", "MOD_LONG_TAG_ÄÖ", true), ("12747462934590", "", false), ("1274746293459x", "GER", false), ("", "GER", false)] {
+            view.battle = Some(battle(combat, country));
+            assert_eq!(view.validate().is_ok(), valid, "battle window {combat:?} as {country:?}");
+        }
     }
 
     #[test]
@@ -970,6 +1012,9 @@ b"
             serde_json::from_str(r#"{"id":"m","sourceId":null,"revision":null,"branchId":null,"hour":null,"fraction":null,"sequence":0,"requestedSequence":0,"loading":true,"error":null}"#)
                 .unwrap();
         assert_eq!(unsent.applied, None);
+        assert!(unsent.keys.is_empty());
+        let keyed = super::DashboardMapState { id: "b".into(), keys: vec![(1, "Space".into())], ..Default::default() };
+        assert_eq!(serde_json::to_value(&keyed).unwrap()["keys"], serde_json::json!([[1, "Space"]]), "the page reads each key as [order, name]");
     }
 
     #[test]

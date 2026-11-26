@@ -23,7 +23,7 @@ interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => M
 
 function shownKey(state: DashboardMapState, playing: boolean): string {
   return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null,
-    state.behindReason ?? null, state.hour == null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
+    state.behindReason ?? null, state.hour == null, state.notes ?? null, state.closeRequests ?? null, state.keys?.at(-1)?.[0] ?? null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
 }
 
 export class MapViewsStore {
@@ -98,7 +98,7 @@ export class MapViewsStore {
     const stopClock = this.clock.subscribe(this.retarget);
     const stopShown = this.clock.subscribe(this.presentAll);
     const stopFrame = this.clock.subscribeFrame(this.checkPresence);
-    const stopHoles = mapHoles.subscribe(this.retarget);
+    const stopHoles = mapHoles.subscribe(this.schedule);
     let stopStates: (() => void) | undefined;
     let stopOptions: (() => void) | undefined;
     let stopToggles: (() => void) | undefined;
@@ -129,7 +129,7 @@ export class MapViewsStore {
       perfLog?.mapStates(states, this.expectation);
       let errorChanged = false;
       for (const state of states) {
-        if (state.clockId !== this.clock.clockId) continue;
+        if (state.clockId !== this.clock.clockId || !this.surfaces.has(state.id) && !this.states.has(state.id)) continue;
         const old = this.states.get(state.id);
         if (old && (state.requestedSequence ?? state.sequence) < (old.requestedSequence ?? old.sequence)
           && old.sourceId === state.sourceId && old.revision === state.revision) continue;
@@ -172,16 +172,29 @@ export class MapViewsStore {
     };
   }
 
-  register(id: string, element: HTMLElement, target: Surface['target']): () => void {
+  register(id: string, element: HTMLElement, target: Surface['target'], playhead = true): () => void {
     const surface: Surface = { element, target, layout: null, present: false };
     this.surfaces.set(id, surface);
     this.observer?.observe(element);
+    const unmark = mapHoles.surface(element, playhead);
     this.schedule();
     return () => {
-      if (this.surfaces.get(id) === surface) this.surfaces.delete(id);
+      unmark();
+      if (this.surfaces.get(id) === surface) {
+        this.surfaces.delete(id);
+        if (!playhead) this.forget(id);
+      }
       this.observer?.unobserve(element);
       this.schedule();
     };
+  }
+
+  forget(id: string): void {
+    if (this.surfaces.has(id)) return;
+    this.states.delete(id);
+    this.shown.delete(id);
+    this.lastViews.delete(id);
+    this.notify(id);
   }
 
   setHidden(hidden: boolean): void {
@@ -281,7 +294,7 @@ export class MapViewsStore {
     for (const surface of this.surfaces.values()) {
       const rect = surface.element.getBoundingClientRect();
       const bounds = physicalRect(rect, dpr);
-      const clip = physicalRect(intersectRects(rect, clipRect, page), dpr);
+      const clip = physicalRect(surface.element.closest('[popover]') ? intersectRects(rect, page) : intersectRects(rect, clipRect, page), dpr);
       surface.layout = { bounds, clip, onScreen: bounds.width > 0 && bounds.height > 0 && clip.width > 0 && clip.height > 0 };
     }
   }
@@ -298,9 +311,9 @@ export class MapViewsStore {
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
       surface.present = target != null;
-      if (!target || !surface.layout) continue;
+      if (!target || !surface.layout || mapHoles.outside(surface.element)) continue;
       const { bounds, clip, onScreen } = surface.layout;
-      const visible = onScreen && !this.hidden && !covered && !document.hidden && !this.states.get(id)?.error && !coveredBy(clip, holes);
+      const visible = onScreen && !this.hidden && !covered && !document.hidden && !this.states.get(id)?.error && !mapHoles.dimmed(surface.element) && !coveredBy(clip, holes);
       const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);

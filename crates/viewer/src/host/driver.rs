@@ -210,6 +210,9 @@ pub(crate) fn run(
         let acquire = surface.paint(&state, config, shown.then_some(size), output.pixels_per_point, clear, &primitives, &mut textures)?.acquire;
         if shown {
             crate::perf_log::frame_painted(painting.elapsed(), acquire);
+            if crate::perf_log::enabled() {
+                crate::perf_log::mark("host_painted", serde_json::json!({"ms": painting.elapsed().as_secs_f64() * 1e3}));
+            }
         }
         if close {
             return Ok(());
