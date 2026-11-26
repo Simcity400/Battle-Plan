@@ -835,8 +835,10 @@ pub(super) fn compute_stack(
         {
             continue;
         }
-        let unrestricted = [(first, rank_hour)];
-        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, rank_hour));
+        let show_later = top_limit.is_none() && (filter.is_some() || group_filter.is_some());
+        let through = if show_later { last } else { rank_hour };
+        let unrestricted = [(first, through)];
+        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, through));
         let member_at_rank = is_complete(spans, rank_hour);
         if spans.is_empty() || (top_limit.is_some() && !member_at_rank) {
             continue;
@@ -844,17 +846,22 @@ pub(super) fn compute_stack(
         let end = member_at_rank.then(|| lookup_slot(Some(runs), rank_complete, rank_hour)).flatten();
         unknown |= end.is_none();
         let mut peak_abs = 0;
+        let mut witnessed_nonzero = false;
         for &(lo, hi) in spans {
             let lo = lo.max(first);
-            let hi = hi.min(rank_hour);
+            let hi = hi.min(through);
             let start = runs.partition_point(|run| run.1 < lo);
-            for &(_, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
+            for &(since, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
                 if let Some(val) = val {
-                    peak_abs = peak_abs.max(val.unsigned_abs());
+                    witnessed_nonzero |= val != 0;
+                    if since.max(lo) <= rank_hour {
+                        peak_abs = peak_abs.max(val.unsigned_abs());
+                    }
                 }
             }
         }
-        if peak_abs > 0 {
+        if witnessed_nonzero {
+            let end = end.filter(|_| peak_abs > 0);
             ranked.push(RankedSlot { slot, end, peak_abs, resolved });
         }
     }
