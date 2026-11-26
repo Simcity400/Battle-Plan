@@ -696,7 +696,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const asksRef = useRef<readonly HoverAsk[] | undefined>(undefined);
   const asks = useMemo(
     () => (asksRef.current = active && plan && hover?.owner === owner && hover.sourceOwner === sourceOwner
-      ? hoverAsks(plan, hover.hour, name => displayedHoverKeys(name, hover.keys, displayedSeries), asksRef.current) : []),
+      ? hoverAsks(plan, hover.hour, name => displayedHoverKeys(name, hover.keys, displayedSeries), asksRef.current, hover.keys) : []),
     [active, plan, owner, sourceOwner, hover, displayedSeries],
   );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);

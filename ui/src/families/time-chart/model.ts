@@ -222,6 +222,7 @@ export interface ChartOverlayLabel {
 export interface ChartHoverDetail {
   readonly hour: number;
   readonly items: readonly TooltipListItem[];
+  readonly itemsBySeries?: ReadonlyMap<string, readonly TooltipListItem[]>;
   readonly replacesSeries?: boolean;
 }
 

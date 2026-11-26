@@ -8,4 +8,5 @@ pub mod registrations;
 pub fn forget(source: &dashboard_base::Source) {
     products::production::forget(source);
     products::construction::forget(source);
+    products::equipment_produced::forget(source);
 }

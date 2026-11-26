@@ -71,12 +71,21 @@ test('hover requests the installed ranking and projection slots while older tile
     { name: 'hover', source, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-state', params: {}, readsOf: 'main' } },
     { name: 'detail', source, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-rank', params: {}, countriesOf: 'bands' } },
   ] };
-  const tiled = { main: new Map([['OLD', 1]]), bands: new Map([['OLD', 2]]) };
+  const tiled = { main: new Map([['OLD', 1]]), bands: new Map([['OLD', 2]]), named: new Map([['OLD', 3]]) };
   const keys = { main: ['NEW'], bands: [countryKey(9)] };
-  const ask = (drawn?: typeof keys) => hoverAsks(plan, 15, name => displayedHoverKeys(name, drawn, tiled)).map(item => item.request.params);
+  const ask = (drawn?: typeof keys) => hoverAsks(plan, 15, name => displayedHoverKeys(name, drawn, tiled), undefined, drawn).map(item => item.request.params);
   assert.deepEqual(ask(keys), [{ reads: [{ country: 'NEW', hour: 15 }] }, { countries: [9], hour: 15 }]);
   assert.deepEqual(ask({ ...keys, bands: [] }), [{ reads: [{ country: 'NEW', hour: 15 }] }]);
   assert.deepEqual(ask()[0], { reads: [{ country: 'OLD', hour: 15 }] });
+  const modelsPlan: SourcePlan = { owner: 'production', entries: [{
+    name: 'hover', source, branch: '1', offset: 0, read: {
+      shape: 'exact-hover', product: 'equipment-produced-race', params: {}, countriesOf: 'main', countryParamsOf: { models: 'named' },
+    },
+  }] };
+  const models = (drawn: Record<string, string[]>) => hoverAsks(modelsPlan, 15, name => displayedHoverKeys(name, drawn, tiled), undefined, drawn)[0]?.request.params;
+  assert.deepEqual(models(keys), { countries: ['NEW'], hour: 15 });
+  assert.deepEqual(models({ ...keys, named: [] }), { countries: ['NEW'], hour: 15, models: [] });
+  assert.deepEqual(models({ main: ['AAA', countryKey(9)], named: [countryKey(9)] }), { countries: ['AAA', 9], hour: 15, models: [9] });
 });
 
 const mkEvent = (key: string, extra: Partial<KeyboardEvent> = {}) => {

@@ -29,7 +29,6 @@ import {
   missingSpansOf,
   withinMapOf,
   chartTopOf,
-  rowsBySelectedKey,
 } from '../../families/time-chart/seriesHelpers.ts';
 import {
   chartAxis,
@@ -97,6 +96,7 @@ function formatExactAmount(raw: number, count: ProducedCount): string {
 function buildHoverDetail(
   readView: BoundedReadView,
   orderedKeys: readonly string[],
+  named: readonly string[],
   options: EquipmentProducedLinesOptions,
   looks: ReadonlyMap<string, ReturnType<typeof countrySeriesLooks> extends ReadonlyMap<string, infer T> ? T : never>,
 ): ChartHoverDetail | null {
@@ -119,46 +119,40 @@ function buildHoverDetail(
   const eligible = orderedKeys.filter(key => memberAt(options.membership, key, hour));
   if (eligible.length === 0) return null;
 
-  const rowFor = rowsBySelectedKey(reply.rows, rowKeyOf);
+  const counted = new Map(reply.rows.map(row => [countryKey(row.counted), row]));
   const items: TooltipListItem[] = [];
+  const itemsBySeries = new Map<string, TooltipListItem[]>();
   for (const key of eligible) {
     const look = looks.get(key);
     const atHour = look ? seriesLookAt(look, hour) : null;
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
     const flagUrl = artUrlOf(flagChoiceArt(readView, who.flagChoice));
-    const row = rowFor(key);
-    if (!row) {
-      items.push({
-        label,
-        missingReason: 'This country is not present at this date.',
-        tone: 'muted',
-        ...(atHour ? { swatch: atHour.color } : {}),
-        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-        divider: items.length > 0,
-      });
-      continue;
-    }
-    if (row.value === null) {
-      items.push({
-        label,
-        missingReason: row.unknown ? UNKNOWN_WORDS[row.unknown] : notRecordedLabel(),
-        tone: 'muted',
-        ...(atHour ? { swatch: atHour.color } : {}),
-        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-        divider: items.length > 0,
-      });
-      continue;
-    }
-    items.push({
+    const row = counted.get(key);
+    const identity = {
       label,
-      value: formatExactAmount(row.value, options.count),
       ...(atHour ? { swatch: atHour.color } : {}),
       ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-      divider: items.length > 0,
-    });
+    };
+    const total: TooltipListItem = {
+      ...identity,
+      ...(row?.value != null ? { value: formatExactAmount(row.value, options.count) } : {
+        missingReason: !row ? 'This country is not present at this date.' : row.unknown ? UNKNOWN_WORDS[row.unknown] : notRecordedLabel(),
+        tone: 'muted',
+      }),
+    };
+    items.push({ ...total, divider: items.length > 0 });
+    const detail = row?.breakdown && named.includes(key) ? row.breakdown : undefined;
+    const line = [total];
+    if (detail && 'models' in detail) {
+      for (const model of detail.models) line.push({ label: model.name, value: formatExactAmount(model.value, options.count) });
+      if (detail.more > 0) line.push({ label: `And ${detail.more} more`, value: formatExactAmount(detail.remainder, options.count) });
+    } else if (detail) {
+      line.push({ label: 'Model amounts', missingReason: 'reason' in detail ? UNKNOWN_WORDS[detail.reason] : detail.unavailable, tone: 'muted' });
+    }
+    itemsBySeries.set(key, line);
   }
-  return items.length > 0 ? { hour, items, replacesSeries: true } : null;
+  return { hour, items, itemsBySeries, replacesSeries: true };
 }
 
 export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProducedLinesOptions> = registerFamilyProjection({
@@ -253,7 +247,12 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       }
     };
 
-    const rowFor = rowsBySelectedKey(headPanel.rows, rowKeyOf);
+    const headRows = new Map<string, EquipmentProducedRaceRow>();
+    for (const row of headPanel.rows) {
+      headRows.set(rowKeyOf(row), row);
+      headRows.set(row.tag, row);
+    }
+    for (const row of headPanel.rows) headRows.set(countryKey(row.counted), row);
 
     if (options.top !== null) {
       for (const row of headPanel.rows) addKey(rowKeyOf(row));
@@ -274,7 +273,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
 
     for (let i = 0; i < orderedKeys.length; i++) {
       const key = orderedKeys[i]!;
-      const row = rowFor(key);
+      const row = headRows.get(key);
       const tile = mainTiles?.get(key) ?? null;
       const look = looks.get(key)!;
       const isTail = i >= COLOURED;
@@ -324,7 +323,8 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       ? `${options.count === 'ic' ? `IC · ${options.equipmentLabel}` : options.equipmentLabel} · since ${formatDateOnly(options.fromHour)}`
       : captionFor(options.count, options.measure, options.equipmentLabel, headPanel.observationHour);
 
-    const hoverDetail = buildHoverDetail(readView, orderedKeys, options, looks);
+    const named = orderedKeys.slice(0, COLOURED);
+    const hoverDetail = buildHoverDetail(readView, orderedKeys, named, options, looks);
     const empty = seriesList.length === 0
       ? {
           kind: (headPanel.readHour !== null ? 'empty' : 'unavailable') as 'empty' | 'unavailable',
@@ -345,6 +345,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       ...(view ? { view } : {}),
       yAxis,
       series: seriesList,
+      drawnKeys: { main: orderedKeys, named },
       empty,
       summaryText,
       warnings: headPanel.warnings.length > 0 ? headPanel.warnings : undefined,
@@ -461,6 +462,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
         shape: 'exact-hover',
         product: 'equipment-produced-race',
         params: hoverParams,
+        countryParamsOf: { models: 'named' },
         ...(top !== null ? { countriesOf: 'main' } : {}),
         ...(top === null && ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
         validate: validateEquipmentProducedRace,

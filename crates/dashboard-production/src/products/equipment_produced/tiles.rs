@@ -539,6 +539,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 types: family.types.clone(),
                 refits: family.refits,
                 from_hour: family.from_hour,
+                models: None,
             };
             let at_reply = race_reply(source, query, &at_params, context, cancelled)?;
             let from = at_reply.first_hour.min(hour);
@@ -735,6 +736,7 @@ mod tests {
             let mut params = EquipmentProducedRaceParams {
                 branch_id: "1".into(), hour: first + 50, countries: vec![], group: None, top: Some(2),
                 count: ProducedCount::Units, measure, types: vec![], refits: false, from_hour,
+                models: None,
             };
             let mut until = i32::MIN;
             let mut expected = (Vec::new(), None);
@@ -755,6 +757,7 @@ mod tests {
         let mut params = EquipmentProducedRaceParams {
             branch_id: "1".into(), hour: first + 190, countries: vec![], group: None, top: Some(1),
             count: ProducedCount::Units, measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+            models: None,
         };
         let held = super::super::race_reply(&src, &query, &params, &load, &cancelled).unwrap();
         assert_eq!(held.rows[0].country, Country::Slot(7));
@@ -824,6 +827,7 @@ mod tests {
                 let params = EquipmentProducedRaceParams {
                     branch_id: "1".into(), hour, countries: vec![], group: None, top: Some(1), count: ProducedCount::Units,
                     measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+                    models: None,
                 };
                 previous_until = super::super::race_reply(&source, &query, &params, &LoadContext { content: None }, &false.into()).unwrap().last_hour;
                 previous_count += 1;
@@ -885,6 +889,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: None,
+                models: None,
             },
             &load,
             &cancelled,
@@ -904,6 +909,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: Some(range_start),
+                models: None,
             },
             &load,
             &cancelled,
@@ -916,7 +922,7 @@ mod tests {
         let one_hour = race_reply(
             &src,
             &query,
-            &EquipmentProducedRaceParams { hour: 1120, from_hour: Some(1120), ..EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("GER".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: None } },
+            &EquipmentProducedRaceParams { hour: 1120, from_hour: Some(1120), ..EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("GER".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: None, models: None } },
             &load,
             &cancelled,
         )
@@ -945,6 +951,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: Some(from_hour),
+                models: None,
             },
             &load,
             &cancelled,
@@ -971,6 +978,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: Some(FIRST),
+                models: None,
             },
             &load,
             &cancelled,
@@ -993,6 +1001,7 @@ mod tests {
                     types: Vec::new(),
                     refits: false,
                     from_hour: Some(from_hour),
+                    models: None,
                 },
                 &load,
                 &cancelled,
@@ -1005,7 +1014,7 @@ mod tests {
         assert_eq!(leader.rows[1].value, Some(8), "and its amount is the country's deliveries since the start, read by its slot: {leader:?}");
         assert_eq!(leader.rows[1].counted, leader.rows[1].country, "a ranked row was counted for its slot, and its detail asks for that slot");
         let renamed_query = dashboard_base::queries::query(&renamed, 1).unwrap();
-        let asked = race_reply(&renamed, &renamed_query, &EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("DEU".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: Some(FIRST + 120) }, &load, &cancelled).unwrap();
+        let asked = race_reply(&renamed, &renamed_query, &EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("DEU".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: Some(FIRST + 120), models: None }, &load, &cancelled).unwrap();
         assert_eq!(asked.rows[0].counted, Country::Tag("DEU".into()), "a row asked for by its tag was counted for that tag, and its detail asks for the same history: {asked:?}");
         let restarted = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-restarted", FIRST, LAST, FIRST, true, None, Some(FIRST + 150));
         let after = ranged_top(&restarted, LAST, FIRST);
@@ -1062,6 +1071,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: None,
+                models: None,
             },
             &load,
             &cancelled,
@@ -1085,6 +1095,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: None,
+                models: None,
             },
             &load,
             &cancelled,
@@ -1105,6 +1116,7 @@ mod tests {
                 types: Vec::new(),
                 refits: false,
                 from_hour: None,
+                models: None,
             },
             &load,
             &cancelled,

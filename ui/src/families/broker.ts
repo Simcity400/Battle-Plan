@@ -8,6 +8,7 @@ import type { FollowRefusal } from '../dashboard/regionGate';
 import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
+import type { DrawnKeys } from './host/installed.ts';
 import { buildRowSourceFromHead, DEFAULT_TAIL_PAGE_SIZE, pageOffsets, validateGenericTailReply, type DatedLogRow, type LogTailQuery, type PageFetchAsk, type RowWindow, type SnapshotPage, type TableRowSource } from './table/rowSource.ts';
 import type {
   ArtProvider,
@@ -78,7 +79,7 @@ function readSignature(read: SourceTimeShape): unknown {
     case 'pixel-binned':
       return ['pixel-binned', read.coverage, read.family, read.tags, read.keys ?? null, read.partBits ?? 0, read.within ? [...read.within.entries()] : null, read.headQuery ?? null, read.exactProduct ?? '', read.params ?? null, read.top ?? null];
     case 'exact-hover':
-      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params, read.readsOf ?? '', read.countriesOf ?? '', read.membership ?? null];
+      return ['exact-hover', read.product, read.hourParam ?? 'hour', read.params, read.readsOf ?? '', read.countriesOf ?? '', read.membership ?? null, read.countryParamsOf ?? null];
     case 'paged-rows':
       return ['paged-rows', read.tailQuery, read.pageSize ?? 0, read.followQuery];
   }
@@ -768,7 +769,7 @@ function resolveHoverParams(
   read: ExactHoverSourceRead,
   hour: number,
   displayed: (entry: string) => readonly string[] | undefined,
-): Readonly<Record<string, unknown>> | null {
+): Record<string, unknown> | null {
   if (!read.params) return null;
   const hourParam = read.hourParam ?? 'hour';
   if (read.readsOf !== undefined) {
@@ -812,6 +813,7 @@ export function hoverAsks(
   hoverHour: number | null | undefined,
   displayed: (entry: string) => readonly string[] | undefined = () => undefined,
   previous: readonly HoverAsk[] = NO_HOVER_ASKS,
+  drawnKeys?: DrawnKeys,
 ): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
@@ -821,6 +823,13 @@ export function hoverAsks(
     if (read.shape !== 'exact-hover') continue;
     const params = resolveHoverParams(read, hour, displayed);
     if (!params) continue;
+    if (read.countryParamsOf) {
+      for (const [field, source] of Object.entries(read.countryParamsOf)) {
+        const keys = drawnKeys?.[source];
+        if (keys === undefined) delete params[field];
+        else params[field] = keys.filter(key => hoverEligible(read.membership, key, hour)).map(countryFromKey);
+      }
+    }
     asks.push({
       name: entry.name,
       key: planQueryKey(entry.source, entry.branch, read.product, params),

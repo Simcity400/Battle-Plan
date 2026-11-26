@@ -832,6 +832,18 @@ describe('time-chart picture authority', () => {
     ...extra,
   });
 
+  it('uses the hit line’s detail and keeps the hour summary for other hits', () => {
+    const hour = H1936 + 400;
+    const items = [{ label: 'All lines' }];
+    const lineItems = [{ label: 'This line' }];
+    const model = pictureModel(hour, { hoverDetail: { hour, items, replacesSeries: true, itemsBySeries: new Map([['cp', lineItems]]) } });
+    const layout = layoutTimeChart(model, 600, 260, FONT, measure);
+    const tip = (key: string) => deriveTimeChartTooltip(model, layout, key)?.payload?.items;
+    assert.deepEqual(tip(`line:cp@${hour}`), lineItems);
+    assert.deepEqual(tip(`plot:${hour}`), items);
+    assert.deepEqual(tip(`line:other@${hour}`), items);
+  });
+
   it('gives a marker hit its recorded hour', () => {
     const hour = H1936 + 400;
     const model = pictureModel(hour, { markers: [{ id: 'spend', hour: H1936 + 200, title: 'Command power spent' }] });

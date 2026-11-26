@@ -3,10 +3,12 @@ import test from 'node:test';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
-import { readPlanExact } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import { planFamilySources } from '../../families/host/planSources.ts';
 import type { FamilyPlanContext, IdentityProvider } from '../../families/plan.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
+import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
+import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { EquipmentProducedRaceReply, ProducedTypesReply } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
 import {
@@ -113,11 +115,22 @@ test('equipment-produced lines registers in TIME_CHART_VIEWS and threads Range f
     assert.deepEqual(main.family.types, ['infantry_equipment']);
     assert.equal(main.family.fromHour, undefined);
   }
+  const displayed = () => [countryKey(7), countryKey(8)];
+  const picture = { named: [countryKey(7)] };
+  assert.equal(hoverAsks(followPlan, null, displayed).length, 0);
+  const asks = hoverAsks(followPlan, 295, displayed, undefined, picture);
+  assert.deepEqual(asks.map(ask => ask.request.params), [{
+    branchId: '1', count: 'units', measure: 'day', types: ['infantry_equipment'], refits: false,
+    models: [7], countries: [7, 8], hour: 295,
+  }]);
+  assert.equal(hoverAsks(followPlan, 295, displayed, asks, picture), asks);
+  assert.equal(hoverAsks(followPlan, 296, displayed, asks, picture).length, 1);
+  assert.equal(hoverAsks(followPlan, null, displayed, asks).length, 0);
 
   const baseCtx = makeCtx({
     top: null,
     tags: [countryKey(7)],
-    options: { measure: 'total', count: 'ic' },
+    options: { measure: 'total', count: 'ic', refits: true },
     time: { mode: 'range', firstOffset: 100, lastOffset: 300 },
   });
   const { staticSpan: _drop, ...withoutSpan } = baseCtx;
@@ -134,6 +147,10 @@ test('equipment-produced lines registers in TIME_CHART_VIEWS and threads Range f
   assert.equal(rangedMain?.shape === 'pixel-binned' ? rangedMain.family.fromHour : undefined, 200);
   assert.equal(rangedHead?.shape === 'point' ? rangedHead.params?.fromHour : undefined, 200);
   assert.equal(rangedHover?.shape === 'exact-hover' ? rangedHover.params?.fromHour : undefined, 200);
+  assert.equal(rangedHover?.shape === 'exact-hover' ? rangedHover.params?.refits : undefined, true);
+  const countries = Array.from({ length: 10 }, (_, i) => i + 1);
+  const selection = equipmentProducedLinesDeclaration.sources(makeCtx({ top: null, tags: countries.map(countryKey) }), { following: false, staticSpan: null });
+  assert.deepEqual(hoverAsks(selection, 295, undefined, undefined, { named: countries.slice(0, 8).map(countryKey) })[0]?.request.params?.models, countries.slice(0, 8));
 });
 
 test('equipment-produced lines keys by slot, keeps missing readings with their reason, and scopes hover detail', () => {
@@ -173,7 +190,10 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
     hour: displayedHour(300),
     series: new Map([['main', new Map([[ger, gerTile]])]]),
     panels: new Map([['head', head]]),
-    hovers: new Map([['hover', { hour: 295, data: head }]]),
+    hovers: new Map([['hover', { hour: 295, data: { ...head, hour: 295, rows: [
+      { ...head.rows[0]!, value: 5, breakdown: { models: [{ name: 'Model A', value: 3 }, { name: 'Model B', value: 2 }], more: 0, remainder: 0 } },
+      head.rows[1]!,
+    ] } }]]),
     identity: fakeIdentity({
       [ger]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
       [ita]: { name: 'Italy', color: '#22c55e', tag: 'ITA' },
@@ -207,16 +227,61 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
   assert.equal(model.summaryText, 'Infantry Equipment · per day', 'selection line moves beside the title');
   assert.equal(model.note, undefined, 'selection line never uses a body note');
   assert.deepEqual(model.hoverDetail?.items?.map(item => item.label), ['German Reich'], 'hover excludes non-member ITA at hour 295');
+  const tip = deriveTimeChartTooltip(model, layoutTimeChart(model, 600, 260, 'sans-serif', text => text.length * 7), `line:${ger}@295`);
+  assert.deepEqual(tip?.payload?.items?.map(item => [item.label, item.value]), [
+    ['German Reich', '5'], ['Model A', '3'], ['Model B', '2'],
+  ]);
+  const manyKeys = Array.from({ length: 9 }, (_, i) => countryKey(i + 1));
+  const tailRow = { ...head.rows[0]!, country: 9, counted: 9, value: 17 };
+  const many = equipmentProducedLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(300), panels: new Map([['head', { ...head, rows: [tailRow] }]]),
+    hovers: new Map([['hover', { hour: 295, data: { ...head, rows: [{ ...tailRow, breakdown: { models: [{ name: 'Model C', value: 17 }], more: 0, remainder: 0 } }] } }]]),
+  }), { ...opts, tags: manyKeys, membership: null });
+  const tail = many.series[8]!;
+  assert.equal(tail.role, 'tail');
+  const tailTip = deriveTimeChartTooltip(many, layoutTimeChart(many, 600, 260, 'sans-serif', text => text.length * 7), `line:${tail.id}@295`);
+  assert.deepEqual(tailTip?.payload?.items?.map(item => item.value), ['17']);
+  const rankedRows = Array.from({ length: 9 }, (_, i) => ({ ...tailRow, country: 9 - i, counted: 9 - i }));
+  const ranked = equipmentProducedLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(300), panels: new Map([['head', { ...head, rows: rankedRows }]]),
+    series: new Map([['main', new Map([[ita, { ...gerTile, tag: ita }], [ger, gerTile]])]]),
+  }), { ...opts, tags: [], top: 9, membership: null });
+  assert.deepEqual(ranked.drawnKeys?.main, rankedRows.map(row => countryKey(row.counted)));
+  assert.deepEqual(ranked.drawnKeys?.named, ranked.series.filter(line => line.role !== 'tail').map(line => line.key));
+  const rankedPlan = equipmentProducedLinesDeclaration.sources(makeCtx({ top: 9 }), { following: false, staticSpan: null });
+  const published = Object.fromEntries(Object.entries(ranked.drawnKeys!).map(([name, keys]) => [name, [...keys].sort()]));
+  const rankedAsk = hoverAsks(rankedPlan, 295, name => published[name], undefined, published)[0]?.request.params;
+  assert.deepEqual(rankedAsk?.models, [2, 3, 4, 5, 6, 7, 8, 9]);
 
-  const icHead = { ...head, count: 'ic' as const, decimals: 5, rows: [{ country: 7, tag: 'GER', value: 123456, unknown: null }] };
+  const icHead = { ...head, count: 'ic' as const, decimals: 5, rows: [{ country: 7, counted: 7, tag: 'GER', value: 123456, unknown: null }] };
   const ic = equipmentProducedLinesProjection.project(createBoundedReadView({
     hour: displayedHour(300),
     panels: new Map([['head', icHead]]),
     hovers: new Map([['hover', { hour: 295, data: icHead }]]),
   }), { ...opts, tags: [ger], count: 'ic', membership: null });
   assert.equal(ic.hoverDetail?.items?.[0]?.value, '1.23456', 'inspection carries the recorded five decimals of IC');
+  const missing = equipmentProducedLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(300), panels: new Map([['head', head]]),
+    hovers: new Map([['hover', { hour: 295, data: { ...head, rows: [
+      { ...head.rows[0]!, value: 5, breakdown: { reason: 'unitsInexact' } },
+    ] } }]]),
+  }), opts).hoverDetail?.itemsBySeries?.get(ger);
+  assert.deepEqual(missing?.map(item => [item.value, item.missingReason]), [
+    ['5', undefined],
+    [undefined, 'A production line left a delivery out of its count.'],
+  ]);
   const byTag = equipmentProducedLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), panels: new Map([['head', head]]) }), { ...opts, tags: ['GER'], membership: null });
   assert.deepEqual(byTag.series.map(s => [s.id, s.headValue]), [['GER', 420]], 'a country chosen by its tag is one line, joined to its head row by tag');
+  const renamed = { ...head, rows: [
+    { country: 7, counted: 7, tag: 'DEU', value: 8, unknown: null },
+    { country: 7, counted: 'DEU', tag: 'DEU', value: null, unknown: 'windowIncomplete' },
+  ] };
+  const mixed = equipmentProducedLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(300), panels: new Map([['head', renamed]]), hovers: new Map([['hover', { hour: 300, data: renamed }]]),
+  }), { ...opts, tags: [ger, 'DEU'], membership: null });
+  assert.deepEqual(mixed.series.map(s => s.headValue), [8, null]);
+  assert.equal(mixed.hoverDetail?.itemsBySeries?.get(ger)?.[0]?.value, '8');
+  assert.match(mixed.hoverDetail?.itemsBySeries?.get('DEU')?.[0]?.missingReason ?? '', /before this country/);
   assert.deepEqual(ic.auditRows?.map(row => row.value), ['1.23456'], 'and so does the audit');
 });
 

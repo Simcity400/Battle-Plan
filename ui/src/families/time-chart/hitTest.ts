@@ -577,7 +577,7 @@ export function deriveTimeChartTooltip(
   const hour = parsed.hour;
   const atHour = model.hoverDetail && model.hoverDetail.hour === hour ? model.hoverDetail : null;
   const items = atHour?.replacesSeries ? [] : seriesTooltipItemsAt(model, hour);
-  const detail = atHour ? atHour.items : null;
+  const detail = (parsed.kind === 'line' ? atHour?.itemsBySeries?.get(parsed.seriesId) : undefined) ?? atHour?.items;
   if (detail?.length) {
     if (items.length) items.push({ ...detail[0]!, divider: true }, ...detail.slice(1));
     else items.push(...detail);
