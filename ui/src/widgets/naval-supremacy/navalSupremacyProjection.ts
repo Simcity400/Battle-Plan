@@ -1,3 +1,4 @@
+import { extendLastRun, joinLanePieces, laneRun, missingCell, noRuns, LaneRunBuilder, solidCell, type LanePieces, type LaneRuns } from '../../families/heat/laneRuns.ts';
 import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -6,7 +7,7 @@ import { buildShareRowsModel, type ShareRowEntry } from '../../families/bars/sha
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
 import type { HeatLanesWidgetDeclaration } from '../../families/heat/lanesDeclaration.ts';
-import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLaneRun, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
+import { findRunAtHour, spanIndexAt, type HeatLaneCell, type HeatLaneReadout, type HeatLaneRow, type HeatLanesModel, type HeatLanesProjection } from '../../families/heat/lanesModel.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import { contestedGrey, countryColourAt, regionLabel, type DatedColour } from '../../families/heat/scale.ts';
 import { formatDateOnly, formatShare } from '../../families/valueFormat.ts';
@@ -137,73 +138,83 @@ function idle(friendly: string | null, enemy: string | null): boolean {
   return friendly !== null && enemy !== null && Number(friendly) <= 0 && Number(enemy) <= 0;
 }
 
-function runCell(run: SupremacyRun, look: Look, scale: number, friendly: string): { cell: HeatLaneCell; items: { label: string; value?: string; swatch?: string }[] } {
-  if (run.control === null) return { cell: { kind: 'missing', reason: run.missing ?? 'Naval region control was not recorded' }, items: [] };
-  if (idle(run.friendly, run.enemy)) return { cell: { kind: 'clear', label: 'No activity' }, items: [{ label: 'No activity' }] };
-  const share = shareOf(run.share, scale);
-  const pct = share === null ? null : formatShare(share);
-  const color = run.control > 0 ? friendly : run.control < 0 ? look.enemy : look.contested;
-  const label = run.control > 0 ? look.friendlyLabel : run.control < 0 ? look.enemyLabel : 'Contested';
-  return {
-    cell: { kind: 'solid', color },
-    items: [{ label, swatch: color, ...(pct === null ? {} : { value: `${pct} of the score` }) }],
-  };
+const noActivity: HeatLaneCell = { kind: 'clear', label: 'No activity' };
+
+function runCell(run: SupremacyRun, look: Look, friendly: string, old?: HeatLaneCell): HeatLaneCell {
+  if (run.control === null) return missingCell(run.missing ?? 'Naval region control was not recorded', old);
+  if (idle(run.friendly, run.enemy)) return noActivity;
+  return solidCell(run.control > 0 ? friendly : run.control < 0 ? look.enemy : look.contested, old);
 }
 
 function emptyLanes(hour: number, extra: Partial<HeatLanesModel>): HeatLanesModel {
   return { hour, firstHour: hour, lastHour: hour, dayHours: 24, playhead: null, rows: [], ...extra };
 }
 
-function unknownRunsOf(reply: NavalSupremacyReply, through: number): HeatLaneRun[] {
-  const dayStart = (day: number) => reply.firstDayHour + day * reply.dayHours;
+function unknownRunsOf(reply: NavalSupremacyReply, through: number): LaneRuns {
   return reply.unknown.map(span => {
-    const firstHour = Math.max(reply.firstHour, dayStart(span.firstDay));
-    const lastHour = Math.min(through, dayStart(span.lastDay + 1) - 1);
+    const firstHour = Math.max(reply.firstHour, reply.firstDayHour + span.firstDay * reply.dayHours);
+    const lastHour = Math.min(through, reply.firstDayHour + (span.lastDay + 1) * reply.dayHours - 1);
     return { firstHour, lastHour, readHour: lastHour, cell: { kind: 'missing', reason: span.reason } };
   });
 }
 
-function regionRuns(reply: NavalSupremacyReply, region: SupremacyRegion, look: Look, through: number, unknownRuns: readonly HeatLaneRun[]): HeatLaneRun[] {
-  const dayStart = (day: number) => reply.firstDayHour + day * reply.dayHours;
-  const runs: HeatLaneRun[] = [];
+function regionRuns(reply: NavalSupremacyReply, region: SupremacyRegion, look: Look, through: number, unknown: LaneRuns, previous: LaneRuns): LaneRuns {
+  const runs = new LaneRunBuilder(previous);
+  const addUnknown = (run: LaneRuns[number]) => {
+    const old = runs.next;
+    if (old?.firstHour === run.firstHour && old.cell.kind === 'missing' && run.cell.kind === 'missing' && old.cell.reason === run.cell.reason) {
+      runs.add(laneRun(run.firstHour, run.lastHour, run.readHour, old.cell, old));
+    } else runs.add(run);
+  };
+  let nextUnknown = 0;
   for (const run of region.runs) {
     for (let day = run.firstDay; day <= run.lastDay;) {
-      const firstHour = Math.max(reply.firstHour, dayStart(day));
+      const firstHour = Math.max(reply.firstHour, reply.firstDayHour + day * reply.dayHours);
       if (firstHour > through) break;
+      while (nextUnknown < unknown.length && unknown[nextUnknown]!.firstHour < firstHour) addUnknown(unknown[nextUnknown++]!);
       const friendly = look.friendly(firstHour);
       const until = Math.max(day, Math.min(run.lastDay, Math.floor((friendly.through - reply.firstDayHour) / reply.dayHours)));
-      const lastHour = Math.min(through, dayStart(until + 1) - 1);
-      runs.push({ firstHour, lastHour, readHour: lastHour, cell: runCell(run, look, reply.scale, friendly.colour).cell });
+      const lastHour = Math.min(through, reply.firstDayHour + (until + 1) * reply.dayHours - 1);
+      const old = runs.next;
+      runs.add(laneRun(firstHour, lastHour, lastHour, runCell(run, look, friendly.colour, old?.cell), old));
       day = until + 1;
     }
   }
-  runs.push(...unknownRuns);
-  runs.sort((a, b) => a.firstHour - b.firstHour);
-  return runs;
+  while (nextUnknown < unknown.length) addUnknown(unknown[nextUnknown++]!);
+  return runs.finish();
 }
 
+const indexes = new WeakMap<NavalSupremacyReply, ReadonlyMap<string, SupremacyRegion>>();
 interface TileLanes {
+  readonly through: number;
   readonly sig: string;
-  readonly byRegion: ReadonlyMap<string, readonly HeatLaneRun[]>;
-  readonly unknown: readonly HeatLaneRun[];
+  readonly unknown: LaneRuns;
+  readonly rows: Map<string, LaneRuns>;
 }
 
 const heldTiles = new WeakMap<NavalSupremacyReply, TileLanes>();
+const windows = new WeakMap<SupremacyOptions, Map<string, LanePieces>>();
 
-function tileLanes(tile: NavalSupremacyReply, sig: string, look: Look): TileLanes {
-  const held = heldTiles.get(tile);
-  if (held && held.sig === sig) return held;
-  const unknown = unknownRunsOf(tile, tile.lastHour);
-  const made = { sig, unknown, byRegion: new Map(tile.regions.map(region => [region.id, regionRuns(tile, region, look, tile.lastHour, unknown)])) };
-  heldTiles.set(tile, made);
-  return made;
+function tileLanes(reply: NavalSupremacyReply, through: number, look: Look, surface: string) {
+  let regions = indexes.get(reply);
+  if (!regions) indexes.set(reply, regions = new Map(reply.regions.map(region => [region.id, region])));
+  const sig = `${surface}|${look.contested}|${datedSignature(look, reply.firstHour, through)}`;
+  let tile = heldTiles.get(reply);
+  const old = tile;
+  if (!tile || tile.through !== through || tile.sig !== sig) {
+    const unknown = unknownRunsOf(reply, through);
+    heldTiles.set(reply, tile = { sig, through, unknown, rows: new Map() });
+  }
+  const extend = old && old.sig === sig && old.through < through
+    && Math.floor((old.through - reply.firstDayHour) / reply.dayHours) === Math.floor((through - reply.firstDayHour) / reply.dayHours);
+  return { reply, regions, tile, extend: extend ? old : undefined };
 }
 
 function datedSignature(look: Look, first: number, last: number): string {
   const out: string[] = [];
   for (let at = first; at <= last;) {
     const dated = look.friendly(at);
-    out.push(dated.colour);
+    out.push(`${at}:${dated.colour}`);
     if (dated.through >= last) break;
     at = dated.through + 1;
   }
@@ -219,12 +230,18 @@ function inspectDay(reply: NavalSupremacyReply, region: SupremacyRegion | undefi
   if (unknown && day <= unknown.lastDay) return { title, ...dated, missingReason: unknown.reason };
   const run = region?.runs[spanIndexAt(region.runs, day, item => item.firstDay)];
   if (!run || day > run.lastDay) return { title, ...dated, missingReason: 'Naval region control was not recorded' };
-  const made = runCell(run, look, reply.scale, painted?.kind === 'solid' ? painted.color : look.contested);
-  return made.cell.kind === 'missing' ? { title, ...dated, missingReason: made.cell.reason } : { title, ...dated, items: made.items };
+  if (run.control === null) return { title, ...dated, missingReason: run.missing ?? 'Naval region control was not recorded' };
+  if (idle(run.friendly, run.enemy)) return { title, ...dated, items: [{ label: 'No activity' }] };
+  const share = shareOf(run.share, reply.scale);
+  const label = run.control > 0 ? look.friendlyLabel : run.control < 0 ? look.enemyLabel : 'Contested';
+  const swatch = run.control === 0 ? look.contested : run.control < 0 ? look.enemy : painted?.kind === 'solid' ? painted.color : look.contested;
+  return { title, ...dated, items: [{ label, swatch, ...(share === null ? {} : { value: `${formatShare(share)} of the score` }) }] };
 }
 
 export function projectSupremacyTimeline(readView: BoundedReadView, options: SupremacyOptions): HeatLanesModel {
   const hour: number = readView.hour;
+  const previous = windows.get(options);
+  windows.delete(options);
   const refused = refusedOf(readView, options.tiles);
   if (refused) return emptyLanes(hour, { refused });
   const now = readView.panel<NavalSupremacyReply>('now');
@@ -233,12 +250,32 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
   if (!tiles) return emptyLanes(hour, { waiting: true });
   const look = lookOf(readView, now, options);
   const through = Math.min(hour, now.validThrough);
-  const held = tiles.map(tile => tileLanes(tile, `${options.surface}|${look.contested}|${datedSignature(look, tile.firstHour, tile.lastHour)}`, look));
-  const nowUnknown = unknownRunsOf(now, through);
+  const pieces = [...tiles, now];
+  const lanes = pieces.map(reply => tileLanes(reply, reply === now ? through : reply.lastHour, look, options.surface));
+  const current = new Map<string, LanePieces>();
+  windows.set(options, current);
   const lastDay = Math.floor((through - now.firstDayHour) / now.dayHours);
   const rows: HeatLaneRow[] = now.regions.map(region => {
     const named = regionLabel(readView, region.id, region.name);
-    const runs = [...held.flatMap(lanes => lanes.byRegion.get(region.id) ?? lanes.unknown), ...regionRuns(now, region, look, through, nowUnknown)];
+    const old = previous?.get(region.id);
+    const parts = lanes.map(({ reply, regions, tile, extend }, i) => {
+      const source = regions.get(region.id);
+      if (!source) return tile.unknown;
+      let runs = tile.rows.get(region.id);
+      if (runs) return runs;
+      const prior = extend?.rows.get(region.id);
+      const last = prior?.at(-1);
+      if (prior && last && extend && last.firstHour <= extend.through && last.lastHour === extend.through && (prior.at(-2)?.lastHour ?? -Infinity) < extend.through) {
+        runs = extendLastRun(prior, tile.through, tile.through);
+      } else {
+        runs = regionRuns(reply, source, look, tile.through, tile.unknown, old?.pieces[i] ?? noRuns);
+      }
+      tile.rows.set(region.id, runs);
+      return runs;
+    });
+    const joined = joinLanePieces(parts, old);
+    current.set(region.id, joined);
+    const runs = joined.runs;
     const readout = region.readout;
     let shown: HeatLaneReadout | undefined;
     if (readout?.kind === 'notRecorded') shown = { kind: 'missing', reason: readout.reason };
@@ -252,7 +289,6 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     }
     return { id: region.id, label: named.label, ...(named.nameMissing ? { nameMissing: named.nameMissing } : {}), pinned: region.pinned, region: Number(region.id), runs, ...(shown ? { readout: shown } : {}) };
   });
-  const pieces = [...tiles, now];
   const gaps = new Map<string, { firstHour: number; lastHour: number; reason: string }>();
   for (const reply of pieces) for (const gap of reply.gaps) gaps.set(`${gap.firstHour}:${gap.lastHour}`, { firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' });
   return {

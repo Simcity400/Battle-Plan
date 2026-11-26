@@ -1,3 +1,4 @@
+import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -135,4 +136,17 @@ test('a day the read did not reach for a region carries its own reason into the 
   const unread = { ...data, unknown: [], regions: [{ ...data.regions[0]!, runs: [{ firstDay: 0, lastDay: 2, control: null, friendly: null, enemy: null, share: null, own: null, missing: 'Naval region control was read in part at this hour' }] }] };
   const model = projectSupremacyTimeline(view(60, unread), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
   assert.deepEqual(model.rows[0]!.runs[0]!.cell, { kind: 'missing', reason: 'Naval region control was read in part at this hour' });
+});
+
+test('a hundred played hours share the naval history and grow only the last run', () => {
+  const data = { ...reply(240), dayHours: 120, validThrough: 339 };
+  const options = { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 };
+  const at = (hour: number, facts = data) => projectSupremacyTimeline(view(hour, facts), options);
+  assertRunCounts(240, hour => at(hour).rows[0]!.runs);
+  const original = at(275);
+  assert.equal(at(275, structuredClone(data)).rows[0]!.runs, original.rows[0]!.runs);
+  const corrected = structuredClone(data);
+  corrected.unknown[0]!.reason = 'No sample';
+  assert.equal(at(275, corrected).inspect!(0, 130)?.missingReason, 'No sample');
+  assert.equal(original.inspect!(0, 130)?.missingReason, data.unknown[0]!.reason);
 });

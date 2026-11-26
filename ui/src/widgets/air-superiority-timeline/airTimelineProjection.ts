@@ -1,3 +1,4 @@
+import { extendLastRun, joinLanePieces, laneRun, missingCell, noRuns, LaneRunBuilder, solidCell, type LanePieces, type LaneRuns } from '../../families/heat/laneRuns.ts';
 import { authoredHex, measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -10,7 +11,6 @@ import {
   type HeatLaneCell,
   type HeatLaneReadout,
   type HeatLaneRow,
-  type HeatLaneRun,
   type HeatLanesModel,
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
@@ -114,52 +114,45 @@ interface Look {
   readonly noViewer: string;
 }
 
-interface Made {
-  readonly cell: HeatLaneCell;
-  readonly tip: Omit<FamilyTooltipPayload, 'title' | 'hour'>;
-}
-
 function viewerColour(side: number | null, reply: AirTimelineReply, look: Look, surface: string, hour: number): DatedColour {
   if (look.viewer) return look.viewer(hour);
   return { colour: side === null ? look.noViewer : sideColour(reply, side, surface, look.noViewer), through: Infinity };
 }
 
-function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, surface: string, viewer: string): Made {
-  if (!cell) return { cell: { kind: 'missing', reason: 'Not recorded on this day' }, tip: { missingReason: 'Not recorded on this day' } };
-  if (cell.kind === 'reason') {
-    if (cell.reason === 'outside-theatres') return { cell: { kind: 'clear' }, tip: { items: [{ label: 'Outside the chosen air theatres' }] } };
-    const reason = REASONS[cell.reason] ?? cell.reason;
-    return { cell: { kind: 'missing', reason }, tip: { missingReason: reason } };
-  }
+const clear: HeatLaneCell = { kind: 'clear' };
+const noDay: HeatLaneCell = { kind: 'missing', reason: 'Not recorded on this day' };
+const unknownScore: HeatLaneCell = { kind: 'missing', reason: 'A side’s air score was not recorded' };
+
+function cellOf(cell: AirDayCell | null, reply: AirTimelineReply, look: Look, surface: string, viewer: string, previous?: HeatLaneCell): HeatLaneCell {
+  if (!cell) return noDay;
+  if (cell.kind === 'reason') return cell.reason === 'outside-theatres' ? clear : missingCell(REASONS[cell.reason] ?? cell.reason, previous);
   if (cell.kind === 'view') {
-    if (cell.share_bp === null) return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
+    if (cell.share_bp === null) return clear;
     const share = cell.share_bp / 10_000;
-    const color = share > 0.5 ? depth(look.track, viewer, share)
-      : share < 0.5 ? depth(look.track, look.enemy, 1 - share)
-        : look.contested;
-    return {
-      cell: { kind: 'solid', color },
-      tip: { items: [{ label: 'Air superiority', value: formatShare(share), swatch: color }] },
-    };
+    return solidCell(share > 0.5 ? depth(look.track, viewer, share)
+      : share < 0.5 ? depth(look.track, look.enemy, 1 - share) : look.contested, previous);
   }
   const lead = cell.lead;
-  if (lead.kind === 'unknown') {
-    const reason = 'A side’s air score was not recorded';
-    return { cell: { kind: 'missing', reason }, tip: { missingReason: reason } };
-  }
-  if (lead.kind === 'noActivity') return { cell: { kind: 'clear' }, tip: { items: [{ label: 'No activity' }] } };
-  let total = 0;
-  for (const part of cell.parts) total += Math.max(0, Number(part.friendly));
+  if (lead.kind === 'unknown') return unknownScore;
+  if (lead.kind === 'noActivity') return clear;
+  return solidCell(lead.kind === 'contested' ? look.contested : depth(look.track, sideColour(reply, lead.side, surface, look.unknownSide), lead.share_bp / 10_000), previous);
+}
+
+function airTip(raw: AirDayCell | null, painted: HeatLaneCell, reply: AirTimelineReply, look: Look, surface: string): Omit<FamilyTooltipPayload, 'title' | 'hour'> {
+  if (painted.kind === 'missing') return { missingReason: painted.reason };
+  if (painted.kind !== 'solid') return { items: [{ label: raw?.kind === 'reason' ? 'Outside the chosen air theatres' : 'No activity' }] };
+  if (raw?.kind === 'view') return { items: [{ label: 'Air superiority', value: formatShare(raw.share_bp! / 10_000), swatch: painted.color }] };
   const items = [];
-  for (const part of cell.parts) {
-    const score = Math.max(0, Number(part.friendly));
-    if (score <= 0) continue;
-    const side = reply.sides[part.side];
-    items.push({ label: sideName(side), value: formatShare(score / total), swatch: sideColour(reply, part.side, surface, look.unknownSide) });
+  if (raw?.kind === 'sides') {
+    if (raw.lead.kind === 'contested') items.push({ label: 'Contested' });
+    let total = 0;
+    for (const part of raw.parts) total += Math.max(0, Number(part.friendly));
+    for (const part of raw.parts) {
+      const score = Math.max(0, Number(part.friendly));
+      if (score > 0) items.push({ label: sideName(reply.sides[part.side]), value: formatShare(score / total), swatch: sideColour(reply, part.side, surface, look.unknownSide) });
+    }
   }
-  if (lead.kind === 'contested') return { cell: { kind: 'solid', color: look.contested }, tip: { items: [{ label: 'Contested' }, ...items] } };
-  const color = depth(look.track, sideColour(reply, lead.side, surface, look.unknownSide), lead.share_bp / 10_000);
-  return { cell: { kind: 'solid', color }, tip: { items } };
+  return { items };
 }
 
 function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, look: Look, surface: string): HeatLaneReadout | undefined {
@@ -185,87 +178,92 @@ function readoutOf(readout: AirReadout | undefined, reply: AirTimelineReply, loo
   }
 }
 
-interface AirLane {
-  readonly runs: readonly HeatLaneRun[];
-  readonly viewers: readonly string[];
-  readonly starts: readonly number[];
-}
-
-function lane(cells: AirTimelineRow['cells'], reply: AirTimelineReply, through: number, look: Look, surface: string, cellsOf: Map<string, HeatLaneCell>): AirLane {
-  const runs: HeatLaneRun[] = [];
-  const viewers: string[] = [];
-  const starts: number[] = [];
-  const dayStart = (day: number) => reply.firstHour + day * reply.dayHours;
-  const observed = (day: number) => reply.days[day] ?? dayStart(day);
-  const lastDayThrough = (hour: number) => {
-    const day = Math.floor((hour - reply.firstHour) / reply.dayHours);
-    return observed(day) > hour ? day - 1 : day;
-  };
+function lane(cells: AirTimelineRow['cells'], reply: AirTimelineReply, look: Look, surface: string, previous: LaneRuns): LaneRuns {
+  const runs = new LaneRunBuilder(previous);
   let day = 0;
   for (const [repeat, raw] of cells) {
-    starts.push(day);
     const end = day + repeat - 1;
-    const key = JSON.stringify(raw);
-    for (let from = day; from <= end;) {
-      const firstHour = dayStart(from);
-      if (firstHour > through) return { runs, viewers, starts };
-      const dated = raw?.kind === 'view' ? viewerColour(raw.side, reply, look, surface, observed(from)) : null;
-      const until = dated && dated.through !== Infinity ? Math.max(from, Math.min(end, lastDayThrough(dated.through))) : end;
-      const viewer = dated?.colour ?? look.noViewer;
-      const memo = `${key}|${viewer}`;
-      let cell = cellsOf.get(memo);
-      if (!cell) cellsOf.set(memo, cell = cellOf(raw, reply, look, surface, viewer).cell);
-      viewers.push(viewer);
-      runs.push({ firstHour, lastHour: Math.min(dayStart(until) + reply.dayHours - 1, through), readHour: reply.days[until] ?? null, cell });
-      from = until + 1;
+    while (day <= end) {
+      const firstHour = reply.firstHour + day * reply.dayHours;
+      if (firstHour > reply.lastHour) return runs.finish();
+      let until = end;
+      let viewer = look.noViewer;
+      if (raw?.kind === 'view') {
+        const dated = viewerColour(raw.side, reply, look, surface, reply.days[day] ?? firstHour);
+        viewer = dated.colour;
+        if (dated.through < reply.firstHour + (end + 1) * reply.dayHours - 1) {
+          const boundary = Math.floor((dated.through - reply.firstHour) / reply.dayHours);
+          const observed = reply.days[boundary] ?? reply.firstHour + boundary * reply.dayHours;
+          until = Math.max(day, Math.min(end, observed > dated.through ? boundary - 1 : boundary));
+        }
+      }
+      const old = runs.next;
+      const cell = cellOf(raw, reply, look, surface, viewer, old?.cell);
+      runs.add(laneRun(firstHour, Math.min(reply.firstHour + (until + 1) * reply.dayHours - 1, reply.lastHour), reply.days[until] ?? null, cell, old));
+      day = until + 1;
     }
-    day = end + 1;
   }
-  return { runs, viewers, starts };
+  return runs.finish();
 }
 
-interface TileLanes {
+const emptyCells: AirTimelineRow['cells'] = [];
+const indexes = new WeakMap<AirTimelineReply, ReadonlyMap<number, AirTimelineRow['cells']>>();
+const heldTiles = new WeakMap<AirTimelineReply, { sig: string; runs: Map<AirTimelineRow['cells'], LaneRuns> }>();
+const windows = new WeakMap<AirTimelineProjectionOptions, Map<number, LanePieces>>();
+
+interface AirEdge {
+  readonly firstHour: number;
+  readonly dayHours: number;
+  readonly days: AirTimelineReply['days'];
+  readonly lastHour: number;
+  readonly colours: readonly (string | null)[];
   readonly sig: string;
-  readonly byRegion: Map<number, AirLane>;
-  readonly absent: AirLane;
-  readonly cells: Map<number, AirTimelineRow['cells']>;
+  readonly runs: LaneRuns;
 }
 
-const heldTiles = new WeakMap<AirTimelineReply, TileLanes>();
+const edges = new WeakMap<AirTimelineRow['cells'], AirEdge>();
 
-function tileLanes(tile: AirTimelineReply, sig: string, look: Look, surface: string): TileLanes {
-  const held = heldTiles.get(tile);
-  if (held && held.sig === sig) return held;
-  const byRegion = new Map<number, AirLane>();
-  const cells = new Map<number, AirTimelineRow['cells']>();
-  const cellsOf = new Map<string, HeatLaneCell>();
-  for (const row of tile.rows) {
-    byRegion.set(row.region, lane(row.cells, tile, tile.lastHour, look, surface, cellsOf));
-    cells.set(row.region, row.cells);
+function currentLane(cells: AirTimelineRow['cells'], reply: AirTimelineReply, look: Look, surface: string, sig: string, previous: LaneRuns): LaneRuns {
+  const old = edges.get(cells);
+  const colours = sidePalette(reply, surface);
+  const day = Math.floor((reply.lastHour - reply.firstHour) / reply.dayHours);
+  let runs: LaneRuns;
+  if (!look.viewer && old && old.sig === sig && old.firstHour === reply.firstHour && old.dayHours === reply.dayHours
+    && Math.floor((old.lastHour - reply.firstHour) / reply.dayHours) === day && old.runs.at(-1)?.lastHour === old.lastHour
+    && reply.days.length === day + 1 && old.days.length === reply.days.length && (old.days === reply.days || reply.days.every((read, i) => i === day || read === old.days[i]))
+    && old.colours.length === colours.length && (old.colours === colours || colours.every((colour, i) => colour === old.colours[i]))) {
+    runs = extendLastRun(old.runs, reply.lastHour, reply.days[day] ?? null);
+  } else {
+    runs = lane(cells, reply, look, surface, previous);
   }
-  const made = { sig, byRegion, absent: lane(tile.absent ?? [], tile, tile.lastHour, look, surface, cellsOf), cells };
-  heldTiles.set(tile, made);
-  return made;
+  edges.set(cells, { firstHour: reply.firstHour, dayHours: reply.dayHours, days: reply.days, lastHour: reply.lastHour, colours, sig, runs });
+  return runs;
 }
 
-interface Piece {
-  readonly reply: AirTimelineReply;
-  readonly lane: AirLane;
-  readonly cells: AirTimelineRow['cells'];
+function tileLanes(reply: AirTimelineReply, look: Look, surface: string) {
+  let cells = indexes.get(reply);
+  if (!cells) indexes.set(reply, cells = new Map(reply.rows.map(row => [row.region, row.cells])));
+  const sig = `${surface}|${look.contested}|${datedSignature(look, reply.firstHour, reply.lastHour)}`;
+  let tile = heldTiles.get(reply);
+  if (tile?.sig !== sig) heldTiles.set(reply, tile = { sig, runs: new Map() });
+  return { reply, cells, sig, runs: tile.runs };
 }
 
-function inspectDay(piece: Piece, label: string, hour: number, look: Look, surface: string): FamilyTooltipPayload | null {
-  const { reply, lane } = piece;
+function inspectDay(reply: AirTimelineReply, cells: AirTimelineRow['cells'], runs: LaneRuns, label: string, hour: number, look: Look, surface: string): FamilyTooltipPayload | null {
   const day = Math.floor((hour - reply.firstHour) / reply.dayHours);
-  const at = spanIndexAt(lane.starts, day, start => start);
-  if (day < 0 || at < 0) return null;
-  const raw = piece.cells[at]![1];
+  if (day < 0 || !cells.length) return null;
+  let end = 0;
+  let raw: AirDayCell | null = null;
+  for (const entry of cells) {
+    raw = entry[1];
+    end += entry[0];
+    if (day < end) break;
+  }
+  const painted = runs[spanIndexAt(runs, hour, run => run.firstHour)]?.cell;
+  if (!painted) return null;
+  const tip = airTip(raw, painted, reply, look, surface);
   const read = reply.days[day] ?? null;
-  const viewer = lane.viewers[spanIndexAt(lane.runs, hour, run => run.firstHour)] ?? look.noViewer;
-  const made = cellOf(raw, reply, look, surface, viewer);
-  return read === null
-    ? { title: label, subtitle: formatDateOnly(reply.firstHour + day * reply.dayHours), ...made.tip }
-    : { title: label, hour: read, ...made.tip };
+  return read === null ? { title: label, subtitle: formatDateOnly(reply.firstHour + day * reply.dayHours), ...tip } : { title: label, hour: read, ...tip };
 }
 
 function emptyModel(hour: number, extra: Partial<HeatLanesModel>): HeatLanesModel {
@@ -286,6 +284,8 @@ function datedSignature(look: Look, first: number, last: number): string {
 
 export function projectAirTimeline(readView: BoundedReadView, options: AirTimelineProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;
+  const previous = windows.get(options);
+  windows.delete(options);
   const refused = readView.refused('now') ?? dayHistoryNames(options.tiles).map(name => readView.refused(name)).find(Boolean);
   if (refused) return emptyModel(hour, { refused });
   const now = readView.panel<AirTimelineReply>('now');
@@ -307,27 +307,32 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     noViewer,
   };
   const subject = countrySubject(readView, options.viewpointCountry);
-  const held = tiles.map(tile => tileLanes(tile, `${surface}|${look.contested}|${datedSignature(look, tile.firstHour, tile.lastHour)}`, look, surface));
-  const cellsOf = new Map<string, HeatLaneCell>();
-  const pieces: Piece[][] = now.rows.map(row => [
-    ...tiles.map((tile, k) => {
-      const lanes = held[k]!;
-      const own = lanes.byRegion.get(row.region);
-      return { reply: tile, lane: own ?? lanes.absent, cells: own ? lanes.cells.get(row.region)! : tile.absent ?? [] };
-    }),
-    { reply: now, lane: lane(row.cells, now, through, look, surface, cellsOf), cells: row.cells },
-  ]);
-  const rows: HeatLaneRow[] = now.rows.map((row, index) => {
+  const pieces = [...tiles, now].map(reply => tileLanes(reply, look, surface));
+  const current = new Map<number, LanePieces>();
+  windows.set(options, current);
+  const rows: HeatLaneRow[] = now.rows.map(row => {
     const { label, nameMissing } = regionLabel(readView, row.region, row.name);
     const readout = readoutOf(row.readout, now, look, surface);
-    const own = pieces[index]!;
+    const old = previous?.get(row.region);
+    const parts = pieces.map((piece, i) => {
+      const cells = piece.cells.get(row.region) ?? piece.reply.absent ?? emptyCells;
+      let runs = piece.runs.get(cells);
+      if (!runs) {
+        const prior = old?.pieces[i] ?? noRuns;
+        runs = piece.reply === now ? currentLane(cells, now, look, surface, piece.sig, prior) : lane(cells, piece.reply, look, surface, prior);
+        piece.runs.set(cells, runs);
+      }
+      return runs;
+    });
+    const joined = joinLanePieces(parts, old);
+    current.set(row.region, joined);
     return {
       id: String(row.region),
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: row.pinned,
       region: row.region,
-      runs: own.length === 1 ? own[0]!.lane.runs : own.flatMap(piece => piece.lane.runs),
+      runs: joined.runs,
       ...(readout ? { readout } : {}),
     };
   });
@@ -344,9 +349,11 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
     regions: { ...regionLanes(subject), active: now.activeUnlisted },
     readoutWidth: LANE_READOUT_MAX_WIDTH,
     inspect: (rowIndex, at) => {
-      const own = pieces[rowIndex];
-      const piece = own?.[spanIndexAt(own, at, item => item.reply.firstHour)];
-      return piece && at <= piece.reply.lastHour ? inspectDay(piece, rows[rowIndex]!.label, at, look, surface) : null;
+      const row = now.rows[rowIndex];
+      const piece = pieces[spanIndexAt(pieces, at, item => item.reply.firstHour)];
+      if (!row || !piece || at > piece.reply.lastHour) return null;
+      const cells = piece.cells.get(row.region) ?? piece.reply.absent ?? emptyCells;
+      return inspectDay(piece.reply, cells, piece.runs.get(cells)!, rows[rowIndex]!.label, at, look, surface);
     },
     ...(now.empty ? noRegionsBody(now.empty, { one: 'active region', many: 'active regions', none: `No air activity${subject ? ` for ${subject}` : ''} at this date.` }) : {}),
     warnings: [...new Set([...tiles, now].flatMap(reply => reply.warnings).concat(rows.length && now.rankMissing ? [now.rankMissing] : []))],

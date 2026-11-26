@@ -38,6 +38,7 @@ import {
   hourToLaneX,
   LANE_PAD,
   projectLaneRunsToPixels,
+  LanePixels,
   type HeatLanesLayout,
 } from './lanesLayout.ts';
 import type { HeatLaneRow, HeatLanesModel } from './lanesModel.ts';
@@ -201,6 +202,8 @@ function drawInRunLabel(
   ctx.restore();
 }
 
+const paintedLanes = new WeakMap<Canvas2D, LanePixels[]>();
+
 export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
   const { model, layout, theme, scrollTop, hoveredRow, hoveredAdd = false, hoveredHour, selectedRowId, focusedRowId, artCache } = input;
   const tokens = resolveKitTokens(theme);
@@ -270,6 +273,9 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
       drawAddRow(ctx, LANE_PAD, ay + layout.rowHeight / 2, layout.plotLeft, layout.plotLeft + layout.plotWidth, model.regions.addLabel, theme);
     }
   }
+  let pixels = paintedLanes.get(ctx);
+  if (!pixels) paintedLanes.set(ctx, pixels = []);
+  pixels.length = layout.endRow - layout.firstRow;
   for (let i = layout.firstRow; i < layout.endRow; i++) {
     const row = model.rows[i]!;
     const y = layout.plotTop + layout.rowTops[i]! - scrollTop;
@@ -319,6 +325,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
       layout.displayedHour,
       layout.plotLeft,
       layout.plotWidth,
+      pixels[i - layout.firstRow] ??= new LanePixels(),
     );
 
     for (let s = 0; s < spans.length; s++) {

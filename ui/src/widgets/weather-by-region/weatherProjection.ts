@@ -1,3 +1,4 @@
+import { extendLastRun, type LaneRuns } from '../../families/heat/laneRuns.ts';
 import { identityColour, measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { contentKey } from '../../dashboard/options.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
@@ -77,36 +78,50 @@ function measureOf(region: RegionalWeatherColumnRegion, id: string) {
 interface ColumnCell {
   readonly key: string;
   readonly cell: HeatLaneCell;
-  readonly items: FamilyTooltipPayload['items'];
+  readonly items?: FamilyTooltipPayload['items'];
   readonly missing?: string;
 }
 
-function conditionCell(reply: RegionalWeatherReply, region: RegionalWeatherColumnRegion, column: number, colours: Palette): ColumnCell {
+function conditionCell(reply: RegionalWeatherReply, region: RegionalWeatherColumnRegion, column: number, colours: Palette, inspect: boolean): ColumnCell {
   const observed = region.observed?.[column] ?? 0;
   const shown = reply.columns.columns[column]!;
   const span = Math.max(observed, Math.ceil((shown.lastHour - shown.firstHour + 1) / reply.dayHours));
   if (observed === 0) return { key: 'missing', cell: { kind: 'missing', reason: 'Region weather was not recorded' }, items: [], missing: 'Region weather was not recorded' };
   const clear = region.clear?.[column] ?? 0;
-  const counted = reply.flags.map(flag => [flag, measureOf(region, flag.id)?.days[column] ?? 0] as const).filter(([, days]) => days > 0);
-  const total = counted.reduce((sum, [, days]) => sum + days, clear);
+  let total = clear;
+  let conditions = 0;
+  let only: RegionalWeatherReply['flags'][number] | undefined;
+  for (const flag of reply.flags) {
+    const days = measureOf(region, flag.id)?.days[column] ?? 0;
+    if (days > 0) {
+      total += days;
+      conditions++;
+      only = flag;
+    }
+  }
+  if (conditions === 0 && observed === span) return { key: 'clear', cell: { kind: 'clear', label: 'Clear' }, ...(inspect ? { items: [{ label: 'Clear' }] } : {}) };
+  if (!inspect && conditions === 1 && clear === 0 && observed === span && only) {
+    return { key: `solid:${only.id}`, cell: { kind: 'solid', color: colours.flag.get(only.id)!, label: only.name } };
+  }
   const scale = total > 0 ? observed / Math.max(observed, total) / span : 0;
   const parts = [];
-  const items = [];
-  for (const [flag, days] of counted) {
+  const items: { label: string; value?: string; swatch?: string }[] | undefined = inspect ? [] : undefined;
+  for (const flag of reply.flags) {
+    const days = measureOf(region, flag.id)?.days[column] ?? 0;
+    if (days <= 0) continue;
     const color = colours.flag.get(flag.id)!;
     parts.push({ id: flag.id, label: flag.name, color, share: days * scale });
-    items.push({ label: flag.name, swatch: color, ...(span > 1 ? { value: `${days} of ${span} days` } : {}) });
+    items?.push({ label: flag.name, swatch: color, ...(span > 1 ? { value: `${days} of ${span} days` } : {}) });
   }
-  if (parts.length === 0 && observed === span) return { key: 'clear', cell: { kind: 'clear', label: 'Clear' }, items: [{ label: 'Clear' }] };
   if (parts.length === 1 && clear === 0 && observed === span) {
     const part = parts[0]!;
     return { key: `solid:${part.id}`, cell: { kind: 'solid', color: part.color, label: part.label }, items };
   }
   if (clear > 0) {
     parts.push({ id: 'clear', label: 'Clear', color: colours.track, share: clear * scale });
-    items.push({ label: 'Clear', ...(span > 1 ? { value: `${clear} of ${span} days` } : {}) });
+    items?.push({ label: 'Clear', ...(span > 1 ? { value: `${clear} of ${span} days` } : {}) });
   }
-  if (observed < span) items.push({ label: 'Not recorded', value: `${span - observed} of ${span} days` });
+  if (observed < span) items?.push({ label: 'Not recorded', value: `${span - observed} of ${span} days` });
   return { key: `parts:${parts.map(part => `${part.id}=${part.share}`).join(',')}`, cell: { kind: 'parts', parts, look: 'split' }, items };
 }
 
@@ -117,6 +132,7 @@ function valueCell(
   show: WeatherShow,
   modifier: string | null,
   colours: Palette,
+  inspect: boolean,
 ): ColumnCell {
   const id = show === 'temperature' ? 'temp' : `mod:${modifier ?? ''}`;
   const stats = measureOf(region, id)?.values?.[column] ?? null;
@@ -130,6 +146,7 @@ function valueCell(
   const color = show === 'temperature'
     ? signedRampColour(mean, low, high, colours.track, colours.cold, colours.warm)
     : signedRampColour(mean, -Math.max(Math.abs(low), Math.abs(high)), Math.max(Math.abs(low), Math.abs(high)), colours.track, colours.ramp, colours.ramp);
+  if (!inspect) return { key: `v:${color}`, cell: { kind: 'solid', color } };
   const text = show === 'temperature' ? temperatureText : modifierText;
   const label = show === 'temperature' ? 'Temperature' : reply.modifiers.find(item => item.id === modifier)?.name ?? 'Modifier';
   const meanText = text(BigInt(stats[1]), BigInt(days));
@@ -170,14 +187,15 @@ function columnCell(
   options: WeatherProjectionOptions,
   modifier: string | null,
   colours: Palette,
+  inspect: boolean,
 ): ColumnCell {
   if (reply.columns.columns[c]!.recorded === 0) {
     const missing = 'Weather was not recorded on these days';
     return { key: 'unrecorded', cell: { kind: 'missing', reason: missing }, items: [], missing };
   }
   return options.show === 'conditions'
-    ? conditionCell(reply, region, c, colours)
-    : valueCell(reply, region, c, options.show, modifier, colours);
+    ? conditionCell(reply, region, c, colours, inspect)
+    : valueCell(reply, region, c, options.show, modifier, colours, inspect);
 }
 
 function lane(
@@ -195,7 +213,7 @@ function lane(
     const column = columns[c]!;
     if (column.firstHour > shownThrough) break;
     const lastHour = c === columns.length - 1 ? shownThrough : Math.min(column.lastHour, shownThrough);
-    const made = columnCell(reply, region, c, options, modifier, colours);
+    const made = columnCell(reply, region, c, options, modifier, colours, false);
     const previous = runs[runs.length - 1];
     if (previous && made.key === key && previous.lastHour + 1 >= column.firstHour) {
       runs[runs.length - 1] = { ...previous, lastHour, readHour: column.readHour ?? previous.readHour };
@@ -220,7 +238,7 @@ function inspectColumn(
   const c = spanIndexAt(columns, hour, column => column.firstHour);
   const column = columns[c];
   if (!column || hour > (c === columns.length - 1 ? reply.validThrough : column.lastHour)) return null;
-  const made = columnCell(reply, region, c, options, modifier, colours);
+  const made = columnCell(reply, region, c, options, modifier, colours, true);
   const dated = column.readHour === null ? { subtitle: formatDateOnly(column.firstHour) } : { hour: column.readHour };
   return made.missing ? { title, ...dated, missingReason: made.missing } : { title, ...dated, items: made.items };
 }
@@ -229,27 +247,96 @@ function emptyModel(hour: number, extra: Partial<HeatLanesModel>): HeatLanesMode
   return { hour, firstHour: hour, lastHour: hour, dayHours: 24, playhead: null, rows: [], ...extra };
 }
 
+interface WeatherLanes {
+  readonly surface: string;
+  readonly show: WeatherShow;
+  readonly modifier: string | null;
+  readonly colours: Palette;
+  readonly names: ReadonlyMap<string, string | null>;
+  readonly reply: RegionalWeatherReply;
+  readonly rows: Map<string, { region: RegionalWeatherColumnRegion; through: number; runs: LaneRuns }>;
+}
+
+const heldLanes = new WeakMap<RegionalWeatherReply, WeatherLanes>();
+
+const windows = new WeakMap<WeatherProjectionOptions, WeatherLanes>();
+
+function sameColumnWindow(a: RegionalWeatherReply, b: RegionalWeatherReply): boolean {
+  const before = a.columns.columns;
+  const after = b.columns.columns;
+  if (a.dayHours !== b.dayHours || before.length !== after.length || !after.length) return false;
+  return before === after || after.every((col, i) => {
+    const prev = before[i]!;
+    if (col.firstHour !== prev.firstHour || (col.recorded === 0) !== (prev.recorded === 0)) return false;
+    if (i !== after.length - 1) return col.lastHour === prev.lastHour && col.readHour === prev.readHour;
+    return (col.readHour === prev.readHour || col.readHour !== null)
+      && Math.floor((col.lastHour - col.firstHour) / b.dayHours) === Math.floor((prev.lastHour - prev.firstHour) / a.dayHours);
+  });
+}
+
+function sameWeatherFacts(a: RegionalWeatherColumnRegion, b: RegionalWeatherColumnRegion, show: WeatherShow, modifier: string | null): boolean {
+  if (a === b) return true;
+  const equal = (x: readonly number[] | undefined, y: readonly number[] | undefined) => x === y
+    || (!!x && !!y && x.length === y.length && x.every((n, i) => n === y[i]));
+  if (show === 'conditions' && (!equal(a.observed, b.observed) || !equal(a.clear, b.clear))) return false;
+  if (a.measures === b.measures) return true;
+  if (show === 'conditions') return a.measures.length === b.measures.length && a.measures.every((m, i) => {
+    const next = b.measures[i]!;
+    return m.id === next.id && equal(m.days, next.days);
+  });
+  const id = show === 'temperature' ? 'temp' : `mod:${modifier ?? ''}`;
+  const x = measureOf(a, id);
+  const y = measureOf(b, id);
+  return x === y || (!!x && !!y && equal(x.days, y.days) && (x.values === y.values ||
+    (!!x.values && !!y.values && x.values.length === y.values.length && x.values.every((v, i) => v?.[1] === y.values![i]?.[1]))));
+}
+
 export function projectWeather(readView: BoundedReadView, options: WeatherProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;
+  const previous = windows.get(options);
+  windows.delete(options);
   const refused = readView.refused('weather');
   if (refused) return emptyModel(hour, { refused });
   const reply = readView.panel<RegionalWeatherReply>('weather');
   if (!reply || !options.surface || reply.lastHour > hour) return emptyModel(hour, {});
   const through = Math.min(hour, reply.validThrough);
-  const colours = palette(reply, options.surface);
   const modifier = options.show === 'modifiers' ? options.modifier ?? reply.modifiers[0]?.id ?? null : null;
-  const names = new Map(reply.regions.map(region => [region.id, region.name]));
+  let held = heldLanes.get(reply);
+  if (!held || held.surface !== options.surface || held.show !== options.show || held.modifier !== modifier) {
+    heldLanes.set(reply, held = { reply, surface: options.surface, show: options.show, modifier, colours: palette(reply, options.surface),
+      names: new Map(reply.regions.map(region => [region.id, region.name])), rows: new Map() });
+  }
+  windows.set(options, held);
+  const prior = previous && previous !== held && previous.surface === options.surface && previous.show === options.show && previous.modifier === modifier
+    && sameColumnWindow(previous.reply, reply) && (options.show === 'conditions'
+      ? previous.reply.flags.length === reply.flags.length && reply.flags.every((flag, i) => {
+        const before = previous.reply.flags[i]!;
+        return flag.id === before.id && flag.name === before.name;
+      })
+      : previous.reply.temperature === reply.temperature && previous.reply.extrema?.[0] === reply.extrema?.[0] && previous.reply.extrema?.[1] === reply.extrema?.[1])
+    ? previous : undefined;
+  const { colours, names, rows: cached } = held;
+  const last = reply.columns.columns.at(-1);
   const regions = reply.columns.regions;
   const rows: HeatLaneRow[] = regions.map(region => {
     const { label, nameMissing } = regionLabel(readView, region.id, names.get(region.id) ?? null);
     const readout = readoutOf(region.readout, options.show, modifier, reply, colours);
+    let history = cached.get(region.id);
+    if (!history || history.through !== through) {
+      const before = history ?? prior?.rows.get(region.id);
+      const canExtend = before && last && Math.min(through, before.through) >= last.firstHour
+        && (history || sameWeatherFacts(before.region, region, options.show, modifier));
+      const runs = canExtend ? extendLastRun(before.runs, through, last.readHour ?? before.runs.at(-1)?.readHour ?? null)
+        : lane(reply, region, through, options, modifier, colours);
+      cached.set(region.id, history = { region, through, runs });
+    }
     return {
       id: region.id,
       label,
       ...(nameMissing ? { nameMissing } : {}),
       pinned: region.pinned,
       region: Number(region.id),
-      runs: lane(reply, region, through, options, modifier, colours),
+      runs: history.runs,
       ...(readout ? { readout } : {}),
     };
   });

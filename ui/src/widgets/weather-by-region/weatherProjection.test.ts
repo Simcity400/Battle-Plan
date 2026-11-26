@@ -1,3 +1,4 @@
+import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -181,4 +182,16 @@ test('a held weather reply asks to project again each hour until its last unchan
   const held = reply(50, { validThrough: 59 });
   assert.equal(weatherProjection.nextChange?.(view(55, held), OPTIONS), 56);
   assert.equal(weatherProjection.nextChange?.(view(59, held), OPTIONS), Infinity);
+});
+
+test('a hundred played hours share the weather history and grow only the last run', () => {
+  const data = reply(50, { validThrough: 149 });
+  const at = (hour: number, facts = data) => projectWeather(view(hour, facts), OPTIONS);
+  assertRunCounts(50, hour => at(hour).rows[0]!.runs);
+  const original = at(55);
+  assert.equal(at(55, structuredClone(data)).rows[0]!.runs, original.rows[0]!.runs);
+  const corrected = structuredClone(data);
+  corrected.columns.regions[0]!.observed![0] = 0;
+  assert.equal(at(55, corrected).inspect!(0, 0)?.missingReason, 'Region weather was not recorded');
+  assert.equal(original.inspect!(0, 0)?.items?.[0]?.label, data.flags[0]!.name);
 });

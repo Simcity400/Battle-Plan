@@ -212,6 +212,18 @@ function sameLaneCell(a: HeatLaneCell, b: HeatLaneCell): boolean {
   }
 }
 
+type DrawnSpan = { -readonly [K in keyof PixelLaneSpan]: PixelLaneSpan[K] };
+
+export class LanePixels {
+  runs?: readonly HeatLaneRun[];
+  firstHour = 0;
+  lastHour = 0;
+  displayedHour = 0;
+  plotLeft = 0;
+  plotWidth = 0;
+  readonly spans: DrawnSpan[] = [];
+}
+
 export function projectLaneRunsToPixels(
   runs: readonly HeatLaneRun[],
   firstHour: number,
@@ -219,11 +231,23 @@ export function projectLaneRunsToPixels(
   displayedHour: number,
   plotLeft: number,
   plotWidth: number,
+  pixels = new LanePixels(),
 ): readonly PixelLaneSpan[] {
-  if (!runs.length || plotWidth <= 0 || displayedHour < firstHour) return [];
+  const out = pixels.spans;
+  if (pixels.runs === runs && pixels.firstHour === firstHour && pixels.lastHour === lastHour && pixels.displayedHour === displayedHour
+    && pixels.plotLeft === plotLeft && pixels.plotWidth === plotWidth) return out;
+  pixels.runs = runs;
+  pixels.firstHour = firstHour;
+  pixels.lastHour = lastHour;
+  pixels.displayedHour = displayedHour;
+  pixels.plotLeft = plotLeft;
+  pixels.plotWidth = plotWidth;
+  if (!runs.length || plotWidth <= 0 || displayedHour < firstHour) {
+    out.length = 0;
+    return out;
+  }
   const effectiveLast = Math.max(firstHour, lastHour);
-  const out: PixelLaneSpan[] = [];
-
+  let count = 0;
   let lo = 0;
   let hi = runs.length;
   while (lo < hi) {
@@ -231,38 +255,41 @@ export function projectLaneRunsToPixels(
     if (runs[mid]!.lastHour < firstHour) lo = mid + 1;
     else hi = mid;
   }
-  for (let i = lo; i < runs.length; i++) {
-    const run = runs[i]!;
-    if (run.firstHour > displayedHour) break;
-    if (run.readHour !== null && run.readHour > displayedHour) continue;
-    const clippedFirst = Math.max(firstHour, run.firstHour);
-    const clippedLast = Math.min(effectiveLast, displayedHour, run.lastHour);
-    if (clippedFirst > clippedLast) continue;
-
-    const prev = out.at(-1);
-    if (prev && prev.lastHour + 1 === clippedFirst && sameLaneCell(prev.cell, run.cell)) {
-      const x0 = hourToLaneX(prev.firstHour, firstHour, effectiveLast, plotLeft, plotWidth);
-      const x1 = hourToLaneX(clippedLast + 1, firstHour, effectiveLast, plotLeft, plotWidth);
-      out[out.length - 1] = {
-        ...prev,
-        x: x0,
-        width: Math.max(0, x1 - x0),
-        lastHour: clippedLast,
-      };
-      continue;
+  let start = 0;
+  let end = 0;
+  let cell: HeatLaneCell | undefined;
+  for (let i = lo; i <= runs.length; i++) {
+    const run = runs[i];
+    if (run && run.firstHour <= displayedHour) {
+      if (run.readHour !== null && run.readHour > displayedHour) continue;
+      const clippedFirst = Math.max(firstHour, run.firstHour);
+      const clippedLast = Math.min(effectiveLast, displayedHour, run.lastHour);
+      if (clippedFirst > clippedLast) continue;
+      if (cell && end + 1 === clippedFirst && sameLaneCell(cell, run.cell)) {
+        end = clippedLast;
+        continue;
+      }
     }
-
-    const x0 = hourToLaneX(clippedFirst, firstHour, effectiveLast, plotLeft, plotWidth);
-    const x1 = hourToLaneX(clippedLast + 1, firstHour, effectiveLast, plotLeft, plotWidth);
-    out.push({
-      x: x0,
-      width: Math.max(0, x1 - x0),
-      firstHour: clippedFirst,
-      lastHour: clippedLast,
-      cell: run.cell,
-    });
+    if (cell) {
+      const x = hourToLaneX(start, firstHour, effectiveLast, plotLeft, plotWidth);
+      const right = hourToLaneX(end + 1, firstHour, effectiveLast, plotLeft, plotWidth);
+      const width = Math.max(0, right - x);
+      const span = out[count++];
+      if (span) {
+        span.x = x;
+        span.width = width;
+        span.firstHour = start;
+        span.lastHour = end;
+        span.cell = cell;
+      } else out.push({ x, width, firstHour: start, lastHour: end, cell });
+    }
+    if (!run || run.firstHour > displayedHour) break;
+    start = Math.max(firstHour, run.firstHour);
+    end = Math.min(effectiveLast, displayedHour, run.lastHour);
+    cell = run.cell;
   }
 
+  out.length = count;
   if (out.length > 0) {
     const last = out[out.length - 1]!;
     const isTerminalCurrentDay = last.lastHour === displayedHour && last.width < 1 && plotWidth >= 2;
@@ -271,10 +298,11 @@ export function projectLaneRunsToPixels(
       if (out.length >= 2) {
         const prev = out[out.length - 2]!;
         if (prev.x + prev.width > terminalX) {
-          out[out.length - 2] = { ...prev, width: Math.max(0, terminalX - prev.x) };
+          prev.width = Math.max(0, terminalX - prev.x);
         }
       }
-      out[out.length - 1] = { ...last, x: terminalX, width: 1 };
+      last.x = terminalX;
+      last.width = 1;
     }
   }
 
