@@ -1,6 +1,7 @@
 import type { ChartBucket } from '../charts/chartSummary';
 import type { Run } from '../charts/series';
-import { rowName, type FollowedAnswer } from '../dashboard/follow/message.ts';
+import { countryKey } from '../dashboard/countryKey.ts';
+import { rowKey, rowName, rowReason, type FollowedAnswer, type FollowedRows } from '../dashboard/follow/message.ts';
 import { rowAmount } from '../dashboard/follow/painters.ts';
 import { followedRow, keyId } from '../dashboard/keyedSeriesData.ts';
 import type { TiledLine } from '../dashboard/tiles/view';
@@ -29,6 +30,7 @@ export interface SerializedTiledLine {
 export interface SeriesHeadSource {
   readonly answerName: string;
   readonly tags: readonly string[];
+  readonly rankedSlots?: boolean;
   readonly keys?: readonly { readonly tag: string; readonly part: string }[];
   readonly partBits?: number;
   readonly decimals?: number;
@@ -106,6 +108,32 @@ function rowIndexOf(tags: readonly string[]): ReadonlyMap<string, number> {
 }
 
 const answerRows = new WeakMap<FollowedAnswer, ReadonlyMap<string, number>>();
+interface CountryRank {
+  readonly rows: ReadonlyMap<string, number>;
+  readonly tags: ReadonlyMap<string, string>;
+  readonly unnamed: ReadonlyMap<string, string>;
+}
+
+const followedRanks = new WeakMap<FollowedRows, CountryRank>();
+
+export function followedCountryRank(answer: FollowedRows): CountryRank {
+  const held = followedRanks.get(answer);
+  if (held) return held;
+  const rows = new Map<string, number>();
+  const tags = new Map<string, string>();
+  const unnamed = new Map<string, string>();
+  for (let row = 0; row < answer.rows; row++) {
+    const key = countryKey(Number(rowKey(answer, row)));
+    rows.set(key, row);
+    const reason = rowReason(answer, row);
+    const tag = rowName(answer, row);
+    if (reason) unnamed.set(key, reason);
+    else if (tag !== null) tags.set(key, tag);
+  }
+  const rank = { rows, tags, unnamed };
+  followedRanks.set(answer, rank);
+  return rank;
+}
 
 export function answerRowOf(answer: FollowedAnswer | undefined, tag: string): number {
   if (!answer || answer.kind === 'notRecorded') return -1;
@@ -134,6 +162,7 @@ function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): n
     const matched = keyOf(head.keys, tag);
     return matched ? followedRow(answer, matched, head.partBits) : -1;
   }
+  if (head.rankedSlots && answer.kind !== 'notRecorded') return followedCountryRank(answer).rows.get(tag) ?? -1;
   return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag);
 }
 

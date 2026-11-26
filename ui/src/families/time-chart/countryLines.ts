@@ -22,9 +22,8 @@ import {
   memberAt,
   missingSpansOf,
   rankEntry,
-  rankedHeadKeys,
+  rankedCountries,
   rankedOrder, unnamedLooks,
-  rankedPanelKeys,
   withinMapOf,
   type ExactReading,
   type HeadReading,
@@ -176,8 +175,9 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const settings = options.settings ?? DEFAULT_LINE_SETTINGS;
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
-      const tags = top ? (rankedHeadKeys(readView, 'main') ?? (drawn ? [...drawn.keys()] : rankedPanelKeys(readView, 'main'))) : options.tags;
-      if (top && (drawn !== undefined || readView.answer('main') !== undefined) && tags.length === 0) {
+      const population = top ? rankedCountries(readView, 'main') : null;
+      const tags = top ? [...(population?.rows.keys() ?? drawn?.keys() ?? [])] : options.tags;
+      if (top && (drawn !== undefined || population !== null) && tags.length === 0) {
         return {
           kind: spec.kind,
           measureTitle: spec.title,
@@ -201,7 +201,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         surface: options.surface,
         withFlag: true,
         tailColor: tailColour(options.surface),
-      }), ranking.unnamed, hour);
+      }), population?.unnamed ?? ranking.unnamed, hour, population?.tags);
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
       const secondLines = options.second ? readView.series('second') : undefined;
       const detailHour = spec.hover ? hoverHourOf(readView, 'detail') : null;
@@ -212,7 +212,8 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const series: TimeChartSeriesModel[] = ordered.flatMap((tag, rank) => {
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;
-        const reading = presentSet.has(tag) ? headReading(readView, 'main', { tag }, options.decimals) : undefined;
+        const headKey = { tag, rankRow: population?.rows.get(tag) };
+        const reading = presentSet.has(tag) ? headReading(readView, 'main', headKey, options.decimals) : undefined;
         if (reading !== undefined) readings.push([tag, reading]);
         const headValue = headValueOf(reading);
         const exact = exactByCountry?.get(tag) ?? null;
@@ -248,7 +249,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         if (!options.second) return [main];
         const secondBounded = secondLines?.get(tag) ?? null;
         const secondReading = presentSet.has(tag)
-          ? headReading(readView, 'second', { tag }, options.decimals) ?? (top ? headReading(readView, 'main', { tag, reading: 1 }, options.decimals) : null)
+          ? headReading(readView, 'second', { tag }, options.decimals) ?? (top ? headReading(readView, 'main', { ...headKey, reading: 1 }, options.decimals) : null)
           : undefined;
         if (secondReading !== undefined) readings.push([`${tag}${SECOND_SUFFIX}`, secondReading]);
         return [main, {

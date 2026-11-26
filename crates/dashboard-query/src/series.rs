@@ -744,11 +744,11 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(&[Country]) -> bool) -> io::Result<(i32, i32)> {
+    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), same: impl Fn(i32, &[Country]) -> bool) -> io::Result<(i32, i32)> {
         let timeline = &self.query.timeline;
         let lo = within.0.max(timeline.first).max(hour.saturating_sub(crate::tile::RANK_PROOF_HOURS));
         let hi = within.1.min(timeline.last).min(hour.saturating_add(crate::tile::RANK_PROOF_HOURS));
-        let holds = |at: i32| -> io::Result<bool> { Ok(matches!(self.rank_at(at, n, least)?, Ok(ranked) if same(&ranked))) };
+        let holds = |at: i32| -> io::Result<bool> { Ok(matches!(self.rank_at(at, n, least)?, Ok(ranked) if same(at, &ranked))) };
         let mut from = hour;
         while from > lo && holds(from - 1)? {
             from -= 1;

@@ -207,6 +207,23 @@ fn chosen_not_ranked(query: &Query, lane: &Lane) -> Option<String> {
     identity.holders.not_ranked(head(lane))
 }
 
+fn ranked_row(table: &mut Table, query: &Query, hour: Hour, key: u128, at: Option<u32>, value: i64) {
+    let Query::Series { series, countries, identity, mode: SeriesMode::Top { population, .. }, .. } = query else { unreachable!("a ranked series") };
+    if let Some(at) = at {
+        let country = &countries[at as usize];
+        let row = if *population { u128::from(identity.holders.slot_at(country, hour).expect("a ranked holder has a recorded slot")) } else { key };
+        table.row(row);
+        table.name(&country.key());
+    } else {
+        let slot = unnamed_slot(series, key).expect("a measured unnamed contender has a recorded slot");
+        let country = dashboard_query::identity::Country::Slot(slot);
+        table.row(u128::from(slot));
+        table.name(&country.key());
+        table.explain(&identity.holders.unnamed(&country, hour));
+    }
+    table.cell(value, State::Value);
+}
+
 fn unknown_contender(query: &Query, lane: &Lane, at: Option<u32>) -> String {
     let Query::Series { series, measure, countries: names, identity, .. } = query else { return String::new() };
     match at {
@@ -307,12 +324,7 @@ impl Ranking {
             top.truncate(*n);
         }
         for (value, _, key) in top {
-            table.row(key);
-            table.cell(if *least { value } else { !value }, State::Value);
-            match tags.by_key.get(&key) {
-                Some(&at) => table.name(&names[at as usize].key()),
-                None => table.name(&dashboard_query::identity::Country::Slot(unnamed_slot(series, key).unwrap_or_default()).key()),
-            }
+            ranked_row(table, query, head(lane), key, tags.by_key.get(&key).copied(), if *least { value } else { !value });
         }
         table.encode(out);
         Some(read)
@@ -592,12 +604,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             }
             ranked.sort_unstable_by(by_tag);
             for &(value, key, at) in ranked.iter() {
-                table.row(key);
-                table.cell(value, State::Value);
-                match at {
-                    UNNAMED => table.name(&dashboard_query::identity::Country::Slot(unnamed_slot(series, key).unwrap_or_default()).key()),
-                    at => table.name(&names[at as usize].key()),
-                }
+                ranked_row(table, query, head(lane), key, (at != UNNAMED).then_some(at), value);
             }
         }
         Query::Series { series, measure, countries: names, mode: SeriesMode::Keyed(scope), identity } => {

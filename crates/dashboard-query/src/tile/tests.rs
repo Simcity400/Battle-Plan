@@ -429,6 +429,31 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
 }
 
 #[test]
+fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_earlier_holder_of_its_tag() {
+    let fixture = long_campaign();
+    let mut query = fixture.query();
+    let change = ITA_FROM + 5 * 97 + (91 - ITA_FROM.rem_euclid(97)).rem_euclid(97);
+    let (ger, ita) = (query.holders.slot_at(&Country::from("GER"), change).unwrap(), query.holders.slot_at(&Country::from("ITA"), change).unwrap());
+    let clip = |runs: &[HolderRun], lo: i32, hi: i32| runs.iter().filter_map(|run| (run.first.max(lo) <= run.last.min(hi)).then(|| HolderRun { first: run.first.max(lo), last: run.last.min(hi), ..run.clone() })).collect::<Vec<_>>();
+    let mut holders = crate::identity::Holders::new(query.holders.tags.clone(), query.holders.unknown.clone());
+    let (ger_runs, ita_runs) = (holders.tags["GER"].clone(), holders.tags["ITA"].clone());
+    holders.tags.insert("GER".to_owned(), [clip(&ger_runs, i32::MIN, change - 1), clip(&ita_runs, change, i32::MAX)].concat());
+    holders.tags.insert("ITA".to_owned(), [clip(&ita_runs, i32::MIN, change - 1), clip(&ger_runs, change, i32::MAX)].concat());
+    query.holders = std::sync::Arc::new(holders);
+    let line = line(&query);
+    let (bin_hours, hour) = (96, change + 5);
+    let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
+    let top = reply(&line, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 1, "hour": hour })).unwrap();
+    assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), vec![Country::Slot(ita)], "the winning slot keys its whole history");
+    let country = tile(&line, "1", &[Ask::whole(Country::Slot(ita))], None, bin_hours, index, false).unwrap();
+    let tag = tile(&line, "1", &[Ask::whole(Country::from("GER"))], None, bin_hours, index, false).unwrap();
+    assert_ne!(country.bins, tag.bins, "the fixture's GER was another country before {change}");
+    assert_eq!(top.bins, country.bins, "the line is the country ranked at {hour} through its history, not slot {ger}'s history under GER");
+    let ranking = top.ranking.unwrap();
+    assert!(ranking.from < change, "the same country stays the top across its change of tag: {ranking:?}");
+}
+
+#[test]
 fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_the_top() {
     let fixture = long_campaign();
     let query = fixture.query();
@@ -445,7 +470,7 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
         }
         assert_eq!(ranking.refused, None, "hour {hour}");
         let ranked = line.rank_at(hour, 1, false).unwrap().unwrap();
-        assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked, "the reply names exactly the top at {hour}");
+        assert_eq!(top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked.iter().map(|country| Country::Slot(query.holders.slot_at(country, hour).unwrap())).collect::<Vec<_>>(), "the reply names exactly the winning slots at {hour}");
         let plain = tile(&line, "1", &ranked.iter().map(Ask::whole).collect::<Vec<_>>(), None, bin_hours, top.index, false).unwrap();
         assert_eq!(top.bins, plain.bins, "the top's bins are its countries' tiles at {hour}");
         assert!(ranking.from <= hour && hour <= ranking.until);
@@ -468,7 +493,7 @@ fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_
     let index = i64::from(hour).div_euclid(BINS as i64 * bin_hours);
     let by = reply(&other, "1", &serde_json::json!({ "binHours": bin_hours, "index": index, "top": 2, "hour": hour, "rankBy": "politicalPower" })).unwrap();
     let ranked = line.rank_at(hour, 2, false).unwrap().unwrap();
-    assert_eq!(by.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked, "ranked by the named measure");
+    assert_eq!(by.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(), ranked.iter().map(|country| Country::Slot(query.holders.slot_at(country, hour).unwrap())).collect::<Vec<_>>(), "ranked by the named measure");
     let plain = tile(&other, "1", &ranked.iter().map(Ask::whole).collect::<Vec<_>>(), None, bin_hours, index, false).unwrap();
     assert_eq!(by.bins, plain.bins, "the tiles are of the asked measure");
     assert_eq!(by.measure, "commandPower");

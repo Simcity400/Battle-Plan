@@ -10,7 +10,7 @@ import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../familie
 import {
   branchGapsOf,
   countrySeriesLooks,
-  exactHoverReadings,
+  exactHoverByCountry,
   memberAt,
   missingSpansOf,
   rankEntry,
@@ -50,7 +50,6 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
     const settings = options.settings ?? DEFAULT_POWER_SETTINGS;
     const format = (reading: KnownHeadReading) => formatPowerAmount(reading, settings.decimals);
     const view = chartWindow(settings, hour, options.extent[0]);
-    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
 
     const headByTag = new Map<string, number | null>();
     const readingByTag = new Map<string, HeadReading | null>();
@@ -59,7 +58,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       if (reading !== undefined) readingByTag.set(tag, reading);
       headByTag.set(tag, headValueOf(reading));
     }
-    const exact = exactHoverReadings(readView, 'hover', seriesMap?.get(tags[0] ?? '')?.decimals ?? 5);
+    const exactByCountry = exactHoverByCountry(readView, 'hover', seriesMap?.get(tags[0] ?? '')?.decimals ?? 5);
 
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
@@ -82,6 +81,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       const { name, flag, color, identities } = looks.get(tag)!;
       const reading = readingByTag.get(tag);
       const headValue = headByTag.get(tag) ?? null;
+      const exact = exactByCountry?.get(tag);
       return {
         id: tag,
         key: tag,
@@ -94,7 +94,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
         bounded,
         headValue,
         headHour: hour,
-        exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
+        exact: exact && memberAt(options.membership, tag, exact.hour) ? exact : null,
         flag,
         ...(single ? {} : { identities }),
         icon: measureIcon,
@@ -192,6 +192,7 @@ export const politicalPowerDeclaration: TimeChartWidgetDeclaration<PoliticalPowe
               read: {
                 shape: 'exact-hover' as const,
                 product: 'series-state' as const,
+                ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
                 params: {
                   branchId: ctx.branch.id,
                   family,

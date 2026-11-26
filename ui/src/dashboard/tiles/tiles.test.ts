@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
+import { countryFromKey, countryKey } from '../countryKey.ts';
 import type { ChartBucket } from '../../charts/chartSummary';
 import { summaryFits } from '../../charts/chartSummary.ts';
 import { plotFrame } from '../../charts/frame.ts';
@@ -36,7 +37,7 @@ function reply(tags: readonly string[], binHours: number, index: number, lastHou
   const last = first + TILE_BINS * binHours - 1;
   return { branchId: '1', measure: 'politicalPower', decimals: 2, binHours, index, firstHour: first, immutable: last < lastHour,
     filled: first <= lastHour ? Math.min(last, lastHour) : null, rawValues: true, hourBytes: 2,
-    lines: tags.map(tag => ({ country: tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: 1, countryId: 1, segmentFirstHour: first }] })), bins: btoa(binary) };
+    lines: tags.map(tag => ({ country: countryFromKey(tag), missing: [], parts: [{ firstHour: first, lastHour: last, slot: 1, countryId: 1, segmentFirstHour: first }] })), bins: btoa(binary) };
 }
 
 const value = (tag: number, hour: number) => hour % 977 < 20 ? null : (hour * 7 + tag * 1000) % 50_000 - 25_000;
@@ -149,7 +150,8 @@ test('a view asks only the tiles it lacks, one request per tile for every tag la
 test('a top of tiles takes its countries from the ranked reply, keeps them while the hour stays inside their proof, and asks again only outside it', async () => {
   const cache = new TileCache();
   const ranks: { hour: number; index: number }[] = [];
-  const named = (hour: number) => hour < 5000 ? ['GER', 'ITA'] : ['SOV', 'GER'];
+  const winner = countryKey(9), other = countryKey(3), newcomer = countryKey(7);
+  const named = (hour: number) => hour < 5000 ? [winner, other] : [newcomer, winner];
   const base = lane([], LAST);
   const top: TileLane = { ...base, top: { ask(binHours, index, hour) {
     ranks.push({ hour, index });
@@ -163,19 +165,25 @@ test('a top of tiles takes its countries from the ranked reply, keeps them while
   assert.equal(view.current, null, 'nothing is drawn before the top is named');
   view.setHour(100);
   await settle();
-  assert.deepEqual([...view.current!.keys()], ['GER', 'ITA']);
-  assert.deepEqual(view.top, { tags: ['GER', 'ITA'], hour: 100, from: 0, until: 4999, refused: null });
+  assert.deepEqual([...view.current!.keys()], [winner, other]);
+  assert.deepEqual(view.top, { tags: [winner, other], hour: 100, from: 0, until: 4999, refused: null });
+  assert.ok(base.asked.length && base.asked.every(ask => ask.tags.every(key => key === winner || key === other)));
+  const selected = lane(['GER', winner], LAST);
+  const ordinary = new TileView(cache, selected, () => {});
+  ordinary.setView({ from: 0, to: 8759, end: 8759, width: 600 });
+  await settle();
+  assert.ok(selected.asked.length && selected.asked.every(ask => ask.tags.length === 1 && ask.tags[0] === 'GER'), 'only the ordinary tag needs tiles, the slot already holds its own history');
   assert.ok(renders > 0);
   view.setHour(4999);
   await settle();
   assert.equal(ranks.length, 1, 'an hour inside the proof asks nothing');
-  const before = base.asked.length, germany = view.current!.get('GER');
+  const before = base.asked.length, held = view.current!.get(winner);
   view.setHour(6000);
   await settle();
   assert.equal(ranks.length, 2);
-  assert.deepEqual([...view.current!.keys()], ['SOV', 'GER']);
-  assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === 'SOV')), 'a country already held keeps its tiles; only the newcomer is asked');
-  assert.equal(view.current!.get('GER'), germany, 'a country still ranked keeps its line object, so the lane is not sent it again');
+  assert.deepEqual([...view.current!.keys()], [newcomer, winner]);
+  assert.ok(base.asked.slice(before).every(ask => ask.tags.every(tag => tag === newcomer)), 'a country already held keeps its tiles; only the newcomer is asked');
+  assert.equal(view.current!.get(winner), held, 'a country still ranked keeps its line object, so the lane is not sent it again');
   const shown = view.current, drawn = renders;
   view.retry();
   await settle();

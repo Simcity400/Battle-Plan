@@ -984,10 +984,14 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(rank_top.rows.iter().map(|r| r.country.to_string()).collect::<Vec<_>>(), vec!["USA"]);
+    assert_eq!(rank_top.rows.iter().map(|row| (&row.country, row.slot)).collect::<Vec<_>>(), vec![(&Country::from("USA"), Some(9))]);
     assert_eq!(rank_top.refused, None);
     let tiles_top = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 124 / BINS as i64, "top": 5, "hour": 124 })).unwrap();
-    assert_eq!(tiles_top.lines.iter().map(|line| line.country.to_string()).collect::<Vec<_>>(), vec!["USA"], "lines and race agree on positive-only top");
+    assert_eq!(
+        tiles_top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(),
+        rank_top.rows.iter().map(|row| Country::Slot(row.slot.expect("the ranked country has a recorded slot"))).collect::<Vec<_>>(),
+        "lines and race agree on the slots in the positive-only top"
+    );
     let tiles_empty = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 121 / BINS as i64, "top": 5, "hour": 121 })).unwrap();
     assert!(tiles_empty.lines.is_empty() && tiles_empty.ranking.unwrap().refused.is_none(), "all-zero count top yields an empty unproven-free tile reply");
     assert_eq!(nukes.rank_at(125, 1, false).unwrap(), Ok(vec![Country::from("USA")]), "only zero is dropped: a negative count is ranked");

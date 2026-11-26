@@ -2,9 +2,9 @@ import { rankSource } from '../seriesRank.ts';
 import { resolveLineColors, tailColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
 import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
-import { answerRowOf } from '../sceneTiles.ts';
+import { answerRowOf, followedCountryRank } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
@@ -30,6 +30,7 @@ export type HeadReading = KnownHeadReading | { readonly missing: string };
 
 export interface HeadKey {
   readonly tag: string;
+  readonly rankRow?: number;
   readonly part?: string;
   readonly partBits?: number;
   readonly reading?: number;
@@ -66,11 +67,6 @@ function scaledReading(rawInt: bigint, decimals: number, scale: number | Rationa
   return Number.isFinite(value) ? { value } : null;
 }
 
-export function rankedPanelKeys(readView: BoundedReadView, name: string): readonly string[] {
-  const panel = readView.panel<Partial<RankPanel>>(name);
-  return panel?.rows?.map(row => countryKey(row.country)) ?? [];
-}
-
 export const ALL_POPULATION_TOP = 10_000;
 
 export function chartTopOf(countries: FamilyPlanContext['countries']): number | null {
@@ -83,15 +79,21 @@ export function rowsBySelectedKey<R extends { readonly tag: string | null }>(row
   return key => bySlot.get(key) ?? byTag.get(key);
 }
 
-export function rankedHeadKeys(readView: BoundedReadView, name: string): readonly string[] | null {
+export function rankedCountries(readView: BoundedReadView, name: string) {
   const answer = readView.answer(name);
-  if (!answer || answer.kind === 'notRecorded') return null;
-  const keys: string[] = [];
-  for (let row = 0; row < answer.rows; row++) {
-    const key = rowName(answer, row);
-    if (key !== null) keys.push(key);
-  }
-  return keys;
+  if (answer && answer.kind !== 'notRecorded') return followedCountryRank(answer);
+  const panel = readView.panel<SeriesRankReply>(name);
+  if (!panel) return null;
+  const rows = new Map<string, number>();
+  const tags = new Map<string, string>();
+  const unnamed = new Map<string, string>();
+  panel.rows.forEach((item, row) => {
+    const key = countryKey(item.slot ?? item.country);
+    rows.set(key, row);
+    if (item.unnamed) unnamed.set(key, item.unnamed);
+    else if (typeof item.country === 'string') tags.set(key, item.country);
+  });
+  return { rows, tags, unnamed };
 }
 
 export function headReading(
@@ -107,9 +109,9 @@ export function headReading(
   const column = key.reading ?? 0;
   if (answer) {
     if (answer.kind === 'notRecorded') return { missing: answer.reason };
-    const row = key.part === undefined
+    const row = key.rankRow ?? (key.part === undefined
       ? answerRowOf(answer, key.tag)
-      : followedRow(answer, { tag: key.tag, part: key.part }, key.partBits ?? 0);
+      : followedRow(answer, { tag: key.tag, part: key.part }, key.partBits ?? 0));
     if (row >= 0) {
       if (column >= answer.columns) return { missing: NOT_READ_AT_HOUR };
       const at = row * answer.columns + column;
@@ -120,7 +122,7 @@ export function headReading(
     }
   }
   const panel = readView.panel<{ readonly decimals?: number; readonly states?: readonly PanelState[] } & Partial<RankPanel>>(name);
-  const ranked = panel?.rows?.find(row => countryKey(row.country) === key.tag);
+  const ranked = key.rankRow === undefined ? panel?.rows?.find(row => countryKey(row.country) === key.tag) : panel?.rows?.[key.rankRow];
   if (ranked) {
     const at = key.reading ?? 0;
     const reading = ranked.readings[at];
@@ -304,7 +306,7 @@ function identityStretches(
         }
       }
     }
-    const name = who.name.status === 'ready' ? who.name.value : who.name.status === 'pending' ? LOADING_NAME : identityTag;
+    const name = who.name.status === 'ready' ? who.name.value : who.name.status === 'pending' ? LOADING_NAME : who.tag?.status === 'ready' ? who.tag.value : identityTag;
     const mapColour = who.colour?.status === 'ready' ? who.colour.value : null;
     const flagChoice = who.flagChoice?.status === 'ready' ? who.flagChoice.value : null;
     const prev = out[out.length - 1];
@@ -535,20 +537,23 @@ export function unnamedLooks(
   looks: ReadonlyMap<string, CountrySeriesLook>,
   unnamed: ReadonlyMap<string, string>,
   hour: number,
+  headTags?: ReadonlyMap<string, string>,
 ): ReadonlyMap<string, CountrySeriesLook> {
-  if (unnamed.size === 0) return looks;
+  if (unnamed.size === 0 && !headTags?.size) return looks;
   const out = new Map(looks);
-  for (const [tag, reason] of unnamed) {
-    const look = looks.get(tag);
-    if (!look) continue;
-    const flag: ChartArtSlot | undefined = look.flag ? { art: unavailableArt(reason), tag } : undefined;
-    const atHour = (run: ChartIdentityRun) => run.firstHour <= hour && hour <= run.lastHour;
-    out.set(tag, {
-      ...look,
-      name: UNNAMED_COUNTRY,
-      ...(flag ? { flag } : {}),
-      identities: look.identities.map(run => (atHour(run) ? { ...run, name: UNNAMED_COUNTRY, ...(flag ? { flag } : {}) } : run)),
-    });
+  for (const [key, look] of looks) {
+    const reason = unnamed.get(key);
+    const name = reason ? UNNAMED_COUNTRY : headTags?.get(key);
+    if (!name || (!reason && look.name !== key && look.name !== LOADING_NAME)) continue;
+    const flag = reason && look.flag ? { art: unavailableArt(reason), tag: key } : look.flag;
+    const identities = look.identities.slice();
+    const last = identities.pop();
+    if (last) {
+      const firstHour = reason ? last.firstHour : hour;
+      if (last.firstHour < firstHour) identities.push({ ...last, lastHour: firstHour - 1 });
+      identities.push({ ...last, firstHour, name, flag });
+    }
+    out.set(key, { ...look, name, flag, identities });
   }
   return out;
 }

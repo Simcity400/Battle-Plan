@@ -19,6 +19,7 @@ function headSourcesOf(plan: SourcePlan): HeadSources | null {
       map[entry.name] = {
         answerName: entry.name,
         tags: entry.read.tags,
+        ...(entry.read.top ? { rankedSlots: true } : {}),
         ...(entry.read.keys ? { keys: entry.read.keys } : {}),
         ...(entry.read.partBits !== undefined ? { partBits: entry.read.partBits } : {}),
       };
