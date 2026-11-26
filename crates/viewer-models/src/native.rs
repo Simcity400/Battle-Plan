@@ -2520,6 +2520,7 @@ impl ModelPass {
                                     || descriptor.lods.iter().flatten().cloned().collect(),
                                     settled,
                                 ) else {
+                                    arena.wait_for_build();
                                     if let Some(recording) = recording.as_deref_mut() {
                                         recording.wait();
                                     }
@@ -2582,6 +2583,7 @@ impl ModelPass {
                                 }
                             }
                             if !built {
+                                arena.wait_for_build();
                                 if let Some(recording) = recording.as_deref_mut() {
                                     recording.wait();
                                 }

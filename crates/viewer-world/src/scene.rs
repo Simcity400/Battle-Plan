@@ -4627,6 +4627,10 @@ impl Scene {
         warnings
     }
 
+    pub fn waiting_for_build(&self) -> bool {
+        self.arena.waiting_for_build()
+    }
+
     pub fn draw_refusals(&self) -> std::collections::BTreeSet<String> {
         let mut refusals = self.arena.refusals();
         refusals.extend(

@@ -5212,9 +5212,19 @@ impl Viewer {
                         }
                         let world = crate::controls::walker::World::of(&map, &floor);
                         let start = self.start_pick.at().unwrap_or(camera.center);
-                        self.walk.camera(&controls, wheel, map, start, &world)
+                        let previous = self.walk.state().copied();
+                        let eye = self.walk.camera(&controls, wheel, map, start, &world);
+                        if self.walk.state() != previous.as_ref() || controls.moved_or_looked() {
+                            ui.ctx().request_repaint();
+                        }
+                        eye
                     } else {
-                        self.fly(document, map, self.start_pick.at(), wheel, &controls)
+                        let previous = self.free_cam;
+                        let eye = self.fly(document, map, self.start_pick.at(), wheel, &controls);
+                        if self.flight.is_some() || self.free_cam != previous || controls.moved_or_looked() {
+                            ui.ctx().request_repaint();
+                        }
+                        eye
                     };
                     (eye, if interface { eye } else { map })
                 } else {
@@ -5231,8 +5241,11 @@ impl Viewer {
             let chosen = self.map_cursor(document, point.filter(|_| !free_mode || interface), over_combat, shift);
             let cursors = &document.content.cursors;
             if let Ok(cursor) = cursors.get(chosen).or_else(|_| cursors.get(MapCursor::Normal)) {
-                let image = cursor.at(self.started.elapsed().as_secs_f64()).0.clone();
-                ui.ctx().output_mut(|output| output.cursor_image = Some(image));
+                let (image, next) = cursor.at(self.started.elapsed().as_secs_f64());
+                ui.ctx().output_mut(|output| output.cursor_image = Some(image.clone()));
+                if let Some(delay) = next {
+                    ui.ctx().request_repaint_after(Duration::from_secs_f64(delay));
+                }
             }
         }
         if self.selection_input.dragging()
@@ -5276,6 +5289,9 @@ impl Viewer {
                     .as_ref()
                     .is_ok_and(|defines| convoys_shown(&defines.convoys))
         });
+        if sailing {
+            ui.ctx().request_repaint();
+        }
         if (self.raid_tick != Some(tick) || sailing || self.convoys_sailing)
             && let Some(prepared) = posed.as_ref()
         {
@@ -5498,6 +5514,9 @@ impl Viewer {
             self.hovered_name_region,
         );
         self.fade = Some(name_fade);
+        if name_fade != LayerFade::instant(camera) {
+            ui.ctx().request_repaint();
+        }
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
         drop(_other_cost);
@@ -6524,6 +6543,9 @@ impl Viewer {
             f64::from(animation_time),
             1.0 / self.speed,
         );
+        if day_night.blending_to(target_light) && self.capture.is_none() {
+            ui.ctx().request_repaint();
+        }
         let layered_radar = self.playhead_map.as_ref().and_then(|side| side.products().radar.clone());
         let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
@@ -6602,6 +6624,9 @@ impl Viewer {
             CameraMode::Fly => Self::fly_model(flying, &aircraft),
             _ => None,
         };
+        if free_mode && player.is_some() {
+            ui.ctx().request_repaint();
+        }
         scene
             .apply(&state.device, &state.queue, SceneInput::SetPlayer(player))
             .map_err(|error| error.to_string())?;
@@ -6683,6 +6708,9 @@ impl Viewer {
             crate::perf_log::gpu_times(scene.gpu_frame_times(&state.device));
         }
         rendered.map_err(|e| e.to_string())?;
+        if scene.waiting_for_build() {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
         let shown_stamp = presentation::shown_stamp(profiling(), || {
@@ -7020,7 +7048,6 @@ impl Viewer {
             ui.painter().rect_filled(cover, 0.0, ui.visuals().panel_fill);
             ui.put(egui::Rect::from_center_size(cover.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new());
         }
-        ui.ctx().request_repaint();
         self.drew_frame = true;
         let overlay_fresh = match &now {
             Some(now) => self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(now)),
