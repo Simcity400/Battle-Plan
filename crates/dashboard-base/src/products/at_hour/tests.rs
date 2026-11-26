@@ -683,6 +683,38 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
 }
 
 #[test]
+fn the_exact_host_distinguishes_predated_withheld_and_damaged_tables() {
+    use replay_data::rows::{ClockRow, compatibility::STANDALONE_UNITS_FORMAT};
+    let frames = (FIRST..=FIRST + 2).map(|hour| {
+        let mut frame = frame(hour);
+        *frame.tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+        frame
+    }).collect();
+    let bytes = replay::campaign::fixtures::encode_records_at(
+        recorder_derive::writers_within, STANDALONE_UNITS_FORMAT, CAMPAIGN.into(), &[records(1, frames)],
+    ).unwrap();
+    let replay = Replay::open(bytes).unwrap();
+    let damaged = TableId::Clock;
+    let bytes = replay.damaged_table(&replay.index[0], damaged).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "older-format".into(), revision: "1".into() },
+        "older.battleplan".into(), Arc::new(Replay::open(bytes).unwrap()), &false.into()).unwrap();
+    let pool = placed::Pool::of(&source).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let mut count = 0;
+    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, placed: None };
+    let withheld = TableId::VariantStats;
+    let predates = TableId::DivisionKills;
+    let frame = input.frame(&[predates, withheld, damaged].map(Read::all), |_| None, 1).unwrap();
+    assert_eq!(*frame.tables[predates.index()], TableView::NotRecorded { mode });
+    let changed = withheld.last_change().table_gap(withheld, STANDALONE_UNITS_FORMAT).unwrap();
+    assert!(changed.contains("layout or meaning changed"), "{changed}");
+    assert_eq!(*frame.tables[withheld.index()], TableView::Unavailable { reason: changed });
+    let TableView::Unavailable { reason } = &*frame.tables[damaged.index()] else { panic!("the damaged clock table was read") };
+    assert!(reason.contains("digest"), "{reason}");
+    assert!(frame.complete::<tables::Clock>().unwrap_err().to_string().contains("Clock"));
+}
+
+#[test]
 fn a_keyed_read_names_the_rows_it_chose() {
     let (source, _) = recording();
     let pool = placed::Pool::of(&source).unwrap();

@@ -42,9 +42,14 @@ pub(super) fn capture_mode(pages: &WorldPages) -> io::Result<CaptureMode> {
 }
 
 impl Projection {
-    pub(super) fn new(pages: &WorldPages, run: usize, table: TableId, columns: Option<Vec<usize>>, cold: Option<Vec<usize>>) -> io::Result<Self> {
+    fn new(input: &Input<'_>, table: TableId, columns: Option<Vec<usize>>, cold: Option<Vec<usize>>) -> Result<Self, TableView> {
+        let pages = &input.pool.pages;
+        let recording = pages.recording();
+        if recording.predates(table.index()).is_some() {
+            return Err(TableView::NotRecorded { mode: input.mode });
+        }
         if let Some(reason) = pages.withheld(table.index()) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, reason.to_owned()));
+            return Err(TableView::Unavailable { reason: reason.to_owned() });
         }
         let fields = field_mask(table, columns.as_deref());
         let omitted = field_mask(table, cold.as_deref()) & !fields;
@@ -55,7 +60,6 @@ impl Projection {
                 validity |= bit;
             }
         }
-        let recording = pages.recording();
         let mut physical = match columns {
             Some(mut columns) => {
                 columns.extend((0..64).filter(|&c| validity & (1 << c) != 0));
@@ -67,7 +71,7 @@ impl Projection {
         physical.retain(|&column| column < recorded);
         physical.sort_unstable();
         physical.dedup();
-        Ok(Self { run, columns: physical, format: recording.format(), fields, validity, selection: None, at: None })
+        Ok(Self { run: input.run, columns: physical, format: recording.format(), fields, validity, selection: None, at: None })
     }
 
     fn lane<'s>(&self, table: TableId, hour: i32, step: ProductStep<'s>) -> Option<(&'s Step, &'s Lane, &'s Changes)> {
@@ -232,7 +236,7 @@ fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sam
     Ok(())
 }
 
-type Projections = HashMap<TableId, Result<Projection, String>>;
+type Projections = HashMap<TableId, Result<Projection, TableView>>;
 
 pub(super) struct Input<'a> {
     pub(super) pool: &'a Arc<Pool>,
@@ -259,31 +263,26 @@ impl Input<'_> {
     fn read(&mut self, tables: &mut Projections, read: &Read, view: &mut SharedView, columns: impl Fn() -> (Option<Vec<usize>>, Option<Vec<usize>>), sample: bool, edits: &mut Edits) -> io::Result<()> {
         let table = read.table;
         let (selected, cold) = columns();
-        let made = |selected, cold| match Projection::new(&self.pool.pages, self.run, table, selected, cold) {
-            Ok(projection) => Ok(Ok(projection)),
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => Ok(Err(e.to_string())),
-            Err(e) => Err(e),
-        };
         let slot = match tables.entry(table) {
             Entry::Occupied(mut entry) if entry.get().as_ref().is_ok_and(|held| held.fields != field_mask(table, selected.as_deref())) => {
-                *entry.get_mut() = made(selected, cold)?;
+                *entry.get_mut() = Projection::new(self, table, selected, cold);
                 entry.into_mut()
             }
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(made(selected, cold)?),
+            Entry::Vacant(entry) => entry.insert(Projection::new(self, table, selected, cold)),
         };
-        let reason = match slot {
+        let missing = match slot {
             Ok(projection) => match projection.read(self, read, sample, view, edits) {
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                     tables.remove(&table);
-                    e.to_string()
+                    TableView::Unavailable { reason: e.to_string() }
                 }
                 result => return result,
             },
-            Err(reason) if view.held().is_not_selected() => reason.clone(),
+            Err(missing) if view.held().is_not_selected() => missing.clone(),
             Err(_) => return Ok(()),
         };
-        *view = TableView::Unavailable { reason }.into();
+        *view = missing.into();
         edits.replaced.insert(table);
         Ok(())
     }
@@ -355,7 +354,7 @@ struct Stream {
 
 impl Stream {
     fn lanes(&self) -> Vec<Declared> {
-        let declared = |(&table, projection): (&TableId, &Result<Projection, String>)| {
+        let declared = |(&table, projection): (&TableId, &Result<Projection, TableView>)| {
             Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false })
         };
         let mut lanes: Vec<_> = self.tables.iter().filter_map(declared).collect();
