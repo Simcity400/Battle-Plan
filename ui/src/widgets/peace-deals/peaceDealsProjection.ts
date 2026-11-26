@@ -113,7 +113,7 @@ export const peaceDealsProjection: TableProjection<Options> = registerFamilyProj
 });
 
 export const peaceDealsDeclaration: TableWidgetDeclaration<Options> = {
-  family: 'table', kind: 'peace-deals', label: 'Peace deals', subject: 'peace deals', icon: 'olive-branch',
+  family: 'table', kind: 'peace-deals', label: 'Peace deals', subject: 'peace deals', icon: 'dove',
   emptyCampaign: 'Load a campaign to see its peace deals.', countries: { mode: 'filter' }, columns: PEACE_DEALS_COLUMNS,
   settings: { kind: 'table', key: TABLE_SETTINGS_KEY, base: LOG_TABLE_BASE },
   sources(ctx, viewport) {
