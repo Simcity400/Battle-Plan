@@ -698,7 +698,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     () => (active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }) : []),
     [active, plan, hoverHour, displayedSeries],
   );
-  const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
+  const hoversRef = useRef<ReturnType<typeof currentHovers> | undefined>(undefined);
+  const hovers = useMemo(() => (hoversRef.current = currentHovers(asks, heldHovers, hoversRef.current)), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {

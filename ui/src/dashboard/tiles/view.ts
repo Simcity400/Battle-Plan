@@ -77,6 +77,7 @@ const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.imm
 export class TileView {
   private wanted: Wanted | null = null;
   private lines: ReadonlyMap<string, TiledLine> | null = null;
+  private told: { readonly failure: unknown; readonly refused: string | null } = { failure: null, refused: null };
   private readonly made = new WeakMap<TiledLine, { readonly head: string; readonly tiles: readonly Tile[]; readonly from: number; readonly to: number; readonly width: number; readonly cell: number | null }>();
   private assembled: Assembled | null = null;
   private failure: unknown = null;
@@ -145,7 +146,7 @@ export class TileView {
       this.rankPending = false;
       this.rankFailedHour = hour;
       this.failure = error;
-      this.changed();
+      this.notify();
     });
   }
 
@@ -231,7 +232,7 @@ export class TileView {
     void flight.then(() => this.assemble(), error => {
       if (this.closed) return;
       this.failure = error;
-      this.changed();
+      this.notify();
     }).finally(() => {
       for (const key of keys) if (this.cache.inflight.get(key) === flight) { this.cache.inflight.delete(key); this.cache.joins.delete(key); }
     });
@@ -266,10 +267,14 @@ export class TileView {
       lines.set(tag, built);
     });
     this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };
-    const failed = this.failure !== null;
     this.failure = null;
-    if (same && !failed) return;
+    if (same && this.told.failure === null && this.told.refused === (this.ranked?.refused ?? null)) return;
     if (!same) this.lines = lines;
+    this.notify();
+  }
+
+  private notify(): void {
+    this.told = { failure: this.failure, refused: this.ranked?.refused ?? null };
     this.changed();
   }
 }

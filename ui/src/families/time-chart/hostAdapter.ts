@@ -6,7 +6,6 @@ import { parseChartInspect } from './hitTest.ts';
 import type { TimeChartModel } from './model.ts';
 
 const MIN_ZOOM_SPAN_HOURS = 24;
-const NO_TILED = {};
 
 type HeadSources = NonNullable<TimeChartBinding['headSourceBySeries']>;
 const headSources = new WeakMap<SourcePlan, HeadSources | null>();
@@ -194,7 +193,6 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
     return {
       extent: ctx.extent,
       ...(ctx.viewport.zoomWindow ? { zoom: zoomOf(ctx.viewport.zoomWindow) } : {}),
-      tiledBySource: NO_TILED,
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
       ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
     };

@@ -225,7 +225,7 @@ let commits = 0;
 let bindCount = 0;
 let boundIds: number[] = [];
 let staticCommits = 0;
-let staticSupplies: { readonly id: number; readonly statics: boolean }[] = [];
+let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
 let currentState = {
@@ -251,7 +251,8 @@ pipeline.bind = ((...args: Parameters<typeof pipeline.bind>) => {
 
 const origSupply = pipeline.supply.bind(pipeline);
 pipeline.supply = ((...args: Parameters<typeof pipeline.supply>) => {
-  staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined });
+  const tiledHead = (args[1].statics as { tiledBySource?: { main?: { GER?: { head?: string } } } } | null | undefined)?.tiledBySource?.main?.GER?.head;
+  staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined, ...(tiledHead !== undefined ? { tiledHead } : {}) });
   return origSupply(...args);
 }) as typeof pipeline.supply;
 
@@ -854,7 +855,7 @@ window.hostDom = {
     const result = {
       rounds,
       binds: bindCount,
-      tilesSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).length,
+      tilesSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).map(item => item.tiledHead ?? null),
       generationKept: pipeline.binding(pipeS) === generation,
     };
     currentState = { ...currentState, statics: null, tiled: undefined };

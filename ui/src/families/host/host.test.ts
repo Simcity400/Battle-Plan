@@ -14,7 +14,7 @@ import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapt
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
 import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { readPlanExact } from '../broker.ts';
+import { currentHovers, readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
@@ -1559,4 +1559,13 @@ test('every member so far masks each member from its first membership, follows i
   const atHour = { ...selection, membership: 'hour' as const };
   const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
   assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
+});
+
+test('a settled hover keeps its object when only the asks are rebuilt, so a tile publish does not rebind the widget', () => {
+  const ask = (key: string) => ({ name: 'hover', key, hour: 120, request: { product: 'p', params: {} } as never });
+  const held = { hover: { key: 'k', hour: 120, data: { value: 1 } } };
+  const first = currentHovers([ask('k')], held);
+  assert.equal(currentHovers([ask('k')], held, first), first, 'rebuilt asks for the same settled answer keep the object');
+  const moved = currentHovers([ask('k2')], { hover: { key: 'k2', hour: 121, data: { value: 2 } } }, first);
+  assert.notEqual(moved, first, 'a new answer is a new object');
 });
