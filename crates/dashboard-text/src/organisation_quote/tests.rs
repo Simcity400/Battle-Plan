@@ -1,4 +1,5 @@
 use super::*;
+use dashboard_core::test_fixtures::game;
 use engine_executable::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST as KEY;
 use replay_data::rows::{TableId, TableRows};
 use replay_frame::frame::{Metrics, TableView};
@@ -174,8 +175,15 @@ impl Content {
         Self::with_visible("always=yes", available)
     }
     fn with_visible(visible: &str, available: &str) -> Self {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier name tests require BATTLEPLAN_GAME_DIR with the supported installation");
+        game::executable()
+            .pinned_modifiers([(KEY, "fixture_policy_cost")])
+            .trigger(
+                "has_mio_flag",
+                content_reader_script::scope::ScopeKind::IndustrialOrganisation.bit(),
+                content_reader_script::trigger_keys::Reader::Assign,
+                0,
+            )
+            .enter();
         let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();
         let root = std::env::temp_dir().join(format!("mio_policy_quote_{}_{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let write = |path: &str, text: &str| {

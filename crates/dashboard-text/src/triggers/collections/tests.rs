@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use std::{cell::RefCell, rc::Rc};
 
@@ -11,8 +12,7 @@ fn collection(text: &str) -> content_reader_politics::collections::Collection {
 
 #[test]
 fn collection_selection_uses_order_limits_and_fresh_root_environment() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
         &[],
@@ -98,8 +98,7 @@ fn collection_selection_uses_order_limits_and_fresh_root_environment() {
 
 #[test]
 fn unrecorded_subjects_refuse_country_and_all_subjects() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],
         &[],
@@ -130,8 +129,7 @@ fn unrecorded_subjects_refuse_country_and_all_subjects() {
 
 #[test]
 fn format98_collections_select_first_passing_owned_and_controlled_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use replay_data::rows::StateRow;
     let mut f = frame(&[(100, 1, "AAA", 2, "", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
@@ -223,8 +221,7 @@ fn format98_collections_select_first_passing_owned_and_controlled_state() {
 
 #[test]
 fn collection_constant_arrays_keep_content_order_and_default_seeds() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use replay_data::rows::StateRow;
     let mut f = frame(
         &[(100, 1, "AAA", 2, "", ""), (200, 2, "GER", 1, "", "")],

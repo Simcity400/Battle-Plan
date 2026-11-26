@@ -1,6 +1,8 @@
 
 use super::tests::{Folder, folder_catalogue};
 use super::*;
+#[cfg(test)]
+use dashboard_core::test_fixtures::game;
 
 pub fn write_sprite_program(root: &std::path::Path) {
     for (path, bytes) in [
@@ -78,8 +80,7 @@ fn strip() -> Rgba8Image {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn rendered_sprite_frames_are_shared_across_callers_and_new_stacks_read_fresh() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -119,8 +120,7 @@ fn rendered_sprite_frames_are_shared_across_callers_and_new_stacks_read_fresh() 
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn requested_sprite_batches_match_single_images_and_share_the_session() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -157,8 +157,7 @@ fn requested_sprite_batches_match_single_images_and_share_the_session() {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn batched_icons_replay_only_their_own_reads_and_shader_notes_in_either_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let first = format!("Includes = {{ absent_first.fxh }}\n{ARTWORK_SHADER}");
     let second = format!("Includes = {{ absent_second.fxh }}\n{ARTWORK_SHADER}");
     let (catalogue, folders) = texture_catalogue(
@@ -220,8 +219,7 @@ fn batched_icons_replay_only_their_own_reads_and_shader_notes_in_either_order() 
 
 #[test]
 fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -259,8 +257,7 @@ fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
 
 #[test]
 fn sprite_images_keep_only_the_strips_frames() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -289,8 +286,7 @@ fn sprite_images_keep_only_the_strips_frames() {
 
 #[test]
 fn a_mod_png_uses_native_frames_with_and_without_padding() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
         &[(
@@ -440,8 +436,7 @@ pub fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
 
 #[test]
 fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let image = strip();
     let (catalogue, _folders) = texture_catalogue(
         &[],
@@ -469,8 +464,7 @@ fn dds_and_engine_targa_still_decode_and_resolver_candidates_win() {
 
 #[test]
 fn padding_and_edges_above_2048_decode() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let wide = Rgba8Image {
         width: 4097,
         height: 1,
@@ -495,8 +489,7 @@ fn padding_and_edges_above_2048_decode() {
 
 #[test]
 fn native_failures_keep_their_distinct_reasons() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let refusals = refusal_textures();
     let files: Vec<_> = refusals
         .iter()
@@ -542,8 +535,7 @@ fn native_failures_keep_their_distinct_reasons() {
 
 #[test]
 fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -597,8 +589,7 @@ fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
 
 #[test]
 fn plain_sprite_refuses_a_missing_resolved_default_program_by_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, folder) = folder_catalogue(&[(
         "interface/art.gfx",
         "spriteTypes={spriteType={name=GFX_plain textureFile=plain.png}}",
@@ -641,8 +632,7 @@ fn transposed(image: &Rgba8Image) -> Rgba8Image {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn frame_animated_sprites_render_native_strip_frames() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folders) = texture_catalogue(
         &[("interface/art.gfx", "spriteTypes = {
             frameAnimatedSpriteType = { name = GFX_mod_sheet textureFile = gfx/sheet.png noOfFrames = 3 animation_rate_fps = 15 looping = yes play_on_show = yes }
@@ -883,8 +873,7 @@ pub fn map_bitmap() -> Vec<u8> {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let lazy_shader = ARTWORK_SHADER.replace("return color;", "color.b = 0.0; return color;");
     let unavailable_shader = ARTWORK_SHADER
         .replace(
@@ -963,8 +952,7 @@ fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
 
 #[test]
 fn artwork_shader_source_warnings_survive_lazy_reads() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folders) = texture_catalogue(
         &[
             (

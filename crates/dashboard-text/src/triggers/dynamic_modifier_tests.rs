@@ -1,4 +1,5 @@
 use super::*;
+use crate::script_test_game as game;
 use replay_data::{
     rows::CharacterRow, rows::DynamicModifierRow, rows::StateDynamicModifierRow, rows::StateRow,
 };
@@ -26,8 +27,7 @@ fn fixture() -> DecodedFrame {
 
 #[test]
 fn dynamic_modifier_synthetic_channel_scope() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = frame(&[(701, 17, "QXZ", 1, "QXZ", "")], &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
         [117, 229]
@@ -64,8 +64,7 @@ fn dynamic_modifier_synthetic_channel_scope() {
 
 #[test]
 fn dynamic_modifier_state_container_scans_targets_in_container_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = fixture();
     let TableView::Complete(TableRows::CountryLinks(links)) =
         &mut *f.tables[TableId::CountryLinks.index()]
@@ -128,8 +127,7 @@ fn dynamic_modifier_state_container_scans_targets_in_container_order() {
 
 #[test]
 fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = with_variables(
         fixture(),
         &[
@@ -239,8 +237,7 @@ fn dynamic_modifier_country_container_uses_aliases_and_variable_targets() {
 
 #[test]
 fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = with_variables(fixture(), &[(1, 100, &[])]);
     *f.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![CharacterRow {
@@ -291,8 +288,7 @@ fn dynamic_modifier_reader_defaults_and_exact_definition_names() {
 
 #[test]
 fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut f = fixture();
     for (id, table_name, trigger) in [
         (
@@ -346,8 +342,7 @@ fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
 
 #[test]
 fn dynamic_modifier_country_index() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let tags: Vec<_> = (0..24)
         .map(|id| {
             format!(

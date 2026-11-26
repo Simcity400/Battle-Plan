@@ -1956,8 +1956,7 @@ pub mod tests {
 
     #[test]
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         use content_reader_gui::gui::native;
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
@@ -1986,8 +1985,7 @@ pub mod tests {
 
     #[test]
     fn a_missing_gui_sprite_uses_the_native_fallback_but_a_refused_one_does_not() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let facts = content_reader_gui::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
             spriteType = { name = GFX_default_fallback_texture texturefile = fallback.dds }
@@ -2016,8 +2014,7 @@ pub mod tests {
 
     #[test]
     fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let facts = content_reader_gui::gui::native::sprites::read_sprites(
             br#"spriteTypes = {
                 spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
@@ -2075,8 +2072,7 @@ pub mod tests {
 
     #[test]
     fn gui_artwork_uses_the_texture_resolver_and_client_power_of_two_setting() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let (_, folder) = folder_catalogue(&[("gfx/interface/present.txt", "")]);
         let mut tga = vec![0; 18];
         tga[2] = 2;
@@ -2085,6 +2081,8 @@ pub mod tests {
         tga[16] = 32;
         tga[17] = 0x28;
         tga.extend_from_slice(&[0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]);
+        tga.extend_from_slice(&[0; 8]);
+        tga.extend_from_slice(b"TRUEVISION-XFILE.\0");
         std::fs::write(folder.0.join("gfx/interface/icon.tga"), tga).unwrap();
         let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
         let image = gui_texture(
@@ -2231,7 +2229,7 @@ pub mod tests {
 
     #[test]
     fn participation_factors_follow_the_evaluated_military_define_stack() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        game::enter();
         let (_, base) = folder_catalogue(&[(
             "common/defines/00_base.lua",
             "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NMilitary={
@@ -2262,8 +2260,7 @@ pub mod tests {
 
     #[test]
     fn faction_templates_share_one_cache_and_report_each_warning_once() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let (catalogue, _folder) = folder_catalogue(&[
             (
                 "common/factions/templates/test.txt",
@@ -2372,8 +2369,7 @@ pub mod tests {
 
     #[test]
     fn plain_and_recorded_text_share_recovery_and_refusal_kinds() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let (catalogue, _folder) = folder_catalogue(&[
             (
                 "localisation/mod_l_english.yml",
@@ -2534,8 +2530,7 @@ pub mod tests {
 
     #[test]
     fn catalogue_refusal_entries_keep_shared_read_warnings_uncounted() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
@@ -2683,8 +2678,7 @@ pub mod tests {
 
     #[test]
     fn own_scopes_report_the_warnings_of_the_readers_they_used() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let files = [(
             "common/factions/templates/test.txt",
             "bad={name=token:missing_name visible=yes}",
@@ -2732,8 +2726,7 @@ pub mod tests {
 
     #[test]
     fn own_scopes_leave_out_the_stacks_live_artwork_and_uncovered_read_diagnostics() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let (catalogue, _folder) =
             folder_catalogue(&[("outside_policy/synthetic.txt", "another consumer's file")]);
         let reads = catalogue.content.layers.report_uncovered_reads();
