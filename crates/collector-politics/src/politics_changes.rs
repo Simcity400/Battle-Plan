@@ -626,7 +626,7 @@ thread_local! {
 
 #[inline]
 fn cached_sites(base: usize) -> Option<ResolvedSites> {
-    let located = engine_sites::located().map_or(0, |l| l as *const _ as usize);
+    let located = engine_sites::located().map_or(0, |l| std::ptr::from_ref(l) as usize);
     if located == 0 {
         return None;
     }
@@ -4376,15 +4376,15 @@ mod tests {
         assert_eq!(caller_cause(key(0x76fe2e)), PowerCause::Decision);
         assert_eq!(caller_cause(key(0x7631ef)), PowerCause::NotIdentified);
         assert_eq!(caller_cause(Some(native::DAILY_CP_CALLER)), PowerCause::DailyGain);
-        let console = government_context(Scope::ConsoleSubject, None, Context::default());
+        let console = government_context(Scope::ConsoleSubject, 0, 0, None, Context::default());
         assert_eq!(
-            government_context(Scope::SubjectGovernment, None, console).government,
+            government_context(Scope::SubjectGovernment, 0, 0, None, console).government,
             GovernmentCause::Console
         );
-        let context = government_context(Scope::OnAction, key(0xbfb8ce), Context::default());
+        let context = government_context(Scope::OnAction, 0xbfb8ce, 0, None, Context::default());
         assert_eq!(context.government, GovernmentCause::ElectionOnAction);
         assert_eq!(
-            government_context(Scope::OnAction, key(0xbfb8cf), context).government,
+            government_context(Scope::OnAction, 0xbfb8cf, 0, None, context).government,
             GovernmentCause::NotIdentified
         );
     }

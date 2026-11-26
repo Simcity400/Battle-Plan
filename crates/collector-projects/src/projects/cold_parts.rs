@@ -616,7 +616,8 @@ mod tests {
                     Some(ProjectDispatch {
                         lanes: 15,
                         acquire: &mut acquire
-                    })
+                    }),
+                    &mut Vec::new(),
                 )
                 .is_some()
             );
@@ -689,6 +690,7 @@ mod tests {
                     lanes: 15,
                     acquire: &mut acquire,
                 }),
+                &mut Vec::new(),
             )
         });
         assert!(result.is_none());
@@ -794,6 +796,7 @@ mod runtime_merge_tests {
             &mut captured.projects.rows,
             &mut captured.history.rows,
             &mut captured.project_runtime,
+            &mut Vec::new(),
         );
         assert_eq!(captured.project_runtime.pending_count(), 2);
         captured.decode_owned();

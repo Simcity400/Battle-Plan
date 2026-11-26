@@ -137,7 +137,7 @@ fn root_slot(handle: u64) -> u32 {
 
 #[inline(always)]
 fn located_tag() -> usize {
-    engine_sites::located().map_or(0, |located| located as *const _ as usize)
+    engine_sites::located().map_or(0, |located| std::ptr::from_ref(located) as usize)
 }
 
 #[derive(Default)]

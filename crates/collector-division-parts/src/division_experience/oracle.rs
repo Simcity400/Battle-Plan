@@ -77,12 +77,7 @@ impl<T: Clone> Store<T> {
         if let Some(held) = self.reference_held(index, seed, certificate, order) {
             return Some(Ok(held.value.clone()));
         }
-        if seed.division == 0
-            || seed.handle != Some(seed.division)
-            || seed.class != Some(0)
-            || !super::is_vtable(base, carmy::VTABLE_RVA, seed.primary_vtable)
-            || !super::is_vtable(base, carmy::SECONDARY_VTABLE_RVA, seed.secondary_vtable)
-        {
+        if super::identity(base, seed).is_err() {
             return None;
         }
         Some(read())

@@ -1394,7 +1394,9 @@ fn observed_walk_bytes(
             0,
             0,
             None,
+            None,
         )
+        .map(|carry| carry.walk)
     };
     copies.fault.set(None);
     Walked {
@@ -2388,7 +2390,7 @@ fn manpower_without_certificate_preserves_stability_and_reads_no_new_words() {
         ratio,
     };
     let countries = ccountry::Reader::new(&guarded, BASE, GS).unwrap();
-    let (input, _) = inputs(&guarded, BASE, &countries, country, &context).unwrap();
+    let (input, _, _) = inputs(&guarded, BASE, &countries, country, &context).unwrap();
     assert_eq!(input.manpower, Default::default());
     assert_eq!(input.stability_raw, 50_000);
     context.manpower_enabled = true;

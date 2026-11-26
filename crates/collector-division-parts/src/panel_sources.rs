@@ -2517,6 +2517,7 @@ mod tests {
                     certificate: Some((1, 1)),
                     count: 0,
                     availability: None,
+                    values: Vec::new(),
                 },
             );
         }

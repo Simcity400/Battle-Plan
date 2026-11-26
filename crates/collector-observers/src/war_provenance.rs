@@ -213,7 +213,7 @@ thread_local! {
 
 fn route(set: CallerSet, callers: &[Caller], caller: usize) -> EventFeedRoute {
     let base = BASE.load(Ordering::Relaxed);
-    let located = engine_sites::located().map_or(0, |l| l as *const _ as usize);
+    let located = engine_sites::located().map_or(0, |l| std::ptr::from_ref(l) as usize);
     if located != 0 {
         let cached = RESOLVED_TABLES.with(|cell| {
             let mut slot = cell.borrow_mut();

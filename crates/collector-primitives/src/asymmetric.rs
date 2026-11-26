@@ -2,7 +2,7 @@ use std::{
     cell::Cell,
     sync::atomic::{
         AtomicBool, AtomicU8, AtomicU64, AtomicUsize,
-        Ordering::{AcqRel, Acquire, Relaxed, SeqCst},
+        Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst},
         compiler_fence,
     },
 };

@@ -132,7 +132,7 @@ std::thread_local! {
 
 #[inline]
 fn cached_sites(base: usize) -> Option<ResolvedSites> {
-    let located = engine_sites::located().map_or(0, |l| l as *const _ as usize);
+    let located = engine_sites::located().map_or(0, |l| std::ptr::from_ref(l) as usize);
     if located == 0 {
         return None;
     }

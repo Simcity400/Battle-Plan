@@ -549,7 +549,7 @@ impl Runtime {
         };
         Self {
             heap_bytes: held.allocated_bytes(),
-            held: [((5_000, 9), held)].into(),
+            held: FastMap::from_iter([((5_000, 9), held)]),
             pending: vec![(5_000, 9)],
         }
     }
@@ -613,13 +613,13 @@ mod tests {
         eager.freeze();
         let eager = Runtime {
             heap_bytes: eager.allocated_bytes(),
-            held: [((row.owner, row.local_id), eager)].into(),
+            held: FastMap::from_iter([((row.owner, row.local_id), eager)]),
             pending: Vec::new(),
         };
         let held = make();
         let mut deferred = Runtime {
             heap_bytes: held.allocated_bytes(),
-            held: [((row.owner, row.local_id), held)].into(),
+            held: FastMap::from_iter([((row.owner, row.local_id), held)]),
             pending: vec![(row.owner, row.local_id)],
         };
         let rows::Recorded::Value(before) = deferred.value(&row) else {
@@ -676,7 +676,7 @@ mod tests {
                 };
                 let mut runtime = Runtime {
                     heap_bytes: held.allocated_bytes(),
-                    held: [((row.owner, row.local_id), held)].into(),
+                    held: FastMap::from_iter([((row.owner, row.local_id), held)]),
                     pending: vec![(row.owner, row.local_id)],
                 };
                 install_terminal_hooks();
