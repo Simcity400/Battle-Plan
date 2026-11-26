@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedReading, datedStore, heldFor, onInstalled } from './useFollowed.ts';
+import { datedReading, datedStore, heldFor, lanesHost, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
@@ -1046,7 +1046,7 @@ test('replacing a mounted PageSurface with a new equal-size PageSurface installs
 });
 
 
-test('the lanes of every pipeline on a clock are asked for what the dashboard needs, a restarted pipeline is asked again, and a lane whose worker never started counts as answered', async () => {
+test('the lanes of every pipeline on a clock are asked for what the dashboard needs, a restarted pipeline is asked again, and a dead lane counts as answered', async () => {
   const clock = new PlaybackController();
   const asked: string[] = [];
   const lanes: (LaneWorker & { onerror: ((event: ErrorEvent) => void) | null })[] = [];
@@ -1065,23 +1065,315 @@ test('the lanes of every pipeline on a clock are asked for what the dashboard ne
   assert.equal(pipeline.prepared(), false);
   lanes[0]!.onmessage!({ data: { type: 'prepared', lane: 0, ask: 1 } } as MessageEvent);
   assert.equal(pipeline.prepared(), false, 'one lane of two has answered');
-  lanes[0]!.onerror!({ message: 'late' } as ErrorEvent);
-  assert.equal(pipeline.prepared(), false, 'an error from a lane that has answered is its own failure, not a missing start');
   const ready = pipeline.whenPrepared();
   lanes[1]!.onerror!({ message: 'chunk missing' } as ErrorEvent);
   await ready;
   assert.equal(pipeline.prepared(), true, 'a lane whose worker never started counts as answered, so nothing waits on it');
   prepareLanes(clock, { families: ['card'], projections: [] });
-  assert.deepEqual(asked.slice(2), ['0:2:card', '1:2:card'], 'a change in what the dashboard needs asks the current pipeline');
-  assert.equal(pipeline.prepared(), false, 'a lane that answered and later reported an error still has to answer each later ask');
+  assert.deepEqual(asked.slice(2), ['0:2:card'], 'a dead lane is not asked again while the healthy lane still answers each later ask');
+  assert.equal(pipeline.prepared(), false);
   lanes[0]!.onmessage!({ data: { type: 'prepared', lane: 0, ask: 2 } } as MessageEvent);
   assert.equal(pipeline.prepared(), true);
+  prepareLanes(clock, { families: ['meter'], projections: [] });
+  assert.equal(pipeline.prepared(), false);
+  const readyAfterCrash = pipeline.whenPrepared();
+  lanes[0]!.onerror!({ message: 'late' } as ErrorEvent);
+  await readyAfterCrash;
+  assert.equal(pipeline.prepared(), true, 'a lane that fails after starting also stops blocking readiness');
   const next = restartPipeline(pipeline)!;
-  assert.deepEqual(asked.slice(4), ['2:1:card', '3:1:card'], 'the restarted pipeline is asked for what the dashboard needs now');
+  assert.deepEqual(asked.slice(4), ['2:1:meter', '3:1:meter'], 'the restarted pipeline is asked for what the dashboard needs now');
   prepareLanes(clock, { families: [], projections: [] });
   assert.deepEqual(asked.slice(6), ['2:2:', '3:2:'], 'removing the last family widget is still the latest ask');
   for (const [at, worker] of lanes.slice(2).entries()) worker.onmessage!({ data: { type: 'prepared', lane: at, ask: 2 } } as MessageEvent);
   assert.equal(next.prepared(), true, 'the empty ask is answered, so readiness does not hang on the earlier one');
   next.close();
   assert.equal(next.prepared(), true);
+});
+
+test('#1071: lanesHost installs an error handler at worker construction, isolates construction failures, and reports failure at mount when every worker fails', async () => {
+  const prevConcurrency = Object.getOwnPropertyDescriptor(globalThis.navigator, 'hardwareConcurrency');
+  Object.defineProperty(globalThis.navigator, 'hardwareConcurrency', { configurable: true, value: 4 });
+  try {
+    let created = 0;
+    let prevented = 0;
+    const rawWorkers: { onmessage: ((ev: MessageEvent) => void) | null; onerror: ((ev: ErrorEvent) => void) | null; terminated: boolean; postMessage(m: { type: string; port?: MessagePort }): void; terminate(): void }[] = [];
+    const client = { available: true, openFollow: async () => 'sess', product: async () => ({ data: { available: true, route: NATIVE } }) } as never;
+
+    const hostPartial = lanesHost(client, () => {
+      const idx = created++;
+      if (idx === 0) throw new Error('blocked by CSP');
+      const raw = {
+        onmessage: null as ((ev: MessageEvent) => void) | null,
+        onerror: null as ((ev: ErrorEvent) => void) | null,
+        terminated: false,
+        postMessage(m: { type: string; port?: MessagePort }) { if (m.type === 'init') m.port?.close(); },
+        terminate() { this.terminated = true; },
+      };
+      rawWorkers.push(raw);
+      return raw as unknown as Worker;
+    });
+    assert.equal(hostPartial.lanes.length, 2);
+    assert.equal(typeof rawWorkers[0]!.onerror, 'function', 'parent error handler is installed immediately at worker construction');
+    const clock = new PlaybackController();
+    clock.setBounds({ firstHour: 0, lastHour: 100 });
+    clock.seek(10);
+    const { Pipeline } = await import('./pipeline.ts');
+    const pPartial = new Pipeline(clock, client, hostPartial);
+    try {
+      const wA = pPartial.acquire('a|0', { offset: 0, pin: null });
+      const wB = pPartial.acquire('b|0', { offset: 0, pin: null });
+      assert.deepEqual([pPartial.lane(wA), pPartial.lane(wB)], [1, 1], 'new placements exclude the lane that threw at construction');
+      assert.equal(pPartial.view(wA)?.mode, 'reading');
+      rawWorkers[0]!.onerror!({ message: 'script 404', preventDefault() { prevented++; } } as unknown as ErrorEvent);
+      assert.equal(prevented, 1, 'error handler handles the worker error event');
+      assert.equal(rawWorkers[0]!.terminated, true, 'failed worker is terminated');
+      assert.equal(pPartial.view(wA)?.mode, 'failed');
+      assert.match(pPartial.view(wA)?.reason ?? '', /Lane 1 failed: script 404/);
+      assert.equal(pPartial.view(wA)?.failureOrigin, 'stream');
+      assert.deepEqual(readingOf(pPartial.view(wA)), { state: 'refused', reason: pPartial.view(wA)!.reason! });
+    } finally {
+      pPartial.close();
+    }
+
+    let openCalls = 0;
+    let followCalls = 0;
+    const trackingClient = {
+      available: true,
+      openFollow: async () => { openCalls++; return 'sess-all'; },
+      product: async (req: { product: string }) => {
+        if (req.product === 'follow') followCalls++;
+        return { data: { available: true, route: NATIVE } };
+      },
+    } as never;
+    const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
+    const earlyRaw: { onerror: ((ev: ErrorEvent) => void) | null; terminated: boolean }[] = [];
+    const hostPreError = lanesHost(trackingClient, () => {
+      const raw = {
+        onmessage: null,
+        onerror: null as ((ev: ErrorEvent) => void) | null,
+        terminated: false,
+        postMessage(m: { type: string; port?: MessagePort }) { if (m.type === 'init') m.port?.close(); },
+        terminate() { this.terminated = true; },
+      };
+      earlyRaw.push(raw);
+      return raw as unknown as Worker;
+    });
+    earlyRaw[0]!.onerror!({ message: 'load error 0' } as ErrorEvent);
+    earlyRaw[1]!.onerror!({ message: 'load error 1' } as ErrorEvent);
+    const pAll = pipelineFor(clock, trackingClient, () => hostPreError);
+    try {
+      assert.equal(pAll.prepared(), true, 'all-dead pipeline does not hang readiness');
+      const wMount = pAll.acquire('all-dead|0', { offset: 0, pin: null });
+      assert.equal(pAll.view(wMount)?.mode, 'failed', 'when every worker failed, failure is reported immediately at mount');
+      assert.match(pAll.view(wMount)?.reason ?? '', /Lane 0 failed: load error 0/);
+      assert.equal(pAll.view(wMount)?.failureOrigin, 'stream');
+      assert.match(pAll.widgetError(wMount)?.message ?? '', /Lane 0 failed: load error 0/);
+      const wOutside = pAll.acquire('all-dead-bounds|0', { offset: 0, pin: null, bounds: [20, 100] });
+      assert.equal(pAll.view(wOutside)?.mode, 'failed', 'terminal lane failure takes precedence over branch bounds');
+      assert.equal(pAll.view(wOutside)?.reason, pAll.widgetError(wOutside)?.message);
+      const sub = pAll.subscribe(wMount, {}, source, '1', 0, { product: 'series-state' }, 'followed')!;
+      assert.equal(pAll.status(sub).status, 'failed');
+      assert.equal(openCalls, 0, 'dead lane does not open push channel');
+      assert.equal(followCalls, 0, 'dead lane does not register native follows');
+      pAll.supply(wMount, { statics: { staticPanels: { a: 1 } }, stamp: 5 });
+      pAll.bind(wMount, [surface()], { surfaces: [{ width: 10, height: 10, dpr: 1 }] });
+      pAll.retime(wMount, { offset: 2 });
+      pAll.retryWidget(wMount);
+      assert.equal(pAll.view(wMount)?.mode, 'failed', 'all-dead failure stays sticky across supply, bind, retime and local retry');
+    } finally {
+      pAll.close();
+    }
+  } finally {
+    if (prevConcurrency) Object.defineProperty(globalThis.navigator, 'hardwareConcurrency', prevConcurrency);
+    else delete (globalThis.navigator as { hardwareConcurrency?: number }).hardwareConcurrency;
+  }
+});
+
+test('#1071: a lane failing after starting isolates siblings on the same route, credits held and in-transit bytes, preserves lane reason across route failure, stays sticky, retires follows, excludes dead placements, and recovers on restart', async () => {
+  let releasePendingFollow!: () => void;
+  let notifyPendingFollow!: () => void;
+  const pendingFollowStarted = new Promise<void>(resolve => { notifyPendingFollow = resolve; });
+  let failClock = false;
+  const asked: { product: string; id: number }[] = [];
+  const activeSubs = new Set<number>();
+  const unfollowWaiters = new Set<() => void>();
+  const waitForUnfollow = (id: number) => new Promise<void>(resolve => {
+    if (asked.some(a => a.product === 'unfollow' && a.id === id)) { resolve(); return; }
+    const check = () => {
+      if (asked.some(a => a.product === 'unfollow' && a.id === id)) { unfollowWaiters.delete(check); resolve(); }
+    };
+    unfollowWaiters.add(check);
+  });
+
+  const env = managedInProcess({
+    lanes: 2,
+    gate: (product, params) => {
+      if (product === 'follow' && (params.query as { params?: { slow?: boolean } })?.params?.slow) {
+        notifyPendingFollow();
+        return new Promise<void>(resolve => { releasePendingFollow = resolve; });
+      }
+      return undefined;
+    },
+    follow: (id) => {
+      asked.push({ product: 'follow', id });
+      activeSubs.add(id);
+      return { available: true, route: NATIVE };
+    },
+    followClock: () => failClock ? { available: false, reason: 'Clock stalled on route' } : { available: true },
+  });
+  const origProduct = env.client.product.bind(env.client);
+  env.client.product = (async (request: { product: string; params: Record<string, unknown> }, signal: AbortSignal) => {
+    const reply = await origProduct(request as never, signal);
+    if (request.product === 'unfollow') {
+      const id = request.params.id as number;
+      asked.push({ product: 'unfollow', id });
+      activeSubs.delete(id);
+      for (const waiter of [...unfollowWaiters]) waiter();
+    }
+    return reply;
+  }) as typeof env.client.product;
+
+  try {
+    env.clock.seek(10);
+    const p1 = env.pipeline;
+    const w0 = p1.acquire('w0|0', { offset: 0, pin: null });
+    const w1 = p1.acquire('w1|0', { offset: 0, pin: null });
+    const deadLane = p1.lane(w0);
+    const liveLane = p1.lane(w1);
+    assert.notEqual(deadLane, liveLane, 'two widgets start on distinct lanes');
+
+    const c0 = env.nextEvent('follow-clock');
+    const s0 = p1.subscribe(w0, {}, env.source, '1', 0, { product: 'series-state', params: { k: 0 } }, 'followed')!;
+    const f1 = env.nextEvent('follow');
+    const s1 = p1.subscribe(w1, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await Promise.all([c0, f1]);
+
+    const seek0 = env.clock.getSnapshot().seekSequence;
+    env.send(message(10, [
+      { id: s0, answer: { keys: [1n], columns: 1, values: [10n] } },
+      { id: s1, answer: { keys: [1n], columns: 1, values: [20n] } },
+    ], true, NATIVE, seek0));
+    await Promise.all([
+      env.waitView(p1, w0, v => v?.mode === 'picture'),
+      env.waitView(p1, w1, v => v?.mode === 'picture'),
+    ]);
+    assert.ok(env.credit().laneOutstanding(deadLane) > 0, 'the dead lane holds byte credit for its installed record before failing');
+
+    const sPending = p1.subscribe(w0, {}, env.source, '1', 0, { product: 'series-state', params: { slow: true } }, 'followed')!;
+    await pendingFollowStarted;
+
+    const hitResults: (string | null)[] = [];
+    p1.pointer(w0, 0, [1, 1], key => hitResults.push(key));
+
+    const workers1 = (p1 as unknown as { host: { lanes: LaneWorker[] } }).host.lanes;
+    const unfollowS0 = waitForUnfollow(s0);
+    workers1[deadLane]!.onerror!({ message: 'worker crashed after start' } as ErrorEvent);
+    await unfollowS0;
+
+    const expectedLaneReason = `Lane ${deadLane} failed: worker crashed after start`;
+    assert.equal(p1.view(w0)?.mode, 'failed', 'dead lane widget is marked failed by name');
+    assert.equal(p1.view(w0)?.reason, expectedLaneReason);
+    assert.equal(p1.view(w0)?.failureOrigin, 'stream');
+    assert.equal(p1.status(s0).status, 'failed');
+    assert.equal(p1.status(sPending).status, 'failed');
+    assert.equal(env.credit().laneOutstanding(deadLane), 0, 'outstanding byte credit on the terminated lane is released immediately');
+    assert.deepEqual(hitResults, [null], 'pending pointer hit on the dead lane settles instead of hanging');
+    assert.equal(installedEntry(p1, w0, s0).status, 'failed');
+
+    const unfollowPending = waitForUnfollow(sPending);
+    releasePendingFollow();
+    await unfollowPending;
+    assert.equal(p1.status(sPending).status, 'failed', 'late follow ack on dead lane stays failed');
+    assert.deepEqual([...activeSubs], [s1], 'only the healthy lane subscription remains active natively');
+
+    p1.supply(w0, { statics: { staticPanels: { fresh: true } }, stamp: 1 });
+    p1.bind(w0, [surface()], { surfaces: [{ width: 20, height: 10, dpr: 1 }] });
+    p1.present(w0, 'fields');
+    p1.retime(w0, { offset: 0 });
+    p1.retryWidget(w0);
+    assert.equal(p1.view(w0)?.mode, 'failed', 'stamped statics, rebinds and local retry never clear a dead lane');
+
+    const creditAfterInTransit = env.nextEvent('credit');
+    env.clock.seek(12);
+    const seek1 = env.clock.getSnapshot().seekSequence;
+    env.send(message(12, [
+      { id: s0, answer: { keys: [1n], columns: 1, values: [99n] } },
+      { id: s1, answer: { keys: [1n], columns: 1, values: [22n] } },
+    ], true, NATIVE, seek1));
+    await Promise.all([
+      creditAfterInTransit,
+      env.waitView(p1, w1, v => v?.mode === 'picture' && v?.h === 12),
+    ]);
+    assert.equal(env.credit().laneOutstanding(deadLane), 0, 'in-transit records for the dead lane are credited immediately without holding shared budget');
+    assert.equal(p1.view(w0)?.mode, 'failed', 'dead lane stays failed across seeks while sibling on same route keeps working');
+
+    failClock = true;
+    const cFail = env.nextEvent('follow-clock');
+    env.clock.seek(13);
+    await cFail;
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    assert.equal(p1.view(w1)?.reason, 'Clock stalled on route', 'route failure marks healthy sibling with the route error');
+    assert.equal(p1.view(w0)?.reason, expectedLaneReason, 'route failure never overwrites a dead lane widget’s terminal lane error');
+    assert.equal(p1.widgetError(w0)?.message, expectedLaneReason, 'view().reason and widgetError() stay in agreement on the dead lane');
+    failClock = false;
+    const cRecover = env.nextEvent('follow-clock');
+    env.clock.seek(14);
+    await cRecover;
+    const seekRecover = env.clock.getSnapshot().seekSequence;
+    env.send(message(14, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [24n] } },
+    ], true, NATIVE, seekRecover));
+    await env.waitView(p1, w1, v => v?.mode === 'picture' && v?.h === 14);
+
+    p1.drop('w0|0');
+    const w0Remount = p1.acquire('w0|0', { offset: 0, pin: null });
+    const w2 = p1.acquire('w2|0', { offset: 0, pin: null });
+    assert.deepEqual([p1.lane(w0Remount), p1.lane(w2)], [liveLane, liveLane], 'new and remounted placements skip the dead lane');
+    const f2 = env.nextEvent('follow');
+    const s2 = p1.subscribe(w2, {}, env.source, '1', 0, { product: 'series-state', params: { k: 2 } }, 'followed')!;
+    await f2;
+    env.send(message(14, [
+      { id: s2, answer: { keys: [1n], columns: 1, values: [30n] } },
+    ], false, NATIVE, seekRecover));
+    await env.waitView(p1, w2, v => v?.mode === 'picture');
+
+    const unfollowS1 = waitForUnfollow(s1);
+    const unfollowS2 = waitForUnfollow(s2);
+    workers1[liveLane]!.onerror!({ message: '' } as ErrorEvent);
+    await Promise.all([unfollowS1, unfollowS2]);
+    assert.equal(activeSubs.size, 0, 'all subscriptions retired when every lane has failed');
+    assert.equal(env.credit().outstanding, 0, 'all byte credit is returned when every lane has failed');
+    assert.equal(env.credit().credited, env.credit().charged, 'every charged byte across all packets was credited back');
+    assert.equal(p1.view(w1)?.reason, `Lane ${liveLane} failed`);
+
+    const wAllDead = p1.acquire('w3|0', { offset: 0, pin: null });
+    assert.equal(p1.view(wAllDead)?.mode, 'failed', 'mounting when every lane is dead fails immediately at mount');
+
+    const restarted = env.nextEvent('restart');
+    restartPipeline(p1);
+    await restarted;
+    const p2 = env.pipeline;
+    assert.notEqual(p2, p1);
+    const r0 = p2.acquire('w0|0', { offset: 0, pin: null });
+    const r1 = p2.acquire('w1|0', { offset: 0, pin: null });
+    assert.notEqual(p2.lane(r0), p2.lane(r1), 'restart restores placement across both lanes');
+    const rc0 = env.nextEvent('follow-clock');
+    const rs0 = p2.subscribe(r0, {}, env.source, '1', 0, { product: 'series-state', params: { k: 0 } }, 'followed')!;
+    const rf1 = env.nextEvent('follow');
+    const rs1 = p2.subscribe(r1, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await Promise.all([rc0, rf1]);
+    const seek2 = env.clock.getSnapshot().seekSequence;
+    env.send(message(12, [
+      { id: rs0, answer: { keys: [1n], columns: 1, values: [100n] } },
+      { id: rs1, answer: { keys: [1n], columns: 1, values: [200n] } },
+    ], true, NATIVE, seek2));
+    await Promise.all([
+      env.waitView(p2, r0, v => v?.mode === 'picture' && v?.h === 12),
+      env.waitView(p2, r1, v => v?.mode === 'picture' && v?.h === 12),
+    ]);
+    assert.equal(p2.widgetError(r0), undefined, 'no retired lane error remains after restart');
+    assert.equal(p2.widgetError(r1), undefined);
+  } finally {
+    env.close();
+  }
 });

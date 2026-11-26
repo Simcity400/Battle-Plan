@@ -140,6 +140,9 @@ export const nativeDashboardClient: DashboardClient = {
         reader.onerror = null;
         reader.terminate();
       };
+      const retireLane = (lane: number) => {
+        if (!terminated) reader.postMessage({ type: 'retire-lane', lane });
+      };
       const ready = new Promise<string>((resolve, reject) => {
         const fail = (reason: string) => { close(); reject(new Error(reason)); };
         reader.onmessage = ({ data }) => {
@@ -149,7 +152,7 @@ export const nativeDashboardClient: DashboardClient = {
         reader.onerror = event => fail(event.message);
         reader.postMessage({ ports, session }, [...ports]);
       });
-      return { ready, close };
+      return { ready, close, retireLane };
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
     replayLibraryStamp: () => invoke<string>('replay_library_stamp'),

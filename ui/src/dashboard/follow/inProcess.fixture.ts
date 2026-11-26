@@ -3,8 +3,9 @@ import { laneDispatch } from '../../draw/laneDispatch.ts';
 import { fieldsView } from '../../draw/views/fields.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import { PlaybackController } from '../playback.ts';
+import { createPullDispatcher, type PullDispatcher } from '../pull.ts';
 import { Pipeline, pipelineFor, subscribeClockPipeline, type LaneWorker, type PipelineHost } from './pipeline.ts';
-import { packet, resetStamps, splitForLanes } from './split.ts';
+import { charge, packet, resetStamps, splitForLanes } from './split.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { FromLane, FromPull, ToLane } from '../../draw/laneMessages';
 import type { LaneView } from '../../draw/lane';
@@ -38,6 +39,9 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
       lanePort?.close();
       lanePort = null;
       onClose?.();
+    },
+    terminate() {
+      worker.close();
     },
   };
   const dispatch = laneDispatch((message: FromLane) => {
@@ -152,6 +156,7 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
   open?: (opened: readonly MessagePort[]) => Promise<string | undefined>;
 } = {}) {
   let ports: readonly MessagePort[] = [];
+  let dispatcher: PullDispatcher | null = null;
   let closed = false;
   let stamp = resetStamps();
   let openCalls = 0;
@@ -159,6 +164,8 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
   let activeLanes = 0;
   let activeOwnedPorts = 0;
   let clockListeners = 0;
+  let chargedBytes = 0;
+  let creditedBytes = 0;
   const followers = new Set<string>();
   const waiters = new Map<string, (() => void)[]>();
   const notify = (event: string) => {
@@ -181,19 +188,24 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
       activeReaders++;
       activeOwnedPorts += owned.length;
       let readerClosed = false;
+      const madeDispatcher = createPullDispatcher(owned, bytes => {
+        creditedBytes += bytes;
+        notify('credit');
+      });
       const closeReader = () => {
         if (readerClosed) return;
         readerClosed = true;
         activeReaders--;
-        for (const port of owned) { port.close(); activeOwnedPorts--; }
-        if (ports === owned) ports = [];
+        for (const port of owned) { port.onmessage = null; port.close(); activeOwnedPorts--; }
+        if (ports === owned) { ports = []; dispatcher = null; }
       };
       try {
         const session = (open ? await open(owned) : undefined) ?? `session-${openCalls}`;
         ports = owned;
+        dispatcher = madeDispatcher;
         stamp = resetStamps();
         notify('open');
-        return { session, close: closeReader };
+        return { session, close: closeReader, retireLane: (laneIndex: number) => madeDispatcher.retireLane(laneIndex) };
       } catch (error) {
         closeReader();
         notify('open');
@@ -263,23 +275,23 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
     notify('restart');
   });
   const send = (bytes: Uint8Array) => {
-    const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
-    if (split.kind !== 'failure') {
-      const target = ports;
-      const gen = openCalls;
-      setImmediate(() => {
-        if (closed || ports !== target || openCalls !== gen) return;
-        split.lanes.forEach((part, index) => { if (part) target[index]?.postMessage(packet(split.kind, part, resets)); });
-      });
-    }
+    const resets = stamp(bytes);
+    const target = dispatcher;
+    const gen = openCalls;
+    const copy = bytes.slice();
+    setImmediate(() => {
+      if (closed || !target || dispatcher !== target || openCalls !== gen) return;
+      chargedBytes += charge(copy);
+      target.dispatch(copy);
+    });
     return resets;
   };
   const fail = (reason: string) => {
-    const target = ports;
+    const target = dispatcher;
     const gen = openCalls;
     setImmediate(() => {
-      if (closed || ports !== target || openCalls !== gen) return;
-      for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
+      if (closed || !target || dispatcher !== target || openCalls !== gen) return;
+      target.failAll(reason);
     });
   };
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
@@ -296,6 +308,12 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
   return {
     get pipeline() { return current; },
     clock, client, source, send, fail, nextEvent, waitView,
+    credit: () => ({
+      charged: chargedBytes,
+      credited: creditedBytes,
+      outstanding: dispatcher?.outstanding() ?? 0,
+      laneOutstanding: (laneIndex: number) => dispatcher?.outstanding(laneIndex) ?? 0,
+    }),
     counts: () => ({ openCalls, activeReaders, activeLanes, activeOwnedPorts, clockListeners }),
     close: () => { closed = true; stopSync(); current.close(); },
   };

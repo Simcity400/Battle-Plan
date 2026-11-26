@@ -8,10 +8,11 @@ import { baseClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { playbackRate } from '../pulled.ts';
 import { canonical } from './canonical.ts';
-import { pipelineFor, pipelineGeneration, subscribeClockPipeline, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
+import { pipelineFor, pipelineGeneration, subscribeClockPipeline, workerErrorDetail, type LaneWorker, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
 import type { Channel } from './facts';
 import type { FollowedPanel } from './message';
 import type { WidgetView } from './page';
+import type { FromLane } from '../../draw/laneMessages';
 import type { ModelField, LiveMap } from '../../draw/views/fields';
 import type { Live, LiveValues } from '../../charts/live';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
@@ -20,8 +21,52 @@ export const laneCount = () => Math.max(1, Math.min(4, (globalThis.navigator?.ha
 
 const weakCpu = () => Number((globalThis as { __weakCpu?: number }).__weakCpu) || 1;
 
-export function lanesHost(client: DashboardClient): PipelineHost {
-  const lanes = Array.from({ length: laneCount() }, () => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }));
+function makeLaneWorker(create: () => Worker): LaneWorker & { terminate(): void } {
+  try {
+    const worker = create();
+    let initialFailure: string | undefined;
+    let onerror: ((event: ErrorEvent) => void) | null = null;
+    worker.onerror = event => {
+      event.preventDefault?.();
+      if (onerror) onerror(event);
+      else initialFailure ??= workerErrorDetail(event) ?? '';
+    };
+    return {
+      postMessage(message, transfer) {
+        if (transfer) worker.postMessage(message, transfer);
+        else worker.postMessage(message);
+      },
+      get onmessage() { return worker.onmessage as ((event: MessageEvent<FromLane>) => void) | null; },
+      set onmessage(handler) { worker.onmessage = handler; },
+      get onerror() { return onerror; },
+      set onerror(handler) { onerror = handler; },
+      get failed() { return initialFailure; },
+      terminate() {
+        onerror = null;
+        worker.onerror = null;
+        worker.onmessage = null;
+        worker.terminate();
+      },
+    };
+  } catch (error) {
+    const failed = workerErrorDetail(error) ?? '';
+    return {
+      onmessage: null,
+      onerror: null,
+      failed,
+      postMessage(message) {
+        if (message.type === 'init') message.port.close();
+      },
+      terminate() {},
+    };
+  }
+}
+
+export function lanesHost(
+  client: DashboardClient,
+  createWorker: () => Worker = () => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }),
+): PipelineHost {
+  const lanes = Array.from({ length: laneCount() }, () => makeLaneWorker(createWorker));
   return {
     lanes,
     open: ports => client.openFollow ? client.openFollow(ports) : Promise.reject(new Error('This connection has no channel for pushed answers')),
