@@ -50,6 +50,7 @@ import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts'
 import { planFamilySources } from './planSources.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { withSoFarMembership } from './membership.ts';
+import type { HolderRun } from '../holders.ts';
 import { rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
@@ -1522,13 +1523,13 @@ test('the host identity snapshot takes a flag drawn after a paused seek although
   broker.dispose();
 });
 
-test('every member so far masks each member from its first membership, so a later joiner is neither drawn nor ranked before it joined', () => {
+test('every member so far masks each member from its first membership, follows its country through a tag change, and never a reused tag', () => {
   const groups: CountryGroupReply = {
     branchId: '1',
     humans: [],
     factions: [{
       id: '7', name: 'Axis', nameReason: null, names: [], recordedName: 'AXIS', firstHour: 50, lastHour: 400,
-      members: [{ tag: 'GER', firstHour: 50, lastHour: 400 }, { tag: 'ITA', firstHour: 200, lastHour: 260 }, { tag: 'ITA', firstHour: 300, lastHour: 320 }],
+      members: [{ tag: 'GER', firstHour: 50, lastHour: 400 }, { tag: 'AAA', firstHour: 200, lastHour: 260 }],
       leaders: [{ tag: 'GER', firstHour: 50, lastHour: 400 }],
       incomplete: [],
     }],
@@ -1536,17 +1537,29 @@ test('every member so far masks each member from its first membership, so a late
     unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
     warnings: [],
   };
+  const bySlot: Record<number, HolderRun[]> = {
+    1: [{ tag: 'GER', firstHour: 0, lastHour: 1000, countryId: 1 }],
+    7: [{ tag: 'AAA', firstHour: 0, lastHour: 299, countryId: 7 }, { tag: 'BBB', firstHour: 300, lastHour: 1000, countryId: 7 }],
+    8: [{ tag: 'AAA', firstHour: 500, lastHour: 1000, countryId: 8 }],
+  };
+  const slots = {
+    tagRuns: (slot: number) => bySlot[slot] ?? [],
+    runsForKey: (key: string) => Object.values(bySlot).flat().filter(run => run.tag === key),
+  };
   const selection = { kind: 'group' as const, group: { type: 'faction' as const, id: '7' }, membership: 'ever' as const, aggregate: false };
   const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
-  const masked = withSoFarMembership(resolved, selection, groups, 1000);
+  const masked = withSoFarMembership(resolved, selection, groups, 1000, slots);
   assert.deepEqual([...masked.membership!.entries()], [
     ['GER', [{ tag: 'GER', firstHour: 50, lastHour: 1000 }]],
-    ['ITA', [{ tag: 'ITA', firstHour: 200, lastHour: 1000 }]],
-  ], 'a member stays one from its first membership to the end of the branch');
+    ['AAA', [{ tag: 'AAA', firstHour: 200, lastHour: 299 }]],
+    ['BBB', [{ tag: 'BBB', firstHour: 300, lastHour: 1000 }]],
+  ], 'a member stays one from its first membership to the branch end, under each tag its country holds, and the country that later takes its old tag is not one');
+  assert.deepEqual(masked.tags, ['GER', 'AAA', 'BBB']);
   assert.deepEqual(rankedCandidates(masked, 100, masked.tags), ['GER'], 'at hour 100 only the founder is a member so far');
-  assert.deepEqual(rankedCandidates(masked, 280, masked.tags).sort(), ['GER', 'ITA'], 'a member who has left is still a member so far');
+  assert.deepEqual(rankedCandidates(masked, 280, masked.tags), ['GER', 'AAA']);
+  assert.deepEqual(rankedCandidates(masked, 600, masked.tags), ['GER', 'BBB'], 'after leaving and changing tag it is still a member so far; the new holder of its old tag is not');
 
   const atHour = { ...selection, membership: 'hour' as const };
   const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
-  assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
+  assert.equal(withSoFarMembership(hourly, atHour, groups, 1000, slots), hourly, 'membership at the hour keeps its recorded runs');
 });
