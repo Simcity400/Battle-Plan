@@ -677,11 +677,13 @@ test('an autonomy sparkline breaks over hours not recorded instead of carrying t
 });
 
 test('autonomy meters ask for every subject the recording names, with no fixed cap', () => {
-  const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, countries: { every: Array.from({ length: 1501 }, (_, i) => `T${i}`) } };
-  const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
-  assert.equal(trend.read.shape === 'pixel-binned' ? trend.read.top?.n : null, 1501);
-  const loading = autonomyLevelsDeclaration.sources({ ...ctx, countries: { every: [] } } as never, {} as never).entries;
-  assert.ok(!loading.some(entry => entry.name === 'trend'), 'no ranked trend is asked before the population is known');
+  const topOf = (count: number) => {
+    const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, countries: { every: Array.from({ length: count }, (_, i) => `T${i}`) } };
+    const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
+    return trend.read.shape === 'pixel-binned' ? trend.read.top?.n : null;
+  };
+  assert.ok(topOf(0)! > 1500, 'more than 1,500 subjects get a trend before the population is known');
+  assert.equal(topOf(20_001), 20_001, 'a larger population is asked whole');
 });
 
 test('an autonomy sparkline breaks across a short unread stretch that falls between two samples', () => {

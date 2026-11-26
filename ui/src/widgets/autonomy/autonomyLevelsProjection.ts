@@ -13,6 +13,7 @@ import type { ArtResult } from '../../families/contract.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
+import { ALL_POPULATION_TOP } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface AutonomyLevelsOptions {
   readonly filter: DeclaredCountryFilter;
@@ -242,20 +243,20 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
           validate: validateAutonomyLevels,
         },
       },
-      ...(ctx.countries.every.length ? [{
+      {
         name: 'trend',
         source: ctx.track.source,
         branch: ctx.branch.id,
         offset: ctx.track.axisOffset,
         read: {
-          shape: 'pixel-binned' as const,
-          coverage: { mode: 'population' as const, form: 'all' as const },
+          shape: 'pixel-binned',
+          coverage: { mode: 'population', form: 'all' },
           family: { kind: 'autonomy-lines' },
           tags: [],
-          top: { n: ctx.countries.every.length },
+          top: { n: Math.max(ALL_POPULATION_TOP, ctx.countries.every.length) },
           headQuery: null,
         },
-      }] : []),
+      },
     ],
   }),
   projection: autonomyLevelsProjection,
