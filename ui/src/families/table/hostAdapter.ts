@@ -124,7 +124,6 @@ export const tableHostAdapter: FamilyHostAdapter<TableModel, unknown, FamilyTabl
   buildBinding: ctx => (ctx.settings
     ? {
         settings: ctx.settings,
-        ...(ctx.pagedRows ? { pagedRows: ctx.pagedRows } : {}),
         expanded: ctx.expanded,
         reducedMotion: ctx.reducedMotion,
       }

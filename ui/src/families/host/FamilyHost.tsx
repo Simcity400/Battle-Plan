@@ -432,6 +432,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const reportShownRef = useRef(reportShown);
   reportShownRef.current = reportShown;
 
+  const tiledBySource = useMemo(() => (tiledSeries ? serializeTiledBySource(tiledSeries) : undefined), [tiledSeries]);
   const latest = {
     adapter,
     settings,
@@ -446,6 +447,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     staticProof,
     pagedRows,
     tiledSeries,
+    tiledBySource,
     hovers,
     laneArt,
     extent,
@@ -613,9 +615,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       options: cur.options,
       settings: cur.settings,
       sources: sourceIdsRef.current,
-      ...(cur.pagedRows && Object.keys(cur.pagedRows).length ? { pagedRows: cur.pagedRows } : {}),
-      ...(cur.hovers ? { hovers: cur.hovers } : {}),
-      ...(cur.laneArt?.resolutions ? { artResolutions: cur.laneArt.resolutions } : {}),
       extent: cur.extent,
       plan: cur.plan,
       viewport,
@@ -1201,9 +1200,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     options,
     theme,
     reducedMotion,
-    pagedRows,
-    hovers,
-    laneArt,
     extent,
     plan,
     selectedKey,
@@ -1214,10 +1210,18 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     settings,
   ]);
 
-  const tiledBySource = useMemo(() => (tiledSeries ? serializeTiledBySource(tiledSeries) : undefined), [tiledSeries]);
+  const supplyData = useCallback(() => {
+    const cur = latestRef.current;
+    supply?.data({
+      tiledBySource: cur.tiledBySource,
+      hovers: cur.hovers && Object.keys(cur.hovers).length ? cur.hovers : undefined,
+      pagedRows: cur.pagedRows && Object.keys(cur.pagedRows).length ? cur.pagedRows : undefined,
+      artResolutions: cur.laneArt?.resolutions,
+    });
+  }, [supply]);
   useLayoutEffect(() => {
-    supply?.tiles(tiledBySource);
-  }, [supply, tiledBySource]);
+    supplyData();
+  }, [supplyData, tiledBySource, hovers, pagedRows, laneArt]);
 
   useLayoutEffect(() => {
     supply?.statics(staticSources, datedNow());
@@ -1228,7 +1232,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipeline.supply(pipe, { identity: identitySnapshot });
   }, [pipeline, pipe, identitySnapshot]);
 
-  useLayoutEffect(() => laneArt?.subscribe(() => bindRef.current()), [laneArt]);
+  useLayoutEffect(() => laneArt?.subscribe(supplyData), [laneArt, supplyData]);
 
   useLayoutEffect(() => staticProof?.subscribe(supplyDated), [staticProof, supplyDated]);
 

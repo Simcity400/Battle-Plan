@@ -194,7 +194,6 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
       extent: ctx.extent,
       ...(ctx.viewport.zoomWindow ? { zoom: zoomOf(ctx.viewport.zoomWindow) } : {}),
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
-      ...(ctx.hovers && Object.keys(ctx.hovers).length ? { hovers: ctx.hovers } : {}),
     };
   },
 };
