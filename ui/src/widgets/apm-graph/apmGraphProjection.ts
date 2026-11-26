@@ -10,7 +10,7 @@ import {
   type TimeChartProjection,
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
-import { seriesLookAt, type ChartGap, type ChartIdentityRun, type TimeChartModel, type TimeChartSeriesModel } from '../../families/time-chart/model.ts';
+import { seriesLookAt, type ChartGap, type TimeChartModel, type TimeChartSeriesModel } from '../../families/time-chart/model.ts';
 import { branchGapsOf, countrySeriesLooks, missingSpansOf } from '../../families/time-chart/seriesHelpers.ts';
 import type { ApmPlayer, ApmPlayerRun, ApmReply, ApmSeries, ApmValue } from '../../generated/dashboard';
 import { apmRateRational, formatApmOperands, formatApmRate, GAPS_NOTE, playerNames, validateApm } from '../player-apm/apmData.ts';
@@ -73,55 +73,55 @@ function runIndexAt(runs: readonly ApmPlayerRun[], hour: number): number {
   return lo - 1;
 }
 
-function playerSeriesLooks(
-  entries: readonly SeriesEntry[], registry: ReadonlyMap<string, ApmPlayer>, readView: BoundedReadView, options: ApmGraphOptions,
+function playerLabel(player: string | null | undefined, country?: string): string {
+  const name = player ?? 'Name not recorded';
+  return country ? `${name} \u00b7 ${country}` : name;
+}
+
+function apmSeriesLooks(
+  entries: readonly SeriesEntry[], registry: ReadonlyMap<string, ApmPlayer>, readView: BoundedReadView,
+  options: ApmGraphOptions, names: ReadonlyMap<string, string> | null,
 ) {
-  const runsById = new Map(entries.map(entry => {
+  const ids = entries.map(entry => entry.id);
+  const input = { from: options.extent[0], surface: options.surface, withFlag: true, holders: null, recordedOrdinal: () => 0 };
+  if (!names) return countrySeriesLooks(ids, readView, input);
+
+  const players = new Map(entries.map(entry => {
     const recorded = registry.get(entry.id)?.runs;
     const observation = { firstHour: entry.obsHour, lastHour: entry.obsHour, tag: entry.tag ?? '', name: entry.name, nameMissing: null };
-    return [entry.id, recorded?.length ? recorded : [observation]] as const;
+    return [entry.id, { runs: recorded?.length ? recorded : [observation], entry }] as const;
   }));
   const playerView = createBoundedReadView({
     hour: readView.hour,
     art: { resolve: handle => readView.art(handle) },
     identity: { resolve(kind, key, hour) {
-      const runs = runsById.get(key)!;
+      const { runs, entry } = players.get(key)!;
       const i = runIndexAt(runs, hour);
       const run = runs[i];
       const until = (runs[i + 1]?.firstHour ?? Infinity) - 1;
       if (!run || hour > run.lastHour || !run.tag) {
         const absent = { status: 'absent' as const, reason: 'Player country was not recorded at this hour.' };
-        return { kind, key, atHour: hour, name: absent, holder: absent, flagChoice: absent, validInterval: [hour, until], nextChangeAt: until + 1 };
+        return { kind, key, atHour: hour, holder: absent, flagChoice: absent, name: { status: 'ready', value: 'Name not recorded' },
+          validInterval: [hour, until], nextChangeAt: until + 1 };
       }
       const country = readView.who('country', run.tag, hour);
       const end = Math.min(until, run.lastHour, country.name.status === 'pending' || country.name.status === 'failed' ? Infinity : country.validInterval[1]);
-      return { ...country, name: { status: 'ready', value: country.name.status === 'ready' ? country.name.value : run.tag },
-        validInterval: [hour, end], nextChangeAt: end + 1 };
+      const player = run.name === entry.name ? names.get(key) ?? run.name : run.name;
+      const label = playerLabel(player, country.name.status === 'ready' ? country.name.value : undefined);
+      return { ...country, name: { status: 'ready', value: label }, validInterval: [hour, end], nextChangeAt: end + 1 };
     } },
   });
-  const looks = countrySeriesLooks(entries.map(e => e.id), playerView, {
-    from: options.extent[0], surface: options.surface, withFlag: true, holders: null, recordedOrdinal: () => 0,
-  });
-  const result = new Map<string, readonly ChartIdentityRun[]>();
-  for (const [id, look] of looks) {
-    const runs = runsById.get(id)!;
-    const identities: ChartIdentityRun[] = [];
-    for (const country of look.identities) {
-      let first = country.firstHour;
-      let i = runIndexAt(runs, first);
-      while (first <= country.lastHour) {
-        const run = runs[i];
-        const known = run && first <= run.lastHour;
-        const last = Math.min(country.lastHour, (runs[i + 1]?.firstHour ?? Infinity) - 1, known ? run.lastHour : Infinity);
-        identities.push({ firstHour: first, lastHour: last, name: (known && run.name) || 'Name not recorded', color: country.color,
-          ...(known && run.tag && country.flag ? { flag: { ...country.flag, tag: run.tag, label: country.name } } : {}) });
-        first = last + 1;
-        while (runs[i + 1] && runs[i + 1]!.firstHour <= first) i++;
-      }
-    }
-    result.set(id, identities);
-  }
-  return result;
+  const looks = countrySeriesLooks(ids, playerView, input);
+  return new Map([...looks].map(([id, look]) => {
+    const { runs } = players.get(id)!;
+    const identities = look.identities.map(stretch => {
+      const run = runs[runIndexAt(runs, stretch.firstHour)];
+      const flag = run && stretch.firstHour <= run.lastHour && run.tag && stretch.flag
+        ? { ...stretch.flag, tag: run.tag } : undefined;
+      return { ...stretch, flag };
+    });
+    return [id, { ...look, identities }];
+  }));
 }
 
 function buildHoverDetail(
@@ -143,7 +143,7 @@ function buildHoverDetail(
     const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
     const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
     const label = options.group === 'player'
-      ? (hoverDisambiguated?.get(row.id) ?? row.name ?? 'Name not recorded')
+      ? playerLabel(hoverDisambiguated?.get(row.id) ?? row.name, identity?.name.status === 'ready' ? identity.name.value : undefined)
       : (row.tag ? identityName(readView, 'country', row.tag, hover.hour) : row.id);
     const series = seriesById.get(row.id);
     const swatch = series && seriesLookAt(series, hover.hour).color;
@@ -277,15 +277,13 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       };
     }
     const disambiguated = options.group === 'player' ? playerNames(entries) : null;
-    const players = options.group === 'player' ? playerSeriesLooks(entries, registryById, readView, options) : null;
-    const countries = players ? null : countrySeriesLooks(entries.map(e => e.id), readView, {
-      from: options.extent[0], surface: options.surface, withFlag: true, holders: null, recordedOrdinal: () => 0,
-    });
+    const looks = apmSeriesLooks(entries, registryById, readView, options, disambiguated);
     const headTexts = new Map<string, string>();
     const series: TimeChartSeriesModel[] = entries.map((entry, rank) => {
       const isTop = rank < TOP_NAMED;
-      const identities = players?.get(entry.id) ?? countries!.get(entry.id)!.identities;
-      const look = seriesLookAt({ name: 'Name not recorded', color: identities[0]!.color, identities }, entry.obsHour);
+      const held = looks.get(entry.id)!;
+      const identities = held.identities;
+      const look = seriesLookAt(held, entry.obsHour);
       const { color, flag } = look;
       const name = disambiguated?.get(entry.id) ?? look.name;
       const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;

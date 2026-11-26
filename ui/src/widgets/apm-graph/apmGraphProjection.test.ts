@@ -10,7 +10,6 @@ import { createSnapshotIdentityProvider } from '../../families/identity/provider
 import { readyArt } from '../../families/art/types.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
-import { seriesLookAt } from '../../families/time-chart/model.ts';
 import type { ApmReply } from '../../generated/dashboard';
 import { apmGraphDeclaration, apmGraphProjection } from './apmGraphProjection.ts';
 
@@ -40,7 +39,7 @@ function makeTiled(id: string, val: number): TiledLine {
 
 describe('apm-graph projection', () => {
   it('uses the player and country recorded at the hovered hour for the name, flag and swatch', () => {
-    const id = 'user:switch';
+    const id = 'user:1', other = 'user:2';
     const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, H1943]);
     index.setFacts({
       branchId: 'b', known: [[H1936, H1943]], names: ['North', 'South'], reasons: [], warnings: [],
@@ -51,7 +50,7 @@ describe('apm-graph projection', () => {
     const paused = 'No unpaused time was observed in this period.';
     const bounded = boundTiledSeries({ ...tiled, missing: [{ firstHour: H1936 + 2, lastHour: H1936 + 2, reason: paused }] }, displayedHour(H1943));
     const view = createBoundedReadView({
-      hour: H1943, series: new Map([['apm', new Map([[id, bounded]])]]), identity: createSnapshotIdentityProvider(index),
+      hour: H1943, series: new Map([['apm', new Map([[id, bounded], [other, bounded]])]]), identity: createSnapshotIdentityProvider(index),
       art: { resolve: handle => handle.kind === 'flag' ? readyArt(handle.choice) : { status: 'pending' } },
     });
     const model = apmGraphProjection.project(view, {
@@ -59,16 +58,19 @@ describe('apm-graph projection', () => {
       players: [{ id, name: 'Later', nameMissing: null, tags: ['AAA', 'BBB'], runs: [
         { firstHour: H1936, lastHour: H1936 + 5, tag: 'AAA', name: 'Earlier', nameMissing: null },
         { firstHour: H1936 + 6, lastHour: H1943, tag: 'BBB', name: 'Later', nameMissing: null },
+      ] }, { id: other, name: 'Later', nameMissing: null, tags: ['AAA'], runs: [
+        { firstHour: H1936 + 6, lastHour: H1943, tag: 'AAA', name: 'Later', nameMissing: null },
       ] }],
     });
     const layout = layoutTimeChart(model, 600, 260, 'sans-serif', text => text.length * 6);
-    const item = (hour: number) => deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items?.[0];
+    const items = (hour: number) => deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items ?? [];
+    const item = (hour: number) => items(hour)[0];
     assert.equal(item(H1936 + 2)?.missingReason, paused);
     assert.equal(item(H1936 + 2)?.value, undefined);
     const early = item(H1936 + 1);
-    assert.equal(early?.label, 'Earlier');
+    assert.equal(early?.label, 'Earlier · North');
     assert.match(early?.countryFlag?.flag ?? '', /north/);
-    assert.equal(seriesLookAt(model.series[0]!, H1936 + 1).flag?.label, 'North');
+    assert.deepEqual(items(H1936 + 6).map(row => row.label).sort(), ['Later (1) · South', 'Later (2) · North']);
     assert.notEqual(early?.swatch, model.series[0]?.color);
   });
   it('shows named unavailable state on single-player recordings with no player orders', () => {
