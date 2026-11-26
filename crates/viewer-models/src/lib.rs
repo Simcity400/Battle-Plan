@@ -784,7 +784,7 @@ impl ModelLibrary {
                 None => {
                     let global = self.textures.len();
                     if texture.layers.is_none() {
-                        texture.layers = shard.layers.clone().or_else(|| self.layers.clone());
+                        texture.layers = self.layers.clone().or_else(|| shard.layers.clone());
                     }
                     self.textures.push(texture);
                     self.spaces.push(shard.spaces[slot]);
