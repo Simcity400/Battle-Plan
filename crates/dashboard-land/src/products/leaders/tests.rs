@@ -348,7 +348,7 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
         test_fixtures::{CAMPAIGN, snapshot_records, source},
     };
     use replay::campaign::Replay;
-    use replay_data::rows::{CharacterRow, CountryLinkRow, CountryRow, Recorded, TableId, TableRows, UnitLeaderRow};
+    use replay_data::rows::{CharacterRow, CountryLinkRow, CountryRow, LexicalTokenRow, Recorded, TableId, TableRows, UnitLeaderRow};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
@@ -370,19 +370,22 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
                 reference_type: 1,
                 kind: KIND_ARMY,
                 owner: 9001,
-                character_id: 77,
+                character_id: if hour < 118 { 77 } else { 79 },
                 skill_valid: 1,
                 skill_level: if hour < 110 { 3 } else { 5 },
                 components: [2, 2, 2, 2],
                 ..Default::default()
             };
-            let rival = UnitLeaderRow { id: 43, character_id: 78, skill_level: 5, components: if hour < 117 { [1; 4] } else { [3; 4] }, ..leader.clone() };
+            let rival = UnitLeaderRow { id: 43, character_id: 78, skill_level: 5, owner: 9001, components: if hour < 117 { [1; 4] } else { [3; 4] }, ..leader.clone() };
             frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader, rival])).into();
             frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
-                CharacterRow { id: 77, token: b"JAP_yamashita".to_vec(), ..Default::default() },
+                CharacterRow { id: 77, token: b"JAP_yamashita".to_vec(), name_token_id: 5, ..Default::default() },
                 CharacterRow { id: 78, token: b"JAP_homma".to_vec(), ..Default::default() },
+                CharacterRow { id: 79, token: b"JAP_yamashita".to_vec(), name_token_id: 5, ..Default::default() },
             ]))
             .into();
+            frame.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 5, literal: if hour < 119 { b"yamashita".to_vec() } else { b"yamashita_tomoyuki".to_vec() } }])).into();
             frame
         })
         .collect();
@@ -433,4 +436,7 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     assert_eq!(late.runs[1].skill, Some(5));
     let overtaken = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 117 }, &load, &cancelled).unwrap();
     assert_eq!(overtaken.reference, Some(((43u64 << 32) | 1).to_string()), "the tie of equal skill turns to the rival once its components are higher");
+    assert_eq!(overtaken.next_change, Some(118), "a general's character link is an input of its name, so of the order");
+    let relinked = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 118 }, &load, &cancelled).unwrap();
+    assert_eq!(relinked.next_change, Some(119), "so is the spelling of its name token");
 }

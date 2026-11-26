@@ -287,13 +287,35 @@ impl NextHour {
     }
 }
 
+fn ranking_steps(history: &History, after: i32, next: &mut NextHour) {
+    for step in history.keys.iter().flat_map(|(_, steps)| steps).filter(|step| step.hour > after) {
+        next.see(step.hour);
+    }
+    let complete = |run: &replay_lanes::lanes::StatusRun| matches!(run.status, replay_columnar::manifest::Status::Complete);
+    for pair in history.statuses.windows(2).filter(|pair| complete(&pair[0]) != complete(&pair[1]) && pair[1].first > after) {
+        next.see(pair[1].first);
+    }
+}
+
+fn name_tokens(query: &Query<'_>, run: u32, hour: i32) -> io::Result<Vec<u128>> {
+    let characters = TableId::Characters;
+    let column = field(characters, "name_token_id")?;
+    let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at(query.replay.recording(), run, characters, hour, Some(&[column])))?;
+    let view = held.view();
+    let mut tokens: Vec<u128> = view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).filter(|&token| token != 0).map(u128::from).collect();
+    tokens.sort_unstable();
+    tokens.dedup();
+    Ok(tokens)
+}
+
 fn next_ranking_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
     let recording = query.replay.recording();
     let leaders = TableId::UnitLeaders;
     let components = field(leaders, "skill_category")? + 1;
     let characters = TableId::Characters;
+    let lexical = TableId::LexicalTokens;
     let inputs = [
-        (leaders, vec![field(leaders, "owner")?, field(leaders, "kind")?, field(leaders, "skill_valid")?, field(leaders, "skill_level")?, components, components + 1, components + 2, components + 3]),
+        (leaders, vec![field(leaders, "owner")?, field(leaders, "kind")?, field(leaders, "character_id")?, field(leaders, "skill_valid")?, field(leaders, "skill_level")?, components, components + 1, components + 2, components + 3]),
         (TableId::LeaderBattleTotals, (0..TableId::LeaderBattleTotals.field_count()).collect()),
         (characters, vec![field(characters, "name_token_id")?, field(characters, "name")?, field(characters, "token")?]),
     ]
@@ -301,6 +323,8 @@ fn next_ranking_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> 
         columns.sort_unstable();
         (table, columns)
     });
+    let literal = [field(lexical, "literal")?];
+    let held = |table: TableId| recording.predates(table.index()).is_none() && recording.withheld_reason(table.index()).is_none();
     let block = replay_columnar::envelope::UNIT_ORDINALS as i32;
     let mut next = NextHour(None, hour);
     for stretch in &query.timeline.stretches {
@@ -308,17 +332,21 @@ fn next_ranking_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> 
             continue;
         }
         let origin = recording.run(stretch.run)?.first_hour;
-        let mut from = hour.max(stretch.first);
+        let start = hour.max(stretch.first);
+        let tokens = if held(characters) && held(lexical) { name_tokens(query, stretch.run, start)? } else { Vec::new() };
+        let mut from = start;
         while from <= stretch.last {
+            let after = if from == start { hour.max(from - 1) } else { from - 1 };
+            let read_from = if from == start { from } else { from - 1 };
             let to = stretch.last.min(origin + ((from - origin) / block + 1) * block - 1);
-            for (table, columns) in &inputs {
-                if recording.predates(table.index()).is_some() || recording.withheld_reason(table.index()).is_some() {
-                    continue;
-                }
-                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, LaneKeys::All, from, to))?;
-                for step in history.keys.iter().flat_map(|(_, steps)| steps) {
-                    next.see(step.hour);
-                }
+            for (table, columns) in inputs.iter().filter(|(table, _)| held(*table)) {
+                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, LaneKeys::All, read_from, to))?;
+                ranking_steps(&history, after, &mut next);
+            }
+            let spelled_to = next.0.map_or(to, |at| at.saturating_sub(1).min(to));
+            if !tokens.is_empty() && spelled_to > after {
+                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, lexical, &literal, LaneKeys::These(&tokens), read_from, spelled_to))?;
+                ranking_steps(&history, after, &mut next);
             }
             if next.0.is_some() {
                 return Ok(next.0);
@@ -339,16 +367,16 @@ struct Full {
 }
 
 #[derive(Default)]
-struct Careers(HashMap<(u64, u64), std::sync::Arc<Full>>);
+struct Careers(HashMap<(u64, u64), std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Full>>>>>);
 
 fn full_career(source: &Source, query: &Query<'_>, leader: u64, cancelled: &AtomicBool) -> io::Result<std::sync::Arc<Full>> {
-    let state = source.state::<Careers>();
-    let key = (query.timeline.id, leader);
-    if let Some(full) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key) {
+    let slot = std::sync::Arc::clone(source.state::<Careers>().lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.entry((query.timeline.id, leader)).or_default());
+    let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(full) = held.as_ref() {
         return Ok(std::sync::Arc::clone(full));
     }
     let full = std::sync::Arc::new(read_full(source, query, leader, cancelled)?);
-    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.insert(key, std::sync::Arc::clone(&full));
+    *held = Some(std::sync::Arc::clone(&full));
     Ok(full)
 }
 
