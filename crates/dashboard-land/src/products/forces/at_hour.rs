@@ -518,7 +518,7 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
                 Err(why) => Some(why),
             };
             if let Some(why) = why {
-                unplaced.insert((named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour.")));
+                unplaced.insert(format!("{spelling}: {why}; its part is drawn in the neutral colour."));
             }
         }
         resolved.insert(part, named);
@@ -529,9 +529,8 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
             NavyGrouping::Type => units.category(unit).ok().map(|mask| format!("type:{mask}")),
         })
     });
-    let named = Named::group(resolved).in_content_order(order.collect::<Vec<_>>());
-    warnings.extend(unplaced.into_iter().filter(|(key, _)| !named.order.contains_key(key)).map(|(_, warning)| warning));
-    named
+    warnings.extend(unplaced);
+    Named::group(resolved).in_content_order(order.collect::<Vec<_>>())
 }
 
 pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &HashMap<u32, Vec<(u128, Option<i64>)>>, parts_error: Option<String>) -> (Vec<ForcePart>, Vec<ForceAtRow>, Vec<String>) {

@@ -28,8 +28,6 @@ pub struct SubUnits {
     warnings: Vec<String>,
 }
 
-const NAVAL_CATEGORIES: u64 = 0x80_0040_03C1;
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AirWing {
     pub sizes: [i32; 4],
@@ -66,7 +64,7 @@ impl SubUnits {
     }
 
     pub fn naval(&self, name: &[u8]) -> Result<bool, String> {
-        self.category(name).map(|categories| categories & NAVAL_CATEGORIES != 0)
+        self.category(name).map(|categories| categories & engine_executable::native_values::equipment_type::SHIP_MASK != 0)
     }
 
     pub fn categories(&self) -> &BTreeSet<Vec<u8>> {
