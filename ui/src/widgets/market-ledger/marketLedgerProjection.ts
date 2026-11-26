@@ -111,7 +111,9 @@ function primaryItemSummary(items: readonly MarketContractItem[]): {
   if (!items.length) return { label: null, missing: 'Contract equipment was not recorded', iconUrl: null };
   const first = items[0]!;
   const label = first.name ?? null;
-  const subtext = items.length > 1 ? `+${items.length - 1} more` : undefined;
+  const more = items.length > 1 ? `+${items.length - 1} more` : undefined;
+  const design = first.name === null ? `Design ${first.variant}` : undefined;
+  const subtext = design && more ? `${design} · ${more}` : (design ?? more);
   return {
     label,
     ...(subtext ? { subtext } : {}),
@@ -183,7 +185,14 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
   const baseDate = logDateCell(event.hour);
   const blank: TableCell = { value: notApplicable('Not applicable to this contract event'), blank: true };
   if (event.kind === 'delivery') {
-    const label = event.equipment ?? 'Delivery';
+    const design = event.variant !== null ? `Design ${event.variant}` : null;
+    const label = event.equipment ?? (design ? `${design} delivery` : 'Delivery');
+    const itemCell: TableCell = event.equipment !== null
+      ? { value: knownValue(event.equipment), inlineSubtext: 'Delivery' }
+      : {
+          value: notRecorded(event.equipmentMissing ?? 'Equipment design not recorded'),
+          inlineSubtext: design ? `${design} · Delivery` : 'Delivery',
+        };
     const qtyCell: TableCell = event.amountRaw !== null
       ? { value: knownValue(formatUnits(event.amountRaw)), unitSuffix: BigInt(event.amountRaw) === FIXED5 ? 'unit' : 'units' }
       : { value: notRecorded('Delivery amount was not recorded') };
@@ -196,7 +205,7 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
         date: baseDate,
         kind: blank,
         country: blank,
-        item: { value: knownValue(label), ...(event.equipment ? { inlineSubtext: 'Delivery' } : {}) },
+        item: itemCell,
         delivered: qtyCell,
         paid: blank,
         status: logStatusCell(sign < 0 ? 'Bought' : sign > 0 ? 'Sold' : 'Delivered', 'finished'),
@@ -205,7 +214,14 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
     };
   }
   if (event.kind === 'deliveryUnavailable') {
-    const label = event.equipment ?? 'Delivery';
+    const design = event.variant !== null ? `Design ${event.variant}` : null;
+    const label = event.equipment ?? (design ? `${design} delivery` : 'Delivery');
+    const itemCell: TableCell = event.equipment !== null
+      ? { value: knownValue(event.equipment), inlineSubtext: 'Delivery' }
+      : {
+          value: notRecorded(event.equipmentMissing ?? 'Equipment design not recorded'),
+          inlineSubtext: design ? `${design} · Delivery` : 'Delivery',
+        };
     return {
       key: `ev:${event.key}`,
       name: label,
@@ -216,7 +232,7 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
         date: baseDate,
         kind: blank,
         country: blank,
-        item: { value: knownValue(label), inlineSubtext: 'Delivery' },
+        item: itemCell,
         delivered: { value: notRecorded(event.reason ?? 'Delivery amount unavailable') },
         paid: blank,
         status: logStatusCell('Unavailable', 'ended', 'muted'),
@@ -278,7 +294,7 @@ function buildContractRow(
   const art = artHandle ? readView.art(artHandle) : unavailableArt(summary.missing ?? 'The product drew no icon for this item');
 
   const statusInfo = CONTRACT_STATUS_TEXT[contract.status];
-  const title = summary.label ?? `Contract ${contract.key.slice(-6)}`;
+  const title = summary.label ?? (contract.items[0] ? `Design ${contract.items[0].variant}` : `Contract ${contract.key.slice(-6)}`);
 
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
@@ -292,11 +308,18 @@ function buildContractRow(
     if (contract.endedHour !== null) out.push({ label: 'Ended', value: knownValue(formatDateTime(contract.endedHour)) });
     if (contract.requestedHour !== null) out.push({ label: 'Requested', value: knownValue(formatDateTime(contract.requestedHour)) });
     for (const quote of contract.quotes) {
-      out.push({ label: `Price (${quote.name ?? `Design ${quote.variant}`})`, value: knownValue(`${formatFixed5Amount(BigInt(quote.priceRaw))} CIC`) });
+      const quoteLabel = quote.name ?? `Design ${quote.variant}`;
+      out.push({ label: `Price (${quoteLabel})`, value: knownValue(`${formatFixed5Amount(BigInt(quote.priceRaw))} CIC`) });
+      if (quote.name === null && quote.nameMissing !== null) {
+        out.push({ label: quoteLabel, value: notRecorded(quote.nameMissing) });
+      }
     }
     if (contract.termsMissing !== null) out.push({ label: 'Terms', value: notRecorded(contract.termsMissing) });
     for (const item of contract.items) {
       const itemLabel = item.name ?? `Design ${item.variant}`;
+      if (item.name === null && item.nameMissing !== null) {
+        out.push({ label: `${itemLabel} name`, value: notRecorded(item.nameMissing) });
+      }
       const progress = item.deliveryUnavailable !== null
         ? item.deliveredRaw !== null ? partialValue(`${formatUnits(item.deliveredRaw)} units`, item.deliveryUnavailable, { atLeast: true }) : notRecorded(item.deliveryUnavailable)
         : knownValue(item.contractedRaw !== null
@@ -325,7 +348,7 @@ function buildContractRow(
       country: contractParties(readView, contract, perspective, boundary),
       item: summary.label !== null
         ? { value: knownValue(summary.label), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) }
-        : { value: notRecorded(summary.missing ?? 'Equipment design not recorded') },
+        : { value: notRecorded(summary.missing ?? 'Equipment design not recorded'), ...(summary.subtext ? { inlineSubtext: summary.subtext } : {}) },
       delivered: deliveredCell(contract.items, contract.deliveryMissing),
       paid: paidCell(contract, sign),
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),

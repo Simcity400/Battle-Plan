@@ -139,8 +139,15 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   const reply = (at: number) => ({ branchId: '1', total: '1', offset: '0', live: '1', counts: [{ key: 'awaiting', total: '1' }], nextChange: null,
     rows: [{ hour: fired, key: card.id, observed: fired, ordinal: '0', live: true, status: 'awaiting' as const, occurrence: card }], missing: [], unavailable: [], warnings: [], at });
   const frozenAt = fired + 30, shownAt = fired + 100;
-  const pages = { 0: { hour: frozenAt, offset: 0, limit: 256, raw: reply(frozenAt), reply: validateGenericTailReply(reply(frozenAt), frozenAt) } };
-  const source = buildRowSourceFromHead('test:choices-frozen', reply(shownAt), undefined, shownAt, pages)!;
+  const gappedReply = (at: number) => ({
+    ...reply(at),
+    missing: [
+      { firstHour: fired + 10, lastHour: fired + 50, reason: 'Unread span crossing frozen hour' },
+      { firstHour: fired + 60, lastHour: fired + 90, reason: 'Future unread span after frozen hour' },
+    ],
+  });
+  const pages = { 0: { hour: frozenAt, offset: 0, limit: 256, raw: gappedReply(frozenAt), reply: validateGenericTailReply(gappedReply(frozenAt), frozenAt) } };
+  const source = buildRowSourceFromHead('test:choices-frozen', gappedReply(shownAt), undefined, shownAt, pages)!;
   const model = eventChoicesProjection.project(createBoundedReadView({ hour: shownAt, rows: new Map([['main', source]]) }), { events: ['country'], awaiting: false, artwork: false, breaks: [] });
   const meta = model.rows[0]!.meta as EventDetailSubject;
   assert.equal(meta.asOfHour, frozenAt, 'the row is read as of the frozen hour');
@@ -148,4 +155,7 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   const extra = typeof row.tooltipExtra === 'function' ? row.tooltipExtra() : row.tooltipExtra;
   assert.ok(JSON.stringify(extra).includes('1 day open'), `one day open at the frozen hour, not four: ${JSON.stringify(extra)}`);
   assert.equal(model.nextChangeAt ?? Infinity, Infinity, 'a frozen row does not wake playback to advance');
+  const gapSlots = (model.slots ?? []).filter(s => s.kind === 'gap');
+  assert.equal(gapSlots.length, 1, 'future gaps after the frozen page hour are excluded');
+  assert.equal(gapSlots[0]!.lastHour, frozenAt, 'gaps overlapping the frozen page hour clip to readAt');
 });
