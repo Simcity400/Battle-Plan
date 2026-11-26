@@ -669,10 +669,14 @@ fn a_sliced_hour_requires_every_saved_month_of_a_country_read_now() {
     let report = run(&window_only, &save, true).unwrap();
     assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     rows.insert(0, august);
-    let retained = frame(rows, &[GER]);
+    let retained = frame(rows.clone(), &[GER]);
     let report = run(&retained, &save, false).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["CombatLogEquipment"], 3);
+    rows[0].amount_raw += 1;
+    let report = run(&frame(rows, &[GER]), &save, false).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("amount_raw"));
 }
 
 #[test]
@@ -683,31 +687,6 @@ fn a_country_read_now_without_rows_is_still_compared() {
     assert!(report.differences[0].starts_with("GER.combat_log[group 12793][kind 0]"));
     let report = run(&frame(vec![], &[]), &save, false).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-}
-
-#[test]
-fn a_whole_read_at_a_sliced_hour_compares_its_older_months() {
-    let save = save(&[
-        month_at("equipment", 0, "1943.8.30.11", &[(1326, "1")]),
-        month_at("equipment", 0, "1943.9.30.11", &[(1326, "2")]),
-        month("equipment", 0, &[(1326, "3")]),
-    ]);
-    let whole = |august: i64| {
-        frame(
-            vec![
-                row_at(AUGUST, 0, 1326, august),
-                row_at(SEPTEMBER, 0, 1326, 200_000),
-                row_at(DATE, 0, 1326, 300_000),
-            ],
-            &[GER],
-        )
-    };
-    let report = run(&whole(100_000), &save, false).unwrap();
-    assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.compared_tables["CombatLogEquipment"], 3);
-    let report = run(&whole(100_001), &save, false).unwrap();
-    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
-    assert!(report.differences[0].contains("amount_raw"));
 }
 
 #[test]
