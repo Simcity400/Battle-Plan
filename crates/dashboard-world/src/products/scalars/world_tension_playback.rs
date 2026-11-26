@@ -1,7 +1,7 @@
-use super::{CachedEvent, DatedGroupFilter, Sample, SlotNames, StackInput, TensionStackEvent, lookup_slot};
+use super::{CachedEvent, DatedGroupFilter, SlotNames, StackInput, TensionStackEvent, lookup_slot};
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet},
     ops::Bound::{Excluded, Included, Unbounded},
 };
 
@@ -69,6 +69,7 @@ impl Peaks {
 }
 
 pub(super) struct SlotIndex {
+    dates: HashMap<u32, Vec<i32>>,
     changes: Edits,
     peaks: BTreeMap<u32, Peaks>,
 }
@@ -109,18 +110,20 @@ impl SlotIndex {
             }
             peaks.insert(slot, Peaks::new(values));
         }
-        Self { changes, peaks }
-    }
-
-    pub(super) fn plot_hours(&self, slots: &[u32], first: i32, last: i32, hours: &mut Vec<i32>) {
-        for (&hour, edits) in self.changes.0.range(first..=last) {
-            if edits.iter().any(|slot| {
-                dashboard_base::products::at_hour::count_rows(|| 1);
-                slots.binary_search(slot).is_ok()
-            }) {
-                hours.push(hour);
+        let mut dates = HashMap::<u32, Vec<i32>>::new();
+        for (&hour, keys) in &mut changes.0 {
+            keys.sort_unstable();
+            keys.dedup();
+            for &slot in keys.iter() {
+                dates.entry(slot).or_default().push(hour);
             }
         }
+        Self { changes, peaks, dates }
+    }
+
+    pub(super) fn slot_edits(&self, slot: u32, first: i32, last: i32) -> &[i32] {
+        let Some(dates) = self.dates.get(&slot) else { return &[] };
+        &dates[dates.partition_point(|&hour| hour < first)..dates.partition_point(|&hour| hour <= last)]
     }
 
     pub(super) fn next(&self, hour: i32) -> Option<i32> {
@@ -163,7 +166,7 @@ impl Ranking {
         input: &StackInput<'_>,
         window: Window,
         group: Option<&DatedGroupFilter>,
-        filter: Option<&HashSet<&str>>,
+        filter: Option<&dyn Fn(&str) -> bool>,
         top: bool,
         named: &impl Fn(u32, i32) -> Option<(String, bool)>,
     ) {
@@ -196,7 +199,7 @@ impl Ranking {
             let raw = lookup_slot(input.slots.get(&slot).map(Vec::as_slice), window.complete, rank);
             let nonzero = raw.is_some_and(|raw| raw != 0);
             let eligible = filter
-                .is_none_or(|wanted| named(slot, window.last).is_some_and(|(tag, _)| wanted.contains(tag.as_str())))
+                .is_none_or(|wanted| named(slot, window.last).is_some_and(|(tag, _)| wanted(&tag)))
                 && group.is_none_or(|group| !group.spans(slot, window.first, window.last).is_empty())
                 && (!top || within);
             let end = within.then_some(raw).flatten();
@@ -329,147 +332,5 @@ impl EventWindow {
             }
         }
         rows
-    }
-}
-
-#[derive(Default)]
-pub(super) struct Plot {
-    bounds: Option<(i32, i32)>,
-    slots: Vec<u32>,
-    other: bool,
-    base: usize,
-    rows: VecDeque<Sample>,
-    breaks: VecDeque<usize>,
-    limits: Vec<VecDeque<Vec<(f64, f64)>>>,
-}
-
-impl Plot {
-    pub(super) fn extend(&mut self, first: i32, last: i32, slots: &[u32], other: bool) -> Option<(i32, bool)> {
-        if let Some((start, through)) = self.bounds
-            && self.slots == slots
-            && self.other == other
-            && start <= first
-            && first <= through.saturating_add(1)
-        {
-            let expired = self.rows.partition_point(|row| row.hour <= first).saturating_sub(1);
-            if expired > 0 {
-                let old = self.base;
-                self.base += expired;
-                self.rows.drain(..expired);
-                for (index, blocks) in self.limits.iter_mut().enumerate() {
-                    let width = 2 << index;
-                    let obsolete = self.base.div_ceil(width) - old.div_ceil(width);
-                    blocks.drain(..obsolete.min(blocks.len()));
-                }
-                let obsolete = self.breaks.partition_point(|&at| at <= self.base);
-                self.breaks.drain(..obsolete);
-            }
-            self.bounds = Some((first, through.max(last)));
-            return (through < last).then(|| (through + 1, true));
-        }
-        *self = Self { bounds: Some((first, last)), slots: slots.to_vec(), other, ..Self::default() };
-        Some((first, false))
-    }
-
-    pub(super) fn push(&mut self, row: Sample) {
-        if let Some(old) = self.rows.back() {
-            if old.total_raw == row.total_raw
-                && old.sum_raw == row.sum_raw
-                && old.band_raws == row.band_raws
-                && old.other_raw == row.other_raw
-            {
-                return;
-            }
-            if old.total.is_none() != row.total.is_none()
-                || old.other.is_none() != row.other.is_none()
-                || old.bands.iter().zip(&row.bands).any(|(a, b)| a.is_none() != b.is_none())
-            {
-                self.breaks.push_back(self.base + self.rows.len());
-            }
-        }
-        self.rows.push_back(row);
-        let next = self.rows.len();
-        let end = self.base + next;
-        for level in 1..=end.trailing_zeros().min(next.ilog2()) as usize {
-            let ranges = if level == 1 {
-                self.rows[next - 2]
-                    .bands
-                    .iter()
-                    .zip(&self.rows[next - 1].bands)
-                    .map(|(a, b)| {
-                        let min = a.unwrap_or(f64::INFINITY).min(b.unwrap_or(f64::INFINITY));
-                        let max = a.unwrap_or(f64::NEG_INFINITY).max(b.unwrap_or(f64::NEG_INFINITY));
-                        (min, max)
-                    })
-                    .collect()
-            } else {
-                let children = &self.limits[level - 2];
-                let end = children.len();
-                children[end - 2].iter().zip(&children[end - 1]).map(|(a, b)| (a.0.min(b.0), a.1.max(b.1))).collect()
-            };
-            if self.limits.len() < level {
-                self.limits.push(VecDeque::new());
-            }
-            self.limits[level - 1].push_back(ranges);
-        }
-    }
-
-    fn bounds_for(&self, row: &mut Sample, mut at: usize, end: usize) {
-        row.band_min.clone_from(&row.bands);
-        row.band_max.clone_from(&row.bands);
-        while at < end {
-            let global = self.base + at;
-            let level = global.trailing_zeros().min((end - at).ilog2());
-            for i in 0..row.bands.len() {
-                let (min, max) = if level == 0 {
-                    let Some(value) = self.rows[at].bands[i] else { continue };
-                    (value, value)
-                } else {
-                    self.limits[level as usize - 1][(global >> level) - self.base.div_ceil(1 << level)][i]
-                };
-                if min <= max {
-                    row.band_min[i] = Some(row.band_min[i].map_or(min, |v| v.min(min)));
-                    row.band_max[i] = Some(row.band_max[i].map_or(max, |v| v.max(max)));
-                }
-            }
-            at += 1 << level;
-        }
-    }
-
-    pub(super) fn samples(&self, first: i32, last: i32, max_points: usize) -> (Vec<Sample>, bool) {
-        let start = self.rows.partition_point(|row| row.hour <= first).saturating_sub(1);
-        let end = self.rows.partition_point(|row| row.hour <= last);
-        if end - start <= max_points || max_points < 4 {
-            let mut rows: Vec<_> = self.rows.range(start..end).cloned().collect();
-            if let Some(row) = rows.first_mut() {
-                row.hour = first;
-            }
-            return (rows, false);
-        }
-        let step = ((i64::from(last) - i64::from(first)) / max_points as i64).max(1);
-        let mut rows = Vec::with_capacity(max_points + 2);
-        let mut index = start;
-        let mut boundary = self.breaks.partition_point(|&at| at <= self.base + start);
-        while index < end {
-            let mut row = self.rows[index].clone();
-            row.hour = row.hour.max(first);
-            let bucket = (i64::from(row.hour) - i64::from(first)) / step;
-            let next_hour = i64::from(first) + (bucket + 1) * step;
-            let mut next = self.rows.partition_point(|point| i64::from(point.hour) < next_hour).min(end);
-            if let Some(&at) = self.breaks.get(boundary) {
-                let at = at - self.base;
-                next = next.min(at);
-                if next == at {
-                    boundary += 1;
-                }
-            }
-            if index + 1 < end {
-                next = next.min(end - 1);
-            }
-            self.bounds_for(&mut row, index + 1, next);
-            rows.push(row);
-            index = next;
-        }
-        (rows, true)
     }
 }
