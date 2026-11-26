@@ -533,15 +533,18 @@ fn per_ship_repairs_are_partial_when_repair_hours_are_unsplit_or_unrecorded() {
     };
 
     let unsplit = make_index(RepairRead::new(
-        vec![(0, 23, Some((Some(100_000), true))), (24, 47, Some((Some(100_000), false))), (48, 50, Some((Some(0), true)))],
-        BTreeMap::from([(Some(3), vec![(0, 23, Some(Some(100_000))), (24, 50, Some(Some(0)))])]),
+        vec![(0, 23, Some((Some(200_000), true))), (24, 47, Some((Some(100_000), false))), (48, 50, Some((Some(0), true)))],
+        BTreeMap::from([
+            (Some(3), vec![(0, 23, Some(Some(100_000))), (24, 50, Some(Some(0)))]),
+            (Some(4), vec![(0, 23, Some(Some(100_000))), (24, 50, Some(Some(0)))]),
+        ]),
     ));
     let unsplit_reply = unsplit.at(50, ProductionSpendingScope::DockyardPurposes, true);
     assert_eq!(unsplit_reply.breakdown.total.state, BreakdownState::Known, "known total repair rate keeps dockyard total exact");
-    assert_eq!(unsplit_reply.breakdown.total.amount, Some(BreakdownAmount { numerator: "4".into(), denominator: "1".into() }));
+    assert_eq!(unsplit_reply.breakdown.total.amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }));
     let repairs = unsplit_reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repairs");
     assert_eq!(repairs.state, BreakdownState::Known);
-    assert_eq!(repairs.share, Some(0.5), "exact repair total keeps its share of dockyard spending");
+    assert_eq!(repairs.share, Some(0.6), "exact repair total keeps its share of dockyard spending");
     let destroyer = repairs.children.iter().find(|part| part.key == "destroyer").expect("destroyer type");
     assert_eq!(destroyer.state, BreakdownState::Partial, "per-type repair is partial when some repair hours were unsplit");
     assert_eq!(destroyer.parent_share, None, "unsplit repair hours withhold per-type share of repairs");
@@ -550,6 +553,11 @@ fn per_ship_repairs_are_partial_when_repair_hours_are_unsplit_or_unrecorded() {
     assert_eq!(dd.state, BreakdownState::Partial, "per-ship repair is partial when some repair hours were unsplit");
     assert_eq!(dd.parent_share, None);
     assert_eq!(dd.share, None);
+    let unresolved = repairs.children.iter().find(|part| part.key == ":variant/4").expect("unresolved ship type");
+    assert_eq!(unresolved.state, BreakdownState::Partial, "unresolved ship type is partial under unsplit hours");
+    assert_eq!(unresolved.parent_share, None);
+    assert_eq!(unresolved.children[0].state, BreakdownState::Partial, "ship child under unresolved type is also partial");
+    assert_eq!(unresolved.children[0].parent_share, None);
 
     let gapped = make_index(RepairRead::new(
         vec![(0, 23, Some((Some(100_000), true))), (24, 47, None), (48, 50, Some((Some(0), true)))],
@@ -557,8 +565,10 @@ fn per_ship_repairs_are_partial_when_repair_hours_are_unsplit_or_unrecorded() {
     ));
     let gapped_reply = gapped.at(50, ProductionSpendingScope::DockyardPurposes, true);
     assert_eq!(gapped_reply.breakdown.total.state, BreakdownState::AtLeast);
+    assert_eq!(gapped_reply.breakdown.total.reason.as_deref(), Some("Spending was not recorded"), "gap reason is not duplicated");
     let repairs = gapped_reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repairs");
     assert_eq!(repairs.state, BreakdownState::AtLeast);
+    assert_eq!(repairs.reason.as_deref(), Some("Spending was not recorded"), "repair aggregate reports gap reason once");
     let destroyer = repairs.children.iter().find(|part| part.key == "destroyer").expect("destroyer type");
     assert_eq!(destroyer.state, BreakdownState::Partial, "per-ship repair is partial when some repair hours were not recorded");
     assert_eq!(destroyer.children[0].state, BreakdownState::Partial);

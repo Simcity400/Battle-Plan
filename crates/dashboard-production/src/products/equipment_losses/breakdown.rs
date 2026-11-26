@@ -17,7 +17,7 @@ use dashboard_query::{
     identity::{Holder, HolderRun, Holders, TAG_UNLINKED},
 };
 use replay_columnar::manifest::Status;
-use replay_data::rows::{EquipmentDestructionCause, EquipmentLossCoverageRow, EquipmentLossTotalRow, TableId};
+use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentDestructionCause, EquipmentLossCoverageRow, EquipmentLossTotalRow, TableId};
 use replay_lanes::lanes::{self, Cell, History, Keys, Reading, StatusRun};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -111,14 +111,35 @@ fn exact_loss(raw: i128) -> Amount {
     }
 }
 
-fn unknown_detail(span: &UnknownSpan) -> &str {
-    span.detail.as_deref().unwrap_or(match span.reason {
-        UnknownReason::Unread => "Equipment loss cause was not read at this hour",
-        UnknownReason::EndedAfterLastRead => "A lend-lease exchange ended after its last read",
-        UnknownReason::DestructionWithheld => "Equipment destruction table was withheld",
-        UnknownReason::DestructionGap => "Equipment destruction was not recorded",
-        UnknownReason::DestructionUnresolved => "Equipment destruction owner was not resolved",
-    })
+fn plain_destruction_reason(text: &str) -> String {
+    fn translate(part: &str) -> &str {
+        match part {
+            EquipmentLossCoverageRow::DRAIN_WITHHELD => "Equipment destruction was withheld for this run",
+            EquipmentLossCoverageRow::DRAIN_TRUNCATED => "Equipment destruction was truncated and withheld for this run",
+            EquipmentLossCoverageRow::DRAIN_SUPPLEMENTAL_NOT_RECORDED => "Equipment destruction coverage was not recorded",
+            EquipmentLossCoverageRow::DRAIN_OWNER_UNKNOWN => "Some destroyed equipment has no recorded country link",
+            EquipmentLossCoverageRow::DRAIN_NOT_RECORDED => "Equipment destruction was not recorded in this recording",
+            EquipmentLossCoverageRow::DRAIN_NOT_READ => "Equipment destruction was not read at this hour",
+            EquipmentLossCoverageRow::DRAIN_LOST => "Equipment destruction was not recorded at some hours",
+            EQUIPMENT_DESTRUCTION_PARTIAL_REASON => "Equipment destruction did not cover the full period from the start",
+            other => other,
+        }
+    }
+    text.split("; ").map(translate).collect::<Vec<_>>().join("; ")
+}
+
+fn unknown_detail(span: &UnknownSpan) -> String {
+    match span.detail.as_deref() {
+        Some(detail) => plain_destruction_reason(detail),
+        None => match span.reason {
+            UnknownReason::Unread => "Equipment loss cause was not read at this hour",
+            UnknownReason::EndedAfterLastRead => "A lend-lease exchange ended after its last read",
+            UnknownReason::DestructionWithheld => "Equipment destruction table was withheld",
+            UnknownReason::DestructionGap => "Equipment destruction was not recorded",
+            UnknownReason::DestructionUnresolved => "Equipment destruction owner was not resolved",
+        }
+        .to_owned(),
+    }
 }
 
 struct ShipRow {
@@ -363,20 +384,20 @@ impl LossesIndex {
             destruction_spans
                 .iter()
                 .find(|span| span.reason == UnknownReason::DestructionWithheld && span.first_hour <= hour && hour <= span.last_hour)
-                .map(|span| unknown_detail(span).to_owned())
+                .map(unknown_detail)
                 .or_else(|| Some("Equipment destruction table was withheld".into()))
         } else if destruction_floor.is_none() {
             seg.covered
                 .destruction_coverage()
                 .iter()
                 .find(|span| span.first_hour <= hour && hour <= span.last_hour)
-                .and_then(|span| span.reason.clone())
+                .and_then(|span| span.reason.as_deref().map(plain_destruction_reason))
                 .or_else(|| Some(if destruction_run.is_none() { NO_DESTRUCTION_READ } else { DESTRUCTION_NOT_COUNTING }.into()))
         } else {
             destruction_spans
                 .iter()
                 .find(|span| span.first_hour <= hour && hour <= span.last_hour)
-                .map(|span| unknown_detail(span).to_owned())
+                .map(unknown_detail)
         };
         let land_spans = if combat_log { seg.covered.land() } else { Vec::new() };
         let land_reason: Option<String> = if combat_log {
@@ -394,8 +415,8 @@ impl LossesIndex {
             seg.covered
                 .unread(bit, hour)
                 .into_iter()
-                .find(|span| span.first_hour <= hour && hour <= span.last_hour)
-                .map(|span| unknown_detail(&span).to_owned())
+                .find(|span| span.first_hour <= hour && span.last_hour >= hour)
+                .map(|span| unknown_detail(&span))
         };
         let combat_log_unread = combat_log.then(|| unread_reason(EquipmentLossCoverageRow::UNREAD_COMBAT_LOG)).flatten();
         let ships_unread = unread_reason(EquipmentLossCoverageRow::UNREAD_SHIPS);
@@ -405,7 +426,7 @@ impl LossesIndex {
                 .ended(hour)
                 .into_iter()
                 .find(|span| span.first_hour <= hour && hour <= span.last_hour)
-                .map(|span| unknown_detail(&span).to_owned())
+                .map(|span| unknown_detail(&span))
         });
 
         let mut by_source: BTreeMap<LossSource, Vec<(Option<u32>, Option<i64>, Option<i32>, Option<String>)>> = BTreeMap::new();

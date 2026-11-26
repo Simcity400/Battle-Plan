@@ -312,6 +312,10 @@ impl SpanRead {
         zip(&self.lines, &self.country, |context, row| context.amount(row.map(|row| if refits { row.0 } else { row.1 }), ProductionSpendingUnknown::SpendingUnavailable))
     }
 
+    pub(crate) fn equipment_coverage(&self) -> Vec<Piece<Amount>> {
+        self.lines.iter().map(|&(first, last, context)| (first, last, context.amount(None, ProductionSpendingUnknown::SpendingUnavailable))).collect()
+    }
+
     pub(super) fn rocket_total(&self) -> Vec<Piece<Amount>> {
         let mut total: Vec<Piece<Amount>> = self.rocket.iter().map(|&(first, last, context)| (first, last, context.amount(None, ProductionSpendingUnknown::SpendingUnavailable))).collect();
         for key in self.rows.keys().filter(|key| key.0) {
