@@ -240,4 +240,11 @@ test('a line shows its factories of the recorded most a line takes, and the coun
   const unread = project({ factoryCap: null, factoryCapMissing: reason }, false, sampleRow({ key: '2', hour: 100, live: true, factories: null, factoriesMissing: 'Assigned factories not recorded: line is known from output only', status: 'building' }));
   const unreadTip = (typeof unread.tooltipExtra === 'function' ? unread.tooltipExtra() : unread.tooltipExtra) ?? [];
   assert.deepEqual(unreadTip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason }, 'the missing cap is told even when the count is missing too');
+  const railway = (factories: number) => project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '3', hour: 100, live: true, kind: 'railway', factories, status: 'building' }));
+  assert.deepEqual(railway(4).cells.factories?.value, { kind: 'known', value: '4 / 15' }, 'a railway line working with factories is not in a state that takes none');
+  const idle = railway(0);
+  assert.deepEqual(idle.cells.factories?.value, { kind: 'known', value: '0' }, 'a railway line with none may be in a state that takes none: no most is guessed');
+  const idleTip = (typeof idle.tooltipExtra === 'function' ? idle.tooltipExtra() : idle.tooltipExtra) ?? [];
+  assert.equal(idleTip.find(entry => entry.label === 'Most factories')?.value.kind, 'notRecorded');
+  assert.deepEqual(project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '4', hour: 100, live: true, kind: 'building', factories: 0, status: 'waiting' })).cells.factories?.value, { kind: 'known', value: '0 / 15' }, 'a building line always takes the define');
 });

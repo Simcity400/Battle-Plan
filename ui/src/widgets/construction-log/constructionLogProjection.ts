@@ -179,6 +179,12 @@ export interface FactoryCap {
   readonly missing: string | null;
 }
 
+const LINE_CAP_UNKNOWN = 'A railway line takes no factories in some states the recording does not tell apart, so its most is not known while it has none';
+
+function lineCap(row: ConstructionLogRow, cap: FactoryCap): FactoryCap {
+  return row.kind !== 'building' && row.factories === 0 && cap.cap !== null ? { cap: null, missing: LINE_CAP_UNKNOWN } : cap;
+}
+
 const factoriesText = (count: number, cap: FactoryCap) =>
   cap.cap === null ? formatScalar(count, 'integer') : `${formatScalar(count, 'integer')} / ${formatScalar(cap.cap, 'integer')}`;
 
@@ -263,7 +269,8 @@ function buildConstructionRow(
 
   const place = resolvePlace(readView, row);
   const levels = levelsCell(row);
-  const factories = factoriesCell(readView, row, cap, artwork);
+  const rowCap = lineCap(row, cap);
+  const factories = factoriesCell(readView, row, rowCap, artwork);
   const status = buildStatusCell(row);
 
   const tooltipExtra = (): TooltipExtraRow[] => {
@@ -274,9 +281,9 @@ function buildConstructionRow(
     else if (row.placeMissing) out.push({ label: 'Place', value: notRecorded(row.placeMissing) });
     if (levels.text) out.push({ label: 'Levels', value: knownValue(levels.text) });
     else if (row.levelsMissing) out.push({ label: 'Levels', value: notRecorded(row.levelsMissing) });
-    if (row.live && cap.missing !== null) out.push({ label: 'Most factories', value: notRecorded(cap.missing) });
+    if (row.live && rowCap.missing !== null) out.push({ label: 'Most factories', value: notRecorded(rowCap.missing) });
     if (row.live && row.factories !== null) {
-      out.push({ label: 'Factories', value: knownValue(factoriesText(row.factories, cap)) });
+      out.push({ label: 'Factories', value: knownValue(factoriesText(row.factories, rowCap)) });
     } else if (!row.live && row.lastFactories !== null) {
       out.push({ label: 'Factories at last read', value: knownValue(formatScalar(row.lastFactories, 'integer')) });
     }
