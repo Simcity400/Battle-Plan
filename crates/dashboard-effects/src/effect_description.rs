@@ -650,22 +650,36 @@ pub fn describe(
     context: &Context<'_, '_>,
     scopes: &mut EventScopes,
 ) -> Description {
+    render_effects(items, context, scopes, Default::default()).finish()
+}
+
+fn render_effects<'r, 'c, 'f>(
+    items: &[Item],
+    context: &'r Context<'c, 'f>,
+    scopes: &mut EventScopes,
+    scripted: lists::Expansion<'c>,
+) -> Renderer<'r, 'c, 'f> {
     if !context.nested_session {
         context.session.replace(None);
     }
+    let incoming_session = context.variable_session();
     let graph = Rc::new(RefCell::new(scopes.clone()));
     let mut out = Renderer {
         context,
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted,
         concise: None,
     };
     let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
         Ok(scopes) => {
             out.out.text = out.group(items, scopes, 0);
+            if out.scripted.exhausted.is_some() {
+                context.session.replace(incoming_session);
+                return out;
+            }
             if let Some(Ok(evaluator)) = out.evaluator.get() {
                 let result = evaluator.end_description(scopes);
                 context.session.replace(Some(evaluator.variable_session()));
@@ -685,7 +699,7 @@ pub fn describe(
         Err(why) => out.refuse("event scope", why.to_string()),
     }
     *scopes = out.graph.borrow().clone();
-    out.out
+    out
 }
 
 struct Renderer<'r, 'c, 'f> {
@@ -693,7 +707,7 @@ struct Renderer<'r, 'c, 'f> {
     graph: Rc<RefCell<EventScopes>>,
     evaluator: OnceCell<Result<Evaluator<'c, 'f>, String>>,
     out: Description,
-    scripted_stack: Vec<(Vec<u8>, Scope)>,
+    scripted: lists::Expansion<'c>,
     concise: Option<(u32, u32)>,
 }
 
@@ -715,7 +729,7 @@ pub fn mio_text(
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
@@ -853,27 +867,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let item = if item.value.scalar().is_some() {
             item
         } else {
-            let token = item
-                .keyword()
-                .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()));
-            if !token.is_some_and(|token| {
-                content_reader_script::effect_keys::is_own_field(token, b"target")
-                    || content_reader_script::effect_keys::class(token).is_some_and(
-                        |(value_reader, key_reader)| {
-                            value_reader == 0x1403C2880
-                                || matches!(
-                                    key_reader,
-                                    0x1403CAC20
-                                        | 0x1403CD750
-                                        | 0x1403CD0D0
-                                        | 0x1403CD910
-                                        | 0x1404BE0F0
-                                        | 0x1404BE2C0
-                                        | 0x1403CEEF0
-                                )
-                        },
-                    )
-            }) {
+            let effect = item.keyword().map(|key| key.folded()).unwrap_or_default();
+            if !content_reader_script::effect_keys::is_own_field(&effect, b"target")? {
                 scalar_operand(item)?;
             }
             let Some(target) = self.country_target_field(item, "target")? else {
@@ -970,20 +965,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         name: &str,
     ) -> Result<Option<&'a Item>, String> {
         let mut fields = children(item).iter().filter(|field| field.keyword_is(name));
-        let chains = item
-            .keyword()
-            .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()))
-            .and_then(content_reader_script::effect_keys::class)
-            .is_some_and(|(_, reader)| reader == 0x1403C8220);
         if fields.clone().nth(1).is_some()
-            && fields.clone().any(|field| {
-                scope_selector(field).is_some()
-                    || chains
-                        && field
-                            .value
-                            .scalar()
-                            .is_some_and(|value| value.contains(&b'.'))
-            })
+            && (fields.clone().any(|field| scope_selector(field).is_some())
+                || fields.clone().any(|field| {
+                    field.value.scalar().is_some_and(|value| value.contains(&b'.'))
+                }) && content_reader_script::effect_keys::reads_scope_chain(
+                    &item.keyword().map(|key| key.folded()).unwrap_or_default(),
+                    name.as_bytes(),
+                )?)
         {
             return Err(format!(
                 "repeated {name} fields retain selector flags or appended scope links; auxiliary reader replay is unavailable"
@@ -1414,18 +1403,60 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .is_some_and(|desc| !desc.is_empty()))
     }
 
+    fn group_item(
+        &mut self,
+        item: &Item,
+        branches: &[&Item],
+        scopes: Scopes,
+        indent: usize,
+    ) -> String {
+        let line = if item.keyword_is("if") {
+            self.if_chain(item, branches, scopes, indent, false).unwrap_or_default()
+        } else {
+            self.builder(item, scopes, indent)
+        };
+        if self.scripted.charge_current(line.len()) {
+            line
+        } else {
+            String::new()
+        }
+    }
+
     pub(super) fn group(&mut self, items: &[Item], scopes: Scopes, indent: usize) -> String {
+        if self.scripted.exhausted.is_some()
+            || !self.scripted.charge_current(std::mem::size_of_val(items).max(1))
+        {
+            return String::new();
+        }
         let mut text = String::new();
         for (item, branches) in self.attached(items, true) {
-            let line = if item.keyword_is("if") {
-                self.if_chain(item, &branches, scopes, indent, false)
-                    .unwrap_or_default()
-            } else {
-                self.builder(item, scopes, indent)
-            };
+            let line = self.group_item(item, &branches, scopes, indent);
+            if self.scripted.exhausted.is_some() {
+                return String::new();
+            }
             append_description(&mut text, &line);
         }
         text
+    }
+
+    fn effect_section(&mut self, items: &[Item], scopes: &mut EventScopes) -> String {
+        let part = render_effects(items, self.context, scopes, std::mem::take(&mut self.scripted));
+        self.scripted = part.scripted;
+        for (why, count) in part.out.refusals {
+            *self.out.refusals.entry(why).or_default() += count;
+        }
+        part.out.text
+    }
+
+    fn finish(mut self) -> Description {
+        if let Some(name) = self.scripted.exhausted {
+            self.refuse(
+                &String::from_utf8_lossy(name),
+                "scripted-effect expansion exceeds the dashboard reply work budget",
+            );
+            self.out.text.clear();
+        }
+        self.out
     }
 }
 
@@ -1437,14 +1468,14 @@ pub fn technology_description(token: &str, database_index: Option<i32>, context:
         ]))),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     match renderer.bound_technology_effect(token, database_index, Scopes::of(Scope::Country(country))) {
         Ok(text) => renderer.out.text = text,
         Err(why) => renderer.refuse("technology effects", why),
     }
-    renderer.out
+    renderer.finish()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1490,7 +1521,7 @@ pub fn project_iteration_description(
         ]))),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: Some((owner, id)),
     };
     let mut out = IterationDescription::default();
@@ -1507,7 +1538,10 @@ pub fn project_iteration_description(
         }
         Err(why) => renderer.refuse("special-project iteration", why),
     }
-    out.refusals = renderer.out.refusals;
+    if renderer.scripted.exhausted.is_some() {
+        out = IterationDescription::default();
+    }
+    out.refusals = renderer.finish().refusals;
     out
 }
 
@@ -1526,7 +1560,7 @@ pub fn project_output_description(
         ]))),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let item = Item {
@@ -1548,5 +1582,5 @@ pub fn project_output_description(
         Ok(text) => renderer.out.text = text,
         Err(why) => renderer.refuse("special-project output", why),
     }
-    renderer.out
+    renderer.finish()
 }

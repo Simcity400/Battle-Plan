@@ -409,6 +409,8 @@ impl OwnReader {
         use OwnValue::{Object, ObjectIfOpen, One};
         use UnitGroup::{RegimentalSupport, Regiments, Support};
         Some(match (self, key) {
+            (Self::Wargoal { .. }, b"type") => OwnValue::InvalidBlock,
+            (Self::Wargoal { .. }, b"target") | (Self::Wargoal { expire: true }, b"expire") => One,
             (Self::CaptureGeneral, b"province" | b"country")
             | (Self::ReleaseGeneral, b"target" | b"province")
             | (Self::ScientistRole, b"character")
@@ -663,6 +665,28 @@ fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader
         DOCTRINE_KEYS => Grammar::Doctrine,
         _ => return None,
     })
+}
+
+pub(super) fn is_own_field(value: u64, key: u64, effect: &[u8], field: &[u8]) -> Option<bool> {
+    let address = match value_form(value) {
+        Some(
+            Form::CurrentOrKeys(source)
+            | Form::ScalarOrKeys(source)
+            | Form::StringOrKeys(source)
+            | Form::Keys(source)
+            | Form::AlwaysKeys(source)
+            | Form::RoleKeys(source),
+        ) => source.address(value, key),
+        Some(Form::Persistent(address)) => address,
+        Some(_) => return Some(false),
+        None if value == super::READ_SCRIPT => key,
+        None => return None,
+    };
+    if address == super::READ_EFFECT {
+        return Some(false);
+    }
+    let reader = own_reader(address, |name| effect.eq_ignore_ascii_case(name.as_bytes()))?;
+    Some(reader.value(field).is_some())
 }
 
 pub(super) fn description_fields(
@@ -936,10 +960,8 @@ impl<'n, 'c> Shaper<'n, 'c> {
             } else {
                 Shape::One
             }
-        } else if field.keyword_is("type") {
-            self.value(OwnValue::InvalidBlock, field)
-        } else if field.keyword_is("target") || (expire && field.keyword_is("expire")) {
-            Shape::One
+        } else if let Some(value) = (OwnReader::Wargoal { expire }).token_value(field.key) {
+            self.value(value, field)
         } else {
             Shape::Skip
         }
@@ -1342,6 +1364,7 @@ impl crate::effect_keys::EffectShape {
     pub const EQUIPMENT_DELIVERY: Self = Self(SCRIPT_VALUE, EQUIPMENT_AMOUNT_KEYS);
     pub const TEMPLATE_MEMBERS: Self = Self(SCRIPT_VALUE, ADD_TEMPLATE_UNITS_KEYS);
     pub const SEND_SHARE: Self = Self(SCRIPT_VALUE, EQUIPMENT_AMOUNT_KEYS);
+    pub const TARGET_VALUE: Self = Self(SCRIPT_VALUE, TARGET_VALUE_KEYS);
     pub const MOVE_SHARE: Self = Self(SCRIPT_VALUE, TRANSFER_LEADERS_KEYS);
     pub const LOCK_COUNTRY_TEMPLATES: Self = Self(ASSIGNMENT_VALUE, TEMPLATE_LOCK_KEYS);
     pub const IDEA_EXCHANGE: Self = Self(SWAP_IDEAS, 0);

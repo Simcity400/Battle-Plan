@@ -16,7 +16,7 @@ use dashboard_query::{
     Query,
     chart::{ChartBucket, ChartRun, merge},
     identity::Holder,
-    series::{Line, MissingSpan, totals::{self, Gap}},
+    series::{Line, MissingSpan, totals::{self, Gap, HistoryGap}},
     tile::{self, BINS, SeriesTileReply, TileLine, TileRanking},
 };
 use dashboard_text::metadata::check_cancel;
@@ -245,10 +245,10 @@ pub(super) fn range_baseline(line: &Line<'_, '_>, query: &Query<'_>, measure: Pr
         return Ok(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED));
     };
     if start <= stretch.first {
-        let observed = stretch.first == query.timeline.first && line.clock_at(start)?.since == Some(start);
+        let observed = stretch.first == query.timeline.first && line.observation_at(start)?.1 == Some(start);
         return Ok(if observed { Baseline::Opening(start) } else { Baseline::Unavailable(RANGE_BASELINE_UNRECORDED) });
     }
-    Ok(line.clock_at(start - 1)?.read.map_or(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED), Baseline::From))
+    Ok(line.observation_at(start - 1)?.0.map_or(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED), Baseline::From))
 }
 
 struct RankHistory {
@@ -595,10 +595,14 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
         check_cancel(cancelled)?;
         let total_runs = match unavailable {
             Some(_) => vec![Vec::new(); keys.len()],
-            None => line.totals(&keys, &parts_of, back, scan_first, clip)?,
+            None => line.total_history(&keys, &parts_of, back, scan_first, clip)?,
         };
-        let restarted: Vec<(i32, i32)> = match baseline {
-            Baseline::Opening(start) => line.since_runs(scan_first, clip)?.into_iter().filter(|run| run.2 != Some(start)).map(|run| (run.0, run.1)).collect(),
+        let restarted: Vec<_> = match baseline {
+            Baseline::Opening(start) => line.since_runs(scan_first, clip)?.into_iter().filter_map(|(lo, hi, since)| match since {
+                Ok(value) if value == Some(start) => None,
+                Ok(_) => Some((lo, hi, std::sync::Arc::from(unknown_reason(Gap::Restarted)))),
+                Err(reason) => Some((lo, hi, reason)),
+            }).collect(),
             _ => Vec::new(),
         };
         for (country, runs_for_country) in keys.into_iter().zip(total_runs) {
@@ -608,12 +612,12 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             if let Some(reason) = unavailable {
                 push_missing(&mut missing, scan_first, clip, reason);
             }
-            for &(lo, hi) in &restarted {
-                push_missing(&mut missing, lo, hi, unknown_reason(Gap::Restarted));
+            for (lo, hi, reason) in &restarted {
+                push_missing(&mut missing, *lo, *hi, reason);
             }
             for run in runs_for_country {
                 let mut kept = vec![(run.first, run.last)];
-                for &(lo, hi) in &restarted {
+                for &(lo, hi, _) in &restarted {
                     kept = kept
                         .into_iter()
                         .flat_map(|(a, b)| match b < lo || a > hi {
@@ -623,15 +627,16 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                         .collect();
                 }
                 for (first, last) in kept {
-                    match run.value {
-                        Ok(raw) if i128::from(raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
+                    match &run.value {
+                        Ok(raw) if i128::from(*raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
                             first,
                             last,
-                            value: raw as f64 / scale,
+                            value: *raw as f64 / scale,
                             break_before: run.opens || first != run.first,
                         }),
                         Ok(_) => push_missing(&mut missing, first, last, unknown_reason(Gap::OutOfRange)),
-                        Err(gap) => push_missing(&mut missing, first, last, unknown_reason(gap)),
+                        Err(HistoryGap::Missing(gap)) => push_missing(&mut missing, first, last, unknown_reason(*gap)),
+                        Err(HistoryGap::Damage(reason)) => push_missing(&mut missing, first, last, reason),
                     }
                 }
             }

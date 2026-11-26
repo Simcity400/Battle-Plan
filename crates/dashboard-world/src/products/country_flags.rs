@@ -468,7 +468,7 @@ pub enum FlagSearch {
 }
 
 pub fn flag_cells(layers: &content_reader_layers::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
-    let recorded = content_reader_defines::defines::read(layers)?;
+    let recorded = dashboard_base::catalogue::defines_for_layers(layers)?;
     let graphics = recorded.graphics_for(layers);
     layers.graphics_define("flag cells", &graphics, &recorded, |defines| {
         Ok::<_, io::Error>([
@@ -1828,6 +1828,43 @@ mod tests {
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
         assert!(near(drawn[0], [0, 43, 0, 255]), "{:?}", drawn[0]);
         assert!(near(drawn[1], [0, 200, 0, 255]), "{:?}", drawn[1]);
+    }
+
+    #[test]
+    fn shared_defines_cold_flag_cells_do_not_read_the_script_again() {
+        use std::sync::atomic::AtomicUsize;
+
+        let (folder, cells) = recorded_shield();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&reads);
+        let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap()
+            .with_read_trace(Arc::new(move |read| {
+                if read.path == b"common/defines/00_flags.lua" {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        let catalogue = dashboard_base::catalogue::tests::layers_catalogue(layers.clone());
+        catalogue.defines().unwrap();
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+        assert_eq!(flag_cells(&layers).unwrap(), cells);
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn shared_defines_give_flags_the_mod_cell_width_or_name_the_unreadable_size() {
+        let read = |value| {
+            let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+                "NDefines={NGraphics={}} for _,p in ipairs({'COUNTRY_FLAG_TEX','COUNTRY_FLAG_MEDIUM_TEX','COUNTRY_FLAG_SMALL_TEX'}) do NDefines.NGraphics[p..'_WIDTH']=4 NDefines.NGraphics[p..'_HEIGHT']=2 NDefines.NGraphics[p..'_MAX_SIZE']=16 end",
+                &format!("NDefines.NGraphics.COUNTRY_FLAG_TEX_WIDTH={value}"),
+                &[],
+            );
+            let resolved = source.content(&load.content().unwrap().options).unwrap();
+            FlagFolders::read(&resolved).map(|folders| folders.cells)
+        };
+        assert_eq!(read("11").unwrap(), [[11, 2], [4, 2], [4, 2]]);
+        let error = read("nil").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "NDefines.NGraphics.COUNTRY_FLAG_TEX_WIDTH is not a positive size");
     }
 
     fn recorded_shield() -> (dashboard_base::catalogue::tests::Folder, [[u32; 2]; 3]) {

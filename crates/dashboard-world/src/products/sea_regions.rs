@@ -113,7 +113,7 @@ impl SeaContent {
         let all: BTreeSet<u32> = regions.regions.keys().copied().collect();
         let sea = kinds.as_ref().map(|(sea, _)| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| sea.contains(province))).map(|(&id, _)| id).collect()).map_err(Clone::clone);
         let land = kinds.map(|(_, land)| regions.regions.iter().filter(|(_, region)| region.provinces.iter().any(|province| land.contains(province))).map(|(&id, _)| id).collect());
-        let ratio = content_reader_defines::defines::read(layers).and_then(|defines| defines.fixed5("NNavy", "DOMINANCE_CONTROLLED_THRESHOLD_RATIO")).map_err(|error| error.to_string());
+        let ratio = dashboard_base::catalogue::defines_for_layers(layers).and_then(|defines| defines.fixed5("NNavy", "DOMINANCE_CONTROLLED_THRESHOLD_RATIO")).map_err(|error| error.to_string());
         let content = Arc::new(Self { sea, land, all, minima, ratio, notes });
         state.held = Some((resolved, Arc::clone(&content)));
         Ok(content)

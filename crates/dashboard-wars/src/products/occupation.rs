@@ -7,7 +7,6 @@ pub mod states;
 mod tests;
 
 use dashboard_base::{Source, catalogue::{self, CachedResult, Catalogue}, products::LoadContext};
-use content_reader_defines::defines::Defines;
 use content_reader_key_names::equipment::Database;
 use content_reader_politics::occupation_laws::Laws;
 use replay_data::rows::{CountryLinkRow, StateResistanceRow, TableId};
@@ -77,8 +76,7 @@ impl Content {
                 Ok(_) => {}
                 Err(why) => warnings.push(format!("Occupation law content unavailable: {why}")),
             }
-            let defines: Result<Arc<Defines>, String> = layers.derived::<CachedResult<Defines>>().get_or_init(|| content_reader_defines::defines::read(layers)).map_err(|why| why.to_string());
-            match defines {
+            match cat.defines() {
                 Ok(defines) => red = defines.fixed5("NInterface", "GARRISON_STRENGTH_TO_SHOW_RED").map_err(|why| warnings.push(format!("Garrison red threshold unavailable: {why}"))).ok(),
                 Err(why) => warnings.push(format!("Garrison defines unavailable: {why}")),
             }

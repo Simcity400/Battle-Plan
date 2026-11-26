@@ -196,7 +196,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             graph: Rc::new(RefCell::new(fresh())),
             evaluator: OnceCell::new(),
             out: Description::default(),
-            scripted_stack: Vec::new(),
+            scripted: Default::default(),
             concise: None,
         };
         let item = content_reader_parser::parser::parse(b"fixture_list_state_division={}")

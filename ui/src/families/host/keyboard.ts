@@ -1,8 +1,146 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { MirrorModel } from '../contract.ts';
+import { extentTop, type RowExtents } from '../table/layout.ts';
+import { displayWindowToData } from '../table/rowSource.ts';
+import type { FamilyRowWindow } from './adapter.ts';
 
 export const TYPEAHEAD_RESET_MS = 700;
 
 export type FamilyNavTuple = readonly [key: string, name: string, index: number, treeState: number, parent: string, meta?: unknown, top?: number, height?: number];
+
+export interface TableOrdinalMetrics {
+  readonly count: number;
+  readonly totalHeight: number;
+  readonly extents?: RowExtents;
+  readonly gapBefore?: readonly number[];
+}
+
+function isGapOrdinal(ordinal: number, gapBefore: readonly number[] | undefined): boolean {
+  if (!gapBefore?.length) return false;
+  let lo = 0;
+  let hi = gapBefore.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const at = gapBefore[mid]! + mid;
+    if (at < ordinal) lo = mid + 1;
+    else if (at > ordinal) hi = mid;
+    else return true;
+  }
+  return false;
+}
+
+export function nearestDataOrdinal(
+  ordinal: number,
+  totalCount: number,
+  gapBefore: readonly number[] | undefined,
+  direction: 1 | -1,
+): number | null {
+  if (totalCount <= 0) return null;
+  const clamped = Math.max(0, Math.min(totalCount - 1, ordinal));
+  if (!gapBefore?.length) return clamped;
+  let at = clamped;
+  while (at >= 0 && at < totalCount && isGapOrdinal(at, gapBefore)) at += direction;
+  if (at >= 0 && at < totalCount) return at;
+  at = clamped - direction;
+  while (at >= 0 && at < totalCount && isGapOrdinal(at, gapBefore)) at -= direction;
+  return at >= 0 && at < totalCount ? at : null;
+}
+
+function tableRowHeight(
+  table: TableOrdinalMetrics,
+  nav: readonly FamilyNavTuple[],
+  fallbackRowHeight?: number,
+): number {
+  if (table.extents) return table.extents.rowHeight;
+  const sampleHeight = nav[0]?.[7];
+  if (sampleHeight && sampleHeight > 0) return sampleHeight;
+  if (fallbackRowHeight && fallbackRowHeight > 0) return fallbackRowHeight;
+  return table.count > 0 ? table.totalHeight / table.count : 0;
+}
+
+export function tableOrdinalBounds(
+  table: TableOrdinalMetrics,
+  nav: readonly FamilyNavTuple[],
+  ordinal: number,
+  fallbackRowHeight?: number,
+): { readonly top: number; readonly height: number } | null {
+  if (table.count <= 0 || ordinal < 0 || ordinal >= table.count) return null;
+  if (table.extents) {
+    const top = extentTop(table.extents, table.extents.rowHeight, ordinal);
+    const height = extentTop(table.extents, table.extents.rowHeight, ordinal + 1) - top;
+    return { top, height };
+  }
+  const rowHeight = tableRowHeight(table, nav, fallbackRowHeight);
+  if (!(rowHeight > 0)) return null;
+  return { top: ordinal * rowHeight, height: rowHeight };
+}
+
+export function tablePageSteps(
+  table: TableOrdinalMetrics,
+  nav: readonly FamilyNavTuple[],
+  currentOrdinal: number,
+  viewportHeight: number,
+  fallbackRowHeight?: number,
+): FamilyPageSteps {
+  const count = table.count;
+  if (count <= 1 || viewportHeight <= 0) return { down: 1, up: 1 };
+  const rowHeight = tableRowHeight(table, nav, fallbackRowHeight);
+  if (!(rowHeight > 0)) return { down: 1, up: 1 };
+  const at = Math.max(0, Math.min(count - 1, currentOrdinal));
+  const extents = table.extents ?? null;
+  const topOf = (ord: number) => (extents ? extentTop(extents, rowHeight, ord) : ord * rowHeight);
+  const reach = topOf(at) + viewportHeight;
+  let loDown = at;
+  let hiDown = count - 1;
+  while (loDown < hiDown) {
+    const mid = (loDown + hiDown + 1) >>> 1;
+    if (topOf(mid + 1) <= reach) loDown = mid;
+    else hiDown = mid - 1;
+  }
+  const floor = topOf(at + 1) - viewportHeight;
+  let loUp = 0;
+  let hiUp = at;
+  while (loUp < hiUp) {
+    const mid = (loUp + hiUp) >>> 1;
+    if (topOf(mid) < floor) loUp = mid + 1;
+    else hiUp = mid;
+  }
+  return { down: Math.max(1, loDown - at), up: Math.max(1, at - loUp) };
+}
+
+export function anchoredRowWindow(
+  anchor: { readonly first: number; readonly count: number },
+  table: TableOrdinalMetrics | undefined,
+): FamilyRowWindow {
+  const gapBefore = table?.gapBefore;
+  if (!gapBefore?.length) return anchor;
+  const data = displayWindowToData(anchor, gapBefore, table ? Math.max(0, table.count - gapBefore.length) : undefined);
+  return { ...anchor, dataFirst: data.first, dataCount: data.count };
+}
+
+export function resolveInstalledOrdinal(
+  nav: readonly FamilyNavTuple[],
+  ordinal: number,
+  table: TableOrdinalMetrics,
+  requested: FamilyRowWindow | null,
+  mirror: MirrorModel | undefined,
+  actionKeys: ReadonlyMap<string, unknown>,
+): FamilyNavTuple | null {
+  const exact = nav.find(item => item[2] === ordinal);
+  if (exact) return exact;
+  if (
+    requested
+    && requested.first + requested.count >= table.count
+    && nav.length > 0
+    && nav[0]![2] >= requested.first
+    && ordinal > nav[nav.length - 1]![2]
+    && mirror
+    && !mirror.rows.some(row => !row.groupHeader && row.name === 'Loading' && !actionKeys.has(row.key))
+  ) {
+    return nav[nav.length - 1]!;
+  }
+  return null;
+}
 
 export interface FamilyKeyboardOptions {
   readonly nav: readonly FamilyNavTuple[];
@@ -14,7 +152,7 @@ export interface FamilyKeyboardOptions {
   readonly typeaheadRef?: { current: { query: string; until: number } };
   readonly isPinnedTooltip: () => boolean;
   readonly onFocusKey: (key: string) => void;
-  readonly onFocusOrdinal?: (ordinal: number) => void;
+  readonly onFocusOrdinal?: (ordinal: number, direction?: 1 | -1) => void;
   readonly onActivate: (entry: FamilyNavTuple) => void;
   readonly onToggleTree?: (key: string) => void;
   readonly onContextMenu?: (entry: FamilyNavTuple | null) => boolean;
@@ -79,7 +217,7 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
     if (options.onFocusOrdinal) {
       const nextOrdinal = hasCurrentOrdinal ? currentOrdinal + delta : 0;
       const clamped = Math.max(0, Math.min(Math.max(0, totalCount - 1), nextOrdinal));
-      options.onFocusOrdinal(clamped);
+      options.onFocusOrdinal(clamped, delta < 0 ? -1 : 1);
       return;
     }
     if (!nav.length) return;
@@ -99,13 +237,13 @@ export function handleFamilyKeyDown(event: ReactKeyboardEvent | KeyboardEvent, o
   }
   if (event.key === 'Home') {
     event.preventDefault();
-    if (options.onFocusOrdinal) options.onFocusOrdinal(0);
+    if (options.onFocusOrdinal) options.onFocusOrdinal(0, 1);
     else if (nav.length) options.onFocusKey(nav[0]![0]);
     return;
   }
   if (event.key === 'End') {
     event.preventDefault();
-    if (options.onFocusOrdinal) options.onFocusOrdinal(Math.max(0, totalCount - 1));
+    if (options.onFocusOrdinal) options.onFocusOrdinal(Math.max(0, totalCount - 1), -1);
     else if (nav.length) options.onFocusKey(nav[nav.length - 1]![0]);
     return;
   }

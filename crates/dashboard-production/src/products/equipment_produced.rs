@@ -1014,12 +1014,8 @@ fn race_reply(
     };
     let amounts = if tags.is_empty() {
         Vec::new()
-    } else if params.models.is_some() {
-        line.totals_at(&tags, &parts_of, back, hour)?
     } else {
-        line.totals(&tags, &parts_of, back, hour, hour)?.into_iter().map(|runs| {
-            runs.into_iter().find(|run| run.first <= hour && hour <= run.last).map_or(Err(Gap::NotRecorded), |run| run.value)
-        }).collect()
+        line.totals_at(&tags, &parts_of, back, hour)?
     };
     let mut rows = Vec::with_capacity(tags.len());
     for (asked, amount) in tags.into_iter().zip(amounts) {
@@ -1154,6 +1150,38 @@ pub(super) mod tests {
     use replay_data::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, Recorded, RocketProductionOutputRow, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
+
+    #[test]
+    fn the_race_reads_each_date_once_for_all_its_countries() {
+        let src = two_producers_read_from("race-dated-reads", 1000, 1300, 1000, true, Some(1200), None);
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let ask = |countries: Vec<Country>, top: Option<u32>, from_hour: i32| {
+            let params = EquipmentProducedRaceParams {
+                branch_id: "1".into(), hour: 1300, countries, group: None, top, count: ProducedCount::Units,
+                measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: Some(from_hour), models: None,
+            };
+            let (reply, reads) = replay_recording::cells::count_reads(|| {
+                race_reply(&src, &query, &params, &LoadContext { content: None }, &false.into()).unwrap()
+            });
+            (reply, reads.get(&TableId::ProducedValues).copied().unwrap_or_default())
+        };
+        let (one, one_read) = ask(vec![], Some(1), 1120);
+        let (all, all_read) = ask(vec![], None, 1120);
+        assert_eq!(one.rows, all.rows[..1]);
+        let (selected, selected_read) = ask(vec![Country::Slot(7), Country::Slot(8)], None, 1120);
+        assert_eq!(selected, all);
+        let (with_tag, tag_read) = ask(vec![Country::Slot(7), Country::Slot(8), Country::from("DEU")], None, 1120);
+        assert_eq!(with_tag.rows[..2], all.rows);
+        assert_eq!(with_tag.rows[2].unknown, Some(ProducedUnknown::WindowIncomplete));
+        assert_eq!(with_tag.rows[2].value, None);
+        assert_eq!(all.rows.iter().map(|r| (r.tag.as_str(), r.value)).collect::<Vec<_>>(), [("ITA", Some(15)), ("DEU", Some(8))]);
+        assert_eq!((all.first_hour, all.last_hour, all.read_hour, all.observation_hour), (1292, 1300, Some(1292), Some(1120)));
+        let (refused, _) = ask(vec![], None, 999);
+        assert!(refused.rows.is_empty());
+        assert_eq!((refused.first_hour, refused.last_hour, refused.missing.as_deref()), (1300, 1300, Some(tiles::RANGE_BASELINE_UNRECORDED)));
+        eprintln!("ranked production reads: {all_read:?}; selected production reads: {selected_read:?}");
+        assert_eq!((one_read, selected_read), (all_read, tag_read), "selecting additional rows must share the same dated production reads");
+    }
 
     #[test]
     fn hover_counts_the_same_country_and_window_as_the_line() {

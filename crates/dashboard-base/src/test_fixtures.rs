@@ -135,17 +135,23 @@ pub fn source_with_content(
     frames: Vec<DecodedFrame>,
     root: &std::path::Path,
 ) -> (crate::Source, crate::products::LoadContext) {
+    source_with_mods(frames, root, &[])
+}
+
+pub fn source_with_mods(
+    frames: Vec<DecodedFrame>,
+    root: &std::path::Path,
+    mods: &[&str],
+) -> (crate::Source, crate::products::LoadContext) {
     std::fs::create_dir_all(root.join("user")).unwrap();
+    let launcher = serde_json::json!({"enabled_mods": mods, "disabled_dlcs": []}).to_string();
     for (path, text) in [
         ("hoi4.exe", "test"),
         (
             "user/settings.txt",
             "language=l_english force_pow2_textures=no",
         ),
-        (
-            "user/dlc_load.json",
-            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-        ),
+        ("user/dlc_load.json", &launcher),
     ] {
         std::fs::write(root.join(path), text).unwrap();
     }
@@ -171,6 +177,21 @@ pub fn source_with_content(
             content: Some(options),
         },
     )
+}
+
+pub fn recorded_mod_defines(
+    base: &str,
+    changes: &str,
+    files: &[(&str, &str)],
+) -> (visual_mods::Machine, crate::Source, crate::products::LoadContext) {
+    let machine = visual_mods::Machine::new(&uuid::Uuid::new_v4().to_string());
+    machine.write("common/defines/base.lua", base.as_bytes());
+    machine.write_mod("probe", "common/defines/z_probe.lua", changes.as_bytes());
+    for &(path, text) in files {
+        machine.write_mod("probe", path, text.as_bytes());
+    }
+    let (source, load) = source_with_mods(vec![source(1, 100, Some(1))], &machine.root, &["mod/probe.mod"]);
+    (machine, source, load)
 }
 
 pub struct Played {

@@ -4,6 +4,34 @@ use crate::triggers::Eval;
 #[cfg(test)]
 mod tests;
 
+#[derive(Default)]
+pub(super) struct Expansion<'a> {
+    active: std::collections::HashSet<(&'a [u8], Scope)>,
+    current: Option<&'a [u8]>,
+    bytes: usize,
+    pub(super) exhausted: Option<&'a [u8]>,
+}
+
+impl<'a> Expansion<'a> {
+    pub(super) fn charge_current(&mut self, bytes: usize) -> bool {
+        self.current.is_none_or(|name| self.charge(name, bytes))
+    }
+
+    fn charge(&mut self, name: &'a [u8], bytes: usize) -> bool {
+        self.bytes = self.bytes.saturating_add(bytes);
+        if self.bytes > dashboard_core::transport::MAX_REPLY_BYTES {
+            self.exhausted.get_or_insert(name);
+            return false;
+        }
+        true
+    }
+}
+
+struct TemplateFrame<'a> {
+    name: &'a [u8],
+    children: std::vec::IntoIter<(&'a Item, Vec<&'a Item>)>,
+}
+
 impl Renderer<'_, '_, '_> {
     fn adds_child(&self, item: &Item) -> bool {
         self.context
@@ -166,7 +194,7 @@ pub(super) fn own() -> Result<String, String> {
     Ok(String::new())
 }
 
-impl Renderer<'_, '_, '_> {
+impl<'c> Renderer<'_, 'c, '_> {
     pub(super) fn list_builder(
         &mut self,
         item: &Item,
@@ -200,38 +228,87 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         indent: usize,
     ) -> Result<String, String> {
-        if self.scripted_stack.len() >= 64 {
-            return Err(
-                "scripted-effect description depth exceeds the 64-level stack limit".into(),
-            );
+        let Some(frame) = self.template_frame(item, scopes.this)? else {
+            return Ok(String::new());
+        };
+        const RED_ZONE: usize = 64 * 1024;
+        const STACK_SEGMENT: usize = 1024 * 1024;
+        if stacker::remaining_stack().is_some_and(|left| left >= RED_ZONE) {
+            return Ok(self.expand_templates(frame, scopes, indent));
         }
+        if !self.scripted.charge(frame.name, STACK_SEGMENT) {
+            return Ok(String::new());
+        }
+        Ok(stacker::maybe_grow(RED_ZONE, STACK_SEGMENT, || {
+            self.expand_templates(frame, scopes, indent)
+        }))
+    }
+
+    fn expand_templates(
+        &mut self,
+        frame: TemplateFrame<'c>,
+        scopes: Scopes,
+        indent: usize,
+    ) -> String {
+        let mut frames = vec![frame];
+        let mut text = String::new();
+        while let Some(frame) = frames.last_mut() {
+            if self.scripted.exhausted.is_some() {
+                break;
+            }
+            let Some((child, branches)) = frame.children.next() else {
+                self.scripted.active.remove(&(frame.name, scopes.this));
+                frames.pop();
+                continue;
+            };
+            if self.effect_class(child)
+                .is_some_and(|class| class.vtable == effect_identity::SCRIPTED)
+            {
+                match self.template_frame(child, scopes.this) {
+                    Ok(Some(frame)) => frames.push(frame),
+                    Ok(None) => break,
+                    Err(why) => self.refuse(&key(child), why),
+                }
+                continue;
+            }
+            let parent = self.scripted.current.replace(frame.name);
+            let line = self.group_item(child, &branches, scopes, indent);
+            self.scripted.current = parent;
+            append_description(&mut text, &line);
+        }
+        if self.scripted.exhausted.is_some() {
+            self.scripted.active.clear();
+            return String::new();
+        }
+        text
+    }
+
+    fn template_frame(
+        &mut self,
+        item: &Item,
+        this: Scope,
+    ) -> Result<Option<TemplateFrame<'c>>, String> {
         let name = content_reader_parser::parser::c_string(item.key.as_deref().unwrap_or_default())
             .to_ascii_lowercase();
-        if self
-            .scripted_stack
-            .iter()
-            .any(|(active, this)| *active == name && *this == scopes.this)
-        {
+        let database = self.context.content.scripted_effects
+            .ok_or_else(|| self.content_gap("scripted effects"))?;
+        let (name, body) = database.bodies.get_key_value(&name)
+            .ok_or("registered scripted-effect template has no body")?;
+        let body = body.as_ref().map_err(Clone::clone)?;
+        if !self.scripted.active.insert((name, this)) {
             return Err(format!(
                 "scripted effect {} recursively calls an active template in the same THIS scope; this recursive expansion is unsupported",
-                String::from_utf8_lossy(&name)
+                String::from_utf8_lossy(name)
             ));
         }
-        let database = self
-            .context
-            .content
-            .scripted_effects
-            .ok_or_else(|| self.content_gap("scripted effects"))?;
-        let body = database
-            .bodies
-            .get(&name)
-            .ok_or("registered scripted-effect template has no body")?
-            .as_ref()
-            .map_err(Clone::clone)?;
-        self.scripted_stack.push((name, scopes.this));
-        let text = self.group(body, scopes, indent);
-        self.scripted_stack.pop();
-        Ok(text)
+        let bytes = std::mem::size_of::<Item>().saturating_mul(body.len().max(1));
+        if !self.scripted.charge(name, bytes) {
+            return Ok(None);
+        }
+        Ok(Some(TemplateFrame {
+            name,
+            children: self.attached(body, true).into_iter(),
+        }))
     }
 
     fn random_effect(
@@ -350,6 +427,9 @@ impl Renderer<'_, '_, '_> {
                 scopes,
                 0,
             );
+            if self.scripted.exhausted.is_some() {
+                return Ok(String::new());
+            }
             let body = trim_description(&body);
             if body.len() < 2 {
                 text.push_str(&self.localised(b"NO_EFFECT", &[], scopes, false)?);

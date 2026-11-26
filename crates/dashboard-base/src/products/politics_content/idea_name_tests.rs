@@ -2,6 +2,23 @@ use super::{CountryLook, IdeaCountry, IdeaName, PoliticsContent};
 use std::sync::Arc;
 
 #[test]
+fn shared_defines_choose_the_recorded_officer_seat_and_name_an_unreadable_list() {
+    let load = |changes| {
+        let (_machine, source, load) = crate::test_fixtures::recorded_mod_defines(
+            "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={'base_seat'}}}",
+            changes,
+            &[("common/ideas/probe.txt", "ideas={ probe_seat={ probe_advisor={} } }")],
+        );
+        super::politics_content(&source, load.content().unwrap())
+    };
+    let content = load("NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={'probe_seat'}").unwrap();
+    assert!(content.advisor("probe_advisor").unwrap().is_some());
+    let error = load("NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU=false").err().unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU is not a table");
+}
+
+#[test]
 fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (

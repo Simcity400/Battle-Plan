@@ -27,6 +27,7 @@ import type {
 } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { PagedRows } from '../table/rowSource.ts';
+import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, type TableDensity } from '../table/settings.ts';
 import {
   familyBinding,
   familyInspectToken,
@@ -54,12 +55,18 @@ import { boundDated, ownProof, StaticSupply } from './dated.ts';
 import { serializeTiledBySource } from '../sceneTiles.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
+  anchoredRowWindow,
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
   navPageSteps,
+  nearestDataOrdinal,
+  resolveInstalledOrdinal,
+  tableOrdinalBounds,
+  tablePageSteps,
   usableRowHeight,
   type FamilyNavTuple,
+  type TableOrdinalMetrics,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
 import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type DrawnKeys, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
@@ -131,6 +138,13 @@ function revealGridAxis(index: number, cellSize: number, scroll: number, span: n
   if (start < scroll) return start;
   if (end > scroll + span) return Math.max(0, end - span);
   return scroll;
+}
+
+function configuredTableRowHeight(fields: Readonly<Record<string, unknown>>, settings: unknown): number | undefined {
+  const density = (settings as { readonly density?: TableDensity } | undefined)?.density;
+  if (!density) return undefined;
+  const media = (fields.meta as { readonly rowHeightMode?: string } | undefined)?.rowHeightMode === 'media';
+  return (media ? MEDIA_ROW_HEIGHT : ROW_HEIGHT)[density];
 }
 
 function listboxItems(mirror: MirrorModel, selectedKey: string | null): readonly ListboxMirrorItem[] {
@@ -319,6 +333,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
   const windowRef = useRef<ReportedRowWindow | null>(null);
   const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
+  const anchoredWindowRef = useRef<{ readonly first: number; readonly count: number } | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
@@ -343,6 +358,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastViewportReportRef = useRef('');
 
   const focusedKeyRef = useRef<string | null>(null);
+  const pendingOrdinalRef = useRef<number | null>(null);
   const focusInsideRef = useRef(false);
   const focusAnchorRef = useRef({ x: 0, y: 0 });
   const regionDragRef = useRef<RegionRowRef | null>(null);
@@ -539,6 +555,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         focusInsideRef,
         restoringFocusRef,
         lastMirrorKeyRef,
+        holdFocus: pendingOrdinalRef.current !== null,
       });
       if (moved) queueMicrotask(() => bindRef.current());
       return;
@@ -595,7 +612,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
-    const asked = requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
+    const anchor = anchoredWindowRef.current;
+    const fields = fieldsNow();
+    const asked = anchor
+      ? anchoredRowWindow(anchor, fields.table as TableOrdinalMetrics | undefined)
+      : requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fields);
     const held = requestedWindowRef.current;
     const rowWindow = sameRowWindow(held, asked) ? held : asked;
 
@@ -717,6 +738,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       menu: !!cur.contextMenuItems,
     }, parseGridKey);
     if (!effect) return false;
+    pendingOrdinalRef.current = null;
     switch (effect.kind) {
       case 'menu': {
         const items = cur.contextMenuItems!(effect.hit);
@@ -766,13 +788,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const vp = viewportRef.current;
     const rows = { scrollTop: vp.scrollTop, height: usableRowHeight(fieldsNow(), vp.height) };
     const moved = scrollRangeIntoView(bodyRef.current, rows, top, height, scrollGeometryRef.current);
-    vp.scrollTop = rows.scrollTop;
+    vp.scrollTop = bodyRef.current && moved ? Math.floor(bodyRef.current.scrollTop) : rows.scrollTop;
     return moved;
   }, []);
 
   const focusRowByKey = useCallback((key: string) => {
     const entry = navNow().find(item => item[0] === key);
     if (!entry) return;
+    pendingOrdinalRef.current = null;
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
@@ -787,6 +810,41 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     }
     bindRef.current();
   }, [revealRow]);
+
+  const focusRowByOrdinal = useCallback((ordinal: number, direction: 1 | -1 = 1) => {
+    const record = recordRef.current;
+    const fields = record?.fields ?? EMPTY_FIELDS;
+    const table = fields.table as TableOrdinalMetrics | undefined;
+    if (!record || !table || fields.panes) return;
+    const target = nearestDataOrdinal(ordinal, table.count, table.gapBefore, direction);
+    if (target === null) return;
+    const entry = resolveInstalledOrdinal(
+      record.nav,
+      target,
+      table,
+      requestedWindowRef.current,
+      fields.mirror as MirrorModel | undefined,
+      record.picture.actionKeys,
+    );
+    if (entry) {
+      if (!anchoredWindowRef.current && entry[2] < target && requestedWindowRef.current) {
+        anchoredWindowRef.current = { first: requestedWindowRef.current.first, count: requestedWindowRef.current.count };
+      }
+      pendingOrdinalRef.current = null;
+      focusRowByKey(entry[0]);
+      return;
+    }
+    anchoredWindowRef.current = null;
+    const bounds = tableOrdinalBounds(table, record.nav, target, configuredTableRowHeight(fields, latestRef.current.settings));
+    if (!bounds) return;
+    pendingOrdinalRef.current = target;
+    const node = bodyRef.current;
+    const vp = viewportRef.current;
+    const rows = { scrollTop: vp.scrollTop, height: usableRowHeight(fields, vp.height) };
+    const moved = scrollRangeIntoView(node, rows, bounds.top, bounds.height, scrollGeometryRef.current);
+    vp.scrollTop = node && moved ? Math.floor(node.scrollTop) : rows.scrollTop;
+    showViewRef.current();
+  }, [focusRowByKey]);
 
   const focusGridCell = useCallback((row: number, column: number) => {
     const curAdapter = latestRef.current.adapter;
@@ -811,6 +869,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     regionDragRef.current = null;
     expansionRef.current = NO_EXPANSION;
     focusedKeyRef.current = null;
+    pendingOrdinalRef.current = null;
+    anchoredWindowRef.current = null;
     inspectedKeyRef.current = null;
     inspectedHitRef.current = null;
     lastMirrorObjRef.current = null;
@@ -996,24 +1056,38 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
         zoomWindow: vp.zoomWindow,
       };
-      const installedUpdate = reconcileInstalledRowWindow(
-        windowRef.current,
-        requestedWindowRef.current,
-        activeAdapter,
-        cur.plan,
-        installedViewport,
-        cur.settings,
-        fields,
-        installed.hour,
-      );
-      requestedWindowRef.current = installedUpdate.requested;
-      if (!installedUpdate.requested) {
-        windowRef.current = null;
-      } else if (installedUpdate.report) {
-        windowRef.current = installedUpdate.report;
-        cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
+      const anchored = anchoredWindowRef.current;
+      if (anchored) {
+        const nextWindow = anchoredRowWindow(anchored, fields.table as TableOrdinalMetrics | undefined);
+        const changed = !sameRowWindow(requestedWindowRef.current, nextWindow);
+        const requested = changed ? nextWindow : requestedWindowRef.current;
+        requestedWindowRef.current = requested;
+        const report = nextReportedRowWindow(windowRef.current, requested, installed.hour, cur.plan);
+        if (report) {
+          windowRef.current = report;
+          cur.onWindowChange?.(report.window, report.hour);
+        }
+        if (changed) queueMicrotask(() => showViewRef.current());
+      } else {
+        const installedUpdate = reconcileInstalledRowWindow(
+          windowRef.current,
+          requestedWindowRef.current,
+          activeAdapter,
+          cur.plan,
+          installedViewport,
+          cur.settings,
+          fields,
+          installed.hour,
+        );
+        requestedWindowRef.current = installedUpdate.requested;
+        if (!installedUpdate.requested) {
+          windowRef.current = null;
+        } else if (installedUpdate.report) {
+          windowRef.current = installedUpdate.report;
+          cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
+        }
+        if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
       }
-      if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
 
       if (activeAdapter.chromeState) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
@@ -1023,7 +1097,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         }
       }
 
-      const table = fields.table as { readonly count: number } | undefined;
+      const table = fields.table as TableOrdinalMetrics | undefined;
       if (table && table !== lastTableRef.current) {
         lastTableRef.current = table;
         if (lastRowCountRef.current !== table.count) {
@@ -1033,18 +1107,65 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         const hovered = inspectedKeyRef.current;
         if (hovered && !record.nav.some(entry => entry[0] === hovered)) clearHoverRef.current();
       }
-      if (focusInsideRef.current && focusedKeyRef.current && navNow() !== lastFocusNavRef.current) {
+      let pendingFocused = false;
+      const pendingOrdinal = pendingOrdinalRef.current;
+      if (pendingOrdinal !== null) {
+        if (!table || fields.panes || table.count <= 0 || pendingOrdinal >= table.count) {
+          pendingOrdinalRef.current = null;
+        } else {
+          const entry = resolveInstalledOrdinal(
+            record.nav,
+            pendingOrdinal,
+            table,
+            requestedWindowRef.current,
+            fields.mirror as MirrorModel | undefined,
+            record.picture.actionKeys,
+          );
+          if (entry) {
+            if (entry[2] < pendingOrdinal && requestedWindowRef.current) {
+              anchoredWindowRef.current = { first: requestedWindowRef.current.first, count: requestedWindowRef.current.count };
+            }
+            pendingOrdinalRef.current = null;
+            focusedKeyRef.current = entry[0];
+            lastFocusNavRef.current = record.nav;
+            revealRow(entry);
+            pendingFocused = true;
+          }
+        }
+      }
+      if (pendingOrdinalRef.current === null && focusInsideRef.current && focusedKeyRef.current && navNow() !== lastFocusNavRef.current) {
         lastFocusNavRef.current = navNow();
         const focusedKey = focusedKeyRef.current;
         const entry = navNow().find(item => item[0] === focusedKey);
         if (entry && revealRow(entry)) queueMicrotask(() => bindRef.current());
       }
 
-      const mirror = mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
+      const mirror = pendingFocused && fields.mirror
+        ? fields.mirror as MirrorModel
+        : mirrorToSync(fields.mirror as MirrorModel | undefined, lastMirrorObjRef.current, record.selectedKey, lastMirrorSelectedRef.current);
       if (mirror !== undefined) {
         lastMirrorObjRef.current = mirror;
         lastMirrorSelectedRef.current = record.selectedKey;
         syncMirrorRef.current(mirror);
+      }
+      if (pendingFocused) {
+        if ((activeAdapter.mirrorFocus ?? 'body') === 'rows' && focusedKeyRef.current) {
+          const tr = mirrorBodyRef.current?.querySelector<HTMLTableRowElement>(mirrorRowSelector(focusedKeyRef.current));
+          if (tr && document.activeElement !== tr) {
+            focusInsideRef.current = true;
+            restoringFocusRef.current = true;
+            try {
+              for (const sibling of mirrorBodyRef.current!.querySelectorAll<HTMLTableRowElement>('tr[tabindex="0"]')) {
+                if (sibling !== tr) sibling.tabIndex = -1;
+              }
+              tr.tabIndex = 0;
+              tr.focus({ preventScroll: true });
+            } finally {
+              restoringFocusRef.current = false;
+            }
+          }
+        }
+        queueMicrotask(() => bindRef.current());
       }
 
       const phases = fields.phases;
@@ -1167,6 +1288,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           const left = Math.floor(node.scrollLeft);
           const top = Math.floor(node.scrollTop);
           if (left === viewportRef.current.scrollLeft && top === viewportRef.current.scrollTop) return;
+          pendingOrdinalRef.current = null;
+          anchoredWindowRef.current = null;
           viewportRef.current.scrollLeft = left;
           viewportRef.current.scrollTop = top;
           showViewRef.current();
@@ -1177,6 +1300,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     bindRef.current();
 
     return () => {
+      pendingOrdinalRef.current = null;
+      anchoredWindowRef.current = null;
       resolveInstalledRef.current = () => recordRef.current?.picture ?? null;
       describe(null);
       if (onScroll) node.removeEventListener('scroll', onScroll);
@@ -1210,6 +1335,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       vp.width = fit.width;
       vp.height = fit.height;
       vp.dpr = fit.dpr;
+      anchoredWindowRef.current = null;
       if (latestRef.current.hasChrome) setChromeWidth(fit.width);
       notifyViewportChange();
       bindRef.current();
@@ -1229,6 +1355,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       observer.disconnect();
     };
   }, [notifyViewportChange, refreshFocusAnchor]);
+
+  useLayoutEffect(() => {
+    pendingOrdinalRef.current = null;
+    anchoredWindowRef.current = null;
+  }, [plan, declaration, view, options, settings]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();
@@ -1292,6 +1423,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [onDiagnostics, extraWarnings, meta.warnings, meta.notes]);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent) => {
+    const priorPending = pendingOrdinalRef.current;
+    if (event.key !== 'Shift' && event.key !== 'Control' && event.key !== 'Alt' && event.key !== 'Meta') {
+      pendingOrdinalRef.current = null;
+    }
     const picture = resolveInstalledRef.current();
     const activeAdapter = latestRef.current.adapter;
     const gate = gateNow();
@@ -1356,10 +1491,27 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       return;
     }
 
+    const table = fields.table as TableOrdinalMetrics | undefined;
+    const pagedTable = !!table && !fields.panes && requestedWindowRef.current !== null;
+    const focusedKey = priorPending !== null ? null : focusedKeyRef.current;
+    const rowViewportHeight = usableRowHeight(fields, viewportRef.current.height);
+    const currentOrdinal = priorPending !== null
+      ? priorPending
+      : (focusedKey !== null ? keyNav.find(item => item[0] === focusedKey)?.[2] : undefined) ?? 0;
+
     handleFamilyKeyDown(event, {
       nav: keyNav,
-      focusedKey: focusedKeyRef.current,
-      pageStep: navPageSteps(keyNav, focusedKeyRef.current, usableRowHeight(fields, viewportRef.current.height)),
+      ...(pagedTable
+        ? {
+            totalCount: table.count,
+            ...(priorPending !== null ? { focusedIndex: priorPending } : {}),
+            onFocusOrdinal: focusRowByOrdinal,
+          }
+        : {}),
+      focusedKey,
+      pageStep: pagedTable
+        ? tablePageSteps(table, keyNav, currentOrdinal, rowViewportHeight, configuredTableRowHeight(fields, latestRef.current.settings))
+        : navPageSteps(keyNav, focusedKey, rowViewportHeight),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
@@ -1370,9 +1522,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       onTogglePinTooltip: key => { run('pin', key); },
       onUnpinTooltip: unpin,
     });
-  }, [say, dispatch, gateNow, focusGridCell, focusRowByKey, publishHoverHour, refreshFocusAnchor, tooltips]);
+  }, [say, dispatch, gateNow, focusGridCell, focusRowByKey, focusRowByOrdinal, publishHoverHour, refreshFocusAnchor, tooltips]);
 
   const onFocus = useCallback(() => {
+    pendingOrdinalRef.current = null;
     focusInsideRef.current = true;
     refreshFocusAnchor();
     const activeAdapter = latestRef.current.adapter;
@@ -1388,6 +1541,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [refreshFocusAnchor]);
 
   const onBlur = useCallback(() => {
+    pendingOrdinalRef.current = null;
     focusInsideRef.current = false;
     if (!inspectedKeyRef.current) tooltips.hideIfUnpinned();
     bindRef.current();
@@ -1395,6 +1549,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const onRowFocus = useCallback((event: ReactFocusEvent<HTMLTableElement>) => {
     if (restoringFocusRef.current) return;
+    pendingOrdinalRef.current = null;
     const wasInside = focusInsideRef.current;
     focusInsideRef.current = true;
     refreshFocusAnchor();
@@ -1408,6 +1563,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const onRowBlur = useCallback((event: ReactFocusEvent<HTMLTableElement>) => {
     if (restoringFocusRef.current) return;
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    pendingOrdinalRef.current = null;
     focusInsideRef.current = false;
     if (!inspectedKeyRef.current) tooltips.hideIfUnpinned();
     bindRef.current();

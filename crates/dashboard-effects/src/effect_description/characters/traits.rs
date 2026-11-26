@@ -232,13 +232,11 @@ impl Renderer<'_, '_, '_> {
         let empty = Scopes::empty();
         let mut targets = String::new();
         for target in &trait_.targeted {
-            let tag = target.tag.as_deref().ok_or_else(|| format!(
-                "country trait {} targeted-country operand is not retained by the shared catalogue", trait_.token,
-            ))?;
-            let country = self
-                .evaluator()?
-                .scoped_country(tag.as_bytes(), empty)
+            let country = target.operand.as_deref()
+                .map(|operand| self.evaluator()?.scoped_country(operand, empty))
+                .transpose()
                 .map_err(|why| why.to_string())?
+                .flatten()
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
                 let name = content_reader_localisation::localisation::crt_case_text(

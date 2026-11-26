@@ -12,7 +12,7 @@ pub fn scaled_static_modifiers(
         graph: Rc::new(RefCell::new(EventScopes::new(Vec::new()))),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let (_, modifiers) = renderer.static_modifier(token)?;

@@ -2,6 +2,7 @@ use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
 use crate::scripted_text::EffectDescriberFactory;
 use crate::{artwork::png_url, invalid};
+use content_reader_defines::defines::Defines;
 use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
@@ -712,6 +713,59 @@ impl replay_spool::Spooled for Catalogue {
     }
 }
 
+#[derive(Default)]
+struct LayerDefines {
+    settled: std::sync::OnceLock<(Result<Defines, Arc<io::Error>>, Diagnostics)>,
+    reading: Mutex<()>,
+}
+
+impl LayerDefines {
+    fn entry(
+        (result, diagnostics): &(Result<Defines, Arc<io::Error>>, Diagnostics),
+    ) -> io::Result<&Defines> {
+        diagnostics.credit();
+        match result {
+            Ok(defines) => Ok(defines),
+            Err(error) => Err(io::Error::new(error.kind(), Arc::clone(error))),
+        }
+    }
+
+    fn read(&self, layers: &ResolvedLayers) -> io::Result<&Defines> {
+        if let Some(entry) = self.settled.get() {
+            return Self::entry(entry);
+        }
+        let _guard = self
+            .reading
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = self.settled.get() {
+            return Self::entry(entry);
+        }
+        let (result, diagnostics) =
+            diagnostics::capture(|| content_reader_defines::defines::read(layers));
+        match result {
+            Ok(defines) => {
+                let entry = self.settled.get_or_init(|| (Ok(defines), diagnostics));
+                Self::entry(entry)
+            }
+            Err(error) if content_reader_defines::defines::is_script_error(&error) => {
+                let entry = self
+                    .settled
+                    .get_or_init(|| (Err(Arc::new(error)), diagnostics));
+                Self::entry(entry)
+            }
+            Err(error) => {
+                diagnostics.credit();
+                Err(error)
+            }
+        }
+    }
+}
+
+pub fn defines_for_layers(layers: &ResolvedLayers) -> io::Result<Defines> {
+    layers.derived::<LayerDefines>().read(layers).cloned()
+}
+
 pub struct Catalogue {
     pub content: Arc<ResolvedContent>,
     pub presentation: Presentation,
@@ -733,7 +787,7 @@ pub struct Catalogue {
     findings: Option<Mutex<BTreeSet<Finding>>>,
     effect_describer: Option<EffectDescriberFactory>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
-    defines: Once<Result<content_reader_defines::defines::Defines, String>>,
+    defines: Arc<LayerDefines>,
     war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
     recorded: Once<Arc<Catalogue>>,
@@ -863,6 +917,7 @@ impl Catalogue {
             ));
         }
         Self {
+            defines: content.layers.derived(),
             content,
             presentation,
             localisation,
@@ -877,7 +932,6 @@ impl Catalogue {
             findings: None,
             effect_describer,
             scripted: Once::new(),
-            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
@@ -1041,11 +1095,12 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
-    pub fn defines(&self) -> Result<&content_reader_defines::defines::Defines, String> {
-        self.defines
-            .get_or_init(|| content_reader_defines::defines::read(&self.content.layers).map_err(|why| why.to_string()))
-            .as_ref()
-            .map_err(Clone::clone)
+    pub fn defines(&self) -> Result<&Defines, String> {
+        self.read_defines().map_err(|why| why.to_string())
+    }
+
+    pub fn read_defines(&self) -> io::Result<&Defines> {
+        self.defines.read(&self.content.layers)
     }
 
     pub fn war_participation_factors(
@@ -2180,6 +2235,105 @@ pub mod tests {
         assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 37.0);
     }
 
+    #[test]
+    fn shared_defines_read_ahead_and_layer_callers_parse_once_per_stack() {
+        let stack = |value| {
+            let script = format!("NDefines={{Probe={{Value={value}}}}}");
+            let (layers, folder) = write_folder(&[("common/defines/probe.lua", &script)]);
+            (layers_catalogue(layers), folder)
+        };
+        let (first, _first_folder) = stack(37);
+        let (second, _second_folder) = stack(83);
+        for (catalogue, expected) in [(&first, 37), (&second, 83)] {
+            let layers = &catalogue.content.layers;
+            let _generation = layers.enter_generation();
+            let parses = || layers.product_counts().iter()
+                .filter(|product| product.parser == "defines Lua 5.1")
+                .map(|product| product.builds)
+                .sum::<u64>();
+            assert_eq!(parses(), 0);
+            catalogue.read_readers();
+            assert_eq!(parses(), 1);
+            assert!(catalogue.defines.settled.get().is_some());
+            assert_eq!(defines_for_layers(layers).unwrap().int32("Probe", "Value").unwrap(), expected);
+            assert_eq!(catalogue.defines().unwrap().int32("Probe", "Value").unwrap(), expected);
+            assert_eq!(parses(), 1);
+        }
+    }
+
+    #[test]
+    fn shared_defines_keep_a_layers_first_script_error_for_the_catalogue() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for scoped in [false, true] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let count = Arc::clone(&reads);
+            let (layers, _folder) = write_folder(&[("common/defines/refused.lua", "error('refused probe')")]);
+            let layers = layers.with_read_trace(Arc::new(move |read| {
+                if read.path == b"common/defines/refused.lua" {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+            let _generation = scoped.then(|| layers.enter_generation());
+            let first = defines_for_layers(&layers).unwrap_err();
+            assert_eq!(first.kind(), io::ErrorKind::InvalidData);
+            assert!(content_reader_defines::defines::is_script_error(&first));
+            let reason = first.to_string();
+            assert!(reason.contains("common/defines/refused.lua") && reason.contains("refused probe"), "{reason}");
+            assert_eq!(reads.load(Ordering::Relaxed), 1);
+            let catalogue = layers_catalogue(layers.clone());
+            let again = catalogue.read_defines().unwrap_err();
+            assert_eq!(again.kind(), first.kind());
+            assert!(content_reader_defines::defines::is_script_error(&again));
+            assert_eq!(catalogue.defines().unwrap_err(), reason);
+            assert_eq!(defines_for_layers(&layers).unwrap_err().to_string(), reason);
+            assert_eq!(reads.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn shared_defines_retry_after_io_and_verification_failures_on_both_paths() {
+        let source = "NDefines={Probe={Value=42}}";
+        let (layers, folder) = write_folder(&[("common/defines/probe.lua", source)]);
+        let catalogue = layers_catalogue(layers.clone());
+        let file = folder.0.join("common/defines/probe.lua");
+
+        let (io_err, cat_err) = {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let _locked = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&file)
+                    .unwrap();
+                (defines_for_layers(&layers).unwrap_err(), catalogue.read_defines().unwrap_err())
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+                let first = defines_for_layers(&layers).unwrap_err();
+                let second = catalogue.read_defines().unwrap_err();
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+                (first, second)
+            }
+        };
+        assert_ne!(io_err.kind(), io::ErrorKind::InvalidData, "{io_err}");
+        assert!(!content_reader_defines::defines::is_script_error(&io_err), "{io_err}");
+        assert_ne!(cat_err.kind(), io::ErrorKind::InvalidData, "{cat_err}");
+
+        std::fs::write(&file, "NDefines={Probe={Value=99}}").unwrap();
+        let changed = catalogue.read_defines().unwrap_err();
+        assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
+        assert!(changed.to_string().contains("changed since verification"), "{changed}");
+        assert!(!content_reader_defines::defines::is_script_error(&changed));
+
+        std::fs::write(&file, source).unwrap();
+        assert_eq!(defines_for_layers(&layers).unwrap().int32("Probe", "Value").unwrap(), 42);
+        assert_eq!(catalogue.defines().unwrap().int32("Probe", "Value").unwrap(), 42);
+    }
+
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
         let (layers, folder) = write_folder(files);
         (layers_catalogue(layers), folder)
@@ -2210,6 +2364,7 @@ pub mod tests {
         let localisation = content_reader_localisation::localisation::read(&layers, "english").unwrap();
         let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         Catalogue {
+            defines: layers.derived(),
             content: Arc::new(ResolvedContent {
                 layers,
                 stats: Default::default(),
@@ -2229,7 +2384,6 @@ pub mod tests {
             findings: None,
             effect_describer: None,
             scripted: Once::new(),
-            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
