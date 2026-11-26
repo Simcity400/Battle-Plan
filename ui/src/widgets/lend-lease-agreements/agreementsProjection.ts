@@ -44,9 +44,14 @@ export function fuelDelivered(terms: Pick<LeaseTerms, 'lastFuelDeliveredRaw'>, f
   return BigInt(terms.lastFuelDeliveredRaw) !== 0n || moved(fuelSent) || moved(fuelLost);
 }
 
+const FUEL_UNITS_FORMAT = { decimals: 0, maxDecimals: 15 } as const;
+
 export function fuelUnits(value: Value): Value {
   if (value.kind !== 'known') return value;
-  return whole(typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(Number(value.value))), FUEL_QUANTITY);
+  const raw = typeof value.value === 'bigint' ? value.value : BigInt(Math.trunc(Number(value.value)));
+  const units = raw / FUEL_QUANTITY;
+  if (units !== 0n) return knownValue(units);
+  return raw === 0n ? zeroValue(0n) : knownValue(Number(raw) / Number(FUEL_QUANTITY));
 }
 
 export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered' | 'sunk' | 'lastFuelDeliveredRaw'>, fuelSent: Value, fuelLost: Value): Value {
@@ -112,10 +117,10 @@ function agreementRows(
     ...(terms.giverMissing !== null ? [{ label: 'Giver', value: notRecorded(terms.giverMissing) }] : []),
     ...(terms.receiverMissing !== null ? [{ label: 'Receiver', value: notRecorded(terms.receiverMissing) }] : []),
   ];
-  const extra = (lost: Value, schedule: string | null): readonly TooltipExtraRow[] => [
+  const extra = (lost: Value, schedule: string | null, lostFormat: 'integer' | typeof FUEL_UNITS_FORMAT = 'integer'): readonly TooltipExtraRow[] => [
     ...unnamed,
     ...(schedule ? [{ label: 'Schedule', value: knownValue(schedule), divider: true }] : []),
-    { label: 'Lost on the way', value: lost, format: 'integer' },
+    { label: 'Lost on the way', value: lost, format: lostFormat },
   ];
   const rows: TableRow[] = [];
   const keys = [...new Set([...monthly.keys(), ...percentage.keys(), ...once.keys(), ...delivered.keys(), ...sunk.keys()])];
@@ -154,12 +159,12 @@ function agreementRows(
         country,
         equipment: { value: knownValue('Fuel') },
         monthly: { value: notApplicable(schedule) },
-        delivered: { value: fuelUnits(sent), format: 'integer' },
+        delivered: { value: fuelUnits(sent), format: FUEL_UNITS_FORMAT },
         last,
         since,
       },
       tooltipTitle: pair,
-      tooltipExtra: () => extra(fuelUnits(fuelLost), schedule),
+      tooltipExtra: () => extra(fuelUnits(fuelLost), schedule, FUEL_UNITS_FORMAT),
       meta,
     });
   }

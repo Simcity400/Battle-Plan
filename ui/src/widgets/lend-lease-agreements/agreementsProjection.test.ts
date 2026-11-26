@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateMarketReply } from '../../dashboard/market.ts';
+import { liveKey } from '../../charts/live.ts';
+import { FUEL_QUANTITY, validateMarketReply } from '../../dashboard/market.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { resolveTableRows } from '../../families/table/model.ts';
+import { tableDefaults } from '../../families/table/settings.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
+import { COLUMNS, TABLE_BASE } from './definition.ts';
 import { agreementsProjection, emptyAgreements, fuelDelivered, fuelUnits, lastDelivery } from './agreementsProjection.ts';
 
 const item = (amountRaw: string) => ({ variant: '6', name: null, amountRaw });
@@ -29,6 +34,43 @@ test('an agreement shows its fuel when fuel was delivered, scheduled or not', ()
   assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '0' }, notRecorded('fuel unread'), zeroValue(0n)), false);
   assert.equal(fuelDelivered({ lastFuelDeliveredRaw: '0' }, zeroValue(0n), knownValue(32_768n)), true, 'fuel lost on the way was sent');
   assert.deepEqual(fuelUnits(knownValue(2n ** 53n + 32_767n)), knownValue(2n ** 53n / 32_768n), 'whole units are divided exactly');
+  assert.deepEqual(fuelUnits(knownValue(1n)), knownValue(1 / 32_768), 'smallest positive raw fuel stays numeric and nonzero');
+  assert.deepEqual(fuelUnits(knownValue(-1n)), knownValue(-1 / 32_768), 'smallest negative raw fuel stays numeric with its sign');
+  assert.deepEqual(fuelUnits(zeroValue(0n)), zeroValue(0n), 'recorded zero stays zero');
+  const fuelLease = { key: '2', id: '10', giver: 'GER', giverMissing: null, receiver: 'ITA', receiverMissing: null, revision: '1', activeSince: 100, lastDelivery: 110,
+    monthly: [], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '1', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' };
+  const negFuelLease = { ...fuelLease, key: '3', fuelDailyRaw: '-1' };
+  const mixedFuelLease = { ...fuelLease, key: '4', fuelDailyRaw: String(FUEL_QUANTITY + 16_384n) };
+  const fuelReply = { branchId: '1', offers: null, contracts: null, agreements: [negFuelLease, fuelLease, mixedFuelLease], agreementsMissing: null, purchasesMissing: null, unattributed: 0, refused: null, variants: [], icons: [], warnings: [] };
+  const liveValues = new Map<string, bigint>([
+    [liveKey('3', 'fuelSent'), -1n],
+    [liveKey('3', 'fuelLost'), 0n],
+    [liveKey('2', 'fuelSent'), 1n],
+    [liveKey('2', 'fuelLost'), 1n],
+    [liveKey('4', 'fuelSent'), FUEL_QUANTITY + 16_384n],
+    [liveKey('4', 'fuelLost'), 0n],
+  ]);
+  const live = { get: (k: string) => liveValues.get(k), missing: () => 'Not read' };
+  const fuelModel = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', fuelReply]]), live: new Map([['main', live]]) }), { direction: 'sent' });
+  assert.deepEqual(
+    fuelModel.rows.map(row => row.cells.monthly!.value),
+    [
+      { kind: 'notApplicable', reason: 'Daily -0.000030517578125' },
+      { kind: 'notApplicable', reason: 'Daily 0.000030517578125' },
+      { kind: 'notApplicable', reason: 'Daily 1.5' },
+    ],
+    'lend-lease daily fuel schedule preserves exact positive, negative, and mixed amounts',
+  );
+  assert.deepEqual(
+    fuelModel.rows.map(row => {
+      const cell = row.cells.delivered!;
+      return cell.value.kind === 'known' ? formatScalar(cell.value.value, cell.format) : cell.value.kind;
+    }),
+    ['\u22120.000030517578125', '0.000030517578125', '1'],
+    'subunit live fuel deliveries render exact nonzero text instead of zero',
+  );
+  const sorted = resolveTableRows(fuelModel, tableDefaults(COLUMNS, { ...TABLE_BASE, sort: { column: 'delivered', direction: 'descending' } })).filter(row => row.kind === 'data');
+  assert.deepEqual(sorted.map(row => row.key), ['4:fuel', '2:fuel', '3:fuel'], 'subunit fuel deliveries sort numerically');
 });
 
 test('an empty list is no lend-lease only when every agreement was read and placed', () => {
