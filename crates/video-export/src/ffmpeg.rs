@@ -182,6 +182,7 @@ pub struct FfmpegSink {
     stderr_thread: Option<JoinHandle<String>>,
     frames: u64,
     audio_frames: u64,
+    finished: bool,
 }
 
 impl FfmpegSink {
@@ -291,6 +292,7 @@ impl FfmpegSink {
             stderr_thread,
             frames: 0,
             audio_frames: 0,
+            finished: false,
         })
     }
 
@@ -301,6 +303,28 @@ impl FfmpegSink {
         if self.video_output != self.staged_final {
             let _ = fs::remove_file(&self.video_output);
         }
+    }
+
+    fn abort_inner(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        drop(self.stdin.take());
+        drop(self.pcm_writer.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
+        self.cleanup_temps();
+        let _ = fs::remove_file(&self.staged_final);
+    }
+}
+
+impl Drop for FfmpegSink {
+    fn drop(&mut self) {
+        self.abort_inner();
     }
 }
 
@@ -436,23 +460,16 @@ impl VideoSink for FfmpegSink {
                 }));
             }
         }
+        self.finished = true;
         Ok(Finished {
-            path: self.staged_final,
+            path: self.staged_final.clone(),
             frames: self.frames,
             audio_frames: self.audio_frames,
-            backend: self.encoder_name,
+            backend: self.encoder_name.clone(),
         })
     }
 
     fn abort(mut self: Box<Self>) {
-        drop(self.stdin.take());
-        drop(self.pcm_writer.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(handle) = self.stderr_thread.take() {
-            let _ = handle.join();
-        }
-        self.cleanup_temps();
-        let _ = fs::remove_file(&self.staged_final);
+        self.abort_inner();
     }
 }

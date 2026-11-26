@@ -243,7 +243,7 @@ pub(crate) fn run_headless(
             return Ok(());
         }
         if let Some(reason) = lost.reason() {
-            viewer.cancel_video_export();
+            viewer.fail_video_export(reason.clone());
             return Err(reason);
         }
         let mut raw = egui::RawInput {

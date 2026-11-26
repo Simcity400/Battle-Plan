@@ -34,7 +34,11 @@ impl OfflineMixer {
     }
 
     pub fn step_frame(&mut self, frame: &Frame, stereo_frames: usize, out: &mut Vec<i16>) {
-        self.engine.frame(frame);
+        let mut timed = frame.clone();
+        if timed.elapsed <= 0.0 {
+            timed.elapsed = stereo_frames as f32 / crate::engine::RATE as f32;
+        }
+        self.engine.frame(&timed);
         self.satisfy_loads();
         let needed_samples = stereo_frames * 2;
         while self.pending.len() < needed_samples {
@@ -121,5 +125,64 @@ mod tests {
             total_frames += out.len() / 2;
         }
         assert_eq!(total_frames, 44_100);
+    }
+
+    #[test]
+    fn offline_mixer_advances_effect_elapsed_time_for_fading_sounds() {
+        use crate::{Group, Mix, Sound, engine::Samples};
+        use content_reader_sound::sound::{Effect, Overflow};
+        let mut catalog = Catalog::default();
+        catalog.effects.push(Effect {
+            name: "test_fade".into(),
+            volume: 1.0,
+            fade_in: 0.25,
+            fade_out: 0.0,
+            delay: 0.0,
+            looping: true,
+            max_audible: 4,
+            overflow: Overflow::Reject,
+            category: None,
+            falloff: None,
+            sounds: vec![0],
+        });
+        catalog.sounds.push(content_reader_sound::sound::Sound {
+            name: "tone".into(),
+            file: "tone.wav".into(),
+            volume: 1.0,
+            weight: 1.0,
+        });
+        let source = Arc::new(Source {
+            content: Arc::new(Content::new(catalog, None)),
+            layers: ResolvedLayers::default(),
+        });
+        let mut mixer = OfflineMixer::new(source);
+        mixer.engine.provide(
+            0,
+            Some(Arc::new(Samples {
+                data: vec![12_000i16; 8_192],
+            })),
+        );
+        let frame = Frame {
+            mix: Mix::default(),
+            interface: vec![Sound {
+                effect: "test_fade".into(),
+                group: Group::Interface,
+                position: None,
+                volume: 1.0,
+            }],
+            ..Frame::default()
+        };
+        let mut first = Vec::new();
+        let mut later = Vec::new();
+        mixer.step_frame(&frame, 735, &mut first);
+        for _ in 0..20 {
+            mixer.step_frame(&frame, 735, &mut later);
+        }
+        let peak_first = first.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        let peak_later = later.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        assert!(
+            peak_later > peak_first,
+            "expected fading-in sound to grow over offline frames (first={peak_first}, later={peak_later})"
+        );
     }
 }

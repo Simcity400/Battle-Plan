@@ -64,14 +64,18 @@ impl Default for ExportJobSnapshot {
 }
 
 struct ActiveJob {
+    id: u64,
     cancel: Arc<AtomicBool>,
+    committing: bool,
     staged_path: PathBuf,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 struct PendingPartial {
     id: u64,
     staged_path: PathBuf,
     destination: PathBuf,
+    saving: bool,
 }
 
 #[derive(Default)]
@@ -110,16 +114,28 @@ impl ExportJobs {
     }
 
     pub fn cancel_and_cleanup_for_shutdown(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cancel) = inner.preview_cancel.take() {
-            cancel.store(true, Ordering::Release);
+        let (join, staged, partial_stage) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cancel) = inner.preview_cancel.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            let (join, staged) = if let Some(mut active) = inner.active.take() {
+                active.cancel.store(true, Ordering::Release);
+                (active.join.take(), Some(active.staged_path))
+            } else {
+                (None, None)
+            };
+            let partial_stage = inner.pending_partial.take().map(|p| p.staged_path);
+            (join, staged, partial_stage)
+        };
+        if let Some(handle) = join {
+            let _ = handle.join();
         }
-        if let Some(active) = inner.active.take() {
-            active.cancel.store(true, Ordering::Release);
-            let _ = std::fs::remove_file(&active.staged_path);
+        if let Some(path) = staged {
+            let _ = std::fs::remove_file(path);
         }
-        if let Some(partial) = inner.pending_partial.take() {
-            let _ = std::fs::remove_file(&partial.staged_path);
+        if let Some(path) = partial_stage {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -204,7 +220,8 @@ pub async fn preview_map_video(
     if request.ffmpeg_path.is_none() {
         request.ffmpeg_path = settings.ffmpeg_path;
     }
-    let config = crate::dashboard_service::host_config()?.0;
+    let (config, allow_unverified) = crate::dashboard_service::host_config()?;
+    request.allow_unverified = allow_unverified;
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         render_map_video_preview(config, request, preview_hour, cancel)
     })
@@ -237,7 +254,8 @@ pub fn start_map_video_export(
     if request.ffmpeg_path.is_none() {
         request.ffmpeg_path = settings.ffmpeg_path;
     }
-    let config = crate::dashboard_service::host_config()?.0;
+    let (config, allow_unverified) = crate::dashboard_service::host_config()?;
+    request.allow_unverified = allow_unverified;
     let staged_path = replay_settings::exit::stage_path(&destination)
         .map_err(|e| format!("Couldn’t prepare staging file beside destination: {e}"))?;
 
@@ -254,13 +272,16 @@ pub fn start_map_video_export(
             let _ = std::fs::remove_file(&old_partial.staged_path);
         }
         inner.active = Some(ActiveJob {
+            id: job_id,
             cancel: Arc::clone(&cancel),
+            committing: false,
             staged_path: staged_path.clone(),
+            join: None,
         });
         inner.snapshot = ExportJobSnapshot {
             id: job_id,
             state: "running".to_owned(),
-            target_label: args.target_label.clone(),
+            target_label: args.target_label,
             destination: Some(destination.to_string_lossy().into_owned()),
             phase: "preparing".to_owned(),
             frame: 0,
@@ -301,7 +322,7 @@ pub fn start_map_video_export(
 
     let app_for_worker = app.clone();
     let worker_staged = staged_path.clone();
-    std::thread::Builder::new()
+    let worker_handle = std::thread::Builder::new()
         .name(format!("video-export-{job_id}"))
         .spawn(move || {
             let outcome = run_map_video_export(
@@ -319,52 +340,89 @@ pub fn start_map_video_export(
                     backend,
                     mut warnings,
                 } => {
-                    let published = replay_settings::exit::EXIT
-                        .admit(replay_settings::exit::What::Export)
-                        .map_err(|e| e.to_string())
-                        .and_then(|receipt| {
-                            receipt
-                                .replace_staged(&finished_stage, &destination)
-                                .map_err(|e| e.to_string())
-                        });
-                    let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
-                    inner.active = None;
-                    match published {
-                        Ok(applied) => {
-                            if let Some(w) = applied.warning {
-                                warnings.push(w);
+                    let proceed = {
+                        let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
+                        let cancelled = cancel.load(Ordering::Acquire)
+                            || !inner.active.as_ref().is_some_and(|a| a.id == job_id);
+                        if cancelled {
+                            if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                                inner.active = None;
                             }
-                            inner.snapshot.state = "completed".to_owned();
-                            inner.snapshot.phase = "done".to_owned();
-                            inner.snapshot.frame = frames;
-                            inner.snapshot.total_frames = frames;
-                            inner.snapshot.eta_ms = Some(0);
-                            inner.snapshot.backend = Some(backend);
-                            inner.snapshot.warnings = warnings;
-                            inner.snapshot.error = None;
-                            inner.snapshot.partial = None;
+                            if inner.snapshot.id == job_id {
+                                inner.snapshot.state = "cancelled".to_owned();
+                                inner.snapshot.phase = "cancelled".to_owned();
+                                inner.snapshot.error = None;
+                                inner.snapshot.partial = None;
+                            }
+                            false
+                        } else {
+                            if let Some(active) = inner.active.as_mut() {
+                                active.committing = true;
+                            }
+                            true
                         }
-                        Err(error) => {
-                            let _ = std::fs::remove_file(&finished_stage);
-                            inner.snapshot.state = "failed".to_owned();
-                            inner.snapshot.phase = "failed".to_owned();
-                            inner.snapshot.error = Some(format!(
-                                "Rendered video couldn’t be published to {}: {error}",
-                                destination.display()
-                            ));
-                            inner.snapshot.partial = None;
+                    };
+                    if !proceed {
+                        let _ = std::fs::remove_file(&finished_stage);
+                        jobs_cloned.snapshot()
+                    } else {
+                        let published = replay_settings::exit::EXIT
+                            .admit(replay_settings::exit::What::Export)
+                            .map_err(|e| e.to_string())
+                            .and_then(|receipt| {
+                                receipt
+                                    .replace_staged(&finished_stage, &destination)
+                                    .map_err(|e| e.to_string())
+                            });
+                        let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
+                        if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                            inner.active = None;
                         }
+                        match published {
+                            Ok(applied) => {
+                                if let Some(w) = applied.warning {
+                                    warnings.push(w);
+                                }
+                                if inner.snapshot.id == job_id {
+                                    inner.snapshot.state = "completed".to_owned();
+                                    inner.snapshot.phase = "done".to_owned();
+                                    inner.snapshot.frame = frames;
+                                    inner.snapshot.total_frames = frames;
+                                    inner.snapshot.eta_ms = Some(0);
+                                    inner.snapshot.backend = Some(backend);
+                                    inner.snapshot.warnings = warnings;
+                                    inner.snapshot.error = None;
+                                    inner.snapshot.partial = None;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = std::fs::remove_file(&finished_stage);
+                                if inner.snapshot.id == job_id {
+                                    inner.snapshot.state = "failed".to_owned();
+                                    inner.snapshot.phase = "failed".to_owned();
+                                    inner.snapshot.error = Some(format!(
+                                        "Rendered video couldn’t be published to {}: {error}",
+                                        destination.display()
+                                    ));
+                                    inner.snapshot.partial = None;
+                                }
+                            }
+                        }
+                        inner.snapshot.clone()
                     }
-                    inner.snapshot.clone()
                 }
                 MapVideoOutcome::Cancelled => {
                     let _ = std::fs::remove_file(&worker_staged);
                     let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
-                    inner.active = None;
-                    inner.snapshot.state = "cancelled".to_owned();
-                    inner.snapshot.phase = "cancelled".to_owned();
-                    inner.snapshot.error = None;
-                    inner.snapshot.partial = None;
+                    if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                        inner.active = None;
+                    }
+                    if inner.snapshot.id == job_id {
+                        inner.snapshot.state = "cancelled".to_owned();
+                        inner.snapshot.phase = "cancelled".to_owned();
+                        inner.snapshot.error = None;
+                        inner.snapshot.partial = None;
+                    }
                     inner.snapshot.clone()
                 }
                 MapVideoOutcome::Failed {
@@ -373,32 +431,39 @@ pub fn start_map_video_export(
                     partial,
                 } => {
                     let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
-                    inner.active = None;
-                    inner.snapshot.state = "failed".to_owned();
-                    inner.snapshot.phase = "failed".to_owned();
-                    inner.snapshot.campaign_hour = campaign_hour.or(inner.snapshot.campaign_hour);
-                    inner.snapshot.error = Some(error);
-                    inner.snapshot.partial = partial.map(
-                        |PartialVideo {
-                             staged_path: partial_stage,
-                             frames,
-                             through_hour,
-                             duration_seconds,
-                             backend,
-                         }| {
-                            inner.snapshot.backend = Some(backend);
-                            inner.pending_partial = Some(PendingPartial {
-                                id: job_id,
-                                staged_path: partial_stage,
-                                destination: destination.clone(),
-                            });
-                            PartialExportInfo {
-                                through_hour,
-                                frames,
-                                duration_seconds,
-                            }
-                        },
-                    );
+                    if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                        inner.active = None;
+                    }
+                    if inner.snapshot.id == job_id {
+                        inner.snapshot.state = "failed".to_owned();
+                        inner.snapshot.phase = "failed".to_owned();
+                        inner.snapshot.campaign_hour = campaign_hour.or(inner.snapshot.campaign_hour);
+                        inner.snapshot.error = Some(error);
+                        inner.snapshot.partial = partial.map(
+                            |PartialVideo {
+                                 staged_path: partial_stage,
+                                 frames,
+                                 through_hour,
+                                 duration_seconds,
+                                 backend,
+                             }| {
+                                inner.snapshot.backend = Some(backend);
+                                inner.pending_partial = Some(PendingPartial {
+                                    id: job_id,
+                                    staged_path: partial_stage,
+                                    destination: destination.clone(),
+                                    saving: false,
+                                });
+                                PartialExportInfo {
+                                    through_hour,
+                                    frames,
+                                    duration_seconds,
+                                }
+                            },
+                        );
+                    } else if let Some(p) = partial {
+                        let _ = std::fs::remove_file(p.staged_path);
+                    }
                     inner.snapshot.clone()
                 }
             };
@@ -410,6 +475,14 @@ pub fn start_map_video_export(
             let _ = std::fs::remove_file(&staged_path);
             format!("Couldn’t start export worker thread: {e}")
         })?;
+    {
+        let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(active) = inner.active.as_mut()
+            && active.id == job_id
+        {
+            active.join = Some(worker_handle);
+        }
+    }
 
     jobs.emit(&app, initial_snapshot.clone());
     Ok(initial_snapshot)
@@ -419,7 +492,9 @@ pub fn start_map_video_export(
 pub fn cancel_video_export(app: AppHandle, jobs: State<'_, ExportJobs>) -> ExportJobSnapshot {
     let snapshot = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(active) = &inner.active {
+        if let Some(active) = &inner.active
+            && !active.committing
+        {
             active.cancel.store(true, Ordering::Release);
             inner.snapshot.phase = "cancelling".to_owned();
         }
@@ -435,42 +510,57 @@ pub fn save_partial_video_export(
     jobs: State<'_, ExportJobs>,
     job_id: u64,
 ) -> Result<String, String> {
-    let pending = {
+    let (staged_path, destination) = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let matches = inner
-            .pending_partial
-            .as_ref()
-            .is_some_and(|p| p.id == job_id);
-        if !matches {
+        let Some(pending) = inner.pending_partial.as_mut().filter(|p| p.id == job_id) else {
             return Err("No finalized partial export is available to save.".into());
+        };
+        if pending.saving {
+            return Err("Partial export is already being saved.".into());
         }
-        inner.pending_partial.take().expect("checked")
+        pending.saving = true;
+        (pending.staged_path.clone(), pending.destination.clone())
     };
-    let preferred = partial_preferred_path(&pending.destination);
-    let receipt = replay_settings::exit::EXIT
+    let preferred = partial_preferred_path(&destination);
+    let published = replay_settings::exit::EXIT
         .admit(replay_settings::exit::What::Export)
-        .map_err(|e| e.to_string())?;
-    let applied = receipt
-        .publish_distinct(&pending.staged_path, &preferred)
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&pending.staged_path);
-            format!("Couldn’t save partial video: {e}")
-        })?;
-    let saved_path = applied.value.to_string_lossy().into_owned();
-    let updated = {
-        let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.snapshot.state = "completed".to_owned();
-        inner.snapshot.phase = "done".to_owned();
-        inner.snapshot.destination = Some(saved_path.clone());
-        inner.snapshot.partial = None;
-        inner.snapshot.error = None;
-        if let Some(w) = applied.warning {
-            inner.snapshot.warnings.push(w);
+        .map_err(|e| e.to_string())
+        .and_then(|receipt| {
+            receipt
+                .publish_distinct(&staged_path, &preferred)
+                .map_err(|e| format!("Couldn’t save partial video: {e}"))
+        });
+    match published {
+        Ok(applied) => {
+            let saved_path = applied.value.to_string_lossy().into_owned();
+            let updated = {
+                let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.pending_partial.as_ref().is_some_and(|p| p.id == job_id) {
+                    inner.pending_partial = None;
+                }
+                if inner.snapshot.id == job_id {
+                    inner.snapshot.state = "completed".to_owned();
+                    inner.snapshot.phase = "done".to_owned();
+                    inner.snapshot.destination = Some(saved_path.clone());
+                    inner.snapshot.partial = None;
+                    inner.snapshot.error = None;
+                    if let Some(w) = applied.warning {
+                        inner.snapshot.warnings.push(w);
+                    }
+                }
+                inner.snapshot.clone()
+            };
+            jobs.emit(&app, updated);
+            Ok(saved_path)
         }
-        inner.snapshot.clone()
-    };
-    jobs.emit(&app, updated);
-    Ok(saved_path)
+        Err(error) => {
+            let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pending) = inner.pending_partial.as_mut().filter(|p| p.id == job_id) {
+                pending.saving = false;
+            }
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

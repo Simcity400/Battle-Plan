@@ -169,7 +169,7 @@ fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
 fn create_attributes(api: &MfApi, initial: u32) -> io::Result<IMFAttributes> {
     let mut out = None;
     // SAFETY: out is a valid pointer to Option<IMFAttributes>.
-    let hr = unsafe { (api.create_attributes)(&mut out, initial) };
+    let hr = unsafe { (api.create_attributes)(&raw mut out, initial) };
     hr.ok().map_err(io::Error::other)?;
     out.ok_or_else(|| io::Error::other("MFCreateAttributes returned null"))
 }
@@ -177,7 +177,7 @@ fn create_attributes(api: &MfApi, initial: u32) -> io::Result<IMFAttributes> {
 fn create_media_type(api: &MfApi) -> io::Result<IMFMediaType> {
     let mut out = None;
     // SAFETY: out is a valid pointer to Option<IMFMediaType>.
-    let hr = unsafe { (api.create_media_type)(&mut out) };
+    let hr = unsafe { (api.create_media_type)(&raw mut out) };
     hr.ok().map_err(io::Error::other)?;
     out.ok_or_else(|| io::Error::other("MFCreateMediaType returned null"))
 }
@@ -208,7 +208,7 @@ fn create_sink_writer(
             PCWSTR(wide.as_ptr()),
             std::ptr::null_mut(),
             attrs.as_raw(),
-            &mut writer,
+            &raw mut writer,
         )
     };
     hr.ok().map_err(io::Error::other)?;
@@ -353,7 +353,7 @@ fn configure_writer(
     Ok((writer, video_stream, audio_stream))
 }
 
-pub struct MfSink {
+struct MfWorker {
     api: &'static MfApi,
     writer: Option<IMFSinkWriter>,
     config: VideoConfig,
@@ -365,7 +365,6 @@ pub struct MfSink {
     height: usize,
     fps: u64,
     audio_rate: u64,
-    frame_bytes: usize,
     nv12: Vec<u8>,
     staged_path: PathBuf,
     backend_label: String,
@@ -374,18 +373,14 @@ pub struct MfSink {
     _session: SessionGuard,
 }
 
-// SAFETY: MfSink initializes COM multithreaded apartment (COINIT_MULTITHREADED), making its IMFSinkWriter safe to send between MTA threads.
-unsafe impl Send for MfSink {}
-
-impl MfSink {
-    pub fn open(
-        config: &VideoConfig,
+impl MfWorker {
+    fn open(
+        config: VideoConfig,
         audio: Option<AudioConfig>,
-        staged_path: &Path,
+        staged_path: PathBuf,
     ) -> io::Result<Self> {
         let api = api().map_err(io::Error::other)?;
         let session = SessionGuard::start(api)?;
-        let frame_bytes = config.rgba_frame_bytes()?;
         let attempts = [
             (true, H264_PROFILE_HIGH, "Windows Media Foundation (Hardware H.264 High)"),
             (true, H264_PROFILE_MAIN, "Windows Media Foundation (Hardware H.264 Main)"),
@@ -394,24 +389,23 @@ impl MfSink {
         ];
         let mut last_error = None;
         for (hardware, profile, label) in attempts {
-            let _ = fs::remove_file(staged_path);
-            match configure_writer(api, config, audio, staged_path, hardware, profile) {
+            let _ = fs::remove_file(&staged_path);
+            match configure_writer(api, &config, audio, &staged_path, hardware, profile) {
                 Ok((writer, video_stream, audio_stream)) => {
                     return Ok(Self {
                         api,
                         writer: Some(writer),
-                        config: config.clone(),
-                        audio,
-                        hardware,
-                        video_stream,
-                        audio_stream,
                         width: config.width as usize,
                         height: config.height as usize,
                         fps: u64::from(config.fps),
                         audio_rate: u64::from(audio.map_or(crate::AUDIO_SAMPLE_RATE, |a| a.sample_rate)),
-                        frame_bytes,
+                        config,
+                        audio,
+                        hardware,
+                        video_stream,
+                        audio_stream,
                         nv12: Vec::new(),
-                        staged_path: staged_path.to_path_buf(),
+                        staged_path,
                         backend_label: label.to_owned(),
                         frames: 0,
                         audio_frames: 0,
@@ -423,7 +417,7 @@ impl MfSink {
                 }
             }
         }
-        let _ = fs::remove_file(staged_path);
+        let _ = fs::remove_file(&staged_path);
         let cause = last_error.map_or_else(|| "unknown error".to_owned(), |e| e.to_string());
         Err(io::Error::other(format!(
             "Media Foundation rejected {}x{} @ {} fps H.264 (hardware and software): {cause}",
@@ -467,14 +461,14 @@ impl MfSink {
         let len = u32::try_from(data.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Sample exceeds 4 GiB"))?;
         // SAFETY: buffer is a valid out-pointer to Option<IMFMediaBuffer>.
-        let hr = unsafe { (self.api.create_memory_buffer)(len, &mut buffer) };
+        let hr = unsafe { (self.api.create_memory_buffer)(len, &raw mut buffer) };
         hr.ok().map_err(io::Error::other)?;
         let buffer = buffer.ok_or_else(|| io::Error::other("MFCreateMemoryBuffer returned null"))?;
 
         let mut dst = std::ptr::null_mut();
         // SAFETY: Locking newly created memory buffer of size len bytes, copying data, then unlocking.
         unsafe {
-            buffer.Lock(&mut dst, None, None).map_err(io::Error::other)?;
+            buffer.Lock(&raw mut dst, None, None).map_err(io::Error::other)?;
             std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
             buffer.Unlock().map_err(io::Error::other)?;
             buffer.SetCurrentLength(len).map_err(io::Error::other)?;
@@ -482,7 +476,7 @@ impl MfSink {
 
         let mut sample = None;
         // SAFETY: sample is a valid out-pointer to Option<IMFSample>.
-        let hr = unsafe { (self.api.create_sample)(&mut sample) };
+        let hr = unsafe { (self.api.create_sample)(&raw mut sample) };
         hr.ok().map_err(io::Error::other)?;
         let sample = sample.ok_or_else(|| io::Error::other("MFCreateSample returned null"))?;
         // SAFETY: Attaching buffer, setting HNS timestamps, and writing sample to stream.
@@ -496,44 +490,32 @@ impl MfSink {
         }
         Ok(())
     }
-}
 
-impl VideoSink for MfSink {
-    fn push_video_rgba(&mut self, rgba: &[u8]) -> io::Result<()> {
-        if rgba.len() != self.frame_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Expected {} RGBA bytes, got {}", self.frame_bytes, rgba.len()),
-            ));
-        }
+    fn push_video(&mut self, rgba: &[u8]) -> io::Result<Option<String>> {
         rgba_to_nv12_bt709(rgba, self.width, self.height, &mut self.nv12);
         let start_hns = ((self.frames * 10_000_000) / self.fps) as i64;
         let next_hns = (((self.frames + 1) * 10_000_000) / self.fps) as i64;
         let duration_hns = (next_hns - start_hns).max(1);
+        let mut updated_label = None;
         if let Err(err) = self.write_sample(self.video_stream, "video", &self.nv12, start_hns, duration_hns) {
             if self.hardware && self.frames == 0 && self.audio_frames == 0 {
                 self.fallback_to_software()?;
                 self.write_sample(self.video_stream, "video-sw", &self.nv12, start_hns, duration_hns)?;
+                updated_label = Some(self.backend_label.clone());
             } else {
                 return Err(err);
             }
         }
         self.frames += 1;
-        Ok(())
+        Ok(updated_label)
     }
 
-    fn push_audio_stereo_i16(&mut self, pcm: &[i16]) -> io::Result<()> {
+    fn push_audio(&mut self, pcm: &[i16]) -> io::Result<()> {
         let Some(stream) = self.audio_stream else {
             return Ok(());
         };
         if pcm.is_empty() {
             return Ok(());
-        }
-        if pcm.len() % 2 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Stereo PCM chunk must hold an even number of samples",
-            ));
         }
         let sample_frames = (pcm.len() / 2) as u64;
         let start_hns = ((self.audio_frames * 10_000_000) / self.audio_rate) as i64;
@@ -547,19 +529,7 @@ impl VideoSink for MfSink {
         Ok(())
     }
 
-    fn frames_written(&self) -> u64 {
-        self.frames
-    }
-
-    fn audio_frames_written(&self) -> u64 {
-        self.audio_frames
-    }
-
-    fn backend_name(&self) -> &str {
-        &self.backend_label
-    }
-
-    fn finish(mut self: Box<Self>) -> io::Result<Finished> {
+    fn finish(mut self) -> io::Result<Finished> {
         let writer = self
             .writer
             .take()
@@ -584,9 +554,216 @@ impl VideoSink for MfSink {
         })
     }
 
-    fn abort(mut self: Box<Self>) {
+    fn abort(mut self) {
         drop(self.writer.take());
         let _ = fs::remove_file(&self.staged_path);
+    }
+}
+
+enum MfCommand {
+    PushVideo {
+        rgba: Vec<u8>,
+        reply: std::sync::mpsc::SyncSender<io::Result<Option<String>>>,
+    },
+    PushAudio {
+        pcm: Vec<i16>,
+        reply: std::sync::mpsc::SyncSender<io::Result<()>>,
+    },
+    Finish {
+        reply: std::sync::mpsc::SyncSender<io::Result<Finished>>,
+    },
+    Abort,
+}
+
+pub struct MfSink {
+    tx: Option<std::sync::mpsc::SyncSender<MfCommand>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    frame_bytes: usize,
+    staged_path: PathBuf,
+    backend_label: String,
+    frames: u64,
+    audio_frames: u64,
+    finished: bool,
+}
+
+impl MfSink {
+    pub fn open(
+        config: &VideoConfig,
+        audio: Option<AudioConfig>,
+        staged_path: &Path,
+    ) -> io::Result<Self> {
+        let frame_bytes = config.rgba_frame_bytes()?;
+        let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<io::Result<String>>(1);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::sync_channel::<MfCommand>(2);
+        let worker_cfg = config.clone();
+        let worker_path = staged_path.to_path_buf();
+        let handle = std::thread::Builder::new()
+            .name("mf-encoder".to_owned())
+            .spawn(move || {
+                let mut worker = match MfWorker::open(worker_cfg, audio, worker_path) {
+                    Ok(worker) => {
+                        let _ = init_tx.send(Ok(worker.backend_label.clone()));
+                        worker
+                    }
+                    Err(error) => {
+                        let _ = init_tx.send(Err(error));
+                        return;
+                    }
+                };
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        MfCommand::PushVideo { rgba, reply } => {
+                            let _ = reply.send(worker.push_video(&rgba));
+                        }
+                        MfCommand::PushAudio { pcm, reply } => {
+                            let _ = reply.send(worker.push_audio(&pcm));
+                        }
+                        MfCommand::Finish { reply } => {
+                            let _ = reply.send(worker.finish());
+                            return;
+                        }
+                        MfCommand::Abort => {
+                            worker.abort();
+                            return;
+                        }
+                    }
+                }
+                worker.abort();
+            })
+            .map_err(|e| io::Error::other(format!("Couldn’t start Media Foundation thread: {e}")))?;
+
+        let backend_label = match init_rx.recv() {
+            Ok(Ok(label)) => label,
+            Ok(Err(error)) => {
+                let _ = handle.join();
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = handle.join();
+                return Err(io::Error::other("Media Foundation thread stopped during initialization"));
+            }
+        };
+
+        Ok(Self {
+            tx: Some(cmd_tx),
+            handle: Some(handle),
+            frame_bytes,
+            staged_path: staged_path.to_path_buf(),
+            backend_label,
+            frames: 0,
+            audio_frames: 0,
+            finished: false,
+        })
+    }
+
+    fn abort_inner(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(MfCommand::Abort);
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        let _ = fs::remove_file(&self.staged_path);
+    }
+}
+
+impl Drop for MfSink {
+    fn drop(&mut self) {
+        self.abort_inner();
+    }
+}
+
+impl VideoSink for MfSink {
+    fn push_video_rgba(&mut self, rgba: &[u8]) -> io::Result<()> {
+        if rgba.len() != self.frame_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Expected {} RGBA bytes, got {}", self.frame_bytes, rgba.len()),
+            ));
+        }
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Media Foundation writer is already closed"))?;
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(MfCommand::PushVideo {
+            rgba: rgba.to_vec(),
+            reply: reply_tx,
+        })
+        .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        let updated = reply_rx
+            .recv()
+            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))??;
+        if let Some(label) = updated {
+            self.backend_label = label;
+        }
+        self.frames += 1;
+        Ok(())
+    }
+
+    fn push_audio_stereo_i16(&mut self, pcm: &[i16]) -> io::Result<()> {
+        if pcm.is_empty() {
+            return Ok(());
+        }
+        if pcm.len() % 2 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Stereo PCM chunk must hold an even number of samples",
+            ));
+        }
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Media Foundation writer is already closed"))?;
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(MfCommand::PushAudio {
+            pcm: pcm.to_vec(),
+            reply: reply_tx,
+        })
+        .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))??;
+        self.audio_frames += (pcm.len() / 2) as u64;
+        Ok(())
+    }
+
+    fn frames_written(&self) -> u64 {
+        self.frames
+    }
+
+    fn audio_frames_written(&self) -> u64 {
+        self.audio_frames
+    }
+
+    fn backend_name(&self) -> &str {
+        &self.backend_label
+    }
+
+    fn finish(mut self: Box<Self>) -> io::Result<Finished> {
+        self.finished = true;
+        let tx = self
+            .tx
+            .take()
+            .ok_or_else(|| io::Error::other("Media Foundation writer was already finalized"))?;
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        tx.send(MfCommand::Finish { reply: reply_tx })
+            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        let result = reply_rx
+            .recv()
+            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        result
+    }
+
+    fn abort(mut self: Box<Self>) {
+        self.abort_inner();
     }
 }
 

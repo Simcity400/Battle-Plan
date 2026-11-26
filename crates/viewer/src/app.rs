@@ -1548,7 +1548,7 @@ impl Viewer {
         let first_time = session
             .current()
             .map_or(0.0, |f| f.presentation_time as f32);
-        let step = 1.0 / session.schedule.fps as f32;
+        let step = 1.0 / session.fps() as f32;
         self.capture = Some(Capture {
             path: PathBuf::from("video-export"),
             remaining: 1,
@@ -1569,6 +1569,14 @@ impl Viewer {
             && let Some(mut session) = capture.video.take()
         {
             session.finish_cancelled();
+        }
+    }
+
+    pub(crate) fn fail_video_export(&mut self, error: String) {
+        if let Some(mut capture) = self.end_capture()
+            && let Some(mut session) = capture.video.take()
+        {
+            session.finish_render_failure(error);
         }
     }
 
@@ -1598,17 +1606,24 @@ impl Viewer {
         } else {
             let map_size = MapSize::of(&document.map);
             let fallback_vp = [1920, 1080];
-            let cam = self.camera.map_or_else(
-                || Camera::fit(map_size, document.map_defines, fallback_vp).placement(),
-                |p| p,
-            );
+            let cam = self.camera.unwrap_or_else(|| {
+                Camera::fit(map_size, document.map_defines, fallback_vp).placement()
+            });
             (cam, fallback_vp, 1.0)
         };
-        let perspective = match &self.perspective.country {
-            viewer_foundation::perspective::Country::Tag(tag)
-            | viewer_foundation::perspective::Country::Slot { tag, .. } => Some(tag.clone()),
-            viewer_foundation::perspective::Country::Recorded => None,
+        let (perspective, perspective_slot) = match &self.perspective.country {
+            viewer_foundation::perspective::Country::Tag(tag) => (Some(tag.clone()), None),
+            viewer_foundation::perspective::Country::Slot { slot, tag } => {
+                (Some(tag.clone()), Some(*slot))
+            }
+            viewer_foundation::perspective::Country::Recorded => (None, None),
         };
+        let map_settings = Some(dashboard_core::protocol::ResolvedMapSettings {
+            graphics: self.graphics,
+            audio: self.volumes,
+            counters: self.counter_filter.clone(),
+            visual_mods: self.options.visual_mods.clone(),
+        });
         let max_texture_dimension = self
             .gpu
             .as_ref()
@@ -1623,6 +1638,7 @@ impl Viewer {
             ui_scale,
             map_mode: self.shown_mode().token(),
             perspective,
+            perspective_slot,
             fog: self.perspective.fog,
             day_night: self.graphics.day_night,
             allied_plans: self.graphics.show_allied_plans,
@@ -1630,6 +1646,7 @@ impl Viewer {
                 == viewer_counter_kit::CounterColorMode::Country,
             nato_counters: self.counter_view.settings.nato,
             audio_muted: self.muted,
+            map_settings,
             max_texture_dimension,
             stretches,
             unheld,
@@ -3387,6 +3404,7 @@ impl Viewer {
                 });
                 if reset_continuity {
                     self.audio_reset = true;
+                    self.presented.last = None;
                 }
                 capture.time = Some(next.presentation_time as f32);
                 capture.remaining = 0;

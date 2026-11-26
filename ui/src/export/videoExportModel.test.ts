@@ -5,6 +5,7 @@ import {
   computeDurationSeconds,
   computeSpeedFromDuration,
   defaultAudioForSpeed,
+  estimateScheduleFrames,
   fitAspectCrop,
   isFullCrop,
   normalizeCrop,
@@ -56,6 +57,17 @@ test('defaultAudioForSpeed enables near real-time and disables fast timelapses',
   assert.equal(defaultAudioForSpeed(12), true);
   assert.equal(defaultAudioForSpeed(24), true);
   assert.equal(defaultAudioForSpeed(72), false);
+});
+
+test('estimateScheduleFrames matches encoder single-hour and multi-stretch cut rules', () => {
+  const stretches = [
+    { first: 100, last: 199, join: 'start' as const },
+    { first: 250, last: 299, join: 'break' as const },
+  ];
+  assert.equal(estimateScheduleFrames(stretches, 150, 150, 60, 0.1, false, 1.0), 1);
+  assert.equal(estimateScheduleFrames(stretches, 150, 150, 60, 0.1, true, 1.0), 1);
+  const withCuts = estimateScheduleFrames(stretches, 100, 299, 30, 30, true, 1.0);
+  assert.equal(withCuts, 100 + 30 + 50);
 });
 
 test('fitAspectCrop and normalizeCrop keep crop rects valid and centered', () => {

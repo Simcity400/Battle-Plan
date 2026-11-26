@@ -18,6 +18,7 @@ import {
   computeSpeedFromDuration,
   defaultAudioForSpeed,
   DIMENSION_PRESETS,
+  estimateScheduleFrames,
   fitAspectCrop,
   formatExportDuration,
   FULL_CROP,
@@ -133,14 +134,31 @@ export default function ExportVideoDialog({
     }
   }, [speed, audioManual, snapshot]);
 
+  const previewGenRef = useRef(0);
+
   const coverage = useMemo(() => {
     if (!snapshot) return { spanHours: 0, recordedHours: 0, missingHours: 0, gapCount: 0 };
     return summarizeRange(snapshot.stretches, snapshot.unheld, fromHour, toHour);
   }, [snapshot, fromHour, toHour]);
 
+  const estimatedFrames = useMemo(() => {
+    if (!snapshot) return 0;
+    return estimateScheduleFrames(snapshot.stretches, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds);
+  }, [snapshot, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds]);
+
   const durationSeconds = useMemo(
-    () => computeDurationSeconds(coverage, speed, skipGaps, cutCardSeconds),
-    [coverage, speed, skipGaps, cutCardSeconds],
+    () =>
+      computeDurationSeconds(
+        coverage,
+        speed,
+        skipGaps,
+        cutCardSeconds,
+        fps,
+        snapshot?.stretches,
+        fromHour,
+        toHour,
+      ),
+    [coverage, speed, skipGaps, cutCardSeconds, fps, snapshot, fromHour, toHour],
   );
 
   const cadence = useMemo(() => analyzeCadence(speed, fps), [speed, fps]);
@@ -155,6 +173,15 @@ export default function ExportVideoDialog({
       if (!snapshot) return null;
       const evenW = snapEven(width);
       const evenH = snapEven(height);
+      let previewW = evenW;
+      let previewH = evenH;
+      if (useFullFrameForCropEdit) {
+        const srcW = Math.max(16, snapshot.viewport[0] || 1280);
+        const srcH = Math.max(16, snapshot.viewport[1] || 720);
+        const factor = Math.min(1, 1280 / srcW, 720 / srcH);
+        previewW = snapEven(srcW * factor);
+        previewH = snapEven(srcH * factor);
+      }
       return {
         path: snapshot.path,
         revision: snapshot.revision,
@@ -165,8 +192,8 @@ export default function ExportVideoDialog({
         hoursPerSecond: speed,
         skipGaps,
         cutCardSeconds,
-        width: useFullFrameForCropEdit ? snapEven(Math.min(1280, snapshot.viewport[0] || 1280)) : evenW,
-        height: useFullFrameForCropEdit ? snapEven(Math.min(720, snapshot.viewport[1] || 720)) : evenH,
+        width: previewW,
+        height: previewH,
         quality,
         backend: 'auto',
         ffmpegPath: null,
@@ -176,14 +203,16 @@ export default function ExportVideoDialog({
         uiScale: snapshot.uiScale,
         mapMode: snapshot.mapMode,
         perspective: snapshot.perspective,
+        perspectiveSlot: snapshot.perspectiveSlot ?? null,
         fog: snapshot.fog,
         dayNight: snapshot.dayNight,
         alliedPlans: snapshot.alliedPlans,
         counterColorsCountry: snapshot.counterColorsCountry,
         natoCounters: snapshot.natoCounters,
+        mapSettings: snapshot.mapSettings,
         dateStamp,
         audioEnabled,
-        allowUnverified: true,
+        allowUnverified: false,
       };
     },
     [
@@ -207,11 +236,13 @@ export default function ExportVideoDialog({
     if (!snapshot || dimensionError) return;
     const req = buildRequest(cropMode);
     if (!req) return;
+    const gen = ++previewGenRef.current;
     setPreviewBusy(true);
     setPreviewError(null);
     try {
       const previewHour = Math.min(Math.max(snapshot.currentHour, req.fromHour), req.toHour);
       const pngBytes = await previewMapVideo(req, previewHour);
+      if (gen !== previewGenRef.current) return;
       let binary = '';
       const chunk = 0x8000;
       for (let i = 0; i < pngBytes.length; i += chunk) {
@@ -219,14 +250,20 @@ export default function ExportVideoDialog({
       }
       setPreviewUrl(`data:image/png;base64,${btoa(binary)}`);
     } catch (cause) {
+      if (gen !== previewGenRef.current) return;
       setPreviewError(errorMessage(cause));
     } finally {
-      setPreviewBusy(false);
+      if (gen === previewGenRef.current) {
+        setPreviewBusy(false);
+      }
     }
   }, [snapshot, dimensionError, buildRequest, cropMode]);
 
   useEffect(() => {
+    previewGenRef.current += 1;
     setPreviewUrl(null);
+    setPreviewError(null);
+    setPreviewBusy(false);
   }, [target]);
 
   useEffect(() => {
@@ -692,7 +729,7 @@ export default function ExportVideoDialog({
           <footer className="export-video-footer">
             <span className="export-video-footer-meta">
               {snapshot
-                ? `${Math.max(1, Math.round(durationSeconds * fps)).toLocaleString()} frames · H.264 MP4${audioEnabled ? ' + AAC' : ''}`
+                ? `${estimatedFrames.toLocaleString()} frames · H.264 MP4${audioEnabled ? ' + AAC' : ''}`
                 : 'Preparing…'}
             </span>
             <div className="export-video-footer-actions">

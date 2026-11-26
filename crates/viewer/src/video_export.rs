@@ -22,8 +22,8 @@ use std::{
 use video_export::{
     AudioConfig, BackendChoice, Quality, VideoConfig, VideoSink,
     schedule::{
-        CutNotice, FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, StretchJoin,
-        UnheldGap, build_schedule,
+        CutNotice, FrameKind, OwnedFrameCursor, RecordedStretch, ScheduleRequest, ScheduledFrame,
+        StretchJoin, UnheldGap, build_schedule,
     },
 };
 use viewer_foundation::perspective::Choice;
@@ -151,12 +151,16 @@ pub struct MapExportSnapshot {
     pub ui_scale: f32,
     pub map_mode: String,
     pub perspective: Option<String>,
+    #[serde(default)]
+    pub perspective_slot: Option<u32>,
     pub fog: bool,
     pub day_night: bool,
     pub allied_plans: bool,
     pub counter_colors_country: bool,
     pub nato_counters: bool,
     pub audio_muted: bool,
+    #[serde(default)]
+    pub map_settings: Option<dashboard_core::protocol::ResolvedMapSettings>,
     pub max_texture_dimension: u32,
     pub stretches: Vec<RecordedStretch>,
     pub unheld: Vec<UnheldGap>,
@@ -187,11 +191,15 @@ pub struct MapVideoRequest {
     pub ui_scale: Option<f32>,
     pub map_mode: Option<String>,
     pub perspective: Option<String>,
+    #[serde(default)]
+    pub perspective_slot: Option<u32>,
     pub fog: bool,
     pub day_night: Option<bool>,
     pub allied_plans: Option<bool>,
     pub counter_colors_country: Option<bool>,
     pub nato_counters: Option<bool>,
+    #[serde(default)]
+    pub map_settings: Option<dashboard_core::protocol::ResolvedMapSettings>,
     pub date_stamp: bool,
     pub audio_enabled: bool,
     pub allow_unverified: bool,
@@ -281,11 +289,20 @@ pub fn cropped_placement(camera: &Camera, source_viewport: [u32; 2], crop: CropR
         }
         Pose::Free(mut free) => {
             let half_fov = (free.lens.fov_y * 0.5).tan();
-            let aspect = source_viewport[0] as f32 / source_viewport[1] as f32;
-            let ndc_x = (crop.x + crop.width * 0.5) * 2.0 - 1.0;
-            let ndc_y = 1.0 - (crop.y + crop.height * 0.5) * 2.0;
-            free.yaw += (ndc_x * half_fov * aspect).atan();
-            free.pitch = (free.pitch + (ndc_y * half_fov).atan()).clamp(-1.55, 1.55);
+            if let Some(dir) = ray_world_dir(camera, source_viewport, [cx, cy]) {
+                let horiz = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
+                free.yaw = dir[0].atan2(-dir[2]);
+                free.pitch = dir[1].atan2(horiz).clamp(-1.55, 1.55);
+            } else {
+                let aspect = source_viewport[0] as f32 / source_viewport[1] as f32;
+                let ndc_x = (crop.x + crop.width * 0.5) * 2.0 - 1.0;
+                let ndc_y = 1.0 - (crop.y + crop.height * 0.5) * 2.0;
+                let (sr, cr) = free.roll.sin_cos();
+                let rx = ndc_x * aspect * cr - ndc_y * sr;
+                let ry = ndc_x * aspect * sr + ndc_y * cr;
+                free.yaw += (rx * half_fov).atan();
+                free.pitch = (free.pitch + (ry * half_fov).atan()).clamp(-1.55, 1.55);
+            }
             free.lens.fov_y = (2.0 * (half_fov * crop.height).atan()).clamp(0.05, 3.0);
             Placement {
                 center: camera.center,
@@ -294,6 +311,24 @@ pub fn cropped_placement(camera: &Camera, source_viewport: [u32; 2], crop: CropR
             }
         }
     }
+}
+
+fn ray_world_dir(camera: &Camera, viewport: [u32; 2], pixel: [f32; 2]) -> Option<[f32; 3]> {
+    let inv = camera.inverse(viewport)?;
+    let ndc_x = (pixel[0] / viewport[0] as f32) * 2.0 - 1.0;
+    let ndc_y = 1.0 - (pixel[1] / viewport[1] as f32) * 2.0;
+    let unproject = |z: f32| -> Option<[f32; 3]> {
+        let mut out = [0.0f32; 4];
+        for col in 0..4 {
+            out[col] = ndc_x * inv[0][col] + ndc_y * inv[1][col] + z * inv[2][col] + inv[3][col];
+        }
+        (out[3].abs() > 1e-6).then_some([out[0] / out[3], out[1] / out[3], out[2] / out[3]])
+    };
+    let near = unproject(0.0)?;
+    let far = unproject(1.0)?;
+    let d = [far[0] - near[0], far[1] - near[1], far[2] - near[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (len > 1e-6).then_some([d[0] / len, d[1] / len, d[2] / len])
 }
 
 fn ray_ground_hit(camera: &Camera, viewport: [u32; 2], pixel: [f32; 2]) -> Option<[f32; 2]> {
@@ -669,11 +704,13 @@ pub(crate) enum VideoMode {
 }
 
 pub(crate) struct VideoSession {
-    pub schedule: FrameSchedule,
-    pub cursor: usize,
+    cursor: OwnedFrameCursor,
+    pending: Option<ScheduledFrame>,
+    frames_done: u64,
     pub size: [u32; 2],
     pub date_stamp: bool,
     pub audio_enabled: bool,
+    audio_warning_recorded: bool,
     pub cancel: Arc<AtomicBool>,
     pub progress: Option<Arc<dyn Fn(ExportProgress) + Send + Sync>>,
     pub started: Instant,
@@ -688,8 +725,53 @@ pub(crate) struct VideoSession {
 }
 
 impl VideoSession {
-    pub(crate) fn current(&self) -> Option<&video_export::schedule::ScheduledFrame> {
-        self.schedule.frames.get(self.cursor)
+    pub(crate) fn new(
+        mut cursor: OwnedFrameCursor,
+        size: [u32; 2],
+        date_stamp: bool,
+        audio_enabled: bool,
+        cancel: Arc<AtomicBool>,
+        progress: Option<Arc<dyn Fn(ExportProgress) + Send + Sync>>,
+        mode: VideoMode,
+    ) -> Self {
+        let pending = cursor.next();
+        let now = Instant::now();
+        Self {
+            cursor,
+            pending,
+            frames_done: 0,
+            size,
+            date_stamp,
+            audio_enabled,
+            audio_warning_recorded: false,
+            cancel,
+            progress,
+            started: now,
+            last_progress: now,
+            mixer: None,
+            audio_buf: Vec::new(),
+            last_recorded_hour: None,
+            warnings: Vec::new(),
+            mode,
+            burner: None,
+            cached_card: None,
+        }
+    }
+
+    pub(crate) fn fps(&self) -> u32 {
+        self.cursor.schedule().fps
+    }
+
+    pub(crate) fn current(&self) -> Option<&ScheduledFrame> {
+        self.pending.as_ref()
+    }
+
+    fn take_current(&mut self) -> Option<ScheduledFrame> {
+        let cur = self.pending.take();
+        if cur.is_some() {
+            self.pending = self.cursor.next();
+        }
+        cur
     }
 
     pub(crate) fn emit_progress(&mut self, phase: &str, hour: Option<Hour>, force: bool) {
@@ -701,8 +783,8 @@ impl VideoSession {
             return;
         }
         self.last_progress = now;
-        let frame = self.cursor as u64;
-        let total_frames = self.schedule.summary.total_frames;
+        let frame = self.frames_done;
+        let total_frames = self.cursor.schedule().summary.total_frames;
         let elapsed_ms = now.duration_since(self.started).as_millis() as u64;
         let eta_ms = if frame >= 5 && total_frames > frame {
             Some(elapsed_ms.saturating_mul(total_frames - frame) / frame)
@@ -729,13 +811,17 @@ impl VideoSession {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Result<bool, String> {
-        while let Some(scheduled) = self.schedule.frames.get(self.cursor).cloned() {
+        while let Some(scheduled) = self.pending.as_ref() {
             if self.cancel.load(Ordering::Acquire) {
                 self.finish_cancelled();
                 return Ok(true);
             }
+            if matches!(scheduled.kind, FrameKind::Recorded { .. }) {
+                return Ok(false);
+            }
+            let scheduled = self.take_current().expect("checked above");
             match scheduled.kind {
-                FrameKind::Recorded { .. } => return Ok(false),
+                FrameKind::Recorded { .. } => unreachable!(),
                 FrameKind::GapCard {
                     hour,
                     gap_first,
@@ -760,7 +846,7 @@ impl VideoSession {
                         rendered
                     };
                     self.push_frame(&rgba, None, scheduled.audio_frames, Some(hour))?;
-                    self.cursor += 1;
+                    self.frames_done += 1;
                     self.emit_progress("rendering", Some(hour), false);
                 }
                 FrameKind::SkipCutCard(cut) => {
@@ -782,7 +868,7 @@ impl VideoSession {
                         rendered
                     };
                     self.push_frame(&rgba, None, scheduled.audio_frames, Some(cut.to_hour))?;
-                    self.cursor += 1;
+                    self.frames_done += 1;
                     self.emit_progress("rendering", Some(cut.to_hour), false);
                 }
             }
@@ -805,17 +891,21 @@ impl VideoSession {
             self.finish_cancelled();
             return Ok(true);
         }
-        let Some(scheduled) = self.schedule.frames.get(self.cursor).cloned() else {
+        let Some(scheduled) = self.pending.as_ref() else {
             self.finish_complete()?;
             return Ok(true);
         };
+        if !matches!(scheduled.kind, FrameKind::Recorded { .. }) {
+            return self.drain_non_recorded(device, queue);
+        }
+        let scheduled = self.take_current().expect("checked above");
         let FrameKind::Recorded {
             hour,
             cut_banner,
             ..
         } = &scheduled.kind
         else {
-            return self.drain_non_recorded(device, queue);
+            unreachable!()
         };
         let date_text = self.date_stamp.then(|| format_campaign_date(*hour));
         let burner = self.burner.get_or_insert_with(|| OverlayBurner::new(device));
@@ -836,7 +926,7 @@ impl VideoSession {
         let _ = (document, camera);
         self.push_frame(&rgba, audio_frame.as_ref(), scheduled.audio_frames, Some(*hour))?;
         self.last_recorded_hour = Some(*hour);
-        self.cursor += 1;
+        self.frames_done += 1;
         self.emit_progress("rendering", Some(*hour), false);
         self.drain_non_recorded(device, queue)
     }
@@ -885,15 +975,30 @@ impl VideoSession {
     }
 
     pub(crate) fn ensure_mixer(&mut self, document: &Document) {
-        if self.audio_enabled
-            && self.mixer.is_none()
-            && let Some(source) = &document.audio
-        {
-            self.mixer = Some(viewer_audio::OfflineMixer::new(Arc::clone(source)));
+        if !self.audio_enabled {
+            return;
+        }
+        if self.mixer.is_none() {
+            if let Some(source) = &document.audio {
+                self.mixer = Some(viewer_audio::OfflineMixer::new(Arc::clone(source)));
+            } else if !self.audio_warning_recorded {
+                self.audio_warning_recorded = true;
+                let detail = document
+                    .warnings
+                    .iter()
+                    .find(|w| w.to_ascii_lowercase().contains("sound") || w.to_ascii_lowercase().contains("audio"))
+                    .cloned()
+                    .unwrap_or_else(|| "Map sound catalog is unavailable; exported audio track is silent.".to_owned());
+                self.warnings.push(detail);
+            }
         }
     }
 
     pub(crate) fn finish_complete(&mut self) -> Result<(), String> {
+        if self.cancel.load(Ordering::Acquire) {
+            self.finish_cancelled();
+            return Ok(());
+        }
         if matches!(self.mode, VideoMode::Encode { .. }) {
             self.emit_progress("finalizing", self.last_recorded_hour, true);
         }
@@ -908,6 +1013,12 @@ impl VideoSession {
                 };
                 match sink.finish() {
                     Ok(finished) => {
+                        if self.cancel.load(Ordering::Acquire) {
+                            let _ = std::fs::remove_file(&finished.path);
+                            *outcome.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(MapVideoOutcome::Cancelled);
+                            return Ok(());
+                        }
                         if let Some(mixer) = &self.mixer {
                             self.warnings.extend(mixer.notes.iter().cloned());
                         }
@@ -972,9 +1083,9 @@ impl VideoSession {
                                         frames: finished.frames,
                                         through_hour: self
                                             .last_recorded_hour
-                                            .unwrap_or(self.schedule.summary.from_hour),
+                                            .unwrap_or(self.cursor.schedule().summary.from_hour),
                                         duration_seconds: finished.frames as f64
-                                            / f64::from(self.schedule.fps),
+                                            / f64::from(self.fps()),
                                         backend: finished.backend,
                                     })
                                 } else {
@@ -1114,8 +1225,23 @@ fn run_map_video_on_thread(
             .map(PathBuf::from),
     };
     video_config.validate().map_err(|e| e.to_string())?;
+    if cancel.load(Ordering::Acquire) {
+        return Ok(());
+    }
 
-    let replay = replay::campaign::Replay::open_timelines(Path::new(&request.path))
+    let source_path = Path::new(&request.path);
+    let initial_revision = dashboard_core::protocol::replay_revision(source_path)
+        .map_err(|e| format!("Couldn’t inspect recording revision: {e}"))?;
+    if let Some(expected) = request.revision.as_deref()
+        && expected != initial_revision
+    {
+        return Err(
+            "The recording changed on disk since this export was opened. Re-open the export dialog to use the updated file."
+                .to_owned(),
+        );
+    }
+
+    let replay = replay::campaign::Replay::open_timelines(source_path)
         .map_err(|e| format!("Couldn’t open recording for export: {e}"))?;
     let timeline = dashboard_query::timeline::resolve(&replay, request.branch)
         .map_err(|e| format!("Couldn’t read branch timeline: {e}"))?;
@@ -1135,13 +1261,20 @@ fn run_map_video_on_thread(
     .map_err(|e| e.to_string())?;
     drop(replay);
 
+    let after_schedule_revision = dashboard_core::protocol::replay_revision(source_path)
+        .map_err(|e| format!("Couldn’t verify recording revision: {e}"))?;
+    if after_schedule_revision != initial_revision {
+        return Err(
+            "The recording changed on disk while preparing this export. Re-open the export dialog to retry."
+                .to_owned(),
+        );
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Ok(());
+    }
+
     let first_recorded = schedule
-        .frames
-        .iter()
-        .find_map(|f| match f.kind {
-            FrameKind::Recorded { hour, fraction, .. } => Some((hour, fraction)),
-            _ => None,
-        })
+        .first_recorded()
         .ok_or_else(|| "Selected range has no recorded hours".to_owned())?;
 
     let mode = match target {
@@ -1170,8 +1303,15 @@ fn run_map_video_on_thread(
         (None, _) => Some(1.0),
     };
 
-    let perspective = match request.perspective.as_deref() {
-        Some(tag) if !tag.is_empty() => Choice {
+    let perspective = match (request.perspective.as_deref(), request.perspective_slot) {
+        (Some(tag), Some(slot)) if !tag.is_empty() => Choice {
+            country: viewer_foundation::perspective::Country::Slot {
+                slot,
+                tag: tag.to_owned(),
+            },
+            fog: request.fog,
+        },
+        (Some(tag), None) if !tag.is_empty() => Choice {
             country: viewer_foundation::perspective::Country::Tag(tag.to_owned()),
             fog: request.fog,
         },
@@ -1189,6 +1329,10 @@ fn run_map_video_on_thread(
     let placement = request.placement.map(Placement::from);
     let source_viewport = request.source_viewport;
     let size = [request.width, request.height];
+    let map_settings = request.map_settings.clone();
+    let visual_mods = map_settings
+        .as_ref()
+        .and_then(|s| s.visual_mods.clone());
 
     let mut options = Options {
         replay: Some(PathBuf::from(&request.path)),
@@ -1210,6 +1354,7 @@ fn run_map_video_on_thread(
             }
         }),
         nato_counters: request.nato_counters,
+        visual_mods,
         allow_unverified: request.allow_unverified,
         window_dump: true,
         postfx: true,
@@ -1217,25 +1362,15 @@ fn run_map_video_on_thread(
     };
     options.out = Some(PathBuf::from("video-export"));
 
-    let now = Instant::now();
-    let session = VideoSession {
-        schedule,
-        cursor: 0,
+    let session = VideoSession::new(
+        schedule.into_cursor(),
         size,
-        date_stamp: request.date_stamp,
-        audio_enabled: request.audio_enabled,
-        cancel: Arc::clone(&cancel),
+        request.date_stamp,
+        request.audio_enabled,
+        Arc::clone(&cancel),
         progress,
-        started: now,
-        last_progress: now,
-        mixer: None,
-        audio_buf: Vec::new(),
-        last_recorded_hour: None,
-        warnings: Vec::new(),
         mode,
-        burner: None,
-        cached_card: None,
-    };
+    );
 
     let speed = request.hours_per_second;
     let lost = Lost::default();
@@ -1251,6 +1386,9 @@ fn run_map_video_on_thread(
         }
         let _generation = content_reader_layers::content::Generation::enter();
         let mut viewer = Viewer::new(ctx, Some(state), config, options, None, reported, None);
+        if let Some(settings) = &map_settings {
+            viewer.set_embedded_graphics(settings);
+        }
         viewer.configure_video_export(session, speed, source_viewport, crop);
         Ok(viewer)
     });
@@ -1288,7 +1426,7 @@ pub(crate) fn dispatch(args: &[std::ffi::OsString]) -> Option<io::Result<()>> {
 }
 
 fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
-    let mut iter = args.to_vec().into_iter();
+    let mut iter = args.iter().cloned();
     let mut replay: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut branch: Option<BranchId> = None;
@@ -1318,7 +1456,7 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
         let Some(flag) = arg.to_str() else {
             return Err(invalid("non-UTF-8 argument to --export-video"));
         };
-        let next_str = |iter: &mut std::vec::IntoIter<std::ffi::OsString>, name: &str| -> io::Result<String> {
+        let next_str = |iter: &mut std::iter::Cloned<std::slice::Iter<'_, std::ffi::OsString>>, name: &str| -> io::Result<String> {
             iter.next()
                 .and_then(|v| v.into_string().ok())
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{name} requires a value")))
@@ -1402,6 +1540,18 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
 
     let replay_path = replay.ok_or_else(|| invalid("--export-video requires a replay path"))?;
     let out_path = out.ok_or_else(|| invalid("--export-video requires --out <video.mp4>"))?;
+    let canonical_in = std::fs::canonicalize(&replay_path)?;
+    let same_target = std::fs::canonicalize(&out_path)
+        .map(|canon_out| canon_out == canonical_in)
+        .unwrap_or_else(|_| {
+            std::path::absolute(&out_path)
+                .ok()
+                .zip(std::path::absolute(&replay_path).ok())
+                .is_some_and(|(a, b)| a == b)
+        });
+    if same_target {
+        return Err(invalid("--out cannot overwrite the input recording"));
+    }
     let mut config = Config::load().unwrap_or_default();
     if let Some(dir) = game_dir {
         config.game_dir = dir;
@@ -1410,7 +1560,7 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
         config.user_dir = dir;
     }
 
-    let opened = replay::campaign::Replay::open_timelines(&replay_path)?;
+    let opened = replay::campaign::Replay::open_timelines(&canonical_in)?;
     let branch_id = branch.unwrap_or_else(|| {
         opened
             .timelines()
@@ -1424,7 +1574,7 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
     drop(opened);
 
     let req = MapVideoRequest {
-        path: replay_path.to_string_lossy().into_owned(),
+        path: canonical_in.to_string_lossy().into_owned(),
         revision: None,
         branch: branch_id,
         from_hour: from_hour.unwrap_or(first_default),
@@ -1444,11 +1594,13 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
         ui_scale: Some(1.0),
         map_mode,
         perspective,
+        perspective_slot: None,
         fog,
         day_night,
         allied_plans: None,
         counter_colors_country: None,
         nato_counters: None,
+        map_settings: None,
         date_stamp,
         audio_enabled,
         allow_unverified,
@@ -1465,10 +1617,18 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
             backend,
             warnings,
         } => {
-            if out_path.exists() {
-                let _ = std::fs::remove_file(&out_path);
+            let receipt = replay_settings::exit::EXIT
+                .admit(replay_settings::exit::What::Export)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            let applied = receipt
+                .replace_staged(&staged_path, &out_path)
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&staged_path);
+                    io::Error::other(e.to_string())
+                })?;
+            if let Some(warning) = applied.warning {
+                eprintln!("Warning: {warning}");
             }
-            std::fs::rename(&staged_path, &out_path)?;
             for warning in warnings {
                 eprintln!("Warning: {warning}");
             }

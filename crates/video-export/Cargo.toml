@@ -13,6 +13,7 @@ serde = { workspace = true, features = ["derive"] }
 windows = { version = "0.62.2", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Media_MediaFoundation",
+    "Win32_Security",
     "Win32_System_Com",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",

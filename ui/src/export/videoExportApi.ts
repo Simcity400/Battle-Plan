@@ -56,12 +56,14 @@ export interface MapExportSnapshot {
   uiScale: number;
   mapMode: string;
   perspective: string | null;
+  perspectiveSlot?: number | null;
   fog: boolean;
   dayNight: boolean;
   alliedPlans: boolean;
   counterColorsCountry: boolean;
   natoCounters: boolean;
   audioMuted: boolean;
+  mapSettings?: unknown;
   maxTextureDimension: number;
   stretches: RecordedStretch[];
   unheld: UnheldGap[];
@@ -90,11 +92,13 @@ export interface MapVideoRequest {
   uiScale: number | null;
   mapMode: string | null;
   perspective: string | null;
+  perspectiveSlot?: number | null;
   fog: boolean;
   dayNight: boolean | null;
   alliedPlans: boolean | null;
   counterColorsCountry: boolean | null;
   natoCounters: boolean | null;
+  mapSettings?: unknown;
   dateStamp: boolean;
   audioEnabled: boolean;
   allowUnverified: boolean;

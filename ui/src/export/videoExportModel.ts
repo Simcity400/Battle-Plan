@@ -74,8 +74,53 @@ export function summarizeRange(
 }
 
 export function effectiveExportHours(coverage: RangeCoverage, skipGaps: boolean): number {
-  const base = skipGaps ? Math.max(1, coverage.recordedHours - 1) : Math.max(1, coverage.spanHours);
-  return Math.max(1 / 60, base);
+  const base = skipGaps ? Math.max(0, coverage.recordedHours - 1) : Math.max(0, coverage.spanHours);
+  return base;
+}
+
+function spanFrames(first: number, last: number, stepHours: number): number {
+  const span = Math.max(0, last - first);
+  if (span <= 0) return 1;
+  const count = Math.floor(span / stepHours) + 1;
+  const lastPos = Math.min(last, first + (count - 1) * stepHours);
+  return count + (Math.floor(lastPos) < last ? 1 : 0);
+}
+
+export function estimateScheduleFrames(
+  stretches: readonly RecordedStretch[],
+  fromHour: number,
+  toHour: number,
+  fps: number,
+  hoursPerSecond: number,
+  skipGaps: boolean,
+  cutCardSeconds: number,
+): number {
+  const lo = Math.min(fromHour, toHour);
+  const hi = Math.max(fromHour, toHour);
+  const safeFps = Math.max(1, fps);
+  const stepHours = Math.max(0.01, hoursPerSecond) / safeFps;
+  const clipped = stretches
+    .filter(s => s.last >= lo && s.first <= hi)
+    .map(s => ({ first: Math.max(lo, s.first), last: Math.min(hi, s.last) }));
+  if (clipped.length === 0) return 0;
+  if (!skipGaps) {
+    return spanFrames(lo, hi, stepHours);
+  }
+  const cutFrames = Number.isFinite(cutCardSeconds) && cutCardSeconds > 0
+    ? Math.max(1, Math.round(cutCardSeconds * safeFps))
+    : 0;
+  let total = 0;
+  for (let i = 0; i < clipped.length; i += 1) {
+    const stretch = clipped[i]!;
+    if (i > 0) {
+      const prev = clipped[i - 1]!;
+      if (prev.last + 1 <= stretch.first - 1) {
+        total += cutFrames;
+      }
+    }
+    total += spanFrames(stretch.first, stretch.last, stepHours);
+  }
+  return total;
 }
 
 export function computeDurationSeconds(
@@ -83,9 +128,18 @@ export function computeDurationSeconds(
   hoursPerSecond: number,
   skipGaps: boolean,
   cutCardSeconds: number,
+  fps = 60,
+  stretches?: readonly RecordedStretch[],
+  fromHour?: number,
+  toHour?: number,
 ): number {
+  if (stretches && fromHour !== undefined && toHour !== undefined) {
+    const frames = estimateScheduleFrames(stretches, fromHour, toHour, fps, hoursPerSecond, skipGaps, cutCardSeconds);
+    return frames / Math.max(1, fps);
+  }
   const speed = Math.max(0.01, hoursPerSecond);
   const hours = effectiveExportHours(coverage, skipGaps);
+  if (hours <= 0) return 1 / Math.max(1, fps);
   const cuts = skipGaps ? coverage.gapCount * Math.max(0, cutCardSeconds) : 0;
   return hours / speed + cuts;
 }
@@ -98,7 +152,7 @@ export function computeSpeedFromDuration(
 ): number {
   const cuts = skipGaps ? coverage.gapCount * Math.max(0, cutCardSeconds) : 0;
   const videoSeconds = Math.max(0.25, durationSeconds - cuts);
-  const hours = effectiveExportHours(coverage, skipGaps);
+  const hours = Math.max(1 / 60, effectiveExportHours(coverage, skipGaps));
   return Math.max(0.01, hours / videoSeconds);
 }
 
