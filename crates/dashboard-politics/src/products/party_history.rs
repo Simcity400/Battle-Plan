@@ -428,16 +428,15 @@ fn character_changes(recording: &replay_recording::columnar_frames::Recording, r
     let mut hours = Vec::new();
     let characters = unless_withheld(lanes::history(recording, run, TableId::Characters, &columns.character, Keys::These(&ids), first, last))?;
     steps_into(&characters, &mut hours);
-    let words: Vec<u128> = numbers(&characters, columns.character[0]).into_iter().map(u128::from).collect();
+    let words: Vec<u128> = numbers(&characters, columns.character[0]).into_iter().filter(|word| *word != 0).map(u128::from).collect();
     let lexical = if words.is_empty() {
         History::default()
     } else {
-        unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?
-    };
-    if words.iter().any(|&word| word != 0) {
-        hours.extend(lexical.keys.iter().filter(|(word, _)| *word != 0).flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
+        let lexical = unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?;
+        steps_into(&lexical, &mut hours);
         read_bounds_into(&unless_withheld(complete_reads(recording, run, TableId::LexicalTokens, first, last))?, &mut hours);
-    }
+        lexical
+    };
     let reads = unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?;
     read_bounds_into(&reads, &mut hours);
     Ok(Recasts { hours: settled(hours, first, last), reads, characters, lexical })
@@ -783,20 +782,28 @@ impl Recasts {
         let cell = |column| self.characters.columns.binary_search(&column).ok().and_then(|at| cells.map(|row| row[at]));
         let name = cell(columns.character[1]).and_then(|value| self.characters.text(value)).and_then(|text| std::str::from_utf8(text).ok());
         let word = cell(columns.character[0]).and_then(number).and_then(|word| u32::try_from(word).ok());
+        let reads = [
+            replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: Keys::These(std::slice::from_ref(&key)) },
+            replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&[0]) },
+        ];
+        let reads = if word == Some(0) { &reads[..] } else { &reads[..1] };
+        let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, reads))?;
         let token = word.and_then(|word| {
-            let at = self.lexical.statuses.partition_point(|held| held.last < hour);
-            let status = self.lexical.statuses.get(at).filter(|held| held.first <= hour)?;
-            if !replay_recording::columnar_frames::complete(status.status) {
-                return None;
-            }
-            let literal = match self.lexical.reading(u128::from(word), hour) {
-                lanes::Reading::Cells(row) => self.lexical.text(row[0]),
-                _ => None,
+            let literal = if word == 0 {
+                frame.complete::<tables::LexicalTokens>().ok()?.first().map(|row| row.literal.as_slice())
+            } else {
+                let at = self.lexical.statuses.partition_point(|held| held.last < hour);
+                let status = self.lexical.statuses.get(at).filter(|held| held.first <= hour)?;
+                if !replay_recording::columnar_frames::complete(status.status) {
+                    return None;
+                }
+                match self.lexical.reading(u128::from(word), hour) {
+                    lanes::Reading::Cells(row) => self.lexical.text(row[0]),
+                    _ => None,
+                }
             };
             character_script_literal(word, literal)
         });
-        let reads = [replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: Keys::These(std::slice::from_ref(&key)) }];
-        let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &reads))?;
         let portrait = recorded_portrait(frame.complete::<tables::CharacterPortraits>().ok(), id, PORTRAIT_CIVILIAN, PORTRAIT_LARGE);
         Ok(Leader { character: IdeaCharacter { id, token: token.unwrap_or_default().to_owned(), name: name.unwrap_or_default().to_owned() }, portrait })
     }
