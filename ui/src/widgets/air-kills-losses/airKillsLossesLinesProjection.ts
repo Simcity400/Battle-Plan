@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
+import { SECONDARY_DASH, tailColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet, type OptionValue } from '../../dashboard/options.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
@@ -52,7 +52,6 @@ import {
   type MilitaryAirFilters,
 } from '../bombing-damage/militaryAirAt.ts';
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 const SCALE = 100_000;
 const DEALT_SUFFIX = '\u0000dealt';
@@ -302,7 +301,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       surface: options.surface,
       withFlag: true,
       recordedOrdinal: key => rowOf.get(key) ?? 0,
-      tailColor: TAIL_COLOUR,
+      tailColor: tailColour(options.surface),
     });
 
     const hoverDetail = buildHoverDetail(readView, orderedKeys, options, looks);

@@ -26,7 +26,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: AirForceSizeRaceOptions = {
+const BASE_OPTS: AirForceSizeRaceOptions = { surface: '#1e1e1e',
   measure: 'planes',
   ownership: 'roster',
   split: true,

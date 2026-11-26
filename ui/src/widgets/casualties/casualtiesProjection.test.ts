@@ -95,7 +95,7 @@ test('under the default Top selection one rank reply carries every displayed mea
     panel: 'series-rank', branchId: '1', family: { kind: 'casualty-totals', measure: 'dealtAndTaken' },
     top: 10, measures: ['dealt', 'taken', 'unknown', 'partial'],
   });
-  const model = casualtiesButterflyProjection.project(view(), casualtiesButterflyDeclaration.projectionOptions(ctxOf({ top: 10 })));
+  const model = casualtiesButterflyProjection.project(view(), casualtiesButterflyDeclaration.projectionOptions(ctxOf({ top: 10 }), { extent: [0, 0], surface: '#1e1e1e' }));
   assert.deepEqual((model.rows as BarsDataRow[]).map(row => formatBarsValueField(row.right!.value).text).slice(0, 2), ['300', '500'], 'recorded casualties are drawn, not missing');
 });
 
@@ -105,6 +105,6 @@ test('a faction is sent as the group, resolved at the hour in Rust, and a known 
   const asked = askedAt(ctx, 'rank', 500) as { group?: unknown; countries?: unknown; top?: unknown };
   assert.deepEqual([asked.group, asked.countries, asked.top], [{ type: 'faction', id: '42', membership: 'hour' }, undefined, undefined],
     'the group, never the union of its members over time');
-  const empty = casualtiesButterflyProjection.project(view(reply(BUTTERFLY_MEASURES, [])), casualtiesButterflyDeclaration.projectionOptions(ctx));
+  const empty = casualtiesButterflyProjection.project(view(reply(BUTTERFLY_MEASURES, [])), casualtiesButterflyDeclaration.projectionOptions(ctx, { extent: [0, 0], surface: '#1e1e1e' }));
   assert.deepEqual([empty.empty, empty.emptyKind], ['No country of this group at this date.', 'empty']);
 });

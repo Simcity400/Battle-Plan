@@ -1,4 +1,4 @@
-import { CATEGORY_LIMIT, colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { CATEGORY_LIMIT, colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
@@ -21,6 +21,7 @@ export interface FactionTotalsRaceOptions {
   readonly aggregated: boolean;
   readonly groupLabel: string;
   readonly top: number | null;
+  readonly surface: string;
 }
 
 const isObj = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -133,19 +134,19 @@ export function factionTotalsSources(
   };
 }
 
-function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string): {
+function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string, surface: string): {
   readonly label: string;
   readonly labelMissing: boolean;
   readonly labelLoading: boolean;
   readonly color: string;
 } {
   if (aggregated) {
-    return { label: groupLabel, labelMissing: false, labelLoading: false, color: colour(DEFAULT_CARD_SURFACE, 0) };
+    return { label: groupLabel, labelMissing: false, labelLoading: false, color: colour(surface, 0) };
   }
   const { value, name, loading: labelLoading, who: identity } = resolveName(readView, 'faction', id);
   const labelMissing = value.kind !== 'known' && !labelLoading;
   const label = value.kind === 'known' || labelLoading ? name : `Faction ${id}`;
-  const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(DEFAULT_CARD_SURFACE, stableColourIndex(id));
+  const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, stableColourIndex(id));
   return { label, labelMissing, labelLoading, color };
 }
 
@@ -188,7 +189,7 @@ export function projectFactionTotalsRace(
 
   const rows: BarsDataRow[] = [];
   for (const row of reply.rows as readonly FactionTotalRow[]) {
-    const pres = factionPresentation(readView, row.id, options.aggregated, options.groupLabel);
+    const pres = factionPresentation(readView, row.id, options.aggregated, options.groupLabel, options.surface);
     const value = row.total === null
       ? notRecorded(row.missing ?? 'Not recorded at this hour')
       : row.total === 0

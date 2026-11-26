@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { authoredHex, CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { authoredHex, measureColour, neutralColour } from '../../charts/palette.ts';
 import { airMode, airParams, airPercent, airScore, validateAirSuperiority } from '../../dashboard/airSuperiority.ts';
 import { ADD_REGION_LABEL, mostActiveHeading, noRegionsBody, PICKED_REGIONS_HEADING } from '../../families/regions/regionRows.ts';
 import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection.ts';
@@ -483,7 +483,7 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
   countries: { mode: 'none' },
   sources: airSuperioritySources,
   projection: airSuperiorityRegionProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const campaign = ctx.track.source.metadata.campaignKey ?? '';
     const currentCountry = selectedCountryKeys(ctx.widget.countries, ctx.track)[0] ?? defaultCountryKey(ctx.track);
     const mode = airMode(ctx.options, campaign, currentCountry);
@@ -492,8 +492,8 @@ export const airSuperiorityRegionDeclaration: BarsWidgetDeclaration<AirSuperiori
       mode: mode.mode,
       filteredSides: mode.sides.length > 0,
       order,
-      enemyColor: ctx.aux?.enemyColor ?? CHART_MEASURE_COLOURS.short,
-      mutedColor: ctx.aux?.mutedColor ?? CHART_MEASURE_COLOURS.mutedFallback,
+      enemyColor: ctx.aux?.enemyColor ?? measureColour('short', extra.surface),
+      mutedColor: ctx.aux?.mutedColor ?? neutralColour('fallback', extra.surface),
     };
   },
   jumpToDate: true,

@@ -73,7 +73,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
       CCC: { name: 'Gamma', color: '#f59e0b' },
     }),
   });
-  const model = occupationReserveRaceProjection.project(view, { top: 10, all: false, group: false });
+  const model = occupationReserveRaceProjection.project(view, { surface: '#1e1e1e', top: 10, all: false, group: false });
   assertBarsModelValid(model, 240);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows.map(r => [r.key, r.numeric]), [['AAA', 500], ['DDD', 250]]);
@@ -84,7 +84,7 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
 
 test('occupation-reserve-manpower surfaces missing refusal as unavailable and handles unpopulated default Top cleanly', () => {
   const unpopulated = createBoundedReadView({ hour: displayedHour(240), panels: new Map() });
-  const pending = occupationReserveRaceProjection.project(unpopulated, { top: 10, all: false, group: false });
+  const pending = occupationReserveRaceProjection.project(unpopulated, { surface: '#1e1e1e', top: 10, all: false, group: false });
   assert.equal(pending.rows.length, 0);
   assert.equal(pending.empty, undefined);
 
@@ -98,13 +98,13 @@ test('occupation-reserve-manpower surfaces missing refusal as unavailable and ha
   };
   const refused = occupationReserveRaceProjection.project(
     createBoundedReadView({ hour: displayedHour(240), panels: new Map([['main', missing]]) }),
-    { top: 10, all: false, group: false },
+    { surface: '#1e1e1e', top: 10, all: false, group: false },
   );
   assert.equal(refused.emptyKind, 'unavailable');
   assert.equal(refused.empty, missing.missing);
   const unproven = occupationReserveRaceProjection.project(
     createBoundedReadView({ hour: displayedHour(240), panels: new Map([['main', { ...missing, missing: null, unnamed: 2, noneMissing: '2 holders the recording names no tag for hold reserve manpower at this hour' }]]) }),
-    { top: 10, all: false, group: false },
+    { surface: '#1e1e1e', top: 10, all: false, group: false },
   );
   assert.deepEqual([unproven.emptyKind, unproven.empty], ['unavailable', '2 holders the recording names no tag for hold reserve manpower at this hour'], 'an empty reserve is claimed only with the evidence for it');
 });

@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { tailColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
@@ -49,7 +49,6 @@ import type {
 import { NAVAL_NOTE, navalLossesAtProof } from './navalLossesAt.ts';
 import { navalAttribution, navalKind, navalMeasure, navalPeriod } from './navalLossesData.ts';
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 
 export interface NavalLossesLinesOptions {
@@ -256,7 +255,7 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
       surface: options.surface,
       withFlag: true,
       recordedOrdinal: key => rowOf.get(key) ?? 0,
-      tailColor: TAIL_COLOUR,
+      tailColor: tailColour(options.surface),
     });
 
     const hoverDetail = buildHoverDetail(readView, orderedKeys, options, looks);

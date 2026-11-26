@@ -61,9 +61,9 @@ export const armySizeMixDeclaration: BarsWidgetDeclaration<ArmySizeMixOptions> =
   },
   sources: armySizeMixSources,
   projection: armySizeMixProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       countFor: armyCountFor(ctx.options.countFor),
     };
   },

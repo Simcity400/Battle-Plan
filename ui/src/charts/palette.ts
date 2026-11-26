@@ -1,4 +1,4 @@
-import { contrast, isDark, mix, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
+import { contrast, isDark, mix, oklchToRgb, parseColor, rgbaColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Oklch, Rgb } from '../shell/appearance/color';
 import { colourDistance, NearestColours } from './paletteDistance.ts';
 
@@ -9,7 +9,7 @@ const CATEGORICAL = {
 export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 export const MARK_CONTRAST = 3;
 
-export const CHART_MEASURE_COLOURS = {
+const MEASURE_COLOURS = {
   politicalPower: '#e3a83b',
   commandPower: '#c76a90',
   stability: '#7fa6d6',
@@ -23,30 +23,76 @@ export const CHART_MEASURE_COLOURS = {
   supplyNone: '#e5484d',
   bopLeft: '#c4705a',
   bopRight: '#4f8fcf',
-  other: '#3e3e3e',
   short: '#e5484d',
-  shortInk: '#ff6b6f',
   temperatureCold: '#4f8fcf',
   temperatureWarm: '#e3843b',
   weatherModifier: '#9085e9',
   opinionNegative: '#d95926',
   opinionPositive: '#199e70',
   intelCoverage: '#3987e5',
-  tailLine: 'rgba(245, 245, 245, 0.22)',
-  mutedFallback: '#8a8a8a',
-  lightInk: '#f5f5f5',
+  heldTrait: '#5c8df6',
+  gainedTrait: '#e5a43b',
 } as const;
 
-export const DEFAULT_DARK_SURFACE = '#111111';
-export const DEFAULT_CARD_SURFACE = '#1e1e1e';
+export type MeasureColour = keyof typeof MEASURE_COLOURS;
 
-export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
+export function measureColour(name: MeasureColour, surface: string, minContrast = MARK_CONTRAST): string {
+  return readableColour(MEASURE_COLOURS[name], surface, minContrast);
+}
+
+const FILL_CONTRAST = 1.5;
+const COMMAND_TERM_COLOURS = ['#394d72', '#3b64a8', '#44587e', '#355c96'] as const;
+
+export function commandTermColour(surface: string, index: number): string {
+  return readableColour(COMMAND_TERM_COLOURS[index % COMMAND_TERM_COLOURS.length]!, surface, FILL_CONTRAST);
+}
+
+const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
   [1, '#22364f'],
   [0.86, '#a8790f'],
   [0.62, '#d4661c'],
   [0.36, '#e2464e'],
   [0, '#ff6b74'],
 ];
+
+export function convoyEfficiencyColour(share: number, surface: string): string {
+  const value = Math.max(0, Math.min(1, share));
+  for (let i = 1; i < CONVOY_EFFICIENCY_STOPS.length; i++) {
+    const [upper, upperColour] = CONVOY_EFFICIENCY_STOPS[i - 1]!;
+    const [lower, lowerColour] = CONVOY_EFFICIENCY_STOPS[i]!;
+    if (value >= lower) return readableColour(mix(lowerColour, upperColour, upper === lower ? 1 : (value - lower) / (upper - lower)), surface, FILL_CONTRAST);
+  }
+  return readableColour(CONVOY_EFFICIENCY_STOPS[CONVOY_EFFICIENCY_STOPS.length - 1]![1], surface, FILL_CONTRAST);
+}
+
+const BLUEPRINT = { '--blueprint': '#1b3a5c', '--blueprint-border': '#2f5c8a' } as const;
+const EVENT_CATEGORY_COLOURS = { '--event-politics': '#b49c6e', '--event-diplomacy': '#49b3d8', '--event-milestones': '#7cb675' } as const;
+
+export function paletteVariables(surface: string): Readonly<Record<string, string>> {
+  const blueprint = Object.entries(BLUEPRINT).map(([name, value]) => [name, readableColour(value, surface, FILL_CONTRAST)]);
+  const events = Object.entries(EVENT_CATEGORY_COLOURS).map(([name, value]) => [name, readableColour(value, surface)]);
+  return Object.fromEntries([...blueprint, ...events]);
+}
+
+const NEUTRAL_INK = { dark: '#f5f5f5', light: '#111111' } as const;
+
+function neutralInk(surface: string): string {
+  return NEUTRAL_INK[isDark(parseColor(surface) ?? { r: 0, g: 0, b: 0 }) ? 'dark' : 'light'];
+}
+
+export function surfaceGrey(surface: string, amount: number): string {
+  return mix(surface, neutralInk(surface), amount);
+}
+
+const NEUTRAL_STEPS = { other: 0.197, fallback: 0.53, total: 1 } as const;
+
+export function neutralColour(name: keyof typeof NEUTRAL_STEPS, surface: string): string {
+  return surfaceGrey(surface, NEUTRAL_STEPS[name]);
+}
+
+export function tailColour(surface: string): string {
+  return rgbaColor(neutralInk(surface), 0.22);
+}
 
 const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
@@ -330,14 +376,13 @@ const RESERVED_FAR_STEP = 0.14;
 export const RESERVED_SEPARATION = 0.12;
 
 export function reservedGrey(surface: string, identities: Iterable<string> = []): string {
-  const ink = isDark(parseColor(surface) ?? { r: 0, g: 0, b: 0 }) ? '#f5f5f5' : '#111111';
-  const near = mix(surface, ink, RESERVED_STEP);
+  const near = surfaceGrey(surface, RESERVED_STEP);
   const nearLightness = rgbToOklch(parseColor(near)!).l;
   for (const identity of identities) {
     const rgb = parseColor(identity);
     if (!rgb) continue;
     const shown = rgbToOklch(rgb);
-    if (shown.c < GREY_CHROMA && Math.abs(shown.l - nearLightness) < RESERVED_SEPARATION) return mix(surface, ink, RESERVED_FAR_STEP);
+    if (shown.c < GREY_CHROMA && Math.abs(shown.l - nearLightness) < RESERVED_SEPARATION) return surfaceGrey(surface, RESERVED_FAR_STEP);
   }
   return near;
 }

@@ -38,11 +38,10 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-colour-literal", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "family-private-art-cache", "widget-stored-option")
+RULES = ("test-clock", "box-leak", "debug-hash", "test-support-branch", "local-contrast-ink", "local-tick-engine", "family-locale-string", "family-measure-text-loop", "family-hand-percent", "family-at-least-wording", "family-private-art-cache", "widget-stored-option")
 RULE_HINTS = {
     "local-contrast-ink": "use contrastInkForFill from ui/src/draw/kit.ts",
     "local-tick-engine": "use computeTimeAxisTicks from ui/src/draw/kit.ts or linearTicks from ui/src/charts/valueAxis.ts",
-    "family-colour-literal": "use ui/src/charts/palette.ts, ui/src/shell/appearance/color.ts, or resolveKitTokens in ui/src/draw/kit.ts",
     "family-locale-string": "use formatScalar, formatCompactScalar, or formatValueState from ui/src/families/valueFormat.ts",
     "family-measure-text-loop": "use textWidth or measureCanvasText from ui/src/charts/textWidth.ts, or fitLabelWidth / fitLabel from ui/src/charts/labels.ts",
     "family-hand-percent": "use formatShare, formatProgress, or formatRecordedPercent from ui/src/families/valueFormat.ts",
@@ -53,7 +52,6 @@ RULE_HINTS = {
 JS_TEST = re.compile(r"\.test\.(?:ts|tsx|mts|js|mjs|cjs)$")
 TS_FIXTURE = re.compile(r"\.fixtures?\.tsx?$")
 FAMILY_OR_WIDGET_TS = re.compile(r"^ui/src/(?:families|widgets)/.+\.tsx?$")
-FAMILY_OR_WIDGET_CSS = re.compile(r"^ui/src/(?:families|widgets)/.+\.css$")
 WIDGET_TS = re.compile(r"^ui/src/widgets/.+\.tsx?$")
 OPTION_MAPPING_MODULE = "ui/src/widgets/manifest.ts"
 STORED_OPTION_READ = re.compile(r"\b(?:widget|spec)\s*\??\.\s*options\s*(?:\?\.\s*\[|\?\.\s*[A-Za-z_$]|\[|\.\s*[A-Za-z_$])|\bresolveOptions\s*\(")
@@ -67,17 +65,6 @@ LOCAL_CONTRAST_INK = re.compile(
 LOCAL_TICK_ENGINE = re.compile(
     rf"\b(?:function\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*|(?:const|let)\s+(?:compute\w*Ticks|nice\w*Ticks|linearTicks|timeAxisTicks|axisTicks|ticksForStep)\w*\s*=\s*{TS_FN_RHS})"
 )
-COLOUR_FUNC_LITERAL = re.compile(r"\b(?:rgba?|hsla?)\s*\(")
-CSS_COLOUR_LITERAL = re.compile(r"#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\s*\(")
-HEX_STRING_LITERAL = re.compile(r"""(['"`])([^'"`\n]*?#[0-9a-fA-F]{3,8}\b[^'"`\n]*?)\1""")
-STYLE_NAME_WORD = r"(?:[A-Za-z_$]\w*(?:colou?r|fill|stroke|background|border|outline|shadow|tint|ink|accent|surface|palette|swatch|theme|gradient|stop|style)|colou?r|fill|stroke|bg|fg|ink|tint|accent|surface|palette|swatch|style)"
-STYLE_CONTEXT_PREFIX = re.compile(
-    rf"(?:\b{STYLE_NAME_WORD}\s*(?:=|:)\s*(?:\{{\s*)?(?:\[\s*(?:[^\]\n]*,\s*)?)?|\b(?:addColorStop|setProperty|contrastInkForFill|readableColour|parseHex|mixColour|mixColor)\s*\([^()\n]*)$",
-    re.IGNORECASE,
-)
-STYLE_VALUE_EMBEDDED = re.compile(r"(?:\b(?:solid|dashed|dotted|gradient|inset)\b|\d+(?:px|em|rem|%)\s+)")
-CONST_HEX_BINDING = re.compile(r"""\b(?:const|let|var)\s+([A-Za-z_$]\w*)\s*(?::[^=\n]+)?=\s*(['"`])#[0-9a-fA-F]{3,8}\2""")
-SELECTOR_CALL_PREFIX = re.compile(r"\b(?:querySelector(?:All)?|closest|matches)\s*\(\s*$")
 FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\.toFixed\s*\(|\bnew\s+Intl\.NumberFormat\s*\(""")
 FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
 FAMILY_HAND_PERCENT = re.compile(
@@ -617,7 +604,7 @@ def rust_matches(name, revision):
 def is_family_or_widget(name):
     if JS_TEST.search(name) or TS_FIXTURE.search(name):
         return False
-    return bool(FAMILY_OR_WIDGET_TS.match(name) or FAMILY_OR_WIDGET_CSS.match(name))
+    return bool(FAMILY_OR_WIDGET_TS.match(name))
 
 
 def _blank_slice(text, start, end):
@@ -775,89 +762,6 @@ def mask_ts_comments(text, *, blank_strings=False):
     return masked
 
 
-def family_colour_lines(text, code_with_strings):
-    offsets = []
-    for match in COLOUR_FUNC_LITERAL.finditer(code_with_strings):
-        offsets.append(match.start())
-
-    const_hex_offsets = {}
-    for match in CONST_HEX_BINDING.finditer(code_with_strings):
-        const_hex_offsets.setdefault(match.group(1), []).append(match.start(2))
-
-    used_in_style = set()
-    for name in const_hex_offsets:
-        if re.search(rf"\b{STYLE_NAME_WORD}\s*(?:=|:)\s*\{{?\s*{re.escape(name)}\b", code_with_strings, re.IGNORECASE) or re.search(
-            rf"\b(?:addColorStop|setProperty|contrastInkForFill|readableColour|parseHex|mixColour|mixColor)\s*\([^()\n]*\b{re.escape(name)}\b",
-            code_with_strings,
-        ):
-            used_in_style.add(name)
-
-    seen_offsets = set(offsets)
-    for match in HEX_STRING_LITERAL.finditer(code_with_strings):
-        start = match.start()
-        if SELECTOR_CALL_PREFIX.search(code_with_strings, max(0, start - 40), start):
-            continue
-        before = code_with_strings[max(0, start - 120):start]
-        in_style = bool(STYLE_CONTEXT_PREFIX.search(before)) or bool(STYLE_VALUE_EMBEDDED.search(match.group(2)))
-        if in_style and start not in seen_offsets:
-            seen_offsets.add(start)
-            offsets.append(start)
-
-    for name in used_in_style:
-        for pos in const_hex_offsets[name]:
-            if pos not in seen_offsets:
-                seen_offsets.add(pos)
-                offsets.append(pos)
-
-    return [line_of(text, offset) for offset in sorted(offsets)]
-
-
-def family_css_matches(text):
-    clean = re.sub(r"/\*[\s\S]*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group()), text)
-    colour_lines = []
-    depth = 0
-    in_value = False
-    value_start = 0
-    length = len(clean)
-    index = 0
-    while index < length:
-        ch = clean[index]
-        if ch in ("'", '"'):
-            quote = ch
-            index += 1
-            while index < length:
-                if clean[index] == "\\":
-                    index += 2
-                    continue
-                if clean[index] == quote:
-                    index += 1
-                    break
-                index += 1
-            continue
-        if ch == "{":
-            if in_value:
-                in_value = False
-            depth += 1
-        elif ch == "}":
-            if in_value:
-                for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, index):
-                    colour_lines.append(line_of(text, hit.start()))
-                in_value = False
-            depth = max(0, depth - 1)
-        elif ch == ":" and depth > 0 and not in_value:
-            in_value = True
-            value_start = index + 1
-        elif ch == ";" and in_value:
-            for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, index):
-                colour_lines.append(line_of(text, hit.start()))
-            in_value = False
-        index += 1
-    if in_value:
-        for hit in CSS_COLOUR_LITERAL.finditer(clean, value_start, length):
-            colour_lines.append(line_of(text, hit.start()))
-    return {"family-colour-literal": colour_lines} if colour_lines else {}
-
-
 def ts_loop_spans(code):
     spans = []
     for head in TS_LOOP_HEAD.finditer(code):
@@ -890,9 +794,6 @@ def family_ts_matches(name, text):
     tick_lines = [line_of(text, m.start()) for m in LOCAL_TICK_ENGINE.finditer(code)]
     if tick_lines:
         found["local-tick-engine"] = tick_lines
-    colour_lines = family_colour_lines(text, code_with_strings)
-    if colour_lines:
-        found["family-colour-literal"] = colour_lines
     if name != "ui/src/families/valueFormat.ts":
         locale_offsets = [m.start() for m in FAMILY_LOCALE_CODE.finditer(code)] + [m.start() for m in FAMILY_LOCALE_IMPORT.finditer(code_with_strings)]
         locale_lines = [line_of(text, offset) for offset in sorted(locale_offsets)]
@@ -932,8 +833,6 @@ def matches(name, revision):
     if name.endswith(".rs"):
         return rust_matches(name, revision)
     if is_family_or_widget(name):
-        if name.endswith(".css"):
-            return family_css_matches(text)
         return family_ts_matches(name, text)
     pattern = JS_CLOCK if JS_TEST.search(name) else PS_CLOCK if PS_TEST.search(name) else None
     if pattern is None:

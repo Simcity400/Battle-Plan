@@ -89,7 +89,7 @@
 }
 
 .game-window-region-focus:focus-visible {
-  outline: 2px solid var(--color-accent, #d4a64a);
+  outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 

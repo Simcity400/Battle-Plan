@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
+import { readableColour } from '../../charts/palette.ts';
 import { rgbaColor } from '../../shell/appearance/color.ts';
 import {
   drawActionButton,
@@ -199,7 +199,7 @@ function shouldDrawBehindBar(column: FamilyColumnLayout, rc: CellRenderContext):
 
 function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   const tokens = resolveKitTokens(theme);
-  if (column.trackTone === 'red' || column.tone === 'red') return CHART_MEASURE_COLOURS.short;
+  if (column.trackTone === 'red' || column.tone === 'red') return tokens.shortFill;
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
@@ -333,7 +333,7 @@ function drawLogExpander(rc: CellRenderContext, right: number, middle: number, o
     const width = padLeft + EXPANDER_ICON + padRight;
     iconX = right - width + padLeft;
     ctx.save();
-    ctx.fillStyle = rgbaColor(theme.text, tokens.dark ? EXPANDER_FILL.dark : EXPANDER_FILL.light, theme.text);
+    ctx.fillStyle = rgbaColor(theme.text, tokens.dark ? EXPANDER_FILL.dark : EXPANDER_FILL.light);
     ctx.beginPath();
     ctx.roundRect(right - width, Math.round(middle - height / 2), width, height, ROW_CORNER_RADIUS);
     ctx.fill();
@@ -459,7 +459,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
     if (signed !== 0 && fraction !== null) {
       ctx.save();
-      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortage;
+      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortFill;
       ctx.globalAlpha = 0.18 + 0.5 * Math.max(0, Math.min(1, fraction));
       ctx.beginPath();
       ctx.roundRect(left, middle - Math.min(rowHeight - 4, 18) / 2, Math.max(0, right - left), Math.min(rowHeight - 4, 18), 3);
@@ -588,7 +588,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       }
     };
     ctx.save();
-    const secondary = tokens.dark ? '#d4d4d4' : theme.text;
+    const secondary = tokens.textSecondary;
     if (sp.ai) {
       runs(sp.produced === null ? [['Production not recorded', word, theme.muted]] : [[sp.produced, lead, theme.text], [' produced a day', word, theme.muted]], top);
       const reason = 'Need not recorded';
@@ -705,13 +705,13 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const figureColor = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
     if (figureStarts(column, rc)) {
       if (tracked) {
-        drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme), theme);
+        drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? resolveKitTokens(theme).shortFill : trackFillOf(column, theme), theme);
       }
       drawFigurePhrase(rc, formatted.text, suffix, tracked ? left + trackW + 10 : left, right, middle, valFont, suffixFont, figureColor);
       return;
     }
     if (tracked) {
-      const barColor = paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme);
+      const barColor = paintModel.bar.alert ? resolveKitTokens(theme).shortFill : trackFillOf(column, theme);
       drawTrackBar(ctx, right - numSlot - 10 - trackW, middle, trackW, 6, fraction, barColor, theme);
     }
     let numRight = right;
@@ -912,7 +912,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (subtext && rowHeight >= 36) {
     const titleFont = fontOf(theme, 13.5, isChild ? 500 : 600);
     const subFont = fontOf(theme, 12, 400);
-    const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.childText : theme.text);
+    const titleColor = item.row.muted ? theme.muted : (isChild ? tokens.textSecondary : theme.text);
     drawInlineRuns(rc, narrowText ?? formatted.text, left, middle - 8, avail, titleFont, titleColor);
     drawInlineRuns(rc, subtext, left, middle + 9, avail, subFont, theme.muted);
     return;
@@ -929,7 +929,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       : column.textTone === 'muted'
         ? theme.muted
         : isChild || column.textTone === 'secondary'
-          ? tokens.childText
+          ? tokens.textSecondary
           : theme.text;
   const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
   if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
@@ -975,7 +975,7 @@ export function drawDetailCell(
         drawFlagSlot(ctx, x, Math.round(mid - DETAIL_FLAG.height / 2), slotOf(flag.art, flag.tag, rc), theme,
           { width: DETAIL_FLAG.width, height: DETAIL_FLAG.height, dimmed: flag.dimmed });
         x += DETAIL_FLAG.width + DETAIL_FLAG.gap;
-        if (flag.label) x += drawInlineRuns(rc, flag.label, x, mid, right - x, font, flag.muted ? theme.muted : tokens.childText);
+        if (flag.label) x += drawInlineRuns(rc, flag.label, x, mid, right - x, font, flag.muted ? theme.muted : tokens.textSecondary);
         if (flag.note && right - x > DETAIL_NOTE_GAP) x += DETAIL_NOTE_GAP + drawInlineRuns(rc, detailNote(flag.note), x + DETAIL_NOTE_GAP, mid, right - x - DETAIL_NOTE_GAP, font, theme.muted);
         x += DETAIL_CHIP_GAP;
       }
@@ -983,7 +983,7 @@ export function drawDetailCell(
   }
   if (detail.text) {
     const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
-    drawInlineRuns(rc, missing ? formatted.label : formatted.text, detail.left, y + DETAIL_LINE_HEIGHT / 2, detail.width, font, item.row.muted || missing ? theme.muted : tokens.childText);
+    drawInlineRuns(rc, missing ? formatted.label : formatted.text, detail.left, y + DETAIL_LINE_HEIGHT / 2, detail.width, font, item.row.muted || missing ? theme.muted : tokens.textSecondary);
   }
 }
 

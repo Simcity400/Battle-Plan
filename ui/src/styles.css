@@ -1,8 +1,4 @@
 :root {
-  --canvas: #0a0f16; --chrome: #0f151d; --surface: #111822; --raised: #1c2532; --overlay: #161e29; --border: #2a3646;
-  --text: #eef3f9; --muted: #9fb0c3; --accent: #5cb2ff; --accent-text: #0a0f16; --selection: #5cb2ff; --glow: #2fc6c0;
-  --positive: #5fd49b; --warning: #f0c060; --error: #f07178;
-  --blueprint: #1b3a5c; --blueprint-border: #2f5c8a; --blueprint-text: #eef3f9;
   --glass: 78%; --glass-blur: 16px; --radius: 10px;
   --muted-row-opacity: .55;
   --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
@@ -27,7 +23,6 @@
   --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
   --accent-softer: color-mix(in srgb, var(--accent) 8%, transparent);
   --accent-line: color-mix(in srgb, var(--accent) 52%, transparent);
-  --accent-hover: color-mix(in srgb, var(--accent) 86%, rgb(from var(--accent-text) calc(255 - r) calc(255 - g) calc(255 - b)));
   --accent-ink: color-mix(in srgb, var(--accent) 62%, var(--text));
   --selection-soft: color-mix(in srgb, var(--selection) 8%, transparent);
   --positive-soft: color-mix(in srgb, var(--positive) 14%, transparent);
@@ -37,13 +32,13 @@
   --meter-sweep: color-mix(in srgb, var(--text) 28%, transparent);
   --error-soft: color-mix(in srgb, var(--error) 14%, transparent);
   --error-ink: color-mix(in srgb, var(--error) 60%, var(--text));
-  --edge: 0 0 #0000;
+  --edge: 0 0 transparent;
   --control-border: color-mix(in srgb, var(--text) 11%, transparent);
   --control-border-hover: color-mix(in srgb, var(--text) 17%, transparent);
   --control-fill: color-mix(in srgb, var(--text) 3%, transparent);
   --control-fill-hover: color-mix(in srgb, var(--text) 6%, transparent);
-  --control-shadow: inset 0 1px 0 rgb(255 255 255 / 5%), 0 1px 2px rgb(0 0 0 / 22%);
-  --shadow-color: rgb(0 0 0 / 42%);
+  --control-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink-light) 5%, transparent), 0 1px 2px color-mix(in srgb, var(--ink-dark) 22%, transparent);
+  --shadow-color: color-mix(in srgb, var(--ink-dark) 42%, transparent);
   --shadow-sm: 0 1px 2px var(--shadow-color);
   --shadow-md: 0 4px 16px -8px var(--shadow-color);
   --shadow-lg: 0 24px 60px -16px var(--shadow-color), 0 4px 12px -4px var(--shadow-color);
@@ -66,13 +61,13 @@
 }
 :root[data-mode='light'] {
   color-scheme: light;
-  --edge: 0 0 #0000;
+  --edge: 0 0 transparent;
   --control-border: color-mix(in srgb, var(--text) 15%, transparent);
   --control-border-hover: color-mix(in srgb, var(--text) 23%, transparent);
   --control-fill: var(--surface);
   --control-fill-hover: color-mix(in srgb, var(--surface) 96%, var(--text));
-  --control-shadow: 0 1px 2px rgb(0 0 0 / 5%);
-  --shadow-color: rgb(28 38 58 / 14%);
+  --control-shadow: 0 1px 2px color-mix(in srgb, var(--ink-dark) 5%, transparent);
+  --shadow-color: color-mix(in srgb, var(--ink-dark) 14%, transparent);
   --hover: color-mix(in srgb, var(--text) 5%, transparent);
   --field: color-mix(in srgb, var(--raised) 55%, var(--surface));
   --field-hover: color-mix(in srgb, var(--raised) 85%, var(--surface));
@@ -116,7 +111,7 @@ h1 { font-size: calc(var(--font-size-display) * 1.57143); letter-spacing: -.02em
 .button:hover:not(:disabled) { background: var(--control-fill-hover); border-color: var(--control-border-hover); }
 .button:active:not(:disabled) { transform: translateY(1px); }
 .button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink-light) 16%, transparent), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent); }
 .button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; }
 .button.quiet { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
 .button.quiet:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: transparent; }
@@ -153,19 +148,19 @@ input[type='checkbox'][role='switch'] {
   background: color-mix(in srgb, var(--text) 16%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); transition: background var(--t) var(--ease);
 }
 input[type='checkbox'][role='switch']::before {
-  content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 35%); transition: transform var(--t) var(--ease-spring);
+  content: ''; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-light);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink-dark) 35%, transparent); transition: transform var(--t) var(--ease-spring);
 }
 input[type='checkbox'][role='switch']:checked { background: var(--accent); box-shadow: none; }
 input[type='checkbox'][role='switch']:checked::before { transform: translateX(14px); }
 input[type='checkbox'][role='switch']:disabled { cursor: default; opacity: .45; }
 input[type='range'].slider { appearance: none; width: 100%; height: 24px; margin: 0; background: transparent; cursor: pointer; --fill: 50%; }
 input[type='range'].slider::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right, var(--accent) var(--fill), color-mix(in srgb, var(--text) 14%, transparent) var(--fill)); }
-input[type='range'].slider::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: #fff; border: 0;
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 15%), 0 2px 6px rgb(0 0 0 / 35%); transition: transform var(--t-fast) var(--ease); }
+input[type='range'].slider::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--ink-light); border: 0;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink-dark) 15%, transparent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 35%, transparent); transition: transform var(--t-fast) var(--ease); }
 input[type='range'].slider:hover::-webkit-slider-thumb, input[type='range'].slider:focus-visible::-webkit-slider-thumb { transform: scale(1.12); }
 input[type='range'].slider:focus-visible { outline: none; }
-input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent), 0 2px 6px rgb(0 0 0 / 35%); }
+input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 35%, transparent); }
 .search-field { position: relative; display: flex; align-items: center; flex: 1; min-width: 0; }
 .search-field > svg { position: absolute; left: 10px; width: 15px; height: 15px; color: var(--muted); pointer-events: none; }
 .search-field > input { padding-left: 32px; }

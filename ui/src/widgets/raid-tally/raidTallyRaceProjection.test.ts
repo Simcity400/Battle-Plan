@@ -27,7 +27,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string; tag?:
   };
 }
 
-const OPTS: RaidTallyRaceOptions = {
+const OPTS: RaidTallyRaceOptions = { surface: '#1e1e1e',
   metric: 'both',
   group: false,
   top: 10,

@@ -72,8 +72,8 @@ button.research-now-cell:hover { background: var(--hover); }
 .research-time-row { display: flex; gap: 1.5px; height: 100%; }
 .research-time-row > span {
   --tone: var(--accent); --shade: 0;
-  min-width: 3px; height: 100%; background: linear-gradient(to bottom, color-mix(in srgb, var(--tone) 100%, white 14%), var(--tone));
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
+  min-width: 3px; height: 100%; background: linear-gradient(to bottom, color-mix(in srgb, var(--tone) 100%, var(--ink-light) 14%), var(--tone));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink-light) 18%, transparent);
   transition: opacity var(--t) var(--ease), filter var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 .research-time-row > span:first-child { border-radius: 999px 0 0 999px; }
@@ -98,7 +98,7 @@ button.research-now-cell:hover { background: var(--hover); }
 .research-time.is-hovering .research-time-row > span:not(.is-hovered) { opacity: .35; }
 .research-time-row > span.is-hovered {
   position: relative; z-index: 1; filter: brightness(1.15); transform: scaleY(1.3);
-  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--tone) 60%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--tone) 80%, white 20%);
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--tone) 60%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--tone) 80%, var(--ink-light) 20%);
 }
 [data-motion='reduced'] .research-time-row > span { transition: none; }
 .research-description-text { margin-top: 8px; }

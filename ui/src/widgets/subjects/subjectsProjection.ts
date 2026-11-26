@@ -1,5 +1,5 @@
 import { unavailableArt } from '../../families/art/types.ts';
-import { CHART_MEASURE_COLOURS, colour, readableColour } from '../../charts/palette.ts';
+import { colour, neutralColour, readableColour } from '../../charts/palette.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
@@ -66,7 +66,7 @@ export const subjectsProjection: TimelineProjection<SubjectsOptions> = registerF
     if (!reply.runs.length) return timelineModel({ ...base, empty: 'No subjects recorded', warnings, nextChangeAt });
     const overlords = viewsOf(reply, groups);
     const levels = new Map<string, SubjectLevel>(reply.levels.map(level => [level.token, level]));
-    const other = readableColour(CHART_MEASURE_COLOURS.other, opt.surface);
+    const other = readableColour(neutralColour('other', opt.surface), opt.surface);
     const fills = levelColours(reply.levels, reply.levels.map((_, index) => colour(opt.surface, index)), other);
     const unobserved = clipSpansToHour(overlords[0]?.unknown ?? reply.unobserved, hour);
     const selected = opt.selected ? new Set(opt.selected) : null;

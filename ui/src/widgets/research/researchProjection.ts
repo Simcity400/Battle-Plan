@@ -1,5 +1,5 @@
 import { liveKey, type LiveValues } from '../../charts/live.ts';
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour, neutralColour } from '../../charts/palette.ts';
 import { runAt } from '../../charts/series.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -176,7 +176,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
     const coverage = throughHour(reply.coverage, reply.hour, hour);
     const unobserved = unobservedSpans(coverage, opt.firstHour, hour);
     const readBySlot = new Map((slotsNow?.slots ?? []).map(item => [item.index, item]));
-    const completedColour = mix(CHART_MEASURE_COLOURS.intelCoverage, opt.surface, 0.5);
+    const completedColour = mix(measureColour('intelCoverage', opt.surface), opt.surface, 0.5);
 
     const lanes: TimelineLane[] = reply.slots.map(slot => {
       const availability = throughHour(slot.availability, reply.hour, hour);
@@ -189,10 +189,10 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
         const dim = chosen.size > 0 && !chosen.has(folder?.key ?? '');
         const name = looks.name(item.token, item.databaseIndex);
         const colour = dim
-          ? CHART_MEASURE_COLOURS.other
+          ? neutralColour('other', opt.surface)
           : item.outcome === 'switched' || item.outcome === 'unknown'
-            ? CHART_MEASURE_COLOURS.mutedFallback
-            : CHART_MEASURE_COLOURS.intelCoverage;
+            ? neutralColour('fallback', opt.surface)
+            : measureColour('intelCoverage', opt.surface);
         const meta: ResearchSpanMeta = {
           slotIndex: slot.index,
           item,
@@ -223,7 +223,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
           id: `${slot.index}:unjoined:${nowRead.state.firstHour}:${token}`,
           firstHour: Math.min(nowRead.state.firstHour, hour),
           lastHour: hour,
-          color: dim ? CHART_MEASURE_COLOURS.other : CHART_MEASURE_COLOURS.intelCoverage,
+          color: dim ? neutralColour('other', opt.surface) : measureColour('intelCoverage', opt.surface),
           label: meta.techName,
           startBy: true,
           open: true,
@@ -248,7 +248,7 @@ export const researchProjection: TimelineProjection<ResearchTimelineOptions> = r
 
     const legend: LegendStripEntry[] = [
       { label: 'Completed', color: completedColour, swatch: 'square' },
-      { label: 'In progress', color: CHART_MEASURE_COLOURS.intelCoverage, swatch: 'square' },
+      { label: 'In progress', color: measureColour('intelCoverage', opt.surface), swatch: 'square' },
       { label: 'Idle', outlined: true },
       ...(unobserved.length ? [{ label: 'Not recorded', hatch: true } satisfies LegendStripEntry] : []),
     ];

@@ -25,9 +25,10 @@ import {
   NOT_APPLICABLE_LABEL,
   notRecordedLabel,
 } from '../families/valueFormat.ts';
-import { CHART_MEASURE_COLOURS, paletteCache, readableColour } from '../charts/palette.ts';
+import { paletteCache, readableColour } from '../charts/palette.ts';
+import { markColours } from '../shell/appearance/themes.ts';
 import { niceStep } from '../charts/valueAxis.ts';
-import { colorCache, contrast, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
+import { colorCache, contrast, extendColor, isDark, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
 
 export type RowDensity = 'compact' | 'normal' | 'comfortable';
@@ -57,75 +58,63 @@ const initialsCache = new Map<string, string>();
 function isDarkTheme(theme: Pick<FamilyTheme, 'surface' | 'dark'>): boolean {
   if (theme.dark !== undefined) return theme.dark;
   const rgb = parseColor(theme.surface);
-  if (!rgb) return true;
-  return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b < 128;
+  return !rgb || isDark(rgb);
 }
 
-export const DEFAULT_FAMILY_THEME: FamilyTheme = {
-  surface: '#111111',
-  raised: '#262626',
-  dark: true,
-  text: '#f5f5f5',
-  muted: '#929292',
-  line: 'rgba(245, 245, 245, 0.18)',
-  lineSoft: 'rgba(245, 245, 245, 0.055)',
-  accent: '#4f86f7',
-  blue: '#4f86f7',
-  red: CHART_MEASURE_COLOURS.short,
-  shortage: CHART_MEASURE_COLOURS.shortInk,
-  amber: CHART_MEASURE_COLOURS.politicalPower,
-  green: CHART_MEASURE_COLOURS.supplyOk,
-  grey: '#929292',
-  hatch: 'rgba(245, 245, 245, 0.17)',
-  hatchEdge: 'rgba(245, 245, 245, 0.12)',
-  font: "'Segoe UI', system-ui, sans-serif",
-  fontSize: { small: 11, body: 12 },
-  lineWidth: 1,
-  hatchSpacing: 5,
-};
-
-type KitTokenInput = Pick<FamilyTheme, 'surface' | 'text' | 'muted' | 'accent'> & Partial<FamilyTheme>;
+type KitTokenInput = Pick<FamilyTheme, 'surface' | 'text' | 'muted' | 'accent' | 'red' | 'green'> & Partial<FamilyTheme>;
 
 function buildKitTokens(theme: KitTokenInput) {
   const dark = isDarkTheme(theme);
-  const ink = dark ? '255, 255, 255' : '15, 23, 42';
+  const ink = extendColor(theme.surface, theme.text);
+  const veil = (alpha: number) => rgbaColor(ink, alpha);
+  const textSecondary = mix(theme.text, theme.muted, 1 / 3);
+  const marks = markColours(theme.red, theme.green);
   return {
     dark,
+    ink,
     raised: theme.raised ?? theme.surface,
-    hairline: theme.hairline ?? `rgba(${ink}, ${dark ? 0.05 : 0.07})`,
-    hairlineStrong: theme.hairlineStrong ?? `rgba(${ink}, ${dark ? 0.085 : 0.11})`,
-    bandDivider: theme.bandDivider ?? `rgba(${ink}, ${dark ? 0.12 : 0.15})`,
-    headerBand: theme.headerBand ?? `rgba(${ink}, ${dark ? 0.025 : 0.03})`,
-    rowHover: theme.rowHover ?? `rgba(${ink}, ${dark ? 0.045 : 0.05})`,
-    rowSelected: theme.rowSelected ?? rgbaColor(theme.accent, 0.14, dark ? 'rgba(96, 165, 250, 0.14)' : 'rgba(37, 99, 235, 0.14)'),
-    childTint: theme.childTint ?? `rgba(${ink}, ${dark ? 0.018 : 0.025})`,
-    shortage: theme.shortage ?? (dark ? '#ff6b6f' : '#e5484d'),
-    barMuted: theme.barMuted ?? `rgba(${ink}, ${dark ? 0.085 : 0.095})`,
-    barTrack: theme.barTrack ?? `rgba(${ink}, ${dark ? 0.08 : 0.1})`,
-    gridLine: theme.gridLine ?? `rgba(${ink}, ${dark ? 0.055 : 0.07})`,
-    zeroLine: theme.zeroLine ?? `rgba(${ink}, ${dark ? 0.18 : 0.22})`,
-    tailLine: theme.tailLine ?? rgbaColor(theme.muted, 0.22, `rgba(${ink}, 0.22)`),
-    playhead: theme.playhead ?? `rgba(${ink}, ${dark ? 0.28 : 0.34})`,
-    crosshair: theme.crosshair ?? `rgba(${ink}, ${dark ? 0.5 : 0.52})`,
+    hairline: theme.hairline ?? veil(dark ? 0.05 : 0.07),
+    hairlineStrong: theme.hairlineStrong ?? veil(dark ? 0.085 : 0.11),
+    bandDivider: theme.bandDivider ?? veil(dark ? 0.12 : 0.15),
+    headerBand: theme.headerBand ?? veil(dark ? 0.025 : 0.03),
+    rowHover: theme.rowHover ?? veil(dark ? 0.045 : 0.05),
+    rowSelected: theme.rowSelected ?? rgbaColor(theme.accent, 0.14),
+    childTint: theme.childTint ?? veil(dark ? 0.018 : 0.025),
+    shortage: theme.shortage ?? readableColour(marks.shortInk, theme.surface),
+    shortFill: marks.shortFill,
+    goodFill: marks.goodFill,
+    goodInk: readableColour(marks.goodInk, theme.surface),
+    barMuted: theme.barMuted ?? veil(dark ? 0.085 : 0.095),
+    barTrack: theme.barTrack ?? veil(dark ? 0.08 : 0.1),
+    gridLine: theme.gridLine ?? veil(dark ? 0.055 : 0.07),
+    zeroLine: theme.zeroLine ?? veil(dark ? 0.18 : 0.22),
+    playhead: theme.playhead ?? veil(dark ? 0.28 : 0.34),
+    crosshair: theme.crosshair ?? veil(dark ? 0.5 : 0.52),
     dateTabBg: theme.dateTabBg ?? (theme.raised ?? theme.surface),
     dateTabText: theme.dateTabText ?? theme.text,
     hoverTabBg: theme.hoverTabBg ?? theme.text,
     hoverTabText: theme.hoverTabText ?? theme.surface,
-    textSecondary: dark ? '#d4d4d4' : theme.muted,
+    textSecondary,
     autoName: mix(theme.text, theme.surface, 0.25),
-    childText: dark ? '#d4d4d4' : theme.text,
     quiet: mix(theme.muted, theme.surface, 0.32),
     tileTop: mix(theme.raised ?? theme.surface, theme.text, 0.05),
     tileBottom: mix(theme.raised ?? theme.surface, theme.surface, 0.3),
-    tileEdge: `rgba(${ink}, ${dark ? 0.06 : 0.08})`,
-    tileFlat: `rgba(${ink}, ${dark ? 0.07 : 0.06})`,
+    tileEdge: veil(dark ? 0.06 : 0.08),
+    tileFlat: veil(dark ? 0.07 : 0.06),
     tileInk: mix(theme.text, theme.surface, 0.28),
-    treeLine: `rgba(${ink}, ${dark ? 0.14 : 0.18})`,
-    barNeutral: dark ? '#cfcfcf' : '#64748b',
-    trackGrey: dark ? '#c4c4c4' : '#64748b',
-    twoWayNeutral: dark ? 'rgba(245, 245, 245, 0.28)' : 'rgba(15, 23, 42, 0.25)',
-    markerTick: dark ? 'rgba(245, 245, 245, 0.42)' : 'rgba(15, 23, 42, 0.42)',
-    partsTrack: dark ? 'rgba(245, 245, 245, 0.045)' : 'rgba(15, 23, 42, 0.05)',
+    treeLine: veil(dark ? 0.14 : 0.18),
+    barNeutral: mix(theme.text, theme.muted, 0.38),
+    trackGrey: mix(theme.text, theme.muted, 0.5),
+    twoWayNeutral: rgbaColor(theme.text, dark ? 0.28 : 0.25),
+    markerTick: rgbaColor(theme.text, 0.42),
+    partsTrack: rgbaColor(theme.text, dark ? 0.045 : 0.05),
+    chipFill: veil(dark ? 0.09 : 0.08),
+    netEdge: veil(dark ? 0.14 : 0.16),
+    netBar: veil(dark ? 0.76 : 0.36),
+    playFill: mix(theme.text, theme.muted, 0.455),
+    pauseFill: rgbaColor(theme.text, dark ? 0.16 : 0.14),
+    darkFillInk: rgbaColor(dark ? theme.surface : theme.text, 0.88),
+    lightFillInk: rgbaColor(dark ? ink : extendColor(theme.text, theme.surface), 0.96),
   };
 }
 
@@ -136,6 +125,8 @@ interface CachedTokens {
   readonly text: string;
   readonly muted: string;
   readonly accent: string;
+  readonly red: string;
+  readonly green: string;
   readonly dark: boolean | undefined;
   readonly raised: string | undefined;
   readonly tokens: KitTokens;
@@ -145,7 +136,7 @@ const kitTokenCache = new WeakMap<object, CachedTokens>();
 let activeTheme: string | null = null;
 
 function themeKey(theme: KitTokenInput): string {
-  return [theme.surface, theme.text, theme.muted, theme.accent, theme.raised ?? '', theme.dark ?? '', theme.font ?? '', theme.fontSize?.small ?? '', theme.fontSize?.body ?? ''].join('\u0000');
+  return [theme.surface, theme.text, theme.muted, theme.accent, theme.red, theme.green, theme.raised ?? '', theme.dark ?? '', theme.font ?? '', theme.fontSize?.small ?? '', theme.fontSize?.body ?? ''].join('\u0000');
 }
 
 export function resolveKitTokens(theme: KitTokenInput): KitTokens {
@@ -163,6 +154,8 @@ export function resolveKitTokens(theme: KitTokenInput): KitTokens {
     && cached.text === theme.text
     && cached.muted === theme.muted
     && cached.accent === theme.accent
+    && cached.red === theme.red
+    && cached.green === theme.green
     && cached.dark === theme.dark
     && cached.raised === theme.raised
   ) {
@@ -174,6 +167,8 @@ export function resolveKitTokens(theme: KitTokenInput): KitTokens {
     text: theme.text,
     muted: theme.muted,
     accent: theme.accent,
+    red: theme.red,
+    green: theme.green,
     dark: theme.dark,
     raised: theme.raised,
     tokens,
@@ -299,7 +294,7 @@ export function drawScrollFade(
   ctx.save();
   const gradient = ctx.createLinearGradient(x0, y0, x1, y1);
   gradient.addColorStop(0, theme.surface);
-  gradient.addColorStop(1, rgbaColor(theme.surface, 0, 'rgba(0, 0, 0, 0)'));
+  gradient.addColorStop(1, rgbaColor(theme.surface, 0));
   ctx.fillStyle = gradient;
   ctx.fillRect(x, y, width, height);
   ctx.restore();
@@ -601,28 +596,27 @@ export function drawBarBehindFigure(
   middleY: number,
   fraction: number,
   fill: string,
-  options?: {
+  options: {
     readonly density?: RowDensity;
     readonly sorted?: boolean;
     readonly maxWidth?: number;
-    readonly theme?: FamilyTheme;
+    readonly theme: FamilyTheme;
   },
 ): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null {
   const clamped = Math.max(0, Math.min(1, fraction));
   if (clamped <= 0) return null;
-  const density = options?.density ?? 'normal';
+  const density = options.density ?? 'normal';
   const height = BEHIND_BAR_HEIGHT[density];
-  const maxWidth = options?.maxWidth ?? BEHIND_BAR_MAX_WIDTH;
+  const maxWidth = options.maxWidth ?? BEHIND_BAR_MAX_WIDTH;
   const width = Math.min(maxWidth, Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(maxWidth * clamped)));
   const startRight = figureRight + BEHIND_BAR_OFFSET;
   const x = startRight - width;
   const y = Math.round(middleY - height / 2);
-  const sorted = options?.sorted ?? true;
+  const sorted = options.sorted ?? true;
   if (sorted) {
     drawBar(ctx, x, y, width, height, fill, 'left', 0.3);
   } else {
-    const mutedFill = options?.theme ? resolveKitTokens(options.theme).barMuted : 'rgba(255, 255, 255, 0.085)';
-    drawBar(ctx, x, y, width, height, mutedFill, 'left', 1);
+    drawBar(ctx, x, y, width, height, resolveKitTokens(options.theme).barMuted, 'left', 1);
   }
   return { x, y, width, height };
 }
@@ -921,7 +915,7 @@ export function drawStatusMark(
   const word = options?.label ?? STATUS_MARK_LABELS[kind];
   const fontSize = STATUS_WORD_SIZE;
   ctx.font = `400 ${fontSize}px ${theme.font}`;
-  ctx.fillStyle = kind === 'ended' ? theme.muted : tokens.childText;
+  ctx.fillStyle = kind === 'ended' ? theme.muted : tokens.textSecondary;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const textMax = options?.maxWidth !== undefined ? Math.max(0, options.maxWidth - dotDiameter - gap) : 10_000;
@@ -1035,14 +1029,14 @@ export function drawDateColumn(
   ctx.textBaseline = 'middle';
   if (rowHeight >= 32) {
     ctx.font = `500 12.5px ${theme.font}`;
-    ctx.fillStyle = tokens.childText;
+    ctx.fillStyle = tokens.textSecondary;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY - 6);
     ctx.font = `400 10.5px ${theme.font}`;
     ctx.fillStyle = tokens.quiet;
     ctx.fillText(ellipsise(parts.year, width, s => textWidth(ctx, s)), anchorX, middleY + 7);
   } else {
     ctx.font = `500 11.5px ${theme.font}`;
-    ctx.fillStyle = tokens.childText;
+    ctx.fillStyle = tokens.textSecondary;
     ctx.fillText(ellipsise(parts.dayMonth, width, s => textWidth(ctx, s)), anchorX, middleY);
   }
   ctx.restore();
@@ -1140,7 +1134,7 @@ export function drawSeriesMissingStrip(
 ): void {
   if (width <= 0 || height <= 0) return;
   ctx.save();
-  ctx.fillStyle = rgbaColor(color, 0.16, color);
+  ctx.fillStyle = rgbaColor(color, 0.16);
   ctx.fillRect(x, y, width, height);
   drawHatchRect(ctx, x, y, width, height, 0, {
     hatch: color,
@@ -1233,12 +1227,6 @@ export function drawDateTab(
   return { x, y, width, height };
 }
 
-const DARK_FILL_INK_RGB = { r: 17, g: 17, b: 17 };
-const LIGHT_FILL_INK_RGB = { r: 255, g: 255, b: 255 };
-const DARK_FILL_INK_ALPHA = 0.88;
-const LIGHT_FILL_INK_ALPHA = 0.96;
-const DARK_FILL_INK = 'rgba(17, 17, 17, 0.88)';
-const LIGHT_FILL_INK = 'rgba(255, 255, 255, 0.96)';
 const MAX_INK_PER_THEME = 512;
 const contrastInkCache = new WeakMap<object, { readonly surface: string; readonly text: string; readonly map: Map<string, string> }>();
 
@@ -1255,11 +1243,14 @@ export function contrastInkForFill(fill: string, theme: FamilyTheme): string {
   if (!parsed) {
     resolved = theme.text;
   } else {
+    const tokens = resolveKitTokens(theme);
     const surface = parsed.alpha < 1 ? parseColor(theme.surface) : null;
     const bg = surface && parsed.alpha < 1 ? mixRgb(surface, parsed.rgb, parsed.alpha) : parsed.rgb;
-    resolved = contrast(bg, mixRgb(bg, DARK_FILL_INK_RGB, DARK_FILL_INK_ALPHA)) >= contrast(bg, mixRgb(bg, LIGHT_FILL_INK_RGB, LIGHT_FILL_INK_ALPHA))
-      ? DARK_FILL_INK
-      : LIGHT_FILL_INK;
+    const shown = (ink: string) => {
+      const over = parseColorAlpha(ink)!;
+      return contrast(bg, mixRgb(bg, over.rgb, over.alpha));
+    };
+    resolved = shown(tokens.darkFillInk) >= shown(tokens.lightFillInk) ? tokens.darkFillInk : tokens.lightFillInk;
   }
   if (bucket.map.size >= MAX_INK_PER_THEME) bucket.map.clear();
   bucket.map.set(fill, resolved);
@@ -1323,7 +1314,7 @@ function fadeFill(ctx: Canvas2D, x: number, width: number, fill: string, fadeSta
   if ((!fadeStart && !fadeEnd) || width <= 2) return fill;
   const grad = ctx.createLinearGradient(x, 0, x + width, 0);
   const stop = Math.min(0.45, TIMELINE_FADE_WIDTH / width);
-  const clear = rgbaColor(fill, 0, 'rgba(0,0,0,0)');
+  const clear = rgbaColor(fill, 0);
   grad.addColorStop(0, fadeStart ? clear : fill);
   if (fadeStart) grad.addColorStop(stop, fill);
   if (fadeEnd) grad.addColorStop(1 - stop, fill);
@@ -1602,17 +1593,12 @@ export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], opti
   }
 }
 
-export function winRateColor(rate: number, theme?: FamilyTheme): string {
-  const dark = theme ? isDarkTheme(theme) : true;
-  const low: readonly [number, number, number] = dark ? [255, 107, 111] : [207, 46, 54];
-  const mid: readonly [number, number, number] = dark ? [212, 212, 212] : [92, 100, 112];
-  const high: readonly [number, number, number] = dark ? [111, 212, 150] : [28, 138, 76];
-  const mix = (a: readonly [number, number, number], b: readonly [number, number, number], t: number) =>
-    `rgb(${Math.round(a[0] + (b[0] - a[0]) * t)}, ${Math.round(a[1] + (b[1] - a[1]) * t)}, ${Math.round(a[2] + (b[2] - a[2]) * t)})`;
-  if (rate <= 0.35) return mix(low, low, 0);
-  if (rate >= 0.65) return mix(high, high, 0);
-  if (rate < 0.5) return mix(low, mid, (rate - 0.35) / 0.15);
-  return mix(mid, high, (rate - 0.5) / 0.15);
+export function winRateColor(rate: number, theme: FamilyTheme): string {
+  const tokens = resolveKitTokens(theme);
+  if (rate <= 0.35) return tokens.shortage;
+  if (rate >= 0.65) return tokens.goodInk;
+  if (rate < 0.5) return mix(tokens.shortage, tokens.textSecondary, (rate - 0.35) / 0.15);
+  return mix(tokens.textSecondary, tokens.goodInk, (rate - 0.5) / 0.15);
 }
 
 export function drawWinRateCell(
@@ -1636,6 +1622,7 @@ export function drawWinRateCell(
     return { pct: null };
   }
   const rate = Math.max(0, Math.min(1, won! / total));
+  const tokens = resolveKitTokens(theme);
   const pct = Math.round(rate * 100);
   ctx.font = `600 13.5px ${theme.font}`;
   ctx.fillStyle = winRateColor(rate, theme);
@@ -1654,13 +1641,13 @@ export function drawWinRateCell(
     const wonW = won! > 0 ? Math.max(2, Math.round(usable * rate)) : 0;
     const lostW = lost! > 0 ? Math.max(2, usable - wonW) : 0;
     if (wonW > 0) {
-      ctx.fillStyle = '#4fbf7a';
+      ctx.fillStyle = tokens.goodFill;
       ctx.beginPath();
       ctx.roundRect(barX, barY, wonW, barH, [2, hasBoth ? 0 : 2, hasBoth ? 0 : 2, 2]);
       ctx.fill();
     }
     if (lostW > 0) {
-      ctx.fillStyle = '#e5484d';
+      ctx.fillStyle = tokens.shortFill;
       ctx.beginPath();
       ctx.roundRect(barX + wonW + splitGap, barY, lostW, barH, [hasBoth ? 0 : 2, 2, 2, hasBoth ? 0 : 2]);
       ctx.fill();
@@ -1876,7 +1863,7 @@ export function drawActionButton(
   const w = Math.ceil(padLeft + padRight + iconSize + gap + labelW);
   const x = right - w;
   const y = Math.round(middleY - h / 2);
-  ctx.fillStyle = tokens.dark ? 'rgba(255, 255, 255, 0.09)' : 'rgba(15, 23, 42, 0.08)';
+  ctx.fillStyle = tokens.chipFill;
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, ROW_CORNER_RADIUS);
   ctx.fill();
@@ -1904,7 +1891,7 @@ export function drawNetBar(
   const middleY = rowY + rowHeight / 2;
   const centerX = Math.floor(x + width / 2) + 0.5;
   ctx.save();
-  ctx.strokeStyle = tokens.dark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(15, 23, 42, 0.16)';
+  ctx.strokeStyle = tokens.netEdge;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(centerX, rowY);
@@ -1915,8 +1902,8 @@ export function drawNetBar(
   const half = Math.max(0, width / 2 - 2);
   const barW = Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(half * Math.min(1, Math.abs(share))));
   const barY = Math.round(middleY - NET_BAR_HEIGHT / 2);
-  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, CHART_MEASURE_COLOURS.short, 'left', 1);
-  else drawBar(ctx, centerX, barY, barW, NET_BAR_HEIGHT, tokens.dark ? 'rgba(255, 255, 255, 0.76)' : 'rgba(15, 23, 42, 0.36)', 'right', 1);
+  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, tokens.shortFill, 'left', 1);
+  else drawBar(ctx, centerX, barY, barW, NET_BAR_HEIGHT, tokens.netBar, 'right', 1);
 }
 
 export interface ClockSummaryData {
@@ -1951,7 +1938,7 @@ export function drawClockSummary(
   const captionFont = `400 13px ${theme.font}`;
   const labelFont = `400 13px ${theme.font}`;
   const timeFont = `600 13px ${theme.font}`;
-  const secondary = tokens.dark ? '#d4d4d4' : theme.text;
+  const secondary = tokens.textSecondary;
 
   ctx.textBaseline = 'alphabetic';
   ctx.font = figureFont;
@@ -1968,8 +1955,8 @@ export function drawClockSummary(
 
   const barY = 83;
   const barH = 8;
-  const playColor = tokens.dark ? '#c8c8c8' : '#475569';
-  const pauseColor = tokens.dark ? 'rgba(245, 245, 245, 0.16)' : 'rgba(15, 23, 42, 0.14)';
+  const playColor = tokens.playFill;
+  const pauseColor = tokens.pauseFill;
   if (summary.playingFraction !== null && summary.pausedFraction !== null) {
     const gap = summary.playingFraction > 0 && summary.pausedFraction > 0 ? 2 : 0;
     const usable = Math.max(0, innerW - gap);

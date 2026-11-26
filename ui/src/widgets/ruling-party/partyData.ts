@@ -49,7 +49,7 @@ export function ownedPartAt(band: Band, hour: number): number | null {
   return null;
 }
 
-export function bandKeys(list: readonly Band[], subject: string): SeriesKey[] {
+export function bandKeys(list: readonly Pick<Band, 'owned'>[], subject: string): SeriesKey[] {
   const parts = new Set<number>();
   for (const band of list) for (const owned of band.owned) parts.add(owned.part);
   return [...parts].sort((a, b) => a - b).map(part => ({ tag: subject, part: String(part) }));

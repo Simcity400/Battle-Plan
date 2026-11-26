@@ -193,7 +193,7 @@ export default function LandBattleWindow({ opened, track, client, active, anchor
     product: 'land-battle-course', params: { branchId: track.branch.id, id: row.key } }), active, validateLandBattleCourse);
   const terrain = useProduct(client, row.province === null ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision,
     product: 'land-battle-terrain', params: { provinces: [row.province] } }), active, validateLandBattleTerrain);
-  const surface = theme?.surface ?? '#111111';
+  const surface = theme!.surface;
   const colours = useMemo(() => sideColours(subject.colors, surface), [subject, surface]);
 
   const ending = endingOf(course.data, row.result);

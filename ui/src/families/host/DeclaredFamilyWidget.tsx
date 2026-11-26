@@ -5,7 +5,6 @@ import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
-import { DEFAULT_DARK_SURFACE } from '../../charts/palette.ts';
 import type { FamilyViewProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
@@ -212,10 +211,10 @@ export default function DeclaredFamilyWidget<
     () => (plan.displayedCtx && settingsPolicy ? { ...plan.displayedCtx, settings } : plan.displayedCtx),
     [plan.displayedCtx, settingsPolicy, settings],
   );
-  const surfaceColor = theme?.surface ?? DEFAULT_DARK_SURFACE;
+  const surfaceColor = theme?.surface;
   const lastProjectionOptionsRef = useRef<TProjectionOptions | undefined>(undefined);
   const projectionOptions = useMemo(() => {
-    const next = displayedCtx ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions);
+    const next = displayedCtx && surfaceColor ? declaration.projectionOptions(displayedCtx, { extent, surface: surfaceColor }) : ({} as TProjectionOptions);
     const kept = keepEqual(lastProjectionOptionsRef.current, next);
     lastProjectionOptionsRef.current = kept;
     return kept;

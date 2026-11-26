@@ -1,4 +1,4 @@
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { GatedHour } from '../../dashboard/regionTime';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
@@ -18,6 +18,7 @@ export interface RaidTallyRaceOptions {
   readonly group: boolean;
   readonly top: number | null;
   readonly all: boolean;
+  readonly surface: string;
 }
 
 const isObj = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -170,7 +171,7 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
 
       const primary = options.metric === 'succeeded' ? item.succeeded : item.launched;
       const value = primary === 0 ? zeroValue() : knownValue(primary);
-      const barFill = pres.color ?? colour(DEFAULT_CARD_SURFACE, 0);
+      const barFill = pres.color ?? colour(options.surface, 0);
       let segments: BarsSegment[] | undefined;
       if (options.metric === 'both' && item.launched > 0) {
         const succeeded = Math.min(item.launched, item.succeeded);
@@ -297,10 +298,11 @@ export const raidTallyRaceDeclaration: BarsWidgetDeclaration<RaidTallyRaceOption
   },
   sources: raidTallyRaceSources,
   projection: raidTallyRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const top = ctx.countries.top;
     const all = ctx.countries.all;
     return {
+      surface: extra.surface,
       metric: metricOption(ctx.options.metric),
       group: top == null && !all && groupSelection(ctx.widget.countries) !== null,
       top,

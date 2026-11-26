@@ -18,7 +18,7 @@
 .settings-block-heading h3 { margin: 0; color: var(--text); font-family: var(--font-display); font-size: var(--font-size-display); font-weight: 600; line-height: 1.4; }
 .settings-block-heading p { margin: 2px 0 0; color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 .settings-block-actions { display: flex; align-items: center; gap: 4px; margin-block: -4px; }
-.settings-group { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
+.settings-group { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); box-shadow: 0 1px 2px color-mix(in srgb, var(--ink-dark) 5%, transparent); }
 [data-backdrop='image'] .settings-group { -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2); backdrop-filter: blur(var(--glass-blur)) saturate(1.2); }
 .settings-group > * + *, .settings-group > .game-folder-form > * + * { box-shadow: 0 -1px 0 var(--line); }
 .settings-group-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
@@ -39,7 +39,7 @@
 .settings-slider { display: flex; align-items: center; gap: 12px; flex: 0 0 208px; }
 .settings-slider input[type='range'].slider { height: 24px; }
 .settings-slider output { min-width: 48px; padding: 4px 6px; border-radius: var(--r-sm); background: var(--hover); color: var(--text); font-size: 0.75rem; font-weight: 500; font-variant-numeric: tabular-nums; text-align: center; }
-.settings-page input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent), 0 2px 6px rgb(0 0 0 / 35%); }
+.settings-page input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 35%, transparent); }
 .settings-layout input:not([type='number']) { font-variant-numeric: normal; }
 .is-search-target { animation: search-target 1.6s var(--ease); }
 @keyframes search-target { 0%, 45% { background-color: var(--accent-soft); } 100% { background-color: transparent; } }
@@ -152,9 +152,9 @@ button.theme-card-mode:hover { transform: scale(1.08); }
 .backdrop-thumb[data-selected] { box-shadow: 0 0 0 2px var(--accent); }
 .backdrop-check { position: absolute; left: 6px; top: 6px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--accent-text); pointer-events: none; }
 .backdrop-check svg { width: 12px; height: 12px; }
-.backdrop-remove { position: absolute; right: 5px; top: 5px; opacity: 0; background: rgb(0 0 0 / 55%) !important; color: #fff !important; }
+.backdrop-remove { position: absolute; right: 5px; top: 5px; opacity: 0; background: color-mix(in srgb, var(--ink-dark) 55%, transparent) !important; color: var(--ink-light) !important; }
 .backdrop-thumb:hover .backdrop-remove, .backdrop-remove:focus-visible { opacity: 1; }
-.backdrop-remove:hover { background: color-mix(in srgb, var(--error) 80%, black) !important; }
+.backdrop-remove:hover { background: color-mix(in srgb, var(--error) 80%, var(--ink-dark)) !important; }
 .backdrop-add { display: flex; width: 100%; padding: 0; background: transparent; flex-direction: column; align-items: center; justify-content: center; gap: 6px; aspect-ratio: 16 / 10; border: 1.5px dashed var(--line); border-radius: var(--r-md);
   color: var(--muted); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), background var(--t-fast) var(--ease); }
 .backdrop-add:hover { border-color: var(--accent-line); color: var(--text); background: var(--accent-softer); }
@@ -225,15 +225,14 @@ button.theme-card-mode:hover { transform: scale(1.08); }
 .color-picker-body { display: flex; flex-direction: column; gap: 10px; }
 .color-picker-area {
   position: relative; height: 150px; border-radius: var(--r-sm); cursor: crosshair; touch-action: none;
-  background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(var(--picker-hue) 100% 50%));
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink-dark) 20%, transparent);
 }
 .color-picker-area:focus-visible { outline-offset: 2px; }
-.color-picker-handle { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgb(0 0 0 / 35%), 0 2px 6px rgb(0 0 0 / 40%); pointer-events: none; }
+.color-picker-handle { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--ink-light), 0 0 0 3px color-mix(in srgb, var(--ink-dark) 35%, transparent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 40%, transparent); pointer-events: none; }
 .color-picker-hue { appearance: none; width: 100%; height: 24px; margin: -5px 0; background: transparent; cursor: pointer; }
 .color-picker-hue::-webkit-slider-runnable-track { height: 14px; border-radius: 999px;
-  background: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%); }
-.color-picker-hue::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -1px; border-radius: 50%; background: transparent; box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgb(0 0 0 / 35%), 0 2px 6px rgb(0 0 0 / 40%); }
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink-dark) 20%, transparent); }
+.color-picker-hue::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -1px; border-radius: 50%; background: transparent; box-shadow: 0 0 0 2px var(--ink-light), 0 0 0 3px color-mix(in srgb, var(--ink-dark) 35%, transparent), 0 2px 6px color-mix(in srgb, var(--ink-dark) 40%, transparent); }
 .color-picker-hue:focus-visible { outline-offset: -2px; }
 .color-picker-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 5px; }
 .color-picker-swatches button { aspect-ratio: 1; padding: 0; border: 0; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent); }

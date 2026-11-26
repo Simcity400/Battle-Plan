@@ -1,5 +1,5 @@
 import { dayLabel } from '../../charts/draw.ts';
-import { colour, DEFAULT_CARD_SURFACE } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { artTooltipItem } from '../../families/art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../../families/art/types.ts';
@@ -15,6 +15,7 @@ import { FUEL_BRANCHES, FUEL_PLACES, branchName, fuelAmount, fuelDecimals, valid
 
 export interface FuelBranchesOptions {
   readonly digits: number;
+  readonly surface: string;
 }
 
 const NO_BRANCH_ICON = 'The installed interface has no insignia icon for this branch';
@@ -31,6 +32,7 @@ function branchRow(
   consumer: FuelConsumerRow,
   digits: number,
   fuelIcon: ArtResult,
+  surface: string,
 ): BarsDataRow {
   const requestedRaw = BigInt(consumer.requested);
   const receivedRaw = BigInt(consumer.received);
@@ -78,7 +80,7 @@ function branchRow(
     label,
     ...(rawName === null ? { labelMissing: true } : {}),
     media,
-    color: colour(DEFAULT_CARD_SURFACE, consumer.index),
+    color: colour(surface, consumer.index),
     value: {
       value: zero ? zeroValue(0n) : knownValue(receivedRaw),
       format,
@@ -123,7 +125,7 @@ function project(readView: BoundedReadView, options: FuelBranchesOptions): BarsM
     return { ...base, rows: [], empty: 'No fuel requested at this date.', emptyKind: 'empty', warnings: reply.warnings };
   }
   const fuelIcon = resolveUrlArt(readView, reply.fuelIcon, reply.fuelIconReason, NO_FUEL_ICON);
-  const rows = reply.consumers.map(consumer => branchRow(readView, reply, consumer, options.digits, fuelIcon));
+  const rows = reply.consumers.map(consumer => branchRow(readView, reply, consumer, options.digits, fuelIcon, options.surface));
   return {
     ...base,
     rows,
@@ -173,7 +175,7 @@ export const fuelBranchesDeclaration: BarsWidgetDeclaration<FuelBranchesOptions>
   countries: { mode: 'single', choose: 'Choose a country to see its fuel by branch.' },
   sources: fuelBranchesSources,
   projection: fuelBranchesProjection,
-  projectionOptions: ctx => ({ digits: fuelDecimals(ctx.options) }),
+  projectionOptions: (ctx, extra) => ({ digits: fuelDecimals(ctx.options), surface: extra.surface }),
   jumpToDate: true,
   keyByBranch: true,
 };

@@ -28,7 +28,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const OPTS: FactionTotalsRaceOptions = {
+const OPTS: FactionTotalsRaceOptions = { surface: '#1e1e1e',
   kind: 'country-factories',
   measure: 'free7',
   measureLabel: 'Factories, available',

@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { HolderRun, HourRanges } from '../../families/holders.ts';
@@ -71,7 +71,7 @@ export const politicalPowerProjection: TimeChartProjection<PoliticalPowerOptions
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
-      singleColor: CHART_MEASURE_COLOURS.politicalPower,
+      singleColor: measureColour('politicalPower', options.surface),
     }), ranking.unnamed, hour);
     const measureIcon: ChartArtSlot | undefined = single
       ? { art: readView.art(measureArtHandle('politicalPower')), label: 'Political power' }

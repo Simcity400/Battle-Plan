@@ -72,10 +72,10 @@
 .timeline-progress { position: absolute; inset: 0; pointer-events: none; }
 .timeline-fill { position: absolute; left: 0; right: 0; top: 7px; height: 4px; border-radius: 4px; background: var(--accent); transform-origin: left; transform: scaleX(0); will-change: transform; }
 .timeline-knob { position: absolute; left: 7px; right: 7px; top: 0; bottom: 0; transform: translateX(-100%); will-change: transform; }
-.timeline-knob::after { content: ''; position: absolute; top: 2px; right: -7px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 40%); transform: scale(.85); transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.timeline-knob::after { content: ''; position: absolute; top: 2px; right: -7px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-light);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink-dark) 40%, transparent); transform: scale(.85); transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
 .header-timeline:hover ~ .timeline-progress .timeline-knob::after, .header-timeline:active ~ .timeline-progress .timeline-knob::after { transform: scale(1.05); }
-.header-timeline:focus-visible ~ .timeline-progress .timeline-knob::after { transform: scale(1.05); box-shadow: 0 0 0 5px var(--accent-line), 0 2px 8px rgb(0 0 0 / 40%); }
+.header-timeline:focus-visible ~ .timeline-progress .timeline-knob::after { transform: scale(1.05); box-shadow: 0 0 0 5px var(--accent-line), 0 2px 8px color-mix(in srgb, var(--ink-dark) 40%, transparent); }
 .header-timeline:disabled ~ .timeline-progress .timeline-knob { display: none; }
 .timeline-gap-markers { position: absolute; top: 50%; left: 7px; right: 7px; height: 0; pointer-events: none; }
 .timeline-gap { position: absolute; top: -4px; min-width: 3px; height: 8px; border-radius: 2px; background: var(--warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--chrome) 80%, transparent); pointer-events: auto; }
@@ -325,7 +325,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
   content: ''; position: absolute; inset: 0; opacity: .7;
   background-image: linear-gradient(var(--line-soft) 1px, transparent 1px), linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
   background-size: 44px 44px; background-position: center;
-  -webkit-mask-image: radial-gradient(ellipse at center, #000 20%, transparent 75%); mask-image: radial-gradient(ellipse at center, #000 20%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse at center, var(--ink-dark) 20%, transparent 75%); mask-image: radial-gradient(ellipse at center, var(--ink-dark) 20%, transparent 75%);
 }
 .dash-map-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; }
 .dash-map-placeholder .empty-icon { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 8px; border-radius: var(--r-md); color: var(--muted);
@@ -345,7 +345,7 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
 
 .widget-catalogue { width: min(1120px, calc(100vw - 48px)); height: min(720px, calc(100dvh - 48px)); padding: 0; overflow: hidden; }
 .widget-catalogue:popover-open { display: flex; flex-direction: column; inset: 0 !important; margin: auto; }
-.widget-catalogue::backdrop { background: rgb(0 0 0 / .42); }
+.widget-catalogue::backdrop { background: color-mix(in srgb, var(--ink-dark) 42%, transparent); }
 .widget-catalogue > .ui-popover-heading { flex: none; margin: 0; padding: 12px 12px 0 18px; }
 .widget-catalogue-body { display: grid; grid-template-columns: 168px minmax(0, 1fr) minmax(380px, 600px); grid-template-rows: auto minmax(0, 1fr); grid-template-areas: 'search search search' 'rail cards details'; flex: 1; min-height: 0; }
 .widget-catalogue-search { grid-area: search; display: flex; align-items: center; gap: 8px; height: 36px; margin: 10px 16px 12px; padding: 0 8px 0 12px; border-radius: var(--r-md); background: var(--hover); color: var(--muted); }

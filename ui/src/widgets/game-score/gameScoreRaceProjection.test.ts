@@ -42,7 +42,7 @@ const view = (panel: SeriesRankReply) => createBoundedReadView({
   panels: new Map([['main', panel]]),
   identity: fakeIdentity({ [countryKey(1)]: 'United States', [countryKey(2)]: 'German Reich', [countryKey(3)]: 'United Kingdom' }),
 });
-const OPTIONS: GameScoreRaceOptions = { top: 10, all: false, group: false, by: 'total', split: true };
+const OPTIONS: GameScoreRaceOptions = { surface: '#1e1e1e', top: 10, all: false, group: false, by: 'total', split: true };
 
 test('game-score race keeps the product order, keys rows by recorded slot, and splits only a proven sum of parts', () => {
   const shown = view(reply([['USA', 1, 4000, 1500, 1500, 1000], ['GER', 2, 3500, 2000, 500, null], ['ENG', 3, 2500, 500, 1500, 500]]));

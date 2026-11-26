@@ -1,4 +1,5 @@
-import { contrast, isDark, mixOklab, mixRgb, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
+import { contrast, extendColor, isDark, mix, mixOklab, mixRgb, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
+import { readableColour } from '../../charts/palette.ts';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -34,11 +35,20 @@ export interface ThemeDefinition {
 
 export interface ThemeSeeds { canvas: string; accent: string; glow?: string }
 
+export const DEFAULT_SEEDS: Readonly<Record<ThemeMode, ThemeSeeds>> = {
+  dark: { canvas: '#0a0f16', accent: '#5cb2ff' },
+  light: { canvas: '#e9eef4', accent: '#1f6fd1' },
+};
+const DERIVE_FALLBACK: ThemeSeeds = { canvas: '#0b1017', accent: '#5fb3ff' };
+export const NEW_VARIANT_CANVAS: Readonly<Record<ThemeMode, string>> = { dark: '#0b0f16', light: '#eef1f5' };
+
+export const THEME_JSON_EXAMPLE = '{ "name": "Dusk", "canvas": "#14121b", "accent": "#f2a65a" }';
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 export function deriveColors(seeds: ThemeSeeds): ThemeColors {
-  const canvasRgb = parseColor(seeds.canvas) ?? { r: 11, g: 16, b: 23 };
-  const accentRgb = parseColor(seeds.accent) ?? { r: 95, g: 179, b: 255 };
+  const canvasRgb = parseColor(seeds.canvas) ?? parseColor(DERIVE_FALLBACK.canvas)!;
+  const accentRgb = parseColor(seeds.accent) ?? parseColor(DERIVE_FALLBACK.accent)!;
   const dark = isDark(canvasRgb);
   const canvas = rgbToOklch(canvasRgb), accent = rgbToOklch(accentRgb);
   const hue = canvas.c > 0.012 ? canvas.h : accent.h;
@@ -55,9 +65,9 @@ export function deriveColors(seeds: ThemeSeeds): ThemeColors {
     .map(fill => mixRgb(fill!, text, dark ? 0.06 : 0.05)).concat(parseColor(raised)!);
   const muted = oklchToRgb(fills.reduce((solved, fill) => solveLightness(solved, fill, 4.6, dark ? 'lighter' : 'darker'), { ...textStart, l: dark ? 0.7 : 0.5 }));
   const glow = normalizeColor(seeds.glow) ?? oklchHex({ l: accent.l, c: Math.max(accent.c, 0.05), h: (accent.h + 35) % 360 });
-  const accentHex = normalizeColor(seeds.accent) ?? '#5fb3ff';
+  const accentHex = toHex(accentRgb);
   return {
-    canvas: normalizeColor(seeds.canvas) ?? '#0b1017',
+    canvas: toHex(canvasRgb),
     chrome,
     surface,
     raised,
@@ -105,7 +115,46 @@ export function completeColors(partial: Partial<Record<string, unknown>>, fallba
 }
 
 export function colorsMode(colors: Pick<ThemeColors, 'canvas'>): ThemeMode {
-  return isDark(parseColor(colors.canvas) ?? { r: 0, g: 0, b: 0 }) ? 'dark' : 'light';
+  const canvas = parseColor(colors.canvas);
+  return !canvas || isDark(canvas) ? 'dark' : 'light';
+}
+
+function inkEnds(colors: Pick<ThemeColors, 'surface' | 'text'>): { readonly light: string; readonly dark: string } {
+  const textSide = extendColor(colors.surface, colors.text), surfaceSide = extendColor(colors.text, colors.surface);
+  return colorsMode({ canvas: colors.surface }) === 'dark' ? { light: textSide, dark: surfaceSide } : { light: surfaceSide, dark: textSide };
+}
+
+const MARK_ANCHORS = {
+  short: { role: '#fb414a', fill: '#e5484d', ink: '#ff6b6f' },
+  good: { role: '#22c55e', fill: '#4fbf7a', ink: '#6fd496' },
+} as const;
+
+function shiftedLike(color: string, anchor: string, target: string): string {
+  const from = rgbToOklch(parseColor(anchor)!), to = rgbToOklch(parseColor(target)!);
+  const own = rgbToOklch(parseColor(color) ?? parseColor(anchor)!);
+  return oklchHex({ l: own.l + to.l - from.l, c: own.c * (to.c / from.c), h: (own.h + to.h - from.h + 360) % 360 });
+}
+
+export interface MarkColours { readonly shortFill: string; readonly shortInk: string; readonly goodFill: string; readonly goodInk: string }
+
+export function markColours(error: string, positive: string): MarkColours {
+  const { short, good } = MARK_ANCHORS;
+  return {
+    shortFill: shiftedLike(error, short.role, short.fill),
+    shortInk: shiftedLike(error, short.role, short.ink),
+    goodFill: shiftedLike(positive, good.role, good.fill),
+    goodInk: shiftedLike(positive, good.role, good.ink),
+  };
+}
+
+export function themeVariables(colors: ThemeColors): Record<string, string> {
+  const ink = inkEnds(colors), accentText = parseColor(colors.accentText)!;
+  const opposite = toHex({ r: 255 - accentText.r, g: 255 - accentText.g, b: 255 - accentText.b });
+  const marks = markColours(colors.error, colors.positive);
+  return {
+    '--ink-light': ink.light, '--ink-dark': ink.dark, '--accent-hover': mix(colors.accent, opposite, 0.14),
+    '--short-ink': readableColour(marks.shortInk, colors.surface), '--good-ink': readableColour(marks.goodInk, colors.surface),
+  };
 }
 
 export function contrastWarnings(colors: ThemeColors): string[] {

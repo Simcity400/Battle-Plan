@@ -44,7 +44,7 @@ function panelOf(hour: number, rows: readonly (readonly [string, ...Reading[]])[
   };
 }
 
-const BASE_OPTS: FactoriesProjectionOptions = {
+const BASE_OPTS: FactoriesProjectionOptions = { surface: '#1e1e1e',
   mode: 'free',
   modeLabel: 'Factories, available',
   split: false,
@@ -174,7 +174,7 @@ test('a factory type keeps its colour when a type before it is deselected', () =
     countries: { top: 5, all: false, every: [], tags: [], membership: null, holders: null, unobserved: [] },
     widget: { countries: { kind: 'group', group: { type: 'top', count: 5 }, membership: 'hour', aggregate: false } },
   }) as unknown as Parameters<typeof factoriesDeclaration.projectionOptions>[0];
-  const colourOf = (types: string, id: string) => factoriesDeclaration.projectionOptions(ctx(types)).parts.find(part => part.id === id)!.color;
+  const colourOf = (types: string, id: string) => factoriesDeclaration.projectionOptions(ctx(types), { extent: [0, 0], surface: '#1e1e1e' }).parts.find(part => part.id === id)!.color;
   assert.equal(colourOf('naval civilian', 'civilian'), colourOf('', 'civilian'));
   assert.equal(colourOf('civilian', 'civilian'), colourOf('', 'civilian'));
 });

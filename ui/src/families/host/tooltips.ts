@@ -10,7 +10,7 @@ export interface TooltipListItem {
   readonly swatch?: string;
   readonly icon?: string;
   readonly countryFlag?: TooltipRow['countryFlag'];
-  readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
+  readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted' | 'error';
   readonly indent?: boolean;
   readonly strong?: boolean;
   readonly divider?: boolean;

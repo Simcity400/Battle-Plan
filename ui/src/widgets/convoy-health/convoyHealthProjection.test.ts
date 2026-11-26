@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { ConvoyHealthReply } from '../../generated/dashboard';
-import { efficiencyColour, projectConvoyHealth } from './convoyHealthProjection.ts';
+import { convoyEfficiencyColour } from '../../charts/palette.ts';
+import { projectConvoyHealth } from './convoyHealthProjection.ts';
 
 const SURFACE = '#161616';
 
@@ -29,9 +30,10 @@ const view = (hour: number, data: ConvoyHealthReply) => createBoundedReadView({ 
 const OPTIONS = { view: 'regions' as const, surface: SURFACE, country: null, historyStart: 0, tiles: 0 };
 
 test('the efficiency scale runs from full at the first stop to empty at the last', () => {
-  assert.equal(efficiencyColour(1), '#22364f');
-  assert.equal(efficiencyColour(0), '#ff6b74');
-  assert.notEqual(efficiencyColour(0.62), efficiencyColour(0.86));
+  assert.equal(convoyEfficiencyColour(1, '#111111'), '#22364f');
+  assert.equal(convoyEfficiencyColour(0, '#111111'), '#ff6b74');
+  assert.notEqual(convoyEfficiencyColour(0.62, '#111111'), convoyEfficiencyColour(0.86, '#111111'));
+  assert.notEqual(convoyEfficiencyColour(1, '#22364f'), '#22364f', 'a full cell stays visible on a surface of its own colour');
 });
 
 test('no traffic is the empty lane, unrecorded hours keep their reason, and the readout is the latest efficiency', () => {

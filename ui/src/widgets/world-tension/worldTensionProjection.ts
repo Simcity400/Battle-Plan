@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { neutralColour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey } from '../../charts/live.ts';
@@ -28,10 +28,8 @@ export interface WorldTensionChartOptions {
   readonly gaps: readonly ChartGap[];
 }
 
-const OTHER_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 const WORLD_UNKNOWN = 'World tension was not recorded at this hour.';
 const END_UNKNOWN = 'Not recorded at this hour.';
-const FALLBACK_COLOR = CHART_MEASURE_COLOURS.mutedFallback;
 
 export function validateWorldTensionStack(raw: unknown): WorldTensionStackReply {
   const reply = raw as WorldTensionStackReply;
@@ -119,7 +117,7 @@ function contributorLabel(
 }
 
 function resolveBandColors(rawColors: readonly (string | null)[], surface: string): string[] {
-  const surfaceRgb = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
+  const surfaceRgb = parseColor(surface)!;
   const parsed: { r: number; g: number; b: number }[] = [];
   const indices: number[] = [];
   for (let i = 0; i < rawColors.length; i++) {
@@ -130,7 +128,7 @@ function resolveBandColors(rawColors: readonly (string | null)[], surface: strin
     }
   }
   const nudged = parsed.length > 0 ? nudgeApart(parsed, surfaceRgb) : [];
-  const out: string[] = rawColors.map(() => FALLBACK_COLOR);
+  const out: string[] = rawColors.map(() => neutralColour('fallback', surface));
   for (let j = 0; j < indices.length; j++) {
     out[indices[j]!] = toHex(nudged[j]!);
   }
@@ -395,7 +393,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         id: 'other',
         key: 'other',
         name: otherLabel,
-        color: OTHER_COLOR,
+        color: neutralColour('fallback', options.surface),
         opacity: 0.72,
         values: reply.other.values,
         ...(otherExactSeries ? { exact: otherExactSeries } : {}),
@@ -441,7 +439,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         bandFormat: 'signedPercent',
         step: true,
         total: {
-          color: CHART_MEASURE_COLOURS.lightInk,
+          color: neutralColour('total', options.surface),
           values: reply.total,
           ...(totalExactSeries ? { exact: totalExactSeries } : {}),
           endLabel: worldText !== null ? { icon: worldIcon, value: worldText } : null,

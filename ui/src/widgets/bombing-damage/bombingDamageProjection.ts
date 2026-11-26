@@ -29,7 +29,8 @@ export const bombingDamageDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
   },
   sources,
   projection: bombingDamageProjection,
-  projectionOptions: ctx => ({
+  projectionOptions: (ctx, extra) => ({
+    surface: extra.surface,
     family: 'bombing',
     scale: 10_000_000,
     digits: 7,

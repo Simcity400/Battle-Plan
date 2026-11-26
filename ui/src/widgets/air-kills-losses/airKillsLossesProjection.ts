@@ -48,7 +48,8 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
   },
   sources,
   projection: airKillsLossesProjection,
-  projectionOptions: ctx => ({
+  projectionOptions: (ctx, extra) => ({
+    surface: extra.surface,
     family: 'airLosses',
     scale: 100_000,
     digits: 5,
@@ -68,8 +69,8 @@ export const airKillsLossesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptio
 export const airKillsLossesPairedDeclaration: BarsWidgetDeclaration<MilitaryAirAtOptions> = {
   ...airKillsLossesDeclaration,
   projection: airKillsLossesPairedProjection,
-  projectionOptions: ctx => ({
-    ...airKillsLossesDeclaration.projectionOptions(ctx),
+  projectionOptions: (ctx, extra) => ({
+    ...airKillsLossesDeclaration.projectionOptions(ctx, extra),
     leftHeader: 'Own losses',
     rightHeader: 'Destroyed',
     paired: { solid: 'Destroyed (solid)', outline: 'Own losses (outline)' },
@@ -81,5 +82,5 @@ export const airLossCausesDeclaration: BarsWidgetDeclaration<MilitaryAirAtOption
   label: 'Own aircraft lost by cause',
   sources: ctx => militaryAirSources('air-loss-causes', ctx, militaryAirParams(ctx, 'airLosses', 'taken', filtersOf(ctx))),
   projection: airLossCausesProjection,
-  projectionOptions: ctx => ({ ...airKillsLossesDeclaration.projectionOptions(ctx), none: 'No aircraft lost yet.' }),
+  projectionOptions: (ctx, extra) => ({ ...airKillsLossesDeclaration.projectionOptions(ctx, extra), none: 'No aircraft lost yet.' }),
 };

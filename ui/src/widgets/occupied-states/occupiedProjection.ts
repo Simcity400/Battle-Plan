@@ -207,7 +207,7 @@ export const occupiedStatesProjection: TableProjection<OccupiedProjectionOptions
         { label: 'Garrison strength', value: strength },
         { label: 'Occupied country', value: row.occupiedName ?? notRecorded('Unknown country') },
       ];
-      if (v.garrisonAlert) extra.push({ label: 'Garrison status', value: knownValue('Garrison requirement not met.'), tone: 'negative' });
+      if (v.garrisonAlert) extra.push({ label: 'Garrison status', value: knownValue('Garrison requirement not met.'), tone: 'error' });
       return extra;
     },
   }),

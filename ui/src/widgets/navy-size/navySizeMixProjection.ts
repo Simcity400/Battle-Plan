@@ -71,9 +71,9 @@ export const navySizeMixDeclaration: BarsWidgetDeclaration<NavySizeMixOptions> =
   },
   sources: navySizeMixSources,
   projection: navySizeMixProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     return {
-      ...seriesRaceSelection(ctx),
+      ...seriesRaceSelection(ctx, extra),
       measure: navyMeasure(ctx.options.measure),
       ownership: navyOwnership(ctx.options.ownership),
       grouping: navyGrouping(ctx.options.grouping),

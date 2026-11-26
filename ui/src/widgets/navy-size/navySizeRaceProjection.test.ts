@@ -26,7 +26,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: NavySizeRaceOptions = {
+const BASE_OPTS: NavySizeRaceOptions = { surface: '#1e1e1e',
   measure: 'strength',
   ownership: 'roster',
   grouping: 'class',

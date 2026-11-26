@@ -1,6 +1,5 @@
 import { measureCanvasText, textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
-  DEFAULT_FAMILY_THEME,
   drawArtSlot,
   drawCrosshairLine,
   drawDateTab,
@@ -225,13 +224,12 @@ export function drawTimeChart(
   ctx: Canvas2D,
   model: TimeChartModel,
   layout: TimeChartLayout,
-  themeInput: FamilyTheme | undefined,
+  theme: FamilyTheme,
   inspectKey: string | null | undefined,
   dpr: number,
   legendFit?: LegendFit | null,
   artCache?: LaneArtCache,
 ): void {
-  const theme = themeInput ?? DEFAULT_FAMILY_THEME;
   const tokens = resolveKitTokens(theme);
   const parsedInspect = parseChartInspect(inspectKey);
   const hoverHour = parsedInspect?.kind === 'plot' || parsedInspect?.kind === 'line'
@@ -620,7 +618,7 @@ export function drawTimeChart(
             below.lineTo(line.first[0], zeroY);
             below.closePath();
             ctx.globalAlpha = 0.16 * opacity;
-            ctx.fillStyle = theme.red;
+            ctx.fillStyle = tokens.shortFill;
             ctx.fill(below);
             ctx.restore();
           }
@@ -725,7 +723,7 @@ export function drawTimeChart(
       cursorX += textWidth(ctx, label.name) + 6;
     }
     ctx.font = labelValueFont;
-    ctx.fillStyle = label.valueMuted ? theme.muted : (label.valueColor ?? theme.text);
+    ctx.fillStyle = label.valueMuted ? theme.muted : label.negative ? tokens.shortage : (label.valueColor ?? theme.text);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(label.value, cursorX, label.y + 0.5);

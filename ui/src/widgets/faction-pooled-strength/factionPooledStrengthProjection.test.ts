@@ -104,7 +104,7 @@ async function project(pool: FactionPoolKind, data: FactionPoolsReply, hour = 50
     panels: new Map([['main', data]]),
     identity: makeIdentity(hour),
     art: { demandOwner: 'view', resolve: handle => (handle.kind === 'url' ? readyArt(handle.url) : PENDING_ART) },
-  }), { pool });
+  }), { surface: '#1e1e1e', pool });
   assertBarsModelValid(model, hour);
   return model;
 }
@@ -208,7 +208,7 @@ test('a quiet stretch of played hours does not re-project or request work', asyn
     family: 'bars',
     kind: 'faction-pooled-strength',
     view: 'resources',
-    options: { pool: 'resources' },
+    options: { surface: '#1e1e1e', pool: 'resources' },
     sources: {},
     staticPanels: { main: baseReply() },
     width: 640,

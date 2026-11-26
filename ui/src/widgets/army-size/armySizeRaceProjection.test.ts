@@ -27,7 +27,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: ArmySizeRaceOptions = {
+const BASE_OPTS: ArmySizeRaceOptions = { surface: '#1e1e1e',
   measure: 'battalions',
   countFor: 'owner',
   split: true,
@@ -64,7 +64,7 @@ test('army-size race and mix split battalion unit groups from army-at and withho
   assert.deepEqual(raceRows[0]!.segments?.map(s => [s.label, Math.round(s.share * 100)]), [['Infantry', 75], ['Armor', 25]]);
   assert.equal(raceRows[1]!.segments, undefined);
 
-  const mix = armySizeMixProjection.project(view, { countFor: 'owner', top: 10, all: false, group: false });
+  const mix = armySizeMixProjection.project(view, { surface: '#1e1e1e', countFor: 'owner', top: 10, all: false, group: false });
   assertBarsModelValid(mix, 300);
   assert.equal(mix.form, 'share');
   const mixRows = mix.rows.filter((r): r is BarsDataRow => r.kind === 'data');

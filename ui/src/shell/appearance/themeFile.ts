@@ -1,5 +1,5 @@
 import { normalizeColor } from './color.ts';
-import { colorsMode, completeColors, themeRoles } from './themes.ts';
+import { DEFAULT_SEEDS, colorsMode, completeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 
 export const THEME_FILE_FORMAT = 'battleplan-theme';
@@ -65,7 +65,7 @@ function variantFrom(input: unknown, mode: ThemeMode, notes: string[]): ThemeCol
   const invalid = themeRoles.filter(role => role in input && !normalizeColor(input[role]));
   if (invalid.length) notes.push(`Replaced unreadable ${mode} colours: ${invalid.join(', ')}`);
   if (!normalizeColor(input.canvas) && !normalizeColor(input.accent)) return null;
-  return completeColors(input, mode === 'dark' ? { canvas: '#0a0f16', accent: '#5cb2ff' } : { canvas: '#e9eef4', accent: '#1f6fd1' });
+  return completeColors(input, DEFAULT_SEEDS[mode]);
 }
 
 function parseOwnTheme(input: Record<string, unknown>): ImportedTheme {
@@ -114,7 +114,7 @@ function parseVsCodeTheme(input: Record<string, unknown>): ImportedTheme {
     error: over(pick('editorError.foreground', 'errorForeground', 'terminal.ansiRed')),
   };
   if (mapped.accent) mapped.selection = mapped.accent;
-  const variant = completeColors(Object.fromEntries(Object.entries(mapped).filter(([, value]) => value)), { canvas: background, accent: accent ?? '#5cb2ff' });
+  const variant = completeColors(Object.fromEntries(Object.entries(mapped).filter(([, value]) => value)), { canvas: background, accent: accent ?? DEFAULT_SEEDS.dark.accent });
   const notes = ['Converted from a VS Code theme. Unset colours were derived from its background and accent.'];
   return { name: cleanName(input.name, 'VS Code theme'), variants: { [mode]: variant }, source: 'vscode', notes };
 }

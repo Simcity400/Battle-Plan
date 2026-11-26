@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { tailColour } from '../../charts/palette.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
@@ -40,7 +40,6 @@ import {
   within,
 } from './autonomyLevelsProjection.ts';
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 
 export interface AutonomyLinesOptions {
@@ -277,7 +276,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       surface: options.surface,
       withFlag: true,
       recordedOrdinal: key => rowOf.get(key) ?? 0,
-      tailColor: TAIL_COLOUR,
+      tailColor: tailColour(options.surface),
     });
 
     const seriesList: TimeChartSeriesModel[] = [];
@@ -292,7 +291,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
         ?? (item.subject ? mainTiles?.get(item.subject) : undefined)
         ?? null;
       const isTail = i >= COLOURED;
-      const color = isTail ? TAIL_COLOUR : look.color;
+      const color = isTail ? tailColour(options.surface) : look.color;
       const known = item.progressMilli !== null;
       const headValue = known ? item.progressMilli! / 1000 : null;
       if (headValue !== null && headValue > maxSeen) maxSeen = headValue;

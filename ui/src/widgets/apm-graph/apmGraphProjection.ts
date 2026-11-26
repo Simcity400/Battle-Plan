@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { categoricalPalette, neutralColour, nudgeApart, readableColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
@@ -70,7 +70,7 @@ function resolveSeriesColors(
   hour: number,
   surface: string,
 ): string[] {
-  const surfaceRgb = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
+  const surfaceRgb = parseColor(surface)!;
   const raw: { r: number; g: number; b: number }[] = [];
   const indices: number[] = [];
   for (let i = 0; i < entries.length; i++) {
@@ -271,7 +271,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       const name = options.group === 'player'
         ? (disambiguated?.get(entry.id) ?? entry.name ?? 'Name not recorded')
         : (entry.tag ? identityName(readView, 'country', entry.tag, entry.obsHour) : entry.id);
-      const color = isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.mutedFallback;
+      const color = isTop ? topColors[rank]! : neutralColour('fallback', options.surface);
       colorById.set(entry.id, color);
       const headText = entry.summary ? formatApmRate(entry.summary, 0) : null;
       if (headText !== null) headTexts.set(entry.id, headText);

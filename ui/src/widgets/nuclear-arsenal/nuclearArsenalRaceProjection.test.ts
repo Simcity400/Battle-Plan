@@ -39,7 +39,7 @@ const REPLY: NuclearArsenalReply = {
   warnings: [],
 };
 
-const BASE_OPTS: NuclearArsenalRaceOptions = {
+const BASE_OPTS: NuclearArsenalRaceOptions = { surface: '#1e1e1e',
   all: false,
   top: 10,
   group: false,

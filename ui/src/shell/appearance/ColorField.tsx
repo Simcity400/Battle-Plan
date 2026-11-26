@@ -5,6 +5,7 @@ import { Icon } from '../../components/Icons';
 import { FailureLine } from '../../components/FailureLine';
 import { HEX_HINT, colorInput, hsvToRgb, normalizeColor, parseColor, rgbToHsv, toHex } from './color';
 import type { Hsv } from './color';
+import './colorPicker.css';
 
 declare global { interface Window { EyeDropper?: new () => { open(): Promise<{ sRGBHex: string }> } } }
 

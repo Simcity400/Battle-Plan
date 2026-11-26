@@ -22,7 +22,7 @@ export interface BarsWidgetDeclaration<TProjectionOptions = Record<string, never
   readonly aux?: AuxProductSpec<TAux>;
   readonly sources: (ctx: FamilyPlanContext<TAux>, view: FamilyViewportRequest) => SourcePlan;
   readonly projection: BarsProjection<TProjectionOptions>;
-  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, extra?: DeclaredProjectionExtra) => TProjectionOptions;
+  readonly projectionOptions: (ctx: FamilyPlanContext<TAux>, extra: DeclaredProjectionExtra) => TProjectionOptions;
   readonly unavailable?: (ctx: FamilyPlanContext<TAux>, moment: number) => string | null;
   readonly warnings?: (ctx: FamilyPlanContext<TAux>, followRefused: string | null) => readonly string[];
   readonly jumpToDate?: boolean;

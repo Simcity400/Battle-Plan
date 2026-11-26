@@ -28,7 +28,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: NavalLossesRaceOptions = {
+const BASE_OPTS: NavalLossesRaceOptions = { surface: '#1e1e1e',
   kind: 'both',
   attribution: 'lost',
   period: 'month',
@@ -94,7 +94,7 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
     const asked = (read.buildExactParams ? read.buildExactParams(read.params!, 500 as never, 'static') : read.params) as { group?: unknown; countries?: readonly unknown[]; top?: unknown };
     assert.deepEqual(asked.group, { type: 'faction', id: '42', membership: 'hour' }, `${kind} ${view}: the group`);
     assert.ok(!asked.countries?.length && asked.top == null, `${kind} ${view}: never its members or a top`);
-    assert.equal((declaration.projectionOptions(ctx(view)) as { group?: boolean }).group, true);
+    assert.equal((declaration.projectionOptions(ctx(view), { extent: [0, 0], surface: '#1e1e1e' }) as { group?: boolean }).group, true);
   }
   const reply: NavalLossesAtReply = {
     firstHour: 321, lastHour: 599, parts: [], missing: null, warnings: [],
@@ -104,7 +104,7 @@ test('every race and mix view sends a group whole, and naval losses keys each ro
   assert.ok(read.shape === 'point');
   if (read.shape !== 'point') return;
   assert.deepEqual(read.provenInterval?.(reply, 500), [321, 599], 'asked again at 600, when the membership changes');
-  const options = navalLossesRaceDeclaration.projectionOptions(ctx('race'));
+  const options = navalLossesRaceDeclaration.projectionOptions(ctx('race'), { extent: [0, 0], surface: '#1e1e1e' });
   const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
   assert.deepEqual(navalLossesRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);
   const none = navalLossesRaceProjection.project(createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', { ...reply, rows: [] }]]) }), options);

@@ -27,7 +27,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string; tag?:
   };
 }
 
-const OPTS: FactoriesMixOptions = {
+const OPTS: FactoriesMixOptions = { surface: '#1e1e1e',
   mode: 'built',
   modeLabel: 'Factories, built',
   group: false,

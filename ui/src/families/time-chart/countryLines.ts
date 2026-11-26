@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS, SECONDARY_DASH } from '../../charts/palette.ts';
+import { SECONDARY_DASH, tailColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
@@ -92,7 +92,6 @@ export interface CountryLinesSpec<TAux = unknown> {
   readonly hover?: CountryLinesHover;
 }
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 
 function hoverHourOf(readView: BoundedReadView, name: string): number | null {
   try {
@@ -203,7 +202,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         surface: options.surface,
         withFlag: true,
         recordedOrdinal: tag => rowOf.get(tag) ?? 0,
-        tailColor: TAIL_COLOUR,
+        tailColor: tailColour(options.surface),
       }), ranking.unnamed, hour);
       const exactByCountry = exactHoverByCountry(readView, 'hover', options.decimals);
       const secondLines = options.second ? readView.series('second') : undefined;

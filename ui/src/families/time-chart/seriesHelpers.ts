@@ -1,5 +1,5 @@
 import { rankSource } from '../seriesRank.ts';
-import { CHART_MEASURE_COLOURS, colour, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { colour, nudgeApart, readableColour, tailColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowName, rowReason } from '../../dashboard/follow/message.ts';
@@ -336,7 +336,7 @@ export function countrySeriesLooks(
   const hour = readView.hour;
   const stretches = ordered.map(tag => identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag));
   const single = ordered.length === 1 && input.singleColor !== undefined;
-  const bg = parseColor(input.surface) ?? { r: 17, g: 17, b: 17 };
+  const bg = parseColor(input.surface)!;
   const coloured = Math.min(ordered.length, COLOURED_SERIES);
   const asked: { r: number; g: number; b: number }[] = [];
   const slotOf = new Map<string, number>();
@@ -362,7 +362,7 @@ export function countrySeriesLooks(
     }
   }
   const distinct = single ? [] : nudgeApart(asked, bg);
-  const tailColor = input.tailColor ?? CHART_MEASURE_COLOURS.tailLine;
+  const tailColor = input.tailColor ?? tailColour(input.surface);
   const out = new Map<string, CountrySeriesLook>();
   let currentSlot = 0;
   ordered.forEach((tag, index) => {

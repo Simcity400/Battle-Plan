@@ -8,7 +8,7 @@ import { actionFailure } from '../../dashboard/queryError';
 import { ConfirmStep, menuKeys } from '../../components/ContextMenu';
 import type { IconName } from '../../components/Icons';
 import { newId } from '../ids';
-import { BUILT_IN_THEMES, customRoles, themeColors } from './themes';
+import { BUILT_IN_THEMES, THEME_JSON_EXAMPLE, customRoles, themeColors } from './themes';
 import type { ThemeDefinition, ThemeMode } from './themes';
 import { parseThemeText, serializeTheme, uniqueThemeName } from './themeFile';
 import { CONTRAST_STEP, LIMITS, MAX_CUSTOM_THEMES } from './settings';
@@ -108,7 +108,7 @@ function ImportTheme({ disabled, onImport }: { disabled: boolean; onImport: (tex
         <small>BattlePlan themes and VS Code colour themes (.json)</small>
         <input ref={file} type="file" accept=".json,application/json" hidden onChange={event => { read(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
       </div>
-      <textarea rows={5} value={text} spellCheck={false} placeholder='…or paste theme JSON, e.g. { "name": "Dusk", "canvas": "#14121b", "accent": "#f2a65a" }'
+      <textarea rows={5} value={text} spellCheck={false} placeholder={`…or paste theme JSON, e.g. ${THEME_JSON_EXAMPLE}`}
         aria-label="Theme JSON" onChange={event => { setText(event.currentTarget.value); setError(null); }} />
       {error && <FailureLine message={error.text} detail={error.detail} onRetry={error.retry ? () => run(attempt.current) : undefined} />}
       <div className="layout-save-actions"><button type="button" className="button primary" disabled={!text.trim()} onClick={() => run(text)}>Import theme</button></div>

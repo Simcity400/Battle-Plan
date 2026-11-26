@@ -10,8 +10,8 @@ export default function AirSuperiorityRegionWidget(props: FamilyViewProps) {
 
   const declaration = useMemo(() => ({
     ...airSuperiorityRegionDeclaration,
-    projectionOptions: (ctx: Parameters<typeof airSuperiorityRegionDeclaration.projectionOptions>[0]) => ({
-      ...airSuperiorityRegionDeclaration.projectionOptions(ctx),
+    projectionOptions: (...[ctx, extra]: Parameters<typeof airSuperiorityRegionDeclaration.projectionOptions>) => ({
+      ...airSuperiorityRegionDeclaration.projectionOptions(ctx, extra),
       enemyColor: tokens.error,
       mutedColor: tokens.muted,
     }),

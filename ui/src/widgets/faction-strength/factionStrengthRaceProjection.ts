@@ -47,7 +47,7 @@ export const factionStrengthRaceDeclaration: BarsWidgetDeclaration<FactionTotals
   },
   sources: factionStrengthRaceSources,
   projection: factionStrengthRaceProjection,
-  projectionOptions: ctx => {
+  projectionOptions: (ctx, extra) => {
     const source = factionStrengthSource(ctx.options);
     const aggregated = isAggregatedSelection(ctx.widget.countries);
     const scaleUnit = source.kind === 'territory'
@@ -62,6 +62,7 @@ export const factionStrengthRaceDeclaration: BarsWidgetDeclaration<FactionTotals
       aggregated,
       groupLabel: groupTitleForSelection(ctx.widget.countries),
       top: factionSelectionTop(ctx.widget.countries),
+      surface: extra.surface,
     };
   },
   unavailable: ctx => {

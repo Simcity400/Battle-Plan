@@ -1,5 +1,5 @@
 import { unavailableArt } from '../../families/art/types.ts';
-import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
+import { measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -8,7 +8,6 @@ import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixA
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageMeasure, IntelCoverageReply, IntelPair } from '../../generated/dashboard';
-import { surfaceMix } from '../../shell/appearance/color.ts';
 
 export const INTEL_TOP_DEFAULT = 12;
 const FIXED = 100_000;
@@ -43,8 +42,8 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
   if (displayed.length < 2) {
     return emptyModel(hour, { empty: displayed.length === 1 ? 'No intel networks of or in this country at this date.' : 'Fewer than two countries are shown at this date.', warnings: reply.warnings });
   }
-  const grey = surfaceMix(options.surface, 0.08);
-  const accent = readableColour(CHART_MEASURE_COLOURS.intelCoverage, options.surface);
+  const grey = surfaceGrey(options.surface, 0.08);
+  const accent = measureColour('intelCoverage', options.surface);
   const readHour = reply.readHour ?? hour;
   const shown = displayed.map(country => {
     const tag = country.tag ?? null;

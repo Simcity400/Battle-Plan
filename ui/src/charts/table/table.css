@@ -22,8 +22,8 @@
 .chart-table tbody tr.is-muted.is-leaving { opacity: 0; }
 .chart-table tbody tr.is-activatable { cursor: pointer; }
 .table-delta { font-size: calc(var(--type-xs) * 10 / 11); margin-left: 4px; }
-.table-delta.is-positive { color: var(--positive); }
-.table-delta.is-negative { color: var(--error); }
+.table-delta.is-positive { color: var(--good-ink); }
+.table-delta.is-negative { color: var(--short-ink); }
 .table-cell { position: relative; display: inline-block; min-width: 64px; }
 .table-cellbar { position: absolute; right: 0; top: 50%; width: 100%; height: 16px; margin-top: -8px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent);
   transform: scaleX(0); transform-origin: right center; }

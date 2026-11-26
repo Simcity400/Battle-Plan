@@ -27,7 +27,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string }>): I
   };
 }
 
-const BASE_OPTS: WorldTensionRaceOptions = {
+const BASE_OPTS: WorldTensionRaceOptions = { surface: '#1e1e1e',
   top: 10,
   all: false,
   group: false,
@@ -88,7 +88,7 @@ test('a group race follows the group and shows its ranked members', async () => 
     measures: [{ name: 'contribution', decimals: 5 }],
     rows: [{ country: 'GER', slot: 7, readings: [reading('GER', 500, '4525000')] }],
   };
-  const options = declaration.projectionOptions(ctx);
+  const options = declaration.projectionOptions(ctx, { extent: [0, 0], surface: '#1e1e1e' });
   const view = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
   assert.deepEqual(worldTensionRaceProjection.project(view, options).rows.map(row => row.key), [countryKey(7)]);
   const empty = createBoundedReadView({ hour: displayedHour(500), panels: new Map([['main', { ...reply, rows: [] }]]), identity: fakeIdentity({}) });
@@ -118,7 +118,7 @@ test('world-tension race keeps missing readings as notRecorded with null numeric
     identity,
   });
 
-  const model = worldTensionRaceProjection.project(view, { top: null, all: false, group: false });
+  const model = worldTensionRaceProjection.project(view, { surface: '#1e1e1e', top: null, all: false, group: false });
   assertBarsModelValid(model, 200);
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.equal(rows[0]!.key, 'GER');

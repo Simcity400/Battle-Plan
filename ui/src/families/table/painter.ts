@@ -531,7 +531,7 @@ export function drawFamilyTable(
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.font = strongFont;
-    ctx.fillStyle = tokens.childText;
+    ctx.fillStyle = tokens.textSecondary;
     ctx.fillText(fit(lead, strongFont, right - left), left, middle);
     const datesShown = fit(dates, smallFont, Math.max(0, right - left - leadW - lengthW - 60));
     const datesW = measure(datesShown, smallFont);

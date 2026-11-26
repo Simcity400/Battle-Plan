@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { tailColour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
@@ -58,7 +58,6 @@ import {
   type ProducedRaceExactBase,
 } from './equipmentProducedRaceProjection.ts';
 
-const TAIL_COLOUR = CHART_MEASURE_COLOURS.tailLine;
 const COLOURED = 8;
 
 export interface EquipmentProducedLinesOptions {
@@ -272,7 +271,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       surface: options.surface,
       withFlag: true,
       recordedOrdinal: key => rowOf.get(key) ?? 0,
-      tailColor: TAIL_COLOUR,
+      tailColor: tailColour(options.surface),
     });
 
     for (let i = 0; i < orderedKeys.length; i++) {
@@ -281,7 +280,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       const tile = mainTiles?.get(key) ?? null;
       const look = looks.get(key)!;
       const isTail = i >= COLOURED;
-      const color = isTail ? TAIL_COLOUR : look.color;
+      const color = isTail ? tailColour(options.surface) : look.color;
 
       const rawValue = row?.value ?? null;
       const headValue = rawValue !== null ? rawValue / scale : null;

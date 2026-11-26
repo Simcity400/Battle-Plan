@@ -1,6 +1,6 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { liveKey } from '../../charts/live.ts';
-import { categoricalPalette, CHART_MEASURE_COLOURS, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { categoricalPalette, nudgeApart, readableColour, tailColour } from '../../charts/palette.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { parseColor, toHex } from '../../shell/appearance/color.ts';
@@ -39,7 +39,7 @@ function formatContributionPct(value: number, rawStr: string | null | undefined,
 }
 
 function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {
-  const surfaceRgb = parseColor(surface) ?? { r: 17, g: 17, b: 17 };
+  const surfaceRgb = parseColor(surface)!;
   const parsed: { r: number; g: number; b: number }[] = [];
   const indices: number[] = [];
   for (let i = 0; i < rawColors.length; i++) {
@@ -202,7 +202,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         id: `slot:${band.slot}`,
         key: `slot:${band.slot}`,
         name: info.fullName,
-        color: isTop ? topColors[rank]! : CHART_MEASURE_COLOURS.tailLine,
+        color: isTop ? topColors[rank]! : tailColour(options.surface),
         role: isTop ? 'primary' : 'tail',
         step: true,
         points,

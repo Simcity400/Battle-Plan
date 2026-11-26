@@ -1,9 +1,7 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
-export { CHART_MEASURE_COLOURS };
 
 export interface ChartArtSlot {
   readonly art: ArtResult;

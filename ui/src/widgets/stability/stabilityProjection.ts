@@ -1,4 +1,4 @@
-import { CHART_MEASURE_COLOURS } from '../../charts/palette.ts';
+import { measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import {
   displayedHour,
@@ -180,7 +180,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       surface: options.surface,
       withFlag: !single,
       recordedOrdinal: tag => rowOf.get(tag) ?? 0,
-      singleColor: CHART_MEASURE_COLOURS.stability,
+      singleColor: measureColour('stability', options.surface),
     }), ranking.unnamed, hour);
 
     const stabIcon: ChartArtSlot | undefined = single && options.showStability
@@ -205,7 +205,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           id: single ? 'stability' : `${tag}:stability`,
           key: single ? 'stability' : `${tag}:stability`,
           name: single ? 'Stability' : `${name} · Stability`,
-          color: single ? CHART_MEASURE_COLOURS.stability : countryColor,
+          color: single ? measureColour('stability', options.surface) : countryColor,
           role: isTail ? 'tail' : 'primary',
           step: true,
           area: false,
@@ -236,7 +236,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
           id: single ? 'warSupport' : `${tag}:warSupport`,
           key: single ? 'warSupport' : `${tag}:warSupport`,
           name: single ? 'War support' : `${name} · War support`,
-          color: single ? CHART_MEASURE_COLOURS.warSupport : countryColor,
+          color: single ? measureColour('warSupport', options.surface) : countryColor,
           role: isTail ? 'tail' : 'primary',
           step: true,
           dash: single ? undefined : [5, 4],

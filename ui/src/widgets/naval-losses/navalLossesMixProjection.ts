@@ -59,8 +59,8 @@ export const navalLossesMixDeclaration: BarsWidgetDeclaration<NavalLossesMixOpti
   },
   sources: ctx => navalLossesAtSources(ctx, 'mix'),
   projection: navalLossesMixProjection,
-  projectionOptions: ctx => ({
-    ...seriesRaceSelection(ctx),
+  projectionOptions: (ctx, extra) => ({
+    ...seriesRaceSelection(ctx, extra),
     kind: navalKind(ctx.options),
     attribution: navalAttribution(ctx.options),
     period: navalPeriod(ctx.options),

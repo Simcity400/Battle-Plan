@@ -402,26 +402,6 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/draw/kit.ts": "export function computeTimeAxisTicks() { return []; }\n",
         })[0], 0)
 
-    def test_family_colour_literals_are_refused_in_families_and_projections(self):
-        code, out = check({}, {
-            "ui/src/families/table/cellPainters.ts": "ctx.fillStyle = '#e5484d';\nconst g = `rgba(${r}, 0, 0, 0.5)`;\nconst c = '#112233';\nctx.strokeStyle = c;\n",
-            "ui/src/widgets/foo/fooProjection.ts": "const s = 'hsl(200, 50%, 50%)';\n",
-            "ui/src/families/table/tableFamily.css": ".tf-th {\n  color: #e2e2e2;\n}\n#header {\n  display: flex;\n}\n",
-        })
-        self.assertEqual(code, 1)
-        self.assertIn("family-colour-literal", out)
-        self.assertIn("ui/src/families/table/cellPainters.ts: family-colour-literal: 0 at the base, 3 now; new at line 1, 2, 3", out)
-        self.assertIn("ui/src/families/table/tableFamily.css: family-colour-literal: 0 at the base, 1 now; new at line 2", out)
-        self.assertIn("ui/src/charts/palette.ts", out)
-        self.assertEqual(check({}, {
-            "ui/src/charts/palette.ts": "export const RED = '#e5484d';\n",
-            "ui/src/shell/appearance/color.ts": "export const f = () => `rgba(0, 0, 0, 1)`;\n",
-            "ui/src/draw/kit.ts": "const color = '#111111';\n",
-            "ui/src/families/table/tableFamily.test.ts": "const color = '#e5484d';\n",
-            "ui/src/families/table/selector.ts": "const selector = '#abc';\nconst el = root.querySelector(selector);\n",
-            "ui/src/families/table/clean.css": "#abc {\n  color: var(--text);\n}\n",
-        })[0], 0)
-
     def test_family_locale_string_is_refused_in_families_and_projections(self):
         code, out = check({}, {
             "ui/src/families/table/cellPainters.ts": "const s = count.toLocaleString('en-US');\nconst d = x.toFixed(1);\n",
@@ -519,13 +499,12 @@ class FamilyKitPatterns(unittest.TestCase):
     def test_widget_helpers_and_jsx_are_checked_and_false_positives_pass(self):
         code, out = check({}, {
             "ui/src/widgets/air-statistics/airStatisticsData.ts": "export const fmt = (n: number) => n.toLocaleString('en-US');\n",
-            "ui/src/widgets/foo/FooWidget.tsx": "const inkOnFill = (f: string) => f;\nconst computeAxisTicks = () => [];\nconst color = '#e5484d';\nfor (const r of rows) { w = ctx.measureText(r).width; }\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "const inkOnFill = (f: string) => f;\nconst computeAxisTicks = () => [];\nfor (const r of rows) { w = ctx.measureText(r).width; }\n",
         })
         self.assertEqual(code, 1)
         self.assertIn("ui/src/widgets/air-statistics/airStatisticsData.ts: family-locale-string", out)
         self.assertIn("local-contrast-ink", out)
         self.assertIn("local-tick-engine", out)
-        self.assertIn("family-colour-literal", out)
         self.assertIn("family-measure-text-loop", out)
         self.assertEqual(check({}, {
             "ui/src/widgets/foo/FooWidget.tsx": (
