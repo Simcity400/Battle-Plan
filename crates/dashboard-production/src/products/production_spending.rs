@@ -533,7 +533,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     if !wanted.is_empty() {
         let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
         let looks = [dashboard_declare::field(TableId::CountryAppearance, "name_tag")?, dashboard_declare::field(TableId::CountryAppearance, "original_tag")?];
-        let links_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], Keys::These(&wanted), span.first, span.last)) {
+        let creators = entries.values().flatten().filter_map(|(_, fields)| fields.as_ref()).any(|fields| fields.display_name.is_empty() && (fields.origin_link as i32) < 1);
+        let links_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], if creators { Keys::All } else { Keys::These(&wanted) }, span.first, span.last)) {
             Ok(history) => Some(history),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(error) => {
@@ -541,29 +542,15 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                 None
             }
         };
-        let looks_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::All, span.first, span.last)) {
-            Ok(history) => Some(history),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
-            Err(error) => {
+        let looks_history = match creators.then(|| cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::All, span.first, span.last))) {
+            None => None,
+            Some(Ok(history)) => Some(history),
+            Some(Err(error)) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Some(Err(error)) => {
                 looks_unread = Some(format!("Country appearance was not read for design names: {error}"));
                 None
             }
         };
-        if let Some(history) = &looks_history {
-            let mut raw_slot: HashMap<u32, u32> = HashMap::new();
-            if let Ok(rows) = frame.complete::<tables::Countries>() {
-                raw_slot.extend(rows.iter().map(|row| (row.id, row.canonical_slot)));
-            }
-            if let Ok(rows) = frame.complete::<tables::CountryLinks>() {
-                raw_slot.extend(rows.iter().map(|row| (row.id, row.canonical_slot)));
-            }
-            for (key, steps) in &history.keys {
-                if let Some(&slot) = raw_slot.get(&(*key as u32)) {
-                    appearance.entry(slot).or_default().extend(steps.iter().map(|step| step.hour));
-                }
-            }
-            appearance_coverage.extend(history.statuses.iter().map(|status| status.first));
-        }
         let history = links_history.unwrap_or_default();
         for (key, steps) in &history.keys {
             let pieces = steps
@@ -579,6 +566,18 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                 })
                 .collect();
             mapped.insert(*key as u32, pieces);
+        }
+        if let Some(looks) = &looks_history {
+            for (key, steps) in &looks.keys {
+                let pieces = mapped.get(&(*key as u32)).map_or(&[][..], Vec::as_slice);
+                for step in steps {
+                    let held = pieces.get(pieces.partition_point(|piece| piece.1 < step.hour)).filter(|piece| piece.0 <= step.hour).and_then(|piece| piece.2);
+                    if let Some(slot) = held {
+                        appearance.entry(slot).or_default().push(step.hour);
+                    }
+                }
+            }
+            appearance_coverage.extend(looks.statuses.iter().map(|status| status.first));
         }
     }
     for why in [&links_unread, &looks_unread].into_iter().flatten() {
@@ -612,7 +611,9 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                     for (first, last) in query.holders.naming_spans(&Country::Slot(slot)) {
                         edges.extend([first, last.saturating_add(1)].into_iter().filter(|&edge| edge > low && edge <= high));
                     }
-                    edges.extend(appearance.get(&slot).into_iter().flatten().copied().filter(|&edge| edge > low && edge <= high));
+                    if created(fields) {
+                        edges.extend(appearance.get(&slot).into_iter().flatten().copied().filter(|&edge| edge > low && edge <= high));
+                    }
                 }
             }
             retagged.extend(edges.into_iter().map(|edge| (edge, Some(fields.clone()))));

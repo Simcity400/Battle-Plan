@@ -300,6 +300,14 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
                 && let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()]
             {
                 rows[0].tag = b"DEU".to_vec();
+                if hour == 110 {
+                    rows.clear();
+                }
+            }
+            if hour == 110
+                && let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows.retain(|row| row.id != 9001);
             }
             *frame.tables[TableId::CountryAppearance.index()] = if hour == 106 {
                 TableView::Unavailable { reason: "appearance read failed".into() }
