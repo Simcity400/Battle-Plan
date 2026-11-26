@@ -11,10 +11,12 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
 import { formatDateOnly, formatScalar, type ValueFormat } from '../../families/valueFormat.ts';
 import type {
+  CountryRef,
   EquipmentProducedRaceReply,
   EquipmentProducedRaceRow,
   GroupSelection,
   ProducedCount,
+  ProducedAtReply,
   ProducedMeasure,
   ProducedTypesReply,
   ProducedUnknown,
@@ -23,6 +25,16 @@ import type {
 export interface EquipmentProducedRowMeta {
   readonly tag: string;
   readonly key: string;
+}
+
+export function detailCountry(meta: EquipmentProducedRowMeta): CountryRef {
+  return countryFromKey(meta.key);
+}
+
+export function detailEmptyText(reply: Pick<ProducedAtReply, 'models' | 'icTotal'>, hour: number): string | null {
+  if (reply.models.length) return null;
+  const reason = reply.icTotal.reason;
+  return reason === 'windowIncomplete' || reason === 'observationRestarted' ? UNKNOWN_WORDS[reason] : `Nothing delivered at ${formatDateOnly(hour)}.`;
 }
 
 export interface EquipmentProducedRaceOptions {

@@ -5,7 +5,7 @@ import { createBoundedReadView, displayedHour } from '../../families/boundedView
 import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { EquipmentProducedRaceReply } from '../../generated/dashboard';
-import { equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, type EquipmentProducedRaceOptions } from './equipmentProducedRaceProjection.ts';
+import { detailCountry, detailEmptyText, equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, UNKNOWN_WORDS, type EquipmentProducedRaceOptions, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string; tag?: string }>): IdentityProvider {
   return {
@@ -115,4 +115,22 @@ test('equipmentProducedRaceProjection sends group to Rust, keys by slot, keeps z
   const read = plan.entries[0]!.read as unknown as { params: Record<string, unknown>; buildExactParams: (base: Record<string, unknown>, hour: number) => Record<string, unknown> | null };
   const exact = read.buildExactParams(read.params, 300);
   assert.deepEqual(exact?.group, { type: 'faction', id: '42', membership: 'hour' }, 'group selection sent to Rust');
+});
+
+test('a race row\'s detail asks for the country the row was counted for, also after it changed tag, and says when its window cannot be counted', () => {
+  const reply: EquipmentProducedRaceReply = {
+    branchId: '1', hour: 300, firstHour: 290, lastHour: 313, count: 'units', measure: 'total', decimals: 0, types: ['infantry_equipment'],
+    rows: [{ country: 7, tag: 'DEU', value: 8, unknown: null }], readHour: 290, observationHour: 120, missing: null, warnings: [],
+  };
+  const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', reply]]), identity: fakeIdentity({ [countryKey(7)]: { name: 'Germany', color: '#6b7280', tag: 'DEU' } }) });
+  const row = equipmentProducedRaceProjection.project(view, { ...OPTS, measure: 'total' }).rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  const meta = row.meta as unknown as EquipmentProducedRowMeta;
+  assert.equal(meta.tag, 'DEU', 'the detail is titled by the tag shown');
+  assert.equal(detailCountry(meta), 7, 'and asks for the slot the race counted, not the tag it has now');
+
+  const icTotal = (reason: 'windowIncomplete' | 'observationRestarted' | null) => ({ value: null, reason });
+  assert.equal(detailEmptyText({ models: [], icTotal: icTotal('windowIncomplete') }, 300), UNKNOWN_WORDS.windowIncomplete, 'a window it cannot count is not "nothing delivered"');
+  assert.equal(detailEmptyText({ models: [], icTotal: icTotal('observationRestarted') }, 300), UNKNOWN_WORDS.observationRestarted);
+  assert.match(detailEmptyText({ models: [], icTotal: { value: 0, reason: null } }, 300)!, /^Nothing delivered at /);
+  assert.equal(detailEmptyText({ models: [{} as never], icTotal: icTotal('windowIncomplete') }, 300), null, 'models are listed, each with its own amount');
 });
