@@ -1,6 +1,6 @@
 import { RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
-import type { WidgetOptions, OptionField } from '../../dashboard/options';
+import type { OptionField } from '../../dashboard/options';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'race', choices: [
@@ -24,11 +24,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
-  migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseArmyOptions(widget.options) }),
   variants: raceViewVariants('Army size', OPTIONS, { mix: 'Army composition', breakdown: 'Army breakdown' }),
 } as const satisfies WidgetMeta;
-
-export function normaliseArmyOptions(options: WidgetOptions = {}): WidgetOptions {
-  const { show, ...rest } = options;
-  return { ...rest, view: show === 'breakdown' ? 'breakdown' : rest.view ?? 'race' };
-}

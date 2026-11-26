@@ -1,14 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { clearLayouts, doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import { resolveOptions, setOption, type OptionField } from './options.ts';
 import { viewOwnedFields } from '../families/manifest.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();
-  return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  return {
+    values,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
 }
 
 test('a page is at its default until its saved layouts differ from the designed arrangement', () => {
@@ -75,28 +80,49 @@ test('widget content scales migrate, persist independently and reject invalid sa
   }
 });
 
-test('migrates a single saved layout without overwriting the original', () => {
+test('legacy single-layout keys and unreadable old-format saves return defaults without touching stored data', () => {
   const storage = memoryStorage();
   const legacy = JSON.stringify({ ...defaultTemplate(), name: 'My campaign' });
   storage.setItem('battleplan.workspace-template.v1', legacy);
-  const { library, warning } = loadLayouts(storage);
+  const readKeys: string[] = [];
+  const writtenKeys: string[] = [];
+  const tracked = {
+    getItem: (key: string) => { readKeys.push(key); return storage.getItem(key); },
+    setItem: (key: string, value: string) => { writtenKeys.push(key); storage.setItem(key, value); },
+  };
+  const { library, warning } = loadLayouts(tracked);
   assert.equal(warning, null);
-  assert.equal(library.layouts[0].template.name, 'My campaign');
-  assert.equal(saveLayouts(library, storage), null);
+  assert.equal(library.layouts[0].template.name, 'Default layout');
+  assert.deepEqual(readKeys, ['battleplan.workspace-layouts.v1']);
+  assert.deepEqual(writtenKeys, []);
   assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
-  assert.deepEqual(loadLayouts(storage).library, library);
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), null);
+
+  clearLayouts('overview', storage);
+  assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
+
+  storage.setItem('battleplan.workspace-layouts.v1', legacy);
+  const bad = loadLayouts(tracked);
+  assert.ok(bad.warning);
+  assert.equal(bad.library.layouts[0].template.name, 'Default layout');
+  assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), legacy);
+  assert.deepEqual(writtenKeys, []);
+
+  const current = { ...library, layouts: [{ id: 'default', template: { ...defaultTemplate(), name: 'Current layout' } }] };
+  assert.equal(saveLayouts(current, storage), null);
+  const restored = loadLayouts(storage);
+  assert.equal(restored.warning, null);
+  assert.equal(restored.library.layouts[0].template.name, 'Current layout');
+  assert.equal(storage.getItem('battleplan.workspace-template.v1'), legacy);
 });
 
-test('renames the original default without changing custom layouts or creating duplicate names', () => {
+test('saved layout names are kept as stored without renaming', () => {
   const storage = memoryStorage();
   const { library } = loadLayouts(storage);
   library.layouts[0].template.name = 'Campaign overview';
   library.layouts.push({ id: 'custom', template: { ...defaultTemplate(), name: 'My layout' } });
   assert.equal(saveLayouts(library, storage), null);
-  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Default layout', 'My layout']);
-  library.layouts[1].template.name = 'Default layout';
-  assert.equal(saveLayouts(library, storage), null);
-  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Campaign overview', 'Default layout']);
+  assert.deepEqual(loadLayouts(storage).library.layouts.map(entry => entry.template.name), ['Campaign overview', 'My layout']);
 });
 
 test('multiple layouts, updates and active selection survive reload independently', () => {
@@ -283,10 +309,6 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   const before = storage.getItem('battleplan.workspace-layouts.v1');
   assert.match(saveLayouts(raw, storage)!, /3 country tag entries couldn’t be saved/);
   assert.equal(storage.getItem('battleplan.workspace-layouts.v1'), before);
-  storage.values.delete('battleplan.workspace-layouts.v1');
-  storage.setItem('battleplan.workspace-template.v1', JSON.stringify(raw.layouts[0].template));
-  assert.equal(loadLayouts(storage).droppedTags, 3);
-  assert.match(loadLayouts(storage).warning!, /3 country tag entries were left out/);
 });
 
 test('restoration drops non-string tag entries and counts notes across layouts', () => {

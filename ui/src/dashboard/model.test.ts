@@ -110,7 +110,7 @@ test('saved templates strip runtime fields and reject corruption without binding
   assert.equal(bindTracks(parsed, new Map()).length, 0);
 });
 
-test('widget versions migrate independently and unavailable widgets survive template round trips', () => {
+test('widget versions are validated without migration and unavailable widgets survive template round trips', () => {
   const legacy = defaultTemplate();
   const input = { ...legacy, widgets: legacy.widgets.map(({ configVersion: _version, ...widget }) => widget) };
   assert.equal(parseTemplate(input)?.widgets[0].configVersion, 1);

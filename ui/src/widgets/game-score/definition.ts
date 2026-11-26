@@ -33,8 +33,5 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS,
-  migrate: (_from, { options: { multiplierPrecision: _precision, split: _split, tableSort: _tableSort, topMeasure, ...options } = {}, ...widget }) => ({ ...widget,
-    options: { ...options,
-      ...(typeof topMeasure === 'string' && topMeasure ? { topMeasure: topMeasure.replace(/^.*:/, '') } : {}) } }),
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => choice.value === 'race' ? 'Game score race' : `Game score: ${choice.label}`),
 } as const satisfies WidgetMeta;

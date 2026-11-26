@@ -186,13 +186,6 @@ export function recordingEndTime(meta: { timeModes: readonly WidgetTime['mode'][
   return { mode: 'pin', windows };
 }
 
-export function migrateWidget(widget: WidgetSpec): WidgetSpec {
-  const definition = widgetDefinition(widget.kind);
-  if (!definition?.migrate || widget.configVersion >= definition.version) return widget;
-  const migrated = definition.migrate(widget.configVersion, widget);
-  return migrated && migrated.id === widget.id && migrated.kind === widget.kind ? { ...migrated, configVersion: definition.version } : widget;
-}
-
 export function rebaseWidget(current: WidgetSpec, base: WidgetSpec, next: WidgetSpec): WidgetSpec {
   const merged: WidgetSpec = { ...current };
   const keys = new Set([...Object.keys(base), ...Object.keys(next)]) as Set<keyof WidgetSpec>;

@@ -92,7 +92,6 @@ export interface WidgetMeta {
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];
   availability?: { product: DeclaredProduct; params: Readonly<Record<string, unknown>> };
-  migrate?: (from: number, widget: WidgetSpec) => WidgetSpec | null;
   retired?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   variants?: readonly WidgetPreset[];
 }

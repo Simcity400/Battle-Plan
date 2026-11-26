@@ -21,7 +21,5 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
-  migrate: (_from, { options = {}, ...widget }) => ({ ...widget,
-    options: { ...options, view: ['race', 'lines', 'mix'].includes(String(options.view)) ? options.view : 'race' } }),
   variants: [...raceViewVariants('Factories', OPTIONS), ...breakdownVariants('Factories', OPTIONS)],
 } as const satisfies WidgetMeta;

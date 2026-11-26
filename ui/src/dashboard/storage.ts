@@ -1,10 +1,9 @@
-import { defaultTemplate, GRID_COLUMNS, migrateWidget, stableJson, WIDGET_CONTENT_SCALES } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, stableJson, WIDGET_CONTENT_SCALES } from './model.ts';
 import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
 import type { PageId } from './pages.ts';
 
-const STORAGE_KEY = 'battleplan.workspace-template.v1';
 const LIBRARY_KEY = 'battleplan.workspace-layouts.v1';
 export const MAX_LAYOUTS = 32;
 export interface LayoutLibrary {
@@ -62,17 +61,6 @@ function selection(value: unknown, dropped?: (count: number) => void): CountrySe
   return { kind: 'tags', tags: [...new Set(tags)] };
 }
 
-function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
-  let migrated: WidgetSpec;
-  try { migrated = migrateWidget(widget); } catch { return widget; }
-  if (migrated === widget) return widget;
-  const valid = widgetTitle(migrated.title) && migrated.trackIds.length > 0 && migrated.trackIds.every(value => trackIds.has(value))
-    && selection(migrated.countries) && timeMode(migrated.time, trackIds)
-    && (migrated.options === undefined || parseStoredOptions(migrated.options))
-    && (migrated.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === migrated.contentScale));
-  return valid ? migrated : widget;
-}
-
 export function parseTemplate(input: unknown): DashboardTemplate | null {
   return parseTemplateWithNotes(input)?.template ?? null;
 }
@@ -115,8 +103,7 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
     const stored: WidgetSpec = { campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
       trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100,
       ...(options && Object.keys(options).length ? { options } : {}) };
-    const migrated = safeMigrate(stored, trackIds);
-    widgets.push(migrated); widgetById.set(migrated.id, migrated);
+    widgets.push(stored); widgetById.set(stored.id, stored);
   }
   const layouts: GridLayouts = {};
   for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {
@@ -162,12 +149,6 @@ export function parseLayoutLibraryWithNotes(input: unknown): { library: LayoutLi
     layoutIds.add(entry.id); layoutNames.add(name);
   }
   return layouts.some((entry) => entry.id === input.activeId) ? { library: { version: 1, activeId: input.activeId, layouts }, droppedTags } : null;
-}
-
-function migrateDefaultName(library: LayoutLibrary): LayoutLibrary {
-  if (library.layouts.some((entry) => entry.template.name.toLowerCase() === 'default layout')) return library;
-  return { ...library, layouts: library.layouts.map((entry) => entry.id === 'default' && entry.template.name === 'Campaign overview'
-    ? { ...entry, template: { ...entry.template, name: 'Default layout' } } : entry) };
 }
 
 export function droppedTagWarning(count: number): string | null {
@@ -230,14 +211,7 @@ export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'):
       if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
       const parsed = parseLayoutLibraryWithNotes(JSON.parse(raw));
       if (!parsed) throw new Error('Invalid layouts');
-      return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
-    }
-    const legacy = page === 'overview' ? target.getItem(STORAGE_KEY) : null;
-    if (legacy !== null) {
-      if (legacy.length > 1_000_000) throw new Error('Saved layout is too large.');
-      const parsed = parseLayoutLibraryWithNotes({ ...fallback, layouts: [{ id: 'default', template: JSON.parse(legacy) }] });
-      if (!parsed) throw new Error('Invalid layout');
-      return { library: migrateDefaultName(parsed.library), warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
+      return { library: parsed.library, warning: droppedTagWarning(parsed.droppedTags), droppedTags: parsed.droppedTags };
     }
     return { library: fallback, warning: null, droppedTags: 0 };
   } catch {
@@ -247,9 +221,7 @@ export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'):
 
 export function clearLayouts(page: PageId, storage?: Pick<Storage, 'removeItem'>) {
   try {
-    const target = storage ?? localStorage;
-    target.removeItem(libraryKey(page));
-    if (page === 'overview') target.removeItem(STORAGE_KEY);
+    (storage ?? localStorage).removeItem(libraryKey(page));
   } catch {  }
 }
 
