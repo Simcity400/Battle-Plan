@@ -67,7 +67,7 @@ fn log_tail_and_dated_panel_match_with_exact_facet_totals() {
     let reply = LogTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.total, "5");
     assert_eq!(reply.rows.iter().map(|row| row.hour).collect::<Vec<_>>(), [136, 132, 128]);
-    assert_eq!(reply.counts, vec![dashboard_base::products::occurrences::OccurrenceCount { key: "kind1".into(), total: "5".into() }]);
+    assert_eq!(reply.counts, vec![dashboard_base::products::occurrences::OccurrenceCount { key: "kind1".into(), total: "5".into(), missing: None }]);
     assert_eq!(spans(&reply.missing), [(FIRST, UNREAD, true)]);
 
     let asked = serde_json::json!({

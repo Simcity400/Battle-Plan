@@ -31,12 +31,15 @@ test('validateTailReply rejects malformed replies and rows after the supplied di
       { key: '2', hour: 120, cells: [{ kind: 'number', value: '11' }] },
       { key: '1', hour: 100, cells: [{ kind: 'number', value: '20' }] },
     ],
-    counts: [{ key: 'contracts', total: '1' }],
+    counts: [{ key: 'contracts', total: '1' }, { key: 'chosen', total: '0', missing: 'Who holds the chosen countries is not known: Countries was not complete at these hours' }],
     missing: [{ firstHour: 105, lastHour: 110, reason: 'gap' }],
   };
   const ok = validateTailReply(raw, 120);
   assert.equal(ok.total, 2);
   assert.equal(ok.facetTotals.get('contracts'), 1);
+  assert.equal(ok.facetTotals.has('chosen'), false, 'a count with a reason never reads as a number');
+  assert.equal(ok.facetMissing?.get('chosen'), 'Who holds the chosen countries is not known: Countries was not complete at these hours');
+  assert.throws(() => validateTailReply({ ...raw, counts: [{ key: 'chosen', total: '0', missing: 5 }] }, 120), /malformed/);
   assert.equal(ok.rows.length, 2);
   assert.throws(() => validateTailReply(raw, 119), /after displayed hour 119/);
   assert.throws(() => validateTailReply({ ...raw, total: '1' }, 120), /malformed/);
