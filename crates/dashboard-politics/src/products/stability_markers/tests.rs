@@ -142,4 +142,14 @@ fn an_unattributed_war_start_is_said_once_with_its_span_and_a_late_join_says_it_
     assert!(titles(&late).is_empty(), "a join right after an unobserved hour is not dated");
     assert_eq!(notes.len(), 1, "but it is said: {notes:?}");
     assert!(notes[0].starts_with("In Axis by "), "named as it was then, not by its later name: {notes:?}");
+
+    let mut joined = groups.clone();
+    joined.factions[0].members = serde_json::from_value(serde_json::json!([
+        { "tag": "AAA", "firstHour": 298, "lastHour": 300 }, { "tag": "BBB", "firstHour": 300, "lastHour": 500 }
+    ]))
+    .unwrap();
+    let mut gap = Markers { hour: 450, shown: Vec::new(), next: None };
+    let slot = |tag: &str, hour: i32| (tag == "AAA" && hour == 299) || (tag == "BBB" && hour >= 300);
+    let notes = faction_markers(&mut gap, &slot, &joined, (0, 1000));
+    assert!(notes.iter().any(|note| note.starts_with("In Axis by ")), "a roster unread the hour before says nothing of who was in it then: {notes:?}");
 }
