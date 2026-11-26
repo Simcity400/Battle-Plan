@@ -84,6 +84,7 @@ export function projectForceAtMix(
     }
 
     if (value.kind === 'notRecorded') {
+      if (item.values.some(raw => raw !== null)) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       rows.push({
         key,
         subject: displayTag,

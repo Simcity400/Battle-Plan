@@ -208,6 +208,7 @@ export function projectForceAtReply(
       }
     }
 
+    if (value.kind === 'notRecorded' && item.values.some(raw => raw !== null)) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
     let segments: BarsSegment[] | undefined;
     if (options.split && numeric !== null && numeric > 0) {
       if (item.partsMissing !== null) {

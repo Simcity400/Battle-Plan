@@ -86,3 +86,16 @@ test('a part keeps its colour when the parts beside it change (convoys alone or 
   assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
   assert.notEqual(added.get('aaa'), added.get('ships'));
 });
+
+test('a total not known beside a known part keeps the known part in its tooltip (ships known, convoys not)', () => {
+  const reply: ForceAtReply = {
+    parts: [{ key: 'ships', name: 'Ships', unresolved: false }, { key: 'convoys', name: 'Convoys', unresolved: false }],
+    rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: null, missing: 'Convoys sunk are not known at this hour', values: [3, null], partsMissing: null }],
+    missing: null,
+    warnings: [],
+  };
+  const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
+  const model = projectForceAtMix(view, reply, { top: null, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys', emptyMessage: 'None.' });
+  const row = model.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
+  assert.deepEqual(row.tooltip?.items?.slice(1), [{ label: 'Ships', value: '3' }, { label: 'Convoys', missingReason: 'Not recorded at this hour' }]);
+});
