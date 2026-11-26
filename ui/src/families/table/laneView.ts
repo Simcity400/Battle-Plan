@@ -426,7 +426,7 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
       columns: model.columns,
     },
     nav: flatRows.flatMap((item, i) => (item.kind === 'data'
-      ? [[item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, layout.tops(i), layout.heights(i)] as const]
+      ? [[item.key, item.name, shape.windowOffset + i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null, layout.tops(i), layout.heights(i)] as const]
       : [])),
   };
   const description = [model.titleSummary, model.titleSummaryPartial].filter((part): part is string => Boolean(part)).join('. ');
@@ -572,7 +572,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   mirror({ model, layout, binding }) {
     const shape = layout.shape;
     const visibleSpecs = shape.columns.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.shownWindows, binding.focusedKey ?? null, layout.focusedIndex);
+    return deriveTableMirror(shape.flatRows, visibleSpecs, shape.rankShown, layout.shownWindows, binding.focusedKey ?? null, layout.focusedIndex, { offset: shape.windowOffset, total: shape.totalCount });
   },
   audit({ model, layout }) {
     const shape = layout.shape;
