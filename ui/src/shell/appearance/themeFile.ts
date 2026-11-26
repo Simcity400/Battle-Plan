@@ -114,7 +114,7 @@ function parseVsCodeTheme(input: Record<string, unknown>): ImportedTheme {
     error: over(pick('editorError.foreground', 'errorForeground', 'terminal.ansiRed')),
   };
   if (mapped.accent) mapped.selection = mapped.accent;
-  const variant = completeColors(Object.fromEntries(Object.entries(mapped).filter(([, value]) => value)), { canvas: background, accent: accent ?? DEFAULT_SEEDS[mode].accent });
+  const variant = completeColors(Object.fromEntries(Object.entries(mapped).filter(([, value]) => value)), { canvas: background, accent: accent ?? DEFAULT_SEEDS.dark.accent });
   const notes = ['Converted from a VS Code theme. Unset colours were derived from its background and accent.'];
   return { name: cleanName(input.name, 'VS Code theme'), variants: { [mode]: variant }, source: 'vscode', notes };
 }

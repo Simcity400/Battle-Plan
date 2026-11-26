@@ -138,7 +138,7 @@ export function migrateLegacy(input: unknown): AppearanceSettings | null {
   const colors = completeColors({
     canvas: old.background, chrome: old.surface, surface: old.surface, raised: old.raised, overlay: old.surface, border: old.border,
     text: old.text, muted: old.muted, accent: old.accent, selection: old.selection, positive: old.positive, warning: old.warning, error: old.error,
-  }, DEFAULT_SEEDS[mode]);
+  }, { canvas: DEFAULT_SEEDS[mode].canvas, accent: DEFAULT_SEEDS.dark.accent });
   settings.custom = [{ id: 'migrated-custom', name: 'My theme', variants: { [mode]: colors } }];
   settings.themes[mode] = 'migrated-custom';
   return settings;

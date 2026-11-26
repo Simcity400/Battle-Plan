@@ -38,14 +38,16 @@ export const DEFAULT_SEEDS: Readonly<Record<ThemeMode, ThemeSeeds>> = {
   dark: { canvas: '#0a0f16', accent: '#5cb2ff' },
   light: { canvas: '#e9eef4', accent: '#1f6fd1' },
 };
+const DERIVE_FALLBACK: ThemeSeeds = { canvas: '#0b1017', accent: '#5fb3ff' };
+export const NEW_VARIANT_CANVAS: Readonly<Record<ThemeMode, string>> = { dark: '#0b0f16', light: '#eef1f5' };
 
 export const THEME_JSON_EXAMPLE = '{ "name": "Dusk", "canvas": "#14121b", "accent": "#f2a65a" }';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 export function deriveColors(seeds: ThemeSeeds): ThemeColors {
-  const canvasRgb = parseColor(seeds.canvas) ?? parseColor(DEFAULT_SEEDS.dark.canvas)!;
-  const accentRgb = parseColor(seeds.accent) ?? parseColor(DEFAULT_SEEDS.dark.accent)!;
+  const canvasRgb = parseColor(seeds.canvas) ?? parseColor(DERIVE_FALLBACK.canvas)!;
+  const accentRgb = parseColor(seeds.accent) ?? parseColor(DERIVE_FALLBACK.accent)!;
   const dark = isDark(canvasRgb);
   const canvas = rgbToOklch(canvasRgb), accent = rgbToOklch(accentRgb);
   const hue = canvas.c > 0.012 ? canvas.h : accent.h;

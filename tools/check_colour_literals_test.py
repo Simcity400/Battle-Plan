@@ -28,13 +28,15 @@ class TypeScript(unittest.TestCase):
         text = (
             "const a = <i style={{ backgroundColor: 'white' }} />;\nctx.fillStyle = theme.text ?? 'white';\n"
             "ctx.strokeStyle = dark ? 'black' : theme.line;\nconst b = { borderColor: 'red', tone: 'red' };\n"
+            "const c = <path fill={selected ? 'white' : theme.text} />;\nconst d = <path\n  stroke={\n    selected\n      ? 'white'\n      : theme.text\n  }\n/>;\n"
         )
-        self.assertEqual(cc.literals("ui/src/widgets/x/X.tsx", text), [1, 2, 3, 4])
+        self.assertEqual(cc.literals("ui/src/widgets/x/X.tsx", text), [1, 2, 3, 4, 5, 9])
 
     def test_words_that_are_not_colours_and_names_of_tones_pass(self):
         text = (
             "type Tone = 'red' | 'grey';\nconst tone: Tone = 'red';\nconst kind = 'tan';\nctx.fillStyle = theme.red;\n"
             "const cell = { color: c, tone: 'red' };\nif (column.tone === 'red') return theme.red;\n"
+            "ctx.fillStyle = tone === 'red' ? theme.red : theme.text;\nctx.fillStyle = 'grey' !== tone ? theme.muted : theme.text;\n"
         )
         self.assertEqual(cc.literals("ui/src/families/x.ts", text), [])
 

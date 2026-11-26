@@ -56,12 +56,14 @@ function key(value: string): string {
   return `${Math.round(parsed.rgb.r)},${Math.round(parsed.rgb.g)},${Math.round(parsed.rgb.b)}`;
 }
 
-function recorder(): { readonly ctx: Canvas2D; readonly colours: Set<string> } {
+function recorder(): { readonly ctx: Canvas2D; readonly colours: Set<string>; readonly unread: Set<string> } {
   const colours = new Set<string>();
+  const unread = new Set<string>();
   const note = (value: unknown) => {
     if (typeof value !== 'string') return;
     const parsed = parseColorAlpha(value);
-    if (!parsed || parsed.alpha > 0) colours.add(key(value));
+    if (!parsed) unread.add(value);
+    else if (parsed.alpha > 0) colours.add(key(value));
   };
   const gradient = { addColorStop: (_at: number, value: string) => note(value) };
   const state = new Map<PropertyKey, unknown>([['globalAlpha', 1], ['lineWidth', 1], ['font', '10px sans-serif']]);
@@ -82,7 +84,7 @@ function recorder(): { readonly ctx: Canvas2D; readonly colours: Set<string> } {
       return true;
     },
   }) as unknown as Canvas2D;
-  return { ctx, colours };
+  return { ctx, colours, unread };
 }
 
 function dataColours(model: unknown): Set<string> {
@@ -98,8 +100,9 @@ function dataColours(model: unknown): Set<string> {
 
 function assertThemed(label: string, paint: (ctx: Canvas2D, theme: FamilyTheme) => unknown): void {
   const drawn = [LIGHT, DARK].map(theme => {
-    const { ctx, colours } = recorder();
+    const { ctx, colours, unread } = recorder();
     const model = paint(ctx, theme);
+    assert.deepEqual([...unread], [], `${label}: every painted colour is a hex or rgb colour this test can compare`);
     assert.ok(colours.has(key(theme.text)) || colours.has(key(theme.muted)), `${label}: the theme's own text is drawn`);
     return { colours, data: dataColours(model) };
   });

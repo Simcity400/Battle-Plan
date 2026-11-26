@@ -6,7 +6,7 @@ import { ConfirmStep } from '../../components/ContextMenu';
 import type { Confirmation } from '../../components/ContextMenu';
 import { Popover, usePopover } from '../../components/Popover';
 import ColorField from './ColorField';
-import { DEFAULT_SEEDS, THEME_ROLES, contrastWarnings, deriveColors, reseed, seedsOf, themeRoles } from './themes';
+import { DEFAULT_SEEDS, NEW_VARIANT_CANVAS, THEME_ROLES, contrastWarnings, deriveColors, reseed, seedsOf, themeRoles } from './themes';
 import type { ThemeColors, ThemeMode, ThemeRole } from './themes';
 import { MAX_THEME_NAME } from './themeFile';
 import { ThemeWireframe } from './ThemePreview';
@@ -97,7 +97,7 @@ export default function ThemeEditor({ draft: initial, original, onDraft, onSave,
     () => { if (colors) setColors(deriveColors(seedsOf(colors)), kept.filter(role => SEEDS.includes(role))); });
   const addVariant = (mode: ThemeMode) => {
     const other = draft.variants[mode === 'dark' ? 'light' : 'dark'];
-    const seeds = { canvas: DEFAULT_SEEDS[mode].canvas, accent: other?.accent ?? DEFAULT_SEEDS[mode].accent, glow: other?.glow };
+    const seeds = { canvas: NEW_VARIANT_CANVAS[mode], accent: other?.accent ?? DEFAULT_SEEDS[mode].accent, glow: other?.glow };
     setDraft(previous => ({ ...previous, mode, variants: { ...previous.variants, [mode]: deriveColors(seeds) }, kept: { ...previous.kept, [mode]: [] } }));
   };
   const removeVariant = (anchor: HTMLElement) => {
