@@ -298,7 +298,6 @@ pub struct Scene {
     faction_highlight_regions: Vec<u32>,
     selection_outlined: bool,
     icon_textures: Arc<IconTextures>,
-    _shared: Arc<SceneTextures>,
     name_pass: NamePass,
     near_name_pass: NamePass,
     order_label_pass: [NamePass; 3],
@@ -448,7 +447,10 @@ impl SceneTextures {
             wgpu::TextureFormat::Rgba8Unorm,
             &sources.world_normal.pixels,
         )?);
-        let (height_size, height_texels) = assets.height_texture();
+        let (height_size, height_texels) = match &sources.padded_heights {
+            Some((size, texels)) => (*size, texels.as_slice()),
+            None => ([assets.heightmap.width, assets.heightmap.height], assets.heightmap_texels()),
+        };
         let heightmap = Arc::new(data_texture(
             device,
             queue,
@@ -465,8 +467,8 @@ impl SceneTextures {
             wgpu::TextureFormat::Rgba8Unorm,
             &sources.terrain_ids,
         )?);
-        let hatch_heights = assets
-            .height_texture
+        let hatch_heights = sources
+            .padded_heights
             .is_some()
             .then(|| {
                 data_texture(
@@ -753,7 +755,6 @@ impl Scene {
             &[0, 0, 0, 0],
         )?;
 
-        let _shared = Arc::clone(&textures);
         let SceneTextures {
             atlas,
             atlas_normal,
@@ -905,7 +906,6 @@ impl Scene {
             faction_highlight_regions: Vec::new(),
             selection_outlined: false,
             icon_textures,
-            _shared,
             name_pass,
             near_name_pass,
             order_label_pass,

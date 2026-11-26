@@ -15,7 +15,6 @@ pub struct MapAssets {
     pub sky_shader: Arc<shader_pipeline::library::Effect>,
     pub name_shader: Arc<shader_pipeline::library::Effect>,
     pub heightmap: Arc<IndexedImage>,
-    pub height_texture: Option<([u32; 2], Vec<u8>)>,
     pub post: PostAssets,
     pub shadow_blur: Arc<shader_pipeline::library::Effect>,
     pub perm_snow: Arc<[bool]>,
@@ -48,6 +47,7 @@ pub struct SceneSources {
     pub fow_noise: dds::Texture,
     pub world_normal: Rgba8Image,
     pub terrain_ids: Vec<u8>,
+    pub padded_heights: Option<([u32; 2], Vec<u8>)>,
     pub icon_images: Vec<dds::Texture>,
 }
 
@@ -68,15 +68,5 @@ impl MapAssets {
         self.sight.get_or_init(|| {
             viewer_gpu::terrain_sight::TerrainSight::new(&self.height_field())
         })
-    }
-
-    pub fn height_texture(&self) -> ([u32; 2], &[u8]) {
-        match &self.height_texture {
-            Some((size, texels)) => (*size, texels),
-            None => (
-                [self.heightmap.width, self.heightmap.height],
-                self.heightmap_texels(),
-            ),
-        }
     }
 }

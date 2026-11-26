@@ -164,6 +164,7 @@ pub fn load_with_products(
         fow_noise: texture(&format!("fow_noise_{quality}.dds"), ColorSpace::Linear)?,
         world_normal,
         terrain_ids,
+        padded_heights: height_texture,
         icon_images: Vec::new(),
     };
     let assets = MapAssets {
@@ -180,7 +181,6 @@ pub fn load_with_products(
         order_label_shader,
         tree_shader: shader("tree shadow shader", viewer_scene_base::tree_caster::load)?,
         heightmap: Arc::new(heightmap),
-        height_texture,
         post: layers.artwork("post-processing", |stack| {
             PostAssets::load(stack, defines_for(stack), map, decode)
         })?,
