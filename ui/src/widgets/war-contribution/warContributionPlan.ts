@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { chosenWar, readHourFor } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -57,7 +57,10 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   if (!options.wars) return { kind: 'loading' };
   if (!options.wars.available) return { kind: 'blank', empty: 'Wars are not in this recording.', emptyKind: 'unavailable' };
   const war = chosenWar(options.wars, options.saved, hour);
-  if (!war) return { kind: 'blank', empty: NO_WAR, emptyKind: 'empty' };
+  if (!war) {
+    const saved = options.wars.wars.find(item => item.id === options.saved);
+    return { kind: 'blank', empty: saved ? WAR_NOT_STARTED : NO_WAR, emptyKind: 'empty' };
+  }
   const reply = replyFor(readView, war, hour);
   if (!reply) return { kind: 'loading' };
   const observation = observationAt(war, reply.hour);
@@ -68,7 +71,11 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
 
 function endedHour(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number; readonly until: number } {
   const war = wars ? chosenWar(wars, saved, hour) : null;
-  if (!war) return { at: hour, until: hour };
+  if (!war) {
+    const future = wars?.wars.find(item => item.id === saved);
+    const next = future?.firstHour ?? wars?.wars.reduce((soonest, item) => item.firstHour > hour ? Math.min(soonest, item.firstHour) : soonest, Infinity);
+    return { at: hour, until: next === undefined ? hour : next - 1 };
+  }
   if (hour <= war.lastHour) return { at: war.firstHour, until: war.lastHour };
   const next = wars!.wars.reduce((soonest, other) => (other.firstHour > hour && other.firstHour < soonest ? other.firstHour : soonest), Infinity);
   return { at: readHourFor(war, hour), until: next - 1 };

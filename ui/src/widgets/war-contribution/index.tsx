@@ -12,11 +12,11 @@ import { useIdentity, useIdentityScope } from '../../families/identity/react.ts'
 import { countryTagKey } from '../../families/identity/types.ts';
 import { useHeadHour } from '../army-size/headHour';
 import { MEASURE_VIEW } from './measureProjection.ts';
-import { warChipAt } from './warContributionData.ts';
+import { WAR_NOT_STARTED, warChipAt } from './warContributionData.ts';
 import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
-import { useWarChoices, useWars, useWarsReply } from './useWarChoices';
+import { useWarChoices, useWarMenu, useWars } from './useWarChoices';
 import './warContribution.css';
 
 function WarContributionView(props: FamilyViewProps) {
@@ -49,12 +49,12 @@ function useLeader(props: Pick<FamilyViewProps, 'runtime' | 'active'>, track: Re
 }
 
 function WarChip(props: FamilyViewCountryChipProps) {
-  const { track, observation, at } = useChosenWar(props);
+  const { track, observation, at, prestart } = useChosenWar(props);
   const shown = observation && at !== null ? Math.min(at, observation.lastHour) : null;
   const [firstTag, secondTag] = attackersFirst(observation, observation?.viewpointSide[0], observation?.opposingSide[0]);
   const first = useLeader(props, track, firstTag, shown);
   const second = useLeader(props, track, secondTag, shown);
-  if (!firstTag || !secondTag) return <span className="dash-widget-country war-chip"><span>Choose a war</span></span>;
+  if (!firstTag || !secondTag) return <span className="dash-widget-country war-chip"><span>{prestart ? WAR_NOT_STARTED : 'Choose a war'}</span></span>;
   const name = `${first.name} – ${second.name}`;
   return <span className="dash-widget-country war-chip" data-tooltip={props.compact ? name : undefined}>
     <CountryFlag image={first.flag?.image} tag={firstTag} name={first.name} pending={first.pending} decorative />
@@ -65,22 +65,18 @@ function WarChip(props: FamilyViewCountryChipProps) {
 }
 
 function WarMenu({ widget, runtime, options, setOption }: FamilyViewSubjectMenuProps) {
-  const reply = useWarsReply(resolveWidgetCampaign({ ...widget, options: {} }, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), runtime, true);
+  const saved = storedWar(options);
+  const { reply, choices } = useWarMenu(resolveWidgetCampaign({ ...widget, options: {} }, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), runtime, saved);
   const wars = reply.data;
   const pending = !wars ? (reply.error ? failureText(reply.error, 'The wars were not read') : 'Loading wars…') : wars.available ? null : 'Wars are not in this recording.';
-  const saved = storedWar(options);
   const choose = (id: string | null) => setOption('war', id === null ? '' : setToken(id));
   return <div className="war-menu" role="group" aria-label="War">
     <div className="war-menu-heading">War</div>
     <button type="button" className={`war-menu-row${saved === null ? ' is-chosen' : ''}`} onClick={() => choose(null)}>The country’s main war at the date</button>
     {pending && <div className="war-menu-pending" role="status">{pending}</div>}
-    {(wars?.wars ?? []).map(war => {
-      const observation = war.observations.at(-1) ?? null;
-      const name = observation?.name.known ? observation.name.text : 'War name not recorded';
-      return <button key={war.id} type="button" className={`war-menu-row${saved === war.id ? ' is-chosen' : ''}`} onClick={() => choose(war.id)}>
-        <span>{name}</span><small>{`From ${dayLabel(war.firstHour)}`}</small>
-      </button>;
-    })}
+    {choices.map(war => <button key={war.id} type="button" className={`war-menu-row${saved === war.id ? ' is-chosen' : ''}`} onClick={() => choose(war.id)}>
+      <span>{war.name}</span>{war.firstHour !== null && <small>{`From ${dayLabel(war.firstHour)}`}</small>}
+    </button>)}
   </div>;
 }
 

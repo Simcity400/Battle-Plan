@@ -90,11 +90,10 @@ pub fn dated(source: &Source, query: &Query<'_>, context: &LoadContext, countrie
         (None, Some(group)) => {
             let reply = groups::shared(source, query, context, cancelled)?;
             let found = runs(&reply, group)?.map_err(dashboard_core::refused)?;
-            let unobserved = found.unknown.iter().map(|span| UnobservedSpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect();
             match group.membership {
                 GroupMembership::Hour => Ok(Some(Selection {
                     membership: found.members.iter().map(|run| CountrySpan { country: Country::Tag(run.tag.clone()), first_hour: run.first_hour, last_hour: run.last_hour }).collect(),
-                    unobserved,
+                    unobserved: found.unknown.iter().map(|span| UnobservedSpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect(),
                     unknown: Vec::new(),
                 })),
                 GroupMembership::Ever => {
@@ -136,6 +135,8 @@ pub fn dated(source: &Source, query: &Query<'_>, context: &LoadContext, countrie
                         .into_iter()
                         .map(|(slot, start)| CountrySpan { country: Country::Slot(slot), first_hour: start, last_hour: last })
                         .collect();
+                    let unobserved = found.unknown.iter().map(|span| span.first_hour).min()
+                        .map(|first_hour| UnobservedSpan { first_hour, last_hour: last }).into_iter().collect();
                     Ok(Some(Selection { membership, unobserved, unknown }))
                 }
             }
@@ -500,11 +501,13 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-                tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+                if hour != 117 {
+                    tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+                }
                 DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
             })
             .collect();
-        let final_frame = frames.last().unwrap().clone();
+        let final_frame = frames.iter().find(|frame| frame.hour == 116).unwrap().clone();
         let built = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
             .unwrap()
             .into_timelines(&Default::default())
@@ -540,8 +543,8 @@ mod tests {
             .unwrap();
         let entries = vec![
             Occurrence { id: 1, date: 105, observed: 105, kind: 0, roles: Box::new([Role { slot: Some(7), at: 105 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
-            Occurrence { id: 2, date: 115, observed: 115, kind: 0, roles: Box::new([Role { slot: Some(7), at: 115 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
-            Occurrence { id: 3, date: 116, observed: 116, kind: 0, roles: Box::new([Role { slot: Some(8), at: 116 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 2, date: 119, observed: 119, kind: 0, roles: Box::new([Role { slot: Some(7), at: 119 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
+            Occurrence { id: 3, date: 120, observed: 120, kind: 0, roles: Box::new([Role { slot: Some(8), at: 120 }]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: () },
         ];
         let index = Index::new(entries, Vec::new(), &[]).unwrap();
         let answer = index
@@ -566,6 +569,7 @@ mod tests {
             )
             .unwrap();
         let ids: Vec<u128> = answer.rows.iter().map(|shown| index.get(shown.at).id).collect();
-        assert_eq!(ids, [2, 1], "member slot 7 keeps its later BBB row and nonmember slot 8 taking AAA is excluded");
+        assert_eq!(ids, [2, 1], "slot 7 keeps its later BBB row and slot 8 has no witnessed membership");
+        assert!(answer.gaps.iter().any(|gap| gap.first_hour == 117 && gap.last_hour == 120), "slot 8 could have joined during the unread roster: {:?}", answer.gaps);
     }
 }

@@ -8,7 +8,7 @@ use dashboard_world::products::{group_members::{self, GroupsAt}, groups::{Countr
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
     coverage::{Witness, witnessed},
-    identity::{Holder, Holders},
+    identity::{Holder, Holders, TAG_UNLINKED},
     series::{MissingSpan, ranked::{GroupKind, GroupMembership, GroupSelection}},
 };
 use replay_data::rows::{CountryFactoriesRow, GroupSpanRow as Span, TableId, TerritoryTotalRow, tables};
@@ -229,7 +229,8 @@ struct EverIndexes(HashMap<(u64, Option<String>), (Arc<CountryGroupReply>, Arc<E
 
 impl EverIndex {
     fn build(reply: &CountryGroupReply, slots: &HashMap<u64, Vec<(u32, i32, i32)>>) -> Self {
-        let mut edges: Vec<i32> = reply.unobserved.factions.iter().map(|span| span.first_hour).collect();
+        let unknown_from = reply.unobserved.factions.iter().map(|span| span.first_hour).min();
+        let mut edges: Vec<i32> = unknown_from.into_iter().collect();
         let mut joins: BTreeMap<String, Vec<(i32, u32)>> = BTreeMap::new();
         for faction in &reply.factions {
             edges.push(faction.first_hour);
@@ -240,7 +241,7 @@ impl EverIndex {
         }
         edges.sort_unstable();
         edges.dedup();
-        Self { edges, joins, refused: None, unknown_from: None }
+        Self { edges, joins, refused: None, unknown_from }
     }
 
     fn of_group(reply: &CountryGroupReply, group: &GroupSelection, holders: &Holders, slots: &HashMap<u64, Vec<(u32, i32, i32)>>) -> io::Result<Self> {
@@ -290,6 +291,9 @@ impl EverIndex {
     }
 
     fn valid_through(&self, hour: i32) -> i32 {
+        if self.unknown_from.is_some_and(|first| first <= hour) {
+            return i32::MAX;
+        }
         self.edges.get(self.edges.partition_point(|&edge| edge <= hour)).map_or(i32::MAX, |&edge| edge - 1)
     }
 
@@ -313,6 +317,21 @@ fn held_through(params: &FactionTotalsAtParams, context: &FactionsAt, hour: i32)
 
 fn ever_group(params: &FactionTotalsAtParams) -> Option<&GroupSelection> {
     params.group.as_ref().filter(|group| group.membership == GroupMembership::Ever)
+}
+
+fn missing_member(holders: &Holders, country: &Country, hour: i32, holder: Option<Holder>) -> String {
+    let (name, unlinked) = match country {
+        Country::Tag(tag) => (tag.clone(), holder == Some(Holder::Unresolved)),
+        Country::Slot(slot) => {
+            let spans = holders.unlinked();
+            let unlinked = spans.get(spans.partition_point(|&(_, last)| last < hour)).is_some_and(|&(first, _)| first <= hour);
+            (format!("slot {slot}"), unlinked)
+        }
+    };
+    match holders.unknown_reason(hour).or(unlinked.then_some(TAG_UNLINKED)) {
+        Some(reason) => format!("Who holds {name} is not known: {reason}"),
+        None => format!("A member ({name}) is not present at this hour"),
+    }
 }
 
 fn group_countries(group: &GroupSelection, context: &FactionsAt, hour: i32) -> io::Result<Result<Vec<Country>, String>> {
@@ -505,10 +524,10 @@ impl AtHour for FactionTotalsAt {
                             Err(_) => {}
                         }
                     }
-                    _ => {
+                    holder => {
                         member_countries.push(country.clone());
                         if missing.is_none() {
-                            missing = Some(format!("A member ({tag}) is not present at this hour"));
+                            missing = Some(missing_member(at.holders, country, frame.hour, holder));
                         }
                     }
                 }

@@ -775,7 +775,10 @@ mod tests {
                 let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside fixture".into() });
                 tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.into() }]));
                 tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }]));
-                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
+                if hour == 107 {
+                    tables[TableId::Countries.index()] = TableView::Unavailable { reason: "country roster unread".into() };
+                }
+                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(if hour == 108 { Vec::new() } else { links.clone() }));
                 tables[TableId::HumanControllers.index()] = TableView::Complete(TableRows::HumanControllers(Vec::new()));
                 tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
                     FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() },
@@ -796,6 +799,15 @@ mod tests {
         assert!(at["missing"].is_string(), "the unresolved faction's total is unknown, so no top is proved: {at}");
         let now = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 105, "kind": "country-factories", "measure": "free7", "top": 1 }), &load, &cancelled);
         assert!(now["missing"].is_string(), "counted by the hour's members too: {now}");
+        let chosen = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 107, "kind": "country-factories", "measure": "free7", "members": ["GER"] }), &load, &cancelled);
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let reason = query.holders.not_known(&Country::from("GER"), 107).unwrap();
+        assert!(chosen["rows"][0]["total"].is_null());
+        assert_eq!(chosen["rows"][0]["missing"], reason);
+        let unlinked = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 108, "kind": "country-factories", "measure": "free7", "members": ["GER"] }), &load, &cancelled);
+        assert_eq!(unlinked["rows"][0]["missing"], format!("Who holds GER is not known: {}", dashboard_query::identity::TAG_UNLINKED));
+        let slot = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 108, "kind": "country-factories", "measure": "free7", "members": [7] }), &load, &cancelled);
+        assert_eq!(slot["rows"][0]["missing"], format!("Who holds slot 7 is not known: {}", dashboard_query::identity::TAG_UNLINKED));
     }
 
     fn load_at(source: &Source, params: Value, load: &LoadContext, cancelled: &AtomicBool) -> Value {
@@ -1118,6 +1130,9 @@ mod tests {
 
         let unread_src = build_late_faction_source(Some((100, 120)));
         let unread_query = dashboard_base::queries::query(&unread_src, 1).unwrap();
+        let groups = dashboard_world::products::groups::shared(&unread_src, &unread_query, &load, &cancelled).unwrap();
+        let proof = EverIndex::shared(&unread_src, 1, &groups, None).unwrap();
+        assert_eq!(proof.valid_through(120), i32::MAX, "a later founding cannot change the refusal after an unread roster");
         let unread_early = tile(
             &unread_src,
             &unread_query,

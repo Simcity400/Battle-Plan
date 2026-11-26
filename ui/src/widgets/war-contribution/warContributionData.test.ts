@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { chosenWar, readHourFor, warChipAt } from './warContributionData.ts';
+import { chosenWar, readHourFor, warChipAt, warChoicesAt } from './warContributionData.ts';
 import { heldAt } from '../army-size/headHour.ts';
 
 const observation = (first: number, last: number, viewpointSide: string[], opposingSide: string[], name = 'Synthetic war'): WarObservation => ({
@@ -21,6 +21,14 @@ test('the saved war wins while it exists, else the war with most participants go
   assert.equal(chosenWar(reply, 'gone', 700)?.id, '3', 'a war going on beats a bigger war that ended');
   assert.equal(chosenWar(reply, null, 550)?.id, '2', 'between wars, the largest one fought so far');
   assert.equal(chosenWar(reply, null, -1), null, 'no war has started');
+  const tied = { ...reply, wars: [reply.wars[0]!, war('2', 10, 500, [['A'], ['D']])] };
+  assert.equal(chosenWar(tied, null, 50)?.id, '1', 'a later end cannot break a tie between active wars');
+  const renamed = { ...reply, wars: [{ ...reply.wars[0]!, observations: [
+    observation(0, 49, ['A'], ['B'], 'First name'), observation(50, 100, ['A'], ['B'], 'Later name'),
+  ] }, reply.wars[2]!] };
+  assert.deepEqual(warChoicesAt(renamed, 49), [{ id: '1', firstHour: 0, name: 'First name' }]);
+  assert.deepEqual(warChoicesAt(renamed, 49, '3')[1], { id: '3', firstHour: null, name: 'The selected war has not started at this date.' });
+  assert.equal(warChoicesAt(renamed, 50)[0]?.name, 'Later name');
   assert.equal(readHourFor(reply.wars[0], 550), 100, 'an ended war reads its last observed hour');
   const sides = reply.wars[1].observations[0];
   assert.equal(warContributions([{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], measures: [], reason: null },
@@ -74,6 +82,8 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(model.columns.map(column => column.key), ['country', 'participation', 'casualties'], 'only the measures the product answers are columns');
   const none = warContributionSidesProjection.project(createBoundedReadView({ hour: 5, panels: new Map() }), { wars, saved: null });
   assert.equal(none.empty, 'Choose a war to see who fought it.');
+  const future = warContributionSidesProjection.project(createBoundedReadView({ hour: 5, panels: new Map() }), { wars, saved: '1' });
+  assert.equal(future.empty, 'The selected war has not started at this date.');
   const ended = warContributionSidesProjection.project(createBoundedReadView({ hour: 900, panels: new Map([['ended', { ...reply, hour: 500 }]]) }), { wars, saved: null });
   assert.equal(ended.panes?.length, 2, 'an ended war is read at its last hour, never later');
   const { warContributionMeasureProjection } = await import('./measureProjection.ts');
