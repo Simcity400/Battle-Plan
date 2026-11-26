@@ -284,6 +284,8 @@ const CEILING_DASH: readonly number[] = [5, 4];
 let stackXsBuf = new Float64Array(512);
 let stackPosAccBuf = new Float64Array(512);
 let stackNegAccBuf = new Float64Array(512);
+let stackPosTopYsBuf = new Float64Array(512);
+let stackNegTopYsBuf = new Float64Array(512);
 let stackBotYsBuf = new Float64Array(512);
 let stackTopYsBuf = new Float64Array(512);
 let stackSignBuf = new Int8Array(512);
@@ -295,6 +297,8 @@ function ensureStackScratch(len: number): void {
   stackXsBuf = new Float64Array(cap);
   stackPosAccBuf = new Float64Array(cap);
   stackNegAccBuf = new Float64Array(cap);
+  stackPosTopYsBuf = new Float64Array(cap);
+  stackNegTopYsBuf = new Float64Array(cap);
   stackBotYsBuf = new Float64Array(cap);
   stackTopYsBuf = new Float64Array(cap);
   stackSignBuf = new Int8Array(cap);
@@ -907,17 +911,22 @@ export function drawTimeChart(
         ctx.beginPath();
         ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
         ctx.clip();
+        const stackZeroY = layout.toY(0);
         for (const run of runs) {
           const len = run.end - run.start + 1;
           ensureStackScratch(len + 1);
           const xs = stackXsBuf;
           const posAcc = stackPosAccBuf;
           const negAcc = stackNegAccBuf;
+          const posTopYs = stackPosTopYsBuf;
+          const negTopYs = stackNegTopYsBuf;
           const botYs = stackBotYsBuf;
           const topYs = stackTopYsBuf;
           const sign = stackSignBuf;
           posAcc.fill(0, 0, len);
           negAcc.fill(0, 0, len);
+          posTopYs.fill(stackZeroY, 0, len);
+          negTopYs.fill(stackZeroY, 0, len);
           for (let k = 0; k < len; k++) xs[k] = layout.toX(hours[run.start + k]!);
           const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
           xs[len] = endX;
@@ -929,18 +938,20 @@ export function drawTimeChart(
               const v = values[run.start + k];
               if (v == null || !Number.isFinite(v) || v === 0) continue;
               if (v > 0) {
-                const bot = posAcc[k]!;
-                const top = bot + v;
+                const top = posAcc[k]! + v;
                 posAcc[k] = top;
-                botYs[k] = layout.toY(bot);
-                topYs[k] = layout.toY(top);
+                botYs[k] = posTopYs[k]!;
+                const ty = layout.toY(top);
+                topYs[k] = ty;
+                posTopYs[k] = ty;
                 sign[k] = 1;
               } else {
-                const bot = negAcc[k]!;
-                const top = bot + v;
+                const top = negAcc[k]! + v;
                 negAcc[k] = top;
-                botYs[k] = layout.toY(bot);
-                topYs[k] = layout.toY(top);
+                botYs[k] = negTopYs[k]!;
+                const ty = layout.toY(top);
+                topYs[k] = ty;
+                negTopYs[k] = ty;
                 sign[k] = -1;
               }
             }
@@ -1063,17 +1074,17 @@ export function drawTimeChart(
         ctx.beginPath();
         ctx.rect(layout.left, layout.top - 2, layout.plotWidth + 1, layout.plotHeight + 4);
         ctx.clip();
+        ensureStackScratch(count);
+        const xs = stackXsBuf;
+        for (let i = 0; i < count; i++) xs[i] = layout.toX(hours[i]!);
         const zeroY = layout.toY(0);
         for (const [start, end] of segments) {
           const len = end - start + 1;
-          ensureStackScratch(len);
-          const xs = stackXsBuf;
           const acc = stackPosAccBuf;
           let botYs = stackBotYsBuf;
           let topYs = stackTopYsBuf;
           acc.fill(0, 0, len);
           botYs.fill(zeroY, 0, len);
-          for (let k = 0; k < len; k++) xs[k] = layout.toX(hours[start + k]!);
           for (let bandIdx = 0; bandIdx < bands.length; bandIdx++) {
             const band = bands[bandIdx]!;
             const values = band.values;
@@ -1084,7 +1095,7 @@ export function drawTimeChart(
             }
             ctx.beginPath();
             if (len === 1) {
-              const x0 = xs[0]!;
+              const x0 = xs[start]!;
               const x1 = Math.min(layout.playheadX, x0 + 1);
               const yTop = topYs[0]!;
               const yBot = botYs[0]!;
@@ -1093,9 +1104,9 @@ export function drawTimeChart(
               ctx.lineTo(x1, yBot);
               ctx.lineTo(x0, yBot);
             } else {
-              ctx.moveTo(xs[0]!, topYs[0]!);
-              for (let k = 1; k < len; k++) ctx.lineTo(xs[k]!, topYs[k]!);
-              for (let k = len - 1; k >= 0; k--) ctx.lineTo(xs[k]!, botYs[k]!);
+              ctx.moveTo(xs[start]!, topYs[0]!);
+              for (let k = 1; k < len; k++) ctx.lineTo(xs[start + k]!, topYs[k]!);
+              for (let k = len - 1; k >= 0; k--) ctx.lineTo(xs[start + k]!, botYs[k]!);
             }
             ctx.closePath();
             ctx.fillStyle = fills?.[bandIdx] ?? band.color;
@@ -1103,8 +1114,8 @@ export function drawTimeChart(
             ctx.fill();
             if (bandIdx < bands.length - 1 && len > 1) {
               ctx.beginPath();
-              ctx.moveTo(xs[0]!, topYs[0]!);
-              for (let k = 1; k < len; k++) ctx.lineTo(xs[k]!, topYs[k]!);
+              ctx.moveTo(xs[start]!, topYs[0]!);
+              for (let k = 1; k < len; k++) ctx.lineTo(xs[start + k]!, topYs[k]!);
               ctx.globalAlpha = 0.9;
               ctx.strokeStyle = theme.surface;
               ctx.lineWidth = 0.8;
@@ -1127,7 +1138,7 @@ export function drawTimeChart(
               if (open) { ctx.stroke(); open = false; }
               continue;
             }
-            const x = layout.toX(hours[i]!);
+            const x = xs[i]!;
             const y = layout.toY(tv);
             if (!open) { ctx.beginPath(); ctx.moveTo(x, y); open = true; }
             else ctx.lineTo(x, y);

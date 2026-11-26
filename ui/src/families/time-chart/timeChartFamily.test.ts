@@ -2852,5 +2852,104 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
       })();
       assert.deepEqual(cached, uncached, `run stack parity failed at offset ${hour - H1936}`);
     }
+
+    const futureRunTiled: TiledLine = {
+      tag: 'FR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 10,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 10 },
+          { firstHour: H1936 + 6, lastHour: H1936 + 6, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedAt6 = boundTiledSeries(futureRunTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureInputs = [{ id: 'fr', key: 'fr', name: 'FR', color: LANE_THEME.blue, parts: [{ series: boundedAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future run beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before run 2');
+    assert.deepEqual(buildBoundedStack(futureInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the lookahead gap');
+
+    const futureBucketTiled: TiledLine = {
+      tag: 'FB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [
+          makeBucket(H1936, H1936, 10),
+          null, null, null, null, null,
+          makeBucket(H1936 + 6, H1936 + 6, 20),
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const boundedBucketAt6 = boundTiledSeries(futureBucketTiled, displayedHour(H1936 + 6), { headValue: knownValue(20) });
+    const futureBucketInputs = [{ id: 'fb', key: 'fb', name: 'FB', color: LANE_THEME.blue, parts: [{ series: boundedBucketAt6 }] }];
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'future bucket beyond requested hour never injects an early gap');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 6).hours, [H1936, H1936 + 1, H1936 + 6], 'advancing to 6 restores the gap before bucket 2');
+    assert.deepEqual(buildBoundedStack(futureBucketInputs, H1936 + 4).hours, [H1936, H1936 + 4], 'seeking back from 6 to 4 drops the bucket lookahead gap');
+
+    const withinTiled: TiledLine = {
+      tag: 'W', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 24, width: 1, buckets: [makeBucket(H1936, H1936 + 23, 5)], tiles: { binHours: 24, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const bW = boundTiledSeries(withinTiled, displayedHour(H1936 + 24));
+    const unrestricted = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW }] }], H1936 + 24);
+    const emptyWithin = buildBoundedStack([{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: bW, within: [] }] }], H1936 + 24);
+    assert.deepEqual(unrestricted.bands[0]!.values, [5, 5, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.values, [null, null, null]);
+    assert.deepEqual(emptyWithin.bands[0]!.outside, [true, true, true]);
+
+    const negZero = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: 0, parts: [{ series: bW }] }], H1936 + 24);
+    const negZeroMinus = buildBoundedStack([{ id: 'z', key: 'z', name: 'Z', color: LANE_THEME.blue, valueScale: -0, parts: [{ series: bW }] }], H1936 + 24);
+    assert.equal(Object.is(negZero.bands[0]!.values[0], 0), true);
+    assert.equal(Object.is(negZeroMinus.bands[0]!.values[0], -0), true);
+
+    const openEnded = buildBoundedStack([{ id: 'o', key: 'o', name: 'O', color: LANE_THEME.blue, parts: [{ within: [[-Infinity, Infinity]] }] }], 2);
+    assert.deepEqual(openEnded.hours, [-Infinity, 2]);
+
+    let denseReads = 0;
+    const denseBuckets = Array.from({ length: 1005 }, (_, i) => {
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 5));
+      return new Proxy(b, { get: (target, prop) => { denseReads++; return Reflect.get(target, prop); } });
+    });
+    const denseTiled: TiledLine = {
+      tag: 'D', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: denseBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const longRunTiled: TiledLine = {
+      tag: 'LR', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: [], runs: [{ firstHour: H1936, lastHour: H1936 + 1004, value: 42 }], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const nullTiled: TiledLine = {
+      tag: 'N', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: Array.from({ length: 1005 }, () => null), tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const dCur = new BoundedSeriesCursor();
+    const lCur = new BoundedSeriesCursor();
+    const nCur = new BoundedSeriesCursor();
+    const stepDenseWith = (other: TiledLine, oCur: BoundedSeriesCursor, h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'o', key: 'o', name: 'O', color: LANE_THEME.amber, parts: [{ series: oCur.advance(other, h, { headValue: knownValue(42) }) }], head: { value: 42 } },
+    ], h);
+    stepDenseWith(longRunTiled, lCur, H1936 + 998);
+    denseReads = 0;
+    const step999Run = stepDenseWith(longRunTiled, lCur, H1936 + 999);
+    assert.ok(denseReads < 40, `long straddling run does not force dense band resample (reads=${denseReads})`);
+    assert.equal(step999Run.hours[step999Run.hours.length - 1], H1936 + 999);
+    stepDenseWith(nullTiled, nCur, H1936 + 998);
+    denseReads = 0;
+    stepDenseWith(nullTiled, nCur, H1936 + 999);
+    assert.ok(denseReads < 40, `all-null band does not force dense band resample (reads=${denseReads})`);
   });
 });
