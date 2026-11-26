@@ -25,10 +25,6 @@ fn step(hour: i32, values: &[i64]) -> Step {
     Step { hour, cells: Some(values.iter().copied().map(Cell::Number).collect::<Vec<_>>().into_boxed_slice()) }
 }
 
-fn war_name(text: &str) -> WarName {
-    WarName { text: text.into(), known: true, reason: None, key: None }
-}
-
 #[test]
 fn a_lifetime_key_and_a_holder_key_are_the_row_codecs() {
     let packed = key((0xff_fffe, 7), (3, 0xab_cdef), -5);
@@ -80,7 +76,7 @@ fn enemies_are_keyed_by_recorded_slot_unnamed_enemies_are_kept_and_ended_relatio
         vec![HolderRun { first: 100, last: 150, holder: Holder::Found { slot: THREE.0, id: THREE.1 }, starts_segment: true }],
         vec![stretch],
         HashMap::from([(ONE.0, vec![(100, 150, "ONE".into())]), (TWO.0, vec![(100, 110, "TWO".into())])]),
-        HashMap::from([("war:1".into(), WarEntry { ordinal: 0, names: vec![(100, 150, war_name("First War"))] })]),
+        HashMap::from([("war:1".into(), WarEntry { ordinal: 0, names: vec![(100, 150, Node::new("war:1", "First War", 0))] })]),
         Vec::new(),
     );
 
@@ -136,7 +132,7 @@ fn live_and_ended_lifetimes_for_the_same_war_and_enemy_keep_last_none_while_live
         vec![HolderRun { first: 100, last: 150, holder: Holder::Found { slot: THREE.0, id: THREE.1 }, starts_segment: true }],
         vec![stretch],
         HashMap::from([(ONE.0, vec![(100, 150, "ONE".into())])]),
-        HashMap::from([("war:1".into(), WarEntry { ordinal: 0, names: vec![(100, 150, war_name("War"))] })]),
+        HashMap::from([("war:1".into(), WarEntry { ordinal: 0, names: vec![(100, 150, Node::new("war:1", "War", 0))] })]),
         Vec::new(),
     );
     let at_125 = index.at(125);
@@ -343,6 +339,11 @@ fn slot_viewpoint_preserves_ended_war_grouping_after_tag_change() {
     assert!(by_tag.breakdown.parts.iter().any(|part| part.key == "~war:none"), "asking by post-change tag loses the pre-change war grouping: {:?}", by_tag.breakdown.parts);
 
     let by_slot = CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: Country::Slot(1), hour: 110 }, &load, &cancelled).unwrap();
+    let ungrouped = by_tag.breakdown.parts.iter().find(|part| part.key == "~war:none").unwrap();
+    assert_eq!(ungrouped.name, "Ungrouped casualties");
+    assert_eq!(ungrouped.name_missing.as_deref(), Some(NO_WAR));
+    assert!(by_slot.breakdown.parts[0].name.contains("AAA"), "the unnamed war identifies the side at the last observation, before the rename");
+    assert!(by_slot.breakdown.parts[0].name_missing.is_some());
     assert_eq!(by_slot.breakdown.total.amount, figure("800"));
     assert_eq!(by_slot.breakdown.parts.len(), 1);
     assert_ne!(by_slot.breakdown.parts[0].key, "~war:none", "asking by recorded slot preserves the ended war grouping across AAA -> BBB: {:?}", by_slot.breakdown.parts);
@@ -379,7 +380,7 @@ fn a_renamed_war_reads_its_name_at_the_hour_whichever_relation_came_first() {
             ],
         }],
         HashMap::from([(ONE.0, vec![(100, 140, "ONE".into())]), (TWO.0, vec![(100, 140, "TWO".into())])]),
-        HashMap::from([("w1".to_owned(), WarEntry { ordinal: 0, names: vec![(100, 115, war_name("Old name")), (116, 140, war_name("New name"))] })]),
+        HashMap::from([("w1".to_owned(), WarEntry { ordinal: 0, names: vec![(100, 115, Node::new("w1", "Old name", 0)), (116, 140, Node::new("w1", "New name", 0))] })]),
         Vec::new(),
     );
     let reply = index.at(130);

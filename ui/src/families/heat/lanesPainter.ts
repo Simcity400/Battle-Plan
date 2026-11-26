@@ -262,16 +262,14 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
   const autoNameColor = tokens.autoName;
   for (const section of layout.sections) {
     const sy = layout.plotTop + section.top - scrollTop;
-    if (sy + ROW_SECTION_HEIGHT < layout.plotTop || sy > bodyBottom) continue;
+    if (section.top < Math.round(scrollTop) || section.top + ROW_SECTION_HEIGHT > Math.round(scrollTop) + layout.plotHeight) continue;
     drawRowSectionLabel(ctx, LANE_PAD, sy, ROW_SECTION_HEIGHT, section.label, theme);
   }
-  if (model.regions && layout.addTop !== null) {
+  if (model.regions && layout.addVisible && layout.addTop !== null) {
     const ay = layout.plotTop + layout.addTop - scrollTop;
-    if (ay + layout.rowHeight >= layout.plotTop && ay <= bodyBottom) {
-      if (hoveredAdd) drawRowHover(ctx, 0, ay, layout.width, layout.rowHeight, theme, 2);
-      if (focusedRowId === REGION_ADD_KEY) drawRowFocusRing(ctx, 0, ay, layout.width, layout.rowHeight, theme, 2);
-      drawAddRow(ctx, LANE_PAD, ay + layout.rowHeight / 2, layout.plotLeft, layout.plotLeft + layout.plotWidth, model.regions.addLabel, theme);
-    }
+    if (hoveredAdd) drawRowHover(ctx, 0, ay, layout.width, layout.rowHeight, theme, 2);
+    if (focusedRowId === REGION_ADD_KEY) drawRowFocusRing(ctx, 0, ay, layout.width, layout.rowHeight, theme, 2);
+    drawAddRow(ctx, LANE_PAD, ay + layout.rowHeight / 2, layout.plotLeft, layout.plotLeft + layout.plotWidth, model.regions.addLabel, theme);
   }
   let pixels = paintedLanes.get(ctx);
   if (!pixels) paintedLanes.set(ctx, pixels = []);
@@ -387,9 +385,9 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
     }
   }
 
-  const lastTop = layout.rowTops.at(-1);
-  const rowsBottom = Math.min(bodyBottom, lastTop === undefined ? layout.plotTop : layout.plotTop + lastTop + layout.rowHeight - scrollTop);
-  if (model.gaps?.length && rowsBottom > layout.plotTop) {
+  if (model.gaps?.length && layout.firstRow < layout.endRow) {
+    const rowsTop = layout.plotTop + layout.rowTops[layout.firstRow]! - scrollTop;
+    const rowsBottom = layout.plotTop + layout.rowTops[layout.endRow - 1]! + layout.rowHeight - scrollTop;
     for (const gap of model.gaps) {
       if (gap.firstHour > layout.displayedHour) continue;
       const gFirst = Math.max(layout.firstHour, gap.firstHour);
@@ -398,7 +396,7 @@ export function drawHeatLanes(ctx: Canvas2D, input: DrawHeatLanesInput): void {
       const gx0 = hourToLaneX(gFirst, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       const gx1 = hourToLaneX(gLast + 1, layout.firstHour, layout.lastHour, layout.plotLeft, layout.plotWidth);
       if (gx1 > gx0) {
-        drawGapBand(ctx, gx0, layout.plotTop, Math.max(1, gx1 - gx0), rowsBottom - layout.plotTop, theme);
+        drawGapBand(ctx, gx0, rowsTop, Math.max(1, gx1 - gx0), rowsBottom - rowsTop, theme);
       }
     }
   }

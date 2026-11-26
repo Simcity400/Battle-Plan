@@ -1,4 +1,4 @@
-use super::wars::{self, WarName, WarRelationMembership, WarsReply};
+use super::wars::{self, WarRelationMembership, WarsReply};
 use dashboard_base::{
     Source,
     products::{
@@ -263,7 +263,7 @@ struct StretchData {
 
 struct WarEntry {
     ordinal: u32,
-    names: Vec<(i32, i32, WarName)>,
+    names: Vec<(i32, i32, Node)>,
 }
 
 enum HolderState {
@@ -313,17 +313,14 @@ impl CasualtyIndex {
             if grouping.is_some_and(|run| run.ambiguous) {
                 return Node::new("~war:several", "Multiple wars", u32::MAX - 1).other().name_missing(Some(SEVERAL_WARS.into()));
             }
-            return Node::new("~war:none", "War not recorded", u32::MAX).other().name_missing(Some(NO_WAR.into()));
+            return Node::new("~war:none", "Ungrouped casualties", u32::MAX).other().name_missing(Some(NO_WAR.into()));
         };
         let Some(entry) = self.wars.get(id) else {
             return Node::new(id, id, u32::MAX - 2).name_missing(Some("The war's name was not recorded at this hour".into()));
         };
-        match covering(&entry.names, grouping_hour, |&(first, last, _)| (first, last)).map(|(_, _, name)| name) {
-            Some(name) if name.known => Node::new(id, name.text.clone(), entry.ordinal),
-            Some(name) => Node::new(id, name.key.clone().unwrap_or_else(|| name.text.clone()), entry.ordinal)
-                .name_missing(Some(name.reason.clone().unwrap_or_else(|| "The war's name was not recorded".into()))),
-            None => Node::new(id, id, entry.ordinal).name_missing(Some("The war's name was not recorded at this hour".into())),
-        }
+        covering(&entry.names, grouping_hour, |&(first, last, _)| (first, last))
+            .map(|(_, _, node)| node.clone())
+            .unwrap_or_else(|| Node::new(id, format!("War {}", entry.ordinal + 1), entry.ordinal).name_missing(Some("The war's name was not recorded at this hour".into())))
     }
 
     pub(crate) fn at(&self, hour: i32) -> CasualtyBreakdownReply {
@@ -454,7 +451,18 @@ fn build_wars(view: &WarsReply) -> HashMap<String, WarEntry> {
         .iter()
         .enumerate()
         .map(|(ordinal, war)| {
-            let names = war.observations.iter().map(|run| (run.first_hour, run.last_hour, run.name.clone())).collect();
+            let names = war.observations.iter().map(|run| {
+                let node = if run.name.known {
+                    Node::new(&war.id, &run.name.text, ordinal as u32)
+                } else {
+                    let scope = match (run.viewpoint_side.first(), run.opposing_side.first()) {
+                        (Some(first), Some(second)) => format!("{first} side vs {second} side"),
+                        _ => format!("War {}", ordinal + 1),
+                    };
+                    Node::new(&war.id, scope, ordinal as u32).name_missing(Some(run.name.reason.clone().unwrap_or_else(|| "The war's name was not recorded".into())))
+                };
+                (run.first_hour, run.last_hour, node)
+            }).collect();
             (war.id.clone(), WarEntry { ordinal: ordinal as u32, names })
         })
         .collect()

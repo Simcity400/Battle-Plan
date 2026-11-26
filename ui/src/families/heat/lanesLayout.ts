@@ -32,6 +32,7 @@ export interface HeatLanesLayout {
   readonly rowTops: readonly number[];
   readonly sections: readonly { readonly label: string; readonly top: number }[];
   readonly addTop: number | null;
+  readonly addVisible: boolean;
   readonly totalHeight: number;
   readonly firstRow: number;
   readonly endRow: number;
@@ -111,7 +112,7 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const contentHeight = y > 0 ? y - LANE_ROW_GAP + 8 : 0;
   const totalHeight = Math.max(height, plotTop + contentHeight + axisHeight);
 
-  const { firstRow, endRow } = lanesWindow({ rowTops, plotHeight }, input.rows.length, input.scrollTop);
+  const window = lanesWindow({ rowTops, rowHeight, plotHeight, addTop }, input.scrollTop);
 
   const firstHour = input.firstHour;
   const lastHour = Math.max(firstHour, input.lastHour);
@@ -135,20 +136,20 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
     sections,
     addTop,
     totalHeight,
-    firstRow,
-    endRow,
+    ...window,
     firstHour,
     lastHour,
     displayedHour: input.displayedHour,
   };
 }
 
-export function lanesWindow(layout: Pick<HeatLanesLayout, 'rowTops' | 'plotHeight'>, rows: number, scrollTopRaw: number): Pick<HeatLanesLayout, 'firstRow' | 'endRow'> {
-  const scrollTop = Math.max(0, scrollTopRaw);
-  return {
-    firstRow: Math.max(0, rowAtOrBelow(layout.rowTops, scrollTop) - 1),
-    endRow: Math.min(rows, rowAtOrBelow(layout.rowTops, scrollTop + layout.plotHeight) + 2),
-  };
+export function lanesWindow(layout: Pick<HeatLanesLayout, 'rowTops' | 'rowHeight' | 'plotHeight' | 'addTop'>, scrollTopRaw: number): Pick<HeatLanesLayout, 'firstRow' | 'endRow' | 'addVisible'> {
+  const scrollTop = Math.max(0, Math.round(scrollTopRaw));
+  const at = rowAtOrBelow(layout.rowTops, scrollTop);
+  const firstRow = layout.rowTops[at] === scrollTop ? at : at + 1;
+  const endRow = rowAtOrBelow(layout.rowTops, scrollTop + layout.plotHeight - layout.rowHeight) + 1;
+  const addVisible = layout.addTop !== null && layout.addTop >= scrollTop && layout.addTop + layout.rowHeight <= scrollTop + layout.plotHeight;
+  return { firstRow, endRow: Math.max(firstRow, endRow), addVisible };
 }
 
 export function hourToLaneX(
@@ -337,9 +338,9 @@ export function hitHeatLanes(
 ): LaneHit {
   if (x < 0 || x > layout.width || y < layout.plotTop || y > layout.height - layout.axisHeight) return null;
   const relY = y - layout.plotTop + scrollTop;
-  if (layout.addTop !== null && relY >= layout.addTop && relY <= layout.addTop + layout.rowHeight) return { kind: 'add' };
+  if (layout.addVisible && layout.addTop !== null && relY >= layout.addTop && relY <= layout.addTop + layout.rowHeight) return { kind: 'add' };
   const rowIndex = rowAtOrBelow(layout.rowTops, relY);
-  if (rowIndex < 0 || rowIndex >= rows.length) return null;
+  if (rowIndex < layout.firstRow || rowIndex >= layout.endRow || rowIndex >= rows.length) return null;
   const inRowY = relY - layout.rowTops[rowIndex]!;
   if (inRowY > layout.rowHeight) return null;
   if (toolsRow === rowIndex && rows[rowIndex]!.region !== undefined) {

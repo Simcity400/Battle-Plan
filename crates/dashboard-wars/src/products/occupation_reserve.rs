@@ -177,9 +177,6 @@ fn select_holders(
         }
         return Ok(Selected { holders: named, unnamed, unplaced: unplaced_positive });
     }
-    if !named.iter().any(|holder| !holder.entries.is_empty()) {
-        return Ok(Selected { holders: Vec::new(), unnamed, unplaced: unplaced_positive });
-    }
     named.sort_unstable_by(|a, b| b.total.cmp(&a.total).then_with(|| a.country.tag.cmp(&b.country.tag)));
     Ok(Selected { holders: named, unnamed, unplaced: unplaced_positive })
 }
@@ -749,6 +746,12 @@ mod tests {
         let chosen_zero = select_holders(zero, &params, &at, 10).unwrap();
         assert_eq!(chosen_zero.holders.iter().map(|holder| (holder.country.id, holder.admitted, holder.total)).collect::<Vec<_>>(), vec![(1, true, 0)], "a chosen admitted holder with no entry keeps its recorded zero");
         assert_eq!(none_missing(None, 0), None);
+        let all = OccupationReserveParams { group: None, ..params.clone() };
+        let admitted = holders(&[1, 2], &[], None, named);
+        let zeros = select_holders(admitted.clone(), &all, &at, 10).unwrap();
+        assert_eq!(zeros.holders.iter().map(|holder| (holder.country.id, holder.total)).collect::<Vec<_>>(), [(1, 0), (2, 0)]);
+        let top = OccupationReserveParams { top: Some(2), ..all };
+        assert!(select_holders(admitted, &top, &at, 10).unwrap().holders.is_empty());
         assert!(none_missing(None, 2).is_some_and(|reason| reason.starts_with("2 holders")), "unnamed holders with manpower are not a proven empty reserve");
         assert!(none_missing(Some("admissions unread".into()), 0).is_some());
         assert_eq!(chosen(60), Ok(vec![(1, Some(5)), (2, Some(6))]));
