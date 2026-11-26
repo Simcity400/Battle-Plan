@@ -1,6 +1,6 @@
 
 use crate::{read, timeline::Timeline};
-use replay_recording::columnar_frames::Recording;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt, io, sync::OnceLock};
@@ -381,7 +381,8 @@ struct Row {
     last: i32,
 }
 
-fn history(recording: &Recording, run: u32) -> io::Result<Vec<Row>> {
+fn history(replay: &Replay, run: u32) -> io::Result<Vec<Row>> {
+    let recording = replay.recording();
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
     let mut names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
@@ -393,7 +394,7 @@ fn history(recording: &Recording, run: u32) -> io::Result<Vec<Row>> {
         names.insert(number, String::from_utf8_lossy(text).into_owned());
     }
     let mut out = Vec::new();
-    for (key, first, last) in crate::cost::lifetimes(recording, run, TableId::TagHolders)? {
+    for &(key, first, last) in crate::cost::recorded_lifetimes(replay, run, TableId::TagHolders)?.iter() {
         let (number, slot, id) = ((key >> 96) as u32, (key >> 32) as u32, key as u32);
         let (first, last) = (first as i32, last as i32);
         if number == TagHolderRow::UNKNOWN {
@@ -412,12 +413,12 @@ fn who_holds(name: &str, reason: &str) -> String {
     format!("Who holds {name} is not known: {reason}")
 }
 
-pub fn holders(recording: &Recording, timeline: &Timeline) -> io::Result<Holders> {
+pub fn holders(replay: &Replay, timeline: &Timeline) -> io::Result<Holders> {
     let mut out = Holders::default();
     let mut read: std::collections::HashMap<u32, Vec<Row>> = std::collections::HashMap::new();
     for stretch in &timeline.stretches {
         if let std::collections::hash_map::Entry::Vacant(slot) = read.entry(stretch.run) {
-            slot.insert(history(recording, stretch.run)?);
+            slot.insert(history(replay, stretch.run)?);
         }
         for row in &read[&stretch.run] {
             let first = row.first.max(stretch.first);

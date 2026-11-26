@@ -9,7 +9,6 @@ use dashboard_query::{Query, read};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::localisation::Localisation;
 use replay_looks::Look;
-use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{Recorded, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -161,7 +160,8 @@ pub struct RunLooks {
     pub tags: HashMap<u32, Arc<str>>,
 }
 
-pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
+fn run_looks(source: &Source, run: u32) -> io::Result<RunLooks> {
+    let recording = source.replay_ref().recording();
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
     let (mut looks, mut raw_looks, mut tags) = (HashMap::new(), HashMap::new(), HashMap::new());
@@ -187,7 +187,7 @@ pub fn run_looks(recording: &Recording, run: u32) -> io::Result<RunLooks> {
         return Err(error);
     }
     let (mut spans, mut unknown) = (Vec::new(), Vec::new());
-    for (key, first, last) in dashboard_query::cost::lifetimes(recording, run, TableId::LookSpans)? {
+    for &(key, first, last) in dashboard_base::queries::lifetimes(source, run, TableId::LookSpans)?.iter() {
         let (number, look) = ((key >> 64) as u32, (key >> 32) as u32);
         if number == TagHolderRow::UNKNOWN {
             unknown.push((first as i32, last as i32));
@@ -765,5 +765,5 @@ pub(crate) fn forget(source: &dashboard_base::Source) {
 }
 
 pub fn cached_looks(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunLooks>> {
-    Runs::held(&source.state::<Runs>(), run, || run_looks(source.replay_ref().recording(), run))
+    Runs::held(&source.state::<Runs>(), run, || run_looks(source, run))
 }

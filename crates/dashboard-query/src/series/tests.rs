@@ -429,7 +429,7 @@ fn a_computed_series_state_distinguishes_not_applicable_from_unrecorded() {
         })
         .unwrap();
         let timeline = Arc::new(Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() });
-        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        let holders = Arc::new(identity::holders(&replay, &timeline).unwrap());
         (replay, timeline, holders)
     };
 
@@ -517,7 +517,7 @@ fn a_step_stops_where_an_empty_measure_changes_its_explanation() {
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(identity::holders(&replay, &timeline).unwrap());
     let query = crate::Query { replay: &replay, timeline, holders };
     let series = dashboard_declare::series("fuel-consumers").unwrap();
     let measure = series.measure("receivedShare").unwrap();
@@ -931,7 +931,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         stretches: vec![crate::timeline::Stretch { run: 0, first, last, join: crate::timeline::Join::Start }],
         unheld: Vec::new(),
     });
-    let v2_holders = Arc::new(crate::identity::holders(v2_replay.recording(), &v2_timeline).unwrap());
+    let v2_holders = Arc::new(crate::identity::holders(&v2_replay, &v2_timeline).unwrap());
     let v2_query = Query { replay: &v2_replay, timeline: v2_timeline, holders: v2_holders };
     let series = dashboard_declare::series("supply-health").unwrap();
     let v2_line = Line::new(&v2_query, series, series.measure("noSupply").unwrap()).unwrap();
@@ -957,7 +957,7 @@ fn v1_published_supply_health_is_withheld_by_dashboard_query() {
         stretches: vec![crate::timeline::Stretch { run: 0, first, last, join: crate::timeline::Join::Start }],
         unheld: Vec::new(),
     });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
     let line = Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap();
 
@@ -1168,7 +1168,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
         ],
         unheld: Vec::new(),
     });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
     let series = dashboard_declare::series("supply-health").unwrap();
     let line = Line::new(&query, series, series.measure("noSupply").unwrap()).unwrap();
@@ -1252,7 +1252,7 @@ fn resumed_v1_to_v2_supply_health_admits_v2_and_withholds_v1_and_spanning_bin() 
         stretches: vec![crate::timeline::Stretch { run: 0, first: first_v1, last: last_v2, join: crate::timeline::Join::Start }],
         unheld: Vec::new(),
     });
-    let mid_holders = Arc::new(crate::identity::holders(mid_replay.recording(), &mid_timeline).unwrap());
+    let mid_holders = Arc::new(crate::identity::holders(&mid_replay, &mid_timeline).unwrap());
     let mid_query = Query { replay: &mid_replay, timeline: mid_timeline, holders: mid_holders };
     let mid_line = Line::new(&mid_query, series, series.measure("noSupply").unwrap()).unwrap();
     let mid_states = mid_line.states(&[read("GER", last_v1, None), read("GER", first_v2, None)], None).unwrap();

@@ -33,7 +33,7 @@ impl Index {
             return Ok(Query { replay, timeline: Arc::clone(timeline), holders: Arc::clone(holders) });
         }
         let timeline = Arc::new(timeline::resolve(replay, id)?);
-        let holders = Arc::new(identity::holders(replay.recording(), &timeline)?);
+        let holders = Arc::new(identity::holders(replay, &timeline)?);
         self.timelines
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

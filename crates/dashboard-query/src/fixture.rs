@@ -337,7 +337,7 @@ impl Fixture {
             unheld.push(Unheld { first: gap_first, last: gap_last, reason: GAP_REASON.into() });
         }
         let timeline = Arc::new(Timeline { id: 1, first, last, stretches, unheld });
-        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        let holders = Arc::new(identity::holders(&replay, &timeline).unwrap());
         Self { replay, timeline, holders }
     }
 

@@ -193,7 +193,7 @@ impl TruncatedFixture {
 
         let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session, branch, LAST_HOUR, write).unwrap();
         let timeline = Arc::new(Timeline { id: 1, first: BASE, last: LAST_HOUR, stretches: vec![Stretch { run: 0, first: BASE, last: LAST_HOUR, join: Join::Start }], unheld: Vec::new() });
-        let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+        let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
         Self { replay, timeline, holders }
     }
 
@@ -458,7 +458,7 @@ fn six_hour_ranked_request_and_complete_absent_none_summary_pin_main_behaviour()
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 125, stretches: vec![Stretch { run: 0, first: 120, last: 125, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
 
     let fac_series = dashboard_declare::series("country-factories").unwrap();
@@ -532,7 +532,7 @@ fn initially_truncated_ranked_leaves_first_hour_empty_while_keyed_state_keeps_wi
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 121, stretches: vec![Stretch { run: 0, first: 120, last: 121, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
     let exp_series = dashboard_declare::series("country-experience").unwrap();
     let exp = Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap();
@@ -677,7 +677,7 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 131, stretches: vec![Stretch { run: 0, first: 120, last: 131, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
 
     let rel_series = dashboard_declare::series("relation-opinions").unwrap();
@@ -877,7 +877,7 @@ fn cold_truncated_tile_batches_witness_walk_once_across_many_countries() {
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 131, stretches: vec![Stretch { run: 0, first: 120, last: 131, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
     let exp_series = dashboard_declare::series("country-experience").unwrap();
     let exp = Line::new(&query, exp_series, exp_series.measure("army").unwrap()).unwrap();
@@ -975,7 +975,7 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 125, stretches: vec![Stretch { run: 0, first: 120, last: 125, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(crate::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(crate::identity::holders(&replay, &timeline).unwrap());
     let query = Query { replay: &replay, timeline, holders };
 
     let nukes_series = dashboard_declare::series("country-nuke-totals").unwrap();

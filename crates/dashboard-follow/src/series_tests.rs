@@ -875,7 +875,7 @@ fn follow_and_live_cells_apply_witness_rule_and_invalidate_across_swapped_trunca
     .unwrap();
 
     let timeline = Arc::new(Timeline { id: 1, first: T_BASE, last: T_LAST, stretches: vec![Stretch { run: 0, first: T_BASE, last: T_LAST, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(dashboard_query::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(dashboard_query::identity::holders(&replay, &timeline).unwrap());
     let state = dashboard_query::Query { replay: &replay, timeline: Arc::clone(&timeline), holders: Arc::clone(&holders) };
     let identity = Identity { holders: Arc::clone(&holders), timeline: Arc::clone(&timeline) };
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
@@ -1243,7 +1243,7 @@ fn a_followed_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     })
     .unwrap();
     let timeline = Arc::new(Timeline { id: 1, first: 120, last: 122, stretches: vec![Stretch { run: 0, first: 120, last: 122, join: Join::Start }], unheld: Vec::new() });
-    let holders = Arc::new(dashboard_query::identity::holders(replay.recording(), &timeline).unwrap());
+    let holders = Arc::new(dashboard_query::identity::holders(&replay, &timeline).unwrap());
     let identity = Identity { holders, timeline };
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
 

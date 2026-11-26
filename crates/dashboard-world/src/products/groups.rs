@@ -220,7 +220,8 @@ pub struct RunGroups {
     names: HashMap<u32, NameOperands>,
 }
 
-pub fn run_groups(recording: &Recording, run: u32) -> io::Result<RunGroups> {
+fn run_groups(source: &Source, run: u32) -> io::Result<RunGroups> {
+    let recording = source.replay_ref().recording();
     let held = recording.run(run)?;
     let end = held.first_hour + held.ordinals as i32 - 1;
     let (mut factions, mut names) = (HashMap::new(), HashMap::new());
@@ -237,13 +238,13 @@ pub fn run_groups(recording: &Recording, run: u32) -> io::Result<RunGroups> {
         let Some(key) = rows.key(slot) else { continue };
         names.insert(key as u32, NameOperands { literal: text(0, slot), token: cell_u32(&rows, 1, slot), spelling: text(2, slot) });
     }
-    let spans = dashboard_query::cost::lifetimes(recording, run, TableId::GroupSpans)?
-        .into_iter()
-        .map(|(key, first, last)| ((key >> 96) as u8, (key >> 64) as u32, (key >> 32) as u32, first as i32, last as i32))
+    let spans = dashboard_base::queries::lifetimes(source, run, TableId::GroupSpans)?
+        .iter()
+        .map(|&(key, first, last)| ((key >> 96) as u8, (key >> 64) as u32, (key >> 32) as u32, first as i32, last as i32))
         .collect();
-    let events = dashboard_query::cost::lifetimes(recording, run, TableId::WarEvents)?
-        .into_iter()
-        .map(|(key, first, _)| ((key >> 96) as u8, (key >> 64) as u32 as i32, (key >> 32) as u32, key as u32, first as i32))
+    let events = dashboard_base::queries::lifetimes(source, run, TableId::WarEvents)?
+        .iter()
+        .map(|&(key, first, _)| ((key >> 96) as u8, (key >> 64) as u32 as i32, (key >> 32) as u32, key as u32, first as i32))
         .collect();
     Ok(RunGroups { spans, events, factions, names })
 }
@@ -802,7 +803,7 @@ pub fn member_slots(source: &Source, query: &Query<'_>) -> io::Result<HashMap<u6
 }
 
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
-    Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
+    Runs::held(&source.state::<Runs>(), run, || run_groups(source, run))
 }
 
 #[cfg(test)]
@@ -821,6 +822,10 @@ mod tests {
         let cancelled = AtomicBool::new(true);
         let again = shared(&held, &query, &context, &cancelled).unwrap();
         assert!(Arc::ptr_eq(&first, &again), "a later request reads the branch's reply already built and visits no stretch again");
+        crate::products::styles::cached_looks(&held, 0).unwrap();
+        for table in [TableId::TagHolders, TableId::GroupSpans, TableId::WarEvents, TableId::LookSpans] {
+            held.replay_ref().row_lifetimes(0, table, || panic!("{table:?} was already read for this run")).unwrap();
+        }
     }
 
     #[test]
