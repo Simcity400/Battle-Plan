@@ -221,8 +221,11 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
         let member_at = |hour: i32| faction.members.iter().any(|other| other.first_hour <= hour && hour <= other.last_hour && holds(&other.tag, hour));
         for run in &faction.members {
-            let seen_before = !within(&groups.unobserved.factions, run.first_hour - 1) && member_at(run.first_hour - 1);
-            if run.first_hour > branch.0 && within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) && !seen_before {
+            if run.first_hour > branch.0
+                && within(&unknown, run.first_hour - 1)
+                && holds(&run.tag, run.first_hour)
+                && (within(&groups.unobserved.factions, run.first_hour - 1) || !member_at(run.first_hour - 1))
+            {
                 if run.first_hour <= out.hour {
                     let dated = groups::faction_name_at(faction, run.first_hour).0.unwrap_or_else(|| FACTION_UNNAMED.to_owned());
                     notes.push(format!("In {dated} by {}: when it joined is not known, as membership was not observed the hour before", when(run.first_hour)));
