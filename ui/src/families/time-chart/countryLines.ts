@@ -9,7 +9,7 @@ import { registerFamilyProjection } from '../registry.ts';
 import { auditRow } from '../auditRow.ts';
 import { formatChartAxisValue } from './layout.ts';
 import { chartAxis, chartWindow, DEFAULT_LINE_SETTINGS, lineChartSettings, type LineChartSettings } from './settings.ts';
-import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartSeriesModel } from './model.ts';
+import type { ChartGap, ChartHoverDetail, ChartLegendEntry, ChartValueFormat, TimeChartModel, TimeChartSeriesModel } from './model.ts';
 import { seriesLookAt } from './model.ts';
 import {
   branchGapsOf,
@@ -136,7 +136,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
     variant: 'line',
     joinMode: spec.step ? 'step' : 'join',
     measureTitle: spec.title,
-    project(readView: BoundedReadView, options: CountryLinesOptions) {
+    project(readView: BoundedReadView, options: CountryLinesOptions): TimeChartModel {
       const hour = readView.hour;
       if (options.unavailable !== null) {
         return {
@@ -279,6 +279,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         ...(view ? { view } : {}),
         yAxis: { format: spec.format, decimals: options.digits ?? options.decimals, exactDecimals: options.decimals, ...chartAxis(settings) },
         series,
+        drawnKeys: options.second ? { main: ordered, second: ordered } : { main: ordered },
         ...(legend ? { legend } : {}),
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),

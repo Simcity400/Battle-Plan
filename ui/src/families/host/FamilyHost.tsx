@@ -62,7 +62,8 @@ import {
   type FamilyNavTuple,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
-import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
+import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type DrawnKeys, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
+import { keepEqual } from './stableValue.ts';
 import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
 import { regionDropAt, regionRowOf, type RegionCommand, type RegionRowRef, type RegionRowsField } from '../regions/regionRows.ts';
@@ -217,7 +218,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onIdentityDemands?: (demands: readonly (readonly [EntityKind, string, number])[]) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
-  readonly onHoverHour?: (hour: number | null) => void;
+  readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -348,6 +349,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const inspectedHitRef = useRef<ParsedFamilyHit | null>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const lastHoverHourRef = useRef<number | null>(null);
+  const lastHoverKeys = useRef<{ picture?: DrawnKeys; asked?: DrawnKeys; owner?: string }>({});
   const heldRef = useRef(held);
   heldRef.current = held;
   const pauseFlushRef = useRef(0);
@@ -476,9 +478,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
-    if (normalized === lastHoverHourRef.current) return;
+    const keys = normalized === null ? undefined : recordRef.current?.fields.drawnKeys as DrawnKeys | undefined;
+    const previous = lastHoverKeys.current;
+    const owner = normalized === null ? undefined : latestRef.current.plan?.owner;
+    const drawnKeys = keys === previous.picture ? previous.asked : keys && keepEqual(previous.asked,
+      Object.fromEntries(Object.entries(keys).map(([name, series]) => [name, [...series].sort()])));
+    if (keys !== previous.picture || owner !== previous.owner) lastHoverKeys.current = { picture: keys, asked: drawnKeys, owner };
+    if (normalized === lastHoverHourRef.current && drawnKeys === previous.asked && owner === previous.owner) return;
     lastHoverHourRef.current = normalized;
-    latestRef.current.onHoverHour?.(normalized);
+    latestRef.current.onHoverHour?.(normalized, drawnKeys);
   }, []);
 
   const notifyViewportChange = useCallback(() => {
@@ -944,6 +952,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
+      if (lastHoverHourRef.current !== null) publishHoverHour(lastHoverHourRef.current);
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,
         summaryPartial: rawMeta?.summaryPartial ?? null,

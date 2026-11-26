@@ -604,14 +604,6 @@ pub(crate) fn bound_catalogue_with(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn set_test_catalogue(source: &Source, options: &ContentOptions, catalogue: Arc<Catalogue>) {
-    let result = Arc::new(CachedResult::loaded(catalogue));
-    with_slot(source, options, |slot| {
-        *slot = Some((binding(options), result))
-    });
-}
-
-#[cfg(any(test, feature = "test-support"))]
 pub fn catalogue_loads(source: &Source, options: &ContentOptions) -> usize {
     with_slot(source, options, |slot| {
         slot.as_ref()

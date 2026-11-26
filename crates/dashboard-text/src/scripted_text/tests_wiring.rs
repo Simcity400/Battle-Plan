@@ -473,7 +473,7 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
                 .unwrap()
                 .items
                 .into_iter()
-                .map(|item| item.value.items().unwrap().to_vec())
+                .map(|item| content_reader_script::triggers::Body::of(item.value.items().unwrap()))
                 .collect(),
         };
     assert_eq!(evaluator.localisation_weight(&member("modifier = { always = no add = 1 factor = 2 } modifier = { always = no add = 2 factor = 0.5 }"), scopes), Ok(13));

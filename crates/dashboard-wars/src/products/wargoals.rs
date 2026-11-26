@@ -1139,11 +1139,10 @@ mod tests {
 
     #[test]
     fn wargoal_product_loads_names_and_standings_from_selected_tables() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (cat, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             (
                 "common/wargoals/test.txt",

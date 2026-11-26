@@ -28,7 +28,7 @@ pub fn visibility(
     names: &mut engine_native_memory::walk::Buffer<'_, u8>,
     used: &mut usize,
 ) -> Result<(u8, Option<(usize, usize, u32)>), &'static str> {
-    use engine_native_memory::{cpdx_array::Array, read};
+    use engine_native_memory::read;
     let at = |p: usize, n: usize| {
         p.checked_add(n)
             .ok_or("scientist visibility address overflow")
@@ -47,28 +47,50 @@ pub fn visibility(
     if read::<u64>(memory, template) != Some(template_vtable as u64) {
         return Err("scientist retained template identity mismatch");
     }
-    let visible = at(template, TEMPLATE_VISIBLE)?;
+    visible_origin(memory, base, at(template, TEMPLATE_VISIBLE)?, names, used)
+}
+
+#[expect(
+    clippy::type_complexity,
+    reason = "Retain visibility status and the independently optional filename span and source line."
+)]
+pub fn visible_origin(
+    memory: &impl engine_native_memory::Memory,
+    base: usize,
+    visible: usize,
+    names: &mut engine_native_memory::walk::Buffer<'_, u8>,
+    used: &mut usize,
+) -> Result<(u8, Option<(usize, usize, u32)>), &'static str> {
+    use engine_native_memory::{cpdx_array::Array, read};
+    let at = |p: usize, n: usize| p.checked_add(n).ok_or("visible trigger address overflow");
+    let word = |p| {
+        read::<u64>(memory, p)
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or("visible trigger pointer unreadable")
+    };
     let visible_vtable = engine_sites::at(base, VISIBLE_VTABLE_RVA)
-        .ok_or("scientist visible conjunction identity mismatch")?;
+        .ok_or("visible conjunction identity mismatch")?;
     if read::<u64>(memory, visible) != Some(visible_vtable as u64) {
-        return Err("scientist visible conjunction identity mismatch");
+        return Err("visible conjunction identity mismatch");
     }
     let children = Array::read(memory, at(visible, VISIBLE_CHILDREN)?, 8)
-        .ok_or("scientist visible children invalid")?;
+        .ok_or("visible children invalid")?;
     if children.count == 0 {
         return Ok((2, None));
     }
-    if read::<u8>(memory, at(visible, VISIBLE_HAS_SOURCE)?) != Some(1) {
-        return Ok((1, None));
+    match read::<u8>(memory, at(visible, VISIBLE_HAS_SOURCE)?) {
+        Some(1) => {}
+        Some(_) => return Ok((1, None)),
+        None => return Err("visible source flag unreadable"),
     }
     let source = read::<[u8; 8]>(memory, at(visible, VISIBLE_SOURCE)?)
-        .ok_or("scientist visibility origin unreadable")?;
+        .ok_or("visibility origin unreadable")?;
     let source = [
         u32::from_le_bytes(source[..4].try_into().unwrap()),
         u32::from_le_bytes(source[4..].try_into().unwrap()),
     ];
     let pool = word(
-        engine_sites::at(base, SOURCE_FILES_RVA).ok_or("scientist visibility address overflow")?,
+        engine_sites::at(base, SOURCE_FILES_RVA).ok_or("visible trigger address overflow")?,
     )?;
     let size = read::<i32>(memory, pool).ok_or("source filename pool size unreadable")?;
     if size < 0 || source[0] >= size as u32 {
@@ -123,9 +145,9 @@ pub fn visibility(
     )?;
     let end = used
         .checked_add(string.len)
-        .ok_or("scientist visibility filename overflow")?;
+        .ok_or("visibility filename overflow")?;
     if !names.ensure(end)? {
-        return Err("scientist visibility filename arena insufficient");
+        return Err("visibility filename arena insufficient");
     }
     string.copy(memory, &mut names[*used..end])?;
     let origin = (*used, string.len, source[1]);

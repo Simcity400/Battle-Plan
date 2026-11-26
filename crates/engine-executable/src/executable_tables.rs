@@ -31,7 +31,6 @@ pub type Tables = &'static ExecutableTables;
 
 static REGISTRY: Mutex<Vec<Tables>> = Mutex::new(Vec::new());
 static PROCESS: OnceLock<Tables> = OnceLock::new();
-static TEST_INITIALIZATION: OnceLock<Result<Tables, String>> = OnceLock::new();
 
 pub fn current() -> Option<Tables> {
     job_priority::context()
@@ -456,25 +455,6 @@ pub fn folding() -> io::Result<&'static folding::FoldingTable> {
 
 pub fn cursors() -> io::Result<&'static cursors::CursorTable> {
     get().cursors.as_ref().map_err(io::Error::from)
-}
-
-pub fn initialize_for_tests() -> io::Result<Tables> {
-    let game_dir = std::env::var_os("BATTLEPLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation",
-        )
-    })?;
-    TEST_INITIALIZATION
-        .get_or_init(|| {
-            let tables = initialize(Path::new(&game_dir)).map_err(|error| error.to_string())?;
-            if let Some(withheld) = tables.withheld().next() {
-                return Err(withheld.to_string());
-            }
-            Ok(tables)
-        })
-        .clone()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 pub fn leak_string(value: impl Into<String>) -> &'static str {

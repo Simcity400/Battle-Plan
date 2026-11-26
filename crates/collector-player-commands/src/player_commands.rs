@@ -2030,7 +2030,7 @@ pub mod tests {
             });
             packet.phase.as_ref().unwrap().validate().unwrap();
         }
-        let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
+        let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet: Box::new(packet) });
         let Record::Control(control) = decode_record(&encode_record(&record).unwrap()).unwrap()
         else {
             panic!("command control changed record kind");

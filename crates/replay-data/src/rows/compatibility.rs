@@ -3942,6 +3942,21 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "division damage",
         )
     };
+    history[TableId::UnitLeaders.index()] = LastChange {
+        layout_since: DAILY_PROGRESS_FORMAT,
+        ..appended_at(
+            TableId::UnitLeaders,
+            LEADER_VISIBILITY_FORMAT,
+            "unit leader role visibility origin",
+            &[
+                AppendedField { index: 20, name: "exile_country", introduced: 93 },
+                AppendedField { index: 21, name: "codename", introduced: RECORDER_INPUTS_FORMAT },
+                AppendedField { index: 22, name: "formation_reference", introduced: EFFECT_INPUTS_FORMAT },
+                AppendedField { index: 23, name: "visible_state", introduced: LEADER_VISIBILITY_FORMAT },
+                AppendedField { index: 24, name: "visible_origin", introduced: LEADER_VISIBILITY_FORMAT },
+            ],
+        )
+    };
     history
 };
 
@@ -4294,6 +4309,9 @@ mod tests {
             }
             if format < DIVISION_DAMAGE_FORMAT {
                 fewer.push((TableId::LandCombatEdges, 8));
+            }
+            if format < LEADER_VISIBILITY_FORMAT {
+                fewer.push((TableId::UnitLeaders, 23));
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4887,7 +4905,13 @@ mod tests {
         assert_eq!(RECORDING_SIZE_FORMAT, 150);
         assert_eq!(RECORDING_SIZE_AUDIT_FORMAT, 151);
         assert_eq!(DIVISION_DAMAGE_FORMAT, 152);
-        assert_eq!(FORMAT_VERSION, DIVISION_DAMAGE_FORMAT);
+        assert_eq!(LEADER_VISIBILITY_FORMAT, 153);
+        assert_eq!(FORMAT_VERSION, LEADER_VISIBILITY_FORMAT);
+        let leaders = TableId::UnitLeaders.last_change();
+        assert!(leaders.gap(TableId::UnitLeaders, DIVISION_DAMAGE_FORMAT).is_none(), "older leaders still play");
+        assert!(leaders.gap(TableId::UnitLeaders, DAILY_PROGRESS_FORMAT - 1).is_some(), "the daily-progress meaning change still refuses older leaders");
+        assert_eq!(leaders.fields(TableId::UnitLeaders, DIVISION_DAMAGE_FORMAT), 23);
+        assert_eq!(leaders.fields(TableId::UnitLeaders, LEADER_VISIBILITY_FORMAT), 25);
         let damage = TableId::LandDivisionDamage.last_change();
         assert_eq!(damage.introduced, DIVISION_DAMAGE_FORMAT);
         assert!(damage.table_gap(TableId::LandDivisionDamage, RECORDING_SIZE_AUDIT_FORMAT).is_some());

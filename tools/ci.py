@@ -36,11 +36,6 @@ PIPELINE_PATH = "tools/ci.toml"
 PIPELINE = ROOT / PIPELINE_PATH
 NEXTEST_TESTS_FAILED = 100
 SHOWN_LINES = 40
-PANIC = re.compile(r"^thread '(?P<thread>[^'\r\n]*)'(?: \(\d+\))? panicked at [^\r\n]*:\r?\n(?P<message>[^\r\n]*)", re.M)
-SUMMARY = re.compile(r"^\s*Summary \[[^\]]*\]\s+(\d+)(/\d+)? tests? run:", re.M)
-CANCELLED = re.compile(r"^\s*Cancelling due to |\btests? (?:was|were) not run due to ", re.M)
-PANIC_EXIT = "test failure with exit code 101"
-RETURNED_ERROR = re.compile(r"^Error: ", re.M)
 COMMAND_LIMIT = 24_000
 KINDS = {"command", "files", "crates"}
 ORDER = ("fail", "not run", "pass", "skipped", "later", "ci only")
@@ -110,7 +105,6 @@ class Job:
     base: bool
     widen: tuple
     report: str
-    not_run: tuple
     shards: int
     warm: tuple
     dependents: bool
@@ -144,7 +138,6 @@ def load_pipeline(text):
             group=table.get("group", ""), whole=tuple(table.get("whole", ())), base=table.get("base", False),
             widen=tuple(table.get("widen", ())),
             report=table.get("report", ""),
-            not_run=tuple((reason, rule.get("panic", ""), tuple(rule.get("crates", ()))) for reason, rule in table.get("not-run", {}).items()),
             shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
             manifest=table.get("manifest", ""), package=table.get("package", ""),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), groups.get(table.get("group"))], sort_keys=True))
@@ -154,8 +147,6 @@ def load_pipeline(text):
         problems += [] if job.command else ["command"]
         problems += [f"group {job.group!r}"] if job.group not in groups else []
         problems += ["name, used twice"] if job.name in {known.name for known in jobs} else []
-        problems += ["report, which not-run reads"] if job.not_run and not job.report else []
-        problems += ["not-run rule's panic or crates"] if any(not panic or not crates for _, panic, crates in job.not_run) else []
         problems += [f"shards {job.shards!r}, a positive count for a crates job"] if job.shards and (
             job.kind != "crates" or not isinstance(job.shards, int) or job.shards < 1) else []
         problems += ["warm, a command for a crates job with shards or a command job"] if job.warm and (
@@ -559,33 +550,13 @@ def changed_since(base):
     return set(z(git("diff", "--name-only", "--no-renames", "-z", base))) | set(z(git("ls-files", "-o", "--exclude-standard", "-z")))
 
 
-def last_panic(test, stderr):
-    """The first line of the message of the last panic on the test's own thread, or None when
-    there is none or the test went on to report an error of its own (libtest's `Error: ` line
-    for a test that returned Err) after it."""
-    found = None
-    for match in PANIC.finditer(stderr):
-        if match["thread"] == test:
-            found = match
-    if found is None or RETURNED_ERROR.search(stderr, found.end()):
-        return None
-    return found["message"]
-
-
-def sorted_failures(report, rules):
-    """(passed, [(test, output)] of the failures no rule names, {reason: {binary: count}} of those
-    one does) from a nextest JUnit report, or None when it is not one. A rule is (reason, regex,
-    crates), and names only failures of the test binaries of those crates.
-    A failure is the rule's only when nextest reports libtest's plain panic exit (not a timeout,
-    abort, leak or other exit code) and the regex matches the first line of the last panic on
-    the test's own thread, with no error returned after it; any other panic, caught or on
-    another thread, never decides it."""
+def failure_report(report, beyond=()):
+    """The pass and failure counts and the start of each failed test's output from nextest's JUnit report."""
     try:
         root = ElementTree.fromstring(report)
     except ElementTree.ParseError:
         return None
-    patterns = [(reason, re.compile(pattern), set(crates)) for reason, pattern, crates in rules]
-    passed, failures, held = 0, [], {}
+    passed, failures = 0, []
     for suite in root.iter("testsuite"):
         for case in suite.iter("testcase"):
             if case.find("skipped") is not None:
@@ -594,38 +565,11 @@ def sorted_failures(report, rules):
             if not failed:
                 passed += 1
                 continue
-            stderr = next((part.text or "" for part in [case.find("system-err")] if part is not None), "")
             output = "\n".join(filter(None, [
                 *(f"{part.get('type', '')}: {part.get('message', '')}\n{part.text or ''}" for part in failed),
                 *((part.text or "") for part in (case.find("system-out"), case.find("system-err")) if part is not None)]))
             binary = suite.get("name") or case.get("classname") or ""
-            plain = [part.tag for part in failed] == ["failure"] and failed[0].get("type") == PANIC_EXIT
-            message = last_panic(case.get("name"), stderr) if plain else None
-            crate = binary.split("::", 1)[0]
-            reason = next((reason for reason, pattern, crates in patterns if crate in crates and pattern.search(message)), None) if message else None
-            if reason is None:
-                failures.append((f"{binary} {case.get('name')}", output))
-            else:
-                held.setdefault(reason, {}).setdefault(binary, 0)
-                held[reason][binary] += 1
-    return passed, failures, held
-
-
-def finished_every_test(log_text, sorted_report):
-    """Whether nextest's summary says it ran every test it selected, as many as the report holds,
-    and nextest never cancelled the run: a cancelled run reports only the tests it finished."""
-    passed, failures, held = sorted_report
-    summaries = SUMMARY.findall(log_text)
-    if not summaries or summaries[-1][1] or CANCELLED.search(log_text):
-        return False
-    return int(summaries[-1][0]) == passed + len(failures) + sum(sum(binaries.values()) for binaries in held.values())
-
-
-def failure_report(sorted_report, beyond=()):
-    """The lines naming what a run's sorted failures were: each unnamed failure with the start of
-    its output, marked when its crate is `beyond` the scope a pull request tests, then the counts
-    each rule held back."""
-    passed, failures, held = sorted_report
+            failures.append((f"{binary} {case.get('name')}", output))
     lines = [f"{passed} passed, {len(failures)} failed"]
     outside = [test for test, _ in failures if test.split(" ", 1)[0].split("::", 1)[0] in beyond]
     if outside:
@@ -635,9 +579,6 @@ def failure_report(sorted_report, beyond=()):
         shown = output.splitlines()
         lines += [f"--- FAIL {test}" + (" (beyond a pull request's scope)" if test in outside else ""), *shown[:SHOWN_LINES]]
         lines += [f"    ({len(shown) - SHOWN_LINES} more lines)"] if len(shown) > SHOWN_LINES else []
-    for reason, binaries in held.items():
-        lines.append(f"not run here: {reason}: {sum(binaries.values())} tests, in "
-                     + ", ".join(f"{binary} ({count})" for binary, count in sorted(binaries.items())))
     return lines
 
 
@@ -654,9 +595,6 @@ def compiled(log):
     shown = ", ".join(dict.fromkeys(names[:8]))
     return f"compiled {len(names)} units" + (f" ({shown}{', ...' if len(names) > 8 else ''})" if names else "")
 
-
-def held_detail(held):
-    return "; ".join(f"{sum(binaries.values())} not run here: {reason}" for reason, binaries in held.items())
 
 
 class Runner:
@@ -681,7 +619,6 @@ class Runner:
     def run(self, decision):
         job, log = decision.job, self.folder / f"{decision.job.name}.log"
         started = time.monotonic()
-        held = ""
         values = dict(self.values, files=decision.arguments, packages=decision.arguments)
         command = job.command
         report = ROOT / job.report if job.report and not self.local else None
@@ -700,16 +637,11 @@ class Runner:
                     return Outcome(job.name, "fail", f"staging pinned shader compiler failed, exit {stage_code}", time.monotonic() - started, str(log))
             code = self.execute(expand(command, values), log)
             if report and report.is_file() and code in (0, NEXTEST_TESTS_FAILED):
-                found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)
-                if found is not None:
-                    complete = finished_every_test(log.read_text(encoding="utf-8", errors="replace"), found)
-                    lines = failure_report(found, set(decision.beyond)) + ([] if complete else ["nextest's summary does not show every selected test run"])
+                lines = failure_report(report.read_text(encoding="utf-8", errors="replace"), set(decision.beyond))
+                if lines is not None:
                     log.with_suffix(".failures.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-                    if code == NEXTEST_TESTS_FAILED and complete and not found[1] and found[2]:
-                        code = 0
-                    held = held_detail(found[2])
         seconds = time.monotonic() - started
-        detail = ", ".join(filter(None, [decision.detail, held, compiled(log) if job.kind == "crates" else ""]))
+        detail = ", ".join(filter(None, [decision.detail, compiled(log) if job.kind == "crates" else ""]))
         if code == 0:
             return Outcome(job.name, "pass", detail, seconds, str(log))
         if code == 127:

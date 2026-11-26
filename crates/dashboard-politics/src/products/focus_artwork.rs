@@ -500,21 +500,6 @@ mod tests {
         Arc::clone(&source.state::<State>().lock().unwrap().frame.cache)
     }
 
-    fn focus_source(frames: Vec<DecodedFrame>, root: &std::path::Path) -> (Source, LoadContext) {
-        let (recorded, context) = source_with_content(frames, root);
-        let replay = Replay::open(recorded.replay_ref().bytes().to_vec())
-            .unwrap()
-            .into_timelines(&Default::default())
-            .unwrap();
-        let source = Source::from_replay(
-            recorded.key().clone(),
-            recorded.path().to_owned(),
-            Arc::new(replay),
-            &AtomicBool::new(false),
-        ).unwrap();
-        (source, context)
-    }
-
     fn icon_product_source(
         frames: Vec<DecodedFrame>,
     ) -> (Source, LoadContext, [dashboard_base::catalogue::tests::Folder; 2]) {
@@ -559,7 +544,7 @@ mod tests {
                 ("gfx/mod/conditional.png", image(47)),
             ],
         );
-        let (source, context) = focus_source(frames, &folders[1].0);
+        let (source, context) = source_with_content(frames, &folders[1].0);
         (source, context, folders)
     }
 
@@ -751,7 +736,7 @@ mod tests {
             let (_, folder) =
                 dashboard_base::catalogue::tests::folder_catalogue(&database_files(refused));
             let frame = focus_scale_frame(100, 4, 2, &["shared"]);
-            let (source, context) = focus_source(vec![frame], &folder.0);
+            let (source, context) = source_with_content(vec![frame], &folder.0);
             let cancelled = AtomicBool::new(false);
             let tag = String::from_utf8(scale_tag(2)).unwrap();
             let load = |database, text_only| {
@@ -838,7 +823,7 @@ mod tests {
             {
                 rows[2].continuous = Some(b"shared".to_vec());
             }
-            let (source, context) = focus_source(vec![frame], &folder.0);
+            let (source, context) = source_with_content(vec![frame], &folder.0);
             let params = CountryParams {
                 branch_id: "1".into(),
                 country: Country::from(String::from_utf8(scale_tag(2)).unwrap()),

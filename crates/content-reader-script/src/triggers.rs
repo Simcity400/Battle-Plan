@@ -1,12 +1,247 @@
 
 
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, LazyLock},
+};
+
 use crate::{key_names::KeyNames, native};
-use content_reader_parser::parser::{Item, Value};
+use content_reader_parser::parser::{Item, Kind, Operator, Value};
 
 pub type Triggers = Vec<Item>;
 
 pub fn body(value: &Value) -> Option<Triggers> {
     value.items().map(<[Item]>::to_vec)
+}
+
+#[derive(Clone)]
+pub struct Body {
+    code: Box<[u8]>,
+    strings: Arc<[Box<[u8]>]>,
+}
+
+static EMPTY: LazyLock<Arc<[Box<[u8]>]>> = LazyLock::new(|| Arc::from(Vec::new()));
+
+pub struct Bodies<'a> {
+    index: HashMap<&'a [u8], u64>,
+    strings: Arc<[Box<[u8]>]>,
+}
+
+impl<'a> Bodies<'a> {
+    pub fn new(items: &'a [Item]) -> Self {
+        let mut index = HashMap::new();
+        let mut strings = Vec::new();
+        intern(items, &mut index, &mut strings);
+        Self {
+            index,
+            strings: strings.into(),
+        }
+    }
+
+    pub fn body(&self, items: &[Item]) -> Body {
+        if items.is_empty() {
+            return Body::default();
+        }
+        let mut code = Vec::new();
+        for item in items {
+            self.encode(item, &mut code);
+        }
+        Body {
+            code: code.into(),
+            strings: Arc::clone(&self.strings),
+        }
+    }
+
+    fn encode(&self, item: &Item, code: &mut Vec<u8>) {
+        let (variant, nested) = match &item.value {
+            Value::Scalar(_) => (0, None),
+            Value::Block(items) => (1, Some(items)),
+            Value::Tagged { items, .. } => (2, Some(items)),
+        };
+        code.push(kind_code(item.kind) | operator_code(item.operator) << 4 | variant << 6);
+        let key = item.key.as_deref().map_or(0, |key| self.index[key] + 1);
+        varint(code, key << 1 | u64::from(item.key_quoted));
+        match &item.value {
+            Value::Scalar(text) => varint(code, self.index[&text[..]]),
+            Value::Tagged { tag, .. } => varint(code, self.index[&tag[..]]),
+            Value::Block(_) => {}
+        }
+        if let Some(items) = nested {
+            varint(code, items.len() as u64);
+            for item in items {
+                self.encode(item, code);
+            }
+        }
+    }
+}
+
+impl Body {
+    pub fn of(items: &[Item]) -> Self {
+        Bodies::new(items).body(items)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.code.is_empty()
+    }
+
+    pub fn items(&self) -> Triggers {
+        let mut at = 0;
+        let mut items = Vec::new();
+        while at < self.code.len() {
+            items.push(self.item(&mut at));
+        }
+        items
+    }
+
+    fn item(&self, at: &mut usize) -> Item {
+        let head = self.code[*at];
+        *at += 1;
+        let key = self.read(at);
+        let text = |index: u64| self.strings[index as usize].to_vec();
+        let value = match head >> 6 {
+            0 => Value::Scalar(text(self.read(at))),
+            1 => Value::Block(self.block(at)),
+            _ => {
+                let tag = text(self.read(at));
+                Value::Tagged {
+                    tag,
+                    items: self.block(at),
+                }
+            }
+        };
+        Item {
+            key: (key >> 1).checked_sub(1).map(text),
+            key_quoted: key & 1 == 1,
+            operator: operator_of(head >> 4 & 3),
+            value,
+            kind: kind_of(head & 15),
+        }
+    }
+
+    fn block(&self, at: &mut usize) -> Vec<Item> {
+        let count = self.read(at);
+        (0..count).map(|_| self.item(at)).collect()
+    }
+
+    fn read(&self, at: &mut usize) -> u64 {
+        let mut value = 0;
+        let mut shift = 0;
+        loop {
+            let byte = self.code[*at];
+            *at += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Self {
+            code: Box::default(),
+            strings: Arc::clone(&EMPTY),
+        }
+    }
+}
+
+impl PartialEq for Body {
+    fn eq(&self, other: &Self) -> bool {
+        self.items() == other.items()
+    }
+}
+
+impl Eq for Body {}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.items()).finish()
+    }
+}
+
+fn intern<'a>(items: &'a [Item], index: &mut HashMap<&'a [u8], u64>, strings: &mut Vec<Box<[u8]>>) {
+    let mut add = |text: &'a [u8]| {
+        index.entry(text).or_insert_with(|| {
+            strings.push(text.into());
+            strings.len() as u64 - 1
+        });
+    };
+    for item in items {
+        if let Some(key) = &item.key {
+            add(key);
+        }
+        match &item.value {
+            Value::Scalar(text) => add(text),
+            Value::Block(_) => {}
+            Value::Tagged { tag, .. } => add(tag),
+        }
+    }
+    for item in items {
+        if let Value::Block(nested) | Value::Tagged { items: nested, .. } = &item.value {
+            intern(nested, index, strings);
+        }
+    }
+}
+
+fn varint(code: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        code.push(value as u8 | 0x80);
+        value >>= 7;
+    }
+    code.push(value as u8);
+}
+
+fn operator_code(operator: Operator) -> u8 {
+    match operator {
+        Operator::Equals => 0,
+        Operator::Less => 1,
+        Operator::Greater => 2,
+    }
+}
+
+fn operator_of(code: u8) -> Operator {
+    match code {
+        1 => Operator::Less,
+        2 => Operator::Greater,
+        _ => Operator::Equals,
+    }
+}
+
+const KINDS: [Kind; 11] = [
+    Kind::Bare,
+    Kind::Quoted,
+    Kind::Equals,
+    Kind::Less,
+    Kind::Greater,
+    Kind::Open,
+    Kind::Close,
+    Kind::Other,
+    Kind::End,
+    Kind::Comment,
+    Kind::Code,
+];
+
+fn kind_code(kind: Kind) -> u8 {
+    match kind {
+        Kind::Bare => 0,
+        Kind::Quoted => 1,
+        Kind::Equals => 2,
+        Kind::Less => 3,
+        Kind::Greater => 4,
+        Kind::Open => 5,
+        Kind::Close => 6,
+        Kind::Other => 7,
+        Kind::End => 8,
+        Kind::Comment => 9,
+        Kind::Code => 10,
+    }
+}
+
+fn kind_of(code: u8) -> Kind {
+    KINDS[usize::from(code)]
 }
 
 pub fn read(text: &[u8], names: &KeyNames) -> native::Read {

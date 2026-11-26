@@ -102,6 +102,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
     const { model, base } = layout;
     if (!base || model.empty) {
       return {
+        drawnKeys: model.drawnKeys ?? { main: [] },
         meta: {
           empty: model.empty?.message ?? null,
           emptyDetail: model.empty?.detail ?? null,
@@ -113,6 +114,7 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
       };
     }
     return {
+      drawnKeys: model.drawnKeys ?? { main: (model.stack?.bands ?? model.series).map(line => line.key) },
       meta: {
         empty: null,
         emptyDetail: null,

@@ -3931,12 +3931,13 @@ fn serial_family_reference(
             let previous_len = units.len;
             units.append(
                 |rows, at, bytes, from| {
-                    read_unit_selected(memory, base, pointer, character_id, bytes, from, training)
+                    read_unit_selected(memory, base, pointer, character_pointer, character_id, bytes, from, training)
                         .and_then(|read| read.store(rows, at))
                 },
                 |row, offset| {
                     relocate(&mut row.text_a_start, offset)
                         && relocate(&mut row.text_b_start, offset)
+                        && row.visible_origin.as_mut().is_none_or(|((start, _), _)| relocate(start, offset))
                         && relocate(&mut row.training.0, offset)
                         && relocate(&mut row.training_factors.0, offset)
                 },

@@ -9,3 +9,4 @@ pub mod cscientist;
 pub mod scientist_roster;
 pub mod scientist_roster_entry;
 pub mod scientist_skill_entry;
+pub mod unit_leader_visibility;

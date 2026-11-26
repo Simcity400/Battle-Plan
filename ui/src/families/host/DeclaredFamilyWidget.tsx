@@ -34,6 +34,7 @@ import { keepEqual } from './stableValue.ts';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
+import type { DrawnKeys } from './installed.ts';
 import { Popover, usePopover } from '../../components/Popover';
 import RegionChooser from '../regions/RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice, type RegionChoice } from '../regions/regionChoice.ts';
@@ -123,13 +124,7 @@ export default function DeclaredFamilyWidget<
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
-  const [hoverHour, setHoverHour] = useState<number | null>(null);
   const lastViewportRef = useRef<FamilyViewportChange | null>(null);
-
-  const handleHoverHour = useCallback((next: number | null) => {
-    setHoverHour(prev => (prev === next ? prev : next));
-    externalHoverHour?.(next);
-  }, [externalHoverHour]);
 
 
   const optionFields = familyViewOptionFields(declaration.kind, view);
@@ -151,9 +146,13 @@ export default function DeclaredFamilyWidget<
     widget,
     runtime,
     active,
-    hoverHour,
     setOption,
   });
+  const reportHover = plan.onHoverHour;
+  const handleHoverHour = useCallback((hour: number | null, keys?: DrawnKeys) => {
+    reportHover(hour, keys);
+    externalHoverHour?.(hour);
+  }, [reportHover, externalHoverHour]);
 
   const { theme } = useFamilyTheme();
 

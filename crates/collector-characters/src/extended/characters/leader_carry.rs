@@ -23,7 +23,7 @@ fn take(
 
 impl Held for LeaderRow {
     fn can_hold(&self) -> bool {
-        self.training_reason.is_none()
+        self.training_reason.is_none() && self.visible_state.is_some()
     }
     fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self> {
         let (text_a_start, _) = take(bytes, (self.text_a_start, self.text_a_len), text, start)?;
@@ -37,9 +37,14 @@ impl Held for LeaderRow {
         };
         let training = take(bytes, self.training, text, start)?;
         let training_factors = take(bytes, self.training_factors, text, start)?;
+        let visible_origin = match self.visible_origin {
+            Some((span, line)) => Some((take(bytes, span, text, start)?, line)),
+            None => None,
+        };
         Some(LeaderRow {
             training,
             training_factors,
+            visible_origin,
             text_a_start,
             text_b_start,
             codename,
@@ -53,6 +58,7 @@ impl Held for LeaderRow {
             + self.codename.map_or(0, |name| name.custom.1 + name.group.1)
             + self.training.1
             + self.training_factors.1
+            + self.visible_origin.map_or(0, |((_, len), _)| len)
     }
 }
 
@@ -87,6 +93,7 @@ struct Visit {
     index: usize,
     pointer: usize,
     character: u32,
+    character_pointer: usize,
     certificate: Option<(u64, u64)>,
     entry: Option<usize>,
     carryable: bool,
@@ -194,7 +201,7 @@ impl<R: Held> LeaderCarry<R> {
         self.counts = Counts::default();
     }
 
-    pub(super) fn certify<I: Iterator<Item = (usize, usize, u32)>>(
+    pub(super) fn certify<I: Iterator<Item = (usize, usize, u32, usize)>>(
         &mut self,
         generation: u64,
         bound: usize,
@@ -211,7 +218,7 @@ impl<R: Held> LeaderCarry<R> {
             if reserved.is_err() {
                 return false;
             }
-            for (index, pointer, character) in occurrences() {
+            for (index, pointer, character, character_pointer) in occurrences() {
                 let entry = self.position(pointer);
                 let certificate = self.changes.sequence(pointer);
                 let carryable = entry.is_some_and(|at| {
@@ -222,6 +229,7 @@ impl<R: Held> LeaderCarry<R> {
                     index,
                     pointer,
                     character,
+                    character_pointer,
                     certificate,
                     entry,
                     carryable,
@@ -253,12 +261,12 @@ impl<R: Held> LeaderCarry<R> {
         self.visits.len()
     }
 
-    pub(super) fn fresh_visit(&self, at: usize) -> Option<(usize, u32)> {
+    pub(super) fn fresh_visit(&self, at: usize) -> Option<(usize, u32, usize)> {
         let visit = self.visits.get(at)?;
         visit
             .entry
             .is_none_or(|entry| !self.entries[entry].carried)
-            .then_some((visit.pointer, visit.character))
+            .then_some((visit.pointer, visit.character, visit.character_pointer))
     }
 
     pub(super) fn visited(&self) -> Option<impl Iterator<Item = usize> + '_> {

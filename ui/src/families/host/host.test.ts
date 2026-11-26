@@ -12,9 +12,9 @@ import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
-import { BoundSelections, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
+import { BoundSelections, displayedHoverKeys, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { readPlanExact } from '../broker.ts';
+import { hoverAsks, readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
@@ -62,6 +62,20 @@ import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary 
 import { airKillsLossesLinesDeclaration } from '../../widgets/air-kills-losses/airKillsLossesLinesProjection.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { countryKey } from '../../dashboard/countryKey.ts';
+
+test('hover requests the installed ranking and projection slots while older tiles are held', () => {
+  const source = { id: 'source', revision: '1' } as DashboardSource;
+  const plan: SourcePlan = { owner: 'rank', entries: [
+    { name: 'hover', source, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-state', params: {}, readsOf: 'main' } },
+    { name: 'detail', source, branch: '1', offset: 0, read: { shape: 'exact-hover', product: 'series-rank', params: {}, countriesOf: 'bands' } },
+  ] };
+  const tiled = { main: new Map([['OLD', 1]]), bands: new Map([['OLD', 2]]) };
+  const keys = { main: ['NEW'], bands: [countryKey(9)] };
+  const ask = (drawn?: typeof keys) => hoverAsks(plan, 15, name => displayedHoverKeys(name, drawn, tiled)).map(item => item.request.params);
+  assert.deepEqual(ask(keys), [{ reads: [{ country: 'NEW', hour: 15 }] }, { countries: [9], hour: 15 }]);
+  assert.deepEqual(ask({ ...keys, bands: [] }), [{ reads: [{ country: 'NEW', hour: 15 }] }]);
+  assert.deepEqual(ask()[0], { reads: [{ country: 'OLD', hour: 15 }] });
+});
 
 const mkEvent = (key: string, extra: Partial<KeyboardEvent> = {}) => {
   let prevented = false;

@@ -3755,7 +3755,7 @@ impl<S: Schedule> Processor<S> {
                 ordinal: *ordinal,
                 record: Record::Control(ControlRecord::PlayerCommands {
                     session: self.session.id,
-                    packet,
+                    packet: engine_allocation::boxed(packet)?,
                 }),
                 attempted: false,
                 storage: None,
@@ -3809,11 +3809,11 @@ impl<S: Schedule> Processor<S> {
             }
             let bytes = match &write.record {
                 Record::Control(ControlRecord::PlayerCommands { packet, .. }) => {
-                    packet.storage_bytes()
+                    packet.storage_bytes().checked_add(size_of_val(packet.as_ref()))
                 }
                 _ => unreachable!(),
             }
-            .checked_add(size_of::<CommandWrite>())
+            .and_then(|n| n.checked_add(size_of::<CommandWrite>()))
             .and_then(|n| n.checked_add(write.id.capacity()))
             .ok_or_else(engine_allocation::oom)?;
             let storage = self.receipt_storage(bytes, self.writer.failure_epoch(), bytes)?;
@@ -5471,7 +5471,7 @@ mod tests {
                 ordinal: 0,
                 record: Record::Control(ControlRecord::PlayerCommands {
                     session: processor.session.id,
-                    packet,
+                    packet: Box::new(packet),
                 }),
                 attempted: false,
                 storage: None,

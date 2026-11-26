@@ -201,7 +201,7 @@ mod tests {
         let to = batch.spans.last().unwrap().to_qpc;
         ControlRecord::PlayerCommands {
             session,
-            packet: Packet::pack(4, capture, 1, 0, from, to, 0, &batch).unwrap(),
+            packet: Box::new(Packet::pack(4, capture, 1, 0, from, to, 0, &batch).unwrap()),
         }
     }
 

@@ -13,7 +13,7 @@ use dashboard_base::{
 };
 use dashboard_query::{
     coverage::{Witness, population, witnessed},
-    identity::{Holder, Holders},
+    identity::{Holder, Holders, TAG_UNLINKED},
     series::ranked::GroupSelection,
 };
 use dashboard_world::products::group_members::GroupsAt;
@@ -166,9 +166,16 @@ pub(crate) fn validate_group(group: Option<&GroupSelection>, countries: &[Countr
     Ok(())
 }
 
-fn holders_unresolved(holders: &Holders, hour: i32) -> bool {
-    holders.unknown.iter().any(|&(first, last, _)| first <= hour && hour <= last)
-        || holders.tags.values().flatten().any(|run| run.first <= hour && hour <= run.last && run.holder == Holder::Unresolved)
+fn unknown_reason_at(holders: &Holders, hour: i32) -> Option<&str> {
+    let at = holders.unknown.partition_point(|&(_, last, _)| last < hour);
+    holders.unknown.get(at).filter(|(first, ..)| *first <= hour).map(|(_, _, reason)| reason.as_str())
+}
+
+fn unlinked_tag_at(holders: &Holders, hour: i32) -> bool {
+    holders.tags.values().any(|runs| {
+        let at = runs.partition_point(|run| run.last < hour);
+        runs.get(at).is_some_and(|run| run.first <= hour && run.holder == Holder::Unresolved)
+    })
 }
 
 fn slot_tags(holders: &Holders, hour: i32) -> HashMap<u32, &str> {
@@ -214,6 +221,8 @@ fn frame_variant_tokens(frame: &DecodedFrame) -> HashMap<u64, String> {
 
 pub(crate) struct SelectedRow {
     pub(crate) slot: Option<u32>,
+    holder_slot: Option<u32>,
+    holder_warning: Option<String>,
     pub(crate) country: Country,
     pub(crate) tag: String,
     pub(crate) total: Option<i64>,
@@ -232,7 +241,7 @@ pub(crate) fn select_population<R>(
     label: &str,
 ) -> Result<Vec<SelectedRow>, String> {
     let tags = slot_tags(holders, hour);
-    let unresolved = holders_unresolved(holders, hour);
+    let unresolved = unknown_reason_at(holders, hour).is_some() || unlinked_tag_at(holders, hour);
     let mut held: Vec<SelectedRow> = Vec::new();
     let mut unplaced: Vec<Option<i64>> = Vec::new();
     let mut unread = 0usize;
@@ -247,6 +256,8 @@ pub(crate) fn select_population<R>(
                 }
                 held.push(SelectedRow {
                     slot: Some(slot),
+                    holder_slot: Some(slot),
+                    holder_warning: None,
                     country: Country::from(tag),
                     tag: tag.to_owned(),
                     total,
@@ -302,56 +313,39 @@ pub(crate) fn select_explicit<T: replay_data::rows::TableSchema>(
     let mut seen = BTreeSet::new();
     let mut held_slots = BTreeSet::new();
     let mut out = Vec::new();
+    let unlinked = std::cell::LazyCell::new(|| unlinked_tag_at(holders, hour));
     for country in countries {
         if !seen.insert(country.clone()) {
             continue;
         }
-        let Some(run) = holders.at(country, hour) else { continue };
-        if let Holder::Found { slot, .. } = run.holder
-            && !held_slots.insert(slot)
-        {
+        let (holder_slot, holder_reason) = match holders.at(country, hour).map(|run| run.holder) {
+            Some(Holder::Found { slot, .. }) => (Some(slot), None),
+            Some(Holder::Unresolved) => (None, Some(unknown_reason_at(holders, hour).unwrap_or(TAG_UNLINKED))),
+            None if matches!(country, Country::Slot(_)) && *unlinked => (None, Some(TAG_UNLINKED)),
+            None => continue,
+        };
+        let slot = match country { Country::Slot(slot) => Some(*slot), Country::Tag(_) => holder_slot };
+        if slot.is_some_and(|slot| !held_slots.insert(slot)) {
             continue;
         }
-        let tag = holders.name(country, hour);
-        match run.holder {
-            Holder::Found { slot, .. } => match witnessed::<T>(frame, u128::from(slot)) {
-                Witness::Row(row) => {
-                    let total = total_of(row);
-                    out.push(SelectedRow {
-                        slot: Some(slot),
-                        country: country.clone(),
-                        tag,
-                        total,
-                        reference_total: reference_of(row),
-                        missing: total.is_none().then(|| format!("{label} was not recorded at this hour")),
-                    });
-                }
-                Witness::Absent => out.push(SelectedRow {
-                    slot: Some(slot),
-                    country: country.clone(),
-                    tag,
-                    total: Some(0),
-                    reference_total: absent_reference,
-                    missing: None,
-                }),
-                Witness::NotRecorded(reason) => out.push(SelectedRow {
-                    slot: Some(slot),
-                    country: country.clone(),
-                    tag,
-                    total: None,
-                    reference_total: absent_reference.map(|_| None),
-                    missing: Some(reason),
-                }),
-            },
-            Holder::Unresolved => out.push(SelectedRow {
-                slot: None,
-                country: country.clone(),
-                tag,
-                total: None,
-                reference_total: absent_reference.map(|_| None),
-                missing: Some(holders.not_known(country, hour).unwrap_or_else(|| "Country holder could not be resolved at this hour".into())),
-            }),
-        }
+        let tag = holders.label(country, hour).unwrap_or_else(|| country.to_string());
+        let holder_missing = holder_reason.map(|reason| format!("Who holds {country} is not known: {reason}"));
+        let unread_reference = absent_reference.map(|_| None);
+        let (total, reference_total, reading_missing) = match slot.map(|slot| witnessed::<T>(frame, u128::from(slot))) {
+            Some(Witness::Row(row)) => {
+                let total = total_of(row);
+                (total, reference_of(row), total.is_none().then(|| format!("No total was recorded for {label} at this hour")))
+            }
+            Some(Witness::Absent) if holder_slot.is_some() => (Some(0), absent_reference, None),
+            Some(Witness::NotRecorded(reason)) => (None, unread_reference, Some(reason)),
+            _ => (None, unread_reference, None),
+        };
+        let (missing, holder_warning) = match (holder_missing, reading_missing) {
+            (Some(holder), Some(reading)) => (Some(format!("{holder}. {reading}")), None),
+            (holder, None) if total.is_some() => (None, holder),
+            (holder, reading) => (holder.or(reading), None),
+        };
+        out.push(SelectedRow { slot, holder_slot, holder_warning, country: country.clone(), tag, total, reference_total, missing });
     }
     out.sort_unstable_by(|a, b| match (a.total, b.total) {
         (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.tag.cmp(&b.tag)),
@@ -543,10 +537,11 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
     let rows = selected
         .into_iter()
         .map(|row| {
+            warnings.extend(row.holder_warning);
             if let Some(reason) = &parts_error {
                 return ForceAtRow {
                     country: row.country,
-                    slot: row.slot,
+                    slot: row.holder_slot,
                     tag: row.tag,
                     total: row.total,
                     reference_total: row.reference_total,
@@ -562,11 +557,15 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
                 .flatten()
                 .filter_map(|&(part, value)| Some((*named.of.get(&part)?, value)))
                 .collect();
-            let (values, reconciled) = split(row.total, &held, groups);
+            let (values, reconciled) = if row.holder_slot.is_none() && row.total.is_none() && held.is_empty() {
+                (vec![None; groups], false)
+            } else {
+                split(row.total, &held, groups)
+            };
             let parts_missing = (row.total.is_some() && !reconciled).then(|| "Part breakdown does not reconcile with the recorded total at this hour".to_owned());
             ForceAtRow {
                 country: row.country,
-                slot: row.slot,
+                slot: row.holder_slot,
                 tag: row.tag,
                 total: row.total,
                 reference_total: row.reference_total,

@@ -348,6 +348,7 @@ impl FrameMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(clippy::large_enum_variant, reason = "recovered frames are the common variant; boxing them would add an allocation per recovered hour")]
 pub enum Recovered {
     SessionStart(SessionStart),
     BranchStart(BranchStart),

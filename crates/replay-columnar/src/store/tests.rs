@@ -594,7 +594,8 @@ fn a_run_s_first_hour_keeps_no_log_and_reads_as_the_same_hour_logged() {
         Shape::Log(vec![Facet::Column(0)]),
     ];
     let pieces = |store: &mut Store, apply: &mut dyn FnMut(&mut Store)| -> Vec<Vec<u8>> {
-        let mut builders: Vec<Builder> = shapes.iter().map(|shape| Builder::open(shape, &store.view(0), store.view(0).status(), hour)).collect();
+        let view = store.view(0);
+        let mut builders: Vec<Builder> = shapes.iter().map(|shape| Builder::open(shape, &view, view.status(), view.view(), hour)).collect();
         apply(store);
         for builder in &mut builders {
             let view = store.view(0);
@@ -648,7 +649,8 @@ fn a_log_summary_of_a_run_s_first_hour_counts_the_rows_live_at_its_end() {
     let shape = Shape::Log(vec![Facet::Column(0)]);
     let mut store = Store::new(vec![KINDS.to_vec()], vec![false]);
     store.begin_run(hour);
-    let mut builder = Builder::open(&shape, &store.view(0), store.view(0).status(), hour);
+    let view = store.view(0);
+    let mut builder = Builder::open(&shape, &view, view.status(), view.view(), hour);
     store.begin_hour(hour, &[b"zero", b"one", b"two"]).unwrap();
     store.status(0, Status::Complete, true, Some(hour), true).unwrap();
     let mut changes = store.table(0).unwrap();
@@ -786,7 +788,8 @@ fn an_hour_s_appended_rows_are_the_log_s_view_and_summary() {
     store.table(1).unwrap().append(1, &cells(0).map(Some)).unwrap();
     store.end_hour(&mut crate::unit::Discard).unwrap();
     let shape = Shape::Log(vec![Facet::Column(0)]);
-    let mut builder = Builder::open(&shape, &store.view(1), store.view(1).status(), hour);
+    let view = store.view(1);
+    let mut builder = Builder::open(&shape, &view, view.status(), view.view(), hour);
     store.begin_hour(hour, &[]).unwrap();
     store.status(1, Status::Truncated { missing: 2 }, true, Some(hour), true).unwrap();
     let mut changes = store.table(1).unwrap();

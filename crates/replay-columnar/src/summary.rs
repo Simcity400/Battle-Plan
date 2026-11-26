@@ -1566,7 +1566,7 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub fn open(shape: &Shape, held: &dyn Cells, status: Status, first_hour: i32) -> Self {
+    pub fn open(shape: &Shape, held: &dyn Cells, status: Status, view: Option<&[u32]>, first_hour: i32) -> Self {
         let first_hour = i64::from(first_hour);
         let columns = match shape {
             Shape::Values(columns) => columns.clone(),
@@ -1580,18 +1580,25 @@ impl Builder {
             first_bucket: bucket_of(first_hour, 0),
             counts: HashMap::default(),
             available: available(status),
-            truncated: false,
+            truncated: matches!(status, Status::Truncated { .. }),
         };
         if !matches!(builder.shape, Shape::Log(_)) && builder.available {
-            let mut rows = 0;
-            held.each_row(&mut |_| rows += 1);
-            builder.tracks.reserve(rows);
+            let rows = view.map_or_else(|| {
+                let mut rows = 0;
+                held.each_row(&mut |_| rows += 1);
+                rows
+            }, <[u32]>::len);
             let (tracks, columns) = (&mut builder.tracks, &builder.columns);
-            held.each_row(&mut |slot| {
+            tracks.reserve(rows);
+            let mut seed = |slot| {
                 let Some(key) = held.key(slot) else { return };
                 let at = tracks.at(key);
                 tracks.open(at, columns.iter().map(|column| column.source.value(held, slot)));
-            });
+            };
+            match view {
+                Some(read) => read.iter().copied().for_each(seed),
+                None => held.each_row(&mut seed),
+            }
         }
         builder
     }

@@ -1264,6 +1264,14 @@ pub fn read(
 }
 
 const UNIT_LEADER_ROLES: [&str; 3] = ["corps_commander", "field_marshal", "navy_leader"];
+const UNIT_LEADER_ROLE_BLOCKS: [&str; 6] = [
+    "corps_commander",
+    "field_marshal",
+    "navy_leader",
+    "add_corps_commander_role",
+    "add_field_marshal_role",
+    "add_naval_commander_role",
+];
 
 fn is_key(item: &Item, key: &str) -> bool {
     item.keyword_is(key)
@@ -1342,7 +1350,7 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
         return Ok(None);
     };
     let role = role.value.items().ok_or_else(|| {
-        if roles == UNIT_LEADER_ROLES {
+        if roles != ["scientist"] {
             "its unit leader role is not a block".to_owned()
         } else {
             "its scientist role is not a block".to_owned()
@@ -1351,7 +1359,7 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
     let mut visible = Vec::new();
     for item in role.iter().filter(|item| is_key(item, "visible")) {
         let block = triggers::body(&item.value).ok_or_else(|| {
-            if roles == UNIT_LEADER_ROLES {
+            if roles != ["scientist"] {
                 "its unit leader role's visible is not a block".to_owned()
             } else {
                 "its scientist role's visible is not a block".to_owned()
@@ -1432,6 +1440,19 @@ pub struct ScientistVisibilityTemplate {
 pub fn parse_scientist_visibility_templates(
     input: &[u8],
 ) -> io::Result<Vec<ScientistVisibilityTemplate>> {
+    parse_role_visibility_templates(input, &["scientist"])
+}
+
+pub fn parse_leader_visibility_templates(
+    input: &[u8],
+) -> io::Result<Vec<ScientistVisibilityTemplate>> {
+    parse_role_visibility_templates(input, &UNIT_LEADER_ROLE_BLOCKS)
+}
+
+fn parse_role_visibility_templates(
+    input: &[u8],
+    roles: &[&str],
+) -> io::Result<Vec<ScientistVisibilityTemplate>> {
     let (document, spans, _) = parser::parse_unclosed_lines(input)?;
     let mut lines = BTreeMap::new();
     let mut next = 0;
@@ -1439,11 +1460,12 @@ pub fn parse_scientist_visibility_templates(
     if next != spans.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "scientist visibility block lines differ",
+            "role visibility block lines differ",
         ));
     }
     fn visit(
         items: &[Item],
+        roles: &[&str],
         lines: &BTreeMap<*const Value, parser::BlockLines>,
         out: &mut Vec<ScientistVisibilityTemplate>,
     ) {
@@ -1451,22 +1473,37 @@ pub fn parse_scientist_visibility_templates(
             let Some(body) = item.value.items() else {
                 continue;
             };
-            if is_key(item, "scientist")
+            if roles.iter().any(|role| is_key(item, role))
                 && let Some(last) = body.iter().rfind(|item| is_key(item, "visible"))
                 && let Some(line) = lines.get(&(&raw const last.value))
             {
                 out.push(ScientistVisibilityTemplate {
                     line: line.open,
-                    triggers: template_role_for(std::slice::from_ref(item), &["scientist"])
-                        .and_then(|role| role.ok_or_else(|| "scientist role missing".into())),
+                    triggers: template_role_for(std::slice::from_ref(item), roles)
+                        .and_then(|role| role.ok_or_else(|| "role missing".into()))
+                        .and_then(|visible| {
+                            if uses_constant(&visible) {
+                                Err("its visible uses a file-local @ constant, which is not read".into())
+                            } else {
+                                Ok(visible)
+                            }
+                        }),
                 });
             }
-            visit(body, lines, out);
+            visit(body, roles, lines, out);
         }
     }
     let mut out = Vec::new();
-    visit(&document.items, &lines, &mut out);
+    visit(&document.items, roles, &lines, &mut out);
     Ok(out)
+}
+
+fn uses_constant(items: &[Item]) -> bool {
+    items.iter().any(|item| {
+        (!item.key_quoted && item.key.as_deref().is_some_and(|key| key.starts_with(b"@")))
+            || (!item.quoted() && item.value.scalar().is_some_and(|value| value.starts_with(b"@")))
+            || item.value.items().is_some_and(uses_constant)
+    })
 }
 
 pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, String> {
@@ -1532,6 +1569,33 @@ add_scientist_role={scientist={
         let triggers = templates[1].triggers.as_ref().unwrap();
         assert_eq!(triggers.len(), 2);
         assert_eq!(triggers[0].value.read_string(), Some(&b"no"[..]));
+        let leaders = super::parse_leader_visibility_templates(
+            br#"
+effect={generate_character={
+ field_marshal={visible={has_war=yes}}
+ scientist={visible={always=no}}
+ navy_leader={
+  visible=yes
+ }
+}}
+"#,
+        )
+        .unwrap();
+        assert_eq!(leaders.iter().map(|template| template.line).collect::<Vec<_>>(), [3]);
+        assert_eq!(leaders[0].triggers.as_ref().unwrap().len(), 1);
+        let effect = super::parse_leader_visibility_templates(b"add_naval_commander_role = {\n skill = 2\n visible = { has_war = yes }\n}").unwrap();
+        assert_eq!(effect.iter().map(|template| (template.line, template.triggers.as_ref().map(Vec::len))).collect::<Vec<_>>(), [(3, Ok(1))], "a role effect carries visible directly");
+        let refused = super::parse_leader_visibility_templates(b"corps_commander={\nvisible=yes\nvisible={ always=no }\n}").unwrap();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].line, 3);
+        assert_eq!(refused[0].triggers, Err("its unit leader role's visible is not a block".into()));
+        let constant = super::parse_leader_visibility_templates(b"@gate = mobilized\ncorps_commander = {\n visible = { has_country_flag = @gate }\n}").unwrap();
+        assert_eq!(constant[0].line, 3);
+        assert_eq!(constant[0].triggers, Err("its visible uses a file-local @ constant, which is not read".into()), "an operand the reader cannot resolve is refused, not evaluated as written");
+        let quoted = super::parse_leader_visibility_templates(b"corps_commander = {
+ visible = { has_country_flag = \"@gate\" }
+}").unwrap();
+        assert_eq!(quoted[0].triggers.as_ref().map(Vec::len), Ok(1), "a quoted operand is literal text, not a constant");
     }
 
     use super::*;
