@@ -17,7 +17,7 @@ import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboar
 import { gatedHour } from '../../test-support/gated.ts';
 import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
 import { rankedTags, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
-import { scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
+import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
 const factories: ScoreboardColumn = { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null,
@@ -265,4 +265,119 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   const topSubs = compileFollowPlan(topPlan, allowFollow).subscriptions;
   assert.equal(topSubs.length, 4);
   assert.ok(topSubs.every(sub => (sub.query as { coverage?: string }).coverage === undefined), 'top-N scoreboard follows stay on default Table coverage');
+});
+
+test('scoreboard incremental projection reuses unchanged rows across 1,500 countries, handles top-N internal rank swaps without full rebuild, and invalidates on identity change', () => {
+  const count = 1500;
+  const tags = Array.from({ length: count }, (_, i) => `C${String(i).padStart(4, '0')}`);
+  const holders: Record<string, readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[]> = {};
+  for (const tag of tags) holders[tag] = [{ tag, firstHour: 0, lastHour: 1000 }];
+  let renamed = false;
+  const identity = {
+    resolve(kind: 'country', key: string, atHour: number) {
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready' as const, value: key },
+        tag: { status: 'ready' as const, value: key },
+        name: { status: 'ready' as const, value: key === 'C0000' && renamed ? 'Zero Renamed' : `Country ${key}` },
+        colour: { status: 'ready' as const, value: '#557799' },
+        flagChoice: { status: 'ready' as const, value: `["${key}",null,null]` },
+        validInterval: [0, 1000] as const,
+        nextChangeAt: 1001,
+      };
+    },
+  };
+  const makeAnswer = (entries: readonly (readonly [string, bigint])[]) =>
+    answer({
+      keys: entries.map((_, i) => BigInt(i + 1)),
+      columns: 1,
+      names: entries.map(([name]) => name),
+      values: entries.map(([, val]) => val),
+      states: entries.map(() => CELL.value),
+    });
+  const vals1 = Array.from({ length: count }, (_, i) => [tags[i]!, BigInt(1000 + i)] as const);
+  const vals2 = vals1.slice();
+  vals2[42] = [tags[42]!, 9999n];
+
+  const opts = { shown: [factories], candidates: tags, holders, top: null, rankMarkers: false };
+  const m1 = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 100, answers: new Map([['factories', makeAnswer(vals1)]]) }),
+    opts,
+  );
+  const m2 = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 101, answers: new Map([['factories', makeAnswer(vals2)]]) }),
+    opts,
+  );
+  assert.equal(m2.rows.length, count);
+  assert.deepEqual([...(m2.changedKeys ?? [])], ['C0042']);
+  assert.notEqual(m2.rows[42], m1.rows[42]);
+  assert.equal(m2.rows[0], m1.rows[0], 'untouched rows keep object identity across 1,500 countries');
+  assert.equal(m2.rows[1499], m1.rows[1499]);
+
+  const m2Same = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 102, answers: new Map([['factories', makeAnswer(vals2)]]) }),
+    opts,
+  );
+  assert.equal(m2Same.changedKeys?.size, 0);
+  assert.equal(m2Same.rows, m2.rows, 'identical values keep the rows array reference');
+
+  renamed = true;
+  const m3 = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 103, answers: new Map([['factories', makeAnswer(vals2)]]) }),
+    opts,
+  );
+  assert.equal(m3.rows[0]!.name, 'Zero Renamed', 'identity change invalidates the incremental scoreboard cache');
+
+  renamed = false;
+  let flagVariant = 'a';
+  const pendingFlagIdentity = {
+    resolve(kind: 'country', key: string, atHour: number) {
+      return {
+        kind, key, atHour,
+        holder: { status: 'ready' as const, value: key },
+        tag: { status: 'ready' as const, value: key },
+        name: { status: 'ready' as const, value: `Country ${key}` },
+        colour: { status: 'ready' as const, value: '#557799' },
+        flagChoice: { status: 'ready' as const, value: `["${key}","${flagVariant}",null]` },
+        validInterval: [0, 1000] as const,
+        nextChangeAt: 1001,
+      };
+    },
+  };
+  const pendingArt = { resolve: () => ({ status: 'pending' as const }) };
+  const pOpts = { shown: [factories], candidates: ['C0001'], holders, top: null, rankMarkers: false };
+  const pAns = makeAnswer([['C0001', 300n]]);
+  const p1 = scoreboardProjection.project(
+    createBoundedReadView({ identity: pendingFlagIdentity as never, art: pendingArt, hour: 100, answers: new Map([['factories', pAns]]) }),
+    pOpts,
+  );
+  flagVariant = 'b';
+  const p2 = scoreboardProjection.project(
+    createBoundedReadView({ identity: pendingFlagIdentity as never, art: pendingArt, hour: 101, answers: new Map([['factories', pAns]]) }),
+    pOpts,
+  );
+  const pSettings = tableDefaults(p1.columns, TABLE_BASE);
+  const pCols = buildColumnLayouts(p1.columns, pSettings);
+  const audit1 = deriveTableAudit({ model: p1, flatRows: resolveTableRows(p1, pSettings), visibleColumns: pCols });
+  const audit2 = deriveTableAudit({ model: p2, flatRows: resolveTableRows(p2, pSettings), visibleColumns: pCols });
+  assert.notEqual(
+    audit1.find(r => r.key === 'C0001:country')?.value,
+    audit2.find(r => r.key === 'C0001:country')?.value,
+    'flag choice change updates audit artKey even while both flags are pending',
+  );
+
+  const topOpts = { shown: [factories], candidates: ['C0001', 'C0002', 'C0003'], top: 3, rankMarkers: false };
+  const r1 = makeAnswer([['C0001', 300n], ['C0002', 200n], ['C0003', 100n]]);
+  const r2 = makeAnswer([['C0002', 350n], ['C0001', 300n], ['C0003', 100n]]);
+  const t1 = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 100, answers: new Map([[RANK_SOURCE, r1], ['factories', r1]]) }),
+    topOpts,
+  );
+  const t2 = scoreboardProjection.project(
+    createBoundedReadView({ identity: identity as never, hour: 101, answers: new Map([[RANK_SOURCE, r2], ['factories', r2]]) }),
+    topOpts,
+  );
+  assert.deepEqual([...(t2.changedKeys ?? [])], ['C0002'], 'internal top-N rank swap stays on the incremental path');
+  assert.equal(t2.rows[0], t1.rows[0], 'unchanged country in top-N swap keeps its TableRow reference');
+  assert.equal(t2.rows[2], t1.rows[2]);
 });

@@ -90,7 +90,8 @@ function readScene(
     ...(demands
       ? {
           onIdentityDemand: (kind: EntityKind, key: string, atHour: number) => {
-            demands.identity.set(`${kind}\u0000${key}\u0000${atHour}`, [kind, key, atHour]);
+            const demandKey = `${kind}\u0000${key}\u0000${atHour}`;
+            if (!demands.identity.has(demandKey)) demands.identity.set(demandKey, [kind, key, atHour]);
           },
           onArtDemand: (handle: ArtHandle, result?: ArtResult) => {
             if (result?.status === 'ready' && result.url) {
@@ -254,12 +255,41 @@ function sameIdentity(a: IdentityResult, b: IdentityResult): boolean {
 
 function sameArt(a: ArtResult, b: ArtResult): boolean {
   if (a === b) return true;
-  const left = a as unknown as Readonly<Record<string, unknown>>;
-  const right = b as unknown as Readonly<Record<string, unknown>>;
-  const keys = Object.keys(left).filter(key => key !== 'retry');
-  if (keys.length !== Object.keys(right).filter(key => key !== 'retry').length) return false;
-  for (const key of keys) if (!sameShallow(left[key], right[key])) return false;
-  return true;
+  if (a.status !== b.status) return false;
+  switch (a.status) {
+    case 'noArtExpected':
+    case 'pending':
+      return true;
+    case 'unavailable':
+      return a.reason === (b as typeof a).reason;
+    case 'confirmedMissing': {
+      const right = b as typeof a;
+      return a.reason === right.reason
+        && a.file === right.file
+        && sameShallow(a.origin, right.origin);
+    }
+    case 'failed': {
+      const right = b as typeof a;
+      return a.reason === right.reason && a.retryable === right.retryable;
+    }
+    case 'refused': {
+      const right = b as typeof a;
+      return a.reason === right.reason
+        && a.construct === right.construct
+        && a.file === right.file
+        && sameShallow(a.origin, right.origin);
+    }
+    case 'ready': {
+      const right = b as typeof a;
+      return a.url === right.url
+        && a.assetId === right.assetId
+        && a.file === right.file
+        && a.bitmap === right.bitmap
+        && sameShallow(a.origin, right.origin)
+        && sameShallow(a.frame, right.frame)
+        && sameShallow(a.provenance, right.provenance);
+    }
+  }
 }
 
 function sameShallow(a: unknown, b: unknown): boolean {
@@ -267,8 +297,17 @@ function sameShallow(a: unknown, b: unknown): boolean {
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
   const left = a as Readonly<Record<string, unknown>>;
   const right = b as Readonly<Record<string, unknown>>;
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every(key => left[key] === right[key]);
+  let leftCount = 0;
+  for (const key in left) {
+    if (!Object.hasOwn(left, key)) continue;
+    leftCount++;
+    if (!Object.hasOwn(right, key) || left[key] !== right[key]) return false;
+  }
+  let rightCount = 0;
+  for (const key in right) {
+    if (Object.hasOwn(right, key)) rightCount++;
+  }
+  return leftCount === rightCount;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {

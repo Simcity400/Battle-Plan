@@ -1,11 +1,13 @@
-import { canvasMeasureText } from '../../charts/textWidth.ts';
-import { BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_OFFSET } from '../../draw/kit.ts';
+import { canvasMeasureText, measureCanvasText } from '../../charts/textWidth.ts';
+import { BEHIND_BAR_HEIGHT, BEHIND_BAR_MAX_WIDTH, BEHIND_BAR_MIN_WIDTH, BEHIND_BAR_OFFSET } from '../../draw/kit.ts';
 import { collectArtUrls, type ArtUrlInput } from '../art/provider.ts';
+import type { LaneArtCache } from '../art/laneCache.ts';
 import type { FamilyAuditRow } from '../auditRow.ts';
 import type { Surface } from '../../draw/lane.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { LaneBinding, LaneFamily, LaneFrame, LaneStep } from '../laneRuntime.ts';
 import { sameFieldValue } from '../laneRuntime.ts';
+import { formatScalar } from '../valueFormat.ts';
 import { treeLevelsOf } from './cellPainters.ts';
 import { buildColumnLayouts, computeRowLayout, END_NOTE_HEIGHT, extentTop, layoutFamilyTable, measureFixedColumnWidths, rowExtents, tableRowWindow, type FamilyColumnLayout, type FamilyTableLayout, type RowExtents, type RowLayoutGeometry } from './layout.ts';
 import {
@@ -28,7 +30,7 @@ import {
 } from './model.ts';
 import { barPixels, barPixelSpan, createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hasGlideCrossing, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
-import { CELL_INSET, MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
+import { CELL_INSET, MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
   readonly family: 'table';
@@ -101,6 +103,7 @@ interface TableLayout {
   readonly height: number;
   readonly visibleRows: readonly { readonly first: number; readonly count: number }[];
   readonly visibleColumns: readonly FamilyColumnLayout[] | null;
+  readonly visibleColumnStarts: readonly number[] | null;
 }
 
 type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
@@ -108,7 +111,8 @@ type TableFrame = LaneFrame<FamilyTableBinding, TableModel, TableLayout>;
 interface PaintedTable {
   readonly width: number;
   readonly height: number;
-  readonly art: number;
+  art: number;
+  artStates?: readonly (readonly [string, unknown])[];
   readonly list: FamilyTablePicture[];
   still?: TableLayout;
   inspect?: string | null;
@@ -123,7 +127,8 @@ function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, a
   const width = surface.width * surface.dpr;
   const height = surface.height * surface.dpr;
   let held = pictures.get(ctx);
-  if (!held || held.width !== width || held.height !== height || held.art !== art) pictures.set(ctx, held = { width, height, art, list: [] });
+  if (!held || held.width !== width || held.height !== height) pictures.set(ctx, held = { width, height, art, list: [] });
+  else held.art = art;
   return held;
 }
 
@@ -243,7 +248,9 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const held = shapes.get(model);
   if (held && held.options === binding.options && held.settings === settings && held.expanded === expanded && held.width === width && held.theme === theme) return held;
   const sortSig = `${settings.sort.column}\u0000${settings.sort.direction}`;
-  const sameView = prev !== null && prev.options === binding.options && prev.settings === settings && prev.expanded === expanded;
+  const sameSettings = prev !== null && (prev.settings === settings || sameFieldValue(prev.settings, settings));
+  const sameExpanded = prev !== null && (prev.expanded === expanded || sameFieldValue(prev.expanded, expanded));
+  const sameView = sameSettings && sameExpanded && (prev.options === binding.options || sameFieldValue(prev.options, binding.options));
   const inc = sameView && prev.model !== model && model.changedKeys !== undefined && !prev.hasGroups && !prev.panes && model.panes === undefined
     ? resolveTableRowsIncremental(prev.model, prev.flatRows, prev.rowIndex, model, settings)
     : null;
@@ -286,7 +293,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const fixedWidths = prev && prev.widthKey === widthKey
     ? prev.fixedWidths
     : measureFixedColumnWidths(baseCols, settings, theme, canvasMeasureText(measure), samples, { hideHeader: model.hideHeader === true, flags });
-  const allLayouts = prev && prev.settings === settings && prev.fixedWidths === fixedWidths && sameFieldValue(prev.model.columns, model.columns)
+  const allLayouts = prev && sameSettings && prev.fixedWidths === fixedWidths && sameFieldValue(prev.model.columns, model.columns)
     ? prev.allLayouts : buildColumnLayouts(model.columns, settings, fixedWidths);
   const columns = prev && prev.allLayouts === allLayouts && (prev.paneGeom?.width ?? prev.width) === layoutWidth &&
     prev.rankShown === rankShown && prev.rankWidth === rankWidth && prev.model.rhythm === model.rhythm
@@ -345,38 +352,60 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   const previous = step.previous?.layout;
   const columnWidth = shape.paneGeom?.width ?? surface.width;
   const left = Math.max(0, Math.min(binding.scrollLeft, shape.columns.totalWidth - columnWidth));
-  const visibleColumns = previous && previous.shape.columns === shape.columns && previous.scrollLeft === left && !!previous.shape.panes === !!panes
-    ? previous.visibleColumns : columnsOnScreen(shape, columnWidth, left);
+  const reuseVisibleCols = previous
+    && previous.shape.columns === shape.columns
+    && previous.shape.settings.barsBehind === shape.settings.barsBehind
+    && previous.shape.settings.sort.column === shape.settings.sort.column
+    && previous.scrollLeft === left
+    && !!previous.shape.panes === !!panes;
+  const shownCols = reuseVisibleCols ? null : columnsOnScreen(shape, columnWidth, left);
+  const visibleColumns = reuseVisibleCols ? previous.visibleColumns : shownCols?.columns ?? null;
+  const visibleColumnStarts = reuseVisibleCols ? previous.visibleColumnStarts : shownCols?.starts ?? null;
   const visibleRows = panes ? shownWindows : [visibleRange(shape, localScrollTop, surface.height)];
-  return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height, visibleRows, visibleColumns, scrollLeft: left };
+  return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height, visibleRows, visibleColumns, visibleColumnStarts, scrollLeft: left };
 }
 
-function canSpillLeft(col: FamilyColumnLayout, x: number, width: number): boolean {
+function drawsBehindBar(col: FamilyColumnLayout, settings: TableSettings): boolean {
+  const barsMode = settings.barsBehind ?? 'all';
+  if (barsMode === 'off' || col.barEligible === false) return false;
+  if (col.barEligible === true || col.display === 'faint') {
+    return barsMode !== 'sorted' || col.key === settings.sort.column;
+  }
+  return false;
+}
+
+function canSpillLeft(col: FamilyColumnLayout, x: number, width: number, settings: TableSettings): boolean {
   if (col.headerGroup || col.display === 'track' || col.display === 'meterBefore' || col.display === 'meterAfter') return true;
   switch (col.cellKind) {
     case undefined: case 'standard': case 'item': case 'country': case 'numeric': case 'status':
-      return !!col.numeric && x + col.width - (col.trailInset ?? 0) - CELL_INSET + BEHIND_BAR_OFFSET - BEHIND_BAR_MAX_WIDTH < width;
+      return !!col.numeric && drawsBehindBar(col, settings) && x + col.width - (col.trailInset ?? 0) - CELL_INSET + BEHIND_BAR_OFFSET - BEHIND_BAR_MAX_WIDTH < width;
     default:
       return true;
   }
 }
 
-function columnsOnScreen(shape: TableShape, width: number, left: number): FamilyColumnLayout[] | null {
+function columnsOnScreen(shape: TableShape, width: number, left: number): { readonly columns: FamilyColumnLayout[]; readonly starts: number[] } | null {
   const layout = shape.columns;
   const shown: FamilyColumnLayout[] = [];
+  const starts: number[] = [];
   let inView = 0;
   let x = shape.rankShown && !shape.panes ? shape.rankWidth : 0;
+  const pinnedCover = layout.scrollable ? layout.pinnedWidth : 0;
   for (let i = 0; i < layout.columns.length; i++) {
     const col = layout.columns[i]!;
     const pinned = i < layout.pinnedCount;
     const start = pinned ? x : x - left;
-    if (col.width > 0) {
-      if (start < width && start + col.width > (pinned ? 0 : layout.pinnedWidth)) inView++;
-      if (start < width || canSpillLeft(col, start, width)) shown.push(col);
+    const minLeft = pinned ? 0 : pinnedCover;
+    if (col.width > 0 && start + col.width > minLeft) {
+      if (start < width) inView++;
+      if (start < width || canSpillLeft(col, start, width, shape.settings)) {
+        shown.push(col);
+        starts.push(start);
+      }
     }
     x += col.width;
   }
-  return shown.length - inView <= inView ? shown : null;
+  return shown.length - inView <= inView ? { columns: shown, starts } : null;
 }
 
 const NO_MOTION: TableMotion = { markers: new Map(), expiries: [], glide: NO_GLIDE, started: -Infinity };
@@ -449,6 +478,14 @@ function visibleRange(shape: TableShape, localScrollTop: number, height: number)
   return { first, count: Math.max(0, Math.min(flatRows.length, Math.ceil((localScrollTop + height) / rowHeight)) - first) };
 }
 
+function sameOtherCellFields(a: TableCell, b: TableCell): boolean {
+  for (const key in a) {
+    if (key !== 'value' && !sameFieldValue(a[key as keyof TableCell], b[key as keyof TableCell])) return false;
+  }
+  for (const key in b) if (!Object.hasOwn(a, key) && b[key as keyof TableCell] !== undefined) return false;
+  return true;
+}
+
 function sameRoundedFigure(a: TableCell, b: TableCell, col: FamilyColumnLayout): boolean {
   if (!col.numeric || (col.cellKind && col.cellKind !== 'numeric' && col.cellKind !== 'standard') ||
       a.value.kind !== 'known' || b.value.kind !== 'known') return false;
@@ -457,28 +494,148 @@ function sameRoundedFigure(a: TableCell, b: TableCell, col: FamilyColumnLayout):
   if (typeof left !== 'number' || typeof right !== 'number' || Math.sign(left) !== Math.sign(right) ||
       Math.trunc(left) !== Math.trunc(right) ||
       (format && format !== 'integer' && !(typeof format === 'object' && (format.decimals > 0 || !format.maxDecimals)))) return false;
-  for (const key in a) {
-    if (key !== 'value' && !sameFieldValue(a[key as keyof TableCell], b[key as keyof TableCell])) return false;
+  return sameOtherCellFields(a, b);
+}
+
+function sameRightClippedFigure(
+  ctx: OffscreenCanvasRenderingContext2D,
+  a: TableCell,
+  b: TableCell,
+  col: FamilyColumnLayout,
+  colStart: number,
+  vpW: number,
+  theme: FamilyTheme,
+  hideHeader: boolean,
+): boolean {
+  if (hideHeader || !col.numeric || col.headerGroup || col.display === 'track' || col.display === 'meterAfter' || col.display === 'meterBefore') return false;
+  if (col.cellKind && col.cellKind !== 'numeric' && col.cellKind !== 'standard') return false;
+  if (a.value.kind !== 'known' || b.value.kind !== 'known') return false;
+  if (a.unitSuffix || b.unitSuffix || a.unitArt || b.unitArt || a.splitBar?.length || b.splitBar?.length || a.blank || b.blank || a.loading || b.loading) return false;
+  const right = colStart + col.width - CELL_INSET - (col.trailInset ?? 0);
+  if (right <= vpW) return false;
+  if (!sameOtherCellFields(a, b)) return false;
+  const format = b.format ?? col.valueFormat;
+  const textA = formatScalar(a.value.value, format);
+  const textB = formatScalar(b.value.value, format);
+  if (textA === textB) return true;
+  const font = `500 13px ${theme.font}`;
+  const left = colStart + CELL_INSET + (col.leadInset ?? 0);
+  const avail = Math.max(0, right - left);
+  const wA = measureCanvasText(ctx, textA, font);
+  const wB = measureCanvasText(ctx, textB, font);
+  if (wA !== wB || wA > avail) return false;
+  let prefix = 0;
+  const limit = Math.min(textA.length, textB.length);
+  while (prefix < limit && textA.charCodeAt(prefix) === textB.charCodeAt(prefix)) prefix++;
+  const prefixW = prefix > 0 ? measureCanvasText(ctx, textA.slice(0, prefix), font) : 0;
+  return right - wA + prefixW >= vpW + 2;
+}
+
+function sameBarPixels(
+  a: TableCell,
+  b: TableCell,
+  col: FamilyColumnLayout,
+  oldMax: number | undefined,
+  newMax: number | undefined,
+  dpr: number,
+  settings: TableSettings,
+): boolean {
+  const kind = col.cellKind;
+  if (kind === 'twoWay' || kind === 'shaded' || kind === 'share' || kind === 'track' || col.display === 'track' || col.display === 'meterAfter' || col.display === 'meterBefore') {
+    const magnitude = kind === 'twoWay' || kind === 'shaded';
+    const span = barPixelSpan(col, dpr);
+    return barPixels(cellBarFraction(a, a.value, a.maximum ?? oldMax, magnitude), span) ===
+      barPixels(cellBarFraction(b, b.value, b.maximum ?? newMax, magnitude), span);
   }
-  for (const key in b) if (!Object.hasOwn(a, key) && b[key as keyof TableCell] !== undefined) return false;
+  if (!drawsBehindBar(col, settings)) return true;
+  const span = barPixelSpan(col, dpr);
+  const behindWidth = (cell: TableCell, max: number | undefined): number => {
+    if (cell.value.kind === 'zero') return 0;
+    const raw = cellBarFraction(cell, cell.value, cell.maximum ?? max, false);
+    if (raw === null) return 0;
+    const quantized = barPixels(raw, span) / span;
+    const clamped = Math.max(0, Math.min(1, quantized));
+    if (clamped <= 0) return 0;
+    return Math.min(BEHIND_BAR_MAX_WIDTH, Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(BEHIND_BAR_MAX_WIDTH * clamped)));
+  };
+  return behindWidth(a, oldMax) === behindWidth(b, newMax);
+}
+
+function sameVisibleCell(
+  ctx: OffscreenCanvasRenderingContext2D,
+  a: TableCell | undefined,
+  b: TableCell | undefined,
+  col: FamilyColumnLayout,
+  colStart: number,
+  vpW: number,
+  oldMax: number | undefined,
+  newMax: number | undefined,
+  dpr: number,
+  settings: TableSettings,
+  theme: FamilyTheme,
+  hideHeader: boolean,
+): boolean {
+  if (!a || !b) return a === b;
+  const same = sameFieldValue(a, b);
+  if (!same && !sameRoundedFigure(a, b, col) && !sameRightClippedFigure(ctx, a, b, col, colStart, vpW, theme, hideHeader)) return false;
+  if (same && (oldMax === newMax || a.bar !== undefined || a.maximum !== undefined)) return true;
+  return sameBarPixels(a, b, col, oldMax, newMax, dpr, settings);
+}
+
+function isPlainSingleLineCell(cell: TableCell | undefined, col: FamilyColumnLayout): boolean {
+  if (!cell) return true;
+  if (cell.subtext || cell.splitBar?.length || cell.artShape || cell.glyph || cell.quantities?.length) return false;
+  if (cell.iconSlot && showsIcon(col.display) && col.display !== 'flag' && col.display !== 'flagName') return false;
   return true;
 }
 
-function sameVisibleCell(a: TableCell | undefined, b: TableCell | undefined, col: FamilyColumnLayout, oldMax: number | undefined, newMax: number | undefined, dpr: number): boolean {
-  if (!a || !b) return a === b;
-  const same = sameFieldValue(a, b);
-  if (!same && !sameRoundedFigure(a, b, col)) return false;
-  if (same && (oldMax === newMax || a.bar !== undefined || a.maximum !== undefined)) return true;
-  const magnitude = col.cellKind === 'twoWay' || col.cellKind === 'shaded';
-  const span = barPixelSpan(col, dpr);
-  return barPixels(cellBarFraction(a, a.value, a.maximum ?? oldMax, magnitude), span) ===
-    barPixels(cellBarFraction(b, b.value, b.maximum ?? newMax, magnitude), span);
+function rowInkBelowCanvas(
+  layout: TableLayout,
+  columns: readonly FamilyColumnLayout[],
+  i: number,
+  a: Extract<FlatTableRow, { kind: 'data' }>,
+  b: Extract<FlatTableRow, { kind: 'data' }>,
+  inspectRow: string | null,
+  selectedKey: string | null,
+  focusedKey: string | null,
+): boolean {
+  const shape = layout.shape;
+  if (shape.panes || shape.rowHeightMode !== 'standard' || shape.hasTree) return false;
+  if (a.level > 1 || b.level > 1 || a.isTreeGroup || b.isTreeGroup || a.isLiveEnd || b.isLiveEnd || a.row.detailColumn || b.row.detailColumn) return false;
+  if (a.key === inspectRow || b.key === inspectRow || a.key === selectedKey || b.key === selectedKey || a.key === focusedKey || b.key === focusedKey) return false;
+  const localTop = shape.rowGeom ? shape.rowGeom.tops[i]! : i * shape.rowHeight;
+  const y = localTop - layout.localScrollTop;
+  const rowH = layout.heights(i);
+  const inkHalf = Math.max(BEHIND_BAR_HEIGHT[shape.settings.density] / 2, shape.theme.fontSize.small * 0.75, 9.5) + 2;
+  if (y + rowH / 2 - inkHalf < layout.height) return false;
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]!;
+    if (col.headerGroup || col.inlineFlags?.length) return false;
+    const kind = col.cellKind;
+    if (kind !== undefined && kind !== 'standard' && kind !== 'country' && kind !== 'numeric' && kind !== 'item' && kind !== 'outOf' && kind !== 'track') return false;
+    if (!isPlainSingleLineCell(a.row.cells[col.key], col) || !isPlainSingleLineCell(b.row.cells[col.key], col)) return false;
+  }
+  return true;
 }
 
-function samePaintedRow(previous: TableLayout, layout: TableLayout, columns: readonly FamilyColumnLayout[], i: number, dpr: number, scaleChanged: boolean): boolean {
+function samePaintedRow(
+  ctx: OffscreenCanvasRenderingContext2D,
+  previous: TableLayout,
+  layout: TableLayout,
+  columns: readonly FamilyColumnLayout[],
+  starts: readonly number[],
+  vpW: number,
+  i: number,
+  dpr: number,
+  scaleChanged: boolean,
+  inspectRow: string | null,
+  selectedKey: string | null,
+  focusedKey: string | null,
+): boolean {
   const a = previous.shape.flatRows[i]!;
   const b = layout.shape.flatRows[i]!;
   if (a.kind !== 'data' || b.kind !== 'data') return sameFieldValue(a, b);
+  if (rowInkBelowCanvas(layout, columns, i, a, b, inspectRow, selectedKey, focusedKey)) return true;
   if (a.key !== b.key || a.name !== b.name || a.level !== b.level || a.isTreeGroup !== b.isTreeGroup ||
       a.isOpen !== b.isOpen || a.isDayEnd !== b.isDayEnd || a.isLiveEnd !== b.isLiveEnd || a.isTotal !== b.isTotal ||
       a.showDate !== b.showDate || (layout.shape.rankShown && a.rank !== b.rank) ||
@@ -492,9 +649,12 @@ function samePaintedRow(previous: TableLayout, layout: TableLayout, columns: rea
   if (b.row.detailColumn && (!sameFieldValue(previous.shape.rowGeom?.detailRows?.get(i), layout.shape.rowGeom?.detailRows?.get(i)) ||
       !sameFieldValue(a.row.cells[b.row.detailColumn], b.row.cells[b.row.detailColumn]))) return false;
   if (a.row === b.row && !scaleChanged) return true;
+  const settings = layout.shape.settings;
+  const theme = layout.shape.theme;
+  const hideHeader = layout.shape.model.hideHeader === true;
   for (let c = 0; c < columns.length; c++) {
     const col = columns[c]!;
-    if (!sameVisibleCell(a.row.cells[col.key], b.row.cells[col.key], col, previous.shape.maxima.get(col.key), layout.shape.maxima.get(col.key), dpr)) return false;
+    if (!sameVisibleCell(ctx, a.row.cells[col.key], b.row.cells[col.key], col, starts[c]!, vpW, previous.shape.maxima.get(col.key), layout.shape.maxima.get(col.key), dpr, settings, theme, hideHeader)) return false;
     if (col.inlineFlags) for (let f = 0; f < col.inlineFlags.length; f++) {
       const key = col.inlineFlags[f]!;
       if (!sameFieldValue(a.row.cells[key], b.row.cells[key])) return false;
@@ -503,10 +663,21 @@ function samePaintedRow(previous: TableLayout, layout: TableLayout, columns: rea
   return true;
 }
 
-function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boolean {
+function sameViewport(
+  ctx: OffscreenCanvasRenderingContext2D,
+  before: TableLayout,
+  after: TableLayout,
+  dpr: number,
+  inspectRow: string | null,
+  selectedKey: string | null,
+  focusedKey: string | null,
+): boolean {
   if (before === after) return true;
   const a = before.shape, b = after.shape;
-  if (a.theme !== b.theme || a.settings !== b.settings || a.columns !== b.columns || a.width !== b.width ||
+  if ((a.theme !== b.theme && !sameFieldValue(a.theme, b.theme)) ||
+      (a.settings !== b.settings && !sameFieldValue(a.settings, b.settings)) ||
+      (a.columns !== b.columns && !sameFieldValue(a.columns, b.columns)) ||
+      a.width !== b.width ||
       before.height !== after.height || before.localScrollTop !== after.localScrollTop || before.scrollLeft !== after.scrollLeft ||
       a.windowOffset !== b.windowOffset || a.rowHeightMode !== b.rowHeightMode || a.hasTree !== b.hasTree ||
       a.model.dateGrouped !== b.model.dateGrouped || a.model.dayDividersOnly !== b.model.dayDividersOnly ||
@@ -514,7 +685,9 @@ function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boo
       (b.model.endNote && (a.totalCount !== b.totalCount || a.totalHeight !== b.totalHeight || a.flatRows.length !== b.flatRows.length)) ||
       !sameFieldValue(a.model.clockSummary, b.model.clockSummary) || !sameFieldValue(a.paneGeom, b.paneGeom)) return false;
   const columns = after.visibleColumns;
-  if (!columns || !sameFieldValue(a.treeLevels, b.treeLevels)) return false;
+  const starts = after.visibleColumnStarts;
+  if (!columns || !starts || !sameFieldValue(a.treeLevels, b.treeLevels)) return false;
+  const vpW = b.paneGeom?.width ?? b.width;
   let scaleChanged = false;
   for (let c = 0; c < columns.length && !scaleChanged; c++) {
     const key = columns[c]!.key;
@@ -525,7 +698,7 @@ function sameViewport(before: TableLayout, after: TableLayout, dpr: number): boo
     const win = after.visibleRows[w]!, old = before.visibleRows[w]!;
     if (win.first !== old.first || win.count !== old.count) return false;
     for (let i = win.first; i < win.first + win.count; i++) {
-      if (before.tops(i) !== after.tops(i) || before.heights(i) !== after.heights(i) || !samePaintedRow(before, after, columns, i, dpr, scaleChanged)) return false;
+      if (before.tops(i) !== after.tops(i) || before.heights(i) !== after.heights(i) || !samePaintedRow(ctx, before, after, columns, starts, vpW, i, dpr, scaleChanged, inspectRow, selectedKey, focusedKey)) return false;
     }
   }
   return true;
@@ -586,6 +759,52 @@ function shapeFields(shape: TableShape, layout: TableLayout, width: number): Rea
 
 const inspectedRow = (inspect: string | null): string | null => (inspect?.startsWith('row:') ? inspect.slice(4) : null);
 
+function snapshotVisibleArt(
+  layout: TableLayout,
+  binding: FamilyTableBinding,
+  artCache: LaneArtCache,
+  inspectRow: string | null,
+): readonly (readonly [string, unknown])[] {
+  const shape = layout.shape;
+  const cols = layout.visibleColumns ?? shape.columns.columns;
+  let urls: string[];
+  if (shape.panes) {
+    urls = collectArtUrls(shape.panes.flatMap(pane => {
+      const [first, last] = visiblePaneRange(pane.geom, pane.rows.length, binding.scrollTop, layout.height);
+      return visibleCellArtItems(pane.rows, cols, first, last);
+    }));
+  } else {
+    const { first, count } = layout.visibleRows[0]!;
+    const selected = binding.selectedKey ?? null;
+    const focused = binding.focusedKey ?? null;
+    let end = first + count;
+    while (end > first) {
+      const row = shape.flatRows[end - 1];
+      if (!row || row.kind !== 'data' || !rowInkBelowCanvas(layout, cols, end - 1, row, row, inspectRow, selected, focused)) break;
+      end--;
+    }
+    urls = collectArtUrls(visibleCellArtItems(shape.flatRows, cols, first, end));
+  }
+  const states = new Array<readonly [string, unknown]>(urls.length);
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i]!;
+    states[i] = [url, artCache.bitmapOf(url) ?? artCache.failureOf(url) ?? null];
+  }
+  return states;
+}
+
+function sameVisibleArtStates(
+  states: readonly (readonly [string, unknown])[] | undefined,
+  artCache: LaneArtCache,
+): boolean {
+  if (!states) return false;
+  for (let i = 0; i < states.length; i++) {
+    const [url, expected] = states[i]!;
+    if ((artCache.bitmapOf(url) ?? artCache.failureOf(url) ?? null) !== expected) return false;
+  }
+  return true;
+}
+
 export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> = {
   family: 'table',
   boundary: nextTableChange,
@@ -599,9 +818,10 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   layout: layoutTable,
   keepsCanvas(ctx, frame) {
     const last = pictures.get(ctx);
-    if (!last?.still || last.art !== frame.art.version || last.dpr !== frame.surface.dpr ||
+    if (!last?.still || last.dpr !== frame.surface.dpr ||
         last.inspect !== frame.inspect || last.selected !== frame.binding.selectedKey || last.focused !== frame.binding.focusedKey ||
-        !sameViewport(last.still, frame.layout, frame.surface.dpr)) return false;
+        (last.art !== frame.art.version && !sameVisibleArtStates(last.artStates, frame.art)) ||
+        !sameViewport(ctx, last.still, frame.layout, frame.surface.dpr, inspectedRow(frame.inspect), frame.binding.selectedKey ?? null, frame.binding.focusedKey ?? null)) return false;
     const motion = motionOf(frame);
     if ((motion.expiries.at(-1) ?? -Infinity) > frame.now) return false;
     const glide = motion.glide;
@@ -692,6 +912,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
     const until = nextExpiry(motion, frame.now);
     if (!Number.isFinite(until)) {
       picture.still = layout;
+      picture.artStates = snapshotVisibleArt(layout, binding, frame.art, inspectedRow(frame.inspect));
       picture.dpr = frame.surface.dpr;
       picture.inspect = frame.inspect;
       picture.selected = binding.selectedKey;
@@ -764,9 +985,17 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   },
 };
 
+function pushCellArt(items: ArtUrlInput[], cell: TableCell | undefined): void {
+  if (!cell) return;
+  if (cell.heading) items.push(cell.heading.flag.art);
+  if (cell.flags) for (const fl of cell.flags) items.push(fl.art);
+  if (cell.icons) for (const ic of cell.icons) items.push(ic.art);
+  items.push(cell.art, cell.unitArt);
+}
+
 function visibleCellArtItems(
   rows: readonly FlatTableRow[],
-  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon'>[],
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display' | 'skillIcon' | 'inlineFlags'>[],
   first: number,
   last: number,
 ): ArtUrlInput[] {
@@ -782,12 +1011,12 @@ function visibleCellArtItems(
     if (item.kind !== 'data') continue;
     for (let c = 0; c < columns.length; c++) {
       const col = columns[c]!;
-      const cell = item.row.cells[col.key];
-      if (!cell) continue;
-      if (cell.heading) items.push(cell.heading.flag.art);
-      if (cell.flags) for (const fl of cell.flags) items.push(fl.art);
-      if (cell.icons) for (const ic of cell.icons) items.push(ic.art);
-      items.push(cell.art, cell.unitArt);
+      pushCellArt(items, item.row.cells[col.key]);
+      if (col.inlineFlags) {
+        for (let f = 0; f < col.inlineFlags.length; f++) {
+          pushCellArt(items, item.row.cells[col.inlineFlags[f]!]);
+        }
+      }
     }
   }
   return items;

@@ -29,7 +29,16 @@ import { formatDateHover, formatValueState, spokenValue, valueStateProps, type V
 import { treeColumnOf, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
 import { artHoverText } from '../art/adapters.ts';
 import { unavailableArt, type ArtResult } from '../art/types.ts';
-import { newIdentityBoundary, resolveCountryColor, resolveIdentity, type IdentityBoundary, type ResolvedIdentity } from './identityCell.ts';
+import {
+  captureCountryIdentity,
+  matchesCountryIdentity,
+  newIdentityBoundary,
+  resolveCountryColorAt,
+  resolveIdentityAt,
+  type CountryIdentitySnapshot,
+  type IdentityBoundary,
+  type ResolvedIdentity,
+} from './identityCell.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
 
 export type TableCellKind =
@@ -1464,31 +1473,85 @@ function resolveNullable<TRow, TOptions>(
   return { kind: whenNull.kind, reason: whenNull.reason };
 }
 
-function identitySignature<TRow, TOptions>(
+interface DeclarativeIdentityEntry {
+  readonly colIndex: number;
+  readonly rowIndex: number;
+  readonly snap: CountryIdentitySnapshot;
+}
+
+const EMPTY_CHANGED_ROWS: ReadonlyMap<string, TableRow> = new Map();
+
+function captureDeclarativeIdentities<TRow, TOptions>(
   readView: BoundedReadView,
   colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[],
   rows: readonly TRow[],
   hour: number,
   options: TOptions,
-): string {
-  const parts: string[] = [];
-  for (const col of colSpecs) {
+): readonly DeclarativeIdentityEntry[] {
+  const out: DeclarativeIdentityEntry[] = [];
+  for (let ci = 0; ci < colSpecs.length; ci++) {
+    const col = colSpecs[ci]!;
     if (!col.countryField) continue;
-    for (const row of rows) {
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri]!;
       const tag = readPath(row, col.countryField);
       if (typeof tag !== 'string' || !tag) continue;
-      const who = resolveIdentity(readView, 'country', tag, { atHour: col.lookHour ? col.lookHour(row, hour, options) : hour });
-      parts.push(JSON.stringify([tag, who.value, who.color ?? null, who.art ? artStatusKey(who.art) : null]));
+      const atHour = col.lookHour ? col.lookHour(row, hour, options) : hour;
+      out.push({ colIndex: ci, rowIndex: ri, snap: captureCountryIdentity(readView, tag, atHour) });
     }
   }
-  return parts.join(',');
+  return out;
 }
 
-function artStatusKey(art: ArtResult): string {
-  return art.status === 'ready' ? `ready:${art.url}` : art.status;
+function matchesDeclarativeIdentities<TRow, TOptions>(
+  readView: BoundedReadView,
+  colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[],
+  rows: readonly TRow[],
+  entries: readonly DeclarativeIdentityEntry[],
+  hour: number,
+  options: TOptions,
+): boolean {
+  let matched = true;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const col = colSpecs[entry.colIndex]!;
+    const atHour = col.lookHour ? col.lookHour(rows[entry.rowIndex]!, hour, options) : hour;
+    if (!matchesCountryIdentity(readView, entry.snap, atHour)) matched = false;
+  }
+  return matched;
 }
 
 export type TableWho = (tag: string, atHour: number) => ResolvedIdentity;
+
+function columnSpecOf<TRow, TOptions>(col: DeclarativeColumnSpec<TRow, TOptions>, options: TOptions): TableColumnSpec {
+  return {
+    key: col.key,
+    label: col.label,
+    as: col.cellBarWhen ? (col.cellBarWhen(options) ? 'faint' : 'plain') : col.as,
+    offered: col.offered,
+    tone: col.tone,
+    priority: col.priority,
+    unit: col.unit,
+    numeric: col.numeric,
+    format: col.format,
+    text: col.text,
+    widest: col.widest,
+    hideable: col.hideable,
+    sortable: col.sortable,
+    hint: col.hint,
+    cellKind: col.cellKind,
+    barEligible: col.barEligible,
+    pinned: col.pinned,
+    notRecordedReason: col.notRecordedReason,
+    skillIcon: col.skillIcon,
+    trackTone: col.trackTone,
+    headerGroup: col.headerGroup,
+    defaultHidden: col.defaultHidden,
+    showNamesDefault: col.showNamesDefault,
+    minWidth: col.minWidth,
+    maxWidth: col.maxWidth,
+  };
+}
 
 export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   spec: DeclarativeTableSpec<TReply, TRow, TOptions>,
@@ -1506,6 +1569,11 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     return held;
   };
 
+  const staticColSpecs = typeof spec.columns !== 'function' && spec.columns.every(col => !col.when && !col.cellBarWhen)
+    ? spec.columns
+    : null;
+  const staticColumns = staticColSpecs ? staticColSpecs.map(col => columnSpecOf(col, undefined as TOptions)) : null;
+
   interface IncrementalDeclCache {
     readonly live: LiveValues<number | bigint | string> | null;
     readonly validFrom: number;
@@ -1513,7 +1581,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
     readonly colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[];
     readonly rawRows: readonly TRow[];
     readonly keyToIndex: ReadonlyMap<string, number>;
-    readonly identity: string;
+    readonly identity: readonly DeclarativeIdentityEntry[];
     readonly model: TableModel;
   }
   const incCache = new WeakMap<object, WeakMap<object, IncrementalDeclCache>>();
@@ -1541,36 +1609,30 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       let prevInc: IncrementalDeclCache | undefined;
       if (canIncremental) {
         prevInc = incCache.get(reply as object)?.get(options as object);
-        if (prevInc && hour >= prevInc.validFrom && hour < prevInc.validUntil && prevInc.identity === identitySignature(readView, prevInc.colSpecs, prevInc.rawRows, hour, options)) {
+        if (prevInc && hour >= prevInc.validFrom && hour < prevInc.validUntil && matchesDeclarativeIdentities(readView, prevInc.colSpecs, prevInc.rawRows, prevInc.identity, hour, options)) {
           const changed = changedLiveRows(prevInc.live, live);
           if (changed !== null) {
             if (changed.size === 0) {
-              return { ...prevInc.model, hour, changedKeys: changed, changedRows: new Map() };
+              return { ...prevInc.model, hour, changedKeys: changed, changedRows: EMPTY_CHANGED_ROWS };
             }
             {
               const colSpecs = prevInc.colSpecs;
               const boundary = newIdentityBoundary();
-              const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, row);
               const nextRows = prevInc.model.rows.slice();
               const touchedKeys = new Set<string>();
               const touchedRows = new Map<string, TableRow>();
               for (const key of changed) {
                 const idx = prevInc.keyToIndex.get(key);
                 if (idx === undefined) continue;
-                const built = buildRow(prevInc.rawRows[idx]!);
+                const built = buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, prevInc.rawRows[idx]!);
                 nextRows[idx] = built;
                 touchedKeys.add(key);
                 touchedRows.set(key, built);
               }
               const nextChangeAt = Math.min(prevInc.model.nextChangeAt ?? Infinity, boundary.next);
-              const nextModel: TableModel = {
-                ...prevInc.model,
-                hour,
-                rows: nextRows,
-                changedKeys: touchedKeys,
-                changedRows: touchedRows,
-                ...(nextChangeAt < Infinity ? { nextChangeAt } : {}),
-              };
+              const nextModel: TableModel = nextChangeAt < Infinity
+                ? { ...prevInc.model, hour, rows: nextRows, changedKeys: touchedKeys, changedRows: touchedRows, nextChangeAt }
+                : { ...prevInc.model, hour, rows: nextRows, changedKeys: touchedKeys, changedRows: touchedRows };
               incCache.get(reply as object)!.set(options as object, {
                 ...prevInc,
                 live,
@@ -1583,37 +1645,18 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
         }
       }
 
-      const rawCols = typeof spec.columns === 'function'
-        ? (reply !== undefined ? spec.columns(reply, options) : [])
-        : spec.columns;
-      const colSpecs = rawCols.filter(col => !col.when || col.when(options));
-      const columns: TableColumnSpec[] = colSpecs.map(col => ({
-        key: col.key,
-        label: col.label,
-        as: col.cellBarWhen ? (col.cellBarWhen(options) ? 'faint' : 'plain') : col.as,
-        offered: col.offered,
-        tone: col.tone,
-        priority: col.priority,
-        unit: col.unit,
-        numeric: col.numeric,
-        format: col.format,
-        text: col.text,
-        widest: col.widest,
-        hideable: col.hideable,
-        sortable: col.sortable,
-        hint: col.hint,
-        cellKind: col.cellKind,
-        barEligible: col.barEligible,
-        pinned: col.pinned,
-        notRecordedReason: col.notRecordedReason,
-        skillIcon: col.skillIcon,
-        trackTone: col.trackTone,
-        headerGroup: col.headerGroup,
-        defaultHidden: col.defaultHidden,
-        showNamesDefault: col.showNamesDefault,
-        minWidth: col.minWidth,
-        maxWidth: col.maxWidth,
-      }));
+      let colSpecs: readonly DeclarativeColumnSpec<TRow, TOptions>[];
+      let columns: TableColumnSpec[];
+      if (staticColSpecs && staticColumns) {
+        colSpecs = staticColSpecs;
+        columns = staticColumns;
+      } else {
+        const rawCols = typeof spec.columns === 'function'
+          ? (reply !== undefined ? spec.columns(reply, options) : [])
+          : spec.columns;
+        colSpecs = rawCols.filter(col => !col.when || col.when(options));
+        columns = colSpecs.map(col => columnSpecOf(col, options));
+      }
       const rank = typeof spec.rank === 'function' ? spec.rank(options) : spec.rank;
       const rankMarkers = typeof spec.rankMarkers === 'function' ? spec.rankMarkers(options) : spec.rankMarkers;
       const panelRefused = readView.refused(panelKey);
@@ -1646,8 +1689,11 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
       }
       const extracted = spec.rows(reply, live, hour, options, readView);
       const boundary = newIdentityBoundary();
-      const buildRow = (row: TRow): TableRow => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, row);
-      const builtRows = extracted.rows.map(buildRow);
+      const rawRows = extracted.rows;
+      const builtRows = new Array<TableRow>(rawRows.length);
+      for (let i = 0; i < rawRows.length; i++) {
+        builtRows[i] = buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, rawRows[i]!);
+      }
       const rowsNext = Math.min(boundary.next, extracted.nextChangeAt ?? Infinity);
       const model: TableModel = {
         columns,
@@ -1684,9 +1730,9 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
           validFrom: hour,
           validUntil,
           colSpecs,
-          rawRows: extracted.rows,
+          rawRows,
           keyToIndex,
-          identity: identitySignature(readView, colSpecs, extracted.rows, hour, options),
+          identity: captureDeclarativeIdentities(readView, colSpecs, rawRows, hour, options),
           model,
         });
       }
@@ -1695,7 +1741,7 @@ export function declareTableProjection<TReply, TRow, TOptions = unknown>(
   };
 }
 
-const withArt = (art: ArtResult | undefined): { readonly art?: ArtResult } => (art ? { art } : {});
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 function buildDeclarativeRow<TReply, TRow, TOptions>(
   spec: DeclarativeTableSpec<TReply, TRow, TOptions>,
@@ -1719,12 +1765,12 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
   let colorHour = NaN;
   let colorVal: string | undefined;
   let colorExtra: Map<string, string | undefined> | undefined;
-  const lookupRowWho = (tag: string, atHour: number): ResolvedIdentity => {
+  const lookupRowWho: TableWho = (tag: string, atHour: number): ResolvedIdentity => {
     if (cachedWho !== undefined && cachedTag === tag && cachedHour === atHour) return cachedWho;
     const mapKey = cachedWho !== undefined ? `${tag}\u0000${atHour}` : '';
     const existing = cachedExtra?.get(mapKey);
     if (existing !== undefined) return existing;
-    const resolved = resolveIdentity(readView, 'country', tag, { atHour, boundary });
+    const resolved = resolveIdentityAt(readView, 'country', tag, atHour, 'panel', boundary);
     if (cachedWho === undefined) {
       cachedTag = tag;
       cachedHour = atHour;
@@ -1743,7 +1789,7 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
     if (colorTag === tag && colorHour === atHour) return colorVal;
     const mapKey = colorTag !== undefined ? `${tag}\u0000${atHour}` : '';
     if (colorExtra?.has(mapKey)) return colorExtra.get(mapKey);
-    const resolved = resolveCountryColor(readView, tag, { atHour, boundary });
+    const resolved = resolveCountryColorAt(readView, tag, atHour, boundary);
     if (colorTag === undefined) {
       colorTag = tag;
       colorHour = atHour;
@@ -1819,51 +1865,44 @@ function buildDeclarativeRow<TReply, TRow, TOptions>(
         const rawSort = readPath(row, col.sortPath);
         sortValue = valueFromNullable(rawSort as Scalar | null | undefined, resolveNullable(col.whenNull, row, options));
       }
-      cells[col.key] = {
-        value: cellValue,
-        ...(col.format ? { format: col.format } : {}),
-        ...withArt(col.art ? col.art(row, readView, options) : countryArt),
-        ...(!col.art && countryArtKey ? { artKey: countryArtKey } : {}),
-        ...(iconSlot ? { iconSlot: true } : {}),
-        ...(countryTag ? { country: countryTag } : {}),
-        ...(countryColor ? { countryColor } : {}),
-        ...(countryLoading ? { loading: true } : {}),
-        ...(col.status ? { status: col.status(row, options) } : {}),
-        ...(col.cellTone ? { tone: col.cellTone(row, options) } : {}),
-        ...(bar !== undefined ? { bar } : {}),
-        ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
-        ...(sortValue ? { sortValue } : {}),
-        ...(col.extra ? col.extra(row, live, hour, options) : {}),
-      };
-      continue;
     }
-    cells[col.key] = {
-      value: cellValue,
-      ...(col.format ? { format: col.format } : {}),
-      ...withArt(col.art?.(row, readView, options)),
-      ...(iconSlot ? { iconSlot: true } : {}),
-      ...(countryTag ? { country: countryTag } : {}),
-      ...(col.status ? { status: col.status(row, options) } : {}),
-      ...(bar !== undefined ? { bar } : {}),
-      ...(col.maximum !== undefined ? { maximum: col.maximum } : {}),
-      ...(sortValue ? { sortValue } : {}),
-      ...(col.extra ? col.extra(row, live, hour, options) : {}),
-    };
+    const cell: Mutable<TableCell> = { value: cellValue };
+    if (col.format) cell.format = col.format;
+    const art = col.art ? col.art(row, readView, options) : (colNa === null ? countryArt : undefined);
+    if (art) cell.art = art;
+    if (colNa === null && !col.art && countryArtKey) cell.artKey = countryArtKey;
+    if (iconSlot) cell.iconSlot = true;
+    if (countryTag) cell.country = countryTag;
+    if (colNa === null && countryColor) cell.countryColor = countryColor;
+    if (colNa === null && countryLoading) cell.loading = true;
+    if (col.status) cell.status = col.status(row, options);
+    if (colNa === null && col.cellTone) cell.tone = col.cellTone(row, options);
+    if (bar !== undefined) cell.bar = bar;
+    if (col.maximum !== undefined) cell.maximum = col.maximum;
+    if (sortValue) cell.sortValue = sortValue;
+    if (col.extra) Object.assign(cell, col.extra(row, live, hour, options));
+    cells[col.key] = cell;
   }
   const childItems = spec.children?.(row);
-  const who: TableWho = (tag, atHour) => lookupRowWho(tag, atHour);
-  return {
+  const builtRow: Mutable<TableRow> = {
     key,
-    name: spec.rowName(row, hour, options, who),
+    name: spec.rowName(row, hour, options, lookupRowWho),
     cells,
-    ...(spec.group ? { group: spec.group(row, hour, options) } : {}),
-    ...(childItems ? { children: childItems.map(child => buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, child)) } : {}),
-    ...(spec.initiallyOpen ? { initiallyOpen: spec.initiallyOpen(row) } : {}),
-    ...(spec.muted?.(row) ? { muted: true } : {}),
-    ...(spec.tooltipTitle ? { tooltipTitle: spec.tooltipTitle(row, hour, options, who) } : {}),
-    ...(spec.tooltipExtra ? { tooltipExtra: () => spec.tooltipExtra!(row, reply, live, hour, options) } : {}),
-    ...(spec.tooltipNote ? { tooltipNote: spec.tooltipNote(row, reply, live, hour, options) } : {}),
-    ...(spec.tooltipAction ? { tooltipAction: spec.tooltipAction(row, options) } : {}),
-    ...(spec.rowMeta ? { meta: spec.rowMeta(row, reply, options) } : {}),
   };
+  if (spec.group) builtRow.group = spec.group(row, hour, options);
+  if (childItems) {
+    const children = new Array<TableRow>(childItems.length);
+    for (let i = 0; i < childItems.length; i++) {
+      children[i] = buildDeclarativeRow(spec, colSpecs, reply, live, hour, options, readView, boundary, childItems[i]!);
+    }
+    builtRow.children = children;
+  }
+  if (spec.initiallyOpen) builtRow.initiallyOpen = spec.initiallyOpen(row);
+  if (spec.muted?.(row)) builtRow.muted = true;
+  if (spec.tooltipTitle) builtRow.tooltipTitle = spec.tooltipTitle(row, hour, options, lookupRowWho);
+  if (spec.tooltipExtra) builtRow.tooltipExtra = () => spec.tooltipExtra!(row, reply, live, hour, options);
+  if (spec.tooltipNote) builtRow.tooltipNote = spec.tooltipNote(row, reply, live, hour, options);
+  if (spec.tooltipAction) builtRow.tooltipAction = spec.tooltipAction(row, options);
+  if (spec.rowMeta) builtRow.meta = spec.rowMeta(row, reply, options);
+  return builtRow;
 }

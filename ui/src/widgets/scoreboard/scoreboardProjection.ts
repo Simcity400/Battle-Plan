@@ -15,7 +15,15 @@ import {
   type HourRanges,
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
-import { identityCell, LOADING_NAME, newIdentityBoundary, type IdentityBoundary } from '../../families/table/identityCell.ts';
+import {
+  captureCountryIdentity,
+  identityCellAt,
+  LOADING_NAME,
+  matchesCountryIdentity,
+  newIdentityBoundary,
+  type CountryIdentitySnapshot,
+  type IdentityBoundary,
+} from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { encodeTableSettings, OFFERED, TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
@@ -55,11 +63,23 @@ export interface ScoreboardProjectionOptions {
   readonly rankMarkers: boolean;
 }
 
-const columnFormat = (column: ScoreboardColumn): ValueFormat =>
-  ({ decimals: column.decimals, percent: column.unit === 'percent' });
+const columnFormatCache = new WeakMap<ScoreboardColumn, ValueFormat>();
+const columnFormat = (column: ScoreboardColumn): ValueFormat => {
+  let held = columnFormatCache.get(column);
+  if (!held) {
+    held = { decimals: column.decimals, percent: column.unit === 'percent' };
+    columnFormatCache.set(column, held);
+  }
+  return held;
+};
+
+const scoreboardColumnsCache = new WeakMap<readonly ScoreboardColumn[], Map<number | null, TableColumnSpec[]>>();
 
 export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: number | null): TableColumnSpec[] {
-  return [
+  let byTop = scoreboardColumnsCache.get(shown);
+  const cached = byTop?.get(top);
+  if (cached) return cached;
+  const built: TableColumnSpec[] = [
     {
       key: 'country',
       label: 'Country',
@@ -91,8 +111,13 @@ export function scoreboardColumnsSpec(shown: readonly ScoreboardColumn[], top: n
       };
     }),
   ];
+  if (!byTop) scoreboardColumnsCache.set(shown, byTop = new Map());
+  byTop.set(top, built);
+  return built;
 }
 
+const EMPTY_CHANGED_KEYS: ReadonlySet<string> = new Set();
+const EMPTY_CHANGED_ROWS: ReadonlyMap<string, TableRow> = new Map();
 
 interface ScoreboardIncCache {
   readonly validFrom: number;
@@ -100,69 +125,88 @@ interface ScoreboardIncCache {
   readonly rankAnswer: FollowedAnswer | undefined;
   readonly answers: readonly (FollowedAnswer | undefined)[];
   readonly partials: readonly (FollowedAnswer | undefined)[];
+  readonly formats: readonly ValueFormat[];
   readonly entries: readonly { readonly key: string; readonly displayTag: string; readonly wireName: string }[];
-  readonly identity: string;
+  readonly identity: readonly CountryIdentitySnapshot[];
   readonly wireToIndices: ReadonlyMap<string, readonly number[]>;
   readonly model: TableModel;
 }
 
 const scoreboardIncCache = new WeakMap<ScoreboardProjectionOptions, ScoreboardIncCache>();
 
-const countryColourOf = (cell: TableCell): { readonly countryColor?: string } => (cell.countryColor ? { countryColor: cell.countryColor } : {});
-
 const nameOf = (cell: TableCell, tag: string): string => (cell.value.kind === 'known' ? String(cell.value.value) : cell.loading ? LOADING_NAME : tag);
 
-function identityStamp(readView: BoundedReadView, entries: readonly { readonly displayTag: string }[], hour: number): string {
-  return entries.map(entry => {
-    const cell = identityCell(readView, 'country', entry.displayTag, { atHour: hour });
-    return JSON.stringify([entry.displayTag, cell.value, cell.countryColor ?? null, cell.art?.status ?? null, cell.art?.status === 'ready' ? cell.art.url : null]);
-  }).join(',');
+function captureScoreboardIdentities(
+  readView: BoundedReadView,
+  entries: readonly { readonly displayTag: string }[],
+  hour: number,
+): readonly CountryIdentitySnapshot[] {
+  const out = new Array<CountryIdentitySnapshot>(entries.length);
+  for (let i = 0; i < entries.length; i++) {
+    out[i] = captureCountryIdentity(readView, entries[i]!.displayTag, hour);
+  }
+  return out;
+}
+
+function matchesScoreboardIdentities(
+  readView: BoundedReadView,
+  identities: readonly CountryIdentitySnapshot[],
+  hour: number,
+): boolean {
+  let matched = true;
+  for (let i = 0; i < identities.length; i++) {
+    if (!matchesCountryIdentity(readView, identities[i]!, hour)) matched = false;
+  }
+  return matched;
 }
 
 function buildScoreboardRow(
   entry: { readonly key: string; readonly displayTag: string; readonly wireName: string },
   readView: BoundedReadView,
   hour: number,
-  options: ScoreboardProjectionOptions,
+  shown: readonly ScoreboardColumn[],
+  answers: readonly (FollowedAnswer | undefined)[],
+  partials: readonly (FollowedAnswer | undefined)[],
+  formats: readonly ValueFormat[],
   boundary: IdentityBoundary,
 ): TableRow {
   const { key, displayTag, wireName } = entry;
-  const cells: Record<string, TableCell> = {
-    country: identityCell(readView, 'country', displayTag, { atHour: hour, boundary }),
-  };
-  const colour = countryColourOf(cells.country!);
+  const countryCell = identityCellAt(readView, 'country', displayTag, hour, 'panel', boundary);
+  const cells: Record<string, TableCell> = { country: countryCell };
+  const countryColor = countryCell.countryColor;
   let hasPartial = false;
-  for (let i = 0; i < options.shown.length; i++) {
-    const column = options.shown[i]!;
-    const format = columnFormat(column);
+  for (let i = 0; i < shown.length; i++) {
+    const column = shown[i]!;
+    const format = formats[i]!;
+    let value: Value<NumericScalar>;
     if (!column.available || !column.family) {
-      cells[column.key] = { value: notRecorded(column.reason ?? 'Unavailable'), format, country: displayTag, ...colour };
-      continue;
+      value = notRecorded(column.reason ?? 'Unavailable');
+    } else {
+      const partialAns = partials[i];
+      let isPartialCell = false;
+      if (partialAns) {
+        const mark = valueFromNamedAnswer(partialAns, wireName);
+        if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
+      }
+      const base = valueFromNamedAnswer(answers[i], wireName);
+      value = base;
+      if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
+        value = partialValue(base.value, 'Some inputs were not recorded at this hour');
+        hasPartial = true;
+      }
     }
-    const answer = readView.answer(column.key);
-    const partialAns = column.partial ? readView.answer(partialSource(column.key)) : undefined;
-    let isPartialCell = false;
-    if (partialAns) {
-      const mark = valueFromNamedAnswer(partialAns, wireName);
-      if (mark.kind === 'known' && mark.value !== 0 && mark.value !== 0n) isPartialCell = true;
-    }
-    const base = valueFromNamedAnswer(answer, wireName);
-    let value: Value<NumericScalar> = base;
-    if (isPartialCell && (base.kind === 'known' || base.kind === 'zero')) {
-      value = partialValue(base.value, 'Some inputs were not recorded at this hour');
-      hasPartial = true;
-    }
-    cells[column.key] = { value, format, country: displayTag, ...colour };
+    cells[column.key] = countryColor !== undefined
+      ? { value, format, country: displayTag, countryColor }
+      : { value, format, country: displayTag };
   }
-  return {
-    key,
-    name: nameOf(cells.country!, displayTag),
-    cells,
-    ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
-  };
+  const name = nameOf(countryCell, displayTag);
+  return hasPartial
+    ? { key, name, cells, tooltipNote: 'Partial values omit unrecorded inputs at this hour.' }
+    : { key, name, cells };
 }
 
 function sameValue(a: Value, b: Value): boolean {
+  if (a === b) return true;
   if (a.kind !== b.kind) return false;
   if (a.kind === 'known' || a.kind === 'zero') return a.value === (b as typeof a).value;
   if (a.kind === 'partial') return a.value === (b as typeof a).value && a.reason === (b as typeof a).reason && a.atLeast === (b as typeof a).atLeast;
@@ -174,22 +218,34 @@ function sameRow(before: TableRow, after: TableRow): boolean {
   for (const key in after.cells) {
     const a = before.cells[key];
     const b = after.cells[key]!;
-    if (!a || a.country !== b.country || a.art !== b.art || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
+    if (!a || a.country !== b.country || a.art !== b.art || a.artKey !== b.artKey || a.countryColor !== b.countryColor || !sameValue(a.value, b.value)) return false;
   }
   return true;
 }
 
 function sameRankedEntries(
   entries: readonly { readonly key: string }[],
+  wireToIndices: ReadonlyMap<string, readonly number[]>,
   rankAnswer: FollowedAnswer | undefined,
 ): boolean {
   if (!rankAnswer || rankAnswer.kind === 'notRecorded') return false;
   const tags = rankedTags(rankAnswer);
   if (tags.length !== entries.length) return false;
+  let exact = true;
   for (let i = 0; i < tags.length; i++) {
-    if (entries[i]!.key !== tags[i]) return false;
+    if (entries[i]!.key !== tags[i]) {
+      exact = false;
+      break;
+    }
   }
-  return true;
+  if (exact) return true;
+  const seen = new Set<string>();
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i]!;
+    if (!wireToIndices.has(tag) || seen.has(tag)) return false;
+    seen.add(tag);
+  }
+  return seen.size === entries.length;
 }
 
 export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> = registerFamilyProjection({
@@ -216,16 +272,17 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       if (options.top == null && options.unobserved?.some(([first, last]) => first <= reply.hour && reply.hour <= last)) {
         return { columns, rows: [], hour: reply.hour, rowTimeBoundaries: false, empty: 'Group membership is unavailable at this time.', emptyKind: 'unavailable', rank: true, rankMarkers: options.rankMarkers, warnings: reply.warnings };
       }
+      const formats = options.shown.map(columnFormat);
       const rows: TableRow[] = reply.rows.map(row => {
         const key = countryKey(row.country);
-        const cells: Record<string, TableCell> = {
-          country: identityCell(readView, 'country', row.tag, { atHour: reply.hour }),
-        };
-        const colour = countryColourOf(cells.country!);
+        const countryCell = identityCellAt(readView, 'country', row.tag, reply.hour);
+        const cells: Record<string, TableCell> = { country: countryCell };
+        const countryColor = countryCell.countryColor;
         let hasPartial = false;
-        options.shown.forEach((column, at) => {
+        for (let at = 0; at < options.shown.length; at++) {
+          const column = options.shown[at]!;
           const rawCell = row.cells[at]!;
-          const format = columnFormat(column);
+          const format = formats[at]!;
           const value: Value<bigint> = !column.available
             ? notRecorded(column.reason ?? 'Unavailable')
             : valueFromRawBigInt(
@@ -234,14 +291,14 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
               { partial: rawCell.partial ? 'Some inputs were not recorded at this hour' : null },
             );
           if (value.kind === 'partial') hasPartial = true;
-          cells[column.key] = { value, format, country: row.tag, ...colour };
-        });
-        return {
-          key,
-          name: nameOf(cells.country!, row.tag),
-          cells,
-          ...(hasPartial ? { tooltipNote: 'Partial values omit unrecorded inputs at this hour.' } : {}),
-        };
+          cells[column.key] = countryColor !== undefined
+            ? { value, format, country: row.tag, countryColor }
+            : { value, format, country: row.tag };
+        }
+        const name = nameOf(countryCell, row.tag);
+        return hasPartial
+          ? { key, name, cells, tooltipNote: 'Partial values omit unrecorded inputs at this hour.' }
+          : { key, name, cells };
       });
       return {
         columns,
@@ -262,15 +319,21 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       && hour >= prevInc.validFrom
       && hour < prevInc.validUntil
       && prevInc.entries.length > 0
-      && prevInc.identity === identityStamp(readView, prevInc.entries, hour)
+      && matchesScoreboardIdentities(readView, prevInc.identity, hour)
       && (
         options.top == null
         || prevInc.rankAnswer === rankAnswer
-        || sameRankedEntries(prevInc.entries, rankAnswer)
+        || sameRankedEntries(prevInc.entries, prevInc.wireToIndices, rankAnswer)
       )
     ) {
-      const nextAnswers = options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined));
-      const nextPartials = options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined));
+      const shownCount = options.shown.length;
+      const nextAnswers = new Array<FollowedAnswer | undefined>(shownCount);
+      const nextPartials = new Array<FollowedAnswer | undefined>(shownCount);
+      for (let i = 0; i < shownCount; i++) {
+        const col = options.shown[i]!;
+        nextAnswers[i] = col.available && col.family ? readView.answer(col.key) : undefined;
+        nextPartials[i] = col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined;
+      }
       const touchedIndices = new Set<number>();
       let canPatch = true;
       const collectDiff = (prevAns: FollowedAnswer | undefined, nextAns: FollowedAnswer | undefined) => {
@@ -292,13 +355,13 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           for (let k = 0; k < indices.length; k++) touchedIndices.add(indices[k]!);
         }
       };
-      for (let i = 0; i < options.shown.length && canPatch; i++) {
+      for (let i = 0; i < shownCount && canPatch; i++) {
         collectDiff(prevInc.answers[i], nextAnswers[i]);
         if (canPatch) collectDiff(prevInc.partials[i], nextPartials[i]);
       }
       if (canPatch) {
         if (touchedIndices.size === 0) {
-          const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: new Set(), changedRows: new Map() };
+          const nextModel: TableModel = { ...prevInc.model, hour, changedKeys: EMPTY_CHANGED_KEYS, changedRows: EMPTY_CHANGED_ROWS };
           scoreboardIncCache.set(options, {
             ...prevInc,
             rankAnswer,
@@ -309,24 +372,26 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
           return nextModel;
         }
         {
-          const nextRows = prevInc.model.rows.slice();
+          let nextRows: TableRow[] | null = null;
           const changedKeys = new Set<string>();
           const changedRows = new Map<string, TableRow>();
+          const boundary = newIdentityBoundary();
           for (const idx of touchedIndices) {
-            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options, newIdentityBoundary());
+            const prevRow = prevInc.model.rows[idx]!;
+            const built = buildScoreboardRow(prevInc.entries[idx]!, readView, hour, options.shown, nextAnswers, nextPartials, prevInc.formats, boundary);
+            if (sameRow(prevRow, built)) continue;
+            if (!nextRows) nextRows = prevInc.model.rows.slice();
             nextRows[idx] = built;
             changedKeys.add(built.key);
             changedRows.set(built.key, built);
           }
-          const nextModel: TableModel = {
-            ...prevInc.model,
-            hour,
-            rows: nextRows,
-            changedKeys,
-            changedRows,
-          };
+          const validUntil = Math.min(prevInc.validUntil, boundary.next);
+          const nextModel: TableModel = nextRows
+            ? { ...prevInc.model, hour, rows: nextRows, changedKeys, changedRows }
+            : { ...prevInc.model, hour, changedKeys: EMPTY_CHANGED_KEYS, changedRows: EMPTY_CHANGED_ROWS };
           scoreboardIncCache.set(options, {
             ...prevInc,
+            validUntil,
             rankAnswer,
             answers: nextAnswers,
             partials: nextPartials,
@@ -367,13 +432,25 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
       }
     }
 
+    const shownCount = options.shown.length;
+    const answers = new Array<FollowedAnswer | undefined>(shownCount);
+    const partials = new Array<FollowedAnswer | undefined>(shownCount);
+    const formats = new Array<ValueFormat>(shownCount);
+    for (let i = 0; i < shownCount; i++) {
+      const col = options.shown[i]!;
+      answers[i] = col.available && col.family ? readView.answer(col.key) : undefined;
+      partials[i] = col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined;
+      formats[i] = columnFormat(col);
+    }
+
     const held = prevInc ? new Map(prevInc.model.rows.map(row => [row.key, row])) : null;
     const boundary = newIdentityBoundary();
-    const rows: TableRow[] = activeEntries.map(entry => {
-      const built = buildScoreboardRow(entry, readView, hour, options, boundary);
+    const rows = new Array<TableRow>(activeEntries.length);
+    for (let i = 0; i < activeEntries.length; i++) {
+      const built = buildScoreboardRow(activeEntries[i]!, readView, hour, options.shown, answers, partials, formats, boundary);
       const before = held?.get(built.key);
-      return before && sameRow(before, built) ? before : built;
-    });
+      rows[i] = before && sameRow(before, built) ? before : built;
+    }
     const model: TableModel = {
       columns,
       rows,
@@ -401,10 +478,11 @@ export const scoreboardProjection: TableProjection<ScoreboardProjectionOptions> 
         validFrom: hour,
         validUntil,
         rankAnswer,
-        answers: options.shown.map(col => (col.available && col.family ? readView.answer(col.key) : undefined)),
-        partials: options.shown.map(col => (col.available && col.family && col.partial ? readView.answer(partialSource(col.key)) : undefined)),
+        answers,
+        partials,
+        formats,
         entries: activeEntries,
-        identity: identityStamp(readView, activeEntries, hour),
+        identity: captureScoreboardIdentities(readView, activeEntries, hour),
         wireToIndices,
         model,
       });
