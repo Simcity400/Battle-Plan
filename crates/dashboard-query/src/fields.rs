@@ -11,7 +11,6 @@ pub enum HourRole {
     Read,
     Start,
     End,
-    Bucket,
 }
 
 impl HourRole {
@@ -21,7 +20,6 @@ impl HourRole {
             Self::Read => Some("read"),
             Self::Start => Some("start"),
             Self::End => Some("end"),
-            Self::Bucket => Some("bucket"),
         }
     }
 }

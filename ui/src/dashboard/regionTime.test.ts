@@ -207,7 +207,7 @@ test('the validators follow every role the contract declares, for every product 
   let checked = 0;
   for (const [product, fields] of Object.entries(REQUEST_HOURS)) for (const [path, role] of Object.entries(fields)) {
     const at = (hour: number) => place(path.split('.'), hour);
-    const exact = role === 'read' || role === 'bucket';
+    const exact = role === 'read';
     assert.equal(refusedHours(product, at(104), GAPPED), null, `${product} ${path}: a recorded hour`);
     assert.equal(refusedHours(product, at(105), GAPPED) === null, !exact, `${product} ${path} (${role}): an unrecorded hour`);
     assert.match(refusedHours(product, at(95), GAPPED) ?? '', /outside branch/, `${product} ${path}: an hour outside the branch`);
