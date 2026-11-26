@@ -3425,20 +3425,24 @@ cells: Array<LogCell>, };
 export type LogFacetCountAsk = { key: string, facets: Array<FacetFilter>, };
 export type LogTailParams = { branchId: string, log: string, facets: Array<FacetFilter>, from: number | null, hour?: number, offset?: string, limit: number, columns: Array<string> | null, countFacets: Array<LogFacetCountAsk>, };
 export type LogTailReply = { branchId: string, log: string, columns: Array<string>, baseOrdinal: string, firstOrdinal: string, offset: string, total: string, rows: Array<LogPageRow>, counts: Array<OccurrenceCount>, missing: Array<MissingSpan>, warnings: Array<string>, };
-export type MarketLedgerTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, sort?: OccurrenceSort, offset?: string, limit: number,
+export type MarketLedgerTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, search?: string, offset?: string, limit: number,
 /**
  * The statuses listed, each at the hour asked; every one when none.
  */
 statuses?: Array<MarketContractStatus>,
 /**
- * The contracts, by key, whose events are listed; the others list none, and `eventsTotal` counts them.
+ * The contracts, by key, whose newest 32 events are listed as lines after them; the others list none.
  */
-expanded?: Array<string>, };
+expanded?: Array<string>,
+/**
+ * The expanded contracts, by key, that list every event, paged with the other lines.
+ */
+full?: Array<string>, };
 export type MarketContractStatus = "requested" | "active" | "ended" | "notRecorded" | "requestEnded";
 export type MarketContractEventKind = "requestPosted" | "contractStarted" | "contractEnded" | "requestEnded" | "delivery" | "payment" | "deliveryUnavailable";
 export type MarketContractItem = { variant: string, name: string | null, nameMissing: string | null, icon: string | null,
 /**
- * Delivered by the hour asked; null with `deliveryUnavailable` when not every delivery is known.
+ * The latest certified cumulative delivery plus the deliveries witnessed after it, read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded.
  */
 deliveredRaw: string | null, contractedRaw: string | null, deliveryUnavailable: string | null, };
 export type MarketQuote = { variant: string, name: string | null, nameMissing: string | null,
@@ -3446,29 +3450,47 @@ export type MarketQuote = { variant: string, name: string | null, nameMissing: s
  * The recorded price of this variant in the terms, as stored; never summed across variants.
  */
 priceRaw: string, };
-export type MarketContractEvent = { key: string, hour: number, kind: MarketContractEventKind, variant: string | null, equipment: string | null, equipmentMissing: string | null, amountRaw: string | null, amountNotRecorded: boolean, reason: string | null, };
+export type MarketContractEvent = { key: string,
+/**
+ * The contract this event belongs to, by its key, and its parties at the hour asked.
+ */
+contract: string, seller: string | null, buyer: string | null,
+/**
+ * The game hour the event happened; it is listed only from the hour it was read.
+ */
+hour: number, kind: MarketContractEventKind, variant: string | null, equipment: string | null, equipmentMissing: string | null, amountRaw: string | null, amountNotRecorded: boolean, reason: string | null, };
 export type MarketContractRow = {
 /**
  * The recorded contract: seller, agreement and whether it is a request, and its incarnation.
  */
 key: string,
 /**
- * The hour the request was posted or the contract accepted; the first event seen when neither was.
+ * The hour the request was posted or the contract accepted; the first event seen when neither was (`exact` false).
  */
 hour: number, observed: number, exact: boolean, ordinal: string, live: boolean, request: boolean, requestedHour: number | null, startedHour: number | null, endedHour: number | null, status: MarketContractStatus, seller: string | null, sellerNotRecorded: boolean, buyer: string | null, buyerNotRecorded: boolean, items: Array<MarketContractItem>,
 /**
  * Why deliveries are not known for the whole contract (a refusal naming no design, or an unread stretch).
  */
-deliveryMissing: string | null, paidRaw: string | null,
+deliveryMissing: string | null,
+/**
+ * The payments witnessed by the hour asked; with `paidMissing` only a lower bound.
+ */
+paidRaw: string | null,
 /**
  * Why the paid total is not known by the hour asked; null with `paidRaw` null means nothing paid yet.
  */
 paidMissing: string | null, quotes: Array<MarketQuote>, termsMissing: string | null,
 /**
- * The newest events by the hour asked, at most 32, for an expanded contract only; `eventsTotal` counts them all.
+ * The events read by the hour asked; an expanded contract lists them as `event` lines after it.
  */
-events: Array<MarketContractEvent>, eventsTotal: string, };
-export type MarketLedgerTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, rows: Array<MarketContractRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
+eventsTotal: string, };
+export type MarketEventsMore = { key: string, hour: number, contract: string, total: string,
+/**
+ * The older events not listed; zero when the contract lists them all.
+ */
+hidden: string, };
+export type MarketLedgerLine = { "line": "contract" } & MarketContractRow | { "line": "event" } & MarketContractEvent | { "line": "more" } & MarketEventsMore;
+export type MarketLedgerTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, rows: Array<MarketLedgerLine>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
 export type MarketLendLeaseParams = { branchId: string,
 /**
  * Rows these countries take part in (as seller or buyer, giver or receiver); every row when
@@ -6665,7 +6687,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "leader-name-runs": { "branchId": "leaf", "from": "leaf", "owner": "any", "references": "node", "references[]": "leaf", "to": "leaf" },
   "lend-lease-balance": { "branchId": "leaf", "countries": "node", "countries[]": "any", "holder": "any", "hour": "leaf", "rank": "leaf", "top": "leaf" },
   "log-tail": { "branchId": "leaf", "columns": "node", "columns[]": "leaf", "countFacets": "node", "countFacets[]": "node", "countFacets[].facets": "node", "countFacets[].facets[]": "node", "countFacets[].facets[].countries": "node", "countFacets[].facets[].countries[]": "any", "countFacets[].facets[].deduplicate": "leaf", "countFacets[].facets[].membership": "node", "countFacets[].facets[].membership[]": "node", "countFacets[].facets[].membership[].country": "any", "countFacets[].facets[].membership[].firstHour": "leaf", "countFacets[].facets[].membership[].lastHour": "leaf", "countFacets[].facets[].name": "leaf", "countFacets[].facets[].unobserved": "node", "countFacets[].facets[].unobserved[]": "node", "countFacets[].facets[].unobserved[].firstHour": "leaf", "countFacets[].facets[].unobserved[].lastHour": "leaf", "countFacets[].facets[].values": "node", "countFacets[].facets[].values[]": "leaf", "countFacets[].key": "leaf", "facets": "node", "facets[]": "node", "facets[].countries": "node", "facets[].countries[]": "any", "facets[].deduplicate": "leaf", "facets[].membership": "node", "facets[].membership[]": "node", "facets[].membership[].country": "any", "facets[].membership[].firstHour": "leaf", "facets[].membership[].lastHour": "leaf", "facets[].name": "leaf", "facets[].unobserved": "node", "facets[].unobserved[]": "node", "facets[].unobserved[].firstHour": "leaf", "facets[].unobserved[].lastHour": "leaf", "facets[].values": "node", "facets[].values[]": "leaf", "from": "leaf", "hour": "leaf", "limit": "leaf", "log": "leaf", "offset": "leaf" },
-  "market-ledger-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
+  "market-ledger-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "expanded": "node", "expanded[]": "leaf", "from": "leaf", "full": "node", "full[]": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "search": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
   "market-lendlease": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "leaseSide": "leaf", "only": "leaf", "row": "leaf" },
   "military-air-at": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "countries": "node", "countries[]": "any", "family": "leaf", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "regions": "node", "regions[]": "leaf", "top": "leaf" },
   "military-air-ledger": { "branchId": "leaf", "causes": "node", "causes[]": "leaf", "family": "leaf", "fromHour": "leaf", "regions": "node", "regions[]": "leaf", "top": "node", "top.count": "leaf", "top.metric": "leaf", "window": "leaf" },

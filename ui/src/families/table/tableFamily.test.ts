@@ -2916,12 +2916,13 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
   const marketReply: MarketLedgerTailReply = {
     branchId: '1',
     offset: '0',
-    total: '2',
+    total: '4',
     live: '1',
     counts: [{ key: 'active', total: '1' }],
     nextChange: null,
     rows: [
       {
+        line: 'contract',
         key: '0000000000000012',
         hour: 100,
         observed: 100,
@@ -2952,12 +2953,11 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         quotes: [{ variant: '6', name: 'Infantry Equipment I', nameMissing: null, priceRaw: '9600000' }],
         termsMissing: null,
         eventsTotal: '2',
-        events: [
-          { key: '3', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
-          { key: '2', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
-        ],
       },
+      { line: 'event', key: '3', contract: '0000000000000012', seller: 'GER', buyer: 'FRA', hour: 108, kind: 'payment', variant: null, equipment: null, equipmentMissing: null, amountRaw: '4800000', amountNotRecorded: false, reason: null },
+      { line: 'event', key: '2', contract: '0000000000000012', seller: 'GER', buyer: 'FRA', hour: 105, kind: 'delivery', variant: '6', equipment: 'Infantry Equipment I', equipmentMissing: null, amountRaw: '25000000', amountNotRecorded: false, reason: null },
       {
+        line: 'contract',
         key: '0000000000000099',
         hour: 100,
         observed: 100,
@@ -2988,29 +2988,28 @@ test('batch 1 log projections: market-ledger contract grouping, decisions runnin
         quotes: [],
         termsMissing: "The contract's terms were not recorded at its start",
         eventsTotal: '0',
-        events: [],
       },
     ],
     missing: [],
     warnings: [],
   };
   const marketValidated = validateGenericTailReply(marketReply, 110);
-  assert.equal(marketValidated.total, 2);
+  assert.equal(marketValidated.total, 4);
   const marketSource = buildRowSourceFromHead('mkt', marketReply, undefined, 110)!;
   const marketModel = marketLedgerProjection.project(createBoundedReadView({ hour: 110, rows: new Map([['main', marketSource]]) }), {
     perspective: 'FRA',
     selectionEmpty: null,
   });
-  assert.equal(marketModel.rows.length, 2);
+  assert.equal(marketModel.rows.length, 4);
   assert.equal(marketModel.rows[0]!.cells.status.statusKind, 'running');
   assert.equal(marketModel.rows[0]!.cells.delivered.value.kind, 'known');
   assert.equal(marketModel.rows[0]!.cells.delivered.value.kind === 'known' ? marketModel.rows[0]!.cells.delivered.value.value : null, '250 / 500');
   assert.equal(marketModel.rows[0]!.cells.paid.value.kind === 'known' ? marketModel.rows[0]!.cells.paid.value.value : null, '\u221248');
-  assert.equal(marketModel.rows[0]!.children?.length, 2, 'deliveries and payments remain separate child rows');
-  assert.equal(marketModel.rows[0]!.children?.[0]!.cells.delivered.value.kind, 'notApplicable', 'payment child row never fabricates delivery count');
-  assert.equal(marketModel.rows[0]!.children?.[1]!.cells.paid.value.kind, 'notApplicable', 'delivery child row never pairs payment');
-  assert.equal(marketModel.rows[1]!.cells.delivered.value.kind, 'notRecorded', 'unavailable delivery stays notRecorded');
-  assert.equal(marketModel.rows[1]!.cells.item.value.kind, 'notRecorded', 'unnamed design stays notRecorded');
+  assert.deepEqual(marketModel.rows.slice(1, 3).map(row => row.pageParent), ['group:0000000000000012', 'group:0000000000000012'], 'deliveries and payments remain separate lines under their contract');
+  assert.equal(marketModel.rows[1]!.cells.delivered.value.kind, 'notApplicable', 'payment child row never fabricates delivery count');
+  assert.equal(marketModel.rows[2]!.cells.paid.value.kind, 'notApplicable', 'delivery child row never pairs payment');
+  assert.equal(marketModel.rows[3]!.cells.delivered.value.kind, 'notRecorded', 'unavailable delivery stays notRecorded');
+  assert.equal(marketModel.rows[3]!.cells.item.value.kind, 'notRecorded', 'unnamed design stays notRecorded');
 
   const decRows: ScriptPageRow[] = [
     {
