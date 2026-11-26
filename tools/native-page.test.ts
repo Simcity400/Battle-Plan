@@ -181,22 +181,31 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     await rm(virtualProfile, { recursive: true, force: true });
   }
 
+  const redirectTarget = createServer((request, response) => {
+    if (request.url === '/deep/entry.js') {
+      response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      response.end('import "./module.js";\n');
+      return;
+    }
+    if (request.url === '/deep/module.js') {
+      response.setHeader('Content-Type', 'text/javascript');
+      response.end('export const redirected = true;\n');
+      return;
+    }
+    response.statusCode = 404;
+    response.end('missing');
+  });
+  await new Promise<void>(done => redirectTarget.listen(0, '127.0.0.1', done));
+  const redirectAddr = redirectTarget.address();
+  assert.ok(redirectAddr && typeof redirectAddr !== 'string');
   const redirectProfile = await mkdtemp(resolve(tmpdir(), 'native-dev-redirect-'));
   const redirected = await devServer('test-redirect', '/test-redirect-page', '/alias.js', redirectProfile, [{
     name: 'redirect-fixture',
     configureServer(server) {
       server.middlewares.use('/alias.js', (_request, response) => {
         response.statusCode = 302;
-        response.setHeader('Location', '/deep/entry.js');
+        response.setHeader('Location', `http://127.0.0.1:${redirectAddr.port}/deep/entry.js`);
         response.end();
-      });
-      server.middlewares.use('/deep/entry.js', (_request, response) => {
-        response.setHeader('Content-Type', 'text/javascript');
-        response.end('import "./module.js";\n');
-      });
-      server.middlewares.use('/deep/module.js', (_request, response) => {
-        response.setHeader('Content-Type', 'text/javascript');
-        response.end('export const redirected = true;\n');
       });
     },
   }]);
@@ -204,6 +213,7 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     await redirected.ready();
   } finally {
     await redirected.close();
+    await new Promise<void>(done => { redirectTarget.close(() => done()); redirectTarget.closeAllConnections(); });
     await rm(redirectProfile, { recursive: true, force: true });
   }
 
@@ -216,8 +226,8 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
         response.end('import "./mismatch.js";\n');
       });
       server.middlewares.use('/mismatch.js', (_request, response) => {
-        response.setHeader('Content-Type', 'text/html');
-        response.end('<!doctype html><p>not js</p>');
+        response.setHeader('Content-Type', 'application/javascript+json');
+        response.end('export const bad = true;\n');
       });
     },
   }]);
@@ -228,7 +238,7 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
         assert.ok(error instanceof Error);
         assert.ok(!(error instanceof assert.AssertionError));
         assert.match(error.message, /fixture could not be loaded \(\/mime-entry\.js\)/);
-        assert.match(error.message, /non-JavaScript content-type "text\/html" for \/mismatch\.js/);
+        assert.match(error.message, /non-JavaScript content-type "application\/javascript\+json" for http:\/\/127\.0\.0\.1:\d+\/mismatch\.js/);
         return true;
       },
     );
@@ -274,6 +284,11 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
   const transformHold = new Promise<void>(done => { releaseTransform = done; });
   const stalled = await devServer('test-stalled', '/test-stalled-page', '/virtual/stalled-fixture.ts', stalledProfile, [{
     name: 'stalled-fixture',
+    configureServer(server) {
+      server.httpServer?.on('upgrade', (_request, socket) => {
+        socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: test\r\nConnection: Upgrade\r\n\r\n');
+      });
+    },
     resolveId(id) {
       return id === '/virtual/stalled-fixture.ts' ? id : null;
     },
@@ -284,7 +299,15 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
       return 'export const never = true;\n';
     },
   }]);
+  const upgradedSocket = connect(stalled.port, '127.0.0.1');
   try {
+    await new Promise<void>((done, reject) => {
+      upgradedSocket.once('connect', () => {
+        upgradedSocket.write('GET /up HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n');
+      });
+      upgradedSocket.once('data', () => done());
+      upgradedSocket.once('error', reject);
+    });
     const controller = new AbortController();
     const pending = stalled.ready(controller.signal);
     await transformEntered;
@@ -292,6 +315,7 @@ test('devServer pre-warms virtual and redirected HTTP modules, checks dependency
     await assert.rejects(() => pending, /stalled page load timed out/);
     await stalled.close();
   } finally {
+    upgradedSocket.destroy();
     releaseTransform();
     await rm(stalledProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -357,8 +381,7 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
     let seenNetworkFailure!: () => void;
     const networkFailureSeen = new Promise<void>(done => { seenNetworkFailure = done; });
     const served = { fixture: '/fixture.js', failures: [] as ServerFailure[] };
-    const staged = runFixtureLoadStage(stage, 'fixture page load', served, async (signal, beginLoad) => {
-      const tracked = beginLoad();
+    const staged = runFixtureLoadStage(stage, 'fixture page load', served, async (signal, tracked) => {
       const originalPush = tracked.push.bind(tracked);
       tracked.push = (...items: BrowserNetworkFailure[]) => {
         const count = originalPush(...items);
@@ -376,6 +399,25 @@ test('loadFixture and runFixtureLoadStage report server and browser fetch failur
         assert.ok(!(error instanceof assert.AssertionError));
         assert.match(error.message, /fixture could not be loaded \(\/fixture\.js\)/);
         assert.match(error.message, /browser net::ERR_CONNECTION_RESET \(http:\/\/127\.0\.0\.1:1\/chunks\/drop\.js\)/);
+        assert.match(error.message, /Edge exited \(42\)/);
+        return true;
+      },
+    );
+
+    const readyChild = Object.assign(new EventEmitter(), { exitCode: null as number | null, signalCode: null }) as unknown as ChildProcess;
+    const readyStage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(readyChild, label, work, timeout);
+    const readyServed = { fixture: '/pending-fixture.ts', failures: [{ url: '/pending-dep.ts', status: 503, reason: 'still warming' }] as ServerFailure[] };
+    const readyFailed = runFixtureLoadStage(readyStage, 'ready page load', readyServed, async () => {
+      await new Promise<void>(() => {});
+    });
+    readyChild.emit('close', 42, null);
+    await assert.rejects(
+      () => readyFailed,
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(!(error instanceof assert.AssertionError));
+        assert.match(error.message, /fixture could not be loaded \(\/pending-fixture\.ts\)/);
+        assert.match(error.message, /server 503 \/pending-dep\.ts: still warming/);
         assert.match(error.message, /Edge exited \(42\)/);
         return true;
       },
