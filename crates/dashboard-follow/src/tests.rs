@@ -2158,7 +2158,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     }
     let pages = record(quiet);
     let follow = Follow::new(0);
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, ..Settings::default() };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
     let gate_from = Arc::new(AtomicI32::new(i32::MAX));
     let threshold = gate_from.clone();
     let (arrived, clock_steps) = mpsc::channel();
@@ -2241,7 +2241,6 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     let start = seed_hour.recv().unwrap();
     let quantum = 6;
     gate_from.store(start + 3 * quantum, Ordering::Release);
-    host.playhead().frame_rate(60.0);
     host.playhead().pace(60.0 * f64::from(quantum));
     host.playhead().anchor(f64::from(start + 6 * quantum), true, 0.0, anchored_at, false);
     let (_, through, advance) = steps.recv().unwrap();
@@ -2251,6 +2250,7 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     }));
     resume.send(()).unwrap();
     handoffs.recv().unwrap();
+    host.playhead().anchor(f64::from(through + quantum), true, 0.0, anchored_at, false);
     advance.send(()).unwrap();
     let (next, last, advance) = steps.recv().unwrap();
     handoffs.recv().unwrap();
