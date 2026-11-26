@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use content_reader_key_names::{characters::LeaderTemplate, tag_aliases::TagAliases, unit_leader::Traits};
+use content_reader_key_names::{characters::{LeaderTemplate, ScientistVisibilityTemplate}, tag_aliases::TagAliases, unit_leader::Traits};
 use content_reader_military::leader_traits::LeaderTraits;
 use content_reader_politics::script_constants::Constants;
 use content_reader_script::trigger_keys::TriggerNames;
@@ -647,9 +647,80 @@ pub struct LeaderRoles {
     pub(super) templates: Vec<LeaderTemplate>,
     pub(super) by_place: BTreeMap<(Vec<u8>, u32), Vec<usize>>,
     names: BTreeSet<Vec<u8>>,
+    layers: Option<content_reader_layers::ResolvedLayers>,
+    placed: std::sync::Mutex<Placed>,
+}
+
+type PlacedFile = Arc<Vec<ScientistVisibilityTemplate>>;
+
+#[derive(Debug, Default)]
+struct Placed {
+    files: BTreeMap<Vec<u8>, Result<PlacedFile, String>>,
+    origins: BTreeMap<(Vec<u8>, u32), Result<usize, String>>,
+    bodies: Vec<(PlacedFile, usize)>,
+}
+
+pub struct RoleVisible<'a>(RoleBody<'a>);
+
+enum RoleBody<'a> {
+    Content(&'a content_reader_script::triggers::Triggers),
+    Placed(PlacedFile, usize),
+}
+
+impl std::ops::Deref for RoleVisible<'_> {
+    type Target = [content_reader_parser::parser::Item];
+    fn deref(&self) -> &Self::Target {
+        match &self.0 {
+            RoleBody::Content(visible) => visible,
+            RoleBody::Placed(file, at) => file[*at].triggers.as_deref().unwrap_or_default(),
+        }
+    }
 }
 
 impl LeaderRoles {
+    pub fn read_through(templates: Vec<LeaderTemplate>, layers: content_reader_layers::ResolvedLayers) -> Self {
+        Self { layers: Some(layers), ..Self::new(templates) }
+    }
+
+    fn placed(&self, file: &[u8], line: u32) -> Result<usize, String> {
+        let mut placed = self.placed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (file.to_vec(), line);
+        if let Some(found) = placed.origins.get(&key) {
+            return found.clone();
+        }
+        let name = String::from_utf8_lossy(file).into_owned();
+        let parsed = match placed.files.get(file) {
+            Some(parsed) => parsed.clone(),
+            None => {
+                let parsed = self
+                    .layers
+                    .as_ref()
+                    .ok_or_else(|| "the recorded mod stack's content is not open".to_owned())
+                    .and_then(|layers| layers.read(&name).map_err(|error| format!("{name} cannot be read: {error}")))
+                    .and_then(|bytes| {
+                        content_reader_key_names::characters::parse_leader_visibility_templates(&bytes)
+                            .map(Arc::new)
+                            .map_err(|error| format!("{name} cannot be parsed: {error}"))
+                    });
+                placed.files.insert(file.to_vec(), parsed.clone());
+                parsed
+            }
+        };
+        let found = parsed.and_then(|parsed| {
+            let mut at = parsed.iter().enumerate().filter(|(_, template)| template.line == line).map(|(at, _)| at);
+            let at = match (at.next(), at.next()) {
+                (Some(at), None) => at,
+                (None, _) => return Err(format!("no unit leader role's visible opens at {name}:{line}")),
+                (Some(_), Some(_)) => return Err(format!("several unit leader roles' visible open at {name}:{line}")),
+            };
+            parsed[at].triggers.as_ref().map_err(|why| format!("the unit leader role at {name}:{line} is refused: {why}"))?;
+            placed.bodies.push((parsed.clone(), at));
+            Ok(self.templates.len() + placed.bodies.len() - 1)
+        });
+        placed.origins.insert(key, found.clone());
+        found
+    }
+
     pub fn new(templates: Vec<LeaderTemplate>) -> Self {
         let mut by_place: BTreeMap<_, Vec<usize>> = BTreeMap::new();
         for (index, template) in templates.iter().enumerate() {
@@ -668,6 +739,8 @@ impl LeaderRoles {
             templates,
             by_place,
             names,
+            layers: None,
+            placed: std::sync::Mutex::default(),
         }
     }
 }
@@ -3582,6 +3655,11 @@ impl<'a> World<'a> {
         template: Result<Option<RecordedTemplate>, Failure>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
+        if let Ok(Some(template)) = &template
+            && template.generated
+        {
+            return self.recorded_role_visibility(row);
+        }
         match template.and_then(|template| self.template_role(row, template, literal)) {
             Ok(Some((_, visible))) if visible.is_empty() => LeaderVisibility::Unconditioned,
             Ok(Some((index, _))) => LeaderVisibility::Conditioned(index),
@@ -3591,6 +3669,29 @@ impl<'a> World<'a> {
                 row.id
             ))),
             Err(reason) => LeaderVisibility::Decided(Eval::unknown(reason)),
+        }
+    }
+
+    fn recorded_role_visibility(&self, row: Leader<'_>) -> LeaderVisibility {
+        use replay_data::rows::UnitLeaderRow;
+        let refused = |why: String| {
+            LeaderVisibility::Decided(Eval::unknown(format!(
+                "unit leader {}'s character template was made by generate_character, and {why}",
+                row.id
+            )))
+        };
+        match (row.visible_state, row.visible_origin) {
+            (Recorded::Value(UnitLeaderRow::NO_ROLE), _) => LeaderVisibility::Decided(Eval::True),
+            (Recorded::Value(UnitLeaderRow::EMPTY_VISIBLE), _) => LeaderVisibility::Unconditioned,
+            (Recorded::Value(UnitLeaderRow::VISIBLE), Recorded::Value(Some(origin))) => {
+                match self.leader_roles.map_err(str::to_owned).and_then(|roles| roles.placed(&origin.file, origin.line)) {
+                    Ok(index) => LeaderVisibility::Conditioned(index),
+                    Err(why) => refused(why),
+                }
+            }
+            (Recorded::Value(UnitLeaderRow::VISIBLE), _) => refused("its role's visible has no recorded source".into()),
+            (Recorded::Value(state), _) => refused(format!("its role's visibility state {state} is not known")),
+            _ => refused("this recording predates the record of its role's visibility".into()),
         }
     }
 
@@ -3607,12 +3708,6 @@ impl<'a> World<'a> {
             )
             .into()
         })?;
-        if template.generated {
-            return Err(format!(
-                "unit leader {}'s character template was made by generate_character, which is not read",
-                row.id
-            ).into());
-        }
         let roles = self.leader_roles.map_err(Failure::from)?;
         let tag = literal(template.tag)?
             .and_then(|literal| std::str::from_utf8(literal).ok())
@@ -3654,11 +3749,19 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(super) fn role_visible(&self, index: usize) -> &'a content_reader_script::triggers::Triggers {
-        match self.leader_roles.map(|roles| &roles.templates[index].role) {
-            Ok(Ok(Some(visible))) => visible,
-            _ => unreachable!("leader role {index} is no content role"),
+    pub(super) fn role_visible(&self, index: usize) -> RoleVisible<'a> {
+        let Ok(roles) = *self.leader_roles else {
+            unreachable!("leader role {index} has no content roles");
+        };
+        if let Some(template) = roles.templates.get(index) {
+            let Ok(Some(visible)) = &template.role else {
+                unreachable!("leader role {index} is no content role");
+            };
+            return RoleVisible(RoleBody::Content(visible));
         }
+        let placed = roles.placed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (file, at) = placed.bodies[index - roles.templates.len()].clone();
+        RoleVisible(RoleBody::Placed(file, at))
     }
 
     pub fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {

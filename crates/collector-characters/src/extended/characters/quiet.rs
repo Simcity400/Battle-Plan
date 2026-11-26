@@ -177,10 +177,10 @@ pub(super) fn unit(occurrence: census::Occurrence) -> Option<usize> {
 
 pub(super) fn leaders(
     census: census::Admitted<'_>,
-) -> impl Iterator<Item = (usize, usize, u32)> + '_ {
+) -> impl Iterator<Item = (usize, usize, u32, usize)> + '_ {
     (0..census.len()).filter_map(move |index| {
         let occurrence = census.occurrence(index);
-        Some((index, unit(occurrence)?, occurrence.id()))
+        Some((index, unit(occurrence)?, occurrence.id(), occurrence.pointer))
     })
 }
 
@@ -223,7 +223,7 @@ fn copy_units(
         let (rows, bytes) = job.carry.census_demand(census);
         job.character_demand.add(rows, bytes);
         if carrying {
-            for (_, pointer, character) in leaders(census) {
+            for (_, pointer, character, _) in leaders(census) {
                 if job.unit_carry.carries(pointer) {
                     job.experience.touch(pointer, character);
                 }
@@ -231,7 +231,7 @@ fn copy_units(
             let (rows, bytes) = job.unit_carry.carried_demand();
             job.unit_demand.add(rows, bytes);
             for at in 0..job.unit_carry.visit_count() {
-                let Some((pointer, id)) = job.unit_carry.fresh_visit(at) else {
+                let Some((pointer, id, character)) = job.unit_carry.fresh_visit(at) else {
                     continue;
                 };
                 let mut unit_id = None;
@@ -240,6 +240,7 @@ fn copy_units(
                     memory,
                     ctx.base,
                     Some(pointer),
+                    character,
                     |_| id,
                     &mut unit_id,
                     &mut dead,
@@ -278,6 +279,7 @@ fn copy_units(
                 memory,
                 ctx.base,
                 Some(pointer),
+                occurrence.pointer,
                 |_| id,
                 &mut unit_id,
                 &mut dead,
@@ -406,13 +408,14 @@ pub(super) fn fresh_leaders_unchanged<M: Memory>(
     let carry = &job.unit_carry;
     let mut bytes = Vec::new();
     for at in 0..carry.visit_count() {
-        let Some((pointer, character)) = carry.fresh_visit(at) else {
+        let Some((pointer, character, character_pointer)) = carry.fresh_visit(at) else {
             continue;
         };
         let Ok(read) = read_unit_selected(
             memory,
             base,
             pointer,
+            character_pointer,
             character,
             &mut bytes,
             0,

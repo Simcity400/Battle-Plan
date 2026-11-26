@@ -3359,7 +3359,7 @@ fn roster_visibility_keeps_country_and_selected_character_without_changing_other
 fn leader_visibility_steps_decide_as_the_roster_check() {
     script_game::enter();
     use content_reader_key_names::characters::LeaderTemplate;
-    use replay_data::{rows::CharacterRow, rows::UnitLeaderRow};
+    use replay_data::{rows::CharacterRow, rows::Recorded, rows::UnitLeaderRow};
     let path = "common/characters/mod.txt";
     let mut frame = frame(&countries(), &[101]);
     *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
@@ -3402,11 +3402,14 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
         line: Some(line),
         role: Ok(role),
     };
-    let roles = LeaderRoles::new(vec![
-        template("mod_commander", 4, Some(items("has_country_flag = x"))),
-        template("MOD_PLAIN", 8, Some(Vec::new())),
-        template("mod_advisor", 12, None),
-    ]);
+    let templates = || {
+        vec![
+            template("mod_commander", 4, Some(items("has_country_flag = x"))),
+            template("MOD_PLAIN", 8, Some(Vec::new())),
+            template("mod_advisor", 12, None),
+        ]
+    };
+    let roles = LeaderRoles::new(templates());
     let leader = |id, owner, visibility_choice| UnitLeaderRow {
         id,
         owner,
@@ -3459,24 +3462,69 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
                 3,
                 "unit leader 3 has its own role choice, but its character's template has no unit leader role",
             ),
-            refused(
-                4,
-                "unit leader 4's character template was made by generate_character, which is not read",
-            ),
             refused(5, "unit leader 5's character 5 is not recorded"),
         ] {
-            assert_eq!(world.decoded_leader_visibility(&row), visibility);
-            assert_eq!(world.leader_visibility(&row), visibility);
-            assert_eq!(
-                Evaluator::new(world, None).decide_leader_visibility(&row, visibility, true),
-                verdict
-            );
-            assert_eq!(
-                Evaluator::new(world, None).leader_roster_visible(&row),
-                verdict
-            );
+            decides(world, &row, visibility, verdict);
         }
     });
+    let generated = |owner, state, origin: Option<(&str, u32)>| UnitLeaderRow {
+        visible_state: state,
+        visible_origin: match state {
+            Recorded::NotRecorded => Recorded::NotRecorded,
+            Recorded::Value(_) => Recorded::Value(origin.map(|(file, line)| {
+                replay_data::rows::ScientistTemplateOrigin { file: file.as_bytes().to_vec(), line }
+            })),
+        },
+        ..leader(4, owner, 0)
+    };
+    let withheld = |why: &str| {
+        let why = format!("unit leader 4's character template was made by generate_character, and {why}");
+        (LeaderVisibility::Decided(Eval::unknown(why.as_str())), Eval::unknown(why.as_str()))
+    };
+    let role_file = "events/generated.txt";
+    let role = Some((role_file, 5));
+    let folder = std::env::temp_dir().join(format!("dashboard-generated-role-{}", std::process::id()));
+    let file = folder.join(role_file);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "country_event = {\n immediate = {\n  generate_character = {\n   field_marshal = {\n    visible = { has_country_flag = x }\n   }\n  }\n }\n}\n",
+    )
+    .unwrap();
+    let placed = LeaderRoles::read_through(
+        templates(),
+        content_reader_layers::ResolvedLayers::from_folders(&[(&folder, &[][..])]).unwrap(),
+    );
+    with_world(&frame, "", Ok(&placed), |world| {
+        let (visibility, verdict) = withheld("this recording predates the record of its role's visibility");
+        decides(world, &generated(101, Recorded::NotRecorded, None), visibility, verdict);
+        let no_role = generated(101, Recorded::Value(UnitLeaderRow::NO_ROLE), None);
+        decides(world, &no_role, LeaderVisibility::Decided(Eval::True), Eval::True);
+        let always = generated(101, Recorded::Value(UnitLeaderRow::EMPTY_VISIBLE), None);
+        decides(world, &always, LeaderVisibility::Unconditioned, Eval::True);
+        let (visibility, verdict) = withheld("its role's visible has no recorded source");
+        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), None), visibility, verdict);
+        for (owner, verdict) in [(101, Eval::True), (102, Eval::False)] {
+            let row = generated(owner, Recorded::Value(UnitLeaderRow::VISIBLE), role);
+            decides(world, &row, LeaderVisibility::Conditioned(3), verdict);
+        }
+        let (visibility, verdict) = withheld("no unit leader role's visible opens at events/generated.txt:4");
+        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), Some((role_file, 4))), visibility, verdict);
+        let (visibility, verdict) = withheld("its role's visibility state 7 is not known");
+        decides(world, &generated(101, Recorded::Value(7), None), visibility, verdict);
+    });
+    std::fs::remove_dir_all(&folder).unwrap();
+    with_world(&frame, "", Ok(&roles), |world| {
+        let (visibility, verdict) = withheld("the recorded mod stack's content is not open");
+        decides(world, &generated(101, Recorded::Value(UnitLeaderRow::VISIBLE), role), visibility, verdict);
+    });
+}
+
+fn decides(world: &World, row: &replay_data::rows::UnitLeaderRow, visibility: LeaderVisibility, verdict: Eval) {
+    assert_eq!(world.decoded_leader_visibility(row), visibility);
+    assert_eq!(world.leader_visibility(row), visibility);
+    assert_eq!(Evaluator::new(world, None).decide_leader_visibility(row, visibility, true), verdict);
+    assert_eq!(Evaluator::new(world, None).leader_roster_visible(row), verdict);
 }
 
 #[test]

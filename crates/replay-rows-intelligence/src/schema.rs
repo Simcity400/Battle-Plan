@@ -70,9 +70,16 @@ pub struct UnitLeaderRow {
     pub exile_country: Recorded<i32>,
     pub codename: Recorded<Option<NameOperands>>,
     pub formation_reference: Recorded<Option<u64>>,
+    pub visible_state: Recorded<u8>,
+    pub visible_origin: Recorded<Option<ScientistTemplateOrigin>>,
+}
+impl UnitLeaderRow {
+    pub const NO_ROLE: u8 = 0;
+    pub const VISIBLE: u8 = 1;
+    pub const EMPTY_VISIBLE: u8 = 2;
 }
 typed_codec!(UnitLeaderRow, 64, |row| (row.id as u128) << 32 | row.reference_type as u128, |key| Self { id: (key >> 32) as u32, reference_type: key as u32, ..Default::default() },
- { 0 => (character_type): U32, 1 => (character_id): U32, 2 => (category): I32, 3 => (experience): I64, 4 => (kind): U8, 5 => (skill_status): U8, 6 => (skill_valid): U8, 7 => (skill_level): I32, 8 => (skill_required_experience): I32, 9 => (skill_category): I32, 10 => (components[0]): I32, 11 => (components[1]): I32, 12 => (components[2]): I32, 13 => (components[3]): I32, 14 => (inherited_text_a): Bytes, 15 => (inherited_text_b): Bytes, 16 => (owner): U32, 17 => (captured): U8, 18 => (visibility_choice): U8, 19 => (template_visibility): U8, 20 => (exile_country): I32, 21 => (codename): Opaque, 22 => (formation_reference): OptionalU64 }, |row| {
+ { 0 => (character_type): U32, 1 => (character_id): U32, 2 => (category): I32, 3 => (experience): I64, 4 => (kind): U8, 5 => (skill_status): U8, 6 => (skill_valid): U8, 7 => (skill_level): I32, 8 => (skill_required_experience): I32, 9 => (skill_category): I32, 10 => (components[0]): I32, 11 => (components[1]): I32, 12 => (components[2]): I32, 13 => (components[3]): I32, 14 => (inherited_text_a): Bytes, 15 => (inherited_text_b): Bytes, 16 => (owner): U32, 17 => (captured): U8, 18 => (visibility_choice): U8, 19 => (template_visibility): U8, 20 => (exile_country): I32, 21 => (codename): Opaque, 22 => (formation_reference): OptionalU64, 23 => (visible_state): U8, 24 => (visible_origin): Opaque }, |row| {
     if matches!(row.codename, Recorded::Value(Some(_))) && row.kind != 3 {
         return Err(invalid("codename requires an operative leader"));
     }

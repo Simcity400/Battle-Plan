@@ -1425,6 +1425,8 @@ impl Fixture for UnitLeaderRow {
             exile_country: Recorded::Value(i32::sample(tick)),
             codename: Recorded::Value(codename),
             formation_reference: Recorded::Value(Option::<u64>::sample(tick)),
+            visible_state: Recorded::Value(u8::sample(tick) % 3),
+            visible_origin: Recorded::Value(Option::<ScientistTemplateOrigin>::sample(tick)),
         }
     }
 }

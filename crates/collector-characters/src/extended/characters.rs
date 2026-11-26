@@ -154,6 +154,8 @@ struct LeaderRow {
     training: (usize, usize),
     training_factors: (usize, usize),
     training_reason: Option<&'static str>,
+    visible_state: Option<u8>,
+    visible_origin: Option<((usize, usize), u32)>,
 }
 
 pub struct Captured {
@@ -713,6 +715,7 @@ impl Captured {
 fn leader_ranges_valid(row: &LeaderRow, bytes: &[u8]) -> bool {
     valid(bytes, row.text_a_start, row.text_a_len)
         && valid(bytes, row.text_b_start, row.text_b_len)
+        && row.visible_origin.is_none_or(|((start, len), _)| valid(bytes, start, len))
         && row.codename.is_none_or(|name| {
             valid(bytes, name.custom.0, name.custom.1) && valid(bytes, name.group.0, name.group.1)
         })
@@ -737,6 +740,8 @@ fn leader_equal(row: &LeaderRow, bytes: &[u8], previous: &UnitLeaderRow) -> bool
         || previous.captured != native.captured
         || previous.visibility_choice != native.visibility_choice
         || previous.template_visibility != native.template_visibility
+        || previous.visible_state != visible_state(row)
+        || previous.visible_origin != visible_origin(row, bytes)
         || previous.exile_country != replay_data::rows::Recorded::Value(native.exile_country)
         || previous.formation_reference
             != replay_data::rows::Recorded::Value(row.formation_reference)
@@ -1357,13 +1362,14 @@ impl Family<'_> {
                     leader_carry::held_rows_into(held, text, rows, at, bytes, from)
                 }
                 None => {
-                    read_unit_selected(memory, base, pointer, character_id, bytes, from, training)
+                    read_unit_selected(memory, base, pointer, character_pointer, character_id, bytes, from, training)
                         .and_then(|read| read.store(rows, at))
                 }
             },
             |row, offset| {
                 relocate(&mut row.text_a_start, offset)
                     && relocate(&mut row.text_b_start, offset)
+                    && row.visible_origin.as_mut().is_none_or(|((start, _), _)| relocate(start, offset))
                     && relocate(&mut row.training.0, offset)
                     && relocate(&mut row.training_factors.0, offset)
                     && row.codename.as_mut().is_none_or(|name| {
@@ -1524,7 +1530,7 @@ fn fresh_traits_unchanged(job: &CharactersJob) -> bool {
     let mut rows = Vec::new();
     let mut bytes = Vec::new();
     for at in 0..carry.visit_count() {
-        let Some((pointer, _)) = carry.fresh_visit(at) else {
+        let Some((pointer, _, _)) = carry.fresh_visit(at) else {
             continue;
         };
         let Some((mut cursor, vector)) = vectors.next() else {
@@ -1605,10 +1611,12 @@ impl UnitRead {
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "The leader read takes its character's pointer and id beside its arena.")]
 fn read_unit_selected(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
+    character_pointer: usize,
     character: u32,
     bytes: &mut Vec<u8>,
     from: usize,
@@ -1693,6 +1701,21 @@ fn read_unit_selected(
     }
     let formation =
         cunit_leader::read_formation_reference(memory, pointer, native.kind, native.category);
+    let mut used = from + len;
+    let visibility = engine_characters::unit_leader_visibility::visibility(
+        memory,
+        base,
+        pointer,
+        character_pointer,
+        &mut engine_native_memory::walk::Buffer::Growing(bytes),
+        &mut used,
+    )
+    .ok();
+    let visible_origin = visibility.and_then(|(_, origin)| origin).map(|(start, name_len, line)| {
+        len += name_len;
+        required += name_len;
+        ((start - from, name_len), line)
+    });
     Ok(UnitRead {
         row: LeaderRow {
             native,
@@ -1707,6 +1730,8 @@ fn read_unit_selected(
             training,
             training_factors,
             training_reason,
+            visible_state: visibility.map(|(state, _)| state),
+            visible_origin,
         },
         bytes_len: len,
         required_bytes: required,
@@ -1888,6 +1913,19 @@ fn leader_reference(id: u32) -> u64 {
     (u64::from(id) << 32) | u64::from(cunit_leader::REFERENCE_TYPE)
 }
 
+fn visible_state(row: &LeaderRow) -> replay_data::rows::Recorded<u8> {
+    row.visible_state.map_or(replay_data::rows::Recorded::NotRecorded, replay_data::rows::Recorded::Value)
+}
+
+fn visible_origin(row: &LeaderRow, bytes: &[u8]) -> replay_data::rows::Recorded<Option<replay_data::rows::ScientistTemplateOrigin>> {
+    match row.visible_state {
+        None => replay_data::rows::Recorded::NotRecorded,
+        Some(_) => replay_data::rows::Recorded::Value(row.visible_origin.map(|((start, len), line)| {
+            replay_data::rows::ScientistTemplateOrigin { file: owned(bytes, start, len), line }
+        })),
+    }
+}
+
 fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
     let native = row.native;
     UnitLeaderRow {
@@ -1916,6 +1954,8 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
                 .map(|name| super::character_inputs::operands(name, bytes)),
         ),
         formation_reference: replay_data::rows::Recorded::Value(row.formation_reference),
+        visible_state: visible_state(row),
+        visible_origin: visible_origin(row, bytes),
     }
 }
 

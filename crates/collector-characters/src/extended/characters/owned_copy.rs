@@ -158,6 +158,10 @@ pub(super) enum AppendedRole {
         kind: u8,
         category: i32,
     },
+    Visibility {
+        leader: usize,
+        character: usize,
+    },
 }
 
 impl CharactersJob {
@@ -1506,11 +1510,13 @@ pub(super) fn parse_unit_identity(
     Some((kind, pool_u32(job, start + cunit_leader::ID)))
 }
 
+#[expect(clippy::too_many_arguments, reason = "A unit copy takes its character's pointer and id beside the job, memory and outputs.")]
 pub(super) fn copy_unit(
     job: &mut CharactersJob,
     memory: &impl Memory,
     base: usize,
     unit: Option<usize>,
+    character: usize,
     character_id: impl FnOnce(&CharactersJob) -> u32,
     unit_id: &mut Option<u32>,
     dead: &mut Dead,
@@ -1612,6 +1618,9 @@ pub(super) fn copy_unit(
             if job.log.overflowed {
                 return false;
             }
+        }
+        if !dead.units {
+            job.remember_appended(AppendedRole::Visibility { leader: unit, character });
         }
         if !dead.units
             && job.active[5]
@@ -1850,6 +1859,7 @@ pub(super) fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory,
     if job.overflowed() || job.log.planned_capture_failed() {
         return;
     }
+    let mut names = Vec::new();
     for index in 0..job.appended_roles.len() {
         let role = job.appended_roles[index];
         let source = AppendedCopy {
@@ -1858,7 +1868,7 @@ pub(super) fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory,
             mask: match role {
                 AppendedRole::Leader(_) => MASK_LEADERS,
                 AppendedRole::Advisor(_) => MASK_ADVISORS,
-                AppendedRole::Unit { .. } => MASK_UNITS,
+                AppendedRole::Unit { .. } | AppendedRole::Visibility { .. } => MASK_UNITS,
             },
         };
         match role {
@@ -1886,6 +1896,19 @@ pub(super) fn copy_appended_roles(job: &mut CharactersJob, memory: &impl Memory,
                 category,
             } => {
                 let _ = cunit_leader::read_formation_reference(&source, pointer, kind, category);
+            }
+            AppendedRole::Visibility { leader, character } => {
+                let mut used = 0;
+                if let Ok((_, Some((_, len, _)))) = engine_characters::unit_leader_visibility::visibility(
+                    &source,
+                    base,
+                    leader,
+                    character,
+                    &mut engine_native_memory::walk::Buffer::Growing(&mut names),
+                    &mut used,
+                ) {
+                    source.job.borrow_mut().unit_demand.add(0, len);
+                }
             }
         }
         if source.job.borrow().log.overflowed {
@@ -2075,6 +2098,7 @@ pub(super) fn copy_character_body(
         memory,
         base,
         unit,
+        pointer,
         character_id,
         &mut view.unit_id,
         dead,
@@ -2637,7 +2661,7 @@ pub(super) fn copy_census_units(
         }
         let id = occurrence.id();
         let mut unit_id = None;
-        if !copy_unit(job, memory, base, Some(pointer), |_| id, &mut unit_id, dead)
+        if !copy_unit(job, memory, base, Some(pointer), occurrence.pointer, |_| id, &mut unit_id, dead)
             || !copy_trait_vectors(job, memory, base, pointer, unit_id.unwrap_or(id), dead)
         {
             return;

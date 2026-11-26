@@ -1103,8 +1103,8 @@ fn compare_leaders(
     report.compared("UnitLeaders", count);
     report.limitation("unit leader secondary inherited text, native class discriminator, skill validity byte, skill definition category and required experience are not serialized by the compared writers", "UnitLeaders.inherited_text_b/kind/skill_valid/skill_category/skill_required_experience");
     report.limitation(
-        "unit-leader visibility inputs (choice presence and visibility state) are not serialized",
-        "UnitLeaders.visibility_choice/template_visibility",
+        "unit-leader visibility inputs (choice presence, visibility state, and the retained role's visible state and source) are not serialized: the save writes no role's visible block or its source",
+        "UnitLeaders.visibility_choice/template_visibility/visible_state/visible_origin",
     );
     report.limitation("the unit leader save writer and the army leader save writer omit the active formation reference. The army writer's optional formation token reads a distinct reference. Saved group membership cannot certify the exact active reference used by ability late-join and communications gates; a matched-hour native comparison remains necessary",
         "UnitLeaders.formation_reference");

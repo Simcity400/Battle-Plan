@@ -1,4 +1,4 @@
-use replay_data::rows::{NameOperands, Recorded, UnitLeaderRow};
+use replay_data::rows::{NameOperands, Recorded, ScientistTemplateOrigin, UnitLeaderRow};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Leader<'a> {
@@ -17,6 +17,8 @@ pub struct Leader<'a> {
     pub inherited_text_b: &'a Vec<u8>,
     pub exile_country: &'a Recorded<i32>,
     pub codename: &'a Recorded<Option<NameOperands>>,
+    pub visible_state: &'a Recorded<u8>,
+    pub visible_origin: &'a Recorded<Option<ScientistTemplateOrigin>>,
 }
 
 impl Leader<'_> {
@@ -34,6 +36,8 @@ impl Leader<'_> {
         "inherited_text_b",
         "exile_country",
         "codename",
+        "visible_state",
+        "visible_origin",
     ];
 }
 
@@ -55,6 +59,8 @@ impl<'a> From<&'a UnitLeaderRow> for Leader<'a> {
             inherited_text_b: &row.inherited_text_b,
             exile_country: &row.exile_country,
             codename: &row.codename,
+            visible_state: &row.visible_state,
+            visible_origin: &row.visible_origin,
         }
     }
 }

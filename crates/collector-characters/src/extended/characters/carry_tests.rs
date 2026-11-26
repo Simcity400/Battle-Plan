@@ -887,7 +887,7 @@ fn leader_carry_rejects_mismatched_trait_spans() {
     let certify = |carry: &mut TraitCarry| {
         carry.begin_hour();
         drop(LEADERS.notify(0x1000, 0));
-        assert!(!carry.certify(1, 1, || std::iter::once((0, 0x1000, 7))));
+        assert!(!carry.certify(1, 1, || std::iter::once((0, 0x1000, 7, 0x2000))));
     };
     certify(&mut carry);
     carry.rebuild(Outcome::Rows { len: 1 }, &[row], b"x", |_| Some((1, 7)));

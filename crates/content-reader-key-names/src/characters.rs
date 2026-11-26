@@ -1432,6 +1432,19 @@ pub struct ScientistVisibilityTemplate {
 pub fn parse_scientist_visibility_templates(
     input: &[u8],
 ) -> io::Result<Vec<ScientistVisibilityTemplate>> {
+    parse_role_visibility_templates(input, &["scientist"])
+}
+
+pub fn parse_leader_visibility_templates(
+    input: &[u8],
+) -> io::Result<Vec<ScientistVisibilityTemplate>> {
+    parse_role_visibility_templates(input, &UNIT_LEADER_ROLES)
+}
+
+fn parse_role_visibility_templates(
+    input: &[u8],
+    roles: &[&str],
+) -> io::Result<Vec<ScientistVisibilityTemplate>> {
     let (document, spans, _) = parser::parse_unclosed_lines(input)?;
     let mut lines = BTreeMap::new();
     let mut next = 0;
@@ -1439,11 +1452,12 @@ pub fn parse_scientist_visibility_templates(
     if next != spans.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "scientist visibility block lines differ",
+            "role visibility block lines differ",
         ));
     }
     fn visit(
         items: &[Item],
+        roles: &[&str],
         lines: &BTreeMap<*const Value, parser::BlockLines>,
         out: &mut Vec<ScientistVisibilityTemplate>,
     ) {
@@ -1451,21 +1465,21 @@ pub fn parse_scientist_visibility_templates(
             let Some(body) = item.value.items() else {
                 continue;
             };
-            if is_key(item, "scientist")
+            if roles.iter().any(|role| is_key(item, role))
                 && let Some(last) = body.iter().rfind(|item| is_key(item, "visible"))
                 && let Some(line) = lines.get(&(&raw const last.value))
             {
                 out.push(ScientistVisibilityTemplate {
                     line: line.open,
-                    triggers: template_role_for(std::slice::from_ref(item), &["scientist"])
-                        .and_then(|role| role.ok_or_else(|| "scientist role missing".into())),
+                    triggers: template_role_for(std::slice::from_ref(item), roles)
+                        .and_then(|role| role.ok_or_else(|| "role missing".into())),
                 });
             }
-            visit(body, lines, out);
+            visit(body, roles, lines, out);
         }
     }
     let mut out = Vec::new();
-    visit(&document.items, &lines, &mut out);
+    visit(&document.items, roles, &lines, &mut out);
     Ok(out)
 }
 
@@ -1532,6 +1546,24 @@ add_scientist_role={scientist={
         let triggers = templates[1].triggers.as_ref().unwrap();
         assert_eq!(triggers.len(), 2);
         assert_eq!(triggers[0].value.read_string(), Some(&b"no"[..]));
+        let leaders = super::parse_leader_visibility_templates(
+            br#"
+effect={generate_character={
+ field_marshal={visible={has_war=yes}}
+ scientist={visible={always=no}}
+ navy_leader={
+  visible=yes
+ }
+}}
+"#,
+        )
+        .unwrap();
+        assert_eq!(leaders.iter().map(|template| template.line).collect::<Vec<_>>(), [3]);
+        assert_eq!(leaders[0].triggers.as_ref().unwrap().len(), 1);
+        let refused = super::parse_leader_visibility_templates(b"corps_commander={\nvisible=yes\nvisible={ always=no }\n}").unwrap();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].line, 3);
+        assert_eq!(refused[0].triggers, Err("its unit leader role's visible is not a block".into()));
     }
 
     use super::*;

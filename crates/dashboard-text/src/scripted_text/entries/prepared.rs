@@ -277,7 +277,7 @@ impl PreparedContent for ScriptedContent {
             .roles
             .get_or_init(|| {
                 content_reader_key_names::characters::leader_templates(&self.layers.layers)
-                    .map(LeaderRoles::new)
+                    .map(|templates| LeaderRoles::read_through(templates, self.layers.layers.clone()))
             })
             .as_ref()
             .map_err(String::as_str)

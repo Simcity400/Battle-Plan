@@ -3931,7 +3931,7 @@ fn serial_family_reference(
             let previous_len = units.len;
             units.append(
                 |rows, at, bytes, from| {
-                    read_unit_selected(memory, base, pointer, character_id, bytes, from, training)
+                    read_unit_selected(memory, base, pointer, character_pointer, character_id, bytes, from, training)
                         .and_then(|read| read.store(rows, at))
                 },
                 |row, offset| {
