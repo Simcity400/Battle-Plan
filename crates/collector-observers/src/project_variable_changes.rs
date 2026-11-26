@@ -253,7 +253,12 @@ pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
     if let Ok(mut entries) = OWNERS.try_write()
         && let Some(entries) = entries.as_mut()
     {
+        let before = entries.len();
         entries.retain(|_, entry| keep(entry.owner, entry.id));
+        if entries.len() != before {
+            EPOCH.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
+        }
         COUNT.store(entries.len(), Ordering::SeqCst);
     }
 }

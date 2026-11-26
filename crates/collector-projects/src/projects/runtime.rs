@@ -1058,6 +1058,25 @@ mod tests {
         drop(write);
         runtime.read(&memory, 0, &[row], false, false, None);
         assert_eq!(memory.pending_reads.get(), pending_reads + 1);
+        let evicted_pending = memory.pending_reads.get();
+        let evicted_variables = memory.variable_reads.get();
+        let mut other_frame = Runtime::default();
+        let other_census = SliceSelection::for_test(1, true, &[]).with_census(&[row.owner]);
+        other_frame.read(&memory, 0, &[], false, true, Some(&other_census));
+        drop(project_variable_changes::writing(0x1000 + store));
+        drop(project_variable_changes::writing_project(
+            row.source_pointer,
+        ));
+        runtime.read(&memory, 0, &[row], false, false, None);
+        assert_eq!(
+            memory.pending_reads.get(),
+            evicted_pending + 1,
+            "eviction from another frame must invalidate quiet tokens before a missed write"
+        );
+        assert!(
+            memory.variable_reads.get() > evicted_variables,
+            "eviction from another frame must force variable re-registration and reread"
+        );
         let variable_reads = memory.variable_reads.get();
         project_variable_changes::enabled(false);
         runtime.read(&memory, 0, &[row], false, false, None);
