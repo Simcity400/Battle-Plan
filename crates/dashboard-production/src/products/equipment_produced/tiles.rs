@@ -784,7 +784,7 @@ mod tests {
                 line: 1, country: 9001, variant: 100, units: 9, since_hour: first, observed_since_creation: true,
                 exact: hour < first + 100, spent_raw: Recorded::Value(Some(i64::from(hour))), purpose: Recorded::Value(1), ..Default::default()
             };
-            let runner_up = ProductionLineOutputRow { line: 2, country: 9002, units: 3, exact: true, ..output.clone() };
+            let runner_up = ProductionLineOutputRow { line: 2, country: 9002, units: 3, exact: true, ..output };
             let rockets = RocketProductionOutputRow { since_hour: first, exact: true, units_exact: true, ..Default::default() };
             *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(vec![output, runner_up]));
             *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Complete(TableRows::RocketProductionOutput(vec![rockets]));
