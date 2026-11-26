@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::effect_description) struct CharacterContent {
     pub(in crate::effect_description) catalogue:
-        Result<content_reader_key_names::characters::Characters, String>,
+        Result<Arc<content_reader_key_names::characters::Characters>, String>,
     pub(super) unit_leaders: Result<content_reader_key_names::unit_leader::Leaders<String>, String>,
     pub(in crate::effect_description) special_projects:
         Result<content_reader_military::special_projects::Catalog, String>,
@@ -19,7 +19,7 @@ impl CharacterContent {
         threads: &'s std::thread::Scope<'s, '_>,
         layers: &'s content_reader_layers::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
-        advisor_templates: Result<&content_reader_key_names::characters::Characters, String>,
+        officers: Result<&[String], String>,
     ) -> Self {
         let mio_traits = crate::effect_description::alongside(threads, || {
             content_reader_military::mio_traits::read(layers)
@@ -38,11 +38,10 @@ impl CharacterContent {
         });
         let mut notes = Vec::new();
         let catalogue = (|| {
-            let templates = advisor_templates?.clone();
-            let (catalogue, warnings) = content_reader_key_names::characters::read(layers, templates)
+            let catalogue = content_reader_politics::ideas::characters(layers, officers?)
                 .map_err(|why| why.to_string())?;
-            notes.extend(warnings.into_iter().map(|(_, why)| why));
-            Ok::<_, String>(catalogue)
+            notes.extend(catalogue.warnings.iter().map(|(_, why)| why.clone()));
+            Ok::<_, String>(Arc::clone(&catalogue.characters))
         })();
         let unit_leaders = content_reader_key_names::unit_leader::Leaders::<String>::load(layers, &|name| {
             environment

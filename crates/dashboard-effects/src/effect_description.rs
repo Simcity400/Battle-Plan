@@ -195,12 +195,12 @@ pub struct CachedContent {
     characters: characters::CharacterContent,
     doctrines: Option<content_reader_military::doctrines::Database>,
     decisions: Option<content_reader_politics::decisions::Database>,
-    ideas: Option<content_reader_politics::ideas::IdeaContent>,
+    ideas: Option<Arc<content_reader_politics::ideas::IdeaContent>>,
     static_modifiers: Arc<content_reader_politics::static_modifiers::Descriptions>,
     dynamic_modifiers: Option<content_reader_politics::dynamic_modifiers::Database>,
     opinion_modifiers: Option<content_reader_politics::opinion_modifiers::Database>,
     power_balances: Option<content_reader_politics::power_balance::Database>,
-    pub advisor_templates: Option<content_reader_key_names::characters::Characters>,
+    pub advisor_templates: Option<Arc<content_reader_key_names::characters::Characters>>,
     name_lists: Option<content_reader_politics::names::NameLists>,
     key_names: Option<Arc<content_reader_key_names::key_name_products::KeyNameProducts>>,
     scripted_effects: Option<content_reader_key_names::scripted_effects::ScriptedEffects>,
@@ -305,7 +305,7 @@ impl CachedContent {
         );
         let read_ideas = || {
             let officers = defines.strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-            content_reader_politics::ideas::read(layers, &officers)
+            content_reader_politics::ideas::catalogue(layers, &officers).map(|catalogue| (catalogue, officers))
         };
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
@@ -314,17 +314,20 @@ impl CachedContent {
         let _ = environment.terrain();
         let _ = environment.leader_traits();
         let environment_notes = environment.catalogue_notes();
-        let (ideas, advisor_templates, idea_warnings) = match ideas {
-            Some((ideas, templates, warnings)) => (Some(ideas), Some(templates), warnings),
-            None => (None, None, Vec::new()),
+        let (ideas, advisor_templates, idea_warnings, officers) = match ideas {
+            Some((catalogue, officers)) => (
+                Some(Arc::clone(&catalogue.ideas)),
+                Some(Arc::clone(&catalogue.advisors)),
+                catalogue.warnings.clone(),
+                Ok(officers),
+            ),
+            None => (None, None, Vec::new(), Err(gaps["ideas"].clone())),
         };
         let characters = characters::CharacterContent::read(
             threads,
             layers,
             environment,
-            advisor_templates
-                .as_ref()
-                .ok_or_else(|| gaps["ideas"].clone()),
+            officers.as_deref().map_err(Clone::clone),
         );
         let mut doctrines = keep(joined(doctrines), "doctrines", &mut gaps);
         if let Some(doctrines) = &mut doctrines {
@@ -477,7 +480,7 @@ impl CachedContent {
         Content {
             doctrines: self.doctrines.as_ref(),
             decisions: self.decisions.as_ref(),
-            ideas: self.ideas.as_ref(),
+            ideas: self.ideas.as_deref(),
             static_modifiers: Some(&self.static_modifiers),
             dynamic_modifiers: self.dynamic_modifiers.as_ref(),
             opinion_modifiers: self.opinion_modifiers.as_ref(),
