@@ -320,6 +320,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_daily_ranking_whose_comparison_hour_has_unknown_holders_is_refused_though_production_was_read_after_it() {
+        use crate::identity::{HolderRun, Holders};
+        use crate::timeline::{Join, Stretch, Timeline};
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+        let (first, last, read, compared) = (90, 130, 124, 100);
+        let replay = crate::fixture::bare(first, last, |frame, hour| {
+            let produced = ProducedValueRow { country: 7, archetype: ProducedValueRow::WHOLE, units: Recorded::Value(i64::from(hour)), ..Default::default() };
+            let clock = ProducedValueRow { country: ProducedValueRow::CLOCK, archetype: 0, since: Some(first), as_of: Some(if hour == read { read } else { hour - 1 }), ..Default::default() };
+            frame.table(TableId::ProducedValues, Input::Snapshot { rows: &[produced, clock], partial: None, read: true, sample: Sample::FromReadBit })
+        })
+        .unwrap();
+        let reason = "Countries was not complete at these hours";
+        let held = |from: i32, to: i32| HolderRun { first: from, last: to, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true };
+        let holders = Holders::new([("GER".to_owned(), vec![held(first, compared - 1), held(compared + 1, last)])].into(), vec![(compared, compared, reason.to_owned())]);
+        let timeline = Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() };
+        let query = crate::Query { replay: &replay, timeline: std::sync::Arc::new(timeline), holders: std::sync::Arc::new(holders) };
+        let series = dashboard_declare::series("produced-values").unwrap();
+        let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+        let whole = |_: u32| vec![u128::from(ProducedValueRow::WHOLE)];
+        let day_before = |_: i32| Some(compared);
+        assert_eq!(line.totals_ranked(read, 5, &whole, None, &|_| true).unwrap(), Ok(vec!["GER".to_owned()]), "the totals at the read hour rank GER");
+        assert_eq!(
+            line.totals_ranked(read, 5, &whole, Some(&day_before), &|_| true).unwrap(),
+            Err(unranked(reason)),
+            "the comparison hour's holders are not known, though production there was read late: refused, never an empty ranking"
+        );
+    }
+
+    #[test]
     fn a_ranking_at_an_hour_whose_holders_are_not_known_is_refused_with_the_recorded_reason() {
         use crate::fixture::{Data, FIRST, Fixture};
         let fixture = Fixture::new(Data::Power, FIRST..=FIRST + 40);

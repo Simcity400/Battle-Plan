@@ -211,6 +211,10 @@ fn branch_start(branch: u64, first: i32) -> BranchStart {
     BranchStart { id: branch, session: branch, loaded_hour: None, first_hour: first, parent: Parentage::Unknown, reason: BranchReason::SessionStart }
 }
 
+pub(crate) fn bare(first: i32, last: i32, write: impl FnMut(&mut Synthetic, i32) -> io::Result<()>) -> io::Result<Replay> {
+    Replay::from_synthetic(recorder_derive_framework::framework::Writers::new(Vec::new()), b"bare".to_vec(), session(1), branch_start(1, first), last, write)
+}
+
 pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
     let mut out = vec![Record::SessionStart(session(branch)), Record::BranchStart(branch_start(branch, first))];
     let mut encoder = FrameEncoder::new();
