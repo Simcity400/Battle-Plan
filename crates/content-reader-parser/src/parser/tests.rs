@@ -367,6 +367,17 @@ fn the_save_grammar_reads_an_empty_key_and_an_empty_value_as_written() {
         [(Some(b"role".to_vec()), Some(Vec::new())), (Some(b"closed".to_vec()), Some(b"yes".to_vec())), (Some(b"last".to_vec()), Some(Vec::new()))]
     );
     assert_eq!(items[3].value.scalar(), Some(b"yes".as_slice()));
+    let inline = parse_save(b"a=x =0").unwrap().items;
+    assert_eq!(
+        inline.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"a".to_vec()), Some(b"x".to_vec())), (Some(Vec::new()), Some(b"0".to_vec()))]
+    );
+    let variables = parse_save(b"variables={named=1 =2}").unwrap().items;
+    let entries = variables[0].value.items().unwrap();
+    assert_eq!(
+        entries.iter().map(|item| (key(item), item.value.scalar().map(<[u8]>::to_vec))).collect::<Vec<_>>(),
+        [(Some(b"named".to_vec()), Some(b"1".to_vec())), (Some(Vec::new()), Some(b"2".to_vec()))]
+    );
     assert!(parse(text).is_err());
     assert!(parse(b"a={ ={ b } }").is_err());
     assert!(parse(b"a={ b= c=d }").is_err());

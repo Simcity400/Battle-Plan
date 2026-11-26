@@ -554,7 +554,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 TokenKind::Operator(Operator::Equals) if self.save => {
-                    let (value, kind) = self.save_value(depth, false)?;
+                    let (value, kind) = self.save_value(depth, false, token.offset)?;
                     items.push(Item {
                         key: Some(Vec::new()),
                         key_quoted: false,
@@ -585,14 +585,15 @@ impl<'a> Parser<'a> {
                         self.peek()?.map(|token| &token.kind)
                     {
                         let operator = *operator;
-                        self.next()?;
+                        let operator_at = self.next()?.expect("peeked operator").offset;
                         let key_quoted = quoted;
+                        let in_variables = variable_map;
                         let variable_map = self.save
                             && !quoted
                             && bytes == b"variables"
                             && operator == Operator::Equals;
-                        let (value, kind) = if self.save {
-                            self.save_value(depth, variable_map)?
+                        let (value, kind) = if self.save && !in_variables {
+                            self.save_value(depth, variable_map, operator_at)?
                         } else {
                             self.value(depth, variable_map)?
                         };
@@ -655,13 +656,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn save_value(&mut self, depth: usize, variable_map: bool) -> io::Result<(Value, Kind)> {
+    fn save_value(&mut self, depth: usize, variable_map: bool, operator: usize) -> io::Result<(Value, Kind)> {
         let empty = || (Value::Scalar(Vec::new()), Kind::Bare);
         match self.peek()?.map(|token| &token.kind) {
             None | Some(TokenKind::Close) => Ok(empty()),
             Some(TokenKind::Scalar { .. }) => {
                 let token = self.next()?.expect("peeked scalar");
-                if matches!(self.peek()?.map(|next| &next.kind), Some(TokenKind::Operator(_))) {
+                let later_line = self.lexer.bytes.get(operator..token.offset).is_some_and(|between| between.contains(&b'\n'));
+                if later_line && matches!(self.peek()?.map(|next| &next.kind), Some(TokenKind::Operator(_))) {
                     self.pushed = Some(token);
                     return Ok(empty());
                 }
