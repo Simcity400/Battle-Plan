@@ -1,6 +1,10 @@
 
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, LazyLock},
+};
 
 use crate::{key_names::KeyNames, native};
 use content_reader_parser::parser::{Item, Kind, Operator, Value};
@@ -17,8 +21,10 @@ pub struct Body {
     strings: Arc<[Box<[u8]>]>,
 }
 
+static EMPTY: LazyLock<Arc<[Box<[u8]>]>> = LazyLock::new(|| Arc::from(Vec::new()));
+
 pub struct Bodies<'a> {
-    index: HashMap<&'a [u8], u32>,
+    index: HashMap<&'a [u8], u64>,
     strings: Arc<[Box<[u8]>]>,
 }
 
@@ -34,6 +40,9 @@ impl<'a> Bodies<'a> {
     }
 
     pub fn body(&self, items: &[Item]) -> Body {
+        if items.is_empty() {
+            return Body::default();
+        }
         let mut code = Vec::new();
         for item in items {
             self.encode(item, &mut code);
@@ -52,14 +61,14 @@ impl<'a> Bodies<'a> {
         };
         code.push(kind_code(item.kind) | operator_code(item.operator) << 4 | variant << 6);
         let key = item.key.as_deref().map_or(0, |key| self.index[key] + 1);
-        varint(code, key << 1 | u32::from(item.key_quoted));
+        varint(code, key << 1 | u64::from(item.key_quoted));
         match &item.value {
             Value::Scalar(text) => varint(code, self.index[&text[..]]),
             Value::Tagged { tag, .. } => varint(code, self.index[&tag[..]]),
             Value::Block(_) => {}
         }
         if let Some(items) = nested {
-            varint(code, u32::try_from(items.len()).unwrap_or(u32::MAX));
+            varint(code, items.len() as u64);
             for item in items {
                 self.encode(item, code);
             }
@@ -89,7 +98,7 @@ impl Body {
         let head = self.code[*at];
         *at += 1;
         let key = self.read(at);
-        let text = |index: u32| self.strings[index as usize].to_vec();
+        let text = |index: u64| self.strings[index as usize].to_vec();
         let value = match head >> 6 {
             0 => Value::Scalar(text(self.read(at))),
             1 => Value::Block(self.block(at)),
@@ -115,13 +124,13 @@ impl Body {
         (0..count).map(|_| self.item(at)).collect()
     }
 
-    fn read(&self, at: &mut usize) -> u32 {
+    fn read(&self, at: &mut usize) -> u64 {
         let mut value = 0;
         let mut shift = 0;
         loop {
             let byte = self.code[*at];
             *at += 1;
-            value |= u32::from(byte & 0x7f) << shift;
+            value |= u64::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
                 return value;
             }
@@ -134,7 +143,7 @@ impl Default for Body {
     fn default() -> Self {
         Self {
             code: Box::default(),
-            strings: Arc::from(Vec::new()),
+            strings: Arc::clone(&EMPTY),
         }
     }
 }
@@ -153,11 +162,11 @@ impl fmt::Debug for Body {
     }
 }
 
-fn intern<'a>(items: &'a [Item], index: &mut HashMap<&'a [u8], u32>, strings: &mut Vec<Box<[u8]>>) {
+fn intern<'a>(items: &'a [Item], index: &mut HashMap<&'a [u8], u64>, strings: &mut Vec<Box<[u8]>>) {
     let mut add = |text: &'a [u8]| {
         index.entry(text).or_insert_with(|| {
             strings.push(text.into());
-            u32::try_from(strings.len() - 1).unwrap_or(u32::MAX)
+            strings.len() as u64 - 1
         });
     };
     for item in items {
@@ -177,7 +186,7 @@ fn intern<'a>(items: &'a [Item], index: &mut HashMap<&'a [u8], u32>, strings: &m
     }
 }
 
-fn varint(code: &mut Vec<u8>, mut value: u32) {
+fn varint(code: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
         code.push(value as u8 | 0x80);
         value >>= 7;
