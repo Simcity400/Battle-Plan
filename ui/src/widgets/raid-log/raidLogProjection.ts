@@ -324,13 +324,14 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
     }
     const boundary = newIdentityBoundary();
     let nextPrepChange = Infinity;
+    const readAt = source.at ?? hour;
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
       rawRow => {
-        const built = buildRaidRow(readView, rawRow, hour, options.artwork, boundary);
-        if (built.nextChangeAt > hour && built.nextChangeAt < nextPrepChange) nextPrepChange = built.nextChangeAt;
+        const built = buildRaidRow(readView, rawRow, readAt, options.artwork, boundary);
+        if (!source.frozen && built.nextChangeAt > hour && built.nextChangeAt < nextPrepChange) nextPrepChange = built.nextChangeAt;
         return built.row;
       },
     );

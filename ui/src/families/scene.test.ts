@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { Scene } from '../draw/lane.ts';
 import { artHandleKey } from './art/types.ts';
 import { projectScene, sceneReadView } from './scene.ts';
+import { validateGenericTailReply } from './table/rowSource.ts';
 
 const part = (version: number, value: unknown) => ({ h: 100, c: 130, value, refused: null, cells: [], seeds: new Map(), channel: 'panel', version, bytes: 0 });
 
@@ -94,4 +95,20 @@ test('a read compares the whole observable result: the interval, a failure’s r
   const ready = projectScene(scene, { sources: {} }, 120, { art: readyOf(64) as never }, view => view.art(sprite).status);
   assert.equal(ready.reads.unchanged({ art: readyOf(64) as never }), true);
   assert.equal(ready.reads.unchanged({ art: readyOf(48) as never }), false, 'another frame size is a change');
+});
+
+test('a log frozen on an answered snapshot reads that snapshot, not the live head’s refusal', () => {
+  const scene = {
+    widget: 1,
+    subs: [{ id: 7, channel: 'panel', route: null }],
+    pictures: [{ h: 160, c: 170, parts: [part(2, { kind: 'panel', bytes: null, data: null, refused: 'Not recorded at this hour' })] }],
+    model: null,
+  } as unknown as Scene;
+  const raw = { total: '300', offset: '256', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: 'old', hour: 100 }], missing: [], counts: [] };
+  const frozen = { 256: { hour: 100, offset: 256, limit: 256, raw, reply: validateGenericTailReply(raw, 100) } };
+  const view = sceneReadView(scene, { sources: { main: 7 }, pagedRows: { main: frozen } }, 165);
+  assert.equal(view.refused('main'), undefined);
+  assert.deepEqual([view.rows('main')?.at, view.rows('main')?.total, view.rows('main')?.refused], [100, 300, null]);
+  const live = sceneReadView(scene, { sources: { main: 7 } }, 165);
+  assert.equal(live.refused('main'), 'Not recorded at this hour', 'at the live head the refusal stands');
 });

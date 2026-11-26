@@ -2097,6 +2097,172 @@ test('on a 1,500-row table a scroll or a focus change derives no navigation agai
   }
 });
 
+test('a glide frame reads only the movers whose path crosses the viewport, however far one other row travels', () => {
+  const N = 1500;
+  const rows = Array.from({ length: N }, (_, i): FlatTableRow => ({ kind: 'data', key: `R${i}`, name: `R${i}`, level: 1, rank: i + 1, row: { key: `R${i}`, name: `R${i}`, cells: {} } } as FlatTableRow));
+  const rowIndex = new Map(rows.map((row, i) => [row.key, i] as const));
+  const offsets = new Map(rows.map((row, i) => [row.key, { from: i === 0 ? (N - 1) * 20 : (i % 2 ? 20 : -20), to: 0, started: 0 }] as const));
+  const glide = tableGlide(offsets, rows, rowIndex, null, 20);
+  let read = 0;
+  const movers = new Proxy(glide.movers as object[], { get: (target, key, receiver) => { if (typeof key === 'string' && /^\d+$/.test(key)) read++; return Reflect.get(target, key, receiver); } });
+  const crossing = glideCrossing({ ...glide, movers } as typeof glide, 20000, 20300);
+  const brute = rows.flatMap((_, i) => {
+    const from = offsets.get(`R${i}`)!.from;
+    return i * 20 + Math.max(from, 0) + 20 > 20000 && i * 20 + Math.min(from, 0) < 20300 ? [i] : [];
+  });
+  assert.deepEqual([...crossing].sort((a, b) => a - b), brute);
+  assert.ok(read <= crossing.length, `a frame reads ${read} movers for ${crossing.length} on screen, not every mover above it`);
+});
+
+test('a scroll or focus step on a two-pane table costs the same at 150 rows as at 1,500, and the mirror names the focused row', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-panes-1500',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, columns, rows: [],
+      panes: ['A', 'B'].map(side => ({
+        key: side, title: { name: knownValue(side) },
+        rows: Array.from({ length: (readView.panel('main') as { perPane: number }).perPane }, (_, i) => ({ key: `${side}${i}`, name: `${side}${i}`, cells: { name: { value: knownValue(`${side}${i}`) }, v: { value: knownValue(i + 1), format: 'integer' as const } } })),
+      })),
+    }),
+  });
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction: 'ascending' } });
+  const recording = installRecordingCanvas();
+  const push = Array.prototype.push;
+  const find = Array.prototype.find;
+  const steps = (perPane: number) => {
+    const staticPanels = { main: { perPane } };
+    const bound = (scrollTop: number, focusedKey: string | null = null) => ({
+      family: 'table' as const, theme: TEST_THEME, kind: 'test-panes-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels,
+      width: 600, height: 300, scrollLeft: 0, scrollTop, focusedKey, reducedMotion: false,
+    });
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    lane.paint({ label: 'first', binding: bound(0), hour: 1, now: 1000 });
+    let now = 1000;
+    return ([['a scroll', bound(1000)], ['a focus change', bound(1000, 'B40')]] as const).map(([label, binding]) => {
+      let pushed = 0;
+      Array.prototype.push = function (this: unknown[], ...items: unknown[]) { pushed += items.length; return push.apply(this, items); };
+      Array.prototype.find = function (this: unknown[], ...args: Parameters<typeof find>) { pushed += this.length; return find.apply(this, args); } as typeof find;
+      let step;
+      try {
+        step = lane.paint({ label, binding, hour: 1, now: now += 5000 });
+      } finally {
+        Array.prototype.push = push;
+        Array.prototype.find = find;
+      }
+      const mirrored = (step.fields.mirror?.value as { rows: { key: string }[] } | undefined)?.rows.map(row => row.key) ?? [];
+      return { label, pushed, mirrored };
+    });
+  };
+  try {
+    const small = steps(75);
+    const large = steps(750);
+    for (let at = 0; at < small.length; at++) {
+      const [few, many] = [small[at]!, large[at]!];
+      assert.ok(many.pushed - few.pushed < 20, `${many.label}: ${many.pushed} entries pushed or searched at 1,500 rows against ${few.pushed} at 150`);
+      assert.deepEqual(many.mirrored, few.mirrored, `${many.label}: the mirror speaks the rows on screen, whatever the panes hold`);
+    }
+    assert.ok(large[1]!.mirrored.includes('B40'), 'the focused row is the one mirrored');
+  } finally {
+    Array.prototype.push = push;
+    Array.prototype.find = find;
+    recording.restore();
+  }
+});
+
+test('an animation frame of a 1,500-row table with a flag per row joins no list that grows with the rows', () => {
+  type Row = { id: string; v: number };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-art-1500',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, rank: true, defaultRankShown: true, rankMarkers: true, columns,
+      rows: (readView.panel('main') as { rows: Row[] }).rows.map(r => {
+        readView.art({ kind: 'url', url: `asset://flag-${r.id}.png` });
+        return { key: r.id, name: r.id, cells: { name: { value: knownValue(r.id) }, v: { value: knownValue(r.v), format: 'integer' } } };
+      }),
+    }),
+  });
+  const N = 1500;
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction: 'descending' } });
+  const ascending = Array.from({ length: N }, (_, i): Row => ({ id: `C${String(i).padStart(4, '0')}`, v: i }));
+  const reversed = ascending.map((row, i): Row => ({ ...row, v: N - i }));
+  const bound = (rows: Row[]) => ({
+    family: 'table' as const, theme: TEST_THEME, kind: 'test-art-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } },
+    width: 600, height: 300, scrollLeft: 0, scrollTop: 600, focusedKey: null, reducedMotion: false,
+  });
+  const recording = installRecordingCanvas();
+  const join = Array.prototype.join;
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    lane.paint({ label: 'ascending', binding: bound(ascending), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const moving = bound(reversed);
+    lane.paint({ label: 'every row moves', binding: moving, hour: 2, speed: 24, seek: 1, now: 2000 });
+    let joined = 0;
+    Array.prototype.join = function (this: unknown[], separator?: string) { joined += this.length; return join.call(this, separator); };
+    let frame;
+    try {
+      frame = lane.paint({ label: 'a frame of the glide', binding: moving, hour: 2, speed: 24, seek: 1, now: 2050 });
+    } finally {
+      Array.prototype.join = join;
+    }
+    assert.equal(frame.motion, true, 'the glide is still running');
+    assert.ok(joined < 200, `an animation frame joins ${joined} list entries, not one per row`);
+  } finally {
+    Array.prototype.join = join;
+    recording.restore();
+  }
+});
+
+test('after a refresh with the same flags, a one-row scroll hands the art cache the offscreen list it already holds', () => {
+  type Row = { id: string; v: number };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-art-scroll-1500',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, columns,
+      rows: (readView.panel('main') as { rows: Row[] }).rows.map(r => {
+        const url = `asset://flag-${r.id}.png`;
+        readView.art({ kind: 'url', url });
+        return { key: r.id, name: r.id, cells: { name: { value: knownValue(r.id), art: readyArt(url) }, v: { value: knownValue(r.v), format: 'integer' } } };
+      }),
+    }),
+  });
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
+  const rows = Array.from({ length: 1500 }, (_, i): Row => ({ id: `C${String(i).padStart(4, '0')}`, v: i }));
+  const bound = (scrollTop: number) => ({
+    family: 'table' as const, theme: TEST_THEME, kind: 'test-art-scroll-1500', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: { main: { rows } },
+    width: 600, height: 300, scrollLeft: 0, scrollTop, focusedKey: null, reducedMotion: false,
+  });
+  const recording = installRecordingCanvas();
+  const request = LaneArtCache.prototype.requestVisible;
+  const offscreens: unknown[] = [];
+  LaneArtCache.prototype.requestVisible = function (this: LaneArtCache, visible, offscreen) { offscreens.push(offscreen); return request.call(this, visible, offscreen); };
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 600, height: 300, dpr: 1 });
+    lane.paint({ label: 'first', binding: bound(0), hour: 1, now: 1000 });
+    lane.paint({ label: 'a refresh with the same flags', binding: bound(0), hour: 2, now: 2000 });
+    lane.paint({ label: 'one row further', binding: bound(34), hour: 2, now: 3000 });
+    assert.ok(offscreens.length >= 2, 'the scroll asks for the newly visible flag');
+    assert.equal(offscreens.at(-1), offscreens[0], 'the offscreen list handed over is the one the cache already holds');
+  } finally {
+    LaneArtCache.prototype.requestVisible = request;
+    recording.restore();
+  }
+});
+
 test('the movers a viewport evaluates are exactly those whose path crosses it', () => {
   const N = 1500;
   const rows = Array.from({ length: N }, (_, i): FlatTableRow => ({ kind: 'data', key: `R${i}`, name: `R${i}`, level: 1, rank: i + 1, row: { key: `R${i}`, name: `R${i}`, cells: {} } } as FlatTableRow));

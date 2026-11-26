@@ -1,5 +1,6 @@
 import type { BoundHour, BoundWindow } from '../../dashboard/regionTime';
 import type { CountrySpan, FacetFilter, LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
+import { formatDateOnly } from '../valueFormat.ts';
 
 type BoundFacetFilter = Omit<FacetFilter, 'membership' | 'unobserved'> & {
   membership?: readonly (CountrySpan & BoundWindow)[];
@@ -87,6 +88,7 @@ export interface TableRowSource<TRow extends DatedLogRow> {
   readonly at: number | null;
   readonly missing: readonly PlacedSpan[];
   readonly refused: string | null;
+  readonly frozen?: true;
   readonly facetTotals?: ReadonlyMap<string, number>;
   readonly facetMissing?: ReadonlyMap<string, string>;
   readonly rawHead?: unknown;
@@ -259,6 +261,12 @@ function pageAt<TRow extends DatedLogRow>(pages: SnapshotPages<TRow>, ordinal: n
   return pages[Math.floor(ordinal / pageSize) * pageSize];
 }
 
+export function frozenAnswer<TRow extends DatedLogRow>(pages: SnapshotPages<TRow> | undefined, hour: number): Extract<SnapshotPage<TRow>, { reply: unknown }> | undefined {
+  const held = pages ? Object.values(pages) : [];
+  if (held.length === 0 || held.some(page => page.hour > hour)) return undefined;
+  return held.find((page): page is Extract<SnapshotPage<TRow>, { reply: unknown }> => 'reply' in page);
+}
+
 export function buildRowSourceFromHead(
   identity: string,
   headRaw: unknown,
@@ -268,7 +276,7 @@ export function buildRowSourceFromHead(
 ): TableRowSource<DatedLogRow> | null {
   const held = Object.values(pages);
   const shown = held.length > 0 && held.every(page => page.hour <= hour) ? pages : NO_PAGES;
-  const answered = Object.values(shown).find((page): page is Extract<SnapshotPage, { reply: unknown }> => 'reply' in page);
+  const answered = frozenAnswer(shown, hour);
   if (answered) {
     const { reply, hour: at, limit } = answered;
     return {
@@ -277,6 +285,7 @@ export function buildRowSourceFromHead(
       at,
       missing: reply.missing,
       refused: null,
+      frozen: true,
       facetTotals: reply.facetTotals,
       ...(reply.facetMissing ? { facetMissing: reply.facetMissing } : {}),
       rawHead: answered.raw,
@@ -289,6 +298,8 @@ export function buildRowSourceFromHead(
       }),
     };
   }
+  const refusals = Object.values(shown);
+  const refusedAt = (ordinal: number) => refusals.find(page => 'refused' in page && ordinal >= page.offset && ordinal < page.offset + page.limit);
   if (headRefused !== undefined) {
     return {
       identity,
@@ -301,7 +312,6 @@ export function buildRowSourceFromHead(
   }
   if (!isTailReplyLike(headRaw)) return null;
   const head = validateGenericTailReply(headRaw, hour);
-  const refusals = Object.values(shown);
   return {
     identity,
     total: head.total,
@@ -314,8 +324,10 @@ export function buildRowSourceFromHead(
     sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, head.total, ordinal => {
       const row = head.rows[ordinal];
       if (row) return { kind: 'data', ordinal, readAt: reqHour, row };
-      const refusal = refusals.find(page => 'refused' in page && ordinal >= page.offset && ordinal < page.offset + page.limit);
-      return refusal && 'refused' in refusal ? { kind: 'refused', ordinal, readAt: reqHour, reason: refusal.refused } : { kind: 'loading', ordinal, readAt: reqHour };
+      const refusal = refusedAt(ordinal);
+      if (!refusal || !('refused' in refusal)) return { kind: 'loading', ordinal, readAt: reqHour };
+      const reason = refusal.hour === hour ? refusal.refused : `Not read at ${formatDateOnly(refusal.hour)}: ${refusal.refused}`;
+      return { kind: 'refused', ordinal, readAt: reqHour, reason };
     }),
   };
 }
@@ -443,6 +455,8 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   #hour: number | null = null;
   #pages = new Map<number, SnapshotPage<TRow>>();
   #inFlight = new Set<number>();
+  #keep = new Set<number>();
+  #header: number | null = null;
   #published: SnapshotPages<TRow> = NO_PAGES as SnapshotPages<TRow>;
   #dirty = false;
 
@@ -476,8 +490,9 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     const keep = new Set(wanted);
     keep.add(wanted[0]! - this.#pageSize);
     keep.add(wanted[wanted.length - 1]! + this.#pageSize);
+    this.#keep = keep;
     for (const offset of this.#pages.keys()) {
-      if (keep.has(offset)) continue;
+      if (keep.has(offset) || offset === this.#header) continue;
       this.#pages.delete(offset);
       this.#dirty = true;
     }
@@ -514,6 +529,10 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
   #settle(ask: PageFetchAsk, page: SnapshotPage<TRow>): boolean {
     if (ask.hour !== this.#hour || !this.#inFlight.delete(ask.offset)) return false;
     this.#pages.set(ask.offset, page);
+    if ('reply' in page) {
+      if (this.#header !== null && this.#header !== ask.offset && !this.#keep.has(this.#header)) this.#pages.delete(this.#header);
+      this.#header = ask.offset;
+    }
     this.#dirty = true;
     return true;
   }
@@ -524,6 +543,8 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     this.#hour = null;
     this.#pages.clear();
     this.#inFlight.clear();
+    this.#keep.clear();
+    this.#header = null;
     return cancel;
   }
 }

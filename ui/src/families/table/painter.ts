@@ -990,15 +990,15 @@ export function drawFamilyTable(
 export interface TableGlide {
   readonly offsets: ReadonlyMap<string, GlideOffset>;
   readonly movers: readonly { readonly index: number; readonly lo: number; readonly hi: number }[];
-  readonly reach: number;
+  readonly starts: Float64Array;
+  readonly ends: Float64Array;
 }
 
-export const NO_GLIDE: TableGlide = { offsets: new Map(), movers: [], reach: 0 };
+export const NO_GLIDE: TableGlide = { offsets: new Map(), movers: [], starts: new Float64Array(0), ends: new Float64Array(0) };
 
 export function tableGlide(offsets: ReadonlyMap<string, GlideOffset>, rows: readonly FlatTableRow[], rowIndex: ReadonlyMap<string, number>, rowGeom: RowLayoutGeometry | null, rowHeight: number): TableGlide {
   if (offsets.size === 0) return NO_GLIDE;
   const movers: { index: number; lo: number; hi: number }[] = [];
-  let reach = 0;
   for (const [key, offset] of offsets) {
     const index = rowIndex.get(key);
     if (index === undefined || rows[index]?.kind !== 'data') continue;
@@ -1006,24 +1006,35 @@ export function tableGlide(offsets: ReadonlyMap<string, GlideOffset>, rows: read
     const lo = top + Math.min(offset.from, offset.to, 0);
     const hi = top + Math.max(offset.from, offset.to, 0) + (rowGeom ? rowGeom.heights[index]! : rowHeight);
     movers.push({ index, lo, hi });
-    if (hi - lo > reach) reach = hi - lo;
   }
   movers.sort((x, y) => x.lo - y.lo);
-  return { offsets, movers, reach };
+  let size = 1;
+  while (size < movers.length) size *= 2;
+  const starts = new Float64Array(movers.length);
+  const ends = new Float64Array(2 * size).fill(-Infinity);
+  for (let at = 0; at < movers.length; at++) {
+    starts[at] = movers[at]!.lo;
+    ends[size + at] = movers[at]!.hi;
+  }
+  for (let node = size - 1; node >= 1; node--) ends[node] = Math.max(ends[2 * node]!, ends[2 * node + 1]!);
+  return { offsets, movers, starts, ends };
 }
 
 export function glideCrossing(glide: TableGlide, top: number, bottom: number): number[] {
-  const { movers } = glide;
-  let lo = 0;
-  let hi = movers.length;
-  const from = top - glide.reach;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (movers[mid]!.lo < from) lo = mid + 1;
-    else hi = mid;
-  }
+  const { movers, starts, ends } = glide;
   const out: number[] = [];
-  for (let at = lo; at < movers.length && movers[at]!.lo < bottom; at++) if (movers[at]!.hi > top) out.push(movers[at]!.index);
+  const size = ends.length / 2;
+  const visit = (node: number, first: number, span: number): void => {
+    if (first >= starts.length || starts[first]! >= bottom || ends[node]! <= top) return;
+    if (span === 1) {
+      out.push(movers[first]!.index);
+      return;
+    }
+    const half = span / 2;
+    visit(2 * node, first, half);
+    visit(2 * node + 1, first + half, half);
+  };
+  if (size >= 1) visit(1, 0, size);
   return out;
 }
 

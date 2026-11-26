@@ -18,7 +18,6 @@ export interface ResolvedPane {
   readonly key: string;
   readonly title: TablePaneTitle;
   readonly rows: readonly FlatTableRow[];
-  readonly rowIndex: ReadonlyMap<string, number>;
   readonly geom: RowLayoutGeometry;
 }
 
@@ -60,15 +59,13 @@ export function resolvePanes(
   const seen = new Set<string>();
   return panes.map(pane => {
     const rows = resolveTableRows(paneModel(model, pane), settings, expanded);
-    const rowIndex = new Map<string, number>();
     for (let i = 0; i < rows.length; i++) {
       const item = rows[i]!;
       if (item.kind === 'group-header' || item.kind === 'loading') continue;
       if (seen.has(item.key)) throw new Error(`table pane ${pane.key}: row key ${item.key} is already in another pane`);
       seen.add(item.key);
-      rowIndex.set(item.key, i);
     }
-    return { key: pane.key, title: pane.title, rows, rowIndex, geom: computeRowLayout(rows, settings.density, rowHeightMode) };
+    return { key: pane.key, title: pane.title, rows, geom: computeRowLayout(rows, settings.density, rowHeightMode) };
   });
 }
 
@@ -101,14 +98,6 @@ export function panesHeight(panes: readonly ResolvedPane[]): number {
   let height = 0;
   for (const pane of panes) height = Math.max(height, pane.geom.totalHeight);
   return height;
-}
-
-export function paneOfRow(panes: readonly ResolvedPane[], key: string): { readonly pane: number; readonly index: number } | null {
-  for (let p = 0; p < panes.length; p++) {
-    const index = panes[p]!.rowIndex.get(key);
-    if (index !== undefined) return { pane: p, index };
-  }
-  return null;
 }
 
 export function visiblePaneRange(geom: RowLayoutGeometry, count: number, scrollTop: number, height: number): readonly [number, number] {

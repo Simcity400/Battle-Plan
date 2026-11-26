@@ -4,6 +4,7 @@ import { PayloadSender } from '../../dashboard/follow/payloads.ts';
 import { tableHostAdapter } from './hostAdapter.ts';
 import { gatedHour } from '../../test-support/gated.ts';
 import { projectPagedSlots, tailFollowParams } from './logHelpers.ts';
+import { formatDateOnly } from '../valueFormat.ts';
 import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, validateTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
 
 interface Row extends DatedLogRow {
@@ -113,6 +114,36 @@ test('the pager freezes one hour, asks it again after a seek before it, keeps pa
   assert.deepEqual(retried.fetch, [{ offset: 20, limit: 4, hour: 90 }], 'scrolling back asks an evicted refused offset again instead of leaving it in flight');
   pager.window({ first: 0, count: 2 }, 160);
   assert.deepEqual(Object.keys(pager.pages()), [], 'back at the head the snapshot is released');
+});
+
+test('a frozen log scrolled far keeps its snapshot header: until the new window answers, no live total, chips or rows show through', () => {
+  const pager = new SnapshotPager(4, 4);
+  const near = pager.window({ first: 5, count: 2 }, 100);
+  const raw = rawReply([{ key: 'p4', hour: 100 }], 40, { offset: '4', counts: [{ key: 'running', total: '3' }] });
+  assert.equal(pager.answer(near.fetch[0]!, validateGenericTailReply(raw, 100), raw), true);
+  const far = pager.window({ first: 30, count: 2 }, 150);
+  assert.deepEqual(far.fetch.map(ask => [ask.offset, ask.hour]), [[28, 100]], 'the far page is asked at the frozen hour');
+  const live = rawReply([{ key: 'new', hour: 150 }], 90, { counts: [{ key: 'running', total: '9' }] });
+  const source = buildRowSourceFromHead('q', live, undefined, 150, pager.pages())!;
+  assert.deepEqual([source.at, source.total, source.facetTotals?.get('running')], [100, 40, 3], 'the frozen snapshot still names the log while the far page loads');
+  assert.deepEqual(source.sliceAt(150, 30, 2).map(slot => slot.kind), ['loading', 'loading']);
+  const answered = rawReply([{ key: 'p28', hour: 100 }], 40, { offset: '28' });
+  pager.answer(far.fetch[0]!, validateGenericTailReply(answered, 100), answered);
+  assert.deepEqual(Object.keys(pager.pages()).map(Number), [28], 'once the window answers, the old header page leaves');
+});
+
+test('a frozen page refused before any page answered is a dated failure inside the later live head', () => {
+  const pager = new SnapshotPager(4, 4);
+  const ask = pager.window({ first: 5, count: 2 }, 100).fetch[0]!;
+  pager.refuse(ask, 'Log page withheld');
+  const live = rawReply([{ key: 'new', hour: 150 }], 9);
+  const source = buildRowSourceFromHead('q', live, undefined, 150, pager.pages())!;
+  assert.deepEqual([source.at, source.total], [150, 9], 'the live head at the displayed hour, whole');
+  const slot = source.sliceAt(150, 5, 1)[0]!;
+  assert.deepEqual([slot.kind, slot.kind === 'refused' ? slot.reason : null], ['refused', `Not read at ${formatDateOnly(100)}: Log page withheld`]);
+  const sameHour = buildRowSourceFromHead('q', rawReply([{ key: 'old', hour: 100 }], 9), undefined, 100, pager.pages())!;
+  const own = sameHour.sliceAt(100, 5, 1)[0]!;
+  assert.equal(own.kind === 'refused' ? own.reason : null, 'Log page withheld', 'a refusal at the displayed hour is told as it came');
 });
 
 test('each snapshot page crosses to the worker once, however many pages the scroll gathers', () => {

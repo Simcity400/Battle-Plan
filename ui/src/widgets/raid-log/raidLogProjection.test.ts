@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { DisplayedHour, EntityKind, IdentityProvider, IdentityResult } from '../../families/plan.ts';
-import { buildRowSourceFromHead } from '../../families/table/rowSource.ts';
+import { buildRowSourceFromHead, validateGenericTailReply } from '../../families/table/rowSource.ts';
 import type { RaidLogRow, RaidLogTailReply, RaidTypeChip } from '../../generated/dashboard';
 import { raidLogProjection, raidTypeFilterItems } from './raidLogProjection.ts';
 
@@ -267,4 +267,18 @@ test('raid projection formats preparation days, nextChangeAt, active count summa
   );
   assert.equal(unavailableModel.emptyKind, 'unavailable');
   assert.equal(unavailableModel.emptyDetail, 'The content declares no raid type.');
+});
+
+test('a raid in a log frozen at an earlier hour keeps the preparation it had then, and does not tick with playback', () => {
+  const row = sampleRow({ key: 'r-short', hour: 100, preparation: { since: 100, hours: 5, perHour: 1, through: null } });
+  const frozen = sampleReply([row], { total: '300' });
+  const pages = { 0: { hour: 100, offset: 0, limit: 256, raw: frozen, reply: validateGenericTailReply(frozen, 100) } };
+  const live = sampleReply([sampleRow({ key: 'r-new', hour: 104 })]);
+  const source = buildRowSourceFromHead('test:raids:frozen', live, undefined, 104, pages)!;
+  const model = raidLogProjection.project(createBoundedReadView({ hour: 104, rows: new Map([['main', source]]) }), { artwork: false, selected: [] });
+  assert.deepEqual(model.rows[0]?.cells.preparation?.value, { kind: 'known', value: '5' }, 'the hours prepared at the frozen hour, not at the displayed one');
+  assert.equal(model.nextChangeAt ?? Infinity, Infinity, 'a frozen row does not wake playback to advance');
+  const sameHour = buildRowSourceFromHead('test:raids:frozen-now', frozen, undefined, 100, pages)!;
+  const answeredNow = raidLogProjection.project(createBoundedReadView({ hour: 100, rows: new Map([['main', sameHour]]) }), { artwork: false, selected: [] });
+  assert.equal(answeredNow.nextChangeAt ?? Infinity, Infinity, 'nor one whose page answered at the hour it froze');
 });

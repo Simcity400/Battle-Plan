@@ -176,6 +176,28 @@ test('DomArtCache distinguishes pending, ready, and failed, wakes listeners, ret
   unsub();
 });
 
+test('scrolling one flag into view reads none of the 1,500 offscreen demands again, and still loads the new flag first', async () => {
+  const started: string[] = [];
+  const lane = new LaneArtCache<ArtBitmap>({
+    maxEntries: 128,
+    fetchBitmap: url => {
+      started.push(url);
+      return new Promise(resolve => queueMicrotask(() => resolve(fakeBitmap())));
+    },
+  });
+  let read = 0;
+  const urls = Array.from({ length: 1500 }, (_, i) => `art://flag-${i}`);
+  const offscreen = new Proxy(urls, { get: (target, key, receiver) => { if (key === Symbol.iterator) read++; return Reflect.get(target, key, receiver); } });
+  lane.requestVisible(urls.slice(0, 20), offscreen);
+  for (let i = 0; i < 2000; i++) await Promise.resolve();
+  const before = read;
+  started.length = 0;
+  lane.requestVisible(urls.slice(1, 21).concat('art://flag-new'), offscreen);
+  assert.equal(read, before, 'the unchanged offscreen list is not walked again');
+  assert.equal(started[0], 'art://flag-new', 'the flag that came into view is the first to load');
+  lane.dispose();
+});
+
 test('at 1,500 assets the lane decodes a bounded few at a time and holds no more than its limit, the DOM cache keeps no failure past its limit, and a decode that lands before subscribing is seen', async () => {
   let started = 0;
   let inFlight = 0;
