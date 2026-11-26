@@ -16,7 +16,7 @@ use dashboard_text::metadata::check_cancel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -33,7 +33,7 @@ pub struct AutonomyLinesTileFamily {
     #[doc = " Only the time each subject spent under one of these overlords; every relation when absent."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub overlords: Option<Vec<Country>>,
+    pub overlords: Option<Vec<(Country, Vec<HourSpan>)>>,
 }
 
 pub fn tile_family_walk() -> dashboard_query::fields::Walk {
@@ -75,29 +75,19 @@ fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
     out
 }
 
-fn intersect_spans(left: &[Span], right: &[Span]) -> Vec<Span> {
-    let mut out = Vec::new();
-    for a in left {
-        for b in right {
-            let first_hour = a.first_hour.max(b.first_hour);
-            let last_hour = a.last_hour.min(b.last_hour);
-            if first_hour <= last_hour {
-                out.push(Span { first_hour, last_hour });
-            }
-        }
-    }
-    merge_spans(out)
+fn intersections(spans: &[Span], first: i32, last: i32) -> impl Iterator<Item = Span> {
+    let start = spans.partition_point(|span| span.last_hour < first);
+    spans[start..].iter().take_while(move |span| span.first_hour <= last).map(move |span| Span {
+        first_hour: span.first_hour.max(first),
+        last_hour: span.last_hour.min(last),
+    })
 }
 
 fn clip_missing(missing: &[MissingSpan], spans: &[Span]) -> Vec<MissingSpan> {
     let mut out: Vec<MissingSpan> = Vec::new();
     for gap in missing {
-        for span in spans {
-            let first_hour = gap.first_hour.max(span.first_hour);
-            let last_hour = gap.last_hour.min(span.last_hour);
-            if first_hour <= last_hour {
-                out.push(MissingSpan { first_hour, last_hour, reason: gap.reason.clone() });
-            }
+        for span in intersections(spans, gap.first_hour, gap.last_hour) {
+            out.push(MissingSpan { first_hour: span.first_hour, last_hour: span.last_hour, reason: gap.reason.clone() });
         }
     }
     out
@@ -106,7 +96,7 @@ fn clip_missing(missing: &[MissingSpan], spans: &[Span]) -> Vec<MissingSpan> {
 fn subject_spans_from_held(
     stretches: &[Stretch],
     held: &HashMap<u32, (Arc<RunSubjects>, Arc<RunLinks>)>,
-    overlords: Option<&BTreeSet<u32>>,
+    overlords: Option<&BTreeMap<u32, Vec<Span>>>,
 ) -> BTreeMap<u32, Vec<Span>> {
     let mut raw_spans: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
     for stretch in stretches {
@@ -124,20 +114,23 @@ fn subject_spans_from_held(
                 if first > last {
                     continue;
                 }
-                let under: Vec<(i32, i32)> = match overlords {
-                    None => vec![(first, last)],
-                    Some(allowed) => links
-                        .within(overlord, first, last)
-                        .into_iter()
-                        .filter_map(|(slot, oa, ob)| slot.filter(|slot| allowed.contains(slot)).map(|_| (oa, ob)))
-                        .collect(),
-                };
-                for (ua, ub) in under {
-                    for (slot, sa, sb) in links.within(subject, ua, ub) {
+                let mut include = |from, to| {
+                    for (slot, sa, sb) in links.within(subject, from, to) {
                         if let Some(slot) = slot {
                             raw_spans.entry(slot).or_default().push(Span { first_hour: sa, last_hour: sb });
                         }
                     }
+                };
+                if let Some(allowed) = overlords {
+                    for (slot, oa, ob) in links.within(overlord, first, last) {
+                        if let Some(selected) = slot.and_then(|slot| allowed.get(&slot)) {
+                            for span in intersections(selected, oa, ob) {
+                                include(span.first_hour, span.last_hour);
+                            }
+                        }
+                    }
+                } else {
+                    include(first, last);
                 }
             }
         }
@@ -168,7 +161,7 @@ fn subjects_by_hour(
         if !is_named(slot) {
             continue;
         }
-        let Some(began) = spans.iter().map(|span| span.first_hour).min() else { continue };
+        let Some(began) = spans.first().map(|span| span.first_hour) else { continue };
         if began <= hour {
             from = from.max(began);
             subjects.push(slot);
@@ -200,8 +193,7 @@ fn spans_for_country(
                 if let Holder::Found { slot, .. } = run.holder
                     && let Some(spans) = subject_spans.get(&slot)
                 {
-                    let holder_span = [Span { first_hour: run.first, last_hour: run.last }];
-                    out.extend(intersect_spans(spans, &holder_span));
+                    out.extend(intersections(spans, run.first, run.last));
                 }
             }
             merge_spans(out)
@@ -240,15 +232,18 @@ pub fn tile(
             ));
         }
     }
-    let overlords: Option<BTreeSet<u32>> = family.overlords.as_ref().map(|asked| {
-        asked
-            .iter()
-            .flat_map(|country| query.holders.within(country, query.timeline.first, query.timeline.last))
-            .filter_map(|run| match run.holder {
-                Holder::Found { slot, .. } => Some(slot),
-                _ => None,
-            })
-            .collect()
+    let overlords = family.overlords.map(|asked| {
+        let mut selected = BTreeMap::<u32, Vec<Span>>::new();
+        for (country, spans) in asked {
+            for span in spans {
+                for run in query.holders.within(&country, span.first_hour, span.last_hour) {
+                    if let Holder::Found { slot, .. } = run.holder {
+                        selected.entry(slot).or_default().push(Span { first_hour: run.first, last_hour: run.last });
+                    }
+                }
+            }
+        }
+        selected.into_iter().map(|(slot, spans)| (slot, merge_spans(spans))).collect()
     });
     let subject_spans = subject_spans_from_held(&query.timeline.stretches, &held, overlords.as_ref());
 
@@ -303,19 +298,20 @@ pub fn tile(
         }
     } else {
         let asks = line.asks(&ask.countries, &[])?;
+        let selected = ask.within.map(|within| {
+            let mut selected = BTreeMap::<Country, Vec<HourSpan>>::new();
+            for (country, spans) in within {
+                selected.entry(country).or_default().extend(spans);
+            }
+            selected
+        });
         let within: Vec<(Country, Vec<Span>)> = asks
             .iter()
             .map(|entry| {
                 let base = spans_for_country(&entry.country, &subject_spans, query);
-                let clipped = match ask.within.as_deref() {
-                    Some(extra) => {
-                        let extra_spans: Vec<Span> = extra
-                            .iter()
-                            .filter(|(country, _)| *country == entry.country)
-                            .flat_map(|(_, spans)| spans.iter().map(|span| Span { first_hour: span.first_hour, last_hour: span.last_hour }))
-                            .collect();
-                        if extra_spans.is_empty() { base } else { intersect_spans(&base, &extra_spans) }
-                    }
+                let clipped = match &selected {
+                    Some(extra) => merge_spans(extra.get(&entry.country).into_iter().flatten()
+                        .flat_map(|span| intersections(&base, span.first_hour, span.last_hour)).collect()),
                     None => base,
                 };
                 (entry.country.clone(), clipped)
@@ -339,6 +335,36 @@ mod tests {
 
     fn cell(start: i32, end: i32) -> Option<i64> {
         Some(i64::from(start) << 32 | i64::from(end as u32))
+    }
+
+    #[test]
+    fn a_reused_overlord_slot_draws_no_later_subjects() {
+        use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, ownership_frame, records}};
+        use replay_data::rows::{SubjectRow, TableId, TableRows};
+        use replay_frame::frame::TableView;
+
+        let frames = (100..=103).map(|hour| {
+            let mut frame = ownership_frame(1, hour, 44);
+            let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
+            let old = hour < 103;
+            rows.iter_mut().find(|row| row.id == 9001).unwrap().tag = if old { b"AAA" } else { b"BBB" }.to_vec();
+            *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(vec![SubjectRow {
+                overlord: 11, subject: if old { 44 } else { 55 }, start_hour: if old { 100 } else { 103 }, ..Default::default()
+            }]));
+            frame
+        }).collect();
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap().into_timelines(&Default::default()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(SourceKey { source_id: "overlord-slot".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let ask = serde_json::json!({
+            "branchId": "1", "family": { "kind": SERIES, "overlords": [["AAA", [{"firstHour": 101, "lastHour": 103}]]] },
+            "binHours": 1, "index": 0, "top": 2, "hour": 103
+        });
+        let reply = tile(&source, &query, &ask, &cancelled).unwrap();
+        assert_eq!(reply.lines.iter().map(|line| &line.country).collect::<Vec<_>>(), [&Country::Slot(8)]);
+        assert_eq!(reply.lines[0].missing.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>(), [(101, 102)]);
     }
 
     #[test]
@@ -382,7 +408,8 @@ mod tests {
             slots: HashMap::from([(1, vec![(100, 199, Some(10))]), (2, vec![(100, 199, Some(20))]), (4, vec![(100, 199, Some(40))])]),
         };
         let moved_held = HashMap::from([(0, (Arc::new(moved), Arc::new(moved_links)))]);
-        let under_b = subject_spans_from_held(&stretches, &moved_held, Some(&BTreeSet::from([40])));
+        let allowed = BTreeMap::from([(40, vec![Span { first_hour: 100, last_hour: 199 }])]);
+        let under_b = subject_spans_from_held(&stretches, &moved_held, Some(&allowed));
         assert_eq!(pairs(&under_b[&20]), vec![(150, 199)], "the subject's time under its earlier overlord is not drawn for the later one");
         let everyone = subject_spans_from_held(&stretches, &moved_held, None);
         assert_eq!(pairs(&everyone[&20]), vec![(100, 199)]);
