@@ -842,7 +842,8 @@ pub fn compare_boundary_counters(
         };
         if !advanced.is_empty() {
             let warning = format!(
-                "the save was written after the compared frame ({}), so its differences are not certified; take the save at a sampled hour: pause, recorder refresh, step one hour, save",
+                "{} counter(s) are higher in the save than in the compared frame ({}), so its differences are not certified; take the save at a sampled hour: pause, recorder refresh, step one hour, save, then run until the recorder has sampled that hour before detaching",
+                advanced.len(),
                 advanced.join(", ")
             );
             report.incomplete("boundary", warning.clone());

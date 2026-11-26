@@ -82,6 +82,8 @@ fn a_design_change_reading_variants_off_their_slot_is_not_a_full_refresh() {
     assert!(!report.full_refresh());
     assert!(variants.iter().all(|&table| report.read_at_hour(table)));
     assert!(!report.read_at_hour(TableId::DivisionEquipment));
+    assert_eq!(replay_data::cadence::cadence(TableId::CountryUnitBonuses), replay_data::cadence::cadence(TableId::VariantDefinitions));
+    assert!(!report.read_at_hour(TableId::CountryUnitBonuses), "a read off the slot is current for its own table, not for its slot");
     assert!(report.attempt("DivisionEquipment", |report| {
         report.difference("field", 1, 2);
         Ok(())
@@ -138,11 +140,10 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
     report.attempt_table(TableId::Countries, differ);
     assert_eq!(report.differences.len(), 2);
     report
-        .observed_refresh
-        .push(replay_data::cadence::cadence(TableId::CountryFuel));
+        .read_now.insert(TableId::CountryFuel);
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 3);
-    report.observed_refresh.clear();
+    report.read_now.clear();
     report.forced_full = true;
     report.attempt("economy CountryFuel", differ);
     assert_eq!(report.differences.len(), 4);
@@ -152,7 +153,7 @@ fn carried_daily_groups_are_listed_not_compared_at_a_non_full_hour() {
         other => panic!("CountryIntel is {other:?}"),
     };
     report.hour = 24 * 1000 + intel_slot;
-    report.observed_refresh.clear();
+    report.read_now.clear();
     assert!(report.attempt("CountryIntel", differ));
     assert!(
         report.carried.contains_key("CountryIntel"),

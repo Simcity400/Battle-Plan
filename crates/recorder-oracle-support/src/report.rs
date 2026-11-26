@@ -128,7 +128,6 @@ pub struct Report {
     pub country_emissions: Option<Vec<content_reader_save::SavedCountryEmission>>,
     pub canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
     pub content_reads: Option<content_reader_layers::content::UncoveredReads>,
-    pub observed_refresh: Vec<replay_data::cadence::Cadence>,
     pub intel_walked: bool,
     pub forced_full: bool,
     pub read_now: BTreeSet<TableId>,
@@ -298,7 +297,7 @@ impl Report {
         if table == TableId::CountryIntel {
             return self.full_refresh() || self.intel_walked;
         }
-        self.full_refresh() || self.read_now.contains(&table) || self.refresh_is_current(table, self.hour)
+        self.full_refresh() || self.refresh_is_current(table, self.hour)
     }
 
     pub fn carried_owners(&mut self, table: TableId, oldest: Option<Hour>) {
@@ -358,7 +357,6 @@ impl Report {
             .into_iter()
             .filter(|table| !frame.recorded(*table))
             .collect();
-        self.observed_refresh.clear();
         self.read_now = TableId::ALL.into_iter().filter(|table| frame.metrics.table_ns[table.index()] != 0).collect();
         let mut daily = TableId::ALL.into_iter().filter(|&table| {
             table != TableId::CountryIntel
@@ -380,16 +378,6 @@ impl Report {
                 for (field, count) in nested {
                     *field_gaps.entry(field.to_owned()).or_default() += count;
                 }
-            }
-            if table != TableId::CountryIntel
-                && frame.metrics.table_ns[table.index()] != 0
-                && matches!(
-                    replay_data::cadence::cadence(table),
-                    replay_data::cadence::Cadence::Daily(_) | replay_data::cadence::Cadence::Static
-                )
-            {
-                self.observed_refresh
-                    .push(replay_data::cadence::cadence(table));
             }
         }
         for (name, count) in field_gaps {
@@ -417,7 +405,7 @@ impl Report {
         let cadence = replay_data::cadence::cadence(table);
         matches!(cadence, replay_data::cadence::Cadence::Static)
             || cadence.is_refresh(hour)
-            || self.observed_refresh.contains(&cadence)
+            || self.read_now.contains(&table)
     }
 
     pub fn full_refresh(&self) -> bool {

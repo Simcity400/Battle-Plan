@@ -4951,7 +4951,9 @@ fn forced_full_refresh_compares_every_owner_whatever_its_read_hour() {
     let (mut frame, mut save, _, _) = relation_fixture();
     frame.hour = 0;
     relations_read_at(&mut frame, -5);
-    frame.metrics.table_ns[TableId::ResearchSlots.index()] = 1;
+    for table in TableId::ALL {
+        frame.metrics.table_ns[table.index()] = 1;
+    }
     saved_relation(&mut save, b"GER", b"D01", Some(5), &[]);
     opinions(
         &mut frame,
