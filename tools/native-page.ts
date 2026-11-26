@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer, type ServerResponse } from 'node:http';
@@ -56,6 +57,7 @@ function navigate(endpoint: string, url: string, signal: AbortSignal) {
       }
     });
     socket.addEventListener('error', () => finish(new Error('Page.navigate connection failed')));
+    socket.addEventListener('close', () => finish(new Error('Page.navigate connection closed before the page loaded')));
   });
 }
 
@@ -178,25 +180,22 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
     const targets = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
     const target = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
-    let guard: AbortSignal | undefined;
+    const guard = new AsyncLocalStorage<AbortSignal>();
     const evaluate = async <T = any,>(expression: string): Promise<T> => {
-      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, guard);
+      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, guard.getStore());
       assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
       return result.result.value as T;
     };
     const owned = browser;
-    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(owned, label, async signal => {
-      const outer = guard;
-      guard = signal;
-      try { return await work(signal); } finally { guard = outer; }
-    }, timeout);
+    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) =>
+      browserStage(owned, label, signal => guard.run(signal, () => work(signal)), timeout);
     await stage(`${name} page load`, async signal => {
       await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
       await evaluate(`import(${JSON.stringify(served.fixture)}).then(() => true)`);
     }, PAGE_LOAD_MS);
     const press = async (key: NativeKey, shift = false) => {
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard);
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard);
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard.getStore());
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
     };
     await run({ evaluate, press, page: target, stage });
   } finally {
