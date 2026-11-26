@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { createLaneView } from '../../families/laneRuntime.ts';
+import { driveLane, installRecordingCanvas, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import type { DisplayedHour, EntityKind, IdentityProvider, IdentityResult } from '../../families/plan.ts';
+import { tableLane } from '../../families/table/laneView.ts';
+import { LOG_TABLE_BASE } from '../../families/table/logHelpers.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from '../../families/table/rowSource.ts';
+import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { RaidLogRow, RaidLogTailReply, RaidTypeChip } from '../../generated/dashboard';
 import { raidLogProjection, raidTypeFilterItems } from './raidLogProjection.ts';
+import { RAID_LOG_COLUMNS } from './definition.ts';
 
 function sampleRow(overrides: Partial<RaidLogRow> = {}): RaidLogRow {
   const hour = overrides.hour ?? 100;
@@ -280,4 +286,54 @@ test('a raid in a log frozen at an earlier hour keeps the preparation it had the
   const sameHour = buildRowSourceFromHead('test:raids:frozen-now', frozen, undefined, 100, pages)!;
   const answeredNow = raidLogProjection.project(createBoundedReadView({ hour: 100, rows: new Map([['main', sameHour]]) }), { artwork: false, selected: [] });
   assert.equal(answeredNow.nextChangeAt ?? Infinity, Infinity, 'nor one whose page answered at the hour it froze');
+});
+
+test('played preparation reaches the canvas only when its row and column are on screen', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const surface = { width: 420, height: 24, dpr: 1 };
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, surface);
+    const rows = [
+      sampleRow({ key: 'visible', preparation: { since: 100, hours: 68, perHour: 1, through: null } }),
+      sampleRow({ key: 'below', ordinal: '1', preparation: { since: 100, hours: 1, perHour: 1, through: null } }),
+    ];
+    const base = {
+      family: 'table', kind: 'raid-log', options: { selected: [], artwork: false }, sources: {},
+      staticPanels: { main: sampleReply(rows) }, theme: LANE_THEME,
+      settings: tableSettingsOf(undefined, RAID_LOG_COLUMNS, LOG_TABLE_BASE),
+      ...surface, scrollLeft: 0, scrollTop: 0,
+    };
+    const scroll = { ...base, scrollLeft: 100 };
+    const play = (hour: number, binding = base) => lane.paint({ label: String(hour), hour, binding, speed: 24 });
+    play(100);
+    const frames = () => recording.canvases[0]!.frames.length;
+    const initial = frames();
+    for (let hour = 101; hour <= 104; hour++) {
+      const kept = play(hour);
+      assert.equal(kept.motion, false);
+      assert.equal(frames(), initial, 'a change beyond the right edge leaves the canvas untouched');
+    }
+    const shown = play(104, scroll);
+    assert.ok(frames() > initial, 'scrolling reveals the current preparation');
+    const latestDraw = () => recording.canvases[0]!.frames.at(-1)!;
+    assert.ok(latestDraw().includes('fillText("3")'));
+    const revealed = frames();
+    for (let hour = 105; hour < 128; hour++) {
+      assert.equal(play(hour, scroll).surfaces[0]!.content, shown.surfaces[0]!.content);
+      assert.equal(frames(), revealed, 'a changing raid below the viewport leaves the canvas untouched');
+    }
+    play(128, scroll);
+    assert.ok(frames() > revealed);
+    assert.ok(latestDraw().includes('fillText("4")'), 'the visible figure changes on its exact hour');
+    const raw = base.staticPanels.main;
+    const page = { hour: 128, offset: 0, limit: 256, raw, reply: validateGenericTailReply(raw, 128) };
+    const frozen = { ...scroll, pagedRows: { main: { 0: page } } };
+    play(128, frozen);
+    const frozenFrames = frames();
+    play(152, frozen);
+    assert.equal(frames(), frozenFrames);
+    assert.equal(play(152, frozen).nextChangeAt, undefined, 'the scrolled snapshot has no preparation deadline');
+  } finally {
+    recording.restore();
+  }
 });

@@ -107,6 +107,27 @@ test('a quiet, steady or paused frame does no projection, layout or drawing, and
     assert.equal(paused.surfaces[0]!.content, first.surfaces[0]!.content);
     lane.paint({ label: 'boundary', binding: bound, hour: 20, speed: 24 });
     assert.equal(counts.project, 2, 'the boundary rebuilds');
+    assert.equal(counts.paint, 2, 'a family without a canvas comparison draws the new model');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('keeping the canvas across a new model skips every canvas operation and finishes animation', () => {
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView({
+      ...family,
+      keepsCanvas: (_ctx, frame) => frame.hour === 20,
+      paint(ctx, frame) { family.paint(ctx, frame); return true; },
+    }, () => {}), recording.canvases);
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    const first = lane.paint({ label: 'initial', binding: bound, hour: 19 });
+    const frames = recording.canvases[0]!.frames.length;
+    const kept = lane.paint({ label: 'new model', binding: bound, hour: 20 });
+    assert.equal(kept.motion, false);
+    assert.equal(recording.canvases[0]!.frames.length, frames);
+    assert.equal(kept.surfaces[0]!.content, first.surfaces[0]!.content);
   } finally {
     recording.restore();
   }
