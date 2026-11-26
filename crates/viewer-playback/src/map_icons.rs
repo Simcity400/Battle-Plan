@@ -3,7 +3,7 @@ use content_reader_gfx::gfx;
 use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
-use viewer_native_gui::native_windows::NativeWindows;
+use viewer_native_gui::native_windows::WindowCache;
 use viewer_counters::counters::CounterAssets;
 use viewer_runtime::errors::invalid;
 use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
@@ -64,7 +64,9 @@ impl MapIcons {
                 }))
             });
             let mut images = Vec::new();
-            let windows = NativeWindows::load_at(layers, gui_viewport)?;
+            let shared = Arc::new(layers.clone());
+            let window_cache = Arc::new(WindowCache::new(Arc::clone(&shared)));
+            let windows = window_cache.at(gui_viewport)?;
             let layouts = viewer_counter_kit::Layouts::read(&windows);
             let mut font_warnings = Vec::new();
             let arrow_font = viewer_gpu::ribbon_content::arrow_text_font(layers)?;
@@ -92,11 +94,10 @@ impl MapIcons {
                 &mut font_warnings,
             )?;
             let sprites = &interface.sprites;
-            let shared = Arc::new(layers.clone());
             let lazy = LazyTextures::new();
             let mut counters = CounterAssets::load(
                 &shared,
-                (layouts, windows),
+                (layouts, windows, window_cache),
                 graphics,
                 (sprites, &interface.registry),
                 (language, map_size, decode),

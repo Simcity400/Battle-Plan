@@ -76,7 +76,7 @@ impl Confirmation {
             .as_ref()
             .is_none_or(|(size, built)| *size != viewport || !built.same(&windows))
         {
-            *self = Self { built: Some((viewport, (*windows).clone())), ..Self::default() };
+            *self = Self { built: Some((viewport, windows.clone())), ..Self::default() };
         }
         if self.texts.as_ref().is_none_or(|(held, body)| held != title || body != description) {
             self.texts = Some((title.to_owned(), description.to_owned()));

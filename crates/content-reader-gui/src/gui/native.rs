@@ -1500,7 +1500,7 @@ pub struct Context {
 
 pub fn read_at(bytes: &[u8], viewport: [i32; 2]) -> Gui {
     let mut gui = Context::new().read(bytes);
-    inherit::pass(&mut [&mut gui], Some(viewport));
+    inherit::pass(&mut [&mut gui], &mut inherit::Viewport::new(Some(viewport)));
     gui
 }
 
@@ -1547,7 +1547,7 @@ impl Context {
 
 pub fn read(bytes: &[u8]) -> Gui {
     let mut gui = Context::new().read(bytes);
-    inherit::pass(&mut [&mut gui], None);
+    inherit::pass(&mut [&mut gui], &mut inherit::Viewport::new(None));
     gui
 }
 
@@ -1564,16 +1564,19 @@ pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result
 fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::Result<Guis> {
     let definitions = layers.product("GUI definitions before inheritance", 1, &[], read_layer_definitions)?;
     let mut files = definitions.as_ref().clone();
+    let mut tested = inherit::Viewport::new(viewport);
     if let Some((path, gui)) = files.first_mut()
         && path == LOAD_SCREEN
     {
-        inherit::pass(&mut [gui], viewport);
+        inherit::pass(&mut [gui], &mut tested);
     }
     inherit::pass(
         &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),
-        viewport,
+        &mut tested,
     );
-    Ok(Guis::new(files))
+    let mut guis = Guis::new(files);
+    guis.viewport = viewport.map(|_| tested.comparisons);
+    Ok(guis)
 }
 
 fn read_layer_definitions(layers: &ResolvedLayers) -> io::Result<Vec<(String, Gui)>> {
@@ -1604,9 +1607,14 @@ fn read_layer_definitions(layers: &ResolvedLayers) -> io::Result<Vec<(String, Gu
 pub struct Guis {
     pub files: Vec<(String, Gui)>,
     registered: Vec<(Vec<u8>, usize, usize)>,
+    viewport: Option<inherit::Comparisons>,
 }
 
 impl Guis {
+    pub fn fits_viewport(&self, viewport: [i32; 2]) -> bool {
+        self.viewport.as_ref().is_some_and(|tested| tested.matches(viewport))
+    }
+
     pub fn default_sounds(&self) -> DefaultSounds {
         let mut sounds = DefaultSounds::default();
         for (_, gui) in &self.files {
@@ -1634,6 +1642,7 @@ impl Guis {
         }
         Self {
             files,
+            viewport: None,
             registered: registered
                 .into_iter()
                 .map(|(name, (file, template))| (name, file, template))

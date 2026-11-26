@@ -41,7 +41,29 @@ enum Edit {
 
 type Place = (usize, usize, Vec<usize>);
 
-pub(super) fn pass(files: &mut [&mut Gui], viewport: Option<[i32; 2]>) {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Comparisons([BTreeMap<i32, bool>; 2]);
+
+impl Comparisons {
+    pub(super) fn matches(&self, viewport: [i32; 2]) -> bool {
+        self.0.iter().zip(viewport).all(|(tested, size)| {
+            tested.iter().all(|(&less, &zero)| (size == less) == zero)
+        })
+    }
+}
+
+pub(super) struct Viewport {
+    pub(super) size: Option<[i32; 2]>,
+    pub(super) comparisons: Comparisons,
+}
+
+impl Viewport {
+    pub(super) fn new(size: Option<[i32; 2]>) -> Self {
+        Self { size, comparisons: Comparisons::default() }
+    }
+}
+
+pub(super) fn pass(files: &mut [&mut Gui], viewport: &mut Viewport) {
     let mut global: BTreeMap<Vec<u8>, (usize, usize)> = BTreeMap::new();
     for (file, gui) in files.iter().enumerate() {
         for (name, index) in &gui.registered {
@@ -400,7 +422,7 @@ fn copy_unset(bar: &mut Scrollbar, from: &Scrollbar, ids: &[u32]) {
 fn windows(
     global: &BTreeMap<Vec<u8>, (usize, usize)>,
     files: &[&mut Gui],
-    viewport: Option<[i32; 2]>,
+    viewport: &mut Viewport,
     edits: &mut Vec<(Place, Edit)>,
 ) {
     let mut passed: BTreeMap<*const Element, Window> = BTreeMap::new();
@@ -421,7 +443,7 @@ fn window_pass<'a>(
     element: &'a Element,
     scope: Scope<'a>,
     place: Place,
-    viewport: Option<[i32; 2]>,
+    viewport: &mut Viewport,
     passed: &mut BTreeMap<*const Element, Window>,
     edits: &mut Vec<(Place, Edit)>,
 ) {
@@ -473,42 +495,38 @@ enum Unfinished {
     Unrecorded(&'static str, String),
 }
 
-fn any_unset(window: &Window, viewport: Option<[i32; 2]>) -> Result<bool, String> {
-    let size = stored_size(window, viewport)?;
+fn any_unset(window: &Window, viewport: &mut Viewport) -> Result<bool, String> {
     let point = |point: [i32; 2]| point[0] == 0 || point[1] == 0;
-    Ok(point(size)
+    Ok(size_unset(window, viewport)?
         || point(window.position)
         || window.background.is_empty()
         || window.vertical_border.is_empty()
         || window.horizontal_border.is_empty())
 }
 
-fn stored_size(window: &Window, viewport: Option<[i32; 2]>) -> Result<[i32; 2], String> {
-    let mut size = [0i32; 2];
-    for (axis, extent) in window.size.iter().enumerate() {
-        match *extent {
-            WindowExtent::Pixels(value) => size[axis] = value,
-            WindowExtent::MaxResolution { less } => match viewport {
-                Some(viewport) => size[axis] = viewport[axis].wrapping_sub(less),
-                None => {
-                    return Err(
-                        "was read with no load-time GUI viewport given (read_layers_at, read_at): \
-                         window post-load pass tests whether size is set (a zero axis is unset) \
-                         while an axis of it is max_resolution, the GUI root's extent (graphics \
-                         context's render size) when the file was read less a number"
-                            .into(),
-                    );
-                }
-            },
-        }
+fn size_unset(window: &Window, viewport: &mut Viewport) -> Result<bool, String> {
+    if viewport.size.is_none() && window.size.iter().any(|extent| matches!(extent, WindowExtent::MaxResolution { .. })) {
+        return Err(
+            "was read with no load-time GUI viewport given (read_layers_at, read_at): \
+             window post-load pass tests whether size is set (a zero axis is unset) \
+             while an axis of it is max_resolution, the GUI root's extent (graphics \
+             context's render size) when the file was read less a number".into()
+        );
     }
-    Ok(size)
+    Ok(window.size.iter().enumerate().any(|(axis, extent)| match *extent {
+        WindowExtent::Pixels(value) => value == 0,
+        WindowExtent::MaxResolution { less } => {
+            let zero = viewport.size.expect("a max-resolution extent has a viewport")[axis] == less;
+            viewport.comparisons.0[axis].insert(less, zero);
+            zero
+        }
+    }))
 }
 
 fn window_fields(
     element: &Element,
     scope: Scope,
-    viewport: Option<[i32; 2]>,
+    viewport: &mut Viewport,
     passed: &BTreeMap<*const Element, Window>,
 ) -> Result<Option<Window>, Unfinished> {
     let Fields::Window(read) = &element.fields else {
@@ -542,10 +560,7 @@ fn window_fields(
                 .get(&std::ptr::from_ref::<Element>(found))
                 .unwrap_or(from)
                 .clone();
-            let size_unset = stored_size(&own, viewport)
-                .map_err(unrecorded)?
-                .contains(&0);
-            if size_unset {
+            if size_unset(&own, viewport).map_err(unrecorded)? {
                 own.size = from.size;
             }
             if own.position[0] == 0 || own.position[1] == 0 {
