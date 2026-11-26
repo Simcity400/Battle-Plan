@@ -495,6 +495,24 @@ mod tests {
         let full_ger = full_at.rows[0].value.unwrap();
         let range_ger = range_at.rows[0].value.unwrap();
         assert!(range_ger > 0 && range_ger < full_ger, "range total {range_ger} must exclude pre-range production from full total {full_ger}");
+        assert_eq!(range_at.observation_hour, Some(range_start), "a Range total is counted from the Range's start");
+        let one_hour = race_reply(
+            &src,
+            &query,
+            &EquipmentProducedRaceParams { hour: 1120, from_hour: Some(1120), ..EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("GER".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: None } },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(one_hour.rows[0].value, Some(1), "a Range of the one hour GER delivers in counts that delivery");
+        let detail = |from_hour| {
+            crate::products::equipment_produced::at_reply(&src, &query, &crate::products::equipment_produced::ProducedAtParams { branch_id: "1".into(), country: Country::Tag("GER".into()), hour: LAST, measure: ProducedMeasure::Total, refits: false, from_hour }, &load).unwrap()
+        };
+        let ranged = detail(Some(range_start));
+        assert_eq!(ranged.observation, Some(range_start), "the detail counts from the same opening as the race");
+        let units: i64 = ranged.models.iter().filter_map(|model| model.units.value).sum();
+        assert_eq!(units, range_ger, "the detail's models add up to the race's Range total");
+        assert_eq!(detail(Some(FIRST)).observation, detail(None).observation, "a Range from the stretch's first hour opens nowhere, in the detail as in the race");
 
         let range_reply = |hour: i32, from_hour: i32| race_reply(
             &src,

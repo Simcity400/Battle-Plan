@@ -1,4 +1,3 @@
-import { colour } from '../../charts/palette.ts';
 import type { BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
@@ -6,6 +5,7 @@ import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
 import { forcePartLabel, forceRowIdentity, GROUP_EMPTY, witnessedPartItems } from './forceAtRace.ts';
 import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
+import { partColours } from './partColour.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
 
 export interface ForceAtMixOptions {
@@ -61,7 +61,7 @@ export function projectForceAtMix(
     });
   }
 
-  const partColours = reply.parts.map((_part, index) => colour(options.surface, index));
+  const colours = partColours(reply.parts.map((_, at) => reply.ordinals[at]), options.surface);
   const usedParts = new Set<number>();
   const rows: ShareRowEntry[] = [];
 
@@ -196,7 +196,7 @@ export function projectForceAtMix(
         const partNum = partItem.scaled.numeric ?? 0;
         const share = partNum / denom;
         const label = forcePartLabel(partItem.part);
-        const color = partColours[partItem.index]!;
+        const color = colours[partItem.index]!;
         usedParts.add(partItem.index);
         segments.push({
           key: partItem.part.key,
@@ -237,7 +237,7 @@ export function projectForceAtMix(
   for (let i = 0; i < reply.parts.length; i++) {
     if (!usedParts.has(i)) continue;
     const part = reply.parts[i]!;
-    legend.push({ key: part.key, label: forcePartLabel(part), color: partColours[i]! });
+    legend.push({ key: part.key, label: forcePartLabel(part), color: colours[i]! });
   }
 
   return buildShareRowsModel({

@@ -17,9 +17,7 @@ export interface NuclearArsenalRaceOptions extends SeriesRaceBaseOptions {
 
 function typeInfoMap(types: readonly NukeType[], surface: string): Map<number, { readonly label: string; readonly color: string }> {
   const map = new Map<number, { readonly label: string; readonly color: string }>();
-  types.forEach((type, index) => {
-    map.set(type.ordinal, { label: typeName(type), color: colour(surface, index) });
-  });
+  for (const type of types) map.set(type.ordinal, { label: typeName(type), color: colour(surface, type.ordinal) });
   return map;
 }
 
@@ -38,10 +36,9 @@ function makeRow(
   let segments: BarsSegment[] | undefined;
   if (split && row.total > 0 && row.counts.length > 0) {
     const positive = row.counts.filter(count => count.value > 0);
-    const sum = positive.reduce((acc, count) => acc + count.value, 0);
-    if (sum > 0) {
-      segments = positive.map((count, idx) => {
-        const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, types.size + idx) };
+    if (positive.length) {
+      segments = positive.map(count => {
+        const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, count.ordinal) };
         const text = count.ready > 0
           ? `${formatScalar(count.value, 'integer')} (${formatScalar(count.ready, 'integer')} ready)`
           : formatScalar(count.value, 'integer');
@@ -49,7 +46,7 @@ function makeRow(
         return {
           key: String(count.ordinal),
           label: info.label,
-          share: count.value / sum,
+          share: count.value / row.total,
           value: knownValue(count.value),
           format: { decimals: 0 },
           color: info.color,
@@ -57,9 +54,9 @@ function makeRow(
       });
     }
   } else if (row.counts.length > 0) {
-    row.counts.forEach((count, idx) => {
+    row.counts.forEach(count => {
       if (count.value <= 0) return;
-      const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, types.size + idx) };
+      const info = types.get(count.ordinal) ?? { label: `Unnamed nuclear type ${count.ordinal}`, color: colour(surface, count.ordinal) };
       tooltipItems.push({ label: info.label, value: formatScalar(count.value, 'integer') });
     });
   }

@@ -115,6 +115,10 @@ pub struct ProducedAtParams {
     pub hour: i32,
     pub measure: ProducedMeasure,
     pub refits: bool,
+    #[doc = " A Range's first hour: a total counts the deliveries from it on."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from_hour: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -514,13 +518,23 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         return Ok(reply);
     };
     let now = DesignsAt::read(query, stretch.run, read, id)?;
-    let before = match measure::back(params.measure, read) {
-        Some(start) if start >= first && reads.binary_search(&start).is_ok() => Some(DesignsAt::read(query, stretch.run, start, id)?),
+    let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
+    let counted = series.measure(produced_measure(ProducedCount::Units, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
+    let opening = tiles::range_baseline(&dashboard_query::series::Line::new(query, series, counted)?, query, params.measure, params.from_hour)?;
+    let whole = match opening {
+        tiles::Baseline::Unrestricted => true,
+        tiles::Baseline::Opening(start) => now.observation.0 == Some(start),
+        tiles::Baseline::From(_) | tiles::Baseline::Unavailable(_) => false,
+    };
+    let ranged = if matches!(opening, tiles::Baseline::Unrestricted) { None } else { params.from_hour };
+    let before = match (opening.hour(), ranged, measure::back(params.measure, read)) {
+        (Some(base), _, _) => (base >= first && reads.binary_search(&base).is_ok()).then(|| DesignsAt::read(query, stretch.run, base, id)).transpose()?,
+        (None, None, Some(start)) if start >= first && reads.binary_search(&start).is_ok() => Some(DesignsAt::read(query, stretch.run, start, id)?),
         _ => None,
     };
     let at = |held: &DesignsAt, key: DesignKey, choice: Choice| held.amount(key, held.hour, choice);
-    let windowed = |key: DesignKey, choice: Choice| match params.measure {
-        ProducedMeasure::Total => at(&now, key, choice).0,
+    let windowed = |key: DesignKey, choice: Choice| match (params.measure, whole) {
+        (ProducedMeasure::Total, true) => at(&now, key, choice).0,
         _ => measure::difference(at(&now, key, choice), before.as_ref().map(|before| at(before, key, choice))),
     };
     let units = Choice { count: ProducedCount::Units, refits: params.refits };
@@ -560,12 +574,12 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         }
         Amount::Known(0)
     };
-    reply.ic_total = amount_of(country(&now).plus(match params.measure {
-        ProducedMeasure::Total => Amount::Known(0),
+    reply.ic_total = amount_of(country(&now).plus(match (params.measure, whole) {
+        (ProducedMeasure::Total, true) => Amount::Known(0),
         _ => before.as_ref().map_or(Amount::Unknown(ProducedUnknown::WindowIncomplete), country),
     }).plus(total));
     reply.recorded = now.country;
-    reply.observation = now.observation.0;
+    reply.observation = ranged.or(now.observation.0);
     reply.read = Some(read);
     warnings.extend(notes);
     reply.warnings = warnings;
@@ -604,7 +618,7 @@ impl Product for EquipmentProducedAt {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProducedAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, measure, refits];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, measure, refits, fromHour: Start];
     type Reply = ProducedAtReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -758,7 +772,7 @@ fn race_reply(
 
     let clock = line.clock_at(hour)?;
     let read_hour = clock.read;
-    let observation_hour = clock.since.filter(|&since| since <= hour);
+    let observation_hour = if baseline.hour().is_some() { params.from_hour } else { clock.since.filter(|&since| since <= hour) };
     if let tiles::Baseline::Opening(start) = baseline
         && clock.since != Some(start)
     {

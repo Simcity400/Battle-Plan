@@ -6,8 +6,7 @@ import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
 import { projectForceAtMix } from './forceAtMix.ts';
 import { validateNavalLossesAtReply } from './forceAtRace.ts';
-import { PART_SURFACE } from './partColour.ts';
-import { CATEGORY_LIMIT, categoricalPalette, reservedGrey } from '../../charts/palette.ts';
+import { CATEGORY_LIMIT, categoricalPalette, colour, reservedGrey } from '../../charts/palette.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -79,9 +78,10 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
 
 test('a part takes the palette colour at its content ordinal, so a new part moves no colour; one the content does not order is neutral', () => {
   const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map(), identity: fakeIdentity({}) });
-  const project = (parts: ForceAtReply['parts'], ordinals: ForceAtReply['ordinals'], values: number[]) => projectForceAtMix(view, {
+  const DARK = '#1e1e1e', LIGHT = '#ffffff';
+  const project = (parts: ForceAtReply['parts'], ordinals: ForceAtReply['ordinals'], values: number[], surface = DARK) => projectForceAtMix(view, {
     parts, ordinals, rows: [{ country: 'ENG', slot: null, tag: 'ENG', total: values.reduce((a, b) => a + b, 0), missing: null, values, partsMissing: null }], missing: null, warnings: [],
-  }, { top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Parts (colour test)', emptyMessage: 'None.' });
+  }, { surface, top: 10, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Parts (colour test)', emptyMessage: 'None.' });
   const colours = (model: ReturnType<typeof project>) => new Map(model.legend?.map(item => [item.key, item.color]));
   const ships = { key: 'ships', name: 'Ships', unresolved: false };
   const convoys = { key: 'convoys', name: 'Convoys', unresolved: false };
@@ -92,9 +92,11 @@ test('a part takes the palette colour at its content ordinal, so a new part move
   const naval = (parts: ForceAtReply['parts']) => validateNavalLossesAtReply({ firstHour: 0, lastHour: 1, parts, rows: [], missing: null, warnings: [] }).ordinals;
   assert.deepEqual([naval([ships, convoys]), naval([convoys])], [[0, 1], [1]], 'convoys alone keep the place they hold beside ships');
   const unordered = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1]));
-  assert.equal(unordered.get('mystery'), reservedGrey(PART_SURFACE), 'a part without an ordinal is drawn in the neutral colour, never guessed');
+  assert.equal(unordered.get('mystery'), reservedGrey(DARK), 'a part without an ordinal is drawn in the neutral colour, never guessed');
   const past = colours(project([ships], [CATEGORY_LIMIT], [1]));
-  assert.ok(!categoricalPalette(PART_SURFACE).includes(past.get('ships')!), 'a part past the palette takes its generated extension');
+  assert.ok(!categoricalPalette(DARK).includes(past.get('ships')!), 'a part past the palette takes its generated extension');
+  const light = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1], LIGHT));
+  assert.deepEqual([light.get('ships'), light.get('mystery')], [colour(LIGHT, 0), reservedGrey(LIGHT)], 'the colours are solved against the theme the widget is drawn on');
 });
 
 test('a total not known beside a known part keeps the known part in its tooltip (ships known, convoys not)', () => {
@@ -106,7 +108,7 @@ test('a total not known beside a known part keeps the known part in its tooltip 
     warnings: [],
   };
   const view = createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', reply]]), identity: fakeIdentity({}) });
-  const model = projectForceAtMix(view, reply, { top: null, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys', emptyMessage: 'None.' });
+  const model = projectForceAtMix(view, reply, { surface: '#1e1e1e', top: null, all: false, group: false }, { decimals: 0, valueFormat: { decimals: 0 }, valueLabel: 'Lost', unit: 'Lost', partsLabel: 'Ships and convoys', emptyMessage: 'None.' });
   const row = model.rows.find((r): r is BarsDataRow => r.kind === 'data')!;
   assert.deepEqual(row.tooltip?.items?.slice(1), [{ label: 'Ships', value: '3' }, { label: 'Convoys', missingReason: 'Not recorded at this hour' }]);
 });

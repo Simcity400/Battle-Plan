@@ -1,4 +1,3 @@
-import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { DeclaredProduct } from '../../dashboard/request';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
@@ -7,8 +6,10 @@ import type { TooltipListItem } from '../host/tooltips.ts';
 import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
+import { partColours } from './partColour.ts';
 import { countryRowPresentation, type BarsDataRow, type BarsModel, type BarsSegment, type CountryRowPresentation } from './model.ts';
 import type { SeriesRaceBaseOptions } from './seriesRace.ts';
+
 
 export interface ForceAtRaceBaseOptions extends SeriesRaceBaseOptions {
   readonly split: boolean;
@@ -115,7 +116,19 @@ function isForceAtRow(v: unknown): v is ForceAtRow {
     && isTextOrNull(v.partsMissing);
 }
 
+function isOrdinal(v: unknown): v is number | null {
+  return v === null || (typeof v === 'number' && Number.isInteger(v) && v >= 0);
+}
+
 export function validateForceAtReply(value: unknown): ForceAtReply {
+  validateForceShape(value);
+  if (!Array.isArray(value.ordinals) || value.ordinals.length !== value.parts.length || !value.ordinals.every(isOrdinal)) {
+    throw new Error('The force snapshot reply is malformed.');
+  }
+  return value as unknown as ForceAtReply;
+}
+
+function validateForceShape(value: unknown): asserts value is Record<string, unknown> & { parts: ForcePart[] } {
   if (
     !isObj(value)
     || !Array.isArray(value.parts) || !value.parts.every(isForcePart)
@@ -125,10 +138,11 @@ export function validateForceAtReply(value: unknown): ForceAtReply {
   ) {
     throw new Error('The force snapshot reply is malformed.');
   }
-  return value as unknown as ForceAtReply;
 }
 
-export function validateNavalLossesAtReply(value: unknown): NavalLossesAtReply {
+const NAVAL_LOSS_PARTS: readonly string[] = ['ships', 'convoys'];
+
+export function validateNavalLossesAtReply(value: unknown): NavalLossesAtReply & Pick<ForceAtReply, 'ordinals'> {
   if (
     !isObj(value)
     || typeof value.firstHour !== 'number' || !Number.isInteger(value.firstHour)
@@ -136,8 +150,9 @@ export function validateNavalLossesAtReply(value: unknown): NavalLossesAtReply {
   ) {
     throw new Error('The naval losses snapshot reply is malformed.');
   }
-  validateForceAtReply(value);
-  return value as unknown as NavalLossesAtReply;
+  validateForceShape(value);
+  const reply = value as unknown as NavalLossesAtReply;
+  return { ...reply, ordinals: reply.parts.map(part => NAVAL_LOSS_PARTS.includes(part.key) ? NAVAL_LOSS_PARTS.indexOf(part.key) : null) };
 }
 
 export function witnessedPartItems(reply: ForceAtReply, item: ForceAtRow, decimals: number, format: ValueFormat): TooltipListItem[] {
@@ -189,7 +204,7 @@ export function projectForceAtReply(
     return { ...baseModel, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   }
 
-  const partColours = reply.parts.map((_part, index) => colour(options.surface, index));
+  const colours = partColours(reply.parts.map((_, at) => reply.ordinals[at]), options.surface);
   const rows: BarsDataRow[] = [];
   for (const item of reply.rows) {
     const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
@@ -215,7 +230,6 @@ export function projectForceAtReply(
         tooltipItems.push({ label: config.partsLabel, missingReason: item.partsMissing }, ...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       } else if (reply.parts.length > 0 && item.values.length === reply.parts.length) {
         const built: BarsSegment[] = [];
-        let knownSum = 0;
         let anyMissing = false;
         const partEntries: { readonly part: ForcePart; readonly color: string; readonly scaled: { readonly value: Value<bigint | number>; readonly numeric: number | null } }[] = [];
         for (let i = 0; i < reply.parts.length; i++) {
@@ -226,19 +240,18 @@ export function projectForceAtReply(
           }
           if (rawPart <= 0) continue;
           const scaled = scaleRaw(rawPart, config.decimals, null);
-          knownSum += scaled.numeric ?? 0;
-          partEntries.push({ part: reply.parts[i]!, color: partColours[i]!, scaled });
+          partEntries.push({ part: reply.parts[i]!, color: colours[i]!, scaled });
         }
         if (anyMissing) {
           tooltipItems.push({ label: config.partsLabel, missingReason: 'Parts not recorded at this hour' });
-        } else if (knownSum > 0) {
+        } else {
           for (const entry of partEntries) {
             const partNum = entry.scaled.numeric ?? 0;
             const partName = forcePartLabel(entry.part);
             built.push({
               key: entry.part.key,
               label: partName,
-              share: partNum / knownSum,
+              share: partNum / numeric,
               value: entry.scaled.value,
               format: config.valueFormat,
               color: entry.color,
