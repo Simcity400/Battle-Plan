@@ -784,6 +784,23 @@ pub fn shared(source: &Source, query: &Query<'_>, context: &LoadContext, cancell
     Ok(reply)
 }
 
+pub fn member_slots(source: &Source, query: &Query<'_>) -> io::Result<HashMap<u64, Vec<(u32, i32, i32)>>> {
+    let mut out: HashMap<u64, Vec<(u32, i32, i32)>> = HashMap::new();
+    for stretch in &query.timeline.stretches {
+        let run = cached_groups(source, stretch.run)?;
+        for &(kind, group, value, first, last) in &run.spans {
+            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
+            if kind != Span::MEMBER || group == Span::HUMANS || first > last {
+                continue;
+            }
+            if let Some(&id) = run.factions.get(&group) {
+                out.entry(id).or_default().push((value, first, last));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }
