@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { Fact } from '../dashboard/follow/facts.ts';
 import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
-import { Lane } from '../draw/lane.ts';
+import { Lane, type Value } from '../draw/lane.ts';
 import { cropSurfaces } from '../draw/laneDispatch.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
@@ -106,6 +107,61 @@ test('a quiet, steady or paused frame does no projection, layout or drawing, and
     assert.equal(paused.surfaces[0]!.content, first.surfaces[0]!.content);
     lane.paint({ label: 'boundary', binding: bound, hour: 20, speed: 24 });
     assert.equal(counts.project, 2, 'the boundary rebuilds');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a followed reply delivered again with the same bytes costs no projection, layout or drawing, and changed bytes rebuild', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const subs = [{ id: 5, channel: 'followed' as const, route: null }];
+    const bound = binding({}, DOWN, { sources: { main: 5 } });
+    const at = (hour: number, bytes: number[]) => {
+      const value: Value = { kind: 'panel', bytes: Uint8Array.from(bytes), data: { rows: [{ key: 'A', v: bytes.at(-1)! }] }, refused: null };
+      const fact: Fact<Value> = { h: hour, c: hour, value, refused: null, cells: [], seeds: new Map(), channel: 'followed', version: hour, bytes: bytes.length };
+      return lane.paint({ label: `hour ${hour}`, binding: bound, hour, speed: 24, subs, pictures: [{ h: hour, c: hour, parts: [fact], value, refused: null }] });
+    };
+    const first = at(12, [1, 2, 3]);
+    const work = () => ({ project: counts.project, layout: counts.layout, paint: counts.paint });
+    const before = work();
+    const again = at(13, [1, 2, 3]);
+    assert.deepEqual(work(), before, 'the same reply under a new fact and version is the same input');
+    assert.equal(again.surfaces[0]!.content, first.surfaces[0]!.content, 'the picture is the one already shown');
+    at(14, [1, 2, 4]);
+    assert.deepEqual(work(), { project: before.project + 1, layout: before.layout + 1, paint: before.paint + 1 }, 'a changed reply rebuilds');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a held model ends where a bounded series it was given ends, even while its panel is unchanged', () => {
+  let projected = 0;
+  let seriesEnd = -Infinity;
+  registerFamilyProjection<FamilyProjection<Model, Options>>({
+    kind: 'fixture-series',
+    family: 'test-lane',
+    project(view: BoundedReadView): Model {
+      projected++;
+      seriesEnd = view.series('main')?.get('GER')?.validInterval[1] ?? -Infinity;
+      return { hour: view.hour, bucket: seriesEnd, rows: [], name: '' };
+    },
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(family, () => {}), recording.canvases);
+    const bucket = (first: number, last: number, value: number) => ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last,
+      minHour: first, minValue: value, maxHour: last, maxValue: value, firstBreak: false, hasBreak: false });
+    const line = { source: 'main', tag: 'GER', head: 'h', decimals: 0, binHours: 96, from: 0, to: 191, width: 2, buckets: [bucket(0, 95, 1), bucket(96, 191, 2)], missing: [], parts: [], marks: null };
+    const bound = binding(rowsAt([]), DOWN, { kind: 'fixture-series', tiledBySource: { main: { GER: line } } } as Partial<Binding>);
+    const first = lane.paint({ label: 'in the first bucket', binding: bound, hour: 50, speed: 24 });
+    assert.ok(Number.isFinite(seriesEnd), 'the projection read the series');
+    assert.equal(first.nextChangeAt, seriesEnd + 1, 'the held model stands no longer than its series');
+    const before = projected;
+    lane.paint({ label: 'past the series interval', binding: bound, hour: seriesEnd + 1, speed: 24 });
+    assert.equal(projected, before + 1, 'the next hour of the series projects again');
   } finally {
     recording.restore();
   }

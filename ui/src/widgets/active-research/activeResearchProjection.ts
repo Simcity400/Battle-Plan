@@ -5,7 +5,7 @@ import { unavailableArt, NO_ART } from '../../families/art/types.ts';
 import type { MeterWidgetDeclaration } from '../../families/meter/declaration.ts';
 import type { MeterModel, MeterProjection, MeterRow } from '../../families/meter/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { formatDateHover, formatDateOnly } from '../../families/valueFormat.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { ResearchDefinitionText, ResearchSlotsReply } from '../../generated/dashboard';
 import { researchArtwork, researchReadName, validateResearchReply, validateResearchSlots } from '../research/researchData.ts';
 import { slotNumbers } from '../research/researchSlots.ts';
@@ -133,7 +133,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
       return {
         hour: readView.hour,
         layout: 'rows',
-        empty: `No research slots recorded at ${formatDateOnly(readView.hour)}.`,
+        empty: 'No research slots recorded at this date.',
         emptyKind: 'empty',
         warnings: [...options.history.warnings, ...reply.warnings],
       };
@@ -245,7 +245,7 @@ export const activeResearchProjection: MeterProjection<ActiveResearchProjectionO
               label: 'Progress',
               ...(numbers.fraction === null
                 ? { missingReason: 'Research progress not recorded' }
-                : { value: `${numbers.percent} on ${formatDateHover(readView.hour)}` }),
+                : { value: numbers.percent }),
             },
             {
               label: 'Days left',

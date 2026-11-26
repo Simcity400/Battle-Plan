@@ -1,6 +1,7 @@
+import type { Fact } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import { sameRevision, type Revisions } from '../dashboard/follow/payloads.ts';
-import type { LaneView, Painted, PaintInput, Scene, Surface } from '../draw/lane.ts';
+import type { LaneView, Painted, PaintInput, Scene, Surface, Value as LaneValue } from '../draw/lane.ts';
 import { markCanvasPainted } from '../draw/laneDispatch.ts';
 import { LaneArtCache, type LaneArtFetcher } from './art/laneCache.ts';
 import { createLaneArtProvider, type ArtResolutions } from './art/provider.ts';
@@ -150,7 +151,7 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   owner: string | undefined;
   inputs: Revisions | undefined;
   readonly tiles: SceneTiles;
-  parts: readonly (readonly unknown[])[];
+  parts: readonly (readonly Fact<LaneValue>[])[];
   validFrom: number;
   validUntil: number;
   drawFrom: number;
@@ -531,6 +532,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         reuse = keep.projected!.reads.unchanged(readers);
         keep.projectedArtRevision = keep.artRevision;
       }
+      if (reuse && !samePictures(keep.parts, input.pictures, true)) keep.parts = snapshotPictures(input.pictures);
       if (!reuse) {
         const base: SceneSources = {
           sources: binding.sources,
@@ -544,10 +546,13 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         };
         const series = keep.tiles.series(input, base, binding, hour);
         const projected = projectScene(input, series ? { ...base, series } : base, hour, readers, view => projection.project(view, binding.options));
+        let seriesUntil = Infinity;
+        for (const lines of series?.values() ?? []) for (const line of lines.values()) seriesUntil = Math.min(seriesUntil, line.validInterval[1] + 1);
         const until = Math.min(
           projection.nextChange ? projection.nextChange(projected.view, binding.options) : Infinity,
           family.boundary(projected.model, hour),
           projected.boundary,
+          seriesUntil,
         );
         keep.projected = projected;
         keep.projectedArtRevision = keep.artRevision;
