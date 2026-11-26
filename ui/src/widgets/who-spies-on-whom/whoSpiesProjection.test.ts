@@ -216,4 +216,19 @@ test('group selections filter spies and pairs at the displayed hour and distingu
   );
   assert.equal(pastEmpty.rows.length, 0);
   assert.equal(pastEmpty.empty, 'No operatives in the field at this date.');
+
+  const missingCensus: OperativeMatrixReply = { ...unreadTargetReply, rows: [], columns: [], cells: [], pairs: [], missing: 'Operative census not recorded' };
+  const emptyBeforeJoin = { membership: { AAA: [[600, 700]] as const }, unobserved: [] as const, membershipMode: 'hour' as const };
+  const missingMatrix = operativeMatrixProjection.project(
+    createBoundedReadView({ hour: 200, identity: names, panels: new Map([['main', missingCensus]]) }),
+    emptyBeforeJoin,
+  );
+  assert.equal(missingMatrix.empty, 'This group has no members at this moment.');
+  assert.equal(missingMatrix.emptyKind, undefined);
+  const missingPairs = operativePairsProjection.project(
+    createBoundedReadView({ hour: 200, identity: names, panels: new Map([['main', missingCensus]]) }),
+    emptyBeforeJoin,
+  );
+  assert.equal(missingPairs.empty, 'This group has no members at this moment.');
+  assert.equal(missingPairs.emptyKind, undefined);
 });

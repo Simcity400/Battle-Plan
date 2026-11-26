@@ -75,10 +75,10 @@ export function projectOperativeMatrix(readView: BoundedReadView, options?: Oper
   if (refused) return blank(hour, { refused });
   const reply = readView.panel<OperativeMatrixReply>('main');
   if (!reply) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
-  if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   const group = activeGroupMembers(options, hour);
   if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings });
   if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: reply.warnings });
+  if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   if (!reply.rows.length) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
 
   let activeRows = reply.rows;
@@ -246,10 +246,10 @@ export function projectOperativePairs(readView: BoundedReadView, options?: Opera
   if (refused) return { form: 'ordered', hour, rows: [], empty: refused, emptyKind: 'unavailable' };
   const reply = readView.panel<OperativeMatrixReply>('main');
   if (!reply) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyKind: 'unavailable' };
-  if (reply.missing) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   const group = activeGroupMembers(options, hour);
   if (group.kind === 'unavailable') return { form: 'ordered', hour, rows: [], empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings };
   if (group.kind === 'empty') return { form: 'ordered', hour, rows: [], empty: group.reason, warnings: reply.warnings };
+  if (reply.missing) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   const pairs = group.kind === 'filtered'
     ? reply.pairs.filter(pair => group.active.has(reply.countries[pair.spy]!.tag) || group.active.has(reply.countries[pair.target]!.tag))
     : reply.pairs;

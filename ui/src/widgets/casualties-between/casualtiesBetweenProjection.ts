@@ -70,10 +70,10 @@ export function projectCasualtyMatrix(readView: BoundedReadView, options?: Casua
   if (refused) return blank(hour, { refused });
   const reply = readView.panel<CasualtyMatrixReply>('main');
   if (!reply) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
-  if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   const group = activeGroupMembers(options, hour);
   if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings });
   if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: reply.warnings });
+  if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
   if (!reply.order.length) return blank(hour, { empty: NONE_YET, warnings: reply.warnings });
 
   const ambiguousHolders = options?.ambiguousHolders ?? null;

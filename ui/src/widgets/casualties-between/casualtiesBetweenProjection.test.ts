@@ -235,4 +235,12 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     true,
     'casualty matrix always loads the group identity catalogue so All does not depend on selection history',
   );
+
+  const missingTable: CasualtyMatrixReply = { ...crossReply, order: [], cells: [], missing: 'Casualty table not recorded' };
+  const emptyBeforeJoin = casualtyMatrixProjection.project(
+    createBoundedReadView({ hour: 200, panels: new Map([['main', missingTable]]) }),
+    { membership: { AAA: [[600, 700]] as const }, unobserved: [], membershipMode: 'hour', between: false },
+  );
+  assert.equal(emptyBeforeJoin.empty, 'This group has no members at this moment.');
+  assert.equal(emptyBeforeJoin.emptyKind, undefined);
 });
