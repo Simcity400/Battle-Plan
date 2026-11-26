@@ -21,8 +21,11 @@ import {
 import { easeBarFraction } from '../families/bars/painter.ts';
 import { glideDurationForSpeed } from '../families/table/painter.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableDefaults } from '../families/table/settings.ts';
-import { definition as GAME_SCORE_DEF, TABLE_BASE as GAME_SCORE_TABLE_BASE } from '../widgets/game-score/definition.ts';
-import { definition as SCOREBOARD_DEF, TABLE_BASE as SCOREBOARD_TABLE_BASE } from '../widgets/scoreboard/definition.ts';
+import { setOption } from '../dashboard/options.ts';
+import { TABLE_BASE as GAME_SCORE_TABLE_BASE } from '../widgets/game-score/definition.ts';
+import { TABLE_BASE as SCOREBOARD_TABLE_BASE } from '../widgets/scoreboard/definition.ts';
+import '../widgets/definitions.ts';
+import { widgetOptionFields } from '../widgets/manifest.ts';
 
 test('snapEven and validateDimensions enforce even bounds and GPU texture limits', () => {
   assert.equal(snapEven(1921), 1920);
@@ -161,19 +164,40 @@ test('readabilityHint flags small rendered text and steep page downscaling', () 
 });
 
 test('widgetShowsRankMarkers gates extended preview history on effective rank-column visibility', () => {
-  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, undefined), false);
-  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, {}), false);
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', undefined), undefined), false);
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', {}), {}), false);
 
-  const scoreboardWithRanks = {
-    [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...tableDefaults([], SCOREBOARD_TABLE_BASE), showRank: true }),
-  };
-  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, scoreboardWithRanks), true);
-  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, { ...scoreboardWithRanks, rankMarkers: false }), false);
+  const scoreboardWithRanks = setOption(
+    widgetOptionFields('scoreboard', undefined),
+    undefined,
+    TABLE_SETTINGS_KEY,
+    encodeTableSettings({ ...tableDefaults([], SCOREBOARD_TABLE_BASE), showRank: true }),
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', scoreboardWithRanks), scoreboardWithRanks), true);
+  const scoreboardMarkersOff = setOption(
+    widgetOptionFields('scoreboard', scoreboardWithRanks),
+    scoreboardWithRanks,
+    'rankMarkers',
+    false,
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', scoreboardMarkersOff), scoreboardMarkersOff), false);
 
-  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, undefined), false);
-  const gameScoreWithRanks = {
-    [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...tableDefaults([], GAME_SCORE_TABLE_BASE), showRank: true }),
-  };
-  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, gameScoreWithRanks), true);
-  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, { ...gameScoreWithRanks, view: 'race' }), false);
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', undefined), undefined), false);
+  const gameScoreWithRanks = setOption(
+    widgetOptionFields('game-score', undefined),
+    undefined,
+    TABLE_SETTINGS_KEY,
+    encodeTableSettings({ ...tableDefaults([], GAME_SCORE_TABLE_BASE), showRank: true }),
+  )!;
+  assert.ok(Object.hasOwn(gameScoreWithRanks, `${TABLE_SETTINGS_KEY}@table`));
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreWithRanks), gameScoreWithRanks), true);
+  const gameScoreMarkersOff = setOption(
+    widgetOptionFields('game-score', gameScoreWithRanks),
+    gameScoreWithRanks,
+    'rankMarkers',
+    false,
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreMarkersOff), gameScoreMarkersOff), false);
+  const gameScoreRace = setOption(widgetOptionFields('game-score', gameScoreWithRanks), gameScoreWithRanks, 'view', 'race')!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreRace), gameScoreRace), false);
 });

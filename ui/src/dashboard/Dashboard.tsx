@@ -24,6 +24,7 @@ import type { LayoutLibrary, LayoutSaveAction } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
+import { widgetOptionFields } from '../widgets/manifest';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { laneModules } from '../widgets/manifest';
 import { prepareLanes } from './follow/pipeline.ts';
@@ -693,7 +694,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       ]);
       const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
       const hasRankMarkerTables = widgetsToCheck.some(w =>
-        widgetShowsRankMarkers(widgetDefinition(w.kind)?.options, w.options, w.countries, w.time.mode),
+        widgetShowsRankMarkers(widgetOptionFields(w.kind, w.options), w.options, w.countries, w.time.mode),
       );
       const scrollEl = viewport.current;
       return {
