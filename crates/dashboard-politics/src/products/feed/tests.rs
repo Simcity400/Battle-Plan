@@ -128,6 +128,8 @@ fn a_feed_rows_cells_read_back_typed_and_what_was_not_recorded_stays_so() {
     assert_eq!(read.opener, Some(40));
     assert_eq!(read.costs, [Some(Some(-5_000_000)), Some(None)]);
     assert_eq!(read.id(), "native:1:42");
+    let unread_command = row(1, 43, &[("hour", number(5)), ("read_hour", number(5)), ("kind", number(i64::from(EventFeedSource::DecisionSelected as u8))), ("actor_reference", number(11)), ("target_reference", number(0)), ("political_power", number(-7)), ("command_power", Cell::Unrecorded)]);
+    assert_eq!(columns.read(&unread_command).unwrap().costs, [Some(Some(-7)), None], "an unread command-power cell keeps the political power read beside it");
 
     let bare = row(FeedEventRow::DERIVED, 5 << 32 | 3, &[("hour", number(5)), ("read_hour", number(5)), ("kind", number(i64::from(FeedEventRow::CEASED_TO_EXIST))), ("actor_reference", number(11)), ("target_reference", number(0))]);
     let read = columns.read(&bare).unwrap();

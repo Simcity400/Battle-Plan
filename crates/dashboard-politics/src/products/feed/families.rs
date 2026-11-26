@@ -135,8 +135,8 @@ pub(crate) struct Unrecorded {
 }
 
 impl Unrecorded {
-    fn of<'s>(category: EventFeedCategory, (kind, label): (&'static str, &'static str), (listed, why): (&'static str, &'static str), reach: i32, spans: impl IntoIterator<Item = &'s HourSpan>) -> Self {
-        let mut sorted: Vec<(i32, i32)> = spans.into_iter().filter(|span| span.first_hour <= span.last_hour).map(|span| (span.first_hour, span.last_hour.saturating_add(reach))).collect();
+    fn of<'s>(category: EventFeedCategory, (kind, label): (&'static str, &'static str), (listed, why): (&'static str, &'static str), spans: impl IntoIterator<Item = &'s HourSpan>) -> Self {
+        let mut sorted: Vec<(i32, i32)> = spans.into_iter().filter(|span| span.first_hour <= span.last_hour).map(|span| (span.first_hour, span.last_hour)).collect();
         sorted.sort_unstable();
         let mut merged: Vec<(i32, i32)> = Vec::with_capacity(sorted.len());
         for (first, last) in sorted {
@@ -150,7 +150,10 @@ impl Unrecorded {
 }
 
 pub(crate) fn retryable(error: &io::Error) -> bool {
-    matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock)
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe | io::ErrorKind::ResourceBusy
+    )
 }
 
 pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, DatedNotes, Vec<i32>)> {
@@ -263,7 +266,7 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
 
 pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>, Unrecorded)> {
     let found = special_projects::completions(source, context, query, from, to, cancelled)?;
-    let unrecorded = Unrecorded::of(EventFeedCategory::Milestones, ("projectFinished", "Special projects"), ("A completion dated in", "may not be listed: project histories were not recorded then"), 0, &found.unrecorded);
+    let unrecorded = Unrecorded::of(EventFeedCategory::Milestones, ("projectFinished", "Special projects"), ("A completion dated in", "may not be listed: project histories were not recorded then"), &found.unrecorded);
     let rows = found.events.into_iter().map(completion_row).collect();
     Ok((rows, found.warnings, unrecorded))
 }

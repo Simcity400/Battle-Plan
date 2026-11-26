@@ -102,7 +102,7 @@ function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number
     return logStatusCell('Awaiting choice', 'waiting');
   }
   if (page.status === 'notRecorded') {
-    return { value: notRecorded('Choice not recorded (recording paused)'), missingFigure: 'Choice' };
+    return { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
   }
   return { value: knownValue('Fired') };
 }

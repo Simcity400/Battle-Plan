@@ -80,7 +80,7 @@ test('a battle row names the battle in bold with its recorded killer beside it, 
   assert.deepEqual(knownTip.value('Killer class'), { kind: 'known', value: 'mod_raider_hull' });
   assert.deepEqual(knownTip.labels, ['Date', 'Killer', 'Victim', 'Class', 'Sea zone', 'Battle', 'Sunk by', 'Killer class', 'First recorded'],
     'one line per fact in reading order: no joined country line, no repeated name, and the battle and its killer replace the Cause line');
-  assert.deepEqual(knownTip.value('Victim'), { kind: 'notRecorded', reason: 'Name not recorded' }, 'a country whose name is not recorded is missing, never its tag as a name');
+  assert.deepEqual(knownTip.value('Victim'), { kind: 'partial', value: 'BBB', reason: 'Name not recorded' }, 'a country whose name is not recorded keeps its tag, marked partial, never as a known name');
   assert.equal(unknown!.cells.cause?.inlineSubtext, undefined);
   assert.deepEqual(tooltip(unknown!).value('Sunk by'), { kind: 'notRecorded', reason: 'Killer not recorded' });
   assert.deepEqual(unnamed!.cells.cause?.value, { kind: 'known', value: 'Battle' }, 'a battle whose name is not recorded still shows its killer');

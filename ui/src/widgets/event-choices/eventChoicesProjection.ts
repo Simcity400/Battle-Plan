@@ -99,7 +99,7 @@ function buildChoiceRow(
     }
   } else {
     choiceCell = {
-      value: notRecorded(at.pause || page.notRecorded ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
+      value: notRecorded(at.pause ? 'Choice not recorded (recording paused)' : 'Choice not recorded'),
       missingFigure: 'Choice',
     };
   }

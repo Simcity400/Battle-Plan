@@ -228,7 +228,7 @@ export function logCountryCell(
         missing.push(who.value.kind === 'notRecorded' ? `${entry.tag}: ${who.value.reason}` : `${entry.tag}: Name not recorded`);
         loading ||= who.loading;
       }
-      if (entry.role) roles.push({ label: entry.role, value: who.value });
+      if (entry.role) roles.push({ label: entry.role, value: who.value.kind === 'notRecorded' && !who.loading ? partialValue(entry.tag, who.value.reason) : who.value });
     }
   }
   const joined = names.join(' · ');

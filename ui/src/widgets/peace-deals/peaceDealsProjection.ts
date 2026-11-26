@@ -74,6 +74,7 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     return { ...flag, label, ...(known ? {} : { muted: true }), ...(term.kind === 'state' ? {} : { note: labels[term.kind][0] }) };
   });
   const list = flags.map(f => f.note ? `${f.label} \u00b7 ${f.note}` : f.label);
+  const unnamed = [...new Set(flags.filter(f => f.muted).map(f => f.label))];
   let name: string;
   let cell: TableCell;
   if (d.kind === 'recipient') {
@@ -89,11 +90,12 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     const note = summary(d.terms.map(quantity));
     name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
     const joined = [name, ...list].join(', ');
-    const value = text.kind === 'known' ? knownValue(joined) : partialValue(joined, text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded');
+    const reasons = [...(text.kind === 'known' ? [] : [text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded']), ...unnamed];
+    const value = reasons.length ? partialValue(joined, reasons.join('; ')) : knownValue(joined);
     cell = { value, heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {
     name = list.length > 1 ? `${list[0]} \u2013 ${list[list.length - 1]}` : (list[0] ?? 'Terms');
-    cell = { value: knownValue(list.join(', ')), flags };
+    cell = { value: unnamed.length ? partialValue(list.join(', '), unnamed.join('; ')) : knownValue(list.join(', ')), flags };
   }
   return {
     ...common, key: `child:${row.key}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),
