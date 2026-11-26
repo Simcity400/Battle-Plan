@@ -78,8 +78,10 @@ pub fn visible_origin(
     if children.count == 0 {
         return Ok((2, None));
     }
-    if read::<u8>(memory, at(visible, VISIBLE_HAS_SOURCE)?) != Some(1) {
-        return Ok((1, None));
+    match read::<u8>(memory, at(visible, VISIBLE_HAS_SOURCE)?) {
+        Some(1) => {}
+        Some(_) => return Ok((1, None)),
+        None => return Err("visible source flag unreadable"),
     }
     let source = read::<[u8; 8]>(memory, at(visible, VISIBLE_SOURCE)?)
         .ok_or("visibility origin unreadable")?;

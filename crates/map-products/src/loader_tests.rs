@@ -129,7 +129,7 @@ fn previous_inputs(
     let buildings = content_reader_key_names::buildings::read(layers)?;
     let tag_aliases = Arc::new(content_reader_key_names::tag_aliases::read(layers)?);
     let leader_roles = content_reader_key_names::characters::leader_templates(layers)
-        .map(dashboard_text::triggers::LeaderRoles::new)
+        .map(|templates| dashboard_text::triggers::LeaderRoles::read_through(templates, layers.clone()))
         .map(Arc::new);
     let (states, _) = content_reader_states::states::read(layers, &defines, &map.definitions)?;
     let states = states.definitions();

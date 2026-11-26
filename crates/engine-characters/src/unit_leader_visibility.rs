@@ -31,6 +31,11 @@ pub fn visibility(
         if linked != 0 {
             let template = word(at(character, ccharacter::TEMPLATE)?)?;
             if template != 0 {
+                let vtable = engine_sites::at(base, ccharacter::template::VTABLE_RVA)
+                    .ok_or("character template identity mismatch")?;
+                if read::<u64>(memory, template) != Some(vtable as u64) {
+                    return Err("character template identity mismatch");
+                }
                 role = word(at(template, CHARACTER_TEMPLATE_ROLE)?)?;
             }
         }
@@ -57,6 +62,7 @@ mod tests {
 
     fn memory() -> Vec<u8> {
         let mut bytes = vec![0; 0x5000];
+        put(&mut bytes, TEMPLATE, ccharacter::template::VTABLE_RVA.0 as u64);
         put(&mut bytes, ROLE, ROLE_VTABLE_RVA.0 as u64);
         put(&mut bytes, ROLE + ROLE_VISIBLE, crate::cscientist::VISIBLE_VTABLE_RVA.0 as u64);
         bytes
@@ -80,6 +86,8 @@ mod tests {
         bytes[LEADER + cunit_leader::TEMPLATE_VISIBILITY] = 1;
         put(&mut bytes, CHARACTER + ccharacter::TEMPLATE, TEMPLATE as u64);
         assert_eq!(read_from(&bytes), Ok((0, None)), "a linked template that has no unit leader role, as generate_character makes");
+        put(&mut bytes, TEMPLATE, 0x1234);
+        assert_eq!(read_from(&bytes), Err("character template identity mismatch"), "a slot read from an object that is no character template is refused");
     }
 
     #[test]
