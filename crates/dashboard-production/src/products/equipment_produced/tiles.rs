@@ -349,20 +349,30 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 push_missing(&mut missing, lo, hi, unknown_reason(Gap::Restarted));
             }
             for run in runs_for_country {
-                if restarted.iter().any(|&(lo, hi)| lo <= run.first && run.last <= hi) {
-                    continue;
+                let mut kept = vec![(run.first, run.last)];
+                for &(lo, hi) in &restarted {
+                    kept = kept
+                        .into_iter()
+                        .flat_map(|(a, b)| match b < lo || a > hi {
+                            true => vec![(a, b)],
+                            false => [(a, lo - 1), (hi + 1, b)].into_iter().filter(|(x, y)| x <= y).collect(),
+                        })
+                        .collect();
                 }
-                match run.value {
-                    Ok(raw) if i128::from(raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
-                        first: run.first,
-                        last: run.last,
-                        value: raw as f64 / scale,
-                        break_before: run.opens,
-                    }),
-                    Ok(_) => push_missing(&mut missing, run.first, run.last, unknown_reason(Gap::OutOfRange)),
-                    Err(gap) => push_missing(&mut missing, run.first, run.last, unknown_reason(gap)),
+                for (first, last) in kept {
+                    match run.value {
+                        Ok(raw) if i128::from(raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
+                            first,
+                            last,
+                            value: raw as f64 / scale,
+                            break_before: run.opens || first != run.first,
+                        }),
+                        Ok(_) => push_missing(&mut missing, first, last, unknown_reason(Gap::OutOfRange)),
+                        Err(gap) => push_missing(&mut missing, first, last, unknown_reason(gap)),
+                    }
                 }
             }
+            missing.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
             let pieces = clip_pieces(pieces, within);
             let missing = clip_missing(&missing, within);
             drawn_lines.push(pieces);
@@ -557,10 +567,35 @@ mod tests {
         let renamed = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-renamed", FIRST, LAST, FIRST, true, Some(FIRST + 200), None);
         let leader = ranged_top(&renamed, LAST, FIRST + 120);
         assert_eq!(leader.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "DEU"], "a country renamed inside the window stays a contender, read by its own rows: {leader:?}");
+        assert_eq!(leader.rows[1].value, Some(8), "and its amount is the country's deliveries since the start, read by its slot: {leader:?}");
         let restarted = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-restarted", FIRST, LAST, FIRST, true, None, Some(FIRST + 150));
         let after = ranged_top(&restarted, LAST, FIRST);
         assert_eq!(after.missing.as_deref(), Some(unknown_reason(Gap::Restarted)), "a range from the first hour is not known after counting restarted: {:?}", after.rows);
         assert!(ranged_top(&restarted, FIRST + 100, FIRST).missing.is_none(), "and is known before");
+        let restarted_query = dashboard_base::queries::query(&restarted, 1).unwrap();
+        let restart_tile = tile(
+            &restarted,
+            &restarted_query,
+            &serde_json::json!({ "branchId": "1", "family": { "kind": SERIES, "count": "units", "measure": "total", "types": [], "refits": false, "fromHour": FIRST }, "binHours": 1, "index": i64::from(FIRST + 150).div_euclid(BINS as i64), "countries": [7] }),
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        let bytes = {
+            const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = Vec::new();
+            for chunk in restart_tile.bins.as_bytes().chunks_exact(4) {
+                let word = chunk.iter().fold(0u32, |word, &byte| (word << 6) | ALPHABET.iter().position(|&c| c == byte).map_or(0, |at| at as u32));
+                out.extend([(word >> 16) as u8, (word >> 8) as u8, word as u8]);
+            }
+            out.truncate(out.len() - restart_tile.bins.bytes().rev().take_while(|&byte| byte == b'=').count());
+            out
+        };
+        let drawn = tile::decode_runs(&bytes, 1, restart_tile.first_hour, 1.0, restart_tile.raw_values).unwrap().remove(0);
+        assert!(drawn.iter().all(|run| run.1 < FIRST + 150), "nothing is drawn after counting restarted, even inside a run that began before: {drawn:?}");
+        assert!(drawn.iter().any(|run| run.0 <= FIRST + 149 && FIRST + 149 <= run.1), "and the hour before is drawn: {drawn:?}");
+        let newcomer = ranged_top(&src, LAST, FIRST + 50);
+        assert_eq!(newcomer.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"], "a country with no deliveries recorded at the start has delivered nothing by then: {newcomer:?}");
         let unsure = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-unsure", FIRST, LAST, FIRST, false, None, None);
         let unsure_query = dashboard_base::queries::query(&unsure, 1).unwrap();
         let unsure_top = race_reply(

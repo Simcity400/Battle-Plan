@@ -679,21 +679,9 @@ pub struct EquipmentProducedRaceReply {
 
 dashboard_base::reply_warnings!(EquipmentProducedRaceReply);
 
-fn population_bounds(query: &Query<'_>, hour: i32, mut first_hour: i32, mut last_hour: i32) -> (i32, i32) {
-    for holder_runs in query.holders.tags.values() {
-        for run in holder_runs {
-            if run.first > first_hour && run.first <= hour {
-                first_hour = run.first;
-            }
-            if run.last >= hour && run.last < last_hour {
-                last_hour = run.last;
-            }
-            if run.first > hour && run.first - 1 < last_hour {
-                last_hour = run.first - 1;
-            }
-        }
-    }
-    (first_hour, last_hour)
+fn population_bounds(query: &Query<'_>, hour: i32, first_hour: i32, last_hour: i32) -> (i32, i32) {
+    let (lo, hi) = query.holders.interval(hour);
+    (first_hour.max(lo), last_hour.min(hi))
 }
 
 fn race_reply(
@@ -820,7 +808,16 @@ fn race_reply(
     } else {
         let limit = params.top.map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(usize::MAX));
         match line.totals_ranked(hour, limit, &parts_of, back, &|value| value > 0)? {
-            Ok(ranked) => (ranked.into_iter().map(Country::from).collect(), true),
+            Ok(ranked) => (
+                ranked
+                    .into_iter()
+                    .map(|tag| {
+                        let country = Country::from(tag);
+                        query.holders.slot_at(&country, hour).map_or(country, Country::Slot)
+                    })
+                    .collect(),
+                true,
+            ),
             Err(reason) => {
                 missing = Some(reason);
                 (Vec::new(), true)

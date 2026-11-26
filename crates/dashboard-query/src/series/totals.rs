@@ -211,8 +211,15 @@ impl<'q, 'a> Line<'q, 'a> {
             if lo > hour {
                 push(&mut out, hour, lo - 1, Err(Gap::WindowIncomplete));
             }
-            let value = read.and_then(|read| i32::try_from(read).ok()).map_or(Err(Gap::WindowIncomplete), |read| window(read));
-            push(&mut out, lo, hi, value);
+            let read = read.and_then(|read| i32::try_from(read).ok());
+            let value = read.map_or(Err(Gap::WindowIncomplete), |read| window(read));
+            let mut cuts: Vec<i32> = since.get(&running.clock).into_iter().flatten().map(|run| run.0).filter(|&at| lo < at && at <= hi).collect();
+            cuts.insert(0, lo);
+            for (index, &from) in cuts.iter().enumerate() {
+                let to = cuts.get(index + 1).map_or(hi, |next| next - 1);
+                let restarted = read.and_then(back).is_some_and(|start| clock_at(since, running.clock, from).is_some_and(|since| since > start));
+                push(&mut out, from, to, if restarted && value.is_ok() { Err(Gap::Restarted) } else { value });
+            }
             hour = hi + 1;
         }
         if hour <= last {
@@ -291,7 +298,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 Some((_, before)) => {
                     match value_of(before, &keys, rest) {
                         Ok(Some(before)) => at - before,
-                        Ok(None) => continue,
+                        Ok(None) => at,
                         Err(reason) => return Ok(Err(reason.to_owned())),
                     }
                 }
@@ -323,14 +330,15 @@ impl<'q, 'a> Line<'q, 'a> {
         let next = |column: usize| crate::cost::storage(|| replay_lanes::lanes::next(recording, stretch.run, self.series.table, column, running.clock, hour));
         let next_change = [next(columns.as_of)?, next(columns.since)?].into_iter().flatten().min().filter(|&at| at <= stretch.last);
         let read = value(columns.as_of).filter(|&read| read <= hour);
-        let since_from = match read {
-            Some(read) if read < hour => self
-                .set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, read.max(stretch.first), hour)?
+        let since_start = read.map_or(stretch.first, |read| read.max(stretch.first));
+        let since_from = match since_start < hour {
+            true => self
+                .set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, since_start, hour)?
                 .get(&columns.since)
                 .and_then(|by| by.get(&running.clock))
                 .and_then(|held| held.iter().find(|run| run.0 <= hour && hour <= run.1))
                 .map(|run| run.0),
-            _ => None,
+            false => None,
         };
         Ok(ClockAt { read, since: value(columns.since), since_from, next_change })
     }

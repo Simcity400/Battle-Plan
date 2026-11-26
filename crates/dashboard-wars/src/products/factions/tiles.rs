@@ -734,6 +734,8 @@ mod tests {
         let (load, cancelled) = (LoadContext { content: None }, AtomicBool::new(false));
         let at = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 105, "kind": "country-factories", "measure": "free7", "top": 1, "membership": "ever" }), &load, &cancelled);
         assert!(at["missing"].is_string(), "the unresolved faction's total is unknown, so no top is proved: {at}");
+        let now = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 105, "kind": "country-factories", "measure": "free7", "top": 1 }), &load, &cancelled);
+        assert!(now["missing"].is_string(), "counted by the hour's members too: {now}");
     }
 
     fn load_at(source: &Source, params: Value, load: &LoadContext, cancelled: &AtomicBool) -> Value {

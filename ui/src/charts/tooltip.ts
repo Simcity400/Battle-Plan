@@ -99,9 +99,17 @@ function activeMetrics(): TooltipMetrics | null {
   return metrics;
 }
 
+function sizeOf(metrics: TooltipMetrics, role: TextRole): number {
+  return role === 'title' ? metrics.sizes.md : role === 'small' ? metrics.sizes.xs : metrics.sizes.sm;
+}
+
 function fontOf(metrics: TooltipMetrics, role: TextRole): string {
-  const size = role === 'title' ? metrics.sizes.md : role === 'small' ? metrics.sizes.xs : metrics.sizes.sm;
-  return `${role === 'title' || role === 'strong' ? 600 : 400} ${size}px ${metrics.family}`;
+  return `${role === 'title' || role === 'strong' ? 600 : 400} ${sizeOf(metrics, role)}px ${metrics.family}`;
+}
+
+function lineOf(role: TextRole, metrics: TooltipMetrics | null): number {
+  if (!metrics) return role === 'title' ? TITLE_LINE : role === 'small' ? SMALL_LINE : LINE;
+  return Math.ceil(sizeOf(metrics, role) * 1.4);
 }
 
 function lines(text: string, role: TextRole, metrics: TooltipMetrics | null, room = CONTENT_WIDTH): number {
@@ -120,9 +128,15 @@ function lines(text: string, role: TextRole, metrics: TooltipMetrics | null, roo
       continue;
     }
     if (used > 0) count++;
-    const spill = Math.ceil(wordWidth / width);
-    count += spill - 1;
-    used = wordWidth - (spill - 1) * width;
+    used = 0;
+    for (const glyph of Array.from(word)) {
+      const glyphWidth = metrics.measure(glyph, font);
+      if (used > 0 && used + glyphWidth > width) {
+        count++;
+        used = 0;
+      }
+      used += glyphWidth;
+    }
   }
   return count;
 }
@@ -156,16 +170,16 @@ export function tooltipRowHeight(row: TooltipRow, metrics: TooltipMetrics | null
           ? `${row.valueState.text ?? ''} partial`
           : (row.valueState.text ?? ''))
     : (row.value ?? '');
-  return (row.short ? 1 : rowLines(row, displayValue, metrics)) * LINE + (row.divider ? DIVIDER : 0);
+  return (row.short ? 1 : rowLines(row, displayValue, metrics)) * lineOf(row.strong ? 'strong' : 'row', metrics) + (row.divider ? DIVIDER : 0);
 }
 
 export function tooltipHeight(content: TooltipContent, metrics: TooltipMetrics | null = activeMetrics()): number {
   const room = CONTENT_WIDTH - (content.countryFlag || content.icon ? HEAD_MARK : 0);
-  const title = lines(content.title, 'title', metrics, room) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, 'small', metrics, room) * SMALL_LINE : 0);
+  const title = lines(content.title, 'title', metrics, room) * lineOf('title', metrics) + (content.subtitle ? lines(content.subtitle, 'small', metrics, room) * lineOf('small', metrics) : 0);
   const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
   const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row, metrics), 0);
-  const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, 'small', metrics), 0) * SMALL_LINE : 0;
-  const note = content.note ? GAP + lines(content.note, 'small', metrics) * SMALL_LINE : 0;
+  const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, 'small', metrics), 0) * lineOf('small', metrics) : 0;
+  const note = content.note ? GAP + lines(content.note, 'small', metrics) * lineOf('small', metrics) : 0;
   return BOX + header + rows + description + note;
 }
 

@@ -133,6 +133,9 @@ test('rows wrap by their width in the active font, so a wide font cuts rows the 
   assert.equal(tooltipRowHeight({ ...flagged, countryFlag: undefined }, even), 17, 'label, gap and value fit the row');
   assert.equal(tooltipRowHeight(flagged, even), 34, 'the flag and the gap between label and value take the room the text needs, so the row wraps');
   assert.equal(tooltipRowHeight({ label: 'A', value: '1'.repeat(40) }, even), 34, 'a value wider than its share wraps even beside a short label');
+  assert.equal(tooltipRowHeight({ label: 'A', value: '1'.repeat(39) }, metrics(9)), 51, 'an unbroken value wraps where its glyphs stop fitting: 19, 19 and 1');
+  const larger = { ...metrics(6), sizes: { xs: 13, sm: 15, md: 16 } };
+  assert.equal(tooltipRowHeight({ label: 'A', value: '1' }, larger), 21, 'a larger interface type has taller lines');
   const title = 'The Kingdom of the Netherlands in exile';
   assert.equal(tooltipHeight({ title, rows: [], countryFlag: {} }, even), tooltipHeight({ title, rows: [] }, even) + 19, 'a flagged title has the room beside its flag, and wraps there');
 });

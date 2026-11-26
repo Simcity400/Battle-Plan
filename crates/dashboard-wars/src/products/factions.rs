@@ -594,7 +594,7 @@ impl AtHour for FactionTotalsAt {
         let mut rows_out: Vec<FactionTotalRow> = rosters
             .members
             .iter()
-            .filter(|(_, slots)| !slots.is_empty())
+            .filter(|(faction_id, slots)| !slots.is_empty() || rosters.incomplete.contains(faction_id))
             .map(|(faction_id, slots)| {
                 let mut missing = rosters.incomplete.contains(faction_id).then(|| "Its roster was not read whole at this hour".to_owned());
                 let mut sum = 0i64;
