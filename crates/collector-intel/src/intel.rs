@@ -1164,6 +1164,8 @@ pub struct Captured {
     residual_aux_apart: bool,
     capitulation: CaptureRows<cdiplomacy_status::CapitulationRow>,
     war_goal_recipients: Vec<u32>,
+    surrender: Vec<engine_intelligence::surrender::Inputs>,
+    surrender_keys: engine_intelligence::surrender::ModifierKeys,
     subjects: CaptureRows<csubject_relation::Row>,
     autonomy: CaptureRows<ccurrent_autonomy_status::Row>,
     agencies: CaptureRows<cintelligence_agency::Row>,
@@ -1302,6 +1304,8 @@ impl Captured {
         Self {
             capitulation: CaptureRows::new(capacity.rows[0]),
             war_goal_recipients: Vec::new(),
+            surrender: Vec::new(),
+            surrender_keys: Default::default(),
             subjects: CaptureRows::new(capacity.rows[1]),
             autonomy: CaptureRows::new(capacity.rows[2]),
             agencies: CaptureRows::new(capacity.rows[3]),
@@ -2018,6 +2022,19 @@ impl Captured {
             capture_rows(&mut self.capitulation, |rows| {
                 cdiplomacy_status::walk_capitulation(memory, base, state, rows, recipients)
             });
+            self.surrender.clear();
+            if let Ok(countries) = ccountry::Reader::new(memory, base, state)
+                && engine_allocation::resize_default(&mut self.surrender, countries.arrays()[1].count as usize).is_ok()
+            {
+                let read = engine_intelligence::surrender::Hour::new(memory, base, &mut self.surrender_keys);
+                for row in &self.capitulation.rows[..self.capitulation.outcome.len()] {
+                    if let Ok(owner) = countries.resolve(row.country)
+                        && let Some(slot) = self.surrender.get_mut(owner.id as usize)
+                    {
+                        *slot = read.country(memory, base, Some(&countries), owner);
+                    }
+                }
+            }
             ticks[0] = elapsed(begin);
         }
         if include_residual {
@@ -5622,6 +5639,8 @@ const M_CAPITULATION: u32 = 0x01;
 pub struct CapitulationJob {
     pub log: RawLog<1>,
     pub game_state: usize,
+    surrender: Vec<engine_intelligence::surrender::Inputs>,
+    keys: engine_intelligence::surrender::ModifierKeys,
 }
 
 impl CapitulationJob {
@@ -5629,12 +5648,15 @@ impl CapitulationJob {
         Self {
             log: RawLog::new(0, 0),
             game_state: 0,
+            surrender: Vec::new(),
+            keys: Default::default(),
         }
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.surrender.clear();
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -5677,8 +5699,9 @@ fn copy_capitulation_pass(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    log: &mut RawLog<1>,
+    job: &mut CapitulationJob,
 ) {
+    let log = &mut job.log;
     use engine_native::cgame_state;
     let _reads = read_accounting::table(TABLES[0]);
     let Some(countries_start) = capspan(
@@ -5716,12 +5739,19 @@ fn copy_capitulation_pass(
     let Some(mut slots) = crate::raw::CountrySlots::new(countries, links, base) else {
         return;
     };
+    let sized = engine_allocation::resize_default(&mut job.surrender, links.count as usize).is_ok();
+    let read = engine_intelligence::surrender::Hour::new(memory, base, &mut job.keys);
+    let roster = ccountry::Reader::new(memory, base, game_state).ok();
     for slot in 1..slots.count() {
-        let pointer = match slots.take(log, memory, slot, M_CAPITULATION) {
-            Some(Some(pointer)) => pointer,
+        let country = match slots.take_country(log, memory, slot, M_CAPITULATION) {
+            Some(Some(country)) => country,
             Some(None) => continue,
             None => return,
         };
+        if sized && let Some(output) = job.surrender.get_mut(country.id as usize) {
+            *output = read.country(memory, base, roster.as_ref(), country);
+        }
+        let pointer = country.pointer;
         let Some(diplo_start) = capspan(
             log,
             memory,
@@ -5825,7 +5855,7 @@ pub fn copy_capitulation_refresh(
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
-    copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut job.log);
+    copy_capitulation_pass(memory, ctx.base, ctx.game_state, job);
     CapitulationCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: [elapsed(started)],
@@ -5852,10 +5882,19 @@ impl Captured {
             return unavailable("war goal recipients outside the captured list");
         }
         table::<tables::Capitulation, _>(outcome, &self.capitulation.rows, |r| {
+            let input = self.surrender.get(r.country as usize).copied().unwrap_or_default();
             rows::CapitulationRow {
                 country: r.country,
                 capitulated: r.capitulated,
                 capitulated_hour: r.capitulated_hour,
+                cached_held_core_weight: input.held_core.into(),
+                cached_total_core_weight: input.total_core.into(),
+                cached_held_territory_weight: input.held_territory.into(),
+                cached_total_territory_weight: input.total_territory.into(),
+                surrender_limit_modifier: input.modifiers[0].into(),
+                forced_surrender_limit_modifier: input.modifiers[1].into(),
+                max_surrender_limit_offset: input.modifiers[2].into(),
+                selected_collaboration: input.collaboration.into(),
                 war_goal_recipients: rows::Recorded::Value(
                     goals(r).unwrap().map(|list| owned_vec(copy_vec(list))),
                 ),
@@ -5875,6 +5914,10 @@ impl Captured {
         job: &CapitulationJob,
         decode_ticks: &mut [u64; 1],
     ) {
+        self.surrender.clear();
+        if engine_allocation::resize_default(&mut self.surrender, job.surrender.len()).is_ok() {
+            self.surrender.copy_from_slice(&job.surrender);
+        }
         let recorded = match crate::raw::Recorded::build(&job.log) {
             Ok(recorded) => recorded,
             Err(reason) => {

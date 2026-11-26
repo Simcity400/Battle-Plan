@@ -14,6 +14,7 @@ name = "tile-bench"
 test = false
 
 [dependencies]
+content-reader-defines.workspace = true
 replay.workspace = true
 replay-lanes.workspace = true
 replay-recording.workspace = true

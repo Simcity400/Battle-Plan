@@ -574,9 +574,25 @@ pub struct CapitulationRow {
     pub legitimacy_raw: RetiredI64,
     pub exile_army_leaders: RetiredI32,
     pub war_goal_recipients: Recorded<Option<Vec<u32>>>,
+    pub cached_held_core_weight: Recorded<Option<i32>>,
+    pub cached_total_core_weight: Recorded<Option<i32>>,
+    pub cached_held_territory_weight: Recorded<Option<i32>>,
+    pub cached_total_territory_weight: Recorded<Option<i32>>,
+    pub surrender_limit_modifier: Recorded<Option<i64>>,
+    pub forced_surrender_limit_modifier: Recorded<Option<i64>>,
+    pub max_surrender_limit_offset: Recorded<Option<i64>>,
+    pub selected_collaboration: Recorded<Option<i64>>,
 }
 typed_codec!(CapitulationRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (capitulated): U8, 1 => (capitulated_hour): I32, 2 => (last_surrender_hour): I32, 3 => (faction_join_hour): I32, 4 => (legitimacy_raw): I64, 5 => (exile_army_leaders): I32, 6 => (war_goal_recipients): Opaque }, |_row| Ok(()));
+ { 0 => (capitulated): U8, 1 => (capitulated_hour): I32, 2 => (last_surrender_hour): I32, 3 => (faction_join_hour): I32, 4 => (legitimacy_raw): I64, 5 => (exile_army_leaders): I32, 6 => (war_goal_recipients): Opaque,
+   7 => (cached_held_core_weight): OptionalI32,
+   8 => (cached_total_core_weight): OptionalI32,
+   9 => (cached_held_territory_weight): OptionalI32,
+   10 => (cached_total_territory_weight): OptionalI32,
+   11 => (surrender_limit_modifier): OptionalI64,
+   12 => (forced_surrender_limit_modifier): OptionalI64,
+   13 => (max_surrender_limit_offset): OptionalI64,
+   14 => (selected_collaboration): OptionalI64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]

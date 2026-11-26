@@ -131,6 +131,9 @@ impl ScriptedContent {
 }
 
 impl PreparedContent for ScriptedContent {
+    fn defines(&self) -> Result<&content_reader_defines::defines::Defines, &str> {
+        Ok(self.prepared_environment()?.defines())
+    }
     fn special_projects(&self) -> Result<&content_reader_military::special_projects::Catalog, &str> {
         self.prepared_environment()?
             .prepared

@@ -33,7 +33,7 @@ pub fn executable() -> Executable {
             "has_volunteers", "is_faction_leader", "is_in_tech_sharing_group", "is_neighbor_of",
             "is_subject",
         ]),
-        (country, Comparison, &["has_stability", "has_war_support"]),
+        (country, Comparison, &["has_stability", "has_war_support", "surrender_progress"]),
         (country, Body, &[
             "all_owned_state", "any_controlled_state", "any_neighbor_country", "any_owned_state",
             "any_scientist",

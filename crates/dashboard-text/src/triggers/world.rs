@@ -96,6 +96,7 @@ pub(crate) trait PreparedContent: Send + Sync {
     fn constants(&self) -> Result<&Constants, &str>;
     fn invasion_days(&self) -> Result<i32, &str>;
     fn geography(&self) -> GeographyInputs<'_>;
+    fn defines(&self) -> Result<&content_reader_defines::defines::Defines, &str>;
 }
 
 #[path = "world/folds.rs"]
@@ -1500,6 +1501,15 @@ impl<'a> World<'a> {
     pub(crate) fn with_geography(mut self, geography: GeographyInputs<'a>) -> Self {
         self.lazy_geography = Some(geography);
         self
+    }
+
+    pub(super) fn recorded_defines(&self) -> Result<&'a content_reader_defines::defines::Defines, Failure> {
+        if let Some(content) = self.prepared_content {
+            return Ok(content.defines()?);
+        }
+        self.lazy_geography
+            .map(|geography| geography.defines)
+            .ok_or_else(|| "recorded country defines are unavailable".into())
     }
 
     pub fn neighbor_states(&self) -> Result<&'a BTreeMap<u32, Vec<u32>>, &'a str> {

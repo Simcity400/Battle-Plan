@@ -214,6 +214,7 @@ pub struct Pack {
     pub state_resistance: BTreeMap<u32, StateResistance>,
     pub occupation_definitions: BTreeMap<(Vec<u8>, Vec<u8>), ActiveOccupationDefinitions>,
     pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
+    pub surrender_recipients: BTreeMap<Vec<u8>, Vec<u8>>,
     pub state_resources: BTreeMap<(u32, Vec<u8>), Decimal>,
     pub state_dynamic_modifiers: BTreeMap<u32, Vec<super::governance::DynamicModifier>>,
     pub country_resources: BTreeMap<Vec<u8>, CountryResources>,
@@ -703,6 +704,9 @@ pub(super) fn parse_with_countries(
         if let Some(value) = field(fields, b"resources")? {
             pack.country_resources
                 .insert(country.to_vec(), country_resources(block(value)?)?);
+        }
+        if let Some(recipient) = bytes(fields, b"last_collaborated_surrender_recipient")? {
+            pack.surrender_recipients.insert(country.to_vec(), recipient);
         }
         if let Some(value) = field(fields, b"collaboration")? {
             if let Some(value) = field(block(value)?, b"collaboration")? {

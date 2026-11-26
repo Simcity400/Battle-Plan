@@ -20,5 +20,6 @@ pub mod operation_token_map;
 pub mod operation_token_target_entry;
 pub mod propaganda_history;
 pub mod strategic_operatives;
+pub mod surrender;
 
 pub mod network_auxiliary;

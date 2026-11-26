@@ -24,8 +24,8 @@ fn field_name(item: &Item) -> Option<String> {
 fn country_core(name: &str) -> Option<&'static [replay_data::rows::TableId]> {
     use replay_data::rows::TableId::{Countries, CountryLinks};
     Some(match name {
-        "has_stability" | "has_war_support" | "has_defensive_war" | "num_of_controlled_states"
-        | "exists" | "has_focus_tree" => &[Countries],
+        "has_stability" | "has_war_support" | "has_defensive_war" | "surrender_progress"
+        | "num_of_controlled_states" | "exists" | "has_focus_tree" => &[Countries],
         "is_neighbor_of" | "has_template" | "has_civil_war" | "has_dynamic_modifier"
         | "is_ally_with" => &[Countries, CountryLinks],
         "has_tech" | "has_war" | "is_ai" | "has_idea_with_trait" | "is_in_tech_sharing_group"
@@ -165,8 +165,12 @@ impl Evaluator<'_, '_> {
             })
         };
         Ok(match name {
-            "has_stability" | "has_war_support" => {
-                let actual = self.country_stability_value(slot, name == "has_war_support")?;
+            "has_stability" | "has_war_support" | "surrender_progress" => {
+                let actual = if name == "surrender_progress" {
+                    self.surrender_progress(slot)?
+                } else {
+                    self.country_stability_value(slot, name == "has_war_support")?
+                };
                 let wanted = self.required(
                     item.value.scalar().unwrap_or_default(),
                     item.quoted(),

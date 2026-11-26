@@ -61,6 +61,17 @@ impl CountrySlots {
         slot: u32,
         mask: u32,
     ) -> Option<Option<usize>> {
+        self.take_country(log, memory, slot, mask)
+            .map(|country| country.map(|country| country.pointer))
+    }
+
+    pub fn take_country<const N: usize>(
+        &mut self,
+        log: &mut RawLog<N>,
+        memory: &impl Memory,
+        slot: u32,
+        mask: u32,
+    ) -> Option<Option<engine_native_memory::country_identity::Country>> {
         let pointer = self.pointer(log, memory, slot, mask)?;
         if pointer == 0 || self.reserved == Some(pointer) {
             return Some(None);
@@ -89,7 +100,9 @@ impl CountrySlots {
         {
             return None;
         }
-        Some((slot == canonical).then_some(pointer))
+        Some((slot == canonical).then_some(engine_native_memory::country_identity::Country {
+            pointer, id, canonical_slot: slot,
+        }))
     }
 
     fn pointer<const N: usize>(

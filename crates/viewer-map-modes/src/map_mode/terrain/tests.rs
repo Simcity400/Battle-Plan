@@ -4,6 +4,7 @@ use content_reader_key_names::terrain::{TerrainAdjuster, TerrainCategory};
 fn category(name: &str, color: Result<[f32; 4], &str>) -> TerrainCategory {
     TerrainCategory {
         name: name.as_bytes().to_vec(),
+        control_weight: Some(0),
         movement_cost: 100_000,
         combat_width: 0,
         combat_support_width: 0,
