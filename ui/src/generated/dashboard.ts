@@ -1772,11 +1772,23 @@ modifier: string | null,
  * Decimal region ids; every region without.
  */
 regions: Array<string> | null, pinnedRegions?: Array<number>, hiddenRegions?: Array<number>, top?: number, };
-export type RegionalWeatherReply = { firstHour: number, lastHour: number, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>,
+export type RegionalWeatherReply = { firstHour: number, lastHour: number,
+/**
+ * The last hour through which nothing this reply shows changes: read beside the reply, never among its rows.
+ */
+validThrough: number, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>,
 /**
  * `available`, or why no temperature is shown.
  */
-temperature: string, columns: RegionalWeatherColumns, legend: Array<WeatherLegendItem>, extrema?: [string, string], gaps: Array<HourSpan>, warnings: Array<string>, };
+temperature: string, columns: RegionalWeatherColumns, legend: Array<WeatherLegendItem>, extrema?: [string, string], gaps: Array<HourSpan>,
+/**
+ * Why the most active regions are not a proven rank at the asked hour: the hour's weather, or a region's, is not recorded. A top then lists only the pinned regions.
+ */
+rankMissing: string | null,
+/**
+ * Why no region is listed in the ranked view; set only when no region is listed.
+ */
+empty: NoRegions | null, activeUnlisted: ActiveRegions, warnings: Array<string>, };
 export type RegionalWeatherShow = "conditions" | "modifier" | "temperature";
 export type RegionalWeatherChoice = { id: string, name: string, };
 export type RegionalWeatherColumns = {

@@ -87,8 +87,19 @@ fn weather_acceptance_current_day_at_midnight_terminal_split_since_and_scoped_ex
     let temp_measures = vec![("temp".to_owned(), temps)];
     assert_eq!(visible_extrema(&[1], &temp_measures, Show::Temperature), Some(["600000".into(), "600000".into()]), "unselected region 2 never pollutes extrema");
 
-    let ranked = rank_regions(&[1, 2], &midnight, &measures, Show::Conditions, &[2], &HashSet::new(), Some(1));
-    assert_eq!(ranked, vec![(2, true), (1, false)], "pinned regions come first followed by automatic rank");
+    assert_eq!(rank_at_hour(&[1, 2], &midnight, &measures, Show::Conditions), Ok(vec![2]), "the hour's reading decides: region 1 rained all week but is clear at the hour");
+    let snow: Daily = [(1, vec![Some(0), Some(0), Some(0), Some(0), Some(1)])].into();
+    let both = vec![measures[0].clone(), ("blizzard".to_owned(), snow)];
+    assert_eq!(rank_at_hour(&[1, 2], &midnight, &both, Show::Conditions), Ok(vec![1, 2]), "a blizzard outranks light rain");
+    let unread: Daily = [(1, vec![Some(1), Some(1), Some(1), Some(1), None])].into();
+    assert!(rank_at_hour(&[1], &midnight, &[("light_rain".to_owned(), unread)], Show::Conditions).is_err(), "a region not read at the hour leaves the rank unproven");
+    assert!(rank_at_hour(&[1, 2], &gapped, &measures, Show::Conditions).is_err(), "no reading at the hour ranks nothing");
+    assert_eq!(rank_at_hour(&[1, 2], &midnight, &temp_measures_at(&midnight), Show::Temperature), Ok(vec![2, 1]), "the largest magnitude at the hour first");
     let legend = visible_legend(&[1], &midnight[4..5], &[("light_rain".to_owned(), [(1, vec![Some(0)]), (2, vec![Some(1)])].into())], Show::Conditions, &choices);
     assert_eq!(legend.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), vec!["clear"], "off-chart region 2 rain does not enter legend");
+}
+
+fn temp_measures_at(days: &[Day]) -> Vec<(String, Daily)> {
+    let at = |value| { let mut values = vec![None; days.len()]; values[days.len() - 1] = Some(value); values };
+    vec![("temp".to_owned(), [(1, at(-200_000)), (2, at(900_000))].into())]
 }

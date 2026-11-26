@@ -15,7 +15,7 @@ import { LANE_READOUT_MAX_WIDTH } from '../../families/heat/lanesLayout.ts';
 import { regionLabel, signedRampColour } from '../../families/heat/scale.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
-import { regionLanes } from '../../families/regions/regionRows.ts';
+import { noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatDateOnly, formatDateParts, formatRational } from '../../families/valueFormat.ts';
 import type {
   RegionalWeatherColumn,
@@ -25,7 +25,7 @@ import type {
 } from '../../generated/dashboard';
 import { type WeatherShow } from './definition.ts';
 
-export const WEATHER_WINDOW_HOURS = 7 * 24;
+export const WEATHER_WINDOW_DAYS = 7;
 export const WEATHER_TOP = 7;
 const WIDTH_STEP = 256;
 
@@ -194,7 +194,7 @@ function lane(
   for (let c = 0; c < columns.length; c++) {
     const column = columns[c]!;
     if (column.firstHour > shownThrough) break;
-    const lastHour = Math.min(column.lastHour, shownThrough);
+    const lastHour = c === columns.length - 1 ? shownThrough : Math.min(column.lastHour, shownThrough);
     const made = columnCell(reply, region, c, options, modifier, colours);
     const previous = runs[runs.length - 1];
     if (previous && made.key === key && previous.lastHour + 1 >= column.firstHour) {
@@ -219,7 +219,7 @@ function inspectColumn(
   const columns = reply.columns.columns;
   const c = spanIndexAt(columns, hour, column => column.firstHour);
   const column = columns[c];
-  if (!column || hour > column.lastHour) return null;
+  if (!column || hour > (c === columns.length - 1 ? reply.validThrough : column.lastHour)) return null;
   const made = columnCell(reply, region, c, options, modifier, colours);
   const dated = column.readHour === null ? { subtitle: formatDateOnly(column.firstHour) } : { hour: column.readHour };
   return made.missing ? { title, ...dated, missingReason: made.missing } : { title, ...dated, items: made.items };
@@ -235,7 +235,7 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
   if (refused) return emptyModel(hour, { refused });
   const reply = readView.panel<RegionalWeatherReply>('weather');
   if (!reply || !options.surface || reply.lastHour > hour) return emptyModel(hour, {});
-  const through = reply.lastHour;
+  const through = Math.min(hour, reply.validThrough);
   const colours = palette(reply, options.surface);
   const modifier = options.show === 'modifiers' ? options.modifier ?? reply.modifiers[0]?.id ?? null : null;
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
@@ -262,13 +262,14 @@ export function projectWeather(readView: BoundedReadView, options: WeatherProjec
     gaps: reply.gaps.map(gap => ({ firstHour: gap.firstHour, lastHour: gap.lastHour, reason: 'The recording holds no hour here' })),
     rows,
     ...(options.show === 'conditions' ? { readoutWidth: LANE_READOUT_MAX_WIDTH } : {}),
-    regions: regionLanes(null, 'Most active this week'),
+    regions: { ...regionLanes(null), active: reply.activeUnlisted },
     inspect: (rowIndex, at) => {
       const region = regions[rowIndex];
       return region ? inspectColumn(reply, region, rows[rowIndex]!.label, at, options, modifier, colours) : null;
     },
-    ...(rows.length ? {} : { empty: 'No weather recorded for these regions at this date.' }),
-    warnings: reply.temperature === 'available' || options.show !== 'temperature' ? reply.warnings : [...reply.warnings, reply.temperature],
+    ...(reply.empty ? noRegionsBody(reply.empty, { one: 'region with weather', many: 'regions with weather', none: 'No region has weather at this date.' })
+      : rows.length ? {} : reply.rankMissing ? { empty: reply.rankMissing, emptyKind: 'unavailable' as const } : { empty: 'No weather recorded for these regions at this date.' }),
+    warnings: [...reply.warnings, ...(reply.temperature === 'available' || options.show !== 'temperature' ? [] : [reply.temperature]), ...(rows.length && reply.rankMissing ? [reply.rankMissing] : [])],
   };
 }
 
@@ -313,10 +314,10 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
           channel: 'panel',
           coverage: { mode: 'population', form: 'top', limit: WEATHER_TOP },
           product: 'regional-weather',
-          followQuery: { panel: 'regional-weather', ...params },
+          followQuery: { panel: 'regional-weather', windowDays: WEATHER_WINDOW_DAYS, ...params },
           params,
           dynamicKeys: ['firstHour', 'lastHour'],
-          buildExactParams: (base, hour) => ({ ...base, firstHour: Math.max(firstHour, hour - WEATHER_WINDOW_HOURS + 1), lastHour: hour }),
+          buildExactParams: (base, hour) => ({ ...base, firstHour: Math.max(firstHour, (Math.floor(hour / 24) - WEATHER_WINDOW_DAYS + 1) * 24), lastHour: hour }),
         },
       }],
     };
