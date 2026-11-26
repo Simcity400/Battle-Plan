@@ -3,10 +3,10 @@ import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type Ba
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatScalar, formatShare } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarsReply } from '../../generated/dashboard';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
-import { chosenGroup, leadOf, savedWar, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import { chosenGroup, leadOf, savedWar, sideCountries, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
 
 export const MEASURE_VIEW = 'measure';
 
@@ -32,7 +32,7 @@ function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure:
   const participation = measure.key === 'participation';
   const missing = group.reason ?? NO_SHARE;
   const membersOf = (side: WarSide) => measure[side].total === null
-    ? (side === 'viewpoint' ? group.viewpointSide : group.opposingSide) : measure[side].members;
+    ? sideCountries(group, side) : measure[side].members;
   const half = (side: WarSide, member: string | WarMeasureMember): BarsOppositeRow => {
     const tag = typeof member === 'string' ? member : member.tag;
     const who = countryRowPresentation(readView, tag, undefined, false, hour);
@@ -41,11 +41,15 @@ function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure:
     return {
       key: `${side}:${tag}`, subject: tag, label: who.label, labelMissing: who.labelMissing, labelLoading: who.labelLoading,
       media: who.media, color: who.color, value: { value, format: value.kind === 'zero' ? { decimals: 0 } : 'share' }, numeric,
-      ...(typeof member !== 'string' && (value.kind === 'notRecorded' || member.partial) ? { tooltip: {
-        title: who.label, hour, items: [
-          { label: 'Recorded amount', value: formatScalar(BigInt(member.value), { decimals: 5 }) },
-          value.kind === 'notRecorded' ? { label: 'Share', missingReason: value.reason } : { label: 'Share', value: formatShare(numeric!) },
-        ], ...(member.partial ? { note: UNATTRIBUTED } : {}),
+      ...(typeof member !== 'string' ? { tooltip: {
+        title: who.labelMissing ? notRecordedLabel('Name') : who.label, hour,
+        get items() {
+          return [
+            { label: 'Recorded amount', value: formatScalar(BigInt(member.value), { decimals: 5 }) },
+            value.kind === 'notRecorded' ? { label: 'Share', missingReason: value.reason } : { label: 'Share', value: formatShare(numeric!) },
+          ];
+        },
+        ...(member.partial ? { note: UNATTRIBUTED } : {}),
       } } : {}),
     };
   };
@@ -72,7 +76,7 @@ function pickRows(readView: BoundedReadView, group: WarContributionGroup, sides:
       label: item.label,
       left: { fraction: fraction(sides[0]), ...(leftColour ? { color: leftColour } : {}) },
       right: { fraction: fraction(sides[1]), ...(rightColour ? { color: rightColour } : {}) },
-      ...(group.reason ? { tooltip: { title: item.label, hour, note: group.reason } } : {}),
+      ...(group.reason ? { tooltip: { title: item.label, fullText: item.label, hour, note: group.reason } } : {}),
       ...(item.key === 'participation' ? { divided: true } : {}),
     }];
   });

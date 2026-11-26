@@ -36,14 +36,17 @@ function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'activ
   const wars = useWars(widget, runtime, active);
   const saved = storedWar(options);
   const shownHour = useCallback((clockHour: number) => (track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null), [track, widget, runtime.tracks]);
-  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
+  const atClock = (clockHour: number) => {
     const at = shownHour(clockHour);
-    return at === null || !wars ? '' : chosenWar(wars, saved, at)?.id ?? 'none';
+    const war = wars && at !== null ? chosenWar(wars, saved, at) : null;
+    const observation = war && at !== null ? labelObservationAt(war, at) : null;
+    return { at, war, observation };
+  };
+  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
+    const { war, observation } = atClock(clockHour);
+    return `${war?.id ?? ''}:${observation?.firstHour ?? ''}`;
   });
-  const at = shownHour(hour);
-  const war = at !== null && wars ? chosenWar(wars, saved, at) : null;
-  const observation = war && at !== null ? labelObservationAt(war, Math.min(at, war.lastHour)) : null;
-  return { track, war, observation, at };
+  return { track, ...atClock(hour) };
 }
 
 function useLeader(props: Pick<FamilyViewProps, 'runtime' | 'active'>, track: ReturnType<typeof useChosenWar>['track'], tag: string | undefined, hour: number | null) {

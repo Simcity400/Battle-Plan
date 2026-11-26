@@ -82,6 +82,7 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(bars[0]!.value?.value, { kind: 'partial', value: 0.59, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
   assert.equal(bars[0]!.rightSide?.key, 'viewpoint:BBB');
   assert.deepEqual(bars[0]!.rightSide?.value.value, { kind: 'known', value: 0.41 }, 'every figure is a share of all of the measure in this war');
+  assert.deepEqual(bars[0]!.rightSide?.tooltip?.items, [{ label: 'Recorded amount', value: '5' }, { label: 'Share', value: '41%' }]);
   assert.equal(bars[1]!.value?.value.kind, 'zero');
   assert.equal(bars[1]!.rightSide, undefined, 'a shorter side leaves its half empty');
   assert.deepEqual(measured.pickList?.rows.map(row => [row.key, row.left.fraction, row.right.fraction, row.divided === true]), [['casualties', 0.59, 0.41, false], ['participation', null, null, true]],
@@ -93,11 +94,12 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const casualties = group.measures[1]!;
   const missing = 'Directional participation ledger not recorded';
   const partialZero = member('AAA', '0', 0, true);
-  const oneSide = { ...group, reason: missing, participants: group.participants.filter(person => person.side === 'opponent'),
+  const oneSide = { ...group, viewpointSide: ['BBB', 'BBB'], reason: missing, participants: group.participants.filter(person => person.side === 'opponent'),
     measures: [{ ...casualties, viewpoint: { total: null, partial: false, members: [], shareOfWar: null },
       opposing: { ...casualties.opposing, shareOfWar: null, members: [casualties.opposing.members[0]!, partialZero] } }] };
   const read = createBoundedReadView({ hour: 100, panels: new Map([['live', { ...reply, contributions: [oneSide] }]]) });
   const table = warContributionSidesProjection.project(read, { wars, saved: null });
+  assert.deepEqual(table.panes![1]!.rows.map(row => row.key), ['viewpoint:BBB']);
   assert.deepEqual(table.panes![1]!.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: missing });
   const witnessed = table.panes![0]!.rows[1]!;
   assert.equal(witnessed.cells.casualties!.value.kind, 'partial');
@@ -106,6 +108,7 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   const byMeasure = warContributionMeasureProjection.project(read, { wars, saved: null, measure: 'casualties' });
   const [first, second] = byMeasure.rows.filter(row => row.kind === 'data');
   assert.deepEqual(first!.rightSide!.value.value, { kind: 'notRecorded', reason: missing });
+  assert.equal(second!.rightSide, undefined);
   assert.deepEqual(second!.value!.value, { kind: 'notRecorded', reason: missing });
   assert.equal(second!.tooltip?.items?.[0]?.value, '0');
   assert.ok(second!.tooltip?.note);

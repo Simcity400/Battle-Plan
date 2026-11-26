@@ -5,7 +5,7 @@ import type { TableCell, TableColumnSpec, TableModel, TablePane, TablePaneTitle,
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarMeasureSide, WarsReply } from '../../generated/dashboard';
-import { chosenGroup, leadOf, savedWar, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
+import { chosenGroup, leadOf, savedWar, sideCountries, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
 import { resolveName } from '../../families/table/identityCell.ts';
 
 export const SIDES_VIEW = 'sides';
@@ -99,7 +99,7 @@ function who(readView: BoundedReadView, tag: string, hour: number): Who {
 function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: WarSide, lead: string, hour: number): TablePane {
   const measures = group.measures;
   const participation = measures.find(measure => measure.key === 'participation') ?? measures[0];
-  const order = participation && participation[side].total !== null ? participation[side].members.map(member => member.tag) : (side === 'viewpoint' ? group.viewpointSide : group.opposingSide);
+  const order = participation && participation[side].total !== null ? participation[side].members.map(member => member.tag) : sideCountries(group, side);
   const missing = group.reason ?? NOT_A_MEMBER;
   const byMeasure = new Map(measures.map(measure => [measure.key, new Map(measure[side].members.map(member => [member.tag, member]))]));
   const rows: TableRow[] = order.map(tag => {

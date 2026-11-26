@@ -40,6 +40,10 @@ export function leadOf(group: WarContributionGroup, side: WarSide): string {
   return (side === 'viewpoint' ? group.viewpointSide[0] : group.opposingSide[0]) ?? '';
 }
 
+export function sideCountries(group: WarContributionGroup, side: WarSide): string[] {
+  return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
+}
+
 function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): WarContributionsReply | undefined {
   const going = observationAt(war, hour) !== null;
   const raw = readView.panel(going ? 'live' : 'ended');
