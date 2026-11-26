@@ -131,13 +131,19 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const laneCount = Math.max(0, ...allWorker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
     const byLane = Map.groupBy(worker, r => r.lane ?? 0);
     const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) && seconds > 0 ? (byLane.get(lane).length - 1) / seconds : null);
-    const fps = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
-    if (fps === null) reasons.push('nothing measured');
+    const displayedFrames = rate(frames), pageFps = rate(page.map(r => r.at)), presents = !lanes.length || lanes.includes(null) ? null : Math.min(...lanes);
+    const opened = page.filter(r => r.at > frames[0]);
+    const pictured = new Set(opened.filter(r => (r.pictures ?? 0) > 0).map(r => frames.findIndex(at => at >= r.at)));
+    const pictureFrames = seconds > 0 ? pictured.size / seconds : null;
+    const expiredShare = page.length ? page.filter(r => r.expired?.length).length / page.length : null;
+    const expiredByWidget = {};
+    for (const r of page) for (const widget of r.expired ?? []) expiredByWidget[widget] = (expiredByWidget[widget] ?? 0) + 1 / page.length;
+    if (displayedFrames === null) reasons.push('nothing measured');
     const pace = playbackPace(first, last, 1440);
     if (!pace.pass) reasons.push('clock did not advance at 1,440 h/s');
-    if (fps === null || fps < 60) reasons.push('presented FPS ' + fps);
+    if (pictureFrames === null || pictureFrames < 60) reasons.push('frames with a new picture/s ' + pictureFrames);
     if (pageFps === null) reasons.push('missing page frame measurements');
-    const outOfBounds = lanes.filter(lane => lane === null || Math.round(lane) < 60 || Math.round(lane) > Math.max(60, Math.round(fps ?? 0)));
+    const outOfBounds = lanes.filter(lane => lane === null || Math.round(lane) < 60 || Math.round(lane) > Math.max(60, Math.round(displayedFrames ?? 0)));
     if (!lanes.length || outOfBounds.length) reasons.push('worker presents/s ' + lanes.map(lane => lane === null ? 'none' : lane.toFixed(1)).join(', '));
     if (w.pressureMerges !== 0) reasons.push('pressure merges ' + w.pressureMerges);
     const pageCount = page.reduce((sum, r) => sum + r.commits, 0);
@@ -188,7 +194,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const changedWidgetMs = emptyMs === null ? null : mean(changing.map(r => (r.workMs - emptyMs) / r.changed));
     const structureBySource = {};
     for (const r of structural) for (const source of new Set(r.changes.filter(verified).map(c => c.source))) structureBySource[source] = (structureBySource[source] ?? 0) + 1;
-    metrics.push({ fps, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
+    metrics.push({ pictureFrames, picturesPerSecond: seconds > 0 ? opened.reduce((sum, r) => sum + (r.pictures ?? 0), 0) / seconds : null, expiredShare, expiredByWidget, displayedFrames, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
       inputCommitsPerSecond: input.length / seconds, unexplainedCommitsPerSecond: unexplained / seconds, structureBySource, frames: frames.length,
       compositorGapP95: p95(gaps(frames)), workerGapP95: p95(gaps(worker.map(r => r.at))), emptyMs, emptyFrames: idle.length,
       changedWidgetMs, changingFrames: changing.length, pressureMerges: w.pressureMerges, playLost: playLost.count, inputLost: inputLost.count, idleLost: idleLost.count });

@@ -598,8 +598,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 };
                 let head = playhead.head(Instant::now());
                 if let Some((push, route, seek)) = told { push.head(route, seek, head); }
-                let advance_ok = consumer.try_advance(head);
-                let take_ok = consumer.try_take(head, &mut taken).is_some();
+                let release = if playing { head.saturating_add(playhead.step_hours().saturating_mul(crate::lead::RELEASE_FRAMES)) } else { head };
+                let advance_ok = consumer.try_advance(release);
+                let take_ok = consumer.try_take(release, &mut taken).is_some();
                 taken.clear();
                 let contended = !advance_ok || !take_ok;
                 let timeout = if contended {

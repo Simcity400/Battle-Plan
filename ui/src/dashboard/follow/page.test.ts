@@ -95,12 +95,15 @@ test('clock: a skipped prediction installs once the clock has crossed it, while 
   assert.deepEqual([view().id, view().through], [3, 140], 'it waited for its window and installs at 140 without a resend');
 });
 
-test('review 3: an entry whose window ended before the actual target is refused even if newer, and the lane hears it', () => {
+test('while playing, an entry whose window ended before the actual target still replaces an older shown picture, and an older one is refused', () => {
   const { p, offer, view, frames } = page();
   offer(entry({ id: 1, h: 96, c: 119, lo: 96, hi: 119 })); p.publish(100, { playing: true, step: 16 });
   offer(entry({ id: 2, h: 120, c: 143, lo: 120, hi: 143 })); p.publish(150);
-  assert.deepEqual([view().id, view().h], [1, 96]);
-  assert.deepEqual(frames().at(-1)!.refused.map(r => [r.id, r.reason]), [[2, 'superseded']]);
+  assert.deepEqual([view().id, view().h], [2, 120]);
+  offer(entry({ id: 3, h: 100, c: 110, lo: 100, hi: 110 })); p.publish(151);
+  assert.deepEqual([view().id, frames().at(-1)!.refused.map(r => [r.id, r.reason])], [2, [[3, 'superseded']]]);
+  offer(entry({ id: 4, h: 130, c: 143, lo: 130, hi: 143 })); p.publish(152);
+  assert.deepEqual([view().id, view().h], [4, 130], 'the same window end with a later start is the newer picture');
 });
 
 test('review 3: a paused step to 20 never installs a delayed entry whose window ended at 14; the visible picture stays, dimmed', () => {

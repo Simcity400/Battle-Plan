@@ -177,6 +177,8 @@ export class Pipeline {
     const rawStep = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
     const step = next.playing ? Math.min(rawStep, nominal) : rawStep;
     this.page.publish(next.hour, { playing: next.playing, seek: next.seekSequence, step, speed: next.hoursPerSecond });
+    const pictures = this.page.takePictures();
+    if (perfLog && next.playing) perfLog.pictures(pictures, this.expiredNames());
     this.dated = true;
     this.flush();
     if (next.playing) noteFrame(performance.now());
@@ -340,7 +342,7 @@ export class Pipeline {
   private commitSoon() {
     if (this.closed || this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
+    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); const pictures = this.page.takePictures(); if (perfLog && this.page.playing) perfLog.pictures(pictures, this.expiredNames()); for (const [id, stamp] of this.page.takeFailures()) this.failedLocally(id, stamp, asFailure(new Error('drawing failed'))); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined, kind: string | undefined): { lane: number; cost: number } {
@@ -374,6 +376,14 @@ export class Pipeline {
   }
 
   private readonly shared = new Map<string, { id: number; holders: number; widget: string }>();
+
+  private expiredNames(): string[] {
+    const expired = this.page.expired();
+    if (!expired.length) return [];
+    const ids = new Set(expired), names = new Set<string>();
+    for (const held of this.shared.values()) if (ids.has(held.id)) names.add(held.widget);
+    return [...names];
+  }
 
   acquire(key: string, options: MountOptions): number {
     let held = this.shared.get(key);
