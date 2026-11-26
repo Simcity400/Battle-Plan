@@ -1,5 +1,6 @@
 import type { BoundHour, BoundWindow } from '../../dashboard/regionTime';
 import type { CountrySpan, FacetFilter, LogCell, LogFacetCountAsk, MissingSpan } from '../../generated/dashboard';
+import { formatDateOnly } from '../valueFormat.ts';
 
 type BoundFacetFilter = Omit<FacetFilter, 'membership' | 'unobserved'> & {
   membership?: readonly (CountrySpan & BoundWindow)[];
@@ -324,7 +325,9 @@ export function buildRowSourceFromHead(
       const row = head.rows[ordinal];
       if (row) return { kind: 'data', ordinal, readAt: reqHour, row };
       const refusal = refusedAt(ordinal);
-      return refusal && 'refused' in refusal ? { kind: 'refused', ordinal, readAt: reqHour, reason: refusal.refused } : { kind: 'loading', ordinal, readAt: reqHour };
+      if (!refusal || !('refused' in refusal)) return { kind: 'loading', ordinal, readAt: reqHour };
+      const reason = refusal.hour === hour ? refusal.refused : `Not read at ${formatDateOnly(refusal.hour)}: ${refusal.refused}`;
+      return { kind: 'refused', ordinal, readAt: reqHour, reason };
     }),
   };
 }
