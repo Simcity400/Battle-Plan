@@ -73,11 +73,11 @@ impl LazyTextures {
         self.version.load(Ordering::Acquire)
     }
 
-    fn bump(&self) {
+    pub(crate) fn bump(&self) {
         self.version.fetch_add(1, Ordering::AcqRel);
     }
 
-    fn insert(&self, texture: dds::Texture) -> usize {
+    pub(crate) fn insert(&self, texture: dds::Texture) -> usize {
         let mut registry = lock(&self.registry);
         let id = DYNAMIC_BASE + registry.next;
         registry.next += 1;
@@ -92,6 +92,10 @@ impl LazyTextures {
         drop(registry);
         self.bump();
         id
+    }
+
+    pub(crate) fn image(&self, id: usize) -> Option<Arc<dds::Texture>> {
+        lock(&self.registry).entries.get(&id).map(|entry| Arc::clone(&entry.texture))
     }
 
     fn modify(&self, id: usize, cell: [u32; 4], change: impl FnOnce(&mut dds::Texture)) {
@@ -157,7 +161,7 @@ impl LazyTextures {
             .sum()
     }
 
-    fn register(&self, loader: Weak<dyn PendingLoad>) {
+    pub(crate) fn register(&self, loader: Weak<dyn PendingLoad>) {
         lock(&self.loaders).push(loader);
     }
 

@@ -178,19 +178,16 @@ impl MapIcons {
         })
     }
 
-    pub fn load_gui(
+    pub fn defer_window_art(
         combat: &mut combat::Assets,
         counters: &mut CounterAssets,
-        images: &mut Vec<dds::Texture>,
+        textures: &Arc<LazyTextures>,
         layers: &ResolvedLayers,
         localisation: &content_reader_localisation::localisation::Localisation,
-    ) -> io::Result<Vec<String>> {
-        let (extra, mut warnings) = combat.localisation_assets(localisation);
-        warnings.extend(counters.load_gui(layers, localisation, extra.clone(), images)?);
-        warnings.extend(combat.load_gui(layers, localisation, &extra, images)?);
-        if images.len() >= DYNAMIC_BASE {
-            return Err(invalid("more static icon pages than texture ids"));
-        }
-        Ok(warnings)
+    ) -> Vec<String> {
+        let (extra, warnings) = combat.localisation_assets(localisation);
+        combat.defer_window_art(layers, localisation, &extra, textures);
+        counters.defer_window_art(layers, localisation, extra, textures);
+        warnings
     }
 }

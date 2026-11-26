@@ -65,6 +65,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         ("interface/fixture.gfx", br#"spriteTypes = {
             spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
             spriteType = { name = "GFX_fixture_portrait" textureFile = "gfx/leaders/fixture.tga" }
+            spriteType = { name = "GFX_fixture_late" textureFile = "gfx/late.tga" }
             spriteType = { name = "GFX_ESCAPE" textureFile = "gfx/icon.tga" }
             spriteType = { name = "GFX_FIXTURE_TEXTURE" textureFile = "gfx/missing.tga" }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_bomber" textureFile = "gfx/icon.tga" noOfFrames = 2 }
@@ -75,8 +76,9 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
             rivers = "x" heightmap = "x" tree_definition = "x""#.to_vec()),
         ("common/terrain/fixture.txt", b"categories = { fixture = {} }".to_vec()),
         ("common/combat_tactics.txt", Vec::new()),
-        ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_icon_name:0 \"fixture_substituted\"\n SHORTCUT:0 \"Shortcut: $KEY$\"\n".as_bytes().to_vec()),
+        ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_late_key:0 \"£fixture_late\"\n fixture_icon_name:0 \"fixture_substituted\"\n SHORTCUT:0 \"Shortcut: $KEY$\"\n".as_bytes().to_vec()),
         ("gfx/icon.tga", tga(4, 4)),
+        ("gfx/late.tga", tga(3, 7)),
         ("gfx/leaders/fixture.tga", tga(8, 12)),
         ("gfx/fonts/fixture.tga", tga(2, 2)),
         ("gfx/fonts/fixture.fnt", b"info face=\"fixture\" size=4\ncommon lineHeight=4 base=3 scaleW=2 scaleH=2 pages=1\npage id=0 file=\"fixture.tga\"\nchars count=1\nchar id=65 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0 chnl=15\n".to_vec()),
@@ -142,24 +144,15 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
     }
     let localisation = content_reader_localisation::localisation::read(&shared, "english").unwrap();
     let (extra, _) = combat.localisation_assets(&localisation);
-    let warnings = combat
-        .load_gui(&shared, &localisation, &extra, &mut images)
-        .unwrap();
-    assert_eq!(
-        warnings
-            .iter()
-            .filter(|warning| warning.contains("GFX_FIXTURE_MISSING"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        warnings
-            .iter()
-            .filter(|warning| warning.contains("gfx/missing.tga"))
-            .count(),
-        1,
-        "{warnings:?}"
-    );
+    combat.defer_window_art(&shared, &localisation, &extra, &lazy);
+    assert!(!combat.gui.loading_window_art());
+    assert!(combat.gui.sheet(b"GFX_fixture_late").is_none());
+    assert!(combat.gui.loading_window_art());
+    assert!(combat.gui.sprite(b"GFX_FIXTURE_TEXTURE").is_none());
+    assert!(lazy.settle());
+    assert!(!combat.gui.loading_window_art());
+    assert_eq!(combat.gui.sheet(b"GFX_fixture_late").unwrap().size, [3, 7]);
+    assert!(combat.gui.sprite(b"GFX_FIXTURE_TEXTURE").unwrap().missing.is_some());
     let map_assets = viewer_counters::counters::gui_assets(
         &windows,
         &interface.registry,

@@ -5793,6 +5793,9 @@ impl Viewer {
                         if !pending.is_empty() {
                             viewer_runtime::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
                         }
+                        if !self.saves_a_frame() && document.icons.counters.gui.loading_window_art() {
+                            break;
+                        }
                         document.icons.lazy.settle();
                         if !prepared.is_stale(&held) && !document.icons.lazy.has_pending() {
                             break;
@@ -6071,6 +6074,7 @@ impl Viewer {
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
+            let drawn = drawn.filter(|_| !document.icons.combat.gui.loading_window_art());
             self.combat_painted = drawn.as_ref().map(combat::Drawn::footprint).unwrap_or_default();
             if let Some(drawn) = &drawn {
                 self.interface_sounds.extend(
@@ -6887,7 +6891,7 @@ impl Viewer {
                 }
             };
             let waiting = waiting
-                .or_else(|| document.icons.lazy.has_pending().then(|| "flags and portraits it drew were still decoding".to_owned()))
+                .or_else(|| document.icons.lazy.has_pending().then(|| "its window art, flags or portraits were still decoding".to_owned()))
                 .or_else(|| {
                     (!combat).then(|| match &self.combat_rows.pending {
                         Some(selector) => format!("the combat it names ({selector:?}) was not found in its rows yet"),
@@ -6958,6 +6962,13 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
+        let loading_art = if document.icons.combat.gui.loading_window_art() {
+            Some("Loading combat window art?")
+        } else if document.icons.counters.gui.loading_window_art() {
+            Some("Loading map counter art?")
+        } else {
+            None
+        };
         let software = is_software(&state.adapter);
         let diagnostics = self.diagnostics && self.embedded.is_some() && !self.dashboard_map;
         let partial = document.playback.replay().is_partial()
@@ -6965,13 +6976,14 @@ impl Viewer {
             && !self.dashboard_map;
         let scoped = replay_data::scope::omits(document.capture_mode()).is_some();
         let vision_refused = self.vision_refusal_line();
-        if software || diagnostics || partial || scoped || vision_refused.is_some() {
+        if loading_art.is_some() || software || diagnostics || partial || scoped || vision_refused.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
                 "diagnostics",
                 self.interface_points,
                 |ui, height| {
+                    if let Some(loading) = loading_art { ui.label(loading); }
                     if let Some(refused) = &vision_refused {
                         ui.colored_label(egui::Color32::YELLOW, refused);
                     }

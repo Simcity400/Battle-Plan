@@ -1109,6 +1109,10 @@ enum Want {
 }
 
 fn read(request: &Request) -> io::Result<Fresh> {
+    request.content.assets.gui.with_ready_window_art(|| read_window(request))
+}
+
+fn read_window(request: &Request) -> io::Result<Fresh> {
     let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details, navy_sources_of, rule_relations, strict } = request;
     let frame = frame.as_deref().map_err(|why| invalid(why.clone()))?;
     let vision = cached_vision(frame, perspective, FogContent::loaded(&document.fog), &document.vision_memo)?;
