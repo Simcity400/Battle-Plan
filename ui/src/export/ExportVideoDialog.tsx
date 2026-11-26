@@ -267,7 +267,14 @@ export default function ExportVideoDialog({
   }, [target]);
 
   useEffect(() => {
-    if (!snapshot || !target || dimensionError) return;
+    previewGenRef.current += 1;
+    if (!snapshot || !target || dimensionError) {
+      if (dimensionError) {
+        setPreviewUrl(null);
+        setPreviewBusy(false);
+      }
+      return;
+    }
     const timer = window.setTimeout(() => {
       void renderPreview();
     }, 220);
@@ -470,7 +477,18 @@ export default function ExportVideoDialog({
                           onChange={event => {
                             const val = Number(event.currentTarget.value);
                             if (Number.isFinite(val) && val > 0) {
-                              setSpeed(computeSpeedFromDuration(coverage, val, skipGaps, cutCardSeconds));
+                              setSpeed(
+                                computeSpeedFromDuration(
+                                  coverage,
+                                  val,
+                                  skipGaps,
+                                  cutCardSeconds,
+                                  fps,
+                                  snapshot?.stretches,
+                                  fromHour,
+                                  toHour,
+                                ),
+                              );
                             }
                           }}
                         />

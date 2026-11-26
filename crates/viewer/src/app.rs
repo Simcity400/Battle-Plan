@@ -818,6 +818,11 @@ pub struct Viewer {
     capture_note: Option<String>,
     private_playhead: bool,
     video_crop: Option<(Option<[u32; 2]>, crate::video_export::CropRect)>,
+    video_preload: Option<(
+        Arc<replay::campaign::Replay>,
+        String,
+        Option<dashboard_core::protocol::ResolvedMapSettings>,
+    )>,
     failure: Arc<Mutex<Option<String>>>,
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
     profile_frame: u32,
@@ -1364,6 +1369,7 @@ impl Viewer {
             capture_note: None,
             private_playhead: false,
             video_crop: None,
+            video_preload: None,
             failure,
             gpu,
             profile_frame: 0,
@@ -1618,11 +1624,16 @@ impl Viewer {
             }
             viewer_foundation::perspective::Country::Recorded => (None, None),
         };
+        let mut graphics = self.graphics;
+        graphics.texture_quality = document.texture_quality;
+        if let Some(scene) = &self.scene {
+            graphics.samples = scene.samples();
+        }
         let map_settings = Some(dashboard_core::protocol::ResolvedMapSettings {
-            graphics: self.graphics,
+            graphics,
             audio: self.volumes,
             counters: self.counter_filter.clone(),
-            visual_mods: self.options.visual_mods.clone(),
+            visual_mods: document.visual_mods.clone(),
         });
         let max_texture_dimension = self
             .gpu
@@ -1674,6 +1685,18 @@ impl Viewer {
                 .nato_counters
                 .unwrap_or_else(|| self.options.counter_settings(&document.game_options).nato);
         }
+    }
+
+    pub(crate) fn configure_video_source(
+        &mut self,
+        replay: Arc<replay::campaign::Replay>,
+        revision: String,
+        settings: Option<dashboard_core::protocol::ResolvedMapSettings>,
+    ) {
+        if let Some(resolved) = &settings {
+            self.set_embedded_graphics(resolved);
+        }
+        self.video_preload = Some((replay, revision, settings));
     }
 
     fn free_scene_target(&mut self, frame: &eframe::Frame) {
@@ -2875,6 +2898,7 @@ impl Viewer {
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         let startup_content = self.startup_content.take();
+        let video_preload = self.video_preload.take();
         job_priority::spawn(move || {
             viewer_runtime::worker_priority::background_priority();
             let _stage = viewer_runtime::load_record::stage("load");
@@ -2916,6 +2940,11 @@ impl Viewer {
                         service
                             .as_ref()
                             .map(|service| service.map_settings(&source.replay()))
+                    })
+                    .or_else(|| {
+                        video_preload
+                            .as_ref()
+                            .and_then(|(_, _, settings)| settings.clone())
                     })
                     .unwrap_or_default();
                 let recording = source.as_ref().map(|source| {
@@ -2959,15 +2988,34 @@ impl Viewer {
                                 crate::document::LoadTarget::Scene,
                             ),
                         },
-                        None => Document::load(
-                            &path,
-                            &resolve,
-                            options.allow_unverified,
-                            &initial,
-                            (!options.visual_mods.is_empty())
-                                .then_some(options.visual_mods.as_slice()),
-                            0,
-                        ),
+                        None => match &video_preload {
+                            Some((pre_replay, pre_rev, pre_settings)) => {
+                                let mods = match pre_settings {
+                                    Some(resolved) => resolved.visual_mods.as_deref(),
+                                    None => (!options.visual_mods.is_empty())
+                                        .then_some(options.visual_mods.as_slice()),
+                                };
+                                Document::load_replay(
+                                    &path,
+                                    Arc::clone(pre_replay),
+                                    pre_rev.clone(),
+                                    &resolve,
+                                    options.allow_unverified,
+                                    &initial,
+                                    mods,
+                                    preferences.graphics.texture_quality,
+                                )
+                            }
+                            None => Document::load(
+                                &path,
+                                &resolve,
+                                options.allow_unverified,
+                                &initial,
+                                (!options.visual_mods.is_empty())
+                                    .then_some(options.visual_mods.as_slice()),
+                                preferences.graphics.texture_quality,
+                            ),
+                        },
                     }
                     .map_err(|error| error.to_string())?;
                     if let Some(source) = &source {
@@ -3205,7 +3253,7 @@ impl Viewer {
                     self.last_step = now;
                 }
                 self.take_game_options(&document.game_options);
-                if self.embedded.is_none() {
+                if self.embedded.is_none() && !self.host_graphics {
                     self.graphics.full_resolution = document.game_full_resolution;
                     self.volumes = document.game_audio;
                 }

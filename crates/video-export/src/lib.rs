@@ -154,6 +154,13 @@ pub trait VideoSink: Send {
     fn audio_frames_written(&self) -> u64;
     fn backend_name(&self) -> &str;
     fn finish(self: Box<Self>) -> io::Result<Finished>;
+    fn finish_cancellable(self: Box<Self>, cancel: &std::sync::atomic::AtomicBool) -> io::Result<Finished> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            self.abort();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        self.finish()
+    }
     fn abort(self: Box<Self>);
 }
 

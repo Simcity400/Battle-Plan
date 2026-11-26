@@ -38,6 +38,9 @@ impl OfflineMixer {
         if timed.elapsed <= 0.0 {
             timed.elapsed = stereo_frames as f32 / crate::engine::RATE as f32;
         }
+        if timed.reset {
+            self.pending.clear();
+        }
         self.engine.frame(&timed);
         self.satisfy_loads();
         let needed_samples = stereo_frames * 2;
@@ -129,27 +132,21 @@ mod tests {
 
     #[test]
     fn offline_mixer_advances_effect_elapsed_time_for_fading_sounds() {
-        use crate::{Group, Mix, Sound, engine::Samples};
-        use content_reader_sound::sound::{Effect, Overflow};
+        use crate::{Emitter, Group, Mix, engine::Samples};
+        use content_reader_sound::sound::{Choice, Effect, Sound};
         let mut catalog = Catalog::default();
-        catalog.effects.push(Effect {
-            name: "test_fade".into(),
-            volume: 1.0,
-            fade_in: 0.25,
-            fade_out: 0.0,
-            delay: 0.0,
-            looping: true,
-            max_audible: 4,
-            overflow: Overflow::Reject,
-            category: None,
-            falloff: None,
-            sounds: vec![0],
-        });
-        catalog.sounds.push(content_reader_sound::sound::Sound {
+        let mut effect = Effect::new("test_fade".into(), "test.asset".into());
+        effect.fade_in = 0.25;
+        effect.looping = true;
+        effect.max_audible = 4;
+        effect.choices.push(Choice { sound: 0, weight: 1 });
+        catalog.effects.push(effect);
+        catalog.sounds.push(Sound {
             name: "tone".into(),
-            file: "tone.wav".into(),
+            path: "sound/tone.wav".into(),
             volume: 1.0,
-            weight: 1.0,
+            priority: 1.0,
+            source: "test.asset".into(),
         });
         let source = Arc::new(Source {
             content: Arc::new(Content::new(catalog, None)),
@@ -162,13 +159,18 @@ mod tests {
                 data: vec![12_000i16; 8_192],
             })),
         );
-        let frame = Frame {
-            mix: Mix::default(),
-            interface: vec![Sound {
-                effect: "test_fade".into(),
+        let mut frame = Frame {
+            mix: Mix {
+                dev_master: 1.0,
+                ..Mix::default()
+            },
+            emitters: vec![Emitter {
+                key: 1,
+                effect: Arc::from("test_fade"),
+                position: [0.0; 3],
+                age: 0.0,
                 group: Group::Interface,
-                position: None,
-                volume: 1.0,
+                restart: false,
             }],
             ..Frame::default()
         };
@@ -176,6 +178,7 @@ mod tests {
         let mut later = Vec::new();
         mixer.step_frame(&frame, 735, &mut first);
         for _ in 0..20 {
+            frame.emitters[0].age += 735.0 / crate::engine::RATE as f32;
             mixer.step_frame(&frame, 735, &mut later);
         }
         let peak_first = first.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
@@ -183,6 +186,21 @@ mod tests {
         assert!(
             peak_later > peak_first,
             "expected fading-in sound to grow over offline frames (first={peak_first}, later={peak_later})"
+        );
+
+        let reset_frame = Frame {
+            mix: Mix {
+                dev_master: 1.0,
+                ..Mix::default()
+            },
+            reset: true,
+            ..Frame::default()
+        };
+        let mut after_reset = Vec::new();
+        mixer.step_frame(&reset_frame, 735, &mut after_reset);
+        assert!(
+            after_reset.iter().all(|&s| s == 0),
+            "buffered pre-reset PCM must not bleed past a continuity reset"
         );
     }
 }

@@ -315,7 +315,6 @@ impl Receipt<'_> {
                     attempt = attempt.checked_add(1).ok_or_else(|| io::Error::other("could not reserve distinct file name"))?;
                 }
                 Err(error) => {
-                    let _ = fs::remove_file(staged);
                     return Err(error);
                 }
             }

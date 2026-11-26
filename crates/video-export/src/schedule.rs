@@ -109,10 +109,46 @@ impl FrameSchedule {
     }
 
     pub fn first_recorded(&self) -> Option<(i32, f64)> {
-        self.cursor().find_map(|frame| match frame.kind {
-            FrameKind::Recorded { hour, fraction, .. } => Some((hour, fraction)),
-            _ => None,
-        })
+        if self.stretches.is_empty() {
+            return None;
+        }
+        if self.skip_gaps {
+            return Some((self.stretches[0].first, 0.0));
+        }
+        let step_hours = self.hours_per_second / f64::from(self.fps.max(1));
+        let from = self.summary.from_hour;
+        let to = self.summary.to_hour;
+        let total_steps = steps_in_span(from, to, step_hours).ok()?;
+        for stretch in &self.stretches {
+            let start_delta = (f64::from(stretch.first) - f64::from(from)).max(0.0);
+            let mut k = if start_delta == 0.0 {
+                0u64
+            } else {
+                (start_delta / step_hours).floor() as u64
+            };
+            while k < total_steps {
+                let pos = (f64::from(from) + k as f64 * step_hours).min(f64::from(to));
+                let whole = pos.floor() as i32;
+                if whole > stretch.last {
+                    break;
+                }
+                if whole >= stretch.first {
+                    let fraction = (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON);
+                    return Some((whole, fraction));
+                }
+                k += 1;
+            }
+        }
+        let last_step_hour = if total_steps > 0 {
+            let last_pos = (f64::from(from) + (total_steps - 1) as f64 * step_hours).min(f64::from(to));
+            last_pos.floor() as i32
+        } else {
+            from
+        };
+        if last_step_hour < to && stretch_at(&self.stretches, to).is_some() {
+            return Some((to, 0.0));
+        }
+        None
     }
 
     pub fn cursor(&self) -> FrameCursor<'_> {
@@ -160,6 +196,7 @@ enum CursorPhase {
         total_steps: u64,
         last_emitted_hour: Option<i32>,
         prev_recorded_hour: Option<i32>,
+        disclosed_gaps: Vec<i32>,
         endpoint_done: bool,
     },
     Done,
@@ -230,6 +267,7 @@ fn initial_phase(schedule: &FrameSchedule, step_hours: f64) -> CursorPhase {
             total_steps,
             last_emitted_hour: None,
             prev_recorded_hour: None,
+            disclosed_gaps: Vec::new(),
             endpoint_done: false,
         }
     }
@@ -251,13 +289,15 @@ fn emit_linear_sample(
     whole: i32,
     fraction: f64,
     prev_recorded_hour: &mut Option<i32>,
+    disclosed_gaps: &mut Vec<i32>,
 ) -> FrameKind {
     if stretch_at(&schedule.stretches, whole).is_some() {
         let cut_banner = prev_recorded_hour
-            .and_then(|prev| traversed_gap_notice(&schedule.gaps, prev, whole));
+            .and_then(|prev| traversed_gap_notice(&schedule.gaps, prev, whole, disclosed_gaps));
         let traversed_join = prev_recorded_hour
             .is_none_or(|prev| has_discontinuity(&schedule.stretches, prev, whole));
         *prev_recorded_hour = Some(whole);
+        disclosed_gaps.clear();
         FrameKind::Recorded {
             hour: whole,
             fraction,
@@ -271,7 +311,9 @@ fn emit_linear_sample(
             schedule.summary.from_hour,
             schedule.summary.to_hour,
         );
-        *prev_recorded_hour = None;
+        if !disclosed_gaps.contains(&gap_first) {
+            disclosed_gaps.push(gap_first);
+        }
         FrameKind::GapCard {
             hour: whole,
             gap_first,
@@ -374,6 +416,7 @@ fn advance_cursor(
                 total_steps,
                 last_emitted_hour,
                 prev_recorded_hour,
+                disclosed_gaps,
                 endpoint_done,
             } => {
                 if *local_idx < *total_steps {
@@ -385,7 +428,7 @@ fn advance_cursor(
                     let whole = pos.floor() as i32;
                     let fraction = (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON);
                     *last_emitted_hour = Some(whole);
-                    let kind = emit_linear_sample(schedule, whole, fraction, prev_recorded_hour);
+                    let kind = emit_linear_sample(schedule, whole, fraction, prev_recorded_hour, disclosed_gaps);
                     return Some(make_frame(frame_index, schedule.fps, kind));
                 }
                 if !*endpoint_done
@@ -394,7 +437,7 @@ fn advance_cursor(
                     *endpoint_done = true;
                     let whole = schedule.summary.to_hour;
                     *last_emitted_hour = Some(whole);
-                    let kind = emit_linear_sample(schedule, whole, 0.0, prev_recorded_hour);
+                    let kind = emit_linear_sample(schedule, whole, 0.0, prev_recorded_hour, disclosed_gaps);
                     return Some(make_frame(frame_index, schedule.fps, kind));
                 }
                 *phase = CursorPhase::Done;
@@ -663,12 +706,17 @@ fn has_discontinuity(stretches: &[RecordedStretch], prev: i32, next: i32) -> boo
     a.first != b.first || a.last != b.last
 }
 
-fn traversed_gap_notice(gaps: &[UnheldGap], prev: i32, next: i32) -> Option<CutNotice> {
+fn traversed_gap_notice(
+    gaps: &[UnheldGap],
+    prev: i32,
+    next: i32,
+    disclosed_gaps: &[i32],
+) -> Option<CutNotice> {
     let mut first_gap: Option<&UnheldGap> = None;
     let mut last_gap: Option<&UnheldGap> = None;
     let mut omitted: u64 = 0;
     for gap in gaps {
-        if gap.first > prev && gap.last < next {
+        if gap.first > prev && gap.last < next && !disclosed_gaps.contains(&gap.first) {
             if first_gap.is_none() {
                 first_gap = Some(gap);
             }
@@ -880,6 +928,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(one.collect_frames().len(), 1);
+    }
+
+    #[test]
+    fn linear_sampling_discloses_crossed_gap_even_when_intermediate_sample_hits_later_gap() {
+        let stretches = vec![
+            RecordedStretch { first: 100, last: 101, join: StretchJoin::Start },
+            RecordedStretch { first: 104, last: 108, join: StretchJoin::Break },
+            RecordedStretch { first: 112, last: 120, join: StretchJoin::Break },
+        ];
+        let gaps = vec![
+            UnheldGap { first: 102, last: 103, reason: "first gap".into() },
+            UnheldGap { first: 109, last: 111, reason: "second gap".into() },
+        ];
+        let schedule = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 120,
+                fps: 1,
+                hours_per_second: 10.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let frames = schedule.collect_frames();
+        assert_eq!(frames.len(), 3);
+        assert!(matches!(frames[0].kind, FrameKind::Recorded { hour: 100, .. }));
+        assert!(matches!(frames[1].kind, FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 111, .. }));
+        assert!(matches!(
+            &frames[2].kind,
+            FrameKind::Recorded { hour: 120, reset_continuity: true, cut_banner: Some(cut), .. }
+            if cut.omitted_hours == 2 && cut.from_hour == 101 && cut.to_hour == 104
+        ));
+    }
+
+    #[test]
+    fn first_recorded_skips_huge_leading_gap_directly() {
+        let schedule = build_schedule(
+            &[RecordedStretch { first: 10_000, last: 10_010, join: StretchJoin::Start }],
+            &[UnheldGap { first: 0, last: 9_999, reason: "leading gap".into() }],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 10_010,
+                fps: 60,
+                hours_per_second: 0.1,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(schedule.first_recorded(), Some((10_000, 0.0)));
     }
 
     #[test]

@@ -389,9 +389,34 @@ impl VideoSink for FfmpegSink {
         &self.encoder_name
     }
 
-    fn finish(mut self: Box<Self>) -> io::Result<Finished> {
+    fn finish(self: Box<Self>) -> io::Result<Finished> {
+        let never = std::sync::atomic::AtomicBool::new(false);
+        self.finish_cancellable(&never)
+    }
+
+    fn finish_cancellable(
+        mut self: Box<Self>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<Finished> {
+        let cancelled = || cancel.load(std::sync::atomic::Ordering::Acquire);
+        if cancelled() {
+            self.abort();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         drop(self.stdin.take());
-        let status = self.child.wait()?;
+        let status = loop {
+            if cancelled() {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                self.cleanup_temps();
+                let _ = fs::remove_file(&self.staged_final);
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+            if let Some(status) = self.child.try_wait()? {
+                break status;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
         let stderr = self
             .stderr_thread
             .take()
@@ -446,7 +471,20 @@ impl VideoSink for FfmpegSink {
             #[cfg(windows)]
             let _remux_job = JobGuard::attach(&remux_child).ok();
             let remux_stderr = remux_child.stderr.take().map(drain_stderr);
-            let remux_status = remux_child.wait()?;
+            let remux_status = loop {
+                if cancelled() {
+                    let _ = remux_child.kill();
+                    let _ = remux_child.wait();
+                    drop(remux_stderr);
+                    self.cleanup_temps();
+                    let _ = fs::remove_file(&self.staged_final);
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                }
+                if let Some(status) = remux_child.try_wait()? {
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            };
             let remux_err = remux_stderr
                 .and_then(|handle| handle.join().ok())
                 .unwrap_or_default();

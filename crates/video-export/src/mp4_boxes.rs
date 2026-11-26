@@ -132,7 +132,10 @@ pub fn relocate_moov_before_mdat(path: &Path) -> io::Result<()> {
         return Err(error);
     }
     let _ = fs::remove_file(path);
-    fs::rename(&tmp_path, path)?;
+    if let Err(error) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error);
+    }
     Ok(())
 }
 

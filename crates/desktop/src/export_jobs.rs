@@ -249,6 +249,10 @@ pub fn start_map_video_export(
         return Err("Choose a destination file before exporting.".into());
     }
     let mut request = args.request;
+    viewer::video_export::ensure_distinct_export_path(
+        std::path::Path::new(&request.path),
+        &destination,
+    )?;
     let settings = export_settings::load();
     request.backend = settings.backend;
     if request.ffmpeg_path.is_none() {
@@ -267,6 +271,10 @@ pub fn start_map_video_export(
         if inner.active.is_some() {
             let _ = std::fs::remove_file(&staged_path);
             return Err("Another video export is already running.".into());
+        }
+        if inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
+            let _ = std::fs::remove_file(&staged_path);
+            return Err("Wait for the partial export save to finish before starting a new export.".into());
         }
         if let Some(old_partial) = inner.pending_partial.take() {
             let _ = std::fs::remove_file(&old_partial.staged_path);
@@ -567,7 +575,7 @@ pub fn save_partial_video_export(
 pub fn dismiss_video_export(app: AppHandle, jobs: State<'_, ExportJobs>) -> ExportJobSnapshot {
     let snapshot = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.active.is_some() {
+        if inner.active.is_some() || inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
             return inner.snapshot.clone();
         }
         if let Some(partial) = inner.pending_partial.take() {

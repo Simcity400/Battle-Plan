@@ -289,19 +289,13 @@ pub fn cropped_placement(camera: &Camera, source_viewport: [u32; 2], crop: CropR
         }
         Pose::Free(mut free) => {
             let half_fov = (free.lens.fov_y * 0.5).tan();
-            if let Some(dir) = ray_world_dir(camera, source_viewport, [cx, cy]) {
-                let horiz = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
-                free.yaw = dir[0].atan2(-dir[2]);
-                free.pitch = dir[1].atan2(horiz).clamp(-1.55, 1.55);
-            } else {
-                let aspect = source_viewport[0] as f32 / source_viewport[1] as f32;
-                let ndc_x = (crop.x + crop.width * 0.5) * 2.0 - 1.0;
-                let ndc_y = 1.0 - (crop.y + crop.height * 0.5) * 2.0;
-                let (sr, cr) = free.roll.sin_cos();
-                let rx = ndc_x * aspect * cr - ndc_y * sr;
-                let ry = ndc_x * aspect * sr + ndc_y * cr;
-                free.yaw += (rx * half_fov).atan();
-                free.pitch = (free.pitch + (ry * half_fov).atan()).clamp(-1.55, 1.55);
+            let dir = camera.ray([cx, cy], source_viewport);
+            let horiz = dir[0].hypot(dir[2]);
+            if dir.iter().all(|v| v.is_finite()) && horiz.hypot(dir[1]) > 1e-6 {
+                free.yaw = dir[0].atan2(dir[2]);
+                free.pitch = dir[1]
+                    .atan2(horiz)
+                    .clamp(-viewer_gpu::camera::PITCH_LIMIT, viewer_gpu::camera::PITCH_LIMIT);
             }
             free.lens.fov_y = (2.0 * (half_fov * crop.height).atan()).clamp(0.05, 3.0);
             Placement {
@@ -313,22 +307,21 @@ pub fn cropped_placement(camera: &Camera, source_viewport: [u32; 2], crop: CropR
     }
 }
 
-fn ray_world_dir(camera: &Camera, viewport: [u32; 2], pixel: [f32; 2]) -> Option<[f32; 3]> {
-    let inv = camera.inverse(viewport)?;
-    let ndc_x = (pixel[0] / viewport[0] as f32) * 2.0 - 1.0;
-    let ndc_y = 1.0 - (pixel[1] / viewport[1] as f32) * 2.0;
-    let unproject = |z: f32| -> Option<[f32; 3]> {
-        let mut out = [0.0f32; 4];
-        for col in 0..4 {
-            out[col] = ndc_x * inv[0][col] + ndc_y * inv[1][col] + z * inv[2][col] + inv[3][col];
-        }
-        (out[3].abs() > 1e-6).then_some([out[0] / out[3], out[1] / out[3], out[2] / out[3]])
-    };
-    let near = unproject(0.0)?;
-    let far = unproject(1.0)?;
-    let d = [far[0] - near[0], far[1] - near[1], far[2] - near[2]];
-    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (len > 1e-6).then_some([d[0] / len, d[1] / len, d[2] / len])
+pub fn ensure_distinct_export_path(input: &Path, output: &Path) -> Result<(), String> {
+    let canonical_in = std::fs::canonicalize(input)
+        .map_err(|e| format!("Couldn’t inspect input recording path: {e}"))?;
+    let same_target = std::fs::canonicalize(output)
+        .map(|canon_out| canon_out == canonical_in)
+        .unwrap_or_else(|_| {
+            std::path::absolute(output)
+                .ok()
+                .zip(std::path::absolute(input).ok())
+                .is_some_and(|(a, b)| a == b)
+        });
+    if same_target {
+        return Err("Export destination cannot overwrite the input recording.".to_owned());
+    }
+    Ok(())
 }
 
 fn ray_ground_hit(camera: &Camera, viewport: [u32; 2], pixel: [f32; 2]) -> Option<[f32; 2]> {
@@ -1011,7 +1004,7 @@ impl VideoSession {
                 let Some(sink) = sink.take() else {
                     return Ok(());
                 };
-                match sink.finish() {
+                match sink.finish_cancellable(&self.cancel) {
                     Ok(finished) => {
                         if self.cancel.load(Ordering::Acquire) {
                             let _ = std::fs::remove_file(&finished.path);
@@ -1030,6 +1023,14 @@ impl VideoSession {
                                 backend: finished.backend,
                                 warnings: std::mem::take(&mut self.warnings),
                             });
+                        Ok(())
+                    }
+                    Err(error)
+                        if error.kind() == io::ErrorKind::Interrupted
+                            || self.cancel.load(Ordering::Acquire) =>
+                    {
+                        *outcome.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(MapVideoOutcome::Cancelled);
                         Ok(())
                     }
                     Err(error) => {
@@ -1064,6 +1065,9 @@ impl VideoSession {
     }
 
     pub(crate) fn finish_render_failure(&mut self, error: String) {
+        let fps = self.fps();
+        let from_hour = self.cursor.schedule().summary.from_hour;
+        let last_recorded_hour = self.last_recorded_hour;
         match &mut self.mode {
             VideoMode::Encode {
                 sink,
@@ -1081,11 +1085,8 @@ impl VideoSession {
                                     Some(PartialVideo {
                                         staged_path: finished.path,
                                         frames: finished.frames,
-                                        through_hour: self
-                                            .last_recorded_hour
-                                            .unwrap_or(self.cursor.schedule().summary.from_hour),
-                                        duration_seconds: finished.frames as f64
-                                            / f64::from(self.fps()),
+                                        through_hour: last_recorded_hour.unwrap_or(from_hour),
+                                        duration_seconds: finished.frames as f64 / f64::from(fps),
                                         backend: finished.backend,
                                     })
                                 } else {
@@ -1108,7 +1109,7 @@ impl VideoSession {
                 *outcome.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(MapVideoOutcome::Failed {
                         error,
-                        campaign_hour: self.last_recorded_hour,
+                        campaign_hour: last_recorded_hour,
                         partial,
                     });
             }
@@ -1241,8 +1242,10 @@ fn run_map_video_on_thread(
         );
     }
 
-    let replay = replay::campaign::Replay::open_timelines(source_path)
-        .map_err(|e| format!("Couldn’t open recording for export: {e}"))?;
+    let replay = Arc::new(
+        replay::campaign::Replay::open_timelines(source_path)
+            .map_err(|e| format!("Couldn’t open recording for export: {e}"))?,
+    );
     let timeline = dashboard_query::timeline::resolve(&replay, request.branch)
         .map_err(|e| format!("Couldn’t read branch timeline: {e}"))?;
     let (stretches, unheld) = timeline_to_schedule_inputs(&timeline);
@@ -1259,7 +1262,6 @@ fn run_map_video_on_thread(
         },
     )
     .map_err(|e| e.to_string())?;
-    drop(replay);
 
     let after_schedule_revision = dashboard_core::protocol::replay_revision(source_path)
         .map_err(|e| format!("Couldn’t verify recording revision: {e}"))?;
@@ -1304,10 +1306,10 @@ fn run_map_video_on_thread(
     };
 
     let perspective = match (request.perspective.as_deref(), request.perspective_slot) {
-        (Some(tag), Some(slot)) if !tag.is_empty() => Choice {
+        (tag, Some(slot)) => Choice {
             country: viewer_foundation::perspective::Country::Slot {
                 slot,
-                tag: tag.to_owned(),
+                tag: tag.unwrap_or_default().to_owned(),
             },
             fog: request.fog,
         },
@@ -1332,7 +1334,8 @@ fn run_map_video_on_thread(
     let map_settings = request.map_settings.clone();
     let visual_mods = map_settings
         .as_ref()
-        .and_then(|s| s.visual_mods.clone());
+        .and_then(|s| s.visual_mods.clone())
+        .unwrap_or_default();
 
     let mut options = Options {
         replay: Some(PathBuf::from(&request.path)),
@@ -1386,9 +1389,7 @@ fn run_map_video_on_thread(
         }
         let _generation = content_reader_layers::content::Generation::enter();
         let mut viewer = Viewer::new(ctx, Some(state), config, options, None, reported, None);
-        if let Some(settings) = &map_settings {
-            viewer.set_embedded_graphics(settings);
-        }
+        viewer.configure_video_source(Arc::clone(&replay), initial_revision.clone(), map_settings.clone());
         viewer.configure_video_export(session, speed, source_viewport, crop);
         Ok(viewer)
     });
@@ -1540,18 +1541,8 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
 
     let replay_path = replay.ok_or_else(|| invalid("--export-video requires a replay path"))?;
     let out_path = out.ok_or_else(|| invalid("--export-video requires --out <video.mp4>"))?;
+    ensure_distinct_export_path(&replay_path, &out_path).map_err(invalid)?;
     let canonical_in = std::fs::canonicalize(&replay_path)?;
-    let same_target = std::fs::canonicalize(&out_path)
-        .map(|canon_out| canon_out == canonical_in)
-        .unwrap_or_else(|_| {
-            std::path::absolute(&out_path)
-                .ok()
-                .zip(std::path::absolute(&replay_path).ok())
-                .is_some_and(|(a, b)| a == b)
-        });
-    if same_target {
-        return Err(invalid("--out cannot overwrite the input recording"));
-    }
     let mut config = Config::load().unwrap_or_default();
     if let Some(dir) = game_dir {
         config.game_dir = dir;
@@ -1680,5 +1671,30 @@ mod tests {
         assert!((clamped.x - 0.5).abs() < 1e-5);
         assert!((clamped.y - 0.0).abs() < 1e-5);
         assert!(!clamped.is_full());
+    }
+
+    #[test]
+    fn centered_free_crop_preserves_yaw_pitch_and_roll() {
+        let mut free = viewer_gpu::camera::Free::new(0.42, -0.35, viewer_gpu::camera::Lens::MAP);
+        free.roll = 0.15;
+        let camera = Camera {
+            center: [100.0, 200.0],
+            height: 250.0,
+            pose: Pose::Free(free),
+            defines: viewer_gpu::camera::MapDefines::test(),
+            map: MapSize::TEST,
+        };
+        let cropped = cropped_placement(
+            &camera,
+            [1920, 1080],
+            CropRect { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+        );
+        let Pose::Free(after) = cropped.pose else {
+            panic!("expected Pose::Free");
+        };
+        assert!((after.yaw - free.yaw).abs() < 1e-4, "yaw drifted: {} vs {}", after.yaw, free.yaw);
+        assert!((after.pitch - free.pitch).abs() < 1e-4, "pitch drifted: {} vs {}", after.pitch, free.pitch);
+        assert!((after.roll - free.roll).abs() < 1e-5);
+        assert!(after.lens.fov_y < free.lens.fov_y);
     }
 }
