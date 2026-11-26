@@ -29,7 +29,7 @@ const NOT_OBSERVED: &str = "Equipment losses were not recorded at this hour";
 const NOT_PRESENT: &str = "This country is not present at this hour";
 const HOLDER_UNRESOLVED: &str = "This country's holder was not recorded at this hour";
 const DESTRUCTION_NOT_COUNTING: &str = "Equipment destruction was not yet counting at this hour";
-const NO_DESTRUCTION_READ: &str = "No destruction drain was recorded at this hour";
+const NO_DESTRUCTION_READ: &str = "Equipment destruction was not recorded at this hour";
 const DOMAIN_UNKNOWN: &str = "The recorded content does not resolve this destruction equipment's domain; its contribution in Combat Log mode is not known";
 const UNRESOLVED_TYPE_KEY: &str = "~unresolved";
 
@@ -116,7 +116,7 @@ fn unknown_detail(span: &UnknownSpan) -> &str {
         UnknownReason::Unread => "Equipment loss cause was not read at this hour",
         UnknownReason::EndedAfterLastRead => "A lend-lease exchange ended after its last read",
         UnknownReason::DestructionWithheld => "Equipment destruction table was withheld",
-        UnknownReason::DestructionGap => "Equipment destruction drain was not recorded",
+        UnknownReason::DestructionGap => "Equipment destruction was not recorded",
         UnknownReason::DestructionUnresolved => "Equipment destruction owner was not resolved",
     })
 }

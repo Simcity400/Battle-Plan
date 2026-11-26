@@ -805,3 +805,22 @@ fn withheld_destruction_and_unavailable_country_hours_never_claim_zero() {
     let at_106 = load(106);
     assert_eq!(at_106.breakdown.total.state, BreakdownState::NotRecorded, "withheld destruction hours never show stale or zero totals: {:?}", at_106.breakdown);
 }
+
+#[test]
+fn combat_log_and_destruction_coverage_messages_use_plain_language() {
+    let held = Held {
+        country: vec![
+            (100, 100, Some(CountryCells { land: Some(Row::NOT_LOGGED), ..Default::default() })),
+            (101, 101, None),
+        ],
+        ..Default::default()
+    };
+    let warnings = held.warnings_through(101, true);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for warning in &warnings {
+        assert!(!warning.contains("feature gate"), "internal term in warning: {warning}");
+        assert!(!warning.contains("blocks/frames"), "internal term in warning: {warning}");
+        assert!(!warning.contains("division census"), "internal term in warning: {warning}");
+        assert!(!warning.contains("writer inputs"), "internal term in warning: {warning}");
+    }
+}

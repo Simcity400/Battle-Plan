@@ -135,6 +135,7 @@ pub(crate) struct CachedRun {
 pub(crate) struct CachedLeaf {
     pub(crate) domain: Option<Domain>,
     pub(crate) unresolved: bool,
+    pub(crate) classified_from: Option<i32>,
     pub(crate) purpose: ProductionPurpose,
     pub(crate) runs: Vec<CachedRun>,
     pub(crate) unproven: Vec<CachedRun>,
@@ -270,6 +271,7 @@ fn build_branch(
             let (_, variant, purpose_raw) = leaf_key;
             let mut domain: Option<Domain> = None;
             let mut unresolved = true;
+            let mut classified_from: Option<i32> = None;
             for (span, span_named) in read.iter().zip(&named) {
                 if !span.rows.contains_key(&leaf_key) {
                     continue;
@@ -277,6 +279,11 @@ fn build_branch(
                 if let Some(found) = span_named.get(&variant) {
                     domain = found.domain;
                     unresolved = found.type_key.starts_with(UNRESOLVED_MARK);
+                    if found.domain.is_some()
+                        && let Some(at) = span.archetype_since.get(&variant).copied().into_iter().chain(found.typed_since).min()
+                    {
+                        classified_from = Some(classified_from.map_or(at, |held| held.min(at)));
+                    }
                 }
             }
             let purpose = purpose_raw.map_or(ProductionPurpose::Unknown, ProductionPurpose::of);
@@ -291,7 +298,7 @@ fn build_branch(
             } else {
                 Vec::new()
             };
-            CachedLeaf { domain, unresolved, purpose, runs, unproven }
+            CachedLeaf { domain, unresolved, classified_from, purpose, runs, unproven }
         })
         .collect();
 
@@ -476,7 +483,7 @@ pub(crate) fn compute_months(
     let relevant_leaves: Vec<&CachedLeaf> = branch
         .leaves
         .iter()
-        .filter(|leaf| leaf.domain == Some(domain) || leaf.unresolved)
+        .filter(|leaf| leaf.domain == Some(domain) || leaf.unresolved || leaf.classified_from.is_some())
         .collect();
 
     let recorded = equipment_recorded_through(&branch.equipment_total, last)
@@ -499,40 +506,40 @@ pub(crate) fn compute_months(
                 || (m_first > month_first_hour && !(m_first == branch.branch_first && m_first - month_first_hour < 24));
             let from = (m_first > branch.branch_first).then_some(m_first);
             let whole = amount_in(&branch.equipment_total, from, m_last, &branch.equipment_observations);
-            let mut reason: Option<MonthUnknown> = whole.err();
+            let mut slot_reasons = [whole.err(); 4];
             let mut sums = [0i128; 4];
             let mut purpose_unproven = false;
             let mut unresolved = false;
             for leaf in &relevant_leaves {
-                if !leaf.unproven.is_empty() && amount_in(&leaf.unproven, from, m_last, &branch.equipment_observations) != Ok(0) {
-                    purpose_unproven = true;
+                let is_unresolved = leaf.unresolved || leaf.classified_from.is_some_and(|at| m_last < at);
+                if !is_unresolved && leaf.domain != Some(domain) {
+                    continue;
                 }
                 let change = amount_in(&leaf.runs, from, m_last, &branch.equipment_observations);
-                if leaf.unresolved {
+                if is_unresolved {
                     if change != Ok(0) {
                         unresolved = true;
                     }
                     continue;
                 }
+                if !leaf.unproven.is_empty() && amount_in(&leaf.unproven, from, m_last, &branch.equipment_observations) != Ok(0) {
+                    purpose_unproven = true;
+                }
+                let slot = match leaf.purpose {
+                    ProductionPurpose::New => 0,
+                    ProductionPurpose::Refit => 1,
+                    ProductionPurpose::Converted => 2,
+                    ProductionPurpose::Unknown => 3,
+                };
                 match change {
-                    Ok(v) => {
-                        let slot = match leaf.purpose {
-                            ProductionPurpose::New => 0,
-                            ProductionPurpose::Refit => 1,
-                            ProductionPurpose::Converted => 2,
-                            ProductionPurpose::Unknown => 3,
-                        };
-                        sums[slot] += v;
-                    }
+                    Ok(v) => sums[slot] += v,
                     Err(why) => {
-                        if reason.is_none() {
-                            reason = Some(why);
-                        }
+                        slot_reasons[slot].get_or_insert(why);
                     }
                 }
             }
             let spent_of = |slot: usize| -> Result<i128, MonthUnknown> {
-                match reason {
+                match slot_reasons[slot] {
                     Some(why) => Err(why),
                     None => Ok(sums[slot]),
                 }
@@ -636,6 +643,7 @@ pub(crate) fn compute_months(
         consider(next_run_boundary(&branch.equipment_total, last));
         for leaf in &relevant_leaves {
             consider(next_run_boundary(&leaf.runs, last));
+            consider(leaf.classified_from);
             if !leaf.unproven.is_empty() {
                 consider(next_run_boundary(&leaf.unproven, last));
             }
@@ -726,6 +734,7 @@ mod tests {
                 CachedLeaf {
                     domain: Some(Domain::Naval),
                     unresolved: false,
+                    classified_from: None,
                     purpose: ProductionPurpose::New,
                     runs: vec![
                         run(jan1, feb1 - 1, Amount::Known(2_000_000)),
@@ -737,6 +746,7 @@ mod tests {
                 CachedLeaf {
                     domain: Some(Domain::Naval),
                     unresolved: false,
+                    classified_from: None,
                     purpose: ProductionPurpose::Unknown,
                     runs: vec![
                         run(jan1, feb1 - 1, Amount::Known(1_000_000)),
@@ -805,6 +815,7 @@ mod tests {
                 CachedLeaf {
                     domain: Some(Domain::Air),
                     unresolved: false,
+                    classified_from: None,
                     purpose: ProductionPurpose::New,
                     runs: vec![
                         run(jan1, feb1 - 1, Amount::Known(1_000_000)),
@@ -815,6 +826,7 @@ mod tests {
                 CachedLeaf {
                     domain: Some(Domain::Air),
                     unresolved: false,
+                    classified_from: None,
                     purpose: ProductionPurpose::Converted,
                     runs: vec![
                         run(jan1, feb1 - 1, Amount::Known(0)),
@@ -837,5 +849,61 @@ mod tests {
         assert_eq!(reply.months[1].parts[1].raw.as_deref(), Some("500000"));
         assert_eq!(reply.months[1].total_raw.as_deref(), Some("1500000"));
         assert_eq!(reply.months[1].total_denominator, 1);
+    }
+
+    #[test]
+    fn unknown_purpose_leaf_keeps_other_known_purposes_and_withholds_total() {
+        let jan1 = first_hour_of_month(1936 * 12);
+        let feb1 = first_hour_of_month(1936 * 12 + 1);
+        let feb28 = first_hour_of_month(1936 * 12 + 2) - 1;
+        let branch = BranchSpending {
+            branch_first: jan1,
+            branch_last: feb28,
+            tag: "GER".into(),
+            equipment_observations: vec![jan1],
+            equipment_total: vec![run(jan1, feb28, Amount::Known(2_000_000))],
+            leaves: vec![
+                CachedLeaf {
+                    domain: Some(Domain::Naval),
+                    unresolved: false,
+                    classified_from: None,
+                    purpose: ProductionPurpose::New,
+                    runs: vec![run(jan1, feb28, Amount::Known(1_500_000))],
+                    unproven: Vec::new(),
+                },
+                CachedLeaf {
+                    domain: Some(Domain::Naval),
+                    unresolved: false,
+                    classified_from: None,
+                    purpose: ProductionPurpose::Refit,
+                    runs: vec![run(jan1, feb1 - 1, Amount::Unknown(ProductionSpendingUnknown::LostOutput)), run(feb1, feb28, Amount::Known(0))],
+                    unproven: Vec::new(),
+                },
+                CachedLeaf {
+                    domain: Some(Domain::Air),
+                    unresolved: false,
+                    classified_from: Some(feb1),
+                    purpose: ProductionPurpose::New,
+                    runs: vec![run(jan1, feb28, Amount::Known(500_000))],
+                    unproven: Vec::new(),
+                },
+            ],
+            repairs_total: Some(vec![run(jan1, feb28, Amount::Known(0))]),
+            warnings: Vec::new(),
+        };
+        let reply = compute_months(&branch, "1", Domain::Naval, true, jan1, feb1 - 1);
+        let jan = &reply.months[0];
+        assert_eq!(jan.parts[0].raw.as_deref(), Some("1500000"), "known New ships stay visible when Refits are unknown");
+        assert!(jan.parts[1].raw.is_none(), "unknown Refits stay unrecorded");
+        assert_eq!(jan.parts[1].reason.as_deref(), Some("Final total missing."));
+        assert!(jan.total_raw.is_none(), "month total is withheld when Refits are unknown or an unclassified design spent IC");
+        assert_eq!(jan.total_reason.as_deref(), Some(TYPE_NOTE));
+        assert_eq!(reply.next_change_hour, Some(feb1), "wakes when the unclassified design is classified");
+
+        let only_refit_missing = BranchSpending { leaves: branch.leaves[..2].to_vec(), ..branch };
+        let jan_only = compute_months(&only_refit_missing, "1", Domain::Naval, true, jan1, feb1 - 1);
+        assert_eq!(jan_only.months[0].parts[0].raw.as_deref(), Some("1500000"));
+        assert_eq!(jan_only.months[0].total_raw, None);
+        assert_eq!(jan_only.months[0].total_reason.as_deref(), Some("Final total missing."));
     }
 }

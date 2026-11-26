@@ -78,8 +78,8 @@ pub struct CountryCells {
 pub type Runs<T> = Vec<(i32, i32, Option<T>)>;
 
 const NOT_AVAILABLE: &str = "The equipment-loss tables were not available at these hours";
-const DRAIN_TEXT_UNREAD: &str = "The drain's reason was not read at these hours";
-const DRAIN_STATE_UNRECORDED: &str = "The drain's coverage state was not recorded at these hours";
+const DRAIN_TEXT_UNREAD: &str = "Equipment-destruction coverage reason was not read at these hours";
+const DRAIN_STATE_UNRECORDED: &str = "Equipment-destruction coverage was not recorded at these hours";
 const COLUMNS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 #[derive(Clone, Debug, Default)]
@@ -333,10 +333,10 @@ impl Held {
         if combat_log {
             let land = self.land();
             if land.iter().any(|span| span.first_hour <= hour && span.coverage == Coverage::NotLogged) {
-                out.push("The game did not keep this country's land losses at some hours (the country or feature gate was closed, or its divisions had no orders groups); those losses are unknown, not zero.".to_owned());
+                out.push("The game did not keep this country's land losses at some hours (the game did not log land losses for it, or its divisions had no orders groups); those losses are unknown, not zero.".to_owned());
             }
             if land.iter().any(|span| span.first_hour <= hour && span.coverage == Coverage::Unknown) {
-                out.push("Some hours have recorded gaps, failed blocks/frames, unread division census, unresolved owners or missing writer inputs; land-loss coverage is unknown there.".to_owned());
+                out.push("Some hours have recording gaps or incomplete loss records; land-loss coverage is unknown there.".to_owned());
             }
         }
         let unresolved = self

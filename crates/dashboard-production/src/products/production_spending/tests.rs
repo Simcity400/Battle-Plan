@@ -495,3 +495,71 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
     let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);
     assert_eq!((quiet.breakdown.total.state, quiet.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "nothing spent inside the range is exactly zero");
 }
+
+#[test]
+fn per_ship_repairs_are_partial_when_repair_hours_are_unsplit_or_unrecorded() {
+    let design = Design {
+        type_key: "destroyer".into(),
+        name: Some("Destroyer".into()),
+        domain: Some(Domain::Naval),
+        names: vec![StockVariantName { first_hour: 0, name: Some("DD I".into()), known: true, design: None }],
+        typed_since: Some(0),
+    };
+    let make_index = |repairs: RepairRead| {
+        let mut rows = BTreeMap::new();
+        rows.insert((false, 3, Some(OutputPurpose::New.raw())), vec![(0, 50, row(Some(200_000)))]);
+        let span_read = SpanRead {
+            span: span(0, 50, false),
+            lines: vec![(0, 50, Context::Known)],
+            rocket: vec![(0, 50, Context::Known)],
+            country: vec![(0, 50, Some((Some(200_000), Some(200_000))))],
+            rows,
+            archetypes: BTreeMap::new(),
+            archetype_since: BTreeMap::from([(3, 0)]),
+            equipment_observations: BTreeSet::new(),
+            rocket_observations: BTreeSet::new(),
+            repairs: Some(repairs),
+        };
+        SpendingIndex {
+            from: 0,
+            to: 50,
+            country_label: "GER".into(),
+            unknown: Vec::new(),
+            unresolved: Vec::new(),
+            spans: vec![IndexedSpan::new(span_read, HashMap::from([(3, design.clone())]), Vec::new())],
+            rocket_source: None,
+            warnings: Vec::new(),
+        }
+    };
+
+    let unsplit = make_index(RepairRead::new(
+        vec![(0, 23, Some((Some(100_000), true))), (24, 47, Some((Some(100_000), false))), (48, 50, Some((Some(0), true)))],
+        BTreeMap::from([(Some(3), vec![(0, 23, Some(Some(100_000))), (24, 50, Some(Some(0)))])]),
+    ));
+    let unsplit_reply = unsplit.at(50, ProductionSpendingScope::DockyardPurposes, true);
+    assert_eq!(unsplit_reply.breakdown.total.state, BreakdownState::Known, "known total repair rate keeps dockyard total exact");
+    assert_eq!(unsplit_reply.breakdown.total.amount, Some(BreakdownAmount { numerator: "4".into(), denominator: "1".into() }));
+    let repairs = unsplit_reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repairs");
+    assert_eq!(repairs.state, BreakdownState::Known);
+    assert_eq!(repairs.share, Some(0.5), "exact repair total keeps its share of dockyard spending");
+    let destroyer = repairs.children.iter().find(|part| part.key == "destroyer").expect("destroyer type");
+    assert_eq!(destroyer.state, BreakdownState::Partial, "per-type repair is partial when some repair hours were unsplit");
+    assert_eq!(destroyer.parent_share, None, "unsplit repair hours withhold per-type share of repairs");
+    assert_eq!(destroyer.share, None);
+    let dd = &destroyer.children[0];
+    assert_eq!(dd.state, BreakdownState::Partial, "per-ship repair is partial when some repair hours were unsplit");
+    assert_eq!(dd.parent_share, None);
+    assert_eq!(dd.share, None);
+
+    let gapped = make_index(RepairRead::new(
+        vec![(0, 23, Some((Some(100_000), true))), (24, 47, None), (48, 50, Some((Some(0), true)))],
+        BTreeMap::from([(Some(3), vec![(0, 23, Some(Some(100_000))), (24, 50, Some(Some(0)))])]),
+    ));
+    let gapped_reply = gapped.at(50, ProductionSpendingScope::DockyardPurposes, true);
+    assert_eq!(gapped_reply.breakdown.total.state, BreakdownState::AtLeast);
+    let repairs = gapped_reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repairs");
+    assert_eq!(repairs.state, BreakdownState::AtLeast);
+    let destroyer = repairs.children.iter().find(|part| part.key == "destroyer").expect("destroyer type");
+    assert_eq!(destroyer.state, BreakdownState::Partial, "per-ship repair is partial when some repair hours were not recorded");
+    assert_eq!(destroyer.children[0].state, BreakdownState::Partial);
+}
