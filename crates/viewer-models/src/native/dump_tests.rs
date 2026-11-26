@@ -1655,8 +1655,8 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
 
 #[test]
 #[ignore = "requires a GPU"]
-fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_renderer() {
-    let (_serial, device, _queue) = tests::device();
+fn a_model_pass_draws_only_after_its_placed_mesh_is_resident() {
+    let (_serial, device, queue) = tests::device();
     let arena = shader_pipeline::gpu::Arena::new(&device);
     let pass = ModelPass::with_rigs_for_tests(Vec::new(), "unit models");
     assert!(pass.layers.is_none());
@@ -1710,6 +1710,24 @@ fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_re
     pass.prepare_casters(&arena, frame, inputs)
         .expect("nor are its casters");
     assert!(pass.native.borrow().is_none(), "no renderer, so no content stack, was asked for");
+
+    let (_directory, library, _) = fixture();
+    let mut pass = ModelPass::new(&library, "unit models");
+    pass.settle_builds(true);
+    let triangle = library.meshes.iter().position(|mesh| mesh.name == "defined_triangle").unwrap();
+    let field = ModelField::build(&library, vec![(triangle, ModelInstance { scale: 1., ..Default::default() })], 128.);
+    pass.set_field(&library, field);
+    let frame = ModelFrame { visible: None, seen: None, ..frame };
+    let error = pass.prepare_kept(&arena, frame, inputs, Queue::Regular, &mut object).err().unwrap();
+    assert!(error.to_string().contains("material is not resident"), "{error}");
+    assert_eq!(pass.drawn(), 0);
+    let error = pass.prepare_casters(&arena, frame, inputs).unwrap_err();
+    assert!(error.to_string().contains("material is not resident"), "{error}");
+
+    pass.make_field_resident(&device, &queue).unwrap();
+    let first = pass.prepare_kept(&arena, frame, inputs, Queue::Regular, &mut object).unwrap();
+    assert_eq!(first.draws.len(), 1, "{:?}", pass.refusal_lines(arena.frame()));
+    pass.recycle_kept(first);
 }
 
 #[test]
