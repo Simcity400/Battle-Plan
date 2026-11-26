@@ -23,6 +23,7 @@ impl Evaluator<'_, '_> {
         let mut base = member.weight;
         let mut product = ONE;
         for fields in &member.modifiers {
+            let fields = &fields.items();
             base = base.wrapping_add(self.mtth_operand("random_list", fields, "add", 0, scopes)?);
             product = product.wrapping_mul(self.mtth_operand(
                 "random_list",

@@ -130,7 +130,7 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
             if let Some(entry) = scripted.entries.get(key.as_bytes()) {
                 for text in &entry.texts {
                     sharing_roster |=
-                        reaches_sharing(&text.trigger, &templates, &mut BTreeSet::new());
+                        reaches_sharing(&text.trigger.items(), &templates, &mut BTreeSet::new());
                     use content_reader_scripted_localisation::scripted_localisation::TextValue;
                     match &text.value {
                         Some(TextValue::Key(key)) => {
