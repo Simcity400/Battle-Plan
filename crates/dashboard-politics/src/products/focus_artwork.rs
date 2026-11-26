@@ -5,7 +5,8 @@ use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
 use dashboard_text::triggers::inputs::{Resolution, TableRead};
-use replay_data::rows::TableId;
+use replay_data::rows::{TableId, tables};
+use replay_lanes::lanes::Cell;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
 use std::{
@@ -300,13 +301,14 @@ pub(crate) fn load(
     if let Some(block) = replay.block_at(branch, params.hour) {
         let through = block.last_hour.min(query.holders.interval(params.hour).1);
         let through = if needs_frame { through.min(params.hour.saturating_add(LOOKAHEAD)) } else { through };
+        let campaign = TableRead { fields: 1, ..TableRead::keys(TableId::Campaign) };
         let reads: Option<Vec<TableRead>> = if needs_frame {
-            inputs.footprint().map(<[TableRead]>::to_vec)
+            inputs.footprint().map(|reads| reads.iter().copied().chain([campaign]).collect())
         } else {
-            Some(vec![TableRead { fields: 1, ..TableRead::keys(TableId::Campaign) }])
+            Some(vec![campaign])
         };
         if let Some(reads) = reads {
-            reply.valid_through = reads_through(&replay, block.run, &reads, params.hour, through, cancelled)?;
+            reply.valid_through = reads_through(&replay, block.run, &reads, &decoded, params.hour, through, cancelled)?;
         }
     }
     Ok(reply)
@@ -314,9 +316,13 @@ pub(crate) fn load(
 
 const LOOKAHEAD: i32 = 24;
 
-fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
+fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], decoded: &DecodedFrame, hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
     let mut tables: BTreeMap<TableId, (u64, Option<Vec<(u128, u128)>>)> = BTreeMap::new();
+    let mut ending: BTreeSet<TableId> = BTreeSet::new();
     let mut merge = |read: &TableRead| {
+        if read.ends {
+            ending.insert(read.table);
+        }
         let held = tables.entry(read.table).or_insert((0, Some(Vec::new())));
         held.0 |= read.fields;
         match (read.rows, read.owner, held.1.as_mut()) {
@@ -355,21 +361,35 @@ fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, thro
             Some(ranges) => replay_lanes::lanes::Keys::Ranges(ranges),
             None => replay_lanes::lanes::Keys::All,
         };
-        if table == TableId::LexicalTokens {
-            let Ok(statuses) = replay_lanes::lanes::statuses(replay.recording(), run, table, hour, next.saturating_sub(1)) else {
-                return Ok(hour);
-            };
-            if let Some(edge) = statuses.iter().map(|status| status.first).filter(|&edge| edge > hour).min() {
-                next = next.min(edge);
-            }
-            continue;
-        }
+        let appended = if table == TableId::LexicalTokens {
+            let known = decoded.complete::<tables::LexicalTokens>().ok().and_then(|rows| rows.last()).map_or(0, |row| u128::from(row.token).saturating_add(1));
+            Some(known)
+        } else {
+            None
+        };
+        let keys = match appended {
+            Some(above) => replay_lanes::lanes::Keys::Range(above, u128::MAX),
+            None => keys,
+        };
         let Ok(history) = replay_lanes::lanes::history(replay.recording(), run, table, &columns, keys, hour, next.saturating_sub(1)) else {
             return Ok(hour);
         };
         let edges = history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).chain(history.statuses.iter().map(|status| status.first));
         if let Some(edge) = edges.filter(|&edge| edge > hour).min() {
             next = next.min(edge);
+        }
+        if ending.contains(&table)
+            && let Some(at) = columns.iter().position(|&column| table.field_name(column) == Some("end_hour"))
+        {
+            for (_, steps) in &history.keys {
+                let held = steps[..steps.partition_point(|step| step.hour <= hour)].last();
+                if let Some(Cell::Number(end)) = held.and_then(|step| step.cells.as_deref()).and_then(|cells| cells.get(at)).copied()
+                    && let Ok(end) = i32::try_from(end)
+                    && end > hour
+                {
+                    next = next.min(end);
+                }
+            }
         }
     }
     Ok(next.saturating_sub(1).max(hour))

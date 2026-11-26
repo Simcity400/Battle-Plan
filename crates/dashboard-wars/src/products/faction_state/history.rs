@@ -569,12 +569,14 @@ fn named(naming: &mut Naming<'_, '_>, runs: Vec<(i32, i32, u64, bool)>, how: Nam
         .collect()
 }
 
-fn coverage_edges(statuses: &[lanes::StatusRun], edges: &mut Vec<(i32, bool)>) {
-    let mut before: Option<bool> = None;
+fn coverage_edges(statuses: &[lanes::StatusRun], breaks: bool, before: &mut Option<bool>, edges: &mut Vec<(i32, bool)>) {
+    if breaks {
+        *before = None;
+    }
     for run in statuses {
         let whole = replay_recording::columnar_frames::complete(run.status);
-        edges.push((run.first, whole && before == Some(false)));
-        before = Some(whole);
+        edges.push((run.first, whole && *before == Some(false)));
+        *before = Some(whole);
     }
 }
 
@@ -590,8 +592,9 @@ fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: 
     let columns = [field(TableId::ProjectPrograms, "owner")?, field(TableId::ProjectPrograms, "active_project")?];
     let mut coverage: Vec<(i32, bool)> = Vec::new();
     let mut projects: BTreeMap<u128, BTreeSet<u64>> = BTreeMap::new();
-    for (_, _, _, _, held, statuses) in histories(query, TableId::ProjectPrograms, &columns, Keys::These(&ids), cancelled)? {
-        coverage_edges(&statuses, &mut coverage);
+    let mut before: Option<bool> = None;
+    for (_, breaks, _, _, held, statuses) in histories(query, TableId::ProjectPrograms, &columns, Keys::These(&ids), cancelled)? {
+        coverage_edges(&statuses, breaks, &mut before, &mut coverage);
         for (key, steps) in held {
             for (first, _, cells) in &steps {
                 out.entry(key as u64).or_default().push((*first, false));
@@ -605,8 +608,9 @@ fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: 
     if !projects.is_empty() {
         let keys: Vec<u128> = projects.keys().copied().collect();
         let columns = [field(TableId::Projects, "definition_id")?, field(TableId::Projects, "program_reference")?];
-        for (_, _, _, _, held, statuses) in histories(query, TableId::Projects, &columns, Keys::These(&keys), cancelled)? {
-            coverage_edges(&statuses, &mut coverage);
+        let mut before: Option<bool> = None;
+        for (_, breaks, _, _, held, statuses) in histories(query, TableId::Projects, &columns, Keys::These(&keys), cancelled)? {
+            coverage_edges(&statuses, breaks, &mut before, &mut coverage);
             for (key, steps) in held {
                 for programme in projects.get(&key).into_iter().flatten() {
                     out.entry(*programme).or_default().extend(steps.iter().map(|step| (step.0, false)));
@@ -933,6 +937,17 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
 mod witnessed_tests {
     use super::*;
     use replay_columnar::manifest::Status;
+
+    #[test]
+    fn coverage_recovered_after_a_continuous_load_restarts_the_programme_date() {
+        let run = |first: i32, last: i32, status: Status| lanes::StatusRun { first, last, status };
+        let (mut before, mut edges) = (None, Vec::new());
+        coverage_edges(&[run(100, 110, Status::NotRecorded)], true, &mut before, &mut edges);
+        coverage_edges(&[run(111, 120, Status::Complete)], false, &mut before, &mut edges);
+        assert_eq!(edges, [(100, false), (111, true)], "coverage carried across a continuous load: the recovery hour starts a segment");
+        coverage_edges(&[run(121, 130, Status::Complete)], true, &mut before, &mut edges);
+        assert_eq!(edges.last(), Some(&(121, false)), "a break starts afresh");
+    }
 
     #[test]
     fn a_programme_named_alike_across_a_boundary_keeps_one_run_and_its_first_date() {

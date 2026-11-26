@@ -102,6 +102,7 @@ fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i
     let start = fold.segments[at].first;
     let mut first: HashMap<u32, i32> = entries.iter().map(|&(ordinal, _)| (ordinal, start)).collect();
     let mut alive: Vec<(u32, u32, &str)> = entries.iter().map(|&(ordinal, token)| (ordinal, ordinal, token)).collect();
+    let mut after = Listed::of(&fold.segments[at]);
     for back in (0..at).rev() {
         if alive.is_empty() {
             break;
@@ -110,7 +111,7 @@ fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i
         if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first {
             break;
         }
-        let (before, after) = (Listed::of(earlier), Listed::of(later));
+        let before = Listed::of(earlier);
         alive = alive
             .into_iter()
             .filter_map(|(shown, ordinal, token)| match (before.unique(token), after.unique(token)) {
@@ -121,6 +122,7 @@ fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i
         for &(shown, _, _) in &alive {
             first.insert(shown, earlier.first);
         }
+        after = before;
     }
     first
 }
