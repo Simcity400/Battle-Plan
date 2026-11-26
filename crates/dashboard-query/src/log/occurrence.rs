@@ -521,13 +521,13 @@ impl<P> Index<P> {
         out
     }
 
-    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool) -> Option<i32> {
+    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool, state_filtered: bool) -> Option<i32> {
         let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
         let mut next = [
             after(&filtered.observed),
             state_changes.then(|| after(&filtered.changes)).flatten(),
             after(&filtered.unattributed),
-            state_changes.then(|| after(&filtered.unattributed_changes)).flatten(),
+            state_filtered.then(|| after(&filtered.unattributed_changes)).flatten(),
         ]
         .into_iter()
         .flatten()
@@ -688,7 +688,7 @@ impl<P> Index<P> {
             None => filtered.unattributed.partition_point(|&observed| observed <= hour) as u64,
             Some(_) => filtered.unattributed_rows.iter().map(|&at| &self.entries[at as usize]).filter(|entry| entry.observed <= hour && state_ok(entry.state_at(hour))).count() as u64,
         };
-        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes).into_iter().chain(live_flip).min();
+        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes, ask.states.is_some()).into_iter().chain(live_flip).min();
         if !state_changes {
             for shown in &rows {
                 let steps = &self.get(shown.at).states;
