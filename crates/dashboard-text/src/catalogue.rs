@@ -2193,8 +2193,9 @@ pub mod tests {
     }
 
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        if engine_executable::executable_tables::current().is_none() {
+            game::enter();
+        }
         layers_catalogue_without_tables(layers)
     }
 
