@@ -510,6 +510,10 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         band.min_values.iter().zip(&band.max_values).any(|(lo, hi)| lo < hi),
         "at least one downsampled bucket carries distinct min/max interval bounds",
     );
+    for (at, hour) in out.hours.iter().enumerate() {
+        let recorded = vals[(*hour / 10) as usize];
+        assert_eq!(band.values_raw[at], Some(recorded.to_string()), "a reduced bin's figure is the one recorded at its own hour {hour}, never a later sample's");
+    }
 }
 
 #[test]
