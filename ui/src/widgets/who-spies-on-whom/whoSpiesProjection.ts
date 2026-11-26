@@ -3,6 +3,7 @@ import type { BarsDataRow, BarsModel, BarsProjection } from '../../families/bars
 import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
+import { activeGroupMembers, nextDatedMembershipChange, type DatedMembershipOptions } from '../../families/groupFilter.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
@@ -11,9 +12,18 @@ import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { knownValue } from '../../families/value.ts';
 import type { Operative, OperativeMatrixForm, OperativeMatrixReply } from '../../generated/dashboard';
 
-const EMPTY_OPTIONS: Readonly<Record<string, never>> = {};
+export type OperativeMatrixOptions = DatedMembershipOptions;
+
 const NOT_RECORDED = 'Operatives were not recorded at this date.';
 const NONE_PLACED = 'No operatives in the field at this date.';
+
+function optionsOf(ctx: FamilyPlanContext): OperativeMatrixOptions {
+  return {
+    membership: ctx.countries.membership,
+    unobserved: ctx.countries.unobserved,
+    membershipMode: ctx.widget.countries.kind === 'group' ? ctx.widget.countries.membership : null,
+  };
+}
 
 export const operativesLabel = (count: number) => `${count} ${count === 1 ? 'operative' : 'operatives'}`;
 
@@ -59,14 +69,67 @@ function blank(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
   return { hour, rows: [], columns: [], cells: NO_CELLS, ...extra };
 }
 
-export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixModel {
+export function projectOperativeMatrix(readView: BoundedReadView, options?: OperativeMatrixOptions): HeatMatrixModel {
   const hour = readView.hour;
   const refused = readView.refused('main');
   if (refused) return blank(hour, { refused });
   const reply = readView.panel<OperativeMatrixReply>('main');
   if (!reply) return blank(hour, { empty: NOT_RECORDED, emptyKind: 'unavailable' });
   if (reply.missing) return blank(hour, { empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings });
+  const group = activeGroupMembers(options, hour);
+  if (group.kind === 'unavailable') return blank(hour, { empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings });
+  if (group.kind === 'empty') return blank(hour, { empty: group.reason, warnings: reply.warnings });
   if (!reply.rows.length) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
+
+  let activeRows = reply.rows;
+  let activeColumns = reply.columns;
+  let activeCells = reply.cells;
+  let mostRaw = reply.most;
+  let largestMaximum = reply.largestMaximum;
+  if (group.kind === 'filtered') {
+    const active = group.active;
+    if (!active.size) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
+    const keptRowIndices = new Set<number>();
+    const keptColIndices = new Set<number>();
+    const filteredCells: OperativeMatrixReply['cells'][number][] = [];
+    for (const cell of reply.cells) {
+      const owner = reply.countries[reply.rows[cell.row]!.country]!.tag;
+      const target = reply.countries[reply.columns[cell.column]!]!.tag;
+      if (!active.has(owner) && !active.has(target)) continue;
+      keptRowIndices.add(cell.row);
+      keptColIndices.add(cell.column);
+      filteredCells.push(cell);
+    }
+    const rowMap = new Map<number, number>();
+    const keptRows: OperativeMatrixReply['rows'][number][] = [];
+    largestMaximum = 0;
+    for (let r = 0; r < reply.rows.length; r++) {
+      const row = reply.rows[r]!;
+      const owner = reply.countries[row.country]!.tag;
+      if (!active.has(owner) && !keptRowIndices.has(r) && row.missing === null) continue;
+      rowMap.set(r, keptRows.length);
+      keptRows.push(row);
+      if (row.capacity.kind === 'known') largestMaximum = Math.max(largestMaximum, row.capacity.maximum);
+    }
+    if (!keptRows.length) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
+    const colMap = new Map<number, number>();
+    const keptColumns: number[] = [];
+    for (let c = 0; c < reply.columns.length; c++) {
+      const countryIndex = reply.columns[c]!;
+      const target = reply.countries[countryIndex]!.tag;
+      if (!active.has(target) && !keptColIndices.has(c)) continue;
+      colMap.set(c, keptColumns.length);
+      keptColumns.push(countryIndex);
+    }
+    if (!keptColumns.length) return blank(hour, { empty: NONE_PLACED, warnings: reply.warnings });
+    mostRaw = 0;
+    activeCells = filteredCells.map(cell => {
+      if (!cell.home) mostRaw = Math.max(mostRaw, cell.operatives.length);
+      return { ...cell, row: rowMap.get(cell.row)!, column: colMap.get(cell.column)! };
+    });
+    activeRows = keptRows;
+    activeColumns = keptColumns;
+  }
 
   const entity = (index: number): MatrixAxisEntity => {
     const country = reply.countries[index]!;
@@ -81,13 +144,13 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
       ...(shown.flag ? { flag: shown.flag } : {}),
     };
   };
-  const rows = reply.rows.map(row => entity(row.country));
-  const columns = reply.columns.map(entity);
+  const rows = activeRows.map(row => entity(row.country));
+  const columns = activeColumns.map(entity);
   const width = columns.length;
   const byPair = new Map<number, OperativeMatrixReply['cells'][number]>();
-  for (const cell of reply.cells) byPair.set(cell.row * width + cell.column, cell);
-  const most = Math.max(1, reply.most);
-  const hasMissing = reply.rows.some(row => row.missing !== null || row.capacity.kind === 'missing');
+  for (const cell of activeCells) byPair.set(cell.row * width + cell.column, cell);
+  const most = Math.max(1, mostRaw);
+  const hasMissing = activeRows.some(row => row.missing !== null || row.capacity.kind === 'missing');
   const readHour = reply.readHour ?? hour;
 
   const present = new Map<number, MatrixCell>();
@@ -101,19 +164,27 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
   }
   const noOperatives: MatrixCell = { kind: 'empty', label: 'No operatives', audit: '0' };
   const home: MatrixCell = { kind: 'diagonal', outlined: true };
-  const unknownOr = (known: MatrixCell) => (r: number): MatrixCell => {
-    const missing = reply.rows[r]!.missing;
-    return missing ? { kind: 'missing', reason: missing } : known;
+  const outsideSelection: MatrixCell = { kind: 'empty', label: 'Outside selected group', audit: 'Outside selection' };
+  const activeSet = group.kind === 'filtered' ? group.active : null;
+  const absent = (r: number, c?: number): MatrixCell => {
+    if (activeSet && c !== undefined && !activeSet.has(rows[r]!.id) && !activeSet.has(columns[c]!.id)) return outsideSelection;
+    const missing = activeRows[r]!.missing;
+    return missing ? { kind: 'missing', reason: missing } : noOperatives;
   };
-  const cells = { present, absent: unknownOr(noOperatives), self: unknownOr(home) };
+  const self = (r: number): MatrixCell => {
+    if (activeSet && !activeSet.has(rows[r]!.id)) return outsideSelection;
+    const missing = activeRows[r]!.missing;
+    return missing ? { kind: 'missing', reason: missing } : home;
+  };
+  const cells = { present, absent, self };
 
   const margin = (r: number): MatrixMarginCell => {
-    const capacity = reply.rows[r]!.capacity;
+    const capacity = activeRows[r]!.capacity;
     if (capacity.kind === 'missing') return { kind: 'missing', reason: capacity.reason };
     if (capacity.kind === 'noAgency') return { kind: 'none', label: 'No agency' };
     return {
       kind: 'value',
-      fraction: reply.largestMaximum > 0 ? capacity.active / reply.largestMaximum : 0,
+      fraction: largestMaximum > 0 ? capacity.active / largestMaximum : 0,
       text: `${capacity.active} / ${capacity.maximum}`,
     };
   };
@@ -128,7 +199,7 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
     corner: 'Spy ↓ · target →',
     margin: { header: 'Active / maximum', cell: margin },
     legend: {
-      gradient: { lowLabel: '0', highLabel: operativesLabel(reply.most), stops: [] },
+      gradient: { lowLabel: '0', highLabel: operativesLabel(mostRaw), stops: [] },
       entries: [
         { id: 'home', label: 'Own country: counter-intelligence', color: '', outlined: true },
         ...(hasMissing ? [{ id: 'missing', label: 'Not recorded', color: '', hatched: true }] : []),
@@ -141,44 +212,51 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
         return { title: `${row.label}: ${operativesLabel(found.operatives.length)} on counter-intelligence at home`, hour: readHour, items: operativeItems(found.operatives) };
       }
       if (item.kind === 'missing') return { title: `${row.label} → ${column.label}`, hour: readHour, missingReason: item.reason };
-      if (!found) return { title: `${row.label} → ${column.label}`, hour: readHour, items: [{ label: 'No operatives', tone: 'muted' }] };
+      if (!found) return { title: `${row.label} → ${column.label}`, hour: readHour, items: [{ label: item.kind === 'empty' && item.label ? item.label : 'No operatives', tone: 'muted' }] };
       return { title: `${row.label} has ${operativesLabel(found.operatives.length)} in ${column.label}`, hour: readHour, items: operativeItems(found.operatives) };
     },
     warnings: reply.warnings,
   };
 }
 
-export const operativeMatrixProjection: HeatMatrixProjection = {
+export const operativeMatrixProjection: HeatMatrixProjection<OperativeMatrixOptions> = {
   kind: 'who-spies-on-whom',
   family: 'heat-matrix',
-  project: readView => projectOperativeMatrix(readView),
+  project: (readView, options) => projectOperativeMatrix(readView, options),
+  nextChange: (readView, options) => nextDatedMembershipChange(options, readView.hour),
 };
 
-export const operativeMatrixDeclaration: HeatMatrixWidgetDeclaration = {
+export const operativeMatrixDeclaration: HeatMatrixWidgetDeclaration<OperativeMatrixOptions> = {
   family: 'heat-matrix',
   kind: 'who-spies-on-whom',
   label: 'Who spies on whom',
   subject: 'operatives',
   emptyCampaign: 'Load a campaign to see its operatives.',
   icon: 'target',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', datedAtHour: true },
   sources: sources('matrix'),
   projection: operativeMatrixProjection,
-  projectionOptions: () => EMPTY_OPTIONS,
+  projectionOptions: optionsOf,
   jumpToDate: true,
 };
 
-export function projectOperativePairs(readView: BoundedReadView): BarsModel {
+export function projectOperativePairs(readView: BoundedReadView, options?: OperativeMatrixOptions): BarsModel {
   const hour = readView.hour;
   const refused = readView.refused('main');
   if (refused) return { form: 'ordered', hour, rows: [], empty: refused, emptyKind: 'unavailable' };
   const reply = readView.panel<OperativeMatrixReply>('main');
   if (!reply) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyKind: 'unavailable' };
   if (reply.missing) return { form: 'ordered', hour, rows: [], empty: NOT_RECORDED, emptyDetail: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
-  if (!reply.pairs.length) return { form: 'ordered', hour, rows: [], empty: NONE_PLACED, warnings: reply.warnings };
+  const group = activeGroupMembers(options, hour);
+  if (group.kind === 'unavailable') return { form: 'ordered', hour, rows: [], empty: group.reason, emptyKind: 'unavailable', warnings: reply.warnings };
+  if (group.kind === 'empty') return { form: 'ordered', hour, rows: [], empty: group.reason, warnings: reply.warnings };
+  const pairs = group.kind === 'filtered'
+    ? reply.pairs.filter(pair => group.active.has(reply.countries[pair.spy]!.tag) || group.active.has(reply.countries[pair.target]!.tag))
+    : reply.pairs;
+  if (!pairs.length) return { form: 'ordered', hour, rows: [], empty: NONE_PLACED, warnings: reply.warnings };
   const readHour = reply.readHour ?? hour;
   let scaleMax = 0;
-  const rows: BarsDataRow[] = reply.pairs.map(pair => {
+  const rows: BarsDataRow[] = pairs.map(pair => {
     const spy = reply.countries[pair.spy]!.tag;
     const target = reply.countries[pair.target]!.tag;
     const shownSpy = countryRowPresentation(readView, spy);
@@ -202,22 +280,23 @@ export function projectOperativePairs(readView: BoundedReadView): BarsModel {
   return { form: 'ordered', hour, rows, scaleMax, animateOrder: true, warnings: reply.warnings };
 }
 
-export const operativePairsProjection: BarsProjection = {
+export const operativePairsProjection: BarsProjection<OperativeMatrixOptions> = {
   kind: 'who-spies-on-whom',
   family: 'bars',
-  project: readView => projectOperativePairs(readView),
+  project: (readView, options) => projectOperativePairs(readView, options),
+  nextChange: (readView, options) => nextDatedMembershipChange(options, readView.hour),
 };
 
-export const operativePairsDeclaration: BarsWidgetDeclaration = {
+export const operativePairsDeclaration: BarsWidgetDeclaration<OperativeMatrixOptions> = {
   family: 'bars',
   kind: 'who-spies-on-whom',
   label: 'Who spies on whom',
   subject: 'operatives',
   emptyCampaign: 'Load a campaign to see its operatives.',
   icon: 'target',
-  countries: { mode: 'multi' },
+  countries: { mode: 'multi', datedAtHour: true },
   sources: sources('pairs'),
   projection: operativePairsProjection,
-  projectionOptions: () => EMPTY_OPTIONS,
+  projectionOptions: optionsOf,
   jumpToDate: true,
 };

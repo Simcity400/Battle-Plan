@@ -5,7 +5,9 @@ import { rankedCounts } from '../../dashboard/groupCounts.ts';
 import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
-import { worldFilter } from '../../dashboard/groups.ts';
+import { EVER_UNRECORDED, groupRuns, worldFilter } from '../../dashboard/groups.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { subjectsProjection } from './subjectsProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -350,4 +352,118 @@ test('a followed subjects reply shown after its read hour keeps the relations he
   const atReadHour = project(read);
   const later = project(read + 30);
   assert.deepEqual(later.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]), atReadHour.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]));
+});
+
+test('subjects projection applies dated group membership, resolves reused tags to the active holder, and marks unrecorded membership', () => {
+  const datedReply: SubjectReply = {
+    branchId: '1', levels, warnings: [], unobserved: [],
+    runs: [
+      { overlord: 'AAA', subject: 'S1', startHour: 0, firstHour: 0, lastHour: 99, steps: [step(0, 99, 'autonomy_puppet')] },
+      { overlord: 'AAA', subject: 'S2', startHour: 200, firstHour: 200, lastHour: 400, steps: [step(200, 400, 'autonomy_puppet')] },
+      { overlord: 'BBB', subject: 'S3', startHour: 50, firstHour: 50, lastHour: 400, steps: [step(50, 400, 'autonomy_puppet')] },
+    ],
+  };
+  const groups: CountryGroupReply = {
+    branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    humans: [{ tag: 'AAA', firstHour: 200, lastHour: 299 }, { tag: 'BBB', firstHour: 350, lastHour: 400 }],
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ slot: 1, countryId: 10, firstHour: 0, lastHour: 99 }, { slot: 2, countryId: 20, firstHour: 200, lastHour: 400 }] },
+      holder('BBB', 3, 0, 400, 30),
+      holder('S1', 4, 0, 400, 40),
+      holder('S2', 5, 0, 400, 50),
+      holder('S3', 6, 0, 400, 60),
+    ],
+    unobserved: { humans: [{ firstHour: 310, lastHour: 320 }], factions: [], wars: [], unattributed: [] },
+  };
+  const cut = <T extends { firstHour: number; lastHour: number }>(spans: readonly T[], upTo: number) =>
+    spans.filter(span => span.firstHour <= upTo).map(span => ({ ...span, lastHour: Math.min(span.lastHour, upTo) }));
+  const at = (hour: number, nextChange: number | null = null) => createBoundedReadView({
+    hour,
+    panels: new Map<string, unknown>([
+      ['main', { hour, nextChange, subjects: { ...datedReply, runs: cut(datedReply.runs, hour).map(run => ({ ...run, steps: cut(run.steps, hour) })) }, warnings: [] }],
+      ['groups', {
+        hour,
+        nextChange,
+        groups: {
+          ...groups,
+          humans: cut(groups.humans, hour),
+          countryIdentities: groups.countryIdentities.map(item => ({ ...item, identities: cut(item.identities, hour) })).filter(item => item.identities.length > 0),
+          unobserved: { ...groups.unobserved, humans: cut(groups.unobserved.humans, hour) },
+        },
+        warnings: [],
+      }],
+    ]),
+  });
+  const baseOpt = {
+    order: 'first' as const, subjects: 'since' as const, showEnded: true, levelNames: true,
+    firstHour: 0, branchFirstHour: 0, surface: '#161616', selected: ['AAA', 'BBB'],
+    membership: { AAA: [[200, 299]] as const, BBB: [[350, 400]] as const },
+    unobserved: [[310, 320]] as const,
+  };
+  const hourOpt = { ...baseOpt, selection: { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'hour' as const, aggregate: false } };
+
+  const before = subjectsProjection.project(at(150), hourOpt);
+  assert.equal(before.lanes.length, 0);
+  assert.equal(before.empty, NO_MEMBERS.hour);
+  assert.equal(subjectsProjection.nextChange!(at(150), hourOpt), 200);
+
+  const reused = subjectsProjection.project(at(250), hourOpt);
+  assert.deepEqual(reused.lanes.map(lane => lane.flagTag), ['AAA', 'S2']);
+  assert.equal(subjectsProjection.nextChange!(at(250), hourOpt), 300);
+
+  const unrecorded = subjectsProjection.project(at(315), hourOpt);
+  assert.equal(unrecorded.lanes.length, 0);
+  assert.equal(unrecorded.emptyKind, 'unavailable');
+  assert.equal(subjectsProjection.nextChange!(at(315), hourOpt), 321);
+
+  const everOpt = {
+    ...baseOpt,
+    membership: { AAA: [[200, 309]] as const },
+    unobserved: [[310, Number.MAX_SAFE_INTEGER]] as const,
+    selection: { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'ever' as const, aggregate: false },
+  };
+  assert.equal(subjectsProjection.project(at(150), everOpt).empty, NO_MEMBERS.yet);
+  assert.deepEqual(subjectsProjection.project(at(305), everOpt).lanes.map(lane => lane.flagTag), ['AAA', 'S2']);
+  const everUnseen = subjectsProjection.project(at(360), everOpt);
+  assert.equal(everUnseen.emptyKind, 'unavailable');
+  assert.equal(everUnseen.empty, EVER_UNRECORDED);
+
+  const guardedGroups: CountryGroupReply = {
+    ...groups,
+    humans: [{ tag: 'AAA', firstHour: 200, lastHour: 250 }],
+    countryIdentities: groups.countryIdentities.map(item => ({ ...item, identities: cut(item.identities, 250) })).filter(item => item.identities.length > 0),
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+  };
+  Object.defineProperty(guardedGroups, 'wars', { get() { throw new Error('human selection must not scan unrelated wars'); } });
+  const guardedView = createBoundedReadView({
+    hour: 250,
+    panels: new Map<string, unknown>([
+      ['main', { hour: 250, nextChange: null, subjects: { ...datedReply, runs: cut(datedReply.runs, 250).map(run => ({ ...run, steps: cut(run.steps, 250) })) }, warnings: [] }],
+      ['groups', { hour: 250, nextChange: null, groups: guardedGroups, warnings: [] }],
+    ]),
+  });
+  assert.deepEqual(subjectsProjection.project(guardedView, hourOpt).lanes.map(lane => lane.flagTag), ['AAA', 'S2']);
+
+  let holderChecks = 0;
+  const manyHolders = Array.from({ length: 40 }, (_, index) => {
+    const run = { slot: 7, countryId: 70 + index, firstHour: index * 10, lastHour: index * 10 + 5 };
+    return new Proxy(run, {
+      get(target, prop, receiver) {
+        if (prop === 'firstHour') holderChecks++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  });
+  const manyWars = Array.from({ length: 1000 }, (_, index) => ({
+    first: `X${index}`, second: `Y${index}`, firstHour: 0, lastHour: 400,
+  }));
+  const warGroups: CountryGroupReply = {
+    ...groups,
+    wars: [...manyWars, { first: 'AAA', second: 'BBB', firstHour: 15, lastHour: 25 }],
+    countryIdentities: [{ tag: 'AAA', identities: manyHolders }],
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+  };
+  const enemies = groupRuns(warGroups, { type: 'war', tag: countryKey(7) });
+  assert.deepEqual(enemies, [{ tag: 'BBB', firstHour: 15, lastHour: 15 }, { tag: 'BBB', firstHour: 20, lastHour: 25 }]);
+  assert.ok(holderChecks <= 10, `indexed war lookup should not multiply unrelated wars by holder runs, got ${holderChecks}`);
 });

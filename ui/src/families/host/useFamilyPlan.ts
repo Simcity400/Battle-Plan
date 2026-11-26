@@ -11,6 +11,7 @@ import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { ambiguousHolderRanges, cumulativeEverMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -403,6 +404,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     }));
   }, [effectiveMulti?.membership]);
 
+  const datedAtHour = isMulti && policy.datedAtHour === true;
+
+  const cumulativeMembership = useMemo(
+    () => (datedAtHour && fetchGroups ? cumulativeEverMembership(widget.countries, groups.data, lastHour) : null),
+    [datedAtHour, fetchGroups, widget.countries, groups.data, lastHour],
+  );
+
   const factionData = useMemo(
     () => extractFactionData(groups.data, isMulti && policy.factions === true),
     [isMulti, policy, groups.data],
@@ -457,6 +465,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     return resolveSelectedCountryRefs(widget.countries, selectedFallback, identities);
   }, [isFilter, isMulti, widget.countries, selectedFallback, groups.data]);
 
+  const ambiguousHolders = useMemo(
+    () => (datedAtHour && fetchGroups ? ambiguousHolderRanges(groups.data?.countryIdentities) : null),
+    [datedAtHour, fetchGroups, groups.data],
+  );
+
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
     tags: effectiveMulti?.tags ?? NO_TAGS,
@@ -465,7 +478,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     every: allTags,
     top: effectiveMulti?.top ?? null,
     membership,
+    cumulativeMembership,
     membershipRuns,
+    ambiguousHolders,
     unobserved,
     filter,
     factions: factionData.runs,
@@ -475,7 +490,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, cumulativeMembership, membershipRuns, ambiguousHolders, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),
@@ -1055,6 +1070,28 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [everKind],
   );
 
+  const datedIncomplete = useMemo(
+    () => (datedAtHour && widget.countries.kind === 'group' && widget.countries.membership === 'hour' && groups.data && effectiveMulti && !effectiveMulti.tags.length && unobserved.length > 0 ? unobserved : null),
+    [datedAtHour, widget.countries, groups.data, effectiveMulti, unobserved],
+  );
+  const incompleteClock = useMemo(() => {
+    const at = () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment);
+    return {
+      subscribe: (changed: () => void) => (datedIncomplete && following && active
+        ? watchBoundary(runtime.clock, axis => {
+            const state = incompleteHourStateAt(datedIncomplete, Math.floor(axis) + trackOffset);
+            return [state.from - trackOffset, state.until + 1 - trackOffset];
+          }, changed)
+        : () => {}),
+      read: () => (datedIncomplete ? incompleteHourStateAt(datedIncomplete, at()).kind : null),
+    };
+  }, [datedIncomplete, following, active, runtime.clock, trackOffset, moment]);
+  const incompleteKind = useSyncExternalStore(incompleteClock.subscribe, incompleteClock.read, incompleteClock.read);
+  const incompleteBody = useMemo<FamilyBodyStatus | null>(
+    () => incompleteGroupBodyStatus(incompleteKind, following),
+    [incompleteKind, following],
+  );
+
   const bodyStatus = useMemo<FamilyBodyStatus>(() => {
     if (!track) return { kind: 'unbound', message: emptyCampaign };
     if (isSingle) {
@@ -1103,14 +1140,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       if ((needsGroups && !groups.data) || (needsSlots && !slots)) {
         return { kind: 'loading', label: loadingLabel };
       }
+      if (incompleteBody) return incompleteBody;
       if (countriesState.reason) return { kind: 'empty', message: countriesState.reason };
       if (everBody) return everBody;
       if (effectiveMulti && !following) {
-        const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
-        if (none) return { kind: 'no-members', reason: none.reason };
-        if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
-          const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
-          return { kind: 'refused', reason: why ?? (widget.countries.kind === 'group' ? NO_MEMBERS.date : 'No countries available for this selection.') };
+        if (datedAtHour) {
+          const staticStatus = staticDatedGroupBodyStatus(widget.countries, effectiveMulti, groups.data, membership, moment, countriesState.rankedAt(moment));
+          if (staticStatus) return staticStatus;
+        } else {
+          const none = noMembersAt(widget.countries, effectiveMulti, groups.data, moment);
+          if (none) return { kind: 'no-members', reason: none.reason };
+          if (effectiveMulti.top == null && !countriesState.rankedAt(moment).length && !policy.allowSingleSlot) {
+            const why = groups.data && widget.countries.kind === 'group' ? worldFilter(widget.countries, [], groups.data, moment).reason : null;
+            return { kind: 'refused', reason: why ?? (widget.countries.kind === 'group' ? NO_MEMBERS.date : 'No countries available for this selection.') };
+          }
         }
       }
     }
@@ -1173,15 +1216,18 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     filterMatch,
     countriesState,
     isMulti,
+    datedAtHour,
     needsSlots,
     slotState.failure,
     slotState.retry,
     slots,
     effectiveMulti,
+    membership,
     following,
     widget.countries,
     moment,
     everBody,
+    incompleteBody,
     lastHour,
     window,
     pinHour,
