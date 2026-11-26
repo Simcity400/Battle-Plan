@@ -298,23 +298,20 @@ fn validate_tags(tags: &[dashboard_base::products::Country]) -> Result<(), &'sta
 pub type RosterContext = Result<Arc<OperativeContent>, String>;
 
 pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Country], holders: &Holders, hour: i32, context: &RosterContext) -> io::Result<OperativesRosterReply> {
+    if let Some(reason) = countries.iter().find_map(|country| holders.not_known(country, hour)) {
+        return Err(io::Error::other(reason));
+    }
     let tags = Tags::read(frame)?;
     let rows = frame.complete::<tables::OperativeMemberships>()?;
     let tags_asked: Vec<String> = countries.iter().map(|country| country.key().into_owned()).collect();
     let mut unheld = Vec::new();
-    let mut holder_unknown = None;
     let mut slots: HashMap<u32, &str> = HashMap::new();
     for (country, tag) in countries.iter().zip(&tags_asked) {
         match holders.at(country, hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot, tag);
             }
-            _ => match holders.not_known(country, hour) {
-                Some(reason) => {
-                    holder_unknown.get_or_insert(reason);
-                }
-                None => unheld.push(tag.clone()),
-            },
+            _ => unheld.push(tag.clone()),
         }
     }
     let character_rows = frame.complete::<tables::CharacterOperatives>();
@@ -377,7 +374,7 @@ pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Count
             warnings.push(format!("{what} are not shown: {why}"));
         }
     }
-    Ok(OperativesRosterReply { operatives, artwork: artwork.urls, unheld, agency_feature: agency_feature(frame), read_hour, missing: missing(frame, TableId::OperativeMemberships).or(holder_unknown), warnings })
+    Ok(OperativesRosterReply { operatives, artwork: artwork.urls, unheld, agency_feature: agency_feature(frame), read_hour, missing: missing(frame, TableId::OperativeMemberships), warnings })
 }
 
 impl AtHour for OperativesRoster {

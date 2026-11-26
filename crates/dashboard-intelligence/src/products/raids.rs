@@ -1688,6 +1688,11 @@ impl Product for RaidTallyAt {
         } else {
             None
         };
+        if explicit_countries.is_some() {
+            let (held_from, held_through) = query.holders.interval(hour);
+            first_hour = first_hour.max(held_from);
+            last_hour = last_hour.min(held_through);
+        }
 
         if explicit_countries.is_none() && params.top.is_some() {
             if let Some(gap) = cached.missing.iter().find(|gap| gap.first_hour <= hour) {
