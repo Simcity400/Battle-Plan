@@ -116,6 +116,7 @@ export interface HeatMatrixModel {
   readonly margin?: MatrixMargin;
   readonly legend?: MatrixLegend;
   readonly tooltip?: (row: MatrixAxisEntity, column: MatrixAxisEntity, cell: MatrixCell, rowIndex: number, columnIndex: number) => FamilyTooltipPayload | null;
+  readonly readHour?: () => number;
   readonly empty?: string;
   readonly emptyDetail?: string;
   readonly emptyKind?: 'empty' | 'unavailable';
@@ -184,28 +185,49 @@ export function deriveMatrixTooltip(
   if (cell.tooltip) return cell.tooltip;
   const title = `${row.label} → ${col.label}`;
   if (cell.kind === 'diagonal') return null;
+  const hour = model.readHour?.() ?? model.hour;
   if (cell.kind === 'missing') {
-    return { title, hour: model.hour, missingReason: cell.reason };
+    return { title, hour, missingReason: cell.reason };
   }
   if (cell.kind === 'empty') {
     return {
       title,
-      hour: model.hour,
+      hour,
       items: [{ label: cell.label ?? 'None', tone: 'muted' }],
     };
   }
   return {
     title,
-    hour: model.hour,
+    hour,
     ...(cell.text !== undefined ? { exactValue: cell.text } : {}),
   };
 }
 
 function marginTooltip(model: HeatMatrixModel, margin: MatrixMargin, row: MatrixAxisEntity, rowIndex: number): FamilyTooltipPayload {
   const item = margin.cell(rowIndex);
-  if (item.kind === 'missing') return { title: row.label, hour: model.hour, missingReason: item.reason };
-  if (item.kind === 'none') return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.label }] };
-  return { title: row.label, hour: model.hour, items: [{ label: margin.header, value: item.exact ?? item.text }] };
+  const hour = model.readHour?.() ?? model.hour;
+  if (item.kind === 'missing') return { title: row.label, hour, missingReason: item.reason };
+  if (item.kind === 'none') return { title: row.label, hour, items: [{ label: margin.header, value: item.label }] };
+  return { title: row.label, hour, items: [{ label: margin.header, value: item.exact ?? item.text }] };
+}
+
+const heldModels = new Map<string, { readonly model: HeatMatrixModel; readonly read: { hour: number } }>();
+const HELD_MODELS = 16;
+
+export function steadyMatrixModel(inputs: unknown, readHour: number, build: (readHour: () => number) => HeatMatrixModel): HeatMatrixModel {
+  const signature = JSON.stringify(inputs, (_key, value: unknown) => (typeof value === 'bigint' ? `${value}n` : value));
+  const held = heldModels.get(signature);
+  if (held) {
+    held.read.hour = readHour;
+    heldModels.delete(signature);
+    heldModels.set(signature, held);
+    return held.model;
+  }
+  const read = { hour: readHour };
+  const model = build(() => read.hour);
+  heldModels.set(signature, { model, read });
+  if (heldModels.size > HELD_MODELS) heldModels.delete(heldModels.keys().next().value!);
+  return model;
 }
 
 export function marginAuditValue(item: MatrixMarginCell): string {
