@@ -185,7 +185,7 @@ impl ControlRecord {
             format.require(RecordKind::PlayerCommands)?;
             return Ok(Self::PlayerCommands {
                 session: input.u64()?,
-                packet: Box::new(crate::command_packet::Packet::decode(input)?),
+                packet: engine_allocation::boxed(crate::command_packet::Packet::decode(input)?)?,
             });
         }
         format.require(match tag {
