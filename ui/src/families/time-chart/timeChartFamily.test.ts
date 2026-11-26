@@ -132,6 +132,48 @@ function laneOn(created: { readonly ctx: Canvas2D }) {
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
+  it('paints and inspects a stack band with its dated look while plain bands keep one fill', () => {
+    const old = { name: 'Earlier', color: '#aa5544', flag: { art: readyArt('early-flag') } };
+    const now = { name: 'Later', color: '#56aa64', flag: { art: readyArt('late-flag') } };
+    for (const step of [false, true]) {
+      for (const dated of [false, true]) {
+        const band = { ...now, id: 'slot', key: 'slot', values: [4, 4], ...(dated ? { identities: [
+          { ...old, firstHour: 100, lastHour: 149 }, { ...now, firstHour: 150, lastHour: 200 },
+          { ...now, flag: { art: readyArt('future-flag') }, firstHour: 201, lastHour: 250 },
+        ] } : {}) };
+        const model: TimeChartModel = { kind: 'fixture', measureTitle: 'Amount', mode: 'stack', hour: 200,
+          extent: [100, 200], yAxis: { format: 'number' }, series: [], stack: { hours: [100, 200], bands: [band], step } };
+        const layout = layoutTimeChart(model, 700, 240, FONT, measure);
+        const tip = deriveTimeChartTooltip(model, layout, 'plot:130')!.payload!.items![0]!;
+        const expected = dated ? old : now;
+        assert.deepEqual([tip.label, tip.swatch, tip.countryFlag?.flag], [expected.name, expected.color, expected.flag.art.url]);
+        const { ctx } = mockCanvas(700, 240);
+        const stops: [number, string][] = [];
+        ctx.createLinearGradient = () => ({ addColorStop: (at, color) => stops.push([at, color]) });
+        drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+        assert.deepEqual(stops, dated ? [[0.5, old.color], [0.5, now.color]] : []);
+        assert.deepEqual(collectVisibleChartArt(model, layout, null), dated ? ['early-flag', 'late-flag'] : []);
+      }
+    }
+    for (const stride of [1, 10_000]) {
+      const identities = Array.from({ length: 31 }, (_, i) => ({
+        ...(i % 2 ? now : old), firstHour: i * stride, lastHour: (i + 1) * stride - 1,
+      }));
+      const hour = identities.at(-1)!.lastHour;
+      const band = { ...now, id: 'slot', key: 'slot', values: [4, 4] };
+      const paint = (dated: boolean) => {
+        const model: TimeChartModel = { kind: 'fixture', measureTitle: 'Amount', mode: 'stack', hour,
+          extent: [0, hour], yAxis: { format: 'number' }, series: [], stack: { hours: [0, hour], bands: [{ ...band, ...(dated ? { identities } : {}) }], step: true } };
+        const { ctx, ops } = mockCanvas(700, 240);
+        let stops = 0;
+        ctx.createLinearGradient = () => ({ addColorStop: () => { stops++; } });
+        drawTimeChart(ctx, model, layoutTimeChart(model, 700, 240, FONT, measure), LANE_THEME, null, 1);
+        return [ops.filter(op => op === 'fill').length, stops];
+      };
+      assert.deepEqual(paint(true), [paint(false)[0], 60]);
+    }
+  });
+
   it('keeps a tail line in the tail colour through every change of identity', () => {
     const view = createBoundedReadView({ hour: displayedHour(200) });
     const tail = 'var(--tail)';

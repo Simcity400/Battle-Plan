@@ -292,13 +292,14 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         const v = band.values[at];
         if (v === null || v === undefined || !Number.isFinite(v) || band.outside?.[at]) continue;
         const bandExact = band.exact?.[at];
-        const flagUrl = artUrlOf(band.flag);
+        const look = seriesLookAt(band, hour);
+        const flagUrl = artUrlOf(look.flag);
         entries.push({
           sortVal: v,
           item: {
-            label: band.name,
+            label: look.name,
             value: formatExactFigure(v, model, model.stack.bandFormat ?? model.yAxis.format, bandExact?.raw, bandExact?.denominator),
-            swatch: band.color,
+            swatch: look.color,
             ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
           },
         });

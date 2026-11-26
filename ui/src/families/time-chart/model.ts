@@ -117,6 +117,7 @@ export interface ChartStackBand {
   readonly exact?: readonly (ChartExactRational | null)[];
   readonly endLabel?: ChartEndLabel | null;
   readonly flag?: ChartArtSlot;
+  readonly identities?: readonly ChartIdentityRun[];
 }
 
 export interface ChartStackModel {
