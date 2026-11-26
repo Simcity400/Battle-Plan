@@ -387,6 +387,7 @@ export interface FamilyHostAdapter<TModel = unknown, TOptions = unknown, TBindin
   readonly defaultSize?: readonly [width: number, height: number];
   readonly rowWindow?: (viewport: FamilyViewportState, settings: TSettings | undefined, fields: Readonly<Record<string, unknown>>) => FamilyRowWindow | null;
   readonly buildBinding?: (ctx: FamilyBindingContext<TOptions, TSettings>) => FamilyBindingExtras<TBinding> | null;
+  readonly buildView?: (ctx: { readonly viewport: FamilyViewportState }) => Readonly<Record<string, unknown>>;
   readonly parseHit?: (hitKey: string | null) => ParsedFamilyHit | null;
   readonly inspectToken?: (key: string) => string;
   readonly resolveHitAction?: (hit: ParsedFamilyHit, installed: InstalledPicture, fields: Readonly<Record<string, unknown>>) => InstalledAction | null;
