@@ -7,6 +7,7 @@ import { createLaneView } from '../../families/laneRuntime.ts';
 import { timeChartLane } from '../../families/time-chart/laneView.ts';
 import type { TimeChartBinding } from '../../families/time-chart/declaration.ts';
 import type { FuelBranchesReply } from '../../generated/dashboard';
+import { definition } from './definition.ts';
 import {
   FUEL_BRANCHES_TIME_VIEW,
   fuelBranchesTimeDeclaration,
@@ -148,4 +149,9 @@ test('fuel by branch over time stays quiet across unchanged playback hours', () 
     surface,
   );
   assert.equal(keyId({ tag: 'JAP', part: '0' }), 'JAP\u00000');
+});
+
+test('fuel by branch over time takes one country: choosing several is not offered (ruling C207)', () => {
+  assert.equal(definition.countries.max, 1);
+  assert.equal(fuelBranchesTimeDeclaration.countries.mode, 'single');
 });

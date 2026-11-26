@@ -679,6 +679,23 @@ pub struct EquipmentProducedRaceReply {
 
 dashboard_base::reply_warnings!(EquipmentProducedRaceReply);
 
+fn population_bounds(query: &Query<'_>, hour: i32, mut first_hour: i32, mut last_hour: i32) -> (i32, i32) {
+    for holder_runs in query.holders.tags.values() {
+        for run in holder_runs {
+            if run.first > first_hour && run.first <= hour {
+                first_hour = run.first;
+            }
+            if run.last >= hour && run.last < last_hour {
+                last_hour = run.last;
+            }
+            if run.first > hour && run.first - 1 < last_hour {
+                last_hour = run.first - 1;
+            }
+        }
+    }
+    (first_hour, last_hour)
+}
+
 fn race_reply(
     source: &Source,
     query: &Query<'_>,
@@ -709,9 +726,26 @@ fn race_reply(
     let measure = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
     let line = dashboard_query::series::Line::new(query, series, measure)?;
     let baseline = tiles::range_baseline(&line, query, params.measure, params.from_hour)?;
+    if let tiles::Baseline::Unavailable(reason) = baseline {
+        return Ok(EquipmentProducedRaceReply {
+            branch_id: params.branch_id.clone(),
+            hour,
+            first_hour: hour,
+            last_hour: hour,
+            count: params.count,
+            measure: params.measure,
+            decimals: decimals(params.count),
+            types: params.types.clone(),
+            rows: Vec::new(),
+            read_hour: None,
+            observation_hour: None,
+            missing: Some(reason.to_owned()),
+            warnings,
+        });
+    }
     let fixed_back = back_of(params.measure);
     let range_fn = |base: i32| move |read: i32| (read >= base).then_some(base);
-    let range_closure = baseline.map(range_fn);
+    let range_closure = baseline.hour().map(range_fn);
     let back: Option<&dyn Fn(i32) -> Option<i32>> = match (&range_closure, &fixed_back) {
         (Some(func), _) => Some(func as &dyn Fn(i32) -> Option<i32>),
         (None, Some(func)) => Some(func as &dyn Fn(i32) -> Option<i32>),
@@ -731,11 +765,30 @@ fn race_reply(
     let parts_of = |run: u32| parts.get(&run).cloned().unwrap_or_default();
     dashboard_text::metadata::check_cancel(cancelled)?;
 
-    let clock = line.clock(stretch.first, stretch.last)?;
-    let read_hour = measure::read_at(&clock.reads, hour);
-    let observation_hour = measure::read_at(&clock.since, hour);
-    let next_read = clock.reads.iter().copied().find(|&h| h > hour);
-    let mut first_hour = read_hour.unwrap_or(stretch.first).max(stretch.first);
+    let clock = line.clock_at(hour)?;
+    let read_hour = clock.read;
+    let observation_hour = clock.since.filter(|&since| since <= hour);
+    if let tiles::Baseline::Opening(start) = baseline
+        && clock.since != Some(start)
+    {
+        return Ok(EquipmentProducedRaceReply {
+            branch_id: params.branch_id.clone(),
+            hour,
+            first_hour: clock.since_from.unwrap_or(hour).min(hour),
+            last_hour: clock.next_change.map_or(stretch.last, |h| h - 1).min(stretch.last).max(hour),
+            count: params.count,
+            measure: params.measure,
+            decimals: decimals(params.count),
+            types: params.types.clone(),
+            rows: Vec::new(),
+            read_hour,
+            observation_hour,
+            missing: Some(tiles::unknown_reason(dashboard_query::series::totals::Gap::Restarted).to_owned()),
+            warnings,
+        });
+    }
+    let next_read = clock.next_change;
+    let mut first_hour = read_hour.unwrap_or(stretch.first).max(stretch.first).max(clock.since_from.unwrap_or(i32::MIN));
     let mut last_hour = next_read.map_or(stretch.last, |h| h - 1).min(stretch.last);
 
     let mut missing = None;
@@ -801,19 +854,7 @@ fn race_reply(
         rows.push(EquipmentProducedRaceRow { country, tag, value, unknown });
     }
     if is_population {
-        for holder_runs in query.holders.tags.values() {
-            for run in holder_runs {
-                if run.first > first_hour && run.first <= hour {
-                    first_hour = run.first;
-                }
-                if run.last >= hour && run.last < last_hour {
-                    last_hour = run.last;
-                }
-                if run.first > hour && run.first - 1 < last_hour {
-                    last_hour = run.first - 1;
-                }
-            }
-        }
+        (first_hour, last_hour) = population_bounds(query, hour, first_hour, last_hour);
     }
     if !is_population {
         rows.sort_unstable_by(|a, b| match (a.value, b.value) {
@@ -897,12 +938,19 @@ pub(super) mod tests {
     use std::sync::Arc;
 
     pub(super) fn two_producers(name: &str, first: i32, last: i32) -> Source {
+        two_producers_read_from(name, first, last, first, true, None, None)
+    }
+
+    pub(super) fn two_producers_read_from(name: &str, first: i32, last: i32, read_from: i32, second_exact: bool, rename_at: Option<i32>, restart_at: Option<i32>) -> Source {
         let frames = (first..=last)
             .map(|hour| {
                 let mut frame = source(1, hour, Some(1));
                 let TableView::Complete(TableRows::Countries(countries)) = &*frame.tables[TableId::Countries.index()] else { unreachable!("the fixture holds its countries") };
                 let mut countries = countries.clone();
                 countries.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..countries[0].clone() });
+                if rename_at.is_some_and(|at| hour >= at) {
+                    countries[0].tag = b"DEU".to_vec();
+                }
                 *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
                 *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
                     CountryLinkRow { id: 11, canonical_slot: 7 },
@@ -912,11 +960,17 @@ pub(super) mod tests {
                 let output = |line: u64, country: u32, units: i64| ProductionLineOutputRow { line, ordinal: 0, country, variant: 100, mio: 0, units, since_hour: first, observed_since_creation: true, ended: false, exact: true, spent_raw: Recorded::Value(None), purpose: Recorded::Value(1), ..Default::default() };
                 let mut rows = vec![output(1, 9001, i64::from((hour - first) / 24))];
                 if hour >= first + 100 {
-                    rows.push(output(2, 9002, i64::from((hour - first - 100) / 12)));
+                    rows.push(ProductionLineOutputRow { exact: second_exact, ..output(2, 9002, i64::from((hour - first - 100) / 12)) });
                 }
-                *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(rows));
-                let world = RocketProductionOutputRow { since_hour: first, exact: true, units_exact: true, ..Default::default() };
-                *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Complete(TableRows::RocketProductionOutput(vec![world]));
+                let since_hour = restart_at.filter(|&at| hour >= at).unwrap_or(read_from);
+                let world = RocketProductionOutputRow { since_hour, exact: true, units_exact: true, ..Default::default() };
+                if hour < read_from {
+                    *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable { reason: "production not read yet".into() };
+                    *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Unavailable { reason: "production not read yet".into() };
+                } else {
+                    *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(rows));
+                    *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Complete(TableRows::RocketProductionOutput(vec![world]));
+                }
                 frame.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
                 frame
             })

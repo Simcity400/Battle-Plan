@@ -39,6 +39,13 @@ pub struct Clock {
     pub since: Vec<i32>,
 }
 
+pub struct ClockAt {
+    pub read: Option<i32>,
+    pub since: Option<i32>,
+    pub since_from: Option<i32>,
+    pub next_change: Option<i32>,
+}
+
 const REACH: i32 = 2 * 744;
 
 struct Held<'r> {
@@ -62,6 +69,11 @@ struct Columns {
     since: usize,
     as_of: usize,
 }
+
+pub const TOTALS_HOUR_UNRECORDED: &str = "This hour is not recorded on this branch";
+pub const TOTALS_NOT_READ: &str = "Production was not read whole by this hour";
+pub const TOTALS_WINDOW_UNRECORDED: &str = "The count at the window's start was not recorded, so what was delivered in it is not known";
+pub const TOTALS_VALUE_UNKNOWN: &str = "A country's amount is not known at this hour, so the ranking cannot be proved";
 
 impl<'q, 'a> Line<'q, 'a> {
     fn running(&self) -> io::Result<&'static RunningTotal> {
@@ -216,7 +228,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let running = self.running()?;
         let columns = self.total_columns(running)?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
-            return Ok(Ok(Vec::new()));
+            return Ok(Err(TOTALS_HOUR_UNRECORDED.to_owned()));
         };
         let recording = self.query.replay.recording();
         let table = self.series.table;
@@ -233,59 +245,107 @@ impl<'q, 'a> Line<'q, 'a> {
             let held = snapshot(at, &[columns.since, columns.as_of], read::Keys::These(&clock_keys))?;
             Ok(held.and_then(|rows| rows.get(&running.clock).map(|cells| (cells[0].and_then(|hour| i32::try_from(hour).ok()), cells[1].and_then(|hour| i32::try_from(hour).ok())))))
         };
-        let Some((since, Some(read))) = clock(hour)? else { return Ok(Ok(Vec::new())) };
+        let Some((since, Some(read))) = clock(hour)? else { return Ok(Err(TOTALS_NOT_READ.to_owned())) };
         if read < stretch.first {
-            return Ok(Ok(Vec::new()));
+            return Ok(Err(TOTALS_NOT_READ.to_owned()));
         }
         let wanted = [columns.value, columns.reason];
-        let Some(now) = snapshot(read, &wanted, read::Keys::All)? else { return Ok(Ok(Vec::new())) };
+        let Some(now) = snapshot(read, &wanted, read::Keys::All)? else { return Ok(Err(TOTALS_NOT_READ.to_owned())) };
         let start = match back {
             None => None,
             Some(back) => {
-                let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Ok(Vec::new())) };
+                let Some(start) = back(read).filter(|&start| start >= stretch.first && since.is_none_or(|since| since <= start)) else { return Ok(Err(TOTALS_WINDOW_UNRECORDED.to_owned())) };
                 if let Some(reason) = self.query.holders.not_ranked(start) {
                     return Ok(Err(reason));
                 }
                 if clock(start)?.and_then(|(_, read)| read) != Some(start) {
-                    return Ok(Ok(Vec::new()));
+                    return Ok(Err(TOTALS_WINDOW_UNRECORDED.to_owned()));
                 }
                 match snapshot(start, &wanted, read::Keys::All)? {
                     Some(before) => Some((start, before)),
-                    None => return Ok(Ok(Vec::new())),
+                    None => return Ok(Err(TOTALS_WINDOW_UNRECORDED.to_owned())),
                 }
             }
         };
         let set = parts(stretch.run);
-        let value_of = |rows: &HashMap<u128, Vec<Option<i64>>>, keys: &[(u128, u128)], rest: Option<u128>| -> Option<i128> {
+        let value_of = |rows: &HashMap<u128, Vec<Option<i64>>>, keys: &[(u128, u128)], rest: Option<u128>| -> Result<Option<i128>, &'static str> {
             let mut sum: i128 = 0;
             for &(_, key) in keys {
-                let cells = rows.get(&key).or_else(|| rest.and_then(|rest| rows.get(&rest)))?;
-                sum += i128::from(cells[0]?);
+                let Some(cells) = rows.get(&key).or_else(|| rest.and_then(|rest| rows.get(&rest))) else { return Ok(None) };
+                sum += i128::from(cells[0].ok_or(TOTALS_VALUE_UNKNOWN)?);
             }
-            Some(sum)
+            Ok(Some(sum))
         };
         let mut scored: Vec<(i128, &str)> = Vec::new();
         for (tag, runs) in &self.query.holders.tags {
             let Some(run) = runs.iter().find(|run| run.first <= hour && hour <= run.last) else { continue };
             let Holder::Found { slot, id } = run.holder else { continue };
             let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &set)?;
-            let Some(at) = value_of(&now, &keys, rest) else { continue };
+            let at = match value_of(&now, &keys, rest) {
+                Ok(Some(at)) => at,
+                Ok(None) => continue,
+                Err(reason) => return Ok(Err(reason.to_owned())),
+            };
             let value = match &start {
                 None => at,
-                Some((start, before)) => {
-                    let same = self.query.holders.at(tag, *start).is_some_and(|held| held.holder == run.holder && held.last >= hour);
-                    let Some(before) = value_of(before, &keys, rest).filter(|_| same) else { continue };
-                    at - before
+                Some((_, before)) => {
+                    match value_of(before, &keys, rest) {
+                        Ok(Some(before)) => at - before,
+                        Ok(None) => continue,
+                        Err(reason) => return Ok(Err(reason.to_owned())),
+                    }
                 }
             };
-            if let Ok(value) = i64::try_from(value)
-                && keep(value)
-            {
+            let Ok(value) = i64::try_from(value) else { return Ok(Err(TOTALS_VALUE_UNKNOWN.to_owned())) };
+            if keep(value) {
                 scored.push((i128::from(value), tag.as_str()));
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
         Ok(Ok(scored.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
+    }
+
+    pub fn clock_at(&self, hour: i32) -> io::Result<ClockAt> {
+        let running = self.running()?;
+        let columns = self.total_columns(running)?;
+        let Some(stretch) = self.query.timeline.at(hour).copied() else {
+            return Ok(ClockAt { read: None, since: None, since_from: None, next_change: None });
+        };
+        let runs = self.set_runs(stretch.run, &[columns.since, columns.as_of], &[(0, running.clock)], None, hour, hour)?;
+        let value = |column: usize| {
+            runs.get(&column)
+                .and_then(|by| by.get(&running.clock))
+                .and_then(|held| held.iter().find(|run| run.0 <= hour && hour <= run.1))
+                .and_then(|run| run.2)
+                .and_then(|at| i32::try_from(at).ok())
+        };
+        let recording = self.query.replay.recording();
+        let next = |column: usize| crate::cost::storage(|| replay_lanes::lanes::next(recording, stretch.run, self.series.table, column, running.clock, hour));
+        let next_change = [next(columns.as_of)?, next(columns.since)?].into_iter().flatten().min().filter(|&at| at <= stretch.last);
+        let read = value(columns.as_of).filter(|&read| read <= hour);
+        let since_from = match read {
+            Some(read) if read < hour => self
+                .set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, read.max(stretch.first), hour)?
+                .get(&columns.since)
+                .and_then(|by| by.get(&running.clock))
+                .and_then(|held| held.iter().find(|run| run.0 <= hour && hour <= run.1))
+                .map(|run| run.0),
+            _ => None,
+        };
+        Ok(ClockAt { read, since: value(columns.since), since_from, next_change })
+    }
+
+    pub fn since_runs(&self, from: i32, to: i32) -> io::Result<Vec<(i32, i32, Option<i32>)>> {
+        let running = self.running()?;
+        let columns = self.total_columns(running)?;
+        let mut out = Vec::new();
+        for stretch in self.query.timeline.within(from, to) {
+            let (first, last) = (stretch.first.max(from), stretch.last.min(to));
+            let runs = self.set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, first, last)?;
+            let held = runs.get(&columns.since).and_then(|by| by.get(&running.clock)).into_iter().flatten();
+            out.extend(held.map(|run| (run.0.max(first), run.1.min(last), run.2.and_then(|hour| i32::try_from(hour).ok()))));
+        }
+        Ok(out)
     }
 
     pub fn clock(&self, from: i32, to: i32) -> io::Result<Clock> {

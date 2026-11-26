@@ -942,6 +942,13 @@ pub fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32, i32)>
     kept
 }
 
+pub(crate) fn observed_at(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, hour: i32) -> io::Result<bool> {
+    let Some(stretch) = query.timeline.at(hour) else { return Ok(false) };
+    let reads = observed(source, query, family, stretch.run)?;
+    let at = reads.read.partition_point(|&(_, end)| end < hour);
+    Ok(reads.read.get(at).is_some_and(|&(start, _)| start <= hour))
+}
+
 fn first_observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, last): (i32, i32)) -> io::Result<Option<i32>> {
     for stretch in query.timeline.within(first, last) {
         let reads = observed(source, query, family, stretch.run)?;

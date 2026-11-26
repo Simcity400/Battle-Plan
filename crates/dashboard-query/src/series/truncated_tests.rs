@@ -961,7 +961,7 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
             ]
         };
         frame.table(TableId::Nukes, Input::Snapshot { rows: &nukes, partial: None, read: true, sample: Sample::FromReadBit })?;
-        if hour == 124 {
+        if (122..=124).contains(&hour) {
             frame.table(TableId::CountryFactories, Input::Snapshot { rows: &fac_all[..2], partial: Some(1), read: true, sample: Sample::FromReadBit })?;
         } else {
             frame.table(TableId::CountryFactories, Input::Snapshot { rows: &fac_all, partial: None, read: true, sample: Sample::FromReadBit })?;
@@ -1014,4 +1014,13 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     let fac = Line::new(&query, fac_series, fac_series.measure("built1").unwrap()).unwrap();
     assert_eq!(fac.rank_at(121, 5, false).unwrap(), Ok(vec![Country::from("GER")]));
     assert!(fac.rank_at(124, 5, false).unwrap().is_err(), "an unrecorded contender still refuses a positive-only count top");
+
+    let keyed: ranked::SeriesRankReply = serde_json::from_value(
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "countries": ["GER", "USA"], "hour": 123 }))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(keyed.refused.is_some(), "USA's reading is not recorded at 123");
+    assert_eq!((keyed.from, keyed.until), (122, 124), "the same answer holds through the whole unrecorded stretch, not one hour at a time");
 }

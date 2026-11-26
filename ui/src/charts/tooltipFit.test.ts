@@ -112,3 +112,27 @@ test('refitting missing flags in a smaller window preserves original omissions a
   assert.equal(tooltipText(final), tooltipText(raw));
   assert.ok(tooltipHeight(final) <= tooltipRoom(260));
 });
+
+test('rows wrap by their width in the active font, so a wide font cuts rows the character estimate would keep', () => {
+  const metrics = (perChar: number) => ({ measure: (text: string) => text.length * perChar, family: 'Test Sans', sizes: { xs: 11, sm: 12, md: 13 } });
+  const narrow = metrics(6);
+  const wide = metrics(14);
+  const row: TooltipRow = { label: 'Wide label of twenty', value: '1,234' };
+  assert.equal(tooltipRowHeight(row, narrow), 17, 'one line in a narrow font');
+  assert.equal(tooltipRowHeight(row, wide), 34, 'the same row wraps to two lines in a wide font');
+  const content: TooltipContent = { title: 'T', rows: Array.from({ length: 12 }, () => row) };
+  const height = tooltipHeight(content, narrow) + 16;
+  assert.equal(fitTooltip([content], height, { metrics: narrow }).rows.length, 12, 'everything fits in the narrow font');
+  const cut = fitTooltip([content], height, { metrics: wide });
+  assert.ok(tooltipHeight(cut, wide) <= tooltipRoom(height), 'the wide font is cut to the room it really needs');
+  assert.ok(cut.rows.length < 12);
+  assert.equal(cut.spoken, tooltipText(content), 'assistive text keeps every row');
+
+  const even = metrics(7);
+  const flagged: TooltipRow = { label: 'Federal Republic of Neverland', value: '11,000,000', countryFlag: {} };
+  assert.equal(tooltipRowHeight({ ...flagged, countryFlag: undefined }, even), 17, 'label, gap and value fit the row');
+  assert.equal(tooltipRowHeight(flagged, even), 34, 'the flag and the gap between label and value take the room the text needs, so the row wraps');
+  assert.equal(tooltipRowHeight({ label: 'A', value: '1'.repeat(40) }, even), 34, 'a value wider than its share wraps even beside a short label');
+  const title = 'The Kingdom of the Netherlands in exile';
+  assert.equal(tooltipHeight({ title, rows: [], countryFlag: {} }, even), tooltipHeight({ title, rows: [] }, even) + 19, 'a flagged title has the room beside its flag, and wraps there');
+});

@@ -1351,5 +1351,34 @@ fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next
     whole.payments[0].hour = None;
     let undated = super::markers::index(&whole, Vec::new()).at(LAST);
     let shown: Vec<_> = undated.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.payments)).collect();
-    assert_eq!(shown, [(104, false, None, 1), (120, true, Some(105), 3)], "an undated payment is placed by its read; several in one read say the interval they fall in and their count");
+    assert_eq!(shown, [(104, false, None, 1), (120, true, Some(119), 3)], "an undated payment is placed by its read; several in one read say the interval since the ledger was last read, which can be in the hour of that read");
+    whole.payments[1].hour = Some(110);
+    let stale = super::markers::index(&whole, Vec::new()).at(LAST);
+    assert_eq!((stale.markers[1].hour, stale.markers[1].dated, stale.markers[1].since), (120, false, Some(119)), "the ledger read at 119 without this payment: an own hour of 110 belongs to an earlier count, even with no payment read since 104");
+
+    let mut first = asked(&source, FIRST, LAST);
+    first.payments[0].payments = 2;
+    first.payments[1].hour = Some(100);
+    first.payments[1].unknown = first.payments[1].payments;
+    let dated = super::markers::index(&first, Vec::new()).at(LAST);
+    let shown: Vec<_> = dated.markers.iter().map(|marker| (marker.hour, marker.dated, marker.since, marker.charge_raw.clone())).collect();
+    assert_eq!(shown[0].2, Some(103), "an item's first count is from the hour the ledger was last read, never from the span's start");
+    assert!(shown[0].2.unwrap() <= shown[0].0, "the interval holds the latest payment");
+    assert_eq!((shown[1].0, shown[1].1), (first.payments[1].read, false), "an hour from before the previous read belongs to an earlier count: the count is dated by its read");
+    assert_eq!(shown[1].3, None, "nothing of the charge was recorded: no figure");
+
+    let mut again = asked(&source, FIRST, LAST);
+    again.payments[0].read = 119;
+    again.payments[0].hour = Some(119);
+    again.payments[1].item = again.payments[0].item;
+    again.payments[1].hour = again.payments[0].hour;
+    again.payments[1].sequence = again.payments[0].sequence.clone();
+    again.payments[1].ordinal = again.payments[0].ordinal;
+    let older = super::markers::index(&again, Vec::new()).at(LAST);
+    assert_eq!((older.markers[1].hour, older.markers[1].dated), (again.payments[1].read, false), "a count whose latest payment is the one already dated gives no date of its own");
+
+    let gap = super::markers::index(&first, vec![(110, 150, "The ledger was not read".to_owned())]);
+    let (inside, later) = (gap.at(115), gap.at(130));
+    assert_eq!(inside.unrecorded[0].last_hour, 150, "an open gap is given to its own end; the chart shows it through the displayed hour");
+    assert_eq!(inside.unrecorded, later.unrecorded, "playing through the gap and seeking into it give one answer");
 }

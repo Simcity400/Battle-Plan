@@ -3472,7 +3472,7 @@ chargeRaw: string | null,
 title: string, category: string, };
 export type PowerSpendUnrecorded = { firstHour: number,
 /**
- * Never after the asked hour.
+ * The gap's own last hour, which can be after the asked hour: a chart shows it through the hour it displays.
  */
 lastHour: number, reason: string, };
 export type AirTimelineParams = { branchId: string, firstHour: number, lastHour: number, mode?: AirMode,
