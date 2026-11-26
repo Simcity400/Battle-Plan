@@ -18,6 +18,7 @@ import { branchGapsOf, countrySeriesLooks } from '../../families/time-chart/seri
 import { formatRational, formatRecordedPercent, formatScaledPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
+import { tensionStackAt } from './stackHistory.ts';
 
 export interface WorldTensionChartOptions {
   readonly extent: readonly [number, number];
@@ -298,8 +299,8 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
   measureTitle: 'World tension',
   project(readView: BoundedReadView, options: WorldTensionChartOptions): TimeChartModel {
     const hour = readView.hour;
-    const reply = readView.panel<WorldTensionStackReply>('main');
-    const refused = readView.refused('main');
+    const reply = tensionStackAt(readView.panel<WorldTensionStackReply>('history') ?? null, readView.panel<WorldTensionStackReply>('main') ?? null);
+    const refused = readView.refused('main') ?? readView.refused('history');
     if (refused) {
       return {
         kind: 'world-tension',
@@ -499,38 +500,27 @@ export const worldTensionDeclaration: TimeChartWidgetDeclaration<WorldTensionCha
     const countries = keyed && !group ? [...ctx.countries.tags] : null;
     const width = Math.max(240, Math.min(2400, Math.ceil(view.width ?? 1024)));
     const includeEvents = ctx.options.markers !== false;
+    const params = { branchId: ctx.branch.id, layers, values, countries, top, group, width, includeStack: true, includeEvents };
+    const location = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+    const coverage = { mode: 'population', form: 'all' } as const;
+    const product = 'world-tension-stack';
+    const stack: SourcePlan['entries'] = view.following
+      ? (['history', 'edge'] as const).map(piece => {
+          const part = { ...params, piece, firstHour: ctx.branch.firstHour };
+          return { ...location, name: piece === 'history' ? 'history' : 'main', read: {
+            shape: 'point', channel: 'panel', coverage, product,
+            followQuery: { panel: product, ...part }, params: part, hourParam: 'lastHour', validate: validateWorldTensionStack,
+          } };
+        })
+      : [{ ...location, name: 'main', read: {
+          shape: 'branch-to-hour', coverage, product, followQuery: null, params,
+          dynamicKeys: ['firstHour', 'lastHour', 'width'], validate: validateWorldTensionStack,
+          provenInterval: (data, _requested, hour) => [hour, ((data as WorldTensionStackReply).nextChangeHour ?? Infinity) - 1],
+        } }];
     return {
       owner: `world-tension:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
       entries: [
-        {
-          name: 'main',
-          source: ctx.track.source,
-          branch: ctx.branch.id,
-          offset: ctx.track.axisOffset,
-          read: {
-            shape: 'branch-to-hour',
-            coverage: { mode: 'population', form: 'all' },
-            product: 'world-tension-stack',
-            followQuery: null,
-            params: {
-              branchId: ctx.branch.id,
-              layers,
-              values,
-              countries,
-              top,
-              group,
-              width,
-              includeStack: true,
-              includeEvents,
-            },
-            dynamicKeys: ['firstHour', 'lastHour', 'width'],
-            validate: validateWorldTensionStack,
-            provenInterval: (data, _requested, hour) => {
-              const reply = data as WorldTensionStackReply;
-              return reply.nextChangeHour !== null ? [hour, reply.nextChangeHour - 1] : [hour, Infinity];
-            },
-          },
-        },
+        ...stack,
         {
           name: 'hover',
           source: ctx.track.source,

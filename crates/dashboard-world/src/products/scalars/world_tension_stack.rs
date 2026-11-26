@@ -40,6 +40,14 @@ pub enum TensionValueMode {
     Recorded,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum TensionStackPiece {
+    History,
+    Edge,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,6 +70,9 @@ pub struct WorldTensionStackParams {
     pub include_stack: Option<bool>,
     #[serde(default)]
     pub include_events: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub piece: Option<TensionStackPiece>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -151,6 +162,15 @@ pub struct WorldTensionStackReply {
     pub missing: Vec<MissingSpan>,
     pub next_change_hour: Option<i32>,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub event_positions: Option<Vec<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub piece_start: Option<i32>,
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    pub(crate) read_through: Option<i32>,
 }
 
 dashboard_base::reply_warnings!(WorldTensionStackReply);
@@ -328,6 +348,62 @@ struct CachedEvent {
     first_read: i32,
     last_read: Option<i32>,
     removed_at: Option<i32>,
+}
+
+#[derive(Clone, Copy)]
+struct PieceWindow {
+    start: i32,
+    end: i32,
+    history: bool,
+}
+
+impl PieceWindow {
+    fn new(kind: TensionStackPiece, first: i32, last: i32, width: usize) -> Self {
+        let width = width as i64;
+        let start = i64::from(last) - (i64::from(last) - i64::from(first)).max(0) % width;
+        Self { start: start as i32, end: (start + width - 1).min(i64::from(i32::MAX)) as i32, history: kind == TensionStackPiece::History }
+    }
+
+    fn closed_event(self, event: &CachedEvent) -> bool {
+        let edit = event.added.partition_point(|&(at, _)| at < self.start);
+        event.hour.max(event.first_read) < self.start
+            && event.added.get(edit).is_none_or(|&(at, _)| at > self.end)
+            && !event.removed_at.is_some_and(|at| (self.start..=self.end).contains(&at))
+    }
+
+    fn finish(self, reply: &mut WorldTensionStackReply) {
+        reply.piece_start = Some(self.start);
+        reply.read_through = Some(dashboard_base::products::at_hour::before(reply.next_change_hour).min(self.end));
+        let closed = reply.missing.iter().take_while(|span| span.last_hour < self.start).count();
+        if self.history { reply.missing.truncate(closed); } else { reply.missing.drain(..closed); }
+        for band in &mut reply.bands {
+            band.holders.retain(|holder| (holder.last_hour < self.start) == self.history);
+        }
+        if self.history {
+            reply.bands.sort_by_key(|band| band.slot);
+            for band in &mut reply.bands {
+                band.tag = None;
+                band.remembered = false;
+                band.end_value = None;
+                band.end_raw = None;
+                band.end_missing = None;
+            }
+            if let Some(other) = &mut reply.other {
+                other.count = 0;
+                other.end_value = None;
+                other.end_raw = None;
+                other.end_missing = None;
+            }
+            reply.end_hour = None;
+            reply.capped_end_tension = None;
+            reply.capped_end_tension_raw = None;
+            reply.end_missing = None;
+            reply.end_sum_raw = None;
+            reply.listing_missing = None;
+            reply.warnings.clear();
+            reply.next_change_hour = None;
+        }
+    }
 }
 
 pub(super) struct SlotNames(BTreeMap<u32, Vec<(i32, String, bool)>>);
@@ -879,7 +955,7 @@ pub(super) fn compute_stack(
     let selected = |tag: &str| filter.is_some_and(|tags| tags.contains(tag));
     let wanted = filter.map(|_| &selected as &dyn Fn(&str) -> bool);
     let mut out = compute_window(&mut playback, input, first, last, layers, mode, wanted, group_filter, top_limit,
-        max_points.into(), slot_tag, slot_next_change);
+        max_points.into(), None, slot_tag, slot_next_change);
     if let Some(next) = next_name { out.next_change_hour = Some(out.next_change_hour.map_or(next, |hour| hour.min(next))); }
     out
 }
@@ -896,6 +972,7 @@ fn compute_window(
     group_filter: Option<&DatedGroupFilter>,
     top_limit: Option<usize>,
     max_points: Option<usize>,
+    piece: Option<PieceWindow>,
     slot_tag: impl Fn(u32, i32) -> Option<(String, bool)>,
     mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
 ) -> StackOutput {
@@ -945,7 +1022,7 @@ fn compute_window(
     };
     let top = ranked;
     let (has_other, other_count) = if top_limit.is_some() || group_filter.is_some() { (false, 0) } else { playback.ranking.other(&top) };
-    let (samples, downsampled, end_sample) = playback.plot.read(input, index, &top, group_filter, mode, has_other, first, last, max_points);
+    let (samples, downsampled, end_sample) = playback.plot.read(input, index, &top, group_filter, mode, has_other, first, last, max_points, piece);
     let member_at = |slot: u32, hour: i32| group_filter.is_none_or(|gf| !gf.spans(slot, hour, hour).is_empty());
     let end_tension = lookup_run(input.tension, last);
     let end_sum = lookup_run(input.sum, last);
@@ -1126,13 +1203,14 @@ impl Product for WorldTensionStack {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = WorldTensionStackParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, layers, values, countries, top, group, width, includeStack, includeEvents];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, layers, values, countries, top, group, width, includeStack, includeEvents, piece];
     type Reply = WorldTensionStackReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             TensionValueMode::decl(),
+            TensionStackPiece::decl(),
             WorldTensionStackParams::decl(),
             TensionHolder::decl(),
             TensionStackBand::decl(),
@@ -1189,10 +1267,12 @@ impl Product for WorldTensionStack {
         let ceiling_raw = cworld_threat::CLAMP_CEILING.to_string();
         let first = params.first_hour.max(timeline.first);
         let last = params.last_hour.min(timeline.last);
+        let max_points = params.width.unwrap_or(1600).clamp(120, 2400) as usize;
+        let piece = params.piece.map(|kind| PieceWindow::new(kind, first, last, max_points));
         if first > last {
             let mut next_change_hour = (params.last_hour < timeline.first).then_some(timeline.first);
             let warnings = dated_warnings(&held, params.last_hour, &mut next_change_hour);
-            let reply = WorldTensionStackReply {
+            let mut reply = WorldTensionStackReply {
                 branch_id: params.branch_id.clone(),
                 tension_scale,
                 contribution_scale,
@@ -1215,7 +1295,9 @@ impl Product for WorldTensionStack {
                 missing: vec![MissingSpan { first_hour: params.first_hour, last_hour: params.last_hour, reason: "This time is outside the recording.".into() }],
                 next_change_hour,
                 warnings,
+                event_positions: None, piece_start: None, read_through: None,
             };
+            if let Some(piece) = piece { piece.finish(&mut reply); }
             check_reply_budget(&reply)?;
             return Ok(reply);
         }
@@ -1273,7 +1355,7 @@ impl Product for WorldTensionStack {
             };
             if let Some(reason) = refusal {
                 let warnings = dated_warnings(&held, last, &mut next_change_hour);
-                let reply = WorldTensionStackReply {
+                let mut reply = WorldTensionStackReply {
                     branch_id: params.branch_id.clone(),
                     tension_scale,
                     contribution_scale,
@@ -1296,7 +1378,9 @@ impl Product for WorldTensionStack {
                     missing: Vec::new(),
                     next_change_hour,
                     warnings,
+                    event_positions: None, piece_start: None, read_through: None,
                 };
+                if let Some(piece) = piece { piece.finish(&mut reply); }
                 check_reply_budget(&reply)?;
                 return Ok(reply);
             }
@@ -1310,7 +1394,6 @@ impl Product for WorldTensionStack {
         let filter = countries.as_ref().map(|_| &selected as &dyn Fn(&str) -> bool);
         let include_stack = params.include_stack.unwrap_or(true);
         let include_events = params.include_events.unwrap_or(true);
-        let max_points = params.width.unwrap_or(1600).clamp(120, 2400) as usize;
         let named = &held.names;
         let mode_missing = match params.values {
             TensionValueMode::Share => &held.tension_missing,
@@ -1342,6 +1425,7 @@ impl Product for WorldTensionStack {
                 group_filter.as_deref(),
                 top_limit,
                 include_stack.then_some(max_points),
+                piece,
                 |slot, hour| named.slot(slot, hour).map(|(tag, remembered)| (tag.to_owned(), remembered)),
                 |slot, hour| named.next_change(slot, hour),
             );
@@ -1351,6 +1435,7 @@ impl Product for WorldTensionStack {
             StackOutput::default()
         };
         let mut events: Vec<TensionStackEvent> = Vec::new();
+        let mut event_positions = piece.filter(|part| !part.history).map(|_| Vec::new());
         let mut listing_missing = None;
         if include_events && computed.refused.is_none() {
             let at = held.listing_missing.partition_point(|span| span.last_hour < last);
@@ -1397,7 +1482,14 @@ impl Product for WorldTensionStack {
                     last_read,
                 })
             });
-            events = playback.events.shown(computed.top_slots.as_ref());
+            let mut position = 0;
+            playback.events.visit(computed.top_slots.as_ref(), |id, event| {
+                if piece.is_none_or(|part| part.closed_event(&held.events[id as usize]) == part.history) {
+                    events.push(event.clone());
+                    if let Some(positions) = &mut event_positions { positions.push(position); }
+                }
+                position += 1;
+            });
         }
         let missing: Vec<MissingSpan> = if include_stack {
             mode_missing[mode_missing.partition_point(|span| span.last_hour < first)..mode_missing.partition_point(|span| span.first_hour <= last)]
@@ -1413,7 +1505,7 @@ impl Product for WorldTensionStack {
         };
         let mut warnings = dated_warnings(&held, last, &mut next_change_hour);
         warnings.extend(computed.ranking_missing);
-        let reply = WorldTensionStackReply {
+        let mut reply = WorldTensionStackReply {
             branch_id: params.branch_id.clone(),
             tension_scale,
             contribution_scale,
@@ -1436,7 +1528,9 @@ impl Product for WorldTensionStack {
             missing,
             next_change_hour,
             warnings,
+            event_positions, piece_start: None, read_through: None,
         };
+        if let Some(piece) = piece { piece.finish(&mut reply); }
         check_reply_budget(&reply)?;
         Ok(reply)
     }
