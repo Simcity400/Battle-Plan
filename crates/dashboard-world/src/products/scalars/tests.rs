@@ -65,6 +65,14 @@ fn tension_markers_keep_the_witness_at_their_hour_and_report_an_unread_listing()
     use std::sync::{Arc, atomic::AtomicBool};
     use world_tension_stack::{WorldTensionStack, WorldTensionStackParams};
 
+    let mut damaged = test_fixtures::source(1, 150, None);
+    *damaged.tables[TableId::ThreatSources.index()] = TableView::Unavailable { reason: "Fixture block unreadable".into() };
+    let (step, missing) = world_tension_stack::listing_snapshot(&damaged, 150, 160);
+    assert!(matches!(step, Step::Stretch { listed: None, .. }));
+    let missing = missing.unwrap();
+    assert_eq!((missing.first_hour, missing.last_hour), (150, 160));
+    assert!(missing.reason.contains("Fixture block unreadable"));
+
     let frames = (100..=103).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
         *frame.tables[TableId::ThreatSources.index()] = if hour == 102 {

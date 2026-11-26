@@ -106,6 +106,7 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
       }
       const shown = parsed.events.filter(ev => ev.firstRead <= hour && ev.hour <= hour);
       if (!shown.length) {
+        if (parsed.listingMissing) return { rows: [], empty: parsed.listingMissing, emptyKind: 'unavailable', warnings: parsed.warnings };
         return { rows: [], empty: `No threat event recorded by ${formatDateOnly(hour)}.`, emptyKind: 'empty', warnings: parsed.warnings };
       }
       return { rows: shown, warnings: parsed.warnings };

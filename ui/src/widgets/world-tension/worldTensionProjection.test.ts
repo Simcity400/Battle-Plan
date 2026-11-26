@@ -463,6 +463,11 @@ describe('world-tension projections', () => {
     for (const row of table.rows) {
       assert.deepEqual(row.cells.until?.value, { kind: 'notRecorded', reason: 'Fixture listing unread' });
     }
+    const empty = worldTensionEventsProjection.project(createBoundedReadView({
+      hour: H1941, panels: new Map([['main', { ...reply, events: [] }]]),
+    }), { branchFirst: H1936 });
+    assert.equal(empty.emptyKind, 'unavailable');
+    assert.equal(empty.empty, 'Fixture listing unread');
   });
 
   it('S11: downsampled world-tension lines paint interval bounds, hover as ranges before exact hover, and show exact hovered-hour contributions once loaded', () => {

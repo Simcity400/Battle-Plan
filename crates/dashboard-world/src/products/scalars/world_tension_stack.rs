@@ -245,18 +245,26 @@ pub(super) fn join(steps: impl IntoIterator<Item = Step>) -> (Vec<Joined>, Vec<i
 
 fn listed(sources: &[ThreatSourceRow], slot_of: impl Fn(u32) -> Option<u32>) -> Vec<(Identity, i64, Option<u32>)> {
     let mut out: Vec<(Identity, i64, Option<u32>)> = Vec::with_capacity(sources.len());
+    let mut places = HashMap::new();
     for source in sources {
-        let place = out
-            .iter()
-            .filter(|(held, ..)| held.country == source.country && held.second == source.second_country && held.date == source.date && held.reason == source.reason)
-            .count() as u32;
+        let place = places.entry((source.country, source.second_country, source.date, source.reason.as_slice())).or_insert(0);
         out.push((
-            Identity { country: source.country, second: source.second_country, date: source.date, reason: source.reason.clone(), place },
+            Identity { country: source.country, second: source.second_country, date: source.date, reason: source.reason.clone(), place: *place },
             source.final_raw,
             slot_of(source.country),
         ));
+        *place += 1;
     }
     out
+}
+
+pub(super) fn listing_snapshot(frame: &replay_frame::frame::DecodedFrame, first: i32, last: i32) -> (Step, Option<MissingSpan>) {
+    let sources = rows::<tables::ThreatSources>(frame);
+    let links = rows::<tables::CountryLinks>(frame).ok();
+    match sources {
+        Ok(sources) => (Step::Stretch { first, last, listed: Some(listed(sources, |country| links.and_then(|links| link_slot(links, country)))) }, None),
+        Err(reason) => (Step::Stretch { first, last, listed: None }, Some(MissingSpan { first_hour: first, last_hour: last, reason })),
+    }
 }
 
 fn number(cells: &[Cell], column: usize) -> Option<i64> {
@@ -533,12 +541,15 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
     let mut steps: Vec<Step> = Vec::new();
     let mut iter = log_rows.into_iter().peekable();
     let mut unreadable_hours: Vec<i32> = Vec::new();
+    let listing_fields = ["country", "second_country", "date", "reason", "final_raw"].map(|field| dashboard_declare::field(TableId::ThreatSources, field)).into_iter().collect::<io::Result<Vec<_>>>()?;
+    let link_fields = [dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?];
+    let reads = [
+        replay_lanes::at::Read { table: TableId::ThreatSources, columns: Some(&listing_fields), keys: replay_lanes::at::Keys::All },
+        replay_lanes::at::Read { table: TableId::CountryLinks, columns: Some(&link_fields), keys: replay_lanes::at::Keys::All },
+    ];
+    let mut listings = replay_lanes::at::Cursor::new(recording, &reads)?;
     for stretch in &timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let reads = [
-            replay_lanes::at::Read { table: TableId::ThreatSources, columns: None, keys: replay_lanes::at::Keys::All },
-            replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: replay_lanes::at::Keys::All },
-        ];
         let (valid, withheld) = valid_span(recording, TableId::ThreatSources, stretch.run, stretch.first, stretch.last);
         listing_missing.extend(withheld);
         let Some((lo, hi)) = valid else { continue };
@@ -559,10 +570,13 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
                 listing_missing.push(MissingSpan { first_hour: first, last_hour: last, reason });
                 continue;
             }
-            let frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, stretch.run, first, &reads))?;
-            let sources = rows::<tables::ThreatSources>(&frame).map_err(dashboard_core::invalid)?;
-            let links = rows::<tables::CountryLinks>(&frame).ok();
-            steps.push(Step::Stretch { first, last, listed: Some(listed(sources, |country| links.and_then(|links| link_slot(links, country)))) });
+            let frame = dashboard_query::cost::storage(|| listings.frame(stretch.run, first))?;
+            let (step, missing) = listing_snapshot(&frame, first, last);
+            steps.push(step);
+            if let Some(span) = missing {
+                listing_missing.push(span);
+                continue;
+            }
             while let Some(row) = iter.next_if(|row| row.hour <= last) {
                 if row.hour > first {
                     if let Some(step) = row_step(&row) {
@@ -1370,7 +1384,7 @@ impl Product for WorldTensionStack {
                     bands: Vec::new(),
                     other: None,
                     events: Vec::new(),
-                listing_missing: None,
+                    listing_missing: None,
                     missing: Vec::new(),
                     next_change_hour,
                     warnings,
