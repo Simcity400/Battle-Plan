@@ -23,14 +23,13 @@ pub const RECOVERED_KIND: u8 = 4;
 
 pub enum Months<'a> {
     All,
-    Window,
     Retaining {
         whole: bool,
         sealed: &'a mut SealedMonths,
     },
 }
 
-pub const WINDOW_ENTRIES: u32 = 2;
+const WINDOW_ENTRIES: u32 = 2;
 
 #[derive(Default)]
 pub struct SealedMonths {
@@ -647,15 +646,6 @@ fn read_group(
             };
             let entries = Array::from_header(bytes[at..at + 16].try_into().unwrap(), 8)
                 .ok_or("combat log month array invalid")?;
-            let entries = match read {
-                Months::Window => {
-                    let first = entries.count.saturating_sub(WINDOW_ENTRIES);
-                    entries
-                        .slice(first, entries.count - first, 8)
-                        .map_err(|_| "combat log month window invalid")?
-                }
-                _ => entries,
-            };
             let key = Key {
                 country,
                 group,
