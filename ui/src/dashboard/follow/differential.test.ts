@@ -7,6 +7,10 @@ import { Page, type Bitmap, type PageMessage } from './page.ts';
 import { splitForLanes } from './split.ts';
 import { cellValue, parseAnswer, rowKey } from './message.ts';
 import { answerBody } from './messages.fixture.ts';
+import { createLaneView, type LaneBinding, type LaneFamily } from '../../families/laneRuntime.ts';
+import { driveLane, installRecordingCanvas, LANE_THEME, type RecordedCanvas } from '../../families/laneRuntime.fixture.ts';
+import { registerFamilyProjection } from '../../families/registry.ts';
+import type { BoundedReadView, FamilyProjection } from '../../families/contract.ts';
 
 interface Fake extends Bitmap { closed: boolean }
 const NATIVE = 3, ROUTE = 1, LANES = 2, HOURS = 2000, ROWS = 6;
@@ -898,5 +902,411 @@ test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused 
     assert.ok(installedEntry(p, wShared, sShared).error);
   } finally {
     env.close();
+  }
+});
+
+test('dated admission (#117): branch, seek, requested hour and coverage agree across panel, canvas and worker against an eager reference through advance, rewind, pin, gap, late replies and remount', async () => {
+  type AdmissionModel = { readonly owner: string; readonly hour: number; readonly bucket: number; readonly value: number | null; readonly refused: string | null };
+  type AdmissionLayout = { readonly line: string };
+  type AdmissionBinding = LaneBinding<Record<string, never>> & { readonly family: 'admission-117' };
+
+  const truth = (owner: 'b1' | 'b2', hour: number): { readonly refused: string | null; readonly value: number | null } => {
+    const bucket = Math.floor(hour / 10);
+    if (owner === 'b1') {
+      if (hour >= 50 && hour <= 69) return { refused: 'branch 1 gap 50-69', value: null };
+      return { refused: null, value: (hour < 50 ? 100 : 200) + bucket };
+    }
+    return { refused: null, value: 500 + bucket };
+  };
+
+  registerFamilyProjection<FamilyProjection<AdmissionModel, Record<string, never>>>({
+    kind: 'admission-117',
+    family: 'admission-117',
+    project(view: BoundedReadView): AdmissionModel {
+      const panel = view.panel<{ owner: string; value: number } | null>('main');
+      const refused = view.refused('main') ?? null;
+      const bucket = Math.floor(view.hour / 10);
+      return {
+        owner: panel?.owner ?? '',
+        hour: view.hour,
+        bucket,
+        value: panel ? panel.value : null,
+        refused,
+      };
+    },
+    nextChange(view: BoundedReadView): number {
+      return Math.floor(view.hour / 10) * 10 + 10;
+    },
+  });
+
+  const admissionFamily: LaneFamily<AdmissionBinding, AdmissionModel, AdmissionLayout> = {
+    family: 'admission-117' as never,
+    boundary: () => Infinity,
+    redraw: () => Infinity,
+    status: model => (model.refused !== null ? { refused: model.refused } : 'picture'),
+    view: [],
+    layout: model => ({ line: `${model.owner}|b${model.bucket}|v${model.value}` }),
+    paint(ctx, frame) {
+      ctx.clearRect(0, 0, frame.surface.width, frame.surface.height);
+      ctx.fillStyle = frame.theme.text;
+      ctx.fillText(frame.layout.line, 4, 12);
+      return false;
+    },
+    hit: () => 'row0',
+    tooltip: (frame, key) => ({ rowKey: key, content: { title: `${frame.layout.line}@${frame.hour}`, rows: [] } as never }),
+    structure: frame => ({ nav: [frame.layout.line] }),
+    mirror: frame => [frame.layout.line],
+    audit: frame => [frame.layout.line],
+    visibleArt: () => [],
+  };
+
+  const marksOf = (canvas: RecordedCanvas): string[] => {
+    const out: string[] = [];
+    for (const [k, v] of canvas.marks) out.push(`${k}=${v}`);
+    return out.sort();
+  };
+
+  const recording = installRecordingCanvas();
+  try {
+    const eagerRef = (owner: 'b1' | 'b2', hour: number) => {
+      const sample = truth(owner, hour);
+      const driver = driveLane(createLaneView(admissionFamily, () => {}), recording.canvases, { width: 200, height: 60, dpr: 1 });
+      const value = { kind: 'panel' as const, bytes: null, data: sample.refused ? null : { owner, value: sample.value! }, refused: sample.refused };
+      const subId = owner === 'b1' ? 3 : 5;
+      const fact = { h: hour, c: hour, value, refused: sample.refused, cells: [], seeds: new Map(), channel: 'panel' as const, version: hour, bytes: 1 };
+      const painted = driver.paint({
+        label: `eager-${owner}-${hour}`,
+        owner,
+        hour,
+        speed: 0,
+        subs: [{ id: subId, channel: 'panel', product: 'admission', route: null }],
+        pictures: [{ h: hour, c: hour, parts: [fact], value, refused: sample.refused }],
+        binding: { family: 'admission-117', kind: 'admission-117', options: {}, sources: { main: subId }, scrollTop: 0, theme: LANE_THEME },
+        inspect: 'row0',
+      });
+      return {
+        mode: painted.mode ?? 'picture',
+        reason: painted.reason,
+        picture: driver.picture(),
+        mirror: painted.fields.mirror?.value,
+        nav: painted.fields.nav?.value,
+        tooltip: (painted.fields.tooltip?.value as { text?: unknown } | undefined)?.text ?? null,
+      };
+    };
+
+    interface SnapBitmap extends Bitmap { readonly snapshot: readonly string[]; closed: boolean }
+    const makeSurface = () => {
+      const state = { snapshot: null as readonly string[] | null, clears: 0, installs: 0 };
+      return {
+        state,
+        surface: {
+          install(bitmap: SnapBitmap) { state.installs++; state.snapshot = bitmap.snapshot; bitmap.close(); },
+          clear() { state.clears++; state.snapshot = null; },
+        },
+      };
+    };
+
+    const heldPresentations: Parameters<Page<SnapBitmap>['offer']>[0][] = [];
+    let holdNext = false;
+    let lane!: Lane<SnapBitmap>;
+    const page = new Page<SnapBitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+        else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+        else lane.fail(m.route);
+      },
+    });
+    const view = createLaneView(admissionFamily, () => {});
+    lane = new Lane<SnapBitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 100,
+      views: () => view,
+      crop: async sources => sources.map((source): SnapBitmap => ({
+        width: source.width,
+        snapshot: marksOf(source as unknown as RecordedCanvas),
+        closed: false,
+        close() { this.closed = true; },
+      })),
+      present: presentation => {
+        if (holdNext) { holdNext = false; heldPresentations.push(presentation); }
+        else page.offer(presentation);
+      },
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: () => {},
+    });
+
+    const packetFor = (native: number, sub: number, owner: 'b1' | 'b2', atHour: number, completedHour: number, seek: number): Uint8Array => {
+      const sample = truth(owner, atHour);
+      const rec = sample.refused !== null
+        ? { id: sub, hour: atHour, kind: 'refused' as const, data: sample.refused }
+        : { id: sub, hour: atHour, kind: 'data' as const, data: { owner, value: sample.value! } };
+      const parts = [rec, { id: 0, hour: completedHour, kind: 'completed' as const }].map(record => {
+        const body = record.kind === 'data' ? encode(record.data) : record.kind === 'refused' ? new TextEncoder().encode(record.data) : new Uint8Array();
+        const out = new Uint8Array((16 + body.length + 7) & ~7), dv = new DataView(out.buffer);
+        dv.setUint32(0, record.kind === 'completed' ? 0 : record.id, true);
+        dv.setInt32(4, record.hour, true);
+        dv.setUint8(8, record.kind === 'data' ? 1 : record.kind === 'refused' ? 0 : 4);
+        dv.setUint8(9, 1);
+        dv.setUint32(12, body.length, true);
+        out.set(body, 16);
+        return out;
+      });
+      const out = new Uint8Array(24 + parts.reduce((sum, p) => sum + p.length, 0)), dv = new DataView(out.buffer);
+      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, 6, true); dv.setUint32(8, parts.length, true);
+      dv.setUint32(16, native, true); dv.setUint32(20, seek, true);
+      let at = 24;
+      for (const part of parts) { out.set(part, at); at += part.length; }
+      return out;
+    };
+
+    const s1 = makeSurface();
+    let activeSurface = s1;
+    let bindingGen = 1;
+    let seek = 0;
+
+    const modelFor = (sub: number): AdmissionBinding => ({
+      family: 'admission-117', kind: 'admission-117', options: {}, sources: { main: sub }, scrollTop: 0, theme: LANE_THEME,
+    });
+
+    lane.follow(3, 'panel', 'admission');
+    lane.bindRoute(3, 1, 11, 0);
+    lane.mount(1, [3], 'admission-117', modelFor(3));
+    lane.bind(1, { generation: bindingGen, owner: 'b1', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: null });
+    page.mount(1, { route: 1, lane: 0, owner: 'b1', bounds: [10, 120], surfaces: [s1.surface] });
+    page.inspect(1, 'row0');
+
+    const settle = async (hour: number, opts: { playing: boolean; seek?: number; step?: number; speed?: number }) => {
+      page.publish(hour, { playing: opts.playing, seek: opts.seek ?? seek, step: opts.step ?? 0, speed: opts.speed ?? 0 });
+      await flush();
+      page.frame();
+      await flush();
+      page.frame();
+    };
+
+    const assertMatchesEager = (owner: 'b1' | 'b2', expectedHour: number, label: string, opts: { dim?: boolean; mirrorWithheld?: boolean } = {}) => {
+      const v = page.view(1);
+      const ref = eagerRef(owner, expectedHour);
+      assert.equal(v.mode, ref.mode, `${label}: mode`);
+      assert.equal(v.dim, opts.dim ?? false, `${label}: dim`);
+      assert.equal(v.painted, expectedHour, `${label}: painted hour matches scripted hour`);
+      if (ref.mode === 'picture') {
+        assert.deepEqual(activeSurface.state.snapshot, ref.picture, `${label}: canvas pixels match eager reference`);
+        if (opts.mirrorWithheld) {
+          assert.equal(v.fields?.mirror, undefined, `${label}: cadence-withheld mirror is withheld while playing`);
+        } else {
+          assert.deepEqual(v.fields?.mirror, ref.mirror, `${label}: panel mirror matches eager reference`);
+        }
+        assert.deepEqual(v.fields?.nav, ref.nav, `${label}: panel nav matches eager reference`);
+        assert.deepEqual(v.tooltip, ref.tooltip, `${label}: panel tooltip matches eager reference`);
+      } else {
+        assert.equal(v.reason, ref.reason, `${label}: refusal reason`);
+        assert.equal(activeSurface.state.snapshot, null, `${label}: canvas cleared on refusal`);
+      }
+    };
+
+    lane.receive('panels', packetFor(11, 3, 'b1', 10, 19, seek));
+    await settle(10, { playing: false });
+    assertMatchesEager('b1', 10, 'initial paused b1@10');
+
+    lane.receive('panels', packetFor(11, 3, 'b1', 20, 29, seek));
+    await settle(22, { playing: true, step: 12, speed: 24 });
+    assertMatchesEager('b1', 22, 'advance playing b1@22', { mirrorWithheld: true });
+    assert.equal(page.view(1).h, 20);
+    assert.equal(page.view(1).through, 22);
+
+    lane.receive('panels', packetFor(11, 3, 'b1', 30, 39, seek));
+    await settle(35, { playing: false });
+    assertMatchesEager('b1', 35, 'advance paused b1@35');
+    assert.equal(page.view(1).h, 30);
+    assert.equal(page.view(1).through, 35);
+
+    await settle(45, { playing: false });
+    assertMatchesEager('b1', 35, 'paused past confirmed coverage dims while keeping b1@35', { dim: true });
+    assert.equal(page.view(1).through, 39);
+
+    const uncoveredBmp: SnapBitmap = { width: 200, snapshot: ['t:4:12=#eef1f6|b1|uncovered'], closed: false, close() { this.closed = true; } };
+    const installsBeforeUncovered = activeSurface.state.installs;
+    page.offer({
+      lane: 0,
+      serial: 99_001,
+      entries: [{
+        widget: 1,
+        binding: bindingGen,
+        owner: 'b1',
+        id: 99_001,
+        h: 35,
+        c: 39,
+        lo: 30,
+        hi: 49,
+        gen: { seek, reset: 0 },
+        follows: false,
+        mode: 'picture',
+        surfaces: [uncoveredBmp],
+        content: { 0: 'uncovered-surf', nav: 'uncovered-nav', mirror: 'uncovered-mirror', tooltip: 'uncovered-tip' },
+        fields: {
+          nav: ['b1|uncovered'],
+          mirror: ['b1|uncovered'],
+          tooltip: { key: 'row0', text: { rowKey: 'row0', hour: 35, content: { title: 'uncovered', rows: [] } } },
+        },
+      }],
+    });
+    page.frame();
+    assert.equal(uncoveredBmp.closed, true, 'uncovered replacement bitmap is closed');
+    assert.equal(activeSurface.state.installs, installsBeforeUncovered, 'uncovered replacement never installs over dimmed b1@35');
+    assert.ok((page.stats.rejected.uncovered ?? 0) >= 1, 'uncovered replacement is rejected as uncovered');
+    assertMatchesEager('b1', 35, 'installed picture, fields and tooltip survive uncovered replacement', { dim: true });
+
+    holdNext = true;
+    lane.receive('panels', packetFor(11, 3, 'b1', 40, 49, seek));
+    await settle(45, { playing: false });
+    assert.equal(heldPresentations.length, 1, 'captured presentation to deliver late');
+    const latePres = heldPresentations.pop()!;
+    lane.receive('panels', packetFor(11, 3, 'b1', 50, 59, seek));
+    await settle(55, { playing: false });
+    assertMatchesEager('b1', 55, 'gap [50,69] shows named refusal and clears canvas');
+
+    page.offer(latePres);
+    page.frame();
+    assert.equal(latePres.entries.every(e => e.surfaces.every(s => !s || s === 'same' || s.closed)), true, 'late pre-gap presentation bitmap is closed');
+    assertMatchesEager('b1', 55, 'late pre-gap presentation never overwrites gap refusal');
+
+    lane.receive('panels', packetFor(11, 3, 'b1', 70, 79, seek));
+    await settle(75, { playing: false });
+    assertMatchesEager('b1', 75, 'leaving gap restores fresh picture b1@75');
+    assert.equal(page.view(1).h, 70);
+
+    holdNext = true;
+    lane.receive('panels', packetFor(11, 3, 'b1', 80, 89, seek));
+    await settle(85, { playing: false });
+    const preRewindPres = heldPresentations.pop()!;
+
+    seek++;
+    await settle(25, { playing: false, seek });
+    page.offer(preRewindPres);
+    page.frame();
+    assert.equal(preRewindPres.entries.every(e => e.surfaces.every(s => !s || s === 'same' || s.closed)), true, 'late pre-rewind presentation rejected and closed');
+    lane.receive('panels', packetFor(11, 3, 'b1', 20, 29, seek));
+    await settle(25, { playing: false, seek });
+    assertMatchesEager('b1', 25, 'rewind b1@25 matches eager reference');
+    assert.equal(page.view(1).h, 20);
+
+    bindingGen++;
+    lane.follow(4, 'pinned', 'admission');
+    lane.exact(4, 32, { owner: 'b1', value: truth('b1', 32).value! }, null);
+    lane.mount(1, [4], 'admission-117', modelFor(4));
+    lane.bind(1, { generation: bindingGen, owner: 'b1', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: 32 });
+    page.rebind(1, { owner: 'b1', pin: 32, subscription: true });
+    await settle(25, { playing: false, seek });
+    assertMatchesEager('b1', 32, 'pinned at 32 shows b1@32');
+
+    seek++;
+    lane.receive('panels', packetFor(11, 3, 'b1', 80, 89, seek));
+    await settle(85, { playing: false, seek });
+    assertMatchesEager('b1', 32, 'pinned at 32 ignores clock advance to 85');
+
+    bindingGen++;
+    lane.exact(4, 55, null, truth('b1', 55).refused);
+    lane.bind(1, { generation: bindingGen, owner: 'b1', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: 55 });
+    page.rebind(1, { owner: 'b1', pin: 55 });
+    await settle(85, { playing: false, seek });
+    assertMatchesEager('b1', 55, 'pinning inside gap shows gap refusal and clears canvas');
+
+    bindingGen++;
+    lane.mount(1, [3], 'admission-117', modelFor(3));
+    lane.bind(1, { generation: bindingGen, owner: 'b1', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: null });
+    page.rebind(1, { owner: 'b1', pin: null, subscription: true });
+    await settle(85, { playing: false, seek });
+    assertMatchesEager('b1', 85, 'unpinning restores live hour b1@85');
+    assert.equal(page.view(1).h, 80);
+
+    holdNext = true;
+    lane.receive('panels', packetFor(11, 3, 'b1', 90, 99, seek));
+    await settle(95, { playing: false, seek });
+    const preRemountPres = heldPresentations.pop()!;
+
+    const s2 = makeSurface();
+    activeSurface = s2;
+    bindingGen++;
+    page.remount(1, [s2.surface]);
+    lane.bind(1, { generation: bindingGen, owner: 'b1', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: null }, undefined, false, true);
+    assert.equal(page.view(1).mode, 'reading', 'remount enters reading immediately');
+    assert.equal(s2.state.snapshot, null, 'remounted surface starts blank');
+
+    page.offer(preRemountPres);
+    page.frame();
+    assert.equal(preRemountPres.entries.every(e => e.surfaces.every(s => !s || s === 'same' || s.closed)), true, 'late pre-remount presentation is rejected and closed');
+    assert.equal(s2.state.installs, 0, 'late pre-remount presentation never installs on fresh surface');
+    assert.equal(s2.state.snapshot, null, 'fresh surface stays blank after late pre-remount reply');
+    assert.equal(page.view(1).mode, 'reading', 'page stays reading after late pre-remount reply');
+    await settle(95, { playing: false, seek });
+    assertMatchesEager('b1', 95, 'remount installs fresh picture matching eager reference');
+    assert.equal(page.view(1).h, 90);
+
+    holdNext = true;
+    lane.receive('panels', packetFor(11, 3, 'b1', 100, 109, seek));
+    await settle(105, { playing: false, seek });
+    const preBranchPres = heldPresentations.pop()!;
+
+    seek++;
+    bindingGen++;
+    lane.follow(5, 'panel', 'admission');
+    lane.bindRoute(5, 2, 22, seek);
+    lane.mount(1, [5], 'admission-117', modelFor(5));
+    lane.bind(1, { generation: bindingGen, owner: 'b2', surfaces: [{ width: 200, height: 60, dpr: 1 }], offset: 0, pin: null });
+    page.mountRoute(1, 2);
+    page.rebind(1, { owner: 'b2', bounds: [20, 140], subscription: true });
+
+    await settle(12, { playing: false, seek });
+    assert.equal(page.view(1).mode, 'outside', 'target 12 outside branch 2 bounds [20,140] reports outside');
+    assert.equal(activeSurface.state.snapshot, null, 'canvas cleared outside branch bounds');
+
+    page.offer(preBranchPres);
+    page.frame();
+    assert.equal(preBranchPres.entries.every(e => e.surfaces.every(s => !s || s === 'same' || s.closed)), true, 'late branch-1 presentation rejected after switch to branch 2');
+
+    lane.receive('panels', packetFor(22, 5, 'b2', 30, 39, seek));
+    await settle(35, { playing: false, seek });
+    assert.equal(page.view(1).tooltip, null, 'branch switch cleared branch-1 hover inspection');
+    page.inspect(1, 'row0');
+    await settle(35, { playing: false, seek });
+    assertMatchesEager('b2', 35, 'branch 2 b2@35 matches eager reference with zero branch-1 bleed');
+    assert.equal(page.view(1).h, 30);
+
+    const wrongOwnerBmp: SnapBitmap = { width: 200, snapshot: ['t:4:12=#eef1f6|b1|wrong-owner'], closed: false, close() { this.closed = true; } };
+    const installsBeforeOwner = activeSurface.state.installs;
+    page.offer({
+      lane: 0,
+      serial: 99_002,
+      entries: [{
+        widget: 1,
+        binding: bindingGen,
+        owner: 'b1',
+        id: 99_002,
+        h: 35,
+        c: 39,
+        lo: 30,
+        hi: 39,
+        gen: { seek, reset: 0 },
+        follows: false,
+        mode: 'picture',
+        surfaces: [wrongOwnerBmp],
+        content: { 0: 'wrong-owner-surf', nav: 'wrong-owner-nav', mirror: 'wrong-owner-mirror', tooltip: 'wrong-owner-tip' },
+        fields: {
+          nav: ['b1|wrong-owner'],
+          mirror: ['b1|wrong-owner'],
+          tooltip: { key: 'row0', text: { rowKey: 'row0', hour: 35, content: { title: 'wrong-owner', rows: [] } } },
+        },
+      }],
+    });
+    page.frame();
+    assert.equal(wrongOwnerBmp.closed, true, 'current-seek wrong-owner bitmap is closed');
+    assert.equal(activeSurface.state.installs, installsBeforeOwner, 'current-seek wrong-owner reply never installs on branch 2');
+    assert.ok((page.stats.rejected.owner ?? 0) >= 1, 'current-seek wrong-owner reply is rejected by owner admission');
+    assertMatchesEager('b2', 35, 'branch 2 canvas and panel survive current-seek wrong-owner delivery');
+  } finally {
+    recording.restore();
   }
 });
