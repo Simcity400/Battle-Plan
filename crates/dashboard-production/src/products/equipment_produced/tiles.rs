@@ -251,8 +251,6 @@ pub(super) fn range_baseline(line: &Line<'_, '_>, query: &Query<'_>, measure: Pr
     Ok(line.clock_at(start - 1)?.read.map_or(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED), Baseline::From))
 }
 
-const RANK_HOURS: i32 = 128;
-
 struct RankHistory {
     rows: History,
     amount: Option<usize>,
@@ -398,14 +396,14 @@ impl RankWindow<'_> {
 fn ranking_until(source: &Source, query: &Query<'_>, params: &EquipmentProducedRaceParams, reply: &EquipmentProducedRaceReply, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<i32> {
     let until = reply.last_hour;
     let Some(stretch) = query.timeline.at(params.hour) else { return Ok(until) };
-    let last = stretch.last.min(until.saturating_add(RANK_HOURS));
+    let last = stretch.last.min(until.saturating_add(BINS as i32));
     if until >= last { return Ok(until); }
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
     let metric = series.measure(produced_measure(params.count, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
     let dashboard_declare::Column::Cell(column) = metric.column else { return Ok(until) };
     let amount = dashboard_declare::field(series.table, column)?;
     let baseline = range_baseline(&Line::new(query, series, metric)?, query, params.measure, params.from_hour)?;
-    if matches!(baseline, Baseline::Unavailable(_)) { return Ok(last); }
+    if matches!(baseline, Baseline::Unavailable(_)) { return Ok(stretch.last); }
     let parts = if params.types.is_empty() {
         vec![u128::from(ProducedValueRow::WHOLE)]
     } else {
@@ -424,62 +422,83 @@ fn ranking_until(source: &Source, query: &Query<'_>, params: &EquipmentProducedR
         .flat_map(|id| production_keys(&parts, id).chain([ProducedValueRow::key_of(id, ProducedValueRow::REST)]))
         .chain([ProducedValueRow::clock()])
         .collect();
-    let first = reply.read_hour.unwrap_or(until).clamp(stretch.first.max(until.saturating_sub(RANK_HOURS)), until);
-    let now = RankHistory::load(query, stretch.run, &keys, amount, first, last)?;
     let fixed = back_of(params.measure);
     let back = |read| match baseline.hour() { Some(base) => (base <= read).then_some(base), None => fixed.and_then(|f| f(read)) };
     let windowed = baseline.hour().is_some() || fixed.is_some();
-    let starts = (first..=last).filter_map(back).filter(|&h| stretch.first <= h && h <= last);
-    let before = match (starts.clone().min(), starts.max()) {
-        (Some(lo), Some(hi)) => Some(RankHistory::load(query, stretch.run, &keys, amount, lo, hi)?),
-        _ => None,
-    };
-    let sample_at = |hour| {
-        let complete = now.complete(hour);
-        if !complete && matches!(baseline, Baseline::Opening(_)) { return None; }
-        let since = now.clock(hour, now.since);
-        if matches!(baseline, Baseline::Opening(open) if Some(open) != since) {
-            return Some(Err(Cow::Borrowed(unknown_reason(Gap::Restarted))));
-        }
-        if let Some(reason) = query.holders.not_ranked(hour) { return Some(Err(Cow::Owned(reason))); }
-        let Some(read) = now.clock(hour, now.read).filter(|&r| complete && r >= stretch.first) else { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))) };
-        if read < first || read > hour { return None; }
-        if !now.complete(read) { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))); }
-        let start = if windowed {
-            let Some(start) = back(read).filter(|&s| s >= stretch.first && since.is_none_or(|since| since <= s)) else {
-                return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
-            };
-            if let Some(reason) = query.holders.not_ranked(start) { return Some(Err(Cow::Owned(reason))); }
-            if !before.as_ref().is_some_and(|h| h.complete(start) && h.clock(start, h.read) == Some(start)) {
-                return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
+    let mut prior_read = reply.read_hour;
+    let mut prove = |until: i32, last: i32| -> io::Result<i32> {
+        check_cancel(cancelled)?;
+        let first = prior_read.unwrap_or(until).clamp(stretch.first.max(until.saturating_sub(tile::RANK_PROOF_HOURS)), until);
+        let starts = (first..=last).filter_map(back).filter(|&h| stretch.first <= h && h <= last);
+        let opening = starts.clone().min().zip(starts.max());
+        let (from, separate) = match opening {
+            Some((lo, hi)) if hi >= first.saturating_sub(1) => (first.min(lo), None),
+            _ => (first, opening),
+        };
+        let now = RankHistory::load(query, stretch.run, &keys, amount, from, last)?;
+        let earlier = separate.map(|(lo, hi)| RankHistory::load(query, stretch.run, &keys, amount, lo, hi)).transpose()?;
+        let before = opening.map(|_| earlier.as_ref().unwrap_or(&now));
+        let sample_at = |hour| {
+            let complete = now.complete(hour);
+            if !complete && matches!(baseline, Baseline::Opening(_)) { return None; }
+            let since = now.clock(hour, now.since);
+            if matches!(baseline, Baseline::Opening(open) if Some(open) != since) {
+                return Some(Err(Cow::Borrowed(unknown_reason(Gap::Restarted))));
             }
-            start
-        } else { read };
-        Some(Ok(RankSample { hour, read, start }))
+            if let Some(reason) = query.holders.not_ranked(hour) { return Some(Err(Cow::Owned(reason))); }
+            let Some(read) = now.clock(hour, now.read).filter(|&r| complete && r >= stretch.first) else { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))) };
+            if read < first || read > hour { return None; }
+            if !now.complete(read) { return Some(Err(Cow::Borrowed(totals::TOTALS_NOT_READ))); }
+            let start = if windowed {
+                let Some(start) = back(read).filter(|&s| s >= stretch.first && since.is_none_or(|since| since <= s)) else {
+                    return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
+                };
+                if let Some(reason) = query.holders.not_ranked(start) { return Some(Err(Cow::Owned(reason))); }
+                if !before.is_some_and(|h| h.complete(start) && h.clock(start, h.read) == Some(start)) {
+                    return Some(Err(Cow::Borrowed(totals::TOTALS_WINDOW_UNRECORDED)));
+                }
+                start
+            } else { read };
+            Some(Ok(RankSample { hour, read, start }))
+        };
+        let mut proved = until;
+        let mut samples: Vec<RankSample> = Vec::new();
+        for hour in until + 1..=last {
+            let Some(check) = sample_at(hour) else { break };
+            match check {
+                Err(reason) if reply.missing.as_deref() != Some(reason.as_ref()) => break,
+                Err(_) => {}
+                Ok(sample) => {
+                    if samples.last().is_some_and(|s| s.read > sample.read || s.start > sample.start) { break; }
+                    samples.push(sample);
+                }
+            }
+            proved = hour;
+        }
+        check_cancel(cancelled)?;
+        let mut rest = samples.as_slice();
+        while let Some(first) = rest.first() {
+            let edge = query.holders.interval(first.hour).1;
+            let (held, later) = rest.split_at(rest.partition_point(|s| s.hour <= edge));
+            let window = RankWindow { now: &now, before, samples: held, parts: &parts };
+            let count = window.matching(query, reply, params.top.unwrap_or(u32::MAX) as usize);
+            if let Some(changed) = held.get(count) { return Ok(changed.hour - 1); }
+            rest = later;
+        }
+        prior_read = now.clock(proved, now.read);
+        Ok(proved)
     };
     let mut proved = until;
-    let mut samples: Vec<RankSample> = Vec::new();
-    for hour in until + 1..=last {
-        let Some(check) = sample_at(hour) else { break };
-        match check {
-            Err(reason) if reply.missing.as_deref() != Some(reason.as_ref()) => break,
-            Err(_) => {}
-            Ok(sample) => {
-                if samples.last().is_some_and(|s| s.read > sample.read || s.start > sample.start) { break; }
-                samples.push(sample);
-            }
+    let mut step = 1;
+    while proved < last {
+        let end = proved.saturating_add(step).min(last);
+        match prove(proved, end) {
+            Ok(through) if through == end => proved = end,
+            Ok(through) => return Ok(through),
+            Err(error) if replay_recording::columnar_frames::Damage::of(&error).is_some() => return Ok(proved),
+            Err(error) => return Err(error),
         }
-        proved = hour;
-    }
-    check_cancel(cancelled)?;
-    let mut rest = samples.as_slice();
-    while let Some(first) = rest.first() {
-        let edge = query.holders.interval(first.hour).1;
-        let (held, later) = rest.split_at(rest.partition_point(|s| s.hour <= edge));
-        let window = RankWindow { now: &now, before: before.as_ref(), samples: held, parts: &parts };
-        let count = window.matching(query, reply, params.top.unwrap_or(u32::MAX) as usize);
-        if let Some(changed) = held.get(count) { return Ok(changed.hour - 1); }
-        rest = later;
+        step *= 4;
     }
     Ok(proved)
 }
@@ -523,7 +542,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             };
             let at_reply = race_reply(source, query, &at_params, context, cancelled)?;
             let from = at_reply.first_hour.min(hour);
-            let until = ranking_until(source, query, &at_params, &at_reply, context, cancelled).unwrap_or(at_reply.last_hour);
+            let until = ranking_until(source, query, &at_params, &at_reply, context, cancelled)?;
             check_cancel(cancelled)?;
             if let Some(reason) = at_reply.missing {
                 (Vec::new(), Some(TileRanking { hour, from, until, refused: Some(reason) }))
@@ -714,7 +733,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         for (measure, from_hour) in [(ProducedMeasure::Total, None), (ProducedMeasure::Total, Some(first + 165)), (ProducedMeasure::Day, None)] {
             let mut params = EquipmentProducedRaceParams {
-                branch_id: "1".into(), hour: first + 170, countries: vec![], group: None, top: Some(2),
+                branch_id: "1".into(), hour: first + 50, countries: vec![], group: None, top: Some(2),
                 count: ProducedCount::Units, measure, types: vec![], refits: false, from_hour,
             };
             let mut until = i32::MIN;
