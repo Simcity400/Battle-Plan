@@ -160,7 +160,7 @@ mod unlinked_slot {
     };
     use dashboard_query::identity::TAG_UNLINKED;
     use replay::campaign::Replay;
-    use replay_data::rows::{AirWingRow, ShipRow, TableRows, TaskForceRow, tables};
+    use replay_data::rows::{AirWingRow, ShipRow, TableRows, TaskForceRow, WingEquipmentRow, tables};
     use replay_frame::frame::TableView;
     use serde_json::{Value, json};
     use std::sync::atomic::AtomicBool;
@@ -174,7 +174,9 @@ mod unlinked_slot {
             }
             *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![
                 AirWingRow { id: 1, owner: 11, planes: if hour == 101 { -1 } else { hour - 90 }, ..Default::default() },
+                AirWingRow { id: 2, owner: 44, planes: 0, ..Default::default() },
             ]));
+            *frame.tables[TableId::WingEquipment.index()] = TableView::Complete(TableRows::WingEquipment(vec![WingEquipmentRow { wing: 2, variant: 5, ..Default::default() }]));
             *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![ShipRow { id: 1, task_force: 2, strength: 41, ..Default::default() }]));
             *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(vec![TaskForceRow { id: 2, roster_owner: 11, logical_owner: 11, ..Default::default() }]));
             *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(Vec::new()));
@@ -206,7 +208,7 @@ mod unlinked_slot {
         }
     }
 
-    fn gap_row<P: AtHour>(mut params: Value) -> Value
+    fn gap_row<P: AtHour>(mut params: Value) -> (Value, Vec<Value>)
     where P::Params: Sync, P::Context: Sync {
         params["branchId"] = json!("1");
         params["countries"] = json!([7, 8, 77]);
@@ -219,37 +221,36 @@ mod unlinked_slot {
         let row = rows.iter().find(|row| row["country"] == 7).expect("the reply keeps the chosen slot");
         assert_eq!(row["slot"], Value::Null);
         assert_eq!(row["tag"], "7");
-        let reason = format!("Who holds 7 is not known: {TAG_UNLINKED}");
-        if row["total"].is_null() {
-            assert_eq!(row["missing"], reason);
-        } else {
-            assert_eq!(row["missing"], Value::Null);
-            assert!(reply["warnings"].as_array().unwrap().contains(&json!(reason)));
-        }
         let absent = rows.iter().find(|row| row["country"] == 77).unwrap();
         assert_eq!(absent["total"], Value::Null);
         assert!(absent["missing"].as_str().unwrap().contains(TAG_UNLINKED));
         assert!(absent["values"].as_array().unwrap().iter().all(Value::is_null));
-        row.clone()
+        (row.clone(), reply["warnings"].as_array().unwrap().clone())
     }
 
     #[test]
     fn air_force_keeps_the_missing_plane_count() {
-        let row = gap_row::<AirForceAt>(json!({ "measure": "planes", "ownership": "roster" }));
+        let (row, _) = gap_row::<AirForceAt>(json!({ "measure": "planes", "ownership": "roster" }));
         assert_eq!(row["total"], Value::Null);
+        assert_eq!(row["missing"], format!("Who holds 7 is not known: {TAG_UNLINKED}. No total was recorded for air planes at this hour"));
+        assert_eq!(row["values"], json!([null, 0]));
     }
 
     #[test]
     fn navy_keeps_witnessed_hull_strength_and_class() {
-        let row = gap_row::<NavyAt>(json!({ "measure": "strength", "ownership": "roster", "grouping": "class" }));
+        let (row, warnings) = gap_row::<NavyAt>(json!({ "measure": "strength", "ownership": "roster", "grouping": "class" }));
         assert_eq!(row["total"], 41);
+        assert_eq!(row["missing"], Value::Null);
+        assert!(warnings.contains(&json!(format!("Who holds 7 is not known: {TAG_UNLINKED}"))));
         assert_eq!(row["values"], json!([41]));
         assert_eq!(row["referenceTotal"], Value::Null);
     }
 
     #[test]
     fn army_keeps_a_recorded_zero() {
-        let row = gap_row::<ArmyAt>(json!({ "countFor": "owner" }));
+        let (row, warnings) = gap_row::<ArmyAt>(json!({ "countFor": "owner" }));
         assert_eq!(row["total"], 0);
+        assert_eq!(row["missing"], Value::Null);
+        assert!(warnings.contains(&json!(format!("Who holds 7 is not known: {TAG_UNLINKED}"))));
     }
 }

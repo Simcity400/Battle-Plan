@@ -222,6 +222,7 @@ fn frame_variant_tokens(frame: &DecodedFrame) -> HashMap<u64, String> {
 pub(crate) struct SelectedRow {
     pub(crate) slot: Option<u32>,
     holder_slot: Option<u32>,
+    holder_warning: Option<String>,
     pub(crate) country: Country,
     pub(crate) tag: String,
     pub(crate) total: Option<i64>,
@@ -256,6 +257,7 @@ pub(crate) fn select_population<R>(
                 held.push(SelectedRow {
                     slot: Some(slot),
                     holder_slot: Some(slot),
+                    holder_warning: None,
                     country: Country::from(tag),
                     tag: tag.to_owned(),
                     total,
@@ -326,22 +328,24 @@ pub(crate) fn select_explicit<T: replay_data::rows::TableSchema>(
         if slot.is_some_and(|slot| !held_slots.insert(slot)) {
             continue;
         }
-        let tag = if holder_slot.is_some() { holders.name(country, hour) } else { country.to_string() };
+        let tag = holders.label(country, hour).unwrap_or_else(|| country.to_string());
         let holder_missing = holder_reason.map(|reason| format!("Who holds {country} is not known: {reason}"));
         let unread_reference = absent_reference.map(|_| None);
-        let (total, reference_total, missing) = match slot.map(|slot| witnessed::<T>(frame, u128::from(slot))) {
+        let (total, reference_total, reading_missing) = match slot.map(|slot| witnessed::<T>(frame, u128::from(slot))) {
             Some(Witness::Row(row)) => {
                 let total = total_of(row);
-                (total, reference_of(row), holder_missing.or_else(|| total.is_none().then(|| format!("{label} was not recorded at this hour"))))
+                (total, reference_of(row), total.is_none().then(|| format!("No total was recorded for {label} at this hour")))
             }
             Some(Witness::Absent) if holder_slot.is_some() => (Some(0), absent_reference, None),
-            Some(Witness::NotRecorded(reason)) => {
-                let reason = match holder_missing { Some(holder) => format!("{holder}. {reason}"), None => reason };
-                (None, unread_reference, Some(reason))
-            }
-            _ => (None, unread_reference, holder_missing),
+            Some(Witness::NotRecorded(reason)) => (None, unread_reference, Some(reason)),
+            _ => (None, unread_reference, None),
         };
-        out.push(SelectedRow { slot, holder_slot, country: country.clone(), tag, total, reference_total, missing });
+        let (missing, holder_warning) = match (holder_missing, reading_missing) {
+            (Some(holder), Some(reading)) => (Some(format!("{holder}. {reading}")), None),
+            (holder, None) if total.is_some() => (None, holder),
+            (holder, reading) => (holder.or(reading), None),
+        };
+        out.push(SelectedRow { slot, holder_slot, holder_warning, country: country.clone(), tag, total, reference_total, missing });
     }
     out.sort_unstable_by(|a, b| match (a.total, b.total) {
         (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.tag.cmp(&b.tag)),
@@ -532,10 +536,8 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
     }
     let rows = selected
         .into_iter()
-        .map(|mut row| {
-            if row.holder_slot.is_none() && row.total.is_some() {
-                warnings.extend(row.missing.take());
-            }
+        .map(|row| {
+            warnings.extend(row.holder_warning);
             if let Some(reason) = &parts_error {
                 return ForceAtRow {
                     country: row.country,
@@ -555,14 +557,11 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
                 .flatten()
                 .filter_map(|&(part, value)| Some((*named.of.get(&part)?, value)))
                 .collect();
-            let (mut values, reconciled) = split(row.total, &held, groups);
-            if row.holder_slot.is_none() && row.total.is_none() {
-                let mut witnessed = vec![None; groups];
-                for &(part, _) in &held {
-                    witnessed[part] = values[part];
-                }
-                values = witnessed;
-            }
+            let (values, reconciled) = if row.holder_slot.is_none() && row.total.is_none() && held.is_empty() {
+                (vec![None; groups], false)
+            } else {
+                split(row.total, &held, groups)
+            };
             let parts_missing = (row.total.is_some() && !reconciled).then(|| "Part breakdown does not reconcile with the recorded total at this hour".to_owned());
             ForceAtRow {
                 country: row.country,
