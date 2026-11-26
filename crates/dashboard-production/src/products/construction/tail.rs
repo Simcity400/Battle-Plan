@@ -698,7 +698,14 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         chips,
         types,
         repair_icon: named.repair_icon,
-        factory_cap: factory_cap(content.catalogue().map_err(str::to_owned).and_then(|catalogue| catalogue.defines())),
+        factory_cap: factory_cap(
+            content
+                .catalogue()
+                .map_err(str::to_owned)
+                .and_then(|catalogue| content_reader_defines::defines::read(&catalogue.content.layers).map_err(|why| why.to_string()))
+                .as_ref()
+                .map_err(Clone::clone),
+        ),
         unavailable: (!recorded).then(|| "Construction was not recorded.".to_owned()),
         warnings,
     })
@@ -708,7 +715,7 @@ fn factory_cap(defines: Result<&content_reader_defines::defines::Defines, String
     let missing = |why: String| format!("The most factories a construction line takes is not recorded: {why}");
     let cap = defines.and_then(|defines| defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").map_err(|why| why.to_string())).map_err(missing)?;
     if cap.fract() != 0.0 || cap < 1.0 || cap > f64::from(i32::MAX) {
-        return Err(missing(format!("NProduction.MAX_CIV_FACTORIES_PER_LINE is {cap}, not a whole number of factories")));
+        return Err(missing(format!("NProduction.MAX_CIV_FACTORIES_PER_LINE is {cap}, not a whole number from 1 to {}", i32::MAX)));
     }
     Ok(cap as i32)
 }
@@ -1042,9 +1049,13 @@ mod tests {
             defines
         };
         assert_eq!(factory_cap(Ok(&defines("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 20 } }"))), Ok(20), "a mod's cap, not a built-in one");
-        for text in ["NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 2.5 } }", "NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 0 } }", "NDefines = { NProduction = {} }"] {
+        for (text, why) in [
+            ("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 2.5 } }", "is 2.5, not a whole number from 1 to 2147483647"),
+            ("NDefines = { NProduction = { MAX_CIV_FACTORIES_PER_LINE = 0 } }", "is 0, not a whole number from 1 to 2147483647"),
+            ("NDefines = { NProduction = {} }", "is not a number"),
+        ] {
             let refused = factory_cap(Ok(&defines(text))).unwrap_err();
-            assert!(refused.starts_with("The most factories a construction line takes is not recorded"), "{text}: {refused}");
+            assert!(refused.starts_with("The most factories a construction line takes is not recorded") && refused.ends_with(why), "{text}: {refused}");
         }
         assert!(factory_cap(Err("no recorded content".to_owned())).unwrap_err().ends_with("no recorded content"));
     }

@@ -222,17 +222,22 @@ test('constructionLogDeclaration sends filters, work kind, queue toggle, order, 
 
 test('a line shows its factories of the recorded most a line takes, and the count alone when that most is not recorded', () => {
   const row = sampleRow({ key: '1', hour: 100, live: true, factories: 3, status: 'building' });
-  const project = (overrides: Partial<ConstructionLogTailReply>, artwork = false) => {
-    const source = buildRowSourceFromHead('test:construction:cap', sampleReply([row], overrides), undefined, 150)!;
-    const model = constructionLogProjection.project(createBoundedReadView({ hour: 150, rows: new Map([['main', source]]) }), { artwork, selected: [] });
+  const asked: unknown[] = [];
+  const project = (overrides: Partial<ConstructionLogTailReply>, artwork = false, line = row) => {
+    const source = buildRowSourceFromHead('test:construction:cap', sampleReply([line], overrides), undefined, 150)!;
+    const model = constructionLogProjection.project(createBoundedReadView({ hour: 150, rows: new Map([['main', source]]), onArtDemand: handle => { asked.push(handle); } }), { artwork, selected: [] });
     return model.rows[0]!;
   };
   const capped = project({ factoryCap: 20, factoryCapMissing: null }, true);
   assert.deepEqual([capped.cells.factories?.value, capped.cells.factories?.unitSuffix], [{ kind: 'known', value: '3 / 20' }, 'factories'], 'the cap the recording holds, a mod’s included');
-  assert.equal(capped.cells.factories?.unitArt?.status !== undefined, true, 'the civilian factory icon comes with the figure');
+  assert.equal(capped.cells.factories?.unitArt !== undefined, true, 'the civilian factory icon comes with the figure');
+  assert.ok(asked.some(handle => JSON.stringify(handle) === JSON.stringify({ kind: 'sprite', key: 'GFX_civ_factory', frame: 0 })), 'the game’s civilian factory icon, by its sprite');
   const reason = 'The most factories a construction line takes is not recorded: no recorded content';
   const uncapped = project({ factoryCap: null, factoryCapMissing: reason });
   assert.deepEqual([uncapped.cells.factories?.value, uncapped.cells.factories?.unitSuffix, uncapped.cells.factories?.unitArt], [{ kind: 'known', value: '3' }, 'factories', undefined], 'never a guessed cap');
   const tooltip = (typeof uncapped.tooltipExtra === 'function' ? uncapped.tooltipExtra() : uncapped.tooltipExtra) ?? [];
   assert.deepEqual(tooltip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason });
+  const unread = project({ factoryCap: null, factoryCapMissing: reason }, false, sampleRow({ key: '2', hour: 100, live: true, factories: null, factoriesMissing: 'Assigned factories not recorded: line is known from output only', status: 'building' }));
+  const unreadTip = (typeof unread.tooltipExtra === 'function' ? unread.tooltipExtra() : unread.tooltipExtra) ?? [];
+  assert.deepEqual(unreadTip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason }, 'the missing cap is told even when the count is missing too');
 });

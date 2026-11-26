@@ -274,9 +274,9 @@ function buildConstructionRow(
     else if (row.placeMissing) out.push({ label: 'Place', value: notRecorded(row.placeMissing) });
     if (levels.text) out.push({ label: 'Levels', value: knownValue(levels.text) });
     else if (row.levelsMissing) out.push({ label: 'Levels', value: notRecorded(row.levelsMissing) });
+    if (row.live && cap.missing !== null) out.push({ label: 'Most factories', value: notRecorded(cap.missing) });
     if (row.live && row.factories !== null) {
       out.push({ label: 'Factories', value: knownValue(factoriesText(row.factories, cap)) });
-      if (cap.missing !== null) out.push({ label: 'Most factories', value: notRecorded(cap.missing) });
     } else if (!row.live && row.lastFactories !== null) {
       out.push({ label: 'Factories at last read', value: knownValue(formatScalar(row.lastFactories, 'integer')) });
     }
