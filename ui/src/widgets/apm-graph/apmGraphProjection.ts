@@ -80,12 +80,12 @@ type PlayerLookup = Pick<PlayerRoster, 'get'>;
 const recordedRosters = new WeakMap<readonly ApmPlayer[], PlayerRoster>();
 const noPlayers: readonly ApmPlayer[] = [];
 
-function nameChangesFor(players: readonly PlayerRuns[]): NameChanges {
+function nameChangesFor(players: readonly PlayerRuns[], only?: ReadonlySet<string>): NameChanges {
   const byName = new Map<string, { hour: number; id: string; starts: boolean }[]>();
   for (const { id, runs } of players) {
     runs?.forEach((run, i) => {
       const end = Math.min(run.lastHour + 1, runs[i + 1]?.firstHour ?? Infinity);
-      if (!run.name?.trim() || end <= run.firstHour) return;
+      if (!run.name?.trim() || (only && !only.has(run.name)) || end <= run.firstHour) return;
       let changes = byName.get(run.name);
       if (!changes) byName.set(run.name, changes = []);
       changes.push({ hour: run.firstHour, id, starts: true }, { hour: end, id, starts: false });
@@ -134,17 +134,55 @@ function recordedRoster(players: readonly ApmPlayer[]): PlayerRoster {
   return roster;
 }
 
+function coversHour(runs: readonly { firstHour: number; lastHour: number }[] | undefined, hour: number): boolean {
+  if (!runs?.length) return false;
+  const run = runs[runIndexAt(runs, hour)];
+  return Boolean(run && hour <= run.lastHour);
+}
+
 function withObservations(recorded: PlayerRoster, entries: readonly SeriesEntry[]): PlayerLookup {
-  if (entries.every(entry => recorded.get(entry.id)?.runs?.length)) return recorded;
-  const observed: PlayerRoster = new Map();
-  const observations = entries.map(({ id, obsHour, tag, name }) => ({
-    id, runs: [{ firstHour: obsHour, lastHour: obsHour, tag: tag ?? '', name, nameMissing: null }],
-  }));
-  const observedNames = nameChangesFor(observations);
-  for (const { id, runs } of observations) {
-    if (!recorded.get(id)?.runs?.length) observed.set(id, { runs, names: observedNames });
+  const uncovered = entries.filter(entry => {
+    const runs = recorded.get(entry.id)?.runs;
+    return !runs?.length || (entry.summary !== null && !coversHour(runs, entry.obsHour));
+  });
+  if (!uncovered.length) return recorded;
+  const baseNames = recorded.values().next().value?.names;
+  const observedRuns = new Map<string, ApmPlayer['runs']>();
+  const affectedNames = new Set<string>();
+  for (const { id, obsHour, tag, name } of uncovered) {
+    const added = { firstHour: obsHour, lastHour: obsHour, tag: tag ?? '', name, nameMissing: null };
+    const existing = recorded.get(id)?.runs;
+    const runs = existing?.length ? [...existing, added].sort((a, b) => a.firstHour - b.firstHour) : [added];
+    observedRuns.set(id, runs);
+    if (name?.trim()) affectedNames.add(name);
   }
-  return { get: id => observed.get(id) ?? recorded.get(id) };
+  let names: NameChanges = baseNames ?? new Map();
+  if (affectedNames.size) {
+    const affected: PlayerRuns[] = [];
+    for (const [id, entry] of recorded) affected.push({ id, runs: observedRuns.get(id) ?? entry.runs });
+    for (const [id, runs] of observedRuns) if (!recorded.has(id)) affected.push({ id, runs });
+    const recomputed = nameChangesFor(affected, affectedNames);
+    names = new Map(baseNames);
+    for (const name of affectedNames) {
+      const dates = recomputed.get(name);
+      if (dates) names.set(name, dates);
+      else names.delete(name);
+    }
+  }
+  const observed: PlayerRoster = new Map();
+  for (const [id, runs] of observedRuns) observed.set(id, { runs, names });
+  if (!affectedNames.size) return { get: id => observed.get(id) ?? recorded.get(id) };
+  return {
+    get: id => {
+      const held = observed.get(id);
+      if (held) return held;
+      const entry = recorded.get(id);
+      if (!entry) return undefined;
+      const merged = { runs: entry.runs, names };
+      observed.set(id, merged);
+      return merged;
+    },
+  };
 }
 
 function apmSeriesLooks(
