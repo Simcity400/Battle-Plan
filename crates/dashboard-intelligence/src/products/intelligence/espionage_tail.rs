@@ -720,6 +720,7 @@ fn scan(
                 let open = completion.is_none() && ended_by.is_none() && last_seen == stretch.last;
                 if let Some(&at) = prior.get(&op_id)
                     && first_seen == stretch.first
+                    && stretch_index.checked_sub(1).is_some_and(|before| query.timeline.stretches[before].last + 1 == stretch.first)
                     && raw_episodes[at].continues(&steps[0])
                 {
                     let held = &mut raw_episodes[at];
@@ -833,12 +834,8 @@ fn scan(
         if let Some(comp) = &raw.completion {
             changes.push(comp.observed_hour);
         }
-        if let Some(by) = raw.ended_by {
-            changes.push(by);
-        } else if raw.completion.is_none()
-            && let Some(last) = raw.last_seen
-            && last < query.timeline.last
-        {
+        changes.extend(raw.ended_by);
+        if let Some(last) = raw.last_seen.filter(|&last| last < query.timeline.last) {
             changes.push(last.saturating_add(1));
         }
         changes.sort_unstable();
@@ -1050,7 +1047,7 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
             terminal: u8::from(s.terminal),
             ..replay_data::rows::OperationRow::default()
         };
-        current_phase(&dummy, hour)
+        current_phase(&dummy, ep.last_seen.map_or(hour, |last| hour.min(last)))
     });
 
     let ended_hour = match status {
@@ -1414,15 +1411,54 @@ mod tests {
     }
 
     fn op_frame(branch: u64, hour: i32, ops: Vec<OperationRow>) -> replay_frame::frame::DecodedFrame {
+        read_frame(branch, hour, Some(ops))
+    }
+
+    fn read_frame(branch: u64, hour: i32, ops: Option<Vec<OperationRow>>) -> replay_frame::frame::DecodedFrame {
         let mut frame = base_frame(branch, hour, Some(1));
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![make_country(1, 1, b"GER"), make_country(2, 2, b"SOV")]));
         *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![make_link(1, 1), make_link(2, 2)]));
         *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 10, literal: b"operation_infiltrate_army".to_vec() }]));
-        frame.metrics.table_ns[TableId::Operations.index()] = 1;
-        *frame.tables[TableId::Operations.index()] = TableView::Complete(TableRows::Operations(ops));
+        *frame.tables[TableId::Operations.index()] = match ops {
+            Some(ops) => {
+                frame.metrics.table_ns[TableId::Operations.index()] = 1;
+                TableView::Complete(TableRows::Operations(ops))
+            }
+            None => TableView::Unavailable { reason: "not read this hour".into() },
+        };
         frame.metrics.table_ns[TableId::OperationCompletions.index()] = 1;
         *frame.tables[TableId::OperationCompletions.index()] = TableView::Complete(TableRows::OperationCompletions(Vec::new()));
         frame
+    }
+
+    #[test]
+    fn an_operation_no_longer_read_keeps_its_last_phase_and_its_last_sighting_from_the_next_hour() {
+        let start = HOUR_EPOCH + 24 * 4;
+        let running = OperationRow { id: 100, owner: 1, target: 2, definition_token: 10, preparation_current: 100_000, preparation_required: 100_000, start_hour: start, duration_days: 2, phase_count: 2, assigned_slots: 1, ..OperationRow::default() };
+        let frames = (start..=start + 40).map(|hour| read_frame(1, hour, match hour - start { 0..=20 => Some(vec![running.clone()]), 21..=30 => None, _ => Some(vec![]) })).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "espionage-unread".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+        let ask = |hour: i32| {
+            EspionageLogTail::load(
+                &source,
+                &EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None },
+                &load,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let read = ask(start + 20);
+        assert_eq!((read.rows[0].status, read.rows[0].current_phase, read.rows[0].last_seen), (EspionageStatus::Running, Some(0), None));
+        assert_eq!(read.next_change, Some(start + 21), "the last sighting appears the hour after it");
+        let unread = ask(start + 25);
+        assert_eq!((unread.rows[0].status, unread.rows[0].last_seen), (EspionageStatus::NotRead, Some(start + 20)));
+        assert_eq!(unread.rows[0].current_phase, Some(0), "a phase past the last read is not shown as reached");
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
+        let exact = panel.exact().unwrap();
+        for (hour, seed) in [(start + 20, true), (start + 21, false), (start + 25, false), (start + 31, false), (start + 22, true)] {
+            assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
+        }
     }
 
     #[test]

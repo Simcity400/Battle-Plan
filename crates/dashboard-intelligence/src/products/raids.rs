@@ -600,37 +600,75 @@ fn spelled_at(recording: &replay_recording::columnar_frames::Recording, run: u32
     Ok(found)
 }
 
-fn first_spelled(recording: &replay_recording::columnar_frames::Recording, run: u32, tokens: &BTreeSet<u128>, from: i32, to: i32) -> io::Result<HashMap<u128, (i32, String)>> {
-    let mut out: HashMap<u128, (i32, String)> = HashMap::new();
-    let read = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LexicalTokens, from, to))?;
-    let Some(to) = read.last().map(|&(_, last)| last) else { return Ok(out) };
-    let at_end = spelled_at(recording, run, &tokens.iter().map(|&token| (to, token)).collect::<Vec<_>>())?;
-    let mut open: Vec<(u128, i32, i32)> = Vec::new();
-    for (token, literal) in at_end {
-        open.push((token, from, to));
-        out.insert(token, (to, literal));
-    }
+fn first_reading(
+    recording: &replay_recording::columnar_frames::Recording,
+    run: u32,
+    mut open: Vec<(u128, i32, i32, Option<String>)>,
+    readings: &mut HashMap<(u128, i32), String>,
+) -> io::Result<HashMap<u128, i32>> {
+    let mut found = HashMap::new();
     while !open.is_empty() {
-        let mut asks: Vec<(i32, u128)> = open.iter().map(|&(token, low, high)| (low + (high - low) / 2, token)).collect();
+        let mut asks: Vec<(i32, u128)> = open.iter().filter(|&&(_, low, high, _)| low < high).map(|&(token, low, high, _)| (low + (high - low) / 2, token)).collect();
         asks.sort_unstable();
-        let read = spelled_at(recording, run, &asks)?;
-        for (token, low, high) in &mut open {
+        let read = if asks.is_empty() { HashMap::new() } else { spelled_at(recording, run, &asks)? };
+        for (token, low, high, wanted) in &mut open {
+            if *low >= *high {
+                continue;
+            }
             let middle = *low + (*high - *low) / 2;
-            if read.contains_key(token) {
+            let literal = read.get(token);
+            if let Some(literal) = literal {
+                readings.insert((*token, middle), literal.clone());
+            }
+            if literal.is_some_and(|literal| wanted.as_ref().is_none_or(|wanted| wanted == literal)) {
                 *high = middle;
             } else {
                 *low = middle + 1;
             }
         }
-        open.retain(|&(token, low, high)| {
+        open.retain(|&(token, low, high, _)| {
             if low < high {
                 return true;
             }
-            if let Some(held) = out.get_mut(&token) {
-                held.0 = high;
-            }
+            found.insert(token, high);
             false
         });
+    }
+    Ok(found)
+}
+
+fn dated_spellings(
+    recording: &replay_recording::columnar_frames::Recording,
+    run: u32,
+    tokens: &BTreeSet<u128>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Vec<(i32, String)>>> {
+    let read = dashboard_query::cost::storage(|| lanes::complete_reads(recording, run, TableId::LexicalTokens, from, to))?;
+    let mut anchors = vec![to];
+    anchors.extend(read.last().map(|&(_, last)| last).filter(|&last| last != to));
+    let mut last: HashMap<u128, (i32, String)> = HashMap::new();
+    for &anchor in anchors.iter().rev() {
+        for (token, literal) in spelled_at(recording, run, &tokens.iter().map(|&token| (anchor, token)).collect::<Vec<_>>())? {
+            last.insert(token, (anchor, literal));
+        }
+    }
+    let mut readings: HashMap<(u128, i32), String> = last.iter().map(|(&token, (anchor, literal))| ((token, *anchor), literal.clone())).collect();
+    let first = first_reading(recording, run, last.iter().map(|(&token, &(anchor, _))| (token, from, anchor, None)).collect(), &mut readings)?;
+    let mut later = Vec::new();
+    let mut out: HashMap<u128, Vec<(i32, String)>> = HashMap::new();
+    for (&token, (anchor, literal)) in &last {
+        let Some(&hour) = first.get(&token) else { continue };
+        let earliest = readings.get(&(token, hour)).cloned().unwrap_or_else(|| literal.clone());
+        if earliest != *literal {
+            later.push((token, hour + 1, *anchor, Some(literal.clone())));
+        }
+        out.insert(token, vec![(hour, earliest)]);
+    }
+    for (token, hour) in first_reading(recording, run, later, &mut readings)? {
+        if let (Some(steps), Some((_, literal))) = (out.get_mut(&token), last.get(&token)) {
+            steps.push((hour, literal.clone()));
+        }
     }
     Ok(out)
 }
@@ -754,10 +792,11 @@ fn episodes(
         };
         let province_history = places(TableId::Provinces, &province_columns, &provinces)?;
         let state_history = places(TableId::States, &[state_controller], &states)?;
-        let lexicon = first_spelled(recording, run, &tokens, start, end)?;
-        let spelled: Vec<i32> = lexicon.values().map(|&(hour, _)| hour).collect();
+        let lexicon = dated_spellings(recording, run, &tokens, start, end)?;
+        let spelled: Vec<i32> = lexicon.values().flatten().map(|&(hour, _)| hour).collect();
         let literal_at = |token: u32, hour: i32| -> Option<String> {
-            lexicon.get(&u128::from(token)).filter(|&&(first, _)| first <= hour).map(|(_, literal)| literal.clone())
+            let steps = lexicon.get(&u128::from(token))?;
+            steps[..steps.partition_point(|&(first, _)| first <= hour)].last().map(|(_, literal)| literal.clone())
         };
         let place = |history: &lanes::History, column: usize, id: u32, hour: i32| -> Result<u32, ()> {
             match cell_at(history, steps_of(history, u128::from(id)), column, hour) {

@@ -131,6 +131,13 @@ test('a raid not read at the hour shown is not recorded, never ended', () => {
   assert.deepEqual(model.rows[0]!.cells.status?.value, { kind: 'notRecorded', reason: 'Raids were not recorded at this hour' });
 });
 
+test('a raid first read ready to launch shows its preparation as not recorded, never as not preparing', () => {
+  const row = sampleRow({ key: 'r-ready', hour: 10, status: 'prepared', preparation: null });
+  const source = buildRowSourceFromHead('test:raids:ready', sampleReply([row]), undefined, 50)!;
+  const model = raidLogProjection.project(createBoundedReadView({ hour: 50, rows: new Map([['main', source]]), identity: makeIdentity((_, key) => key) }), { artwork: false, selected: [] });
+  assert.deepEqual(model.rows[0]!.cells.preparation?.value, { kind: 'notRecorded', reason: 'Preparation hours were not recorded' });
+});
+
 test('a selected slot untagged raid is listed instead of dropped on the client', () => {
   const untagged = sampleRow({
     key: 'r-untagged',

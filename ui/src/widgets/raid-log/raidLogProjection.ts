@@ -127,7 +127,7 @@ function preparationCell(
 ): { readonly cell: TableCell; readonly nextChangeAt: number; readonly text: string | null } {
   const prep = row.preparation;
   if (!prep) {
-    if (row.status === 'preparing') {
+    if (row.status === 'preparing' || row.status === 'prepared') {
       return {
         cell: { value: notRecorded('Preparation hours were not recorded'), missingFigure: 'Preparation' },
         nextChangeAt: Infinity,
