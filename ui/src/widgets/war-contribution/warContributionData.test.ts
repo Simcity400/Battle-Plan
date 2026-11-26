@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { chosenWar, createWarChipTracker, createWarMenuTracker, readHourFor, warChipLeaderHour, warChipStateAt, warChoicesAt } from './warContributionData.ts';
+import { chosenWar, createWarChipTracker, createWarMenuTracker, readHourFor, warChipLeaderHour, warChipStateAt, warChoicesAt, warEligibilityAt } from './warContributionData.ts';
 
 const observation = (first: number, last: number, viewpointSide: string[], opposingSide: string[], name = 'Synthetic war'): WarObservation => ({
   firstHour: first, lastHour: last, viewpointTag: viewpointSide[0], viewpointSide, opposingSide, attackersAreViewpoint: true, representative: null,
@@ -439,6 +439,81 @@ test('warContributionSources plans no contribution reads when no eligible war ex
     assert.deepEqual(state.valid, [h, h]);
   }
   assert.ok(obsReads < 4000, `cached edge index avoids rescanning all 2,000 observations per boundary (reads=${obsReads})`);
+
+  warEligibilityAt(hourlyWars, null, 0);
+  obsReads = 0;
+  for (let h = 1; h <= 100; h++) {
+    assert.deepEqual(warEligibilityAt(hourlyWars, null, h), { mode: 'live', valid: [0, 1999] });
+  }
+  assert.equal(obsReads, 0, 'warm eligibility lookup reuses cached coalesced segments with zero observation accesses');
+
+  const splitByUnobserved = {
+    available: true,
+    wars: [war('1', 100, 125, [['AAA'], ['BBB']]), war('2', 175, 200, [['AAA'], ['BBB']])],
+    unobserved: [{ firstHour: 126, lastHour: 174 }],
+  } as unknown as WarsReply;
+  assert.deepEqual(warEligibilityAt(splitByUnobserved, null, 150), { mode: 'none', valid: [126, 174] });
+  const gapFollowPlan = warContributionSources({ ...makeCtx(splitByUnobserved, true), planHour: 150 });
+  assert.deepEqual(gapFollowPlan.entries, [], 'WarsReply.unobserved gap plans no ended or live read');
+  assert.deepEqual(gapFollowPlan.valid, [126, 174]);
+  assert.deepEqual(
+    chosenGroup(createBoundedReadView({ hour: 150, panels: new Map([['ended', { ...endedReply, hour: 125 }]]) }), { wars: splitByUnobserved, saved: null }),
+    { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' },
+    'unobserved war gap shows unavailable instead of the previous war’s hour-125 contributions',
+  );
+
+  const { createLaneView } = await import('../../families/laneRuntime.ts');
+  const { barsLane } = await import('../../families/bars/laneView.ts');
+  const { installRecordingCanvas, LANE_THEME, LaneTransport } = await import('../../families/laneRuntime.fixture.ts');
+  const { MEASURE_VIEW } = await import('./measureProjection.ts');
+  const recording = installRecordingCanvas();
+  try {
+    const view = createLaneView(barsLane, () => {});
+    const state = new Map<string, unknown>();
+    let seq = 0;
+    const content = () => `c${++seq}`;
+    const binding = new LaneTransport().carry({
+      family: 'bars' as const,
+      kind: 'war-contribution',
+      view: MEASURE_VIEW,
+      options: { wars: splitWars, saved: '1', measure: 'casualties' },
+      sources: {},
+      width: 480,
+      height: 240,
+      scrollTop: 0,
+      theme: LANE_THEME,
+      audit: true,
+      auditId: 1,
+    });
+    const paintAt = (hour: number, seek: number) => view.paint({
+      widget: 1,
+      subs: [],
+      pictures: [],
+      hour,
+      seek,
+      speed: 0,
+      now: 1000 + seek * 100,
+      inspect: null,
+      binding: { generation: 1, surfaces: [{ width: 480, height: 240, dpr: 1 }], offset: 0, pin: null },
+      model: binding,
+    } as never, state, content);
+    const at50 = paintAt(50, 0);
+    assert.equal(at50.mode, 'picture');
+    const text50 = JSON.stringify(at50.mode === 'picture' ? at50.fields : null);
+    assert.ok(text50.includes('The selected war has not started at this date.'), text50);
+
+    const at150 = paintAt(150, 1);
+    assert.equal(at150.mode, 'picture');
+    const text150 = JSON.stringify(at150.mode === 'picture' ? at150.fields : null);
+    assert.ok(text150.includes('This war’s contributions were not recorded at this time.'), `direct seek 50 -> 150 must replace prestart with gap message: ${text150}`);
+
+    const back50 = paintAt(50, 2);
+    assert.equal(back50.mode, 'picture');
+    const textBack50 = JSON.stringify(back50.mode === 'picture' ? back50.fields : null);
+    assert.ok(textBack50.includes('The selected war has not started at this date.'), textBack50);
+  } finally {
+    recording.restore();
+  }
 });
 
 test('war chip and menu watchers stay quiet across 100 played hours and wake only on observation or lead-identity changes', async () => {

@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { WAR_NOT_STARTED, chosenWar, readHourFor, warChipStateAt, warEligibilityAt } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor, unobservedAt, warChipStateAt, warEligibilityAt } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -52,10 +52,19 @@ function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): Wa
   return reply.hour >= war.firstHour && reply.hour <= war.lastHour && reply.hour <= hour ? reply : undefined;
 }
 
+export function warContributionNextChange(hour: number, options: WarChoiceOptions): number {
+  if (!options.wars || !options.wars.available) return Infinity;
+  const until = warChipStateAt(options.wars, options.saved, hour).valid[1];
+  return Number.isFinite(until) ? until + 1 : Infinity;
+}
+
 export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions): ChosenGroup {
   const hour = readView.hour;
   if (!options.wars) return { kind: 'loading' };
   if (!options.wars.available) return { kind: 'blank', empty: 'Wars are not in this recording.', emptyKind: 'unavailable' };
+  if (unobservedAt(options.wars, hour)) {
+    return { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
+  }
   const war = chosenWar(options.wars, options.saved, hour);
   if (!war) {
     const saved = options.wars.wars.find(item => item.id === options.saved);
