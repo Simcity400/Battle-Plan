@@ -157,18 +157,75 @@ pub(crate) struct Leader {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Parties {
     pub parties: BTreeMap<String, PartySeries>,
-    pub ruling: Vec<RulingRun>,
+    ruling: RulingHistory,
     pub leaders: Vec<LeaderRun>,
     pub people: Vec<Leader>,
-    pub party_name_runs: Vec<PartyNameRun>,
-    pub namings: Vec<(PartyNaming, Result<String, String>)>,
     pub elections: Vec<Election>,
     pub unobserved: Vec<HourSpan>,
     last: Option<(i32, (u32, u32))>,
     look_last: Option<(i32, (u32, u32))>,
     election: Option<((u32, u32), i64)>,
-    naming: Option<((String, u32, Option<String>), u32)>,
     leader: Option<(Option<u32>, Option<u32>)>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RulingHistory {
+    runs: Vec<RulingRun>,
+    name_runs: Vec<PartyNameRun>,
+    namings: Vec<(PartyNaming, Result<String, String>)>,
+    naming: Option<((String, u32, Option<String>), u32)>,
+}
+
+impl RulingHistory {
+    fn observe(
+        &mut self, token: &str, raw: u32, key: Option<String>, (hour, end): (i32, i32), continues: bool,
+        tags: impl FnOnce() -> io::Result<(Option<String>, Result<String, String>)>,
+    ) -> io::Result<()> {
+        let inputs = (token.to_owned(), raw, key.clone());
+        let index = match &self.naming {
+            Some((held, index)) if *held == inputs && continues => *index,
+            _ => {
+                let (own, selected) = tags()?;
+                let naming = PartyNaming { token: token.to_owned(), tag: own, original_tag: selected.as_ref().ok().cloned(), key };
+                let index = match self.namings.iter().position(|(held, original)| *held == naming && *original == selected) {
+                    Some(index) => index as u32,
+                    None => {
+                        self.namings.push((naming, selected));
+                        (self.namings.len() - 1) as u32
+                    }
+                };
+                self.naming = Some((inputs, index));
+                index
+            }
+        };
+        match self.name_runs.last_mut() {
+            Some(run) if continues && run.name == index && i64::from(run.last_hour) + 1 == i64::from(hour) => run.last_hour = end,
+            _ => self.name_runs.push(PartyNameRun { name: index, first_hour: hour, last_hour: end }),
+        }
+        match self.runs.last_mut() {
+            Some(run) if continues && run.token == token && i64::from(run.last_hour) + 1 == i64::from(hour) => run.last_hour = end,
+            previous => {
+                let starts_segment = !(continues && previous.is_some_and(|run| i64::from(run.last_hour) + 1 == i64::from(hour)));
+                self.runs.push(RulingRun { token: token.to_owned(), first_hour: hour, last_hour: end, starts_segment });
+            }
+        }
+        Ok(())
+    }
+
+    fn party_names(&self, politics: Option<&PoliticsContent>, warnings: &mut Vec<String>) -> Vec<Option<String>> {
+        self.namings
+            .iter()
+            .map(|(naming, selected)| {
+                let politics = politics?;
+                let Some((key, fallback)) = party_key_for_tag_checked(naming, selected.as_ref().ok().map(String::as_str), |key| politics.defines(key)) else {
+                    warnings.push(format!("party name: {}", selected.as_ref().err().cloned().unwrap_or_else(|| "party own tag is unavailable".into())));
+                    return None;
+                };
+                warnings.extend(fallback);
+                politics.localised(&key, View::Plain)
+            })
+            .collect()
+    }
 }
 
 const SOURCES: [TableId; 3] = [TableId::PoliticalParties, TableId::CountryAppearance, TableId::Politics];
@@ -394,34 +451,7 @@ impl Parties {
                 }
                 let raw = number(cells[party_tag]).and_then(|raw| u32::try_from(raw).ok()).unwrap_or_default();
                 let key = (number(cells[default]) == Some(0)).then(|| held.text(cells[name]).map(|name| String::from_utf8_lossy(name).into_owned()).unwrap_or_default());
-                let inputs = (token.to_owned(), raw, key.clone());
-                let index = match &self.naming {
-                    Some((held, index)) if *held == inputs && continues => *index,
-                    _ => {
-                        let (own, selected) = party_tags(query, run, hour, raw, who, tag)?;
-                        let naming = PartyNaming { token: token.to_owned(), tag: own, original_tag: selected.as_ref().ok().cloned(), key };
-                        let index = match self.namings.iter().position(|(held, original)| *held == naming && *original == selected) {
-                            Some(index) => index as u32,
-                            None => {
-                                self.namings.push((naming, selected));
-                                (self.namings.len() - 1) as u32
-                            }
-                        };
-                        self.naming = Some((inputs, index));
-                        index
-                    }
-                };
-                match self.party_name_runs.last_mut() {
-                    Some(run) if continues && run.name == index && i64::from(run.last_hour) + 1 == i64::from(hour) => run.last_hour = end,
-                    _ => self.party_name_runs.push(PartyNameRun { name: index, first_hour: hour, last_hour: end }),
-                }
-                match self.ruling.last_mut() {
-                    Some(run) if continues && run.token == token && i64::from(run.last_hour) + 1 == i64::from(hour) => run.last_hour = end,
-                    previous => {
-                        let starts_segment = !(continues && previous.is_some_and(|run| i64::from(run.last_hour) + 1 == i64::from(hour)));
-                        self.ruling.push(RulingRun { token: token.to_owned(), first_hour: hour, last_hour: end, starts_segment });
-                    }
-                }
+                self.ruling.observe(token, raw, key, (hour, end), continues, || party_tags(query, run, hour, raw, who, tag))?;
             }
         }
         Ok(())
@@ -598,19 +628,7 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         };
         people.push(LeaderArtwork { character: character.clone(), name, portrait, portrait_missing });
     }
-    let party_names = parties
-        .namings
-        .iter()
-        .map(|(naming, selected)| {
-            let politics = politics?;
-            let Some((key, fallback)) = party_key_for_tag_checked(naming, selected.as_ref().ok().map(String::as_str), |key| politics.defines(key)) else {
-                warnings.push(format!("party name: {}", selected.as_ref().err().cloned().unwrap_or_else(|| "party own tag is unavailable".into())));
-                return None;
-            };
-            warnings.extend(fallback);
-            politics.localised(&key, View::Plain)
-        })
-        .collect();
+    let party_names = parties.ruling.party_names(politics, &mut warnings);
     if people.iter().any(|leader| leader.portrait.is_some()) {
         warnings.push(format!(
             "{}; visual assets are outside content hash coverage.",
@@ -629,9 +647,9 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         asked: params.country.clone(),
         decimals: POPULARITY_DECIMALS,
         parties: stack_order(&parties.parties, &ideologies),
-        ruling: parties.ruling.clone(),
+        ruling: parties.ruling.runs.clone(),
         leaders: parties.leaders.clone(),
-        party_name_runs: parties.party_name_runs.clone(),
+        party_name_runs: parties.ruling.name_runs.clone(),
         party_names,
         people,
         ideology_types,
