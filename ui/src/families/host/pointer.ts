@@ -129,18 +129,20 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   let pointerDown: PointerDownState | null = null;
   let lastHoverKey: string | null = null;
   let lastHoverHour: number | undefined;
+  let lastHoverPicture: number | undefined;
 
   const installedNow = (): InstalledPicture | null => getInstalled?.() ?? null;
 
   const tokenFor = (hit: ParsedFamilyHit): string => hit.inspectToken ?? inspectToken(hit.key);
 
-  const notifyHover = (hit: ParsedFamilyHit | null) => {
+  const notifyHover = (hit: ParsedFamilyHit | null, picture?: number) => {
     if (inspectedHitRef) inspectedHitRef.current = hit;
     const nextKey = hit?.key ?? null;
     const nextHour = hit?.hour;
-    if (nextKey !== lastHoverKey || nextHour !== lastHoverHour) {
+    if (nextKey !== lastHoverKey || nextHour !== lastHoverHour || (nextKey !== null && picture !== lastHoverPicture)) {
       lastHoverKey = nextKey;
       lastHoverHour = nextHour;
+      lastHoverPicture = picture;
       onHoverChange?.(hit);
     }
   };
@@ -180,7 +182,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
       const nextKey = parsed?.key ?? null;
       const changed = nextKey !== inspectedKeyRef.current;
       inspectedKeyRef.current = nextKey;
-      notifyHover(parsed);
+      notifyHover(parsed, moved?.id);
       pipeline.inspect(pipe, parsed ? tokenFor(parsed) : null);
       if (!nextKey) {
         tooltips.cancelHoverOpen();

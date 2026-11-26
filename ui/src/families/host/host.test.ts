@@ -1773,9 +1773,30 @@ test('the hovered row is the subject the row would activate, reported when it ch
   assert.deepEqual(rows, ['GER', 'FRA', null], 'a hit answered after the pointer left reports no row');
   stop();
 
-  const lanes = recordInstalled(picture(20), { extent: { rows: [{ id: 'GER', label: 'Germany' }] } }, null);
+  const lane = (id: number, row: string) => {
+    const shown = picture(id);
+    recordInstalled(shown, { extent: { rows: [{ id: row, label: row }] } }, null);
+    return shown;
+  };
+  installed = lane(20, 'GER');
   const laneRows: (string | null)[] = [];
-  const lanePublish = rowHoverPublisher(() => heatLanesHostAdapter, () => lanes, () => subject => laneRows.push(subject));
-  for (const hour of [100, 101, 102]) lanePublish(parseHeatLanesHit(`lane:#0@${hour}`));
+  const stopLanes = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
+    pipeline: fakePipeline, pipe: 1, tooltips: new FamilyTooltipController('delayed-worker'), inspectedKeyRef: { current: null }, inspectedHitRef: { current: null },
+    lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
+    accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
+    parseHit: parseHeatLanesHit,
+    onHoverChange: rowHoverPublisher(() => heatLanesHostAdapter, () => installedRecordOf(installed), () => subject => laneRows.push(subject)),
+    onActivate: () => {},
+  });
+  for (const [x, hit] of [[40, 'lane:#0@100'], [41, 'lane:#0@101'], [42, 'lane:#0']] as const) {
+    body.dispatch('pointermove', { isTrusted: true, clientX: x, clientY: 10 });
+    reply(hit);
+  }
   assert.deepEqual(laneRows, ['GER'], 'moving along one heat lane across hours is one row');
+  installed = lane(21, 'FRA');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 43, clientY: 10 });
+  reply('lane:#0');
+  assert.deepEqual(laneRows, ['GER', 'FRA'], 'the same lane key over another lane in a new picture is a new row');
+  stopLanes();
 });
