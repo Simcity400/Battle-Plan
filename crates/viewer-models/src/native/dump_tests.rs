@@ -472,7 +472,9 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
         );
     }
 
-    library.textures[blank].width = device.limits().max_texture_dimension_2d + 1;
+    let mut oversized = library.textures[blank].source().unwrap();
+    oversized.width = device.limits().max_texture_dimension_2d + 1;
+    library.textures[blank] = crate::ModelTexture::held(oversized);
     let field = ModelField::build(
         &library,
         vec![(
@@ -1707,4 +1709,38 @@ fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_re
     pass.prepare_casters(&arena, frame, inputs)
         .expect("nor are its casters");
     assert!(pass.native.borrow().is_none(), "no renderer, so no content stack, was asked for");
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is_gone() {
+    let directory = TestDir::new();
+    let root = &directory.0;
+    std::fs::create_dir_all(root.join("gfx/models")).unwrap();
+    let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 0x28];
+    tga.extend([10u8, 20, 30, 255].repeat(4));
+    std::fs::write(root.join("gfx/models/painted.tga"), &tga).unwrap();
+    let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
+    let path = "gfx/models/painted.tga".to_owned();
+    let decode = Decode::default();
+    let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
+    let mut library = ModelLibrary::empty(decode);
+    library.textures.push(crate::ModelTexture {
+        path: Some(path),
+        layers: Some(Arc::clone(&layers)),
+        held: std::sync::Mutex::new(Some(source)),
+    });
+    library.spaces.push(ColorSpace::Srgb);
+    let (_serial, device, queue) = tests::device();
+    let shared = library.device_textures(&device);
+    assert!(Arc::ptr_eq(&shared, &library.device_textures(&device)));
+    let first = library.gpu_texture(&shared, &device, &queue, "painted", 0).unwrap();
+    assert!(library.textures[0].source().is_none(), "the source bytes go once the device holds the texture");
+    let again = library.gpu_texture(&library.device_textures(&device), &device, &queue, "painted", 0).unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "a second pass on the device draws the same texture");
+    drop((shared, first, again));
+    let rebuilt = library.device_textures(&device);
+    let reread = library.gpu_texture(&rebuilt, &device, &queue, "painted", 0).unwrap();
+    assert_eq!(reread.texture.size().width, 2);
+    assert!(library.textures[0].source().is_none());
 }

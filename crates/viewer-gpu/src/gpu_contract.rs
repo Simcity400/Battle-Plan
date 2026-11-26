@@ -540,6 +540,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         label: Some("BattlePlan viewer"),
         required_features: features,
         required_limits: required_limits(&limits, base_limits),
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
         ..Default::default()
     }
 }

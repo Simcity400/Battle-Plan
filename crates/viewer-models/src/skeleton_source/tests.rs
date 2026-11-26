@@ -539,11 +539,11 @@ fn merged_textures_keep_their_storage_and_first_seen_slots() {
         ]],
     };
     let mut library = ModelLibrary::empty(Decode::default());
-    library.textures.push(texture(10));
+    library.textures.push(crate::ModelTexture::held(texture(10)));
     library.spaces.push(Srgb);
     library.paths.insert(("shared.dds".into(), Srgb), 0);
     let mut shard = ModelLibrary::empty(Decode::default());
-    shard.textures = vec![texture(20), texture(30), texture(40)];
+    shard.textures = [texture(20), texture(30), texture(40)].map(crate::ModelTexture::held).into();
     shard.spaces = vec![Srgb, Linear, Srgb];
     shard.paths = std::collections::BTreeMap::from([
         (("shared.dds".into(), Srgb), 0),
@@ -559,16 +559,17 @@ fn merged_textures_keep_their_storage_and_first_seen_slots() {
         .failed
         .insert("refused".into(), "synthetic refusal".into());
     let expected = vec![texture(10), texture(30), texture(40)];
-    let storage = |texture: &Texture| {
-        texture.mips[0]
+    let storage = |texture: &crate::ModelTexture| {
+        texture.source().unwrap().mips[0]
             .iter()
             .map(|mip| mip.data.as_ptr())
             .collect::<Vec<_>>()
     };
+    let sources = |library: &ModelLibrary| library.textures.iter().map(|texture| texture.source().unwrap()).collect::<Vec<_>>();
     let retained_storage = storage(&library.textures[0]);
     let moved_storage = [storage(&shard.textures[1]), storage(&shard.textures[2])];
     library.merge(shard);
-    assert_eq!(library.textures, expected);
+    assert_eq!(sources(&library), expected);
     assert_eq!(library.spaces, [Srgb, Linear, Srgb]);
     assert_eq!(library.paths[&("shared.dds".into(), Srgb)], 0);
     assert_eq!(library.paths[&("shared.dds".into(), Linear)], 1);
@@ -586,7 +587,7 @@ fn merged_textures_keep_their_storage_and_first_seen_slots() {
     assert_eq!(storage(&library.textures[1]), moved_storage[0]);
     assert_eq!(storage(&library.textures[2]), moved_storage[1]);
     library.merge(ModelLibrary::empty(Decode::default()));
-    assert_eq!(library.textures, expected);
+    assert_eq!(sources(&library), expected);
     assert_eq!(storage(&library.textures[1]), moved_storage[0]);
     assert_eq!(storage(&library.textures[2]), moved_storage[1]);
 }

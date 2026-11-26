@@ -1115,7 +1115,7 @@ fn a_transient_bake_read_keeps_its_claim_and_warnings_but_no_decision_or_merge()
             library.meshes.clone(),
             library.palette.clone(),
             library.materials.clone(),
-            library.textures.clone(),
+            library.textures.iter().map(viewer_models::ModelTexture::source).collect::<Vec<_>>(),
             library.index.clone(),
             library.failed.clone(),
         )
@@ -1174,7 +1174,7 @@ fn a_transient_bake_read_keeps_its_claim_and_warnings_but_no_decision_or_merge()
                     library.meshes.clone(),
                     library.palette.clone(),
                     library.materials.clone(),
-                    library.textures.clone(),
+                    library.textures.iter().map(viewer_models::ModelTexture::source).collect::<Vec<_>>(),
                     library.index.clone(),
                     library.failed.clone()
                 ),

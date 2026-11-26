@@ -318,6 +318,7 @@ impl Renderer {
                     | wgpu::Features::TEXTURE_COMPRESSION_BC
                     | wgpu::Features::FLOAT32_FILTERABLE),
             required_limits: limits,
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;

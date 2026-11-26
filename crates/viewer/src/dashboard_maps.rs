@@ -162,6 +162,7 @@ pub struct DashboardMaps {
     visual_reports: Vec<crate::visual_fallback::Report>,
     limits: MapLimits,
     waiting_source: Option<PathBuf>,
+    seeded: Option<(SourceKey, std::sync::Weak<Content>)>,
     diagnostics: bool,
     muted: bool,
     audio_owner: Option<String>,
@@ -228,6 +229,7 @@ impl DashboardMaps {
             visual_reports: Vec::new(),
             limits,
             waiting_source: None,
+            seeded: None,
             diagnostics: false,
             muted: false,
             audio_owner: None,
@@ -292,6 +294,7 @@ impl DashboardMaps {
         {
             return;
         }
+        self.seeded = Some((source.key().clone(), Arc::downgrade(&content)));
         for (key, entry) in &mut self.sources {
             if key.recording == *source.key()
                 && entry.content.is_none()
@@ -300,8 +303,20 @@ impl DashboardMaps {
             {
                 entry.content = Some(Arc::clone(&content));
                 entry.error = None;
+                if self.loading.as_ref().is_some_and(|load| load.key == *key) {
+                    self.loading = None;
+                }
             }
         }
+    }
+
+    fn seeded(&self, key: &MapSourceKey) -> Option<Arc<Content>> {
+        let (recording, content) = self.seeded.as_ref()?;
+        let content = content.upgrade()?;
+        (*recording == key.recording
+            && content.texture_quality == key.texture_quality
+            && content.visual_mods == key.visual_mods)
+            .then_some(content)
     }
 
     pub fn content_snapshot(&self, config: &Config) -> Vec<(SourceKey, Arc<Content>)> {
@@ -941,9 +956,15 @@ impl DashboardMaps {
     }
 
     fn load_source(&mut self, key: MapSourceKey, ctx: &egui::Context) {
+        let seeded = self.seeded(&key);
         let Some(source) = self.sources.get_mut(&key) else {
             return;
         };
+        if let Some(content) = seeded {
+            source.content = Some(content);
+            source.error = None;
+            return;
+        }
         let resolve = match self.config.resolve_options() {
             Ok(resolve) => resolve,
             Err(error) => {
