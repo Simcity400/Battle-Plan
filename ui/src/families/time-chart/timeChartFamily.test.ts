@@ -903,6 +903,7 @@ describe('time-chart laneView integration', () => {
   });
 
   it('projects stability with valueScale 100 step lines, 0-100% axis, and future-clamped markers', () => {
+    const HIDDEN = 'War and faction markers are not shown from 1936.1.6 00:00: Who holds GER is not known: Countries table unread';
     const until = H1936 + 240;
     const stabLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.8, 0.75, 1.0, 1.0, until)]);
     const warLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.35, 0.35, 0.9, 0.9, until)]);
@@ -922,7 +923,7 @@ describe('time-chart laneView integration', () => {
         ['stability', new Map([['GER', boundTiledSeries(stabLine, displayedHour(until), { headValue: knownValue(1.0) })]])],
         ['warSupport', new Map([['GER', boundTiledSeries(warLine, displayedHour(until), { headValue: knownValue(0.9) })]])],
       ]),
-      panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [], markers: [
+      panels: new Map([['markers', { hour: until, nextChange: until + 48, warnings: [HIDDEN], markers: [
         { id: 'i1', hour: H1936 + 105, kind: 'idea', title: 'Partial mobilisation adopted', verb: null, other: null, faction: null, sprite: null, alert: false },
         { id: 'w1', hour: H1936 + 113, kind: 'war', title: 'War with POL began', verb: 'began', other: 'POL', faction: null, sprite: null, alert: true },
       ] }]]),
@@ -946,6 +947,7 @@ describe('time-chart laneView integration', () => {
       [H1936 + 105, 'Partial mobilisation adopted'],
       [H1936 + 113, 'War with Poland began'],
     ], 'each event keeps its own hour: a later alert on the same day neither moves nor hides the morning one');
+    assert.deepEqual(model.warnings, [HIDDEN], 'the markers a holder hides say why, beside the chart');
 
     const fullLayout = layoutTimeChart(model, 960, 276, FONT, measure);
     assert.deepEqual(fullLayout.yTicks, [0, 25, 50, 75, 100]);
