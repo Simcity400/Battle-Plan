@@ -25,12 +25,19 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
     let mut ships = vec![ShipRow { id: 42, task_force: 5, strength, ..Default::default() }];
     if hour >= 108 { ships.push(ShipRow { id: 63, task_force: 600, ..Default::default() }); }
     set(TableId::Ships, TableRows::Ships(ships));
+    set(TableId::ShipModels, TableRows::ShipModels(vec![ShipModelRow { ship: 42, variant: 27, ..Default::default() }]));
     set(TableId::TaskForces, TableRows::TaskForces(vec![TaskForceRow { id: 5, roster_owner: 9001, ..Default::default() }]));
-    set(TableId::NavalRefitProgress, TableRows::NavalRefitProgress(vec![NavalRefitProgressRow { line: 8, progress_raw: strength }]));
+    set(TableId::NavalRefitProgress, TableRows::NavalRefitProgress(vec![
+        NavalRefitProgressRow { line: 8, progress_raw: strength },
+        NavalRefitProgressRow { line: 19, progress_raw: i64::from(hour) },
+    ]));
     set(TableId::NavalRefitShips, TableRows::NavalRefitShips(vec![NavalRefitShipRow { ship: 42, line: 8 }]));
-    set(TableId::ProductionLines, TableRows::ProductionLines(vec![ProductionLineRow { handle: 8, country: 9001, cost_raw: 500, active_factories: 2, ..Default::default() }]));
+    set(TableId::ProductionLines, TableRows::ProductionLines(vec![
+        ProductionLineRow { handle: 8, country: 9001, cost_raw: 500, active_factories: 2, ..Default::default() },
+        ProductionLineRow { handle: 19, country: 42, ..Default::default() },
+    ]));
     set(TableId::NavalMissionLedgers, TableRows::NavalMissionLedgers(vec![NavalMissionLedgerRow { owner: 9001, region: 7, task_forces: vec![5, 600], ..Default::default() }]));
-    for (table, from) in [(TableId::NavalRegionalMines,110),(TableId::NavalBases,113),(TableId::NavalRefitProgress,116),(TableId::NavalRepairQueue,119)] {
+    for (table, from) in [(TableId::NavalRegionalMines,110),(TableId::NavalBases,113),(TableId::NavalRefitProgress,116),(TableId::NavalRepairQueue,119),(TableId::VariantDefinitions,103)] {
         if (from..from+2).contains(&hour) { *frame.tables[table.index()] = TableView::Unavailable { reason: "damaged fleet record".into() }; }
     }
     frame

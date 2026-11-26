@@ -288,7 +288,7 @@ impl AtHour for Minefields {
         }
     }
 
-    fn holds_refusal(frame: &DecodedFrame, _error: &io::Error) -> bool {
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
         matches!(frame.tables[TableId::NavalRegionalMines.index()].held(), TableView::Unavailable { .. } | TableView::NotRecorded { .. })
     }
 

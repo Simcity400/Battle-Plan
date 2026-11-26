@@ -15,18 +15,13 @@ struct Scope {
     ships: ShipInputs,
 }
 
-struct Changes {
-    scope: Scope,
-    dates: BTreeSet<i32>,
-}
-
-impl Changes {
-    fn read(recording: &Recording, scope: Scope) -> io::Result<Self> {
+impl Scope {
+    fn changes(&self, recording: &Recording) -> io::Result<BTreeSet<i32>> {
         let mut dates = BTreeSet::new();
-        let Some(viewer) = scope.viewer else { return Ok(Self { scope, dates }) };
+        let Some(viewer) = self.viewer else { return Ok(dates) };
         let mut table = |table, columns: &[usize], keys, observe: &mut dyn FnMut(u128, Option<&[Cell]>) -> bool| {
             let mut statuses = Vec::new();
-            replay_lanes::points::cells(recording, scope.run, table, columns, keys, scope.first, scope.last, Some(&mut statuses), &mut |hour, key, cells| {
+            replay_lanes::points::cells(recording, self.run, table, columns, keys, self.first, self.last, Some(&mut statuses), &mut |hour, key, cells| {
                 if observe(key, cells) { dates.insert(hour); }
                 true
             })?;
@@ -38,7 +33,7 @@ impl Changes {
         };
         let control = control_ranges(viewer, None);
         table(TableId::NavalRegionControl, &COLUMNS, lanes::Keys::Ranges(&control), &mut |_, _| true)?;
-        let ships = &scope.ships;
+        let ships = &self.ships;
         if !ships.regions.is_empty() {
             let enemies = u128::from(viewer) << 34 | u128::from(AirCountryRelationRow::ENEMY) << 32;
             let range = [(enemies, enemies | u128::from(u32::MAX))];
@@ -69,12 +64,7 @@ impl Changes {
                 before || after
             })?;
         }
-        Ok(Self { scope, dates })
-    }
-
-    fn through(&self, hour: i32) -> i32 {
-        self.dates.range((std::ops::Bound::Excluded(hour), std::ops::Bound::Unbounded)).next()
-            .map_or(self.scope.last, |next| next.saturating_sub(1).min(self.scope.last))
+        Ok(dates)
     }
 }
 
@@ -101,7 +91,7 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
     let query = dashboard_base::queries::query(source, branch).map_err(|e| e.to_string())?;
     let last = query.timeline.last;
     let start = |hour: i32| hour.div_euclid(DAY).saturating_mul(DAY);
-    let held = Mutex::new(None::<Changes>);
+    let held = Mutex::new(None::<(Scope, Option<BTreeSet<i32>>)>);
     let styles = OnceLock::new();
     let owned = Arc::clone(source);
     let options = LoadContext { content: load.content.clone() };
@@ -119,13 +109,16 @@ pub fn panel(source: &Arc<Source>, load: &LoadContext, asked: &Value) -> Result<
         let viewer = holder.and_then(|holder| match holder.holder { Holder::Found { slot, .. } => Some(slot), _ => None });
         let mut changes = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let scope = Scope { run, viewer, first: first.max(day), last: last.min(end), ships: reply.ship_inputs.clone() };
-        if changes.as_ref().is_none_or(|held| held.scope != scope) {
-            *changes = Changes::read(query.replay.recording(), scope).ok();
+        if changes.as_ref().is_none_or(|(held, _)| *held != scope) {
+            let dates = scope.changes(query.replay.recording()).ok();
+            *changes = Some((scope, dates));
         }
-        let Some(changes) = changes.as_ref() else { return hour };
+        let Some((scope, Some(dates))) = changes.as_ref() else { return hour };
+        let through = dates.range((std::ops::Bound::Excluded(hour), std::ops::Bound::Unbounded)).next()
+            .map_or(scope.last, |next| next.saturating_sub(1).min(scope.last));
         let tag = query.holders.name(&params.country, hour);
         let Ok(styles) = styles.get_or_init(|| BranchLooks::load(&owned, &query.timeline, &options, &mut Vec::new())) else { return hour };
         let identity = holder.map_or_else(|| at_hour::before(query.holders.next_change(hour)), |holder| holder.last);
-        changes.through(hour).min(identity).min(at_hour::before(styles.next_for(&tag, hour)))
+        through.min(identity).min(at_hour::before(styles.next_for(&tag, hour)))
     }, move |data, hour| date(data, if start(hour) <= last { last.min(hour) } else { hour }))
 }

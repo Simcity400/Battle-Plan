@@ -155,7 +155,7 @@ pub trait AtHour: 'static {
         if partial { frame.hour } else { Self::valid_through(frame, params, at) }
     }
 
-    fn holds_refusal(_frame: &DecodedFrame, _error: &io::Error) -> bool { false }
+    fn holds_refusal(_frame: &DecodedFrame) -> bool { false }
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
         matches!(Self::CLOCK, Clock::EveryHour(_))

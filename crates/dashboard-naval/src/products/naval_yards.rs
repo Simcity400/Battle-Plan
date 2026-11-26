@@ -483,7 +483,11 @@ impl AtHour for NavalRepairs {
         Some(field_columns(table, fields))
     }
 
-    fn holds_refusal(frame: &DecodedFrame, _error: &io::Error) -> bool {
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::warnings_through(frame.hour, &reply.warnings)
+    }
+
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
         !complete(frame, TableId::NavalBases)
     }
 
@@ -588,8 +592,12 @@ fn finite(raw: i64) -> bool {
     raw != i64::MAX && raw != i64::MIN && raw != i64::MIN + 1
 }
 
+fn owned_handles(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeSet<u64> {
+    held.complete::<tables::ProductionLines>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.handle).collect()).unwrap_or_default()
+}
+
 fn owned_lines(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeMap<u64, Vec<u64>> {
-    let owned: BTreeSet<u64> = held.complete::<tables::ProductionLines>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.handle).collect()).unwrap_or_default();
+    let owned = owned_handles(held, raws);
     let mut out: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for row in held.complete::<tables::NavalRefitProgress>().unwrap_or_default().iter().filter(|row| owned.contains(&row.line)) {
         out.insert(row.line, Vec::new());
@@ -652,9 +660,10 @@ impl AtHour for NavalRefits {
         let Some(owner) = owner else { return Vec::new() };
         let lines = || owned_lines(held, &raws(held, owner.slot));
         match step {
-            0 => [TableId::NavalRefitProgress, TableId::NavalRefitShips, TableId::ProductionLines, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].map(Read::all).into(),
-            1 => ship_reads(&lines().into_values().flatten().collect()),
-            2 => {
+            0 => [TableId::ProductionLines, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].map(Read::all).into(),
+            1 => vec![Read::all(TableId::NavalRefitShips), Read::these(TableId::NavalRefitProgress, owned_handles(held, &raws(held, owner.slot)).into_iter().map(u128::from))],
+            2 => ship_reads(&lines().into_values().flatten().collect()),
+            3 => {
                 let targets: Vec<u64> = held
                     .complete::<tables::ProductionLines>()
                     .map(|rows| {
@@ -664,7 +673,7 @@ impl AtHour for NavalRefits {
                     .unwrap_or_default();
                 named_reads(held, targets)
             }
-            3 => token_reads(held),
+            4 => token_reads(held),
             _ => Vec::new(),
         }
     }
@@ -674,6 +683,10 @@ impl AtHour for NavalRefits {
             Some(read) if read > frame.hour => read - 1,
             _ => i32::MAX,
         }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at).min(super::warnings_through(frame.hour, &reply.warnings))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

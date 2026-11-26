@@ -8,6 +8,11 @@ fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
     held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
 }
 
+fn warnings_through(hour: i32, warnings: &[String]) -> i32 {
+    let date = format!("hour {hour} ");
+    if warnings.iter().any(|warning| warning.contains(&date)) { hour } else { i32::MAX }
+}
+
 fn fleet_fields(table: TableId) -> Option<&'static [&'static str]> {
     Some(match table {
         TableId::Countries => &["canonical_slot", "tag"],

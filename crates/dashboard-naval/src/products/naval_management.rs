@@ -187,8 +187,7 @@ impl AtHour for NavalManagement {
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        let date = format!(": hour {} ", frame.hour);
-        if reply.warnings.iter().any(|warning| warning.contains(&date)) { frame.hour } else { i32::MAX }
+        super::warnings_through(frame.hour, &reply.warnings)
     }
 
     fn compares_previous(table: TableId) -> bool { table == TableId::Ships }

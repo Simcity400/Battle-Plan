@@ -509,12 +509,12 @@ where P::Context: Sync, P::Params: Sync {
             let result = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)));
             let mut reply = match result {
                 Ok(reply) => reply,
-                Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame, &error) => {
+                Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame) => {
                     state.data = Arc::new(Err(error.to_string()));
                     state.live = Arc::default();
                     state.extra = Supplemental::default();
                     state.reply = None;
-                    state.reply_through = i32::MAX;
+                    state.reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_through(&state.frame, &params, &at));
                     state.rebuild = false;
                     state.values_at = Some(hour);
                     return Ok(state.data.clone());
