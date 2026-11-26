@@ -302,7 +302,7 @@ fn name_tokens(query: &Query<'_>, run: u32, hour: i32) -> io::Result<Vec<u128>> 
     let column = field(characters, "name_token_id")?;
     let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at(query.replay.recording(), run, characters, hour, Some(&[column])))?;
     let view = held.view();
-    let mut tokens: Vec<u128> = view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).filter(|&token| token != 0).map(u128::from).collect();
+    let mut tokens: Vec<u128> = view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).map(u128::from).collect();
     tokens.sort_unstable();
     tokens.dedup();
     Ok(tokens)

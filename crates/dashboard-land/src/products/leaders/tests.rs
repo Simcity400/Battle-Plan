@@ -379,13 +379,13 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
             let rival = UnitLeaderRow { id: 43, character_id: 78, skill_level: 5, owner: 9001, components: if hour < 117 { [1; 4] } else { [3; 4] }, ..leader.clone() };
             frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader, rival])).into();
             frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
-                CharacterRow { id: 77, token: b"JAP_yamashita".to_vec(), name_token_id: 5, ..Default::default() },
+                CharacterRow { id: 77, token: b"JAP_yamashita".to_vec(), ..Default::default() },
                 CharacterRow { id: 78, token: b"JAP_homma".to_vec(), ..Default::default() },
-                CharacterRow { id: 79, token: b"JAP_yamashita".to_vec(), name_token_id: 5, ..Default::default() },
+                CharacterRow { id: 79, token: b"JAP_yamashita".to_vec(), ..Default::default() },
             ]))
             .into();
             frame.tables[TableId::LexicalTokens.index()] =
-                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 5, literal: if hour < 119 { b"yamashita".to_vec() } else { b"yamashita_tomoyuki".to_vec() } }])).into();
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 0, literal: if hour < 119 { b"yamashita".to_vec() } else { b"yamashita_tomoyuki".to_vec() } }])).into();
             frame
         })
         .collect();
