@@ -4,8 +4,7 @@ use super::party_history::{self, RulingParties};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, CountryParams, LoadContext, Product, check_reply_budget};
 use dashboard_base::span::HourSpan;
-use dashboard_base::queries::country_ids::Names;
-use dashboard_query::identity::{Holder, Holders, TAG_UNLINKED};
+use dashboard_query::identity::{Holder, Holders, Key, TAG_UNLINKED};
 use dashboard_text::division_history::date;
 use replay_data::temperature::EPOCH;
 use dashboard_world::products::groups::{self, CountryGroupReply};
@@ -222,9 +221,10 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
         let member_at = |hour: i32| faction.members.iter().any(|other| other.first_hour <= hour && hour <= other.last_hour && holds(&other.tag, hour));
         for run in &faction.members {
-            if run.first_hour > branch.0 && within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) {
+            if run.first_hour > branch.0 && within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) && !member_at(run.first_hour - 1) {
                 if run.first_hour <= out.hour {
-                    notes.push(format!("In {name} by {}: when it joined is not known, as membership was not observed the hour before", when(run.first_hour)));
+                    let dated = groups::faction_name_at(faction, run.first_hour).0.unwrap_or_else(|| FACTION_UNNAMED.to_owned());
+                    notes.push(format!("In {dated} by {}: when it joined is not known, as membership was not observed the hour before", when(run.first_hour)));
                 } else {
                     out.later(Some(run.first_hour));
                 }
@@ -262,17 +262,32 @@ fn hidden(wars: bool, factions: bool) -> &'static str {
 }
 
 fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, end): (i32, i32), kinds: &str) -> Vec<String> {
-    let names = Names::new(holders);
-    let named = |hour: i32| match country {
-        Country::Tag(tag) => tag.clone(),
-        Country::Slot(slot) => names.slot_tags(*slot, from, hour.saturating_sub(1)).iter().rev().find_map(|(tag, ..)| *tag).map_or_else(|| "the chosen country".to_owned(), str::to_owned),
+    let runs = country.runs(holders);
+    let said = |hour: i32, reason: &str| match country {
+        Country::Tag(tag) => format!("Who holds {tag} is not known: {reason}"),
+        Country::Slot(slot) => {
+            let before = runs[..runs.partition_point(|run| run.first < hour)].last().and_then(|run| holders.slot_tag(*slot, run.last));
+            match before {
+                Some(tag) => format!("The chosen country's tag is not known: {reason}; it was last recorded as {tag}"),
+                None => format!("The chosen country's tag is not known: {reason}"),
+            }
+        }
     };
     let mut spans: Vec<(i32, i32, Option<&str>)> = holders.unknown.iter().map(|(first, last, reason)| (*first, *last, Some(reason.as_str()))).collect();
     match country {
         Country::Tag(_) => spans.extend(holders.within(country, from, i32::MAX).into_iter().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last, None))),
-        Country::Slot(slot) => {
+        Country::Slot(_) => {
             for &(first, last) in holders.unlinked() {
-                spans.extend(names.slot_tags(*slot, first, last).into_iter().filter(|(tag, ..)| tag.is_none()).map(|(_, first, last)| (first, last, None)));
+                let mut at = first;
+                for run in runs[runs.partition_point(|run| run.last < first)..].iter().take_while(|run| run.first <= last) {
+                    if run.first > at {
+                        spans.push((at, run.first - 1, None));
+                    }
+                    at = at.max(run.last.saturating_add(1));
+                }
+                if at <= last {
+                    spans.push((at, last, None));
+                }
             }
         }
     }
@@ -287,7 +302,7 @@ fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, (from, 
             out.later(Some(first));
             break;
         }
-        let reason = format!("Who holds {} is not known: {}", named(first), reason.unwrap_or(TAG_UNLINKED));
+        let reason = said(first, reason.unwrap_or(TAG_UNLINKED));
         if last >= out.hour {
             if last < end {
                 out.later(Some(last + 1));
@@ -362,7 +377,7 @@ impl Product for StabilityMarkers {
         out.shown.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.id.cmp(&b.id)));
         warnings.sort();
         warnings.dedup();
-        let reply = StabilityMarkersReply { hour, next_change: out.next, markers: out.shown, warnings };
+        let reply = StabilityMarkersReply { hour, next_change: out.next.filter(|&next| next <= query.timeline.last), markers: out.shown, warnings };
         check_reply_budget(&reply)?;
         Ok(reply)
     }

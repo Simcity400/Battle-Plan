@@ -102,6 +102,23 @@ fn markers_a_holder_hides_say_when_and_why() {
     );
     let mut slot = Markers { hour: 230, shown: Vec::new(), next: None };
     assert!(holder_notes(&mut slot, &other, &Country::Slot(7), (0, 1000), "Faction markers").is_empty(), "another tag's unresolved holder says nothing of a slot that kept its own");
+
+    let found = |slot: u32, first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true };
+    let unresolved = |first: i32, last: i32| HolderRun { first, last, holder: Holder::Unresolved, starts_segment: true };
+    let nested = Holders::new(
+        [("AAA".to_owned(), vec![found(5, 100, 119)]), ("BBB".to_owned(), vec![found(5, 105, 109)]), ("CCC".to_owned(), vec![unresolved(100, 119)])].into_iter().collect(),
+        Vec::new(),
+    );
+    let mut overlap = Markers { hour: 115, shown: Vec::new(), next: None };
+    assert!(holder_notes(&mut overlap, &nested, &Country::Slot(5), (100, 200), "War markers").is_empty(), "a slot held throughout, under a tag nested in another, has no unknown hour");
+    let moved = Holders::new(
+        [("GER".to_owned(), vec![found(7, 0, 99), found(8, 100, 300)]), ("CCC".to_owned(), vec![unresolved(100, 120)])].into_iter().collect(),
+        Vec::new(),
+    );
+    let mut left = Markers { hour: 110, shown: Vec::new(), next: None };
+    let notes = holder_notes(&mut left, &moved, &Country::Slot(7), (0, 300), "War markers");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("The chosen country's tag is not known") && notes[0].ends_with("it was last recorded as GER"), "the slot's own tag is what is missing, named by its last record: {notes:?}");
 }
 
 #[test]
@@ -114,9 +131,15 @@ fn an_unattributed_war_start_is_said_once_with_its_span_and_a_late_join_says_it_
 
     let mut groups = groups();
     groups.unobserved.factions = serde_json::from_value(serde_json::json!([{ "firstHour": 299, "lastHour": 299 }])).unwrap();
+    groups.factions[0].names = serde_json::from_value(serde_json::json!([
+        { "firstHour": 100, "lastHour": 699, "name": "Axis", "reason": null, "token": null },
+        { "firstHour": 700, "lastHour": 900, "name": "Pact", "reason": null, "token": null }
+    ]))
+    .unwrap();
+    groups.factions[0].name = Some("Pact".to_owned());
     let mut late = Markers { hour: 450, shown: Vec::new(), next: None };
     let notes = faction_markers(&mut late, &|tag: &str, _| tag == "ITA", &groups, (0, 1000));
     assert!(titles(&late).is_empty(), "a join right after an unobserved hour is not dated");
     assert_eq!(notes.len(), 1, "but it is said: {notes:?}");
-    assert!(notes[0].starts_with("In Axis by "), "{notes:?}");
+    assert!(notes[0].starts_with("In Axis by "), "named as it was then, not by its later name: {notes:?}");
 }
