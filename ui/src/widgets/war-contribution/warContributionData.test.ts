@@ -461,6 +461,34 @@ test('warContributionSources plans no contribution reads when no eligible war ex
     { kind: 'blank', empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' },
     'unobserved war gap shows unavailable instead of the previous war’s hour-125 contributions',
   );
+  const savedInGapChip = warChipStateAt(splitByUnobserved, '1', 150);
+  assert.equal(savedInGapChip.unavailable, true, 'selected war during unobserved gap reports unavailable, not unselected');
+  assert.equal(savedInGapChip.prestart, false);
+  assert.equal(savedInGapChip.observation, null);
+  const midWarGapChip = warChipStateAt(splitWars, '1', 150);
+  assert.equal(midWarGapChip.unavailable, true, 'selected war during an observation gap reports unavailable');
+  assert.equal(warChipStateAt(splitWars, '1', 50).unavailable, false);
+  assert.equal(warChipStateAt(splitWars, '1', 50).prestart, true);
+
+  let coldObsReads = 0;
+  const sequentialWars = {
+    available: true,
+    wars: Array.from({ length: 1000 }, (_, i) => {
+      const start = i * 4;
+      const obsList = [observation(start, start + 1, ['AAA'], [`B${i}`])];
+      const proxyObs = new Proxy(obsList, {
+        get(target, prop, receiver) {
+          if (typeof prop === 'string' && /^\d+$/.test(prop)) coldObsReads++;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { ...war(String(i + 1), start, start + 1, [['AAA'], [`B${i}`]]), observations: proxyObs } as unknown as WarTimeline;
+    }),
+  } as unknown as WarsReply;
+  assert.deepEqual(warEligibilityAt(sequentialWars, null, 0), { mode: 'live', valid: [0, 1] });
+  assert.ok(coldObsReads < 10_000, `first automatic eligibility build over 1,000 sequential wars stays linear, not quadratic (reads=${coldObsReads})`);
+  assert.deepEqual(warEligibilityAt(sequentialWars, null, 2), { mode: 'ended', valid: [2, 3] });
+  assert.deepEqual(warEligibilityAt(sequentialWars, null, 4), { mode: 'live', valid: [4, 5] });
 
   const { createLaneView } = await import('../../families/laneRuntime.ts');
   const { barsLane } = await import('../../families/bars/laneView.ts');

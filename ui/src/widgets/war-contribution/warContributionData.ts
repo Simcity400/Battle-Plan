@@ -3,12 +3,14 @@ import type { WarObservation, WarTimeline, WarsReply } from '../../generated/das
 import { labelObservationAt, observationAt } from '../wars/warsData.ts';
 
 export const WAR_NOT_STARTED = 'The selected war has not started at this date.';
+export const WAR_UNAVAILABLE = 'War not recorded at this time.';
 
 export interface WarChipState {
   readonly at: number | null;
   readonly war: WarTimeline | null;
   readonly observation: WarObservation | null;
   readonly prestart: boolean;
+  readonly unavailable: boolean;
   readonly valid: readonly [number, number];
 }
 
@@ -38,6 +40,7 @@ const PENDING_CHIP: WarChipState = Object.freeze({
   war: null,
   observation: null,
   prestart: false,
+  unavailable: false,
   valid: [-Infinity, Infinity] as const,
 });
 
@@ -149,10 +152,10 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
   if (explicit) {
     const valid = spanFromEdges(warEdgesOf(explicit, wars), hour);
     if (unobservedAt(wars, hour)) {
-      return { at: hour, war: null, observation: null, prestart: false, valid };
+      return { at: hour, war: null, observation: null, prestart: false, unavailable: true, valid };
     }
     if (hour < explicit.firstHour) {
-      return { at: hour, war: null, observation: null, prestart: true, valid };
+      return { at: hour, war: null, observation: null, prestart: true, unavailable: false, valid };
     }
     if (hour > explicit.lastHour) {
       return {
@@ -160,32 +163,45 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
         war: explicit,
         observation: explicit.observations.at(-1) ?? null,
         prestart: false,
+        unavailable: false,
         valid,
       };
     }
+    const observation = labelObservationAt(explicit, hour);
     return {
       at: hour,
       war: explicit,
-      observation: labelObservationAt(explicit, hour),
+      observation,
       prestart: false,
+      unavailable: observation === null,
       valid,
     };
   }
   const valid = spanFromEdges(chipEdgesOf(wars), hour);
   if (unobservedAt(wars, hour)) {
-    return { at: hour, war: null, observation: null, prestart: false, valid };
+    return { at: hour, war: null, observation: null, prestart: false, unavailable: true, valid };
   }
   const war = chosenWar(wars, null, hour);
+  const observation = war ? labelObservationAt(war, hour) : null;
   return {
     at: hour,
     war,
-    observation: war ? labelObservationAt(war, hour) : null,
+    observation,
     prestart: false,
+    unavailable: war !== null && observation === null,
     valid,
   };
 }
 
 export type WarEligibilityMode = 'none' | 'live' | 'ended';
+
+interface SweepEvent {
+  readonly hour: number;
+  readonly unobserved: number;
+  readonly active: number;
+  readonly started: number;
+  readonly gap: number;
+}
 
 function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly EligibilitySegment[] {
   const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
@@ -197,32 +213,77 @@ function eligibilitySegmentsOf(wars: WarsReply, saved: string | null): readonly 
   }
   let segments = byKey.get(cacheKey);
   if (!segments) {
-    const edges = explicit ? warEdgesOf(explicit, wars) : chipEdgesOf(wars);
-    const classify = (h: number): { readonly tag: string; readonly mode: WarEligibilityMode } => {
-      if (unobservedAt(wars, h)) return { tag: 'none', mode: 'none' };
-      const war = chosenWar(wars, explicit ? explicit.id : null, h);
-      if (!war) return { tag: 'none', mode: 'none' };
-      if (observationAt(war, h) !== null) return { tag: 'live', mode: 'live' };
-      return observationAt(war, readHourFor(war, h)) !== null
-        ? { tag: `ended:${war.id}`, mode: 'ended' }
-        : { tag: 'none', mode: 'none' };
-    };
-    const built: EligibilitySegment[] = [];
-    let prevTag: string | null = null;
-    for (let i = 0; i <= edges.length; i++) {
-      const from = i === 0 ? -Infinity : edges[i - 1]!;
-      const until = i === edges.length ? Infinity : edges[i]! - 1;
-      if (from > until) continue;
-      const sample = Number.isFinite(from) ? from : Number.isFinite(until) ? until : 0;
-      const { tag, mode } = classify(sample);
-      if (built.length && prevTag === tag) {
-        const last = built[built.length - 1]!;
-        built[built.length - 1] = { from: last.from, until, mode: last.mode };
-      } else {
-        built.push({ from, until, mode });
-        prevTag = tag;
+    const scope = explicit ? [explicit] : wars.wars;
+    const events: SweepEvent[] = [];
+    for (const span of wars.unobserved ?? []) {
+      events.push({ hour: span.firstHour, unobserved: 1, active: 0, started: 0, gap: 0 });
+      events.push({ hour: span.lastHour + 1, unobserved: -1, active: 0, started: 0, gap: 0 });
+    }
+    for (const war of scope) {
+      const obs = war.observations;
+      if (!obs.length) continue;
+      events.push({ hour: obs[0]!.firstHour, unobserved: 0, active: 0, started: 1, gap: 0 });
+      for (let i = 0; i < obs.length; i++) {
+        const cur = obs[i]!;
+        events.push({ hour: cur.firstHour, unobserved: 0, active: 1, started: 0, gap: 0 });
+        events.push({ hour: cur.lastHour + 1, unobserved: 0, active: -1, started: 0, gap: 0 });
+        const next = obs[i + 1];
+        if (next && cur.lastHour + 1 < next.firstHour) {
+          events.push({ hour: cur.lastHour + 1, unobserved: 0, active: 0, started: 0, gap: 1 });
+          events.push({ hour: next.firstHour, unobserved: 0, active: 0, started: 0, gap: -1 });
+        }
+      }
+      const tail = obs[obs.length - 1]!;
+      if (tail.lastHour < war.lastHour) {
+        events.push({ hour: tail.lastHour + 1, unobserved: 0, active: 0, started: 0, gap: 1 });
       }
     }
+    events.sort((a, b) => a.hour - b.hour);
+
+    const built: EligibilitySegment[] = [];
+    const push = (from: number, until: number, mode: WarEligibilityMode) => {
+      if (from > until) return;
+      const last = built[built.length - 1];
+      if (last && last.mode === mode && last.until + 1 === from) {
+        built[built.length - 1] = { from: last.from, until, mode };
+      } else {
+        built.push({ from, until, mode });
+      }
+    };
+
+    let unobservedCount = 0;
+    let activeCount = 0;
+    let startedCount = 0;
+    let gapCount = 0;
+    let cursor = -Infinity;
+
+    const modeAt = (sample: number): WarEligibilityMode => {
+      if (unobservedCount > 0 || startedCount === 0) return 'none';
+      if (activeCount > 0) return 'live';
+      if (gapCount === 0) return 'ended';
+      const war = chosenWar(wars, explicit ? explicit.id : null, sample);
+      if (!war) return 'none';
+      return observationAt(war, readHourFor(war, sample)) !== null ? 'ended' : 'none';
+    };
+
+    for (let i = 0; i < events.length;) {
+      const hour = events[i]!.hour;
+      if (cursor < hour) {
+        const sample = Number.isFinite(cursor) ? cursor : hour - 1;
+        push(cursor, hour - 1, modeAt(sample));
+        cursor = hour;
+      }
+      while (i < events.length && events[i]!.hour === hour) {
+        const ev = events[i]!;
+        unobservedCount += ev.unobserved;
+        activeCount += ev.active;
+        startedCount += ev.started;
+        gapCount += ev.gap;
+        i++;
+      }
+    }
+    push(cursor, Infinity, modeAt(Number.isFinite(cursor) ? cursor : 0));
+
     segments = built;
     byKey.set(cacheKey, segments);
   }

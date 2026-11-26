@@ -11,7 +11,7 @@ import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry';
 import { countryTagKey, useIdentityAtHead, useIdentityScope, type CountryIdentityResult } from '../../families/identity/react.ts';
 import { MEASURE_VIEW } from './measureProjection.ts';
-import { WAR_NOT_STARTED, createWarChipTracker, warChipLeaderHour } from './warContributionData.ts';
+import { WAR_NOT_STARTED, WAR_UNAVAILABLE, createWarChipTracker, warChipLeaderHour } from './warContributionData.ts';
 import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
@@ -51,7 +51,7 @@ function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'activ
 }
 
 function WarChip(props: FamilyViewCountryChipProps) {
-  const { track, shownHour, observation, prestart } = useChosenWar(props);
+  const { track, shownHour, observation, prestart, unavailable } = useChosenWar(props);
   const [firstTag, secondTag] = attackersFirst(observation, observation?.viewpointSide[0], observation?.opposingSide[0]);
   const hasPair = Boolean(firstTag && secondTag);
   const leaderKeys = useMemo(
@@ -74,7 +74,10 @@ function WarChip(props: FamilyViewCountryChipProps) {
     flagSize: 'small',
     branchBounds,
   });
-  if (!firstTag || !secondTag) return <span className="dash-widget-country war-chip"><span>{prestart ? WAR_NOT_STARTED : 'Choose a war'}</span></span>;
+  if (!firstTag || !secondTag) {
+    const label = prestart ? WAR_NOT_STARTED : unavailable ? WAR_UNAVAILABLE : 'Choose a war';
+    return <span className="dash-widget-country war-chip"><span>{label}</span></span>;
+  }
   const readLeader = (index: number, tag: string) => {
     const result = identity.results[index] as CountryIdentityResult | undefined;
     const country = result?.kind === 'known' ? result : null;
