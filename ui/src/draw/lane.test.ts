@@ -2435,7 +2435,50 @@ test('hand-over after a slow serve preserves pointer-after-ack, refusal-then-ins
   }
 });
 
-test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve exact replaced by speculative installs hour 20 on Page', async () => {
+test('an older kept-content refusal in the same batch preserves the newer installed picture', async () => {
+  const { lane, mount, presented, hits } = rig({ probe: {
+    paint: ({ hour }) => ({ surfaces: [], fields: {}, motion: false, hit: () => String(hour) }),
+  } });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([10, 20].map(hour => ({ id: 3, hour, kind: 'data', stepped: true, data: { hour } }))));
+  const frame: FrameRequest = { type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] };
+  lane.frame(frame);
+  await flush();
+  const older = presented.at(-1)!.entries[0]!;
+  const next = { ...frame, serial: 2, now: 20, target: 20 };
+  lane.frame(next);
+  await flush();
+  const newer = presented.at(-1)!.entries[0]!;
+  assert.ok(newer.id > older.id);
+
+  const before = presented.length;
+  lane.frame({ ...next, serial: 3, installed: [{ widget: 1, binding: 1, id: newer.id }], refused: [{ widget: 1, id: older.id, reason: 'kept content' }] });
+  lane.frame({ ...next, serial: 4 });
+  await flush();
+  lane.pointer(1, 0, [0, 0]);
+  assert.deepEqual(hits, ['20']);
+  assert.equal(presented.length, before);
+});
+
+test('a queued exact frame installs the current hour before its speculative successor is due', async () => {
+  const { lane, mount, page } = rig({ probe: {
+    paint: () => ({ surfaces: [], fields: { v: { value: 100, content: 'shared' } }, motion: false }),
+  } });
+  mount(1, [{ id: 3, channel: 'panel' }], 'probe');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([10, 11, 12].map(hour => ({ id: 3, hour, kind: 'data', stepped: true, data: { hour } }))));
+  page.publish(10, { playing: true, speed: 24, step: 1 });
+  page.publish(11);
+  await flush();
+  page.frame();
+  assert.deepEqual([page.view(1).h, page.view(1).fields?.v], [11, 100]);
+  assert.equal(page.ahead[0], 1, 'both pictures answered the current tick');
+  page.publish(12);
+  assert.deepEqual([page.view(1).h, page.view(1).fields?.v], [12, 100]);
+});
+
+test('mid-serve ack FIFO flushes at serve completion before wake, and resuming during crop installs hour 20 on Page', async () => {
   const drainMicrotasks = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
   {
@@ -2492,8 +2535,8 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve 
     await drainMicrotasks();
     assert.equal(cropCall, 4, 'fourth serve is suspended in crop while both id10 and id20 remain outstanding');
 
-    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
-    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id20, reason: 'kept content' }], inspect: [] });
+    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id10 }], refused: [], inspect: [] });
 
     lane.pointer(1, 0, [1, 1]);
     assert.deepEqual(hits, ['row:5'], 'neither queued ack batch applies while crop is still held');
@@ -2502,8 +2545,8 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and mid-serve 
     await drainMicrotasks();
     assert.equal(wakes.length, 1, 'speculative hand-over wake is held');
     lane.pointer(1, 0, [1, 1]);
-    assert.deepEqual(hits, ['row:5', 'row:20'], 'outstanding id10 refusal flushes before id20 install at serve completion before wake fires');
-    assert.equal(lane.stats.refused['kept content'], 1, 'id10 was still outstanding when refused so reversed order would have cleared id20');
+    assert.deepEqual(hits, ['row:5', 'row:10'], 'the second batch installs hour 10 after the first batch refused hour 20');
+    assert.equal(lane.stats.refused['kept content'], 1);
   }
 
   {
