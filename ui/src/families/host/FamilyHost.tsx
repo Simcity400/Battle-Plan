@@ -815,6 +815,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     inspectedHitRef.current = null;
     lastMirrorObjRef.current = null;
     publishHoverHour(null);
+    publishHoverRow(null);
     if (viewportRef.current.zoomWindow) {
       viewportRef.current.zoomWindow = null;
       notifyViewportChange();
@@ -1113,10 +1114,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       getViewportHeight: () => latestRef.current.viewportHeight,
       parseHit: hitKey => parseFamilyHit(latestRef.current.adapter, hitKey),
       inspectToken: key => familyInspectToken(latestRef.current.adapter, key),
-      onHoverChange: hit => {
-        publishHoverHour(hit?.hour ?? null);
-        publishHoverRow(hit);
-      },
+      onHoverChange: hit => publishHoverHour(hit?.hour ?? null),
+      onHoverHit: publishHoverRow,
       ...(gestures
         ? {
             gestures: {

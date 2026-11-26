@@ -67,6 +67,7 @@ export interface FamilyPointerBindingOptions {
   readonly parseHit?: (hitKey: string | null, installed: InstalledPicture | null) => ParsedFamilyHit | FamilyPointerHit | null;
   readonly inspectToken?: (key: string) => string;
   readonly onHoverChange?: (hit: ParsedFamilyHit | null) => void;
+  readonly onHoverHit?: (hit: ParsedFamilyHit | null) => void;
   readonly gestures?: FamilyPointerGestures;
   readonly rowDrag?: FamilyRowDrag;
   readonly onActivate: (key: string, toggle: boolean, hit: ParsedFamilyHit | null, picture: InstalledPicture | null) => void;
@@ -119,6 +120,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     getViewportHeight,
     getInstalled,
     onHoverChange,
+    onHoverHit,
     gestures,
     rowDrag,
     onActivate,
@@ -130,6 +132,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   let lastHoverKey: string | null = null;
   let lastHoverHour: number | undefined;
   let lastHoverPicture: number | undefined;
+  let hoverVisit = 0;
 
   const installedNow = (): InstalledPicture | null => getInstalled?.() ?? null;
 
@@ -139,10 +142,13 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
     if (inspectedHitRef) inspectedHitRef.current = hit;
     const nextKey = hit?.key ?? null;
     const nextHour = hit?.hour;
-    if (nextKey !== lastHoverKey || nextHour !== lastHoverHour || (nextKey !== null && picture !== lastHoverPicture)) {
+    const moved = nextKey !== lastHoverKey || nextHour !== lastHoverHour;
+    const repainted = nextKey !== null && picture !== lastHoverPicture;
+    lastHoverPicture = picture;
+    if (moved || repainted) onHoverHit?.(hit);
+    if (moved) {
       lastHoverKey = nextKey;
       lastHoverHour = nextHour;
-      lastHoverPicture = picture;
       onHoverChange?.(hit);
     }
   };
@@ -171,8 +177,9 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   const hover = (clientX: number, clientY: number) => {
     const moved = installedNow();
     const stamp: PictureStamp = { installedId: moved?.id, owner: moved?.owner };
+    const visit = hoverVisit;
     pipeline.pointer(pipe, 0, toPoint(clientX, clientY), (hitKey, hitMeta) => {
-      if (isBlocked() || !lastPointerRef.current || !acceptsReply(hitMeta, stamp)) return;
+      if (isBlocked() || visit !== hoverVisit || !acceptsReply(hitMeta, stamp)) return;
       if (getInstalled && installedNow()?.id !== stamp.installedId) {
         const last = lastPointerRef.current;
         if (last) hover(last.x, last.y);
@@ -242,6 +249,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
 
   const onPointerLeave = () => {
     lastPointerRef.current = null;
+    hoverVisit++;
     tooltips.scheduleHoverLeave(() => {
       inspectedKeyRef.current = null;
       notifyHover(null);
@@ -403,6 +411,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   const clearHover = () => {
     tooltips.cancelHoverOpen();
     lastPointerRef.current = null;
+    hoverVisit++;
     if (inspectedKeyRef.current === null && lastHoverKey === null && lastHoverHour === undefined) return;
     inspectedKeyRef.current = null;
     notifyHover(null);

@@ -1742,6 +1742,7 @@ test('the hovered row is the subject the row would activate, reported when it ch
   } as unknown as Pipeline;
   const reply = (key: string | null) => { while (pending.length) pending.shift()!(key, { installedId: installed.id, owner: installed.owner }); };
   const rows: (string | null)[] = [];
+  let hoverNotices = 0;
   const publish = rowHoverPublisher(() => tableHostAdapter, () => installedRecordOf(installed), () => subject => rows.push(subject));
   const stop = bindFamilyPointer({
     bodyNode: body as unknown as HTMLElement, pictureNode: body as unknown as HTMLElement, menuHost: body as unknown as HTMLElement,
@@ -1749,7 +1750,8 @@ test('the hovered row is the subject the row would activate, reported when it ch
     lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
     parseHit: parseTableHit,
-    onHoverChange: publish,
+    onHoverChange: () => { hoverNotices++; },
+    onHoverHit: publish,
     onActivate: () => {},
   });
   body.dispatch('pointermove', { isTrusted: true, clientX: 20, clientY: 10 });
@@ -1760,6 +1762,7 @@ test('the hovered row is the subject the row would activate, reported when it ch
     reply('row:GER');
   }
   assert.deepEqual(rows, ['GER'], 'one report while the pointer rests on GER and playback advances under it');
+  assert.equal(hoverNotices, 1, 'a new picture under the same row is no hover change for the hour publisher');
   body.dispatch('pointermove', { isTrusted: true, clientX: 21, clientY: 30 });
   reply('row:FRA');
   assert.deepEqual(rows, ['GER', 'FRA'], 'a new row under the pointer is reported once');
@@ -1771,6 +1774,14 @@ test('the hovered row is the subject the row would activate, reported when it ch
   t.mock.timers.tick(HOVER_CLOSE_MS);
   reply('row:GER');
   assert.deepEqual(rows, ['GER', 'FRA', null], 'a hit answered after the pointer left reports no row');
+  body.dispatch('pointermove', { isTrusted: true, clientX: 22, clientY: 10 });
+  body.dispatch('pointerleave', { isTrusted: true, clientX: 300, clientY: 300 });
+  t.mock.timers.tick(HOVER_CLOSE_MS);
+  body.dispatch('pointermove', { isTrusted: true, clientX: 22, clientY: 30 });
+  const meta = { installedId: installed.id, owner: installed.owner };
+  pending.shift()!('row:GER', meta);
+  pending.shift()!('row:FRA', meta);
+  assert.deepEqual(rows, ['GER', 'FRA', null, 'FRA'], 'a hit from before the tooltip closed is not reported on the next visit');
   stop();
 
   const lane = (id: number, row: string) => {
@@ -1786,7 +1797,7 @@ test('the hovered row is the subject the row would activate, reported when it ch
     lastPointerRef: { current: null }, focusInsideRef: { current: false }, focusedKeyRef: { current: null }, focusAnchorRef: { current: { x: 0, y: 0 } },
     accessibleRef: { current: body as unknown as HTMLElement }, isBlocked: () => false, getInstalled: () => installed, getViewportHeight: () => 800,
     parseHit: parseHeatLanesHit,
-    onHoverChange: rowHoverPublisher(() => heatLanesHostAdapter, () => installedRecordOf(installed), () => subject => laneRows.push(subject)),
+    onHoverHit: rowHoverPublisher(() => heatLanesHostAdapter, () => installedRecordOf(installed), () => subject => laneRows.push(subject)),
     onActivate: () => {},
   });
   for (const [x, hit] of [[40, 'lane:#0@100'], [41, 'lane:#0@101'], [42, 'lane:#0']] as const) {
