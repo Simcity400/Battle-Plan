@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readyArt } from '../../families/art/types.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../../families/broker.ts';
@@ -131,6 +132,32 @@ describe('world-tension projections', () => {
       { branchId: '1', values: 'recorded', group, countries: [1], hour: at });
     assert.equal(lines.series[0]?.exact?.value, null);
     assert.equal(lines.series[0]?.exact?.reason, reason);
+  });
+
+  it('keeps one series per slot and shows the holder name, flag and colour at the inspected hour', () => {
+    const change = H1936 + 10000;
+    const sample = sampleStack();
+    const previous = { tag: 'JAP', firstHour: H1936, lastHour: change - 1, remembered: false };
+    const current = { tag: 'GER', firstHour: change, lastHour: H1941, remembered: false };
+    const reply = { ...sample, bands: [{ ...sample.bands[0]!, holders: [previous, current] }], other: null, events: [] };
+    const view = createBoundedReadView({ hour: H1941, panels: new Map([['main', reply]]), identity: makeIdentity(),
+      art: { resolve: handle => readyArt(handle.kind === 'flag' ? handle.choice : 'world') } });
+    const opts = { extent: [H1936, H1941] as const, surface: '#111111', gaps: [] };
+    const lines = worldTensionLinesProjection.project(view, opts);
+    const stack = worldTensionProjection.project(view, { ...opts, values: 'recorded', layers: 1, showMarkers: false });
+    assert.deepEqual(lines.series.map(line => line.id), ['slot:1']);
+    assert.deepEqual(stack.stack?.bands.map(band => band.id), ['slot:1']);
+    for (const model of [lines, stack]) {
+      const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
+      const at = (hour: number) => deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items?.find(item => item.label !== 'World tension');
+      const early = at(change - 1);
+      const late = at(change);
+      assert.equal(early?.label, 'Japan');
+      assert.equal(late?.label, 'German Reich');
+      assert.match(early?.countryFlag?.flag ?? '', /JAP/);
+      assert.match(late?.countryFlag?.flag ?? '', /GER/);
+      assert.notEqual(early?.swatch, late?.swatch);
+    }
   });
 
   it('projects stepped stack with Other at bottom, leader on top, shortName at small, and clamps future events', () => {

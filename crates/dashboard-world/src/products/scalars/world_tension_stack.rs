@@ -1,4 +1,4 @@
-use super::{Named, rows};
+use super::rows;
 use crate::products::{group_members, groups::{self, MembershipRun}};
 use dashboard_base::{Source, products::{LoadContext, Product, check_reply_budget}};
 use dashboard_query::{
@@ -59,11 +59,24 @@ pub struct WorldTensionStackParams {
     pub include_events: Option<bool>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct TensionHolder {
+    pub tag: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub remembered: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackBand {
     pub slot: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub holders: Option<Vec<TensionHolder>>,
     pub tag: Option<String>,
     pub remembered: bool,
     pub values: Vec<Option<f64>>,
@@ -314,7 +327,48 @@ struct CachedEvent {
     removed_at: Option<i32>,
 }
 
+pub(super) struct SlotNames(BTreeMap<u32, Vec<(i32, String, bool)>>);
+
+impl SlotNames {
+    pub(super) fn new(holders: &dashboard_query::identity::Holders) -> Self {
+        let mut edges: BTreeMap<u32, Vec<i32>> = BTreeMap::new();
+        for run in holders.tags.values().flatten() {
+            if let dashboard_query::identity::Holder::Found { slot, .. } = run.holder {
+                let changes = edges.entry(slot).or_default();
+                changes.push(run.first);
+                changes.extend(run.last.checked_add(1));
+            }
+        }
+        Self(edges.into_iter().map(|(slot, mut edges)| {
+            edges.sort_unstable();
+            edges.dedup();
+            let mut runs: Vec<(i32, String, bool)> = Vec::new();
+            for edge in edges {
+                if let Some(tag) = holders.slot_tag(slot, edge) {
+                    if runs.last().is_none_or(|(_, last, former)| *former || last != tag) {
+                        runs.push((edge, tag.to_owned(), false));
+                    }
+                } else if let Some((_, previous, false)) = runs.last() {
+                    runs.push((edge, previous.clone(), true));
+                }
+            }
+            (slot, runs)
+        }).collect())
+    }
+
+    pub(super) fn slot(&self, slot: u32, hour: i32) -> Option<(&str, bool)> {
+        let runs = self.0.get(&slot)?;
+        runs[..runs.partition_point(|run| run.0 <= hour)].last().map(|(_, tag, former)| (tag.as_str(), *former))
+    }
+
+    pub(super) fn next_change(&self, slot: u32, hour: i32) -> Option<i32> {
+        let runs = self.0.get(&slot)?;
+        runs.get(runs.partition_point(|run| run.0 <= hour)).map(|run| run.0)
+    }
+}
+
 struct BranchTension {
+    names: SlotNames,
     tension: Vec<(i32, i32, i64)>,
     sum: Vec<(i32, i32, i64)>,
     slots: BTreeMap<u32, Vec<(i32, i32, Option<i64>)>>,
@@ -612,6 +666,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
     events.sort_by_key(|event| (event.first_read, event.hour));
     warnings.sort_by_key(|(hour, _)| *hour);
     let built = Arc::new(BranchTension {
+        names: SlotNames::new(&query.holders),
         tension,
         sum,
         slots,
@@ -1172,7 +1227,19 @@ pub(super) fn compute_stack(
                 .copied()
                 .flatten()
                 .map(|v| v.to_string());
+            let mut holders = Vec::new();
+            let mut first_hour = first;
+            loop {
+                let next = slot_next_change(entry.slot, first_hour).filter(|&at| first_hour < at && at <= last);
+                let last_hour = next.map_or(last, |at| at - 1);
+                if let Some((tag, remembered)) = slot_tag(entry.slot, first_hour) {
+                    holders.push(TensionHolder { first_hour, last_hour, tag, remembered });
+                }
+                let Some(at) = next else { break };
+                first_hour = at;
+            }
             TensionStackBand {
+                holders: Some(holders),
                 slot: entry.slot,
                 tag: entry.resolved.as_ref().map(|(tag, _)| tag.clone()),
                 remembered: entry.resolved.as_ref().is_some_and(|(_, remembered)| *remembered),
@@ -1267,6 +1334,7 @@ impl Product for WorldTensionStack {
         vec![
             TensionValueMode::decl(),
             WorldTensionStackParams::decl(),
+            TensionHolder::decl(),
             TensionStackBand::decl(),
             TensionStackOther::decl(),
             TensionStackEvent::decl(),
@@ -1406,7 +1474,7 @@ impl Product for WorldTensionStack {
         let include_stack = params.include_stack.unwrap_or(true);
         let include_events = params.include_events.unwrap_or(true);
         let max_points = params.width.unwrap_or(1600).clamp(120, 2400) as usize;
-        let named = Named::new(&query.holders, last);
+        let named = &held.names;
         let mode_missing = match params.values {
             TensionValueMode::Share => &held.tension_missing,
             TensionValueMode::Recorded => &held.aggregates_missing,

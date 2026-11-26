@@ -1,10 +1,9 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { neutralColour, nudgeApart, readableColour } from '../../charts/palette.ts';
+import { neutralColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
 import { liveKey } from '../../charts/live.ts';
-import { parseColor, toHex } from '../../shell/appearance/color.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -14,8 +13,8 @@ import {
   type TimeChartWidgetDeclaration,
 } from '../../families/time-chart/declaration.ts';
 import { measureArtHandle } from '../../families/time-chart/measureArt.ts';
-import type { ChartExactRational, ChartGap, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
-import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
+import type { ChartExactRational, ChartGap, ChartIdentityRun, ChartMarker, ChartStackBand, TimeChartModel } from '../../families/time-chart/model.ts';
+import { branchGapsOf, countrySeriesLooks } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent, formatScaledPercent, formatShare, formatShareRatio } from '../../families/valueFormat.ts';
 import type { WorldTensionReply, WorldTensionStackReply } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
@@ -117,23 +116,33 @@ function contributorLabel(
   return { name: baseName, fullName, color, flagChoice };
 }
 
-function resolveBandColors(rawColors: readonly (string | null)[], surface: string): string[] {
-  const surfaceRgb = parseColor(surface)!;
-  const parsed: { r: number; g: number; b: number }[] = [];
-  const indices: number[] = [];
-  for (let i = 0; i < rawColors.length; i++) {
-    const c = rawColors[i] ? parseColor(readableColour(rawColors[i]!, surface)) : null;
-    if (c) {
-      parsed.push(c);
-      indices.push(i);
+export function tensionBandLooks(readView: BoundedReadView, reply: WorldTensionStackReply, from: number, surface: string) {
+  const keys = reply.bands.map(band => countryKey(band.slot));
+  const holders = Object.fromEntries(reply.bands.map((band, i) => [keys[i]!, band.holders ?? (band.tag ? [
+    { tag: band.tag, firstHour: from, lastHour: readView.hour, remembered: band.remembered },
+  ] : [])]));
+  const looks = countrySeriesLooks(keys, readView, { holders, from, surface, withFlag: true });
+  return keys.map(key => {
+    const look = looks.get(key)!;
+    const history = holders[key]!;
+    const identities: ChartIdentityRun[] = [];
+    let index = 0;
+    for (const run of look.identities) {
+      let firstHour = run.firstHour;
+      while (firstHour <= run.lastHour) {
+        while (history[index] && history[index]!.lastHour < firstHour) index++;
+        const next = history[index];
+        const holder = next && next.firstHour <= firstHour ? next : null;
+        const lastHour = Math.min(run.lastHour, holder?.lastHour ?? (next ? next.firstHour - 1 : run.lastHour));
+        identities.push(holder
+          ? { ...run, firstHour, lastHour, name: holder.remembered ? `${run.name} (former)` : run.name }
+          : { firstHour, lastHour, name: 'Unknown country', color: run.color });
+        firstHour = lastHour + 1;
+      }
     }
-  }
-  const nudged = parsed.length > 0 ? nudgeApart(parsed, surfaceRgb) : [];
-  const out: string[] = rawColors.map(() => neutralColour('fallback', surface));
-  for (let j = 0; j < indices.length; j++) {
-    out[indices[j]!] = toHex(nudged[j]!);
-  }
-  return out;
+    const now = identities.at(-1)!;
+    return { ...now, shortName: history.length ? look.name : 'Unknown', identities };
+  });
 }
 
 function buildMarkers(
@@ -358,17 +367,12 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
           return parsed !== null ? { raw: parsed, denominator: BigInt(totalScale) } : null;
         })
       : undefined;
-    const bandInfos = reply.bands.map(band => contributorLabel(readView, band.tag, band.remembered, hour));
-    const bandColors = resolveBandColors(bandInfos.map(info => info.color), options.surface);
+    const looks = tensionBandLooks(readView, reply, reply.hours[0] ?? options.extent[0], options.surface);
     const orderedBands: ChartStackBand[] = [];
     const bandEndExacts: (ChartExactRational | null)[] = [];
     for (let i = 0; i < reply.bands.length; i++) {
       const band = reply.bands[i]!;
-      const info = bandInfos[i]!;
-      const color = bandColors[i]!;
-      const flag = info.flagChoice
-        ? { art: readView.art(flagArtHandle(info.flagChoice, 'panel')), tag: band.tag ?? undefined, label: info.name }
-        : undefined;
+      const { color, name, shortName, flag, identities } = looks[i]!;
       const endVal = endHour !== null ? band.endValue : null;
       const endExact = endHour !== null
         ? exactBandRational(band.endRaw, options.values, reply.cappedEndTensionRaw, reply.endSumRaw, reply.tensionScale, reply.contributionScale)
@@ -382,7 +386,8 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       orderedBands.push({
         id: `slot:${band.slot}`,
         key: `slot:${band.slot}`,
-        name: info.fullName,
+        name,
+        identities,
         color,
         opacity: 0.84,
         values: band.values,
@@ -391,8 +396,8 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         endLabel: validEnd
           ? {
               ...(flag ? { flag } : {}),
-              name: info.name,
-              fullName: info.fullName,
+              name: shortName,
+              fullName: name,
               value: formatEndPct(endVal, options.values, endExact),
             }
           : null,

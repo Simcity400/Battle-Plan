@@ -572,7 +572,7 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
 
 #[test]
 fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_transitions() {
-    use super::Named;
+    use world_tension_stack::SlotNames;
     use dashboard_query::identity::{Holder, HolderRun, Holders};
     use std::collections::BTreeMap;
     use world_tension_stack::{StackInput, TensionValueMode, compute_stack};
@@ -589,8 +589,8 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
     let complete = [(10, 19)];
     let input = StackInput { tension: &[], sum: &[(10, 19, 400_000)], slots: &slots, aggregates_complete: &complete, tension_missing: &[], aggregates_missing: &[] };
 
-    let named_20 = Named::new(&holders, 20);
-    assert_eq!(named_20.next_change(1, 20), Some(26));
+    let names = SlotNames::new(&holders);
+    assert_eq!(names.next_change(1, 20), Some(26));
     let out_20 = compute_stack(
         &input,
         10,
@@ -601,13 +601,12 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         None,
         None,
         200,
-        |slot, hour| named_20.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
-        |slot, hour| named_20.next_change(slot, hour),
+        |slot, hour| names.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| names.next_change(slot, hour),
     );
     assert_eq!(out_20.bands[0].tag.as_deref(), Some("GER"));
     assert_eq!(out_20.next_change_hour, Some(26), "holder transition at hour 26 must bound validity");
 
-    let named_30 = Named::new(&holders, 30);
     let out_30 = compute_stack(
         &input,
         10,
@@ -618,9 +617,14 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
         None,
         None,
         200,
-        |slot, hour| named_30.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
-        |slot, hour| named_30.next_change(slot, hour),
+        |slot, hour| names.slot(slot, hour).map(|(tag, rem)| (tag.to_owned(), rem)),
+        |slot, hour| names.next_change(slot, hour),
     );
+    let history = serde_json::to_value(&out_30.bands[0]).unwrap();
+    assert_eq!(history["holders"], serde_json::json!([
+        { "tag": "GER", "firstHour": 10, "lastHour": 25, "remembered": false },
+        { "tag": "D01", "firstHour": 26, "lastHour": 30, "remembered": false },
+    ]));
     assert_eq!(out_30.bands[0].tag.as_deref(), Some("D01"), "slot identity resolves at drawn hour 30, not rank_hour 19");
 }
 
