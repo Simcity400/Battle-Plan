@@ -7,8 +7,8 @@ use crate::native::Read;
 fn class_metadata_covers_the_reader_registry_and_aliases() {
     let (first, second) = (0x7_0000_0010, 0x7_0000_0020);
     crate::test_game::with(|game| {
-        game.effect("synthetic_class_first", READ_VALUE, 0, first)
-            .effect("synthetic_class_second", READ_VALUE, 0, second)
+        let game = EffectShape::SCALAR.register(game, "synthetic_class_first", first);
+        EffectShape::SCALAR.register(game, "synthetic_class_second", second)
     });
     assert!(
         classes::CLASS_IDENTITIES
@@ -30,6 +30,8 @@ fn class_metadata_covers_the_reader_registry_and_aliases() {
         class(registered(b"synthetic_class_first").unwrap()),
         class(registered(b"synthetic_class_second").unwrap())
     );
+    let fields = read_body(b"synthetic_class_second = 17", &KeyNames::default()).unwrap();
+    assert_eq!(scalar(&fields, "synthetic_class_second"), b"17");
     let conditional = native_class(b"if").unwrap();
     assert_eq!(native_class(b"else_if"), Some(conditional));
     assert_eq!(native_class(b"else"), Some(conditional));

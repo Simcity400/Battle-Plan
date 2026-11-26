@@ -1321,6 +1321,33 @@ pub(crate) fn body_scope(
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl crate::effect_keys::EffectShape {
+    pub const CAPTURED_GENERAL: Self = Self(ASSIGNMENT_VALUE, CAPTURE_GENERAL_KEYS);
+    pub const CHARACTER_NATIONALITY: Self = Self(CHARACTER_NATIONALITY, 0);
+    pub const CHARACTER_PROMOTION: Self = Self(PROMOTION, 0);
+    pub const COUNTRY_TRAIT: Self = Self(COUNTRY_TRAIT, 0);
+    pub const EVENT: Self = Self(EVENT_VALUE, EVENT_KEYS);
+    pub const HIGHEST_TEMP_COUNTRY: Self = Self(HIGHEST_TEMP_VALUE, SCORED_VARIABLE_KEYS);
+    pub const LEADER_TOOLTIP: Self = Self(LEADERS_TOOLTIP_VALUE, 0);
+    pub const LOCALISATION: Self = Self(LOCALIZATION_VALUE, 0);
+    pub const MODULO_TEMP_VARIABLE: Self = Self(MODULO_TEMP_VALUE, MODULO_KEYS);
+    pub const OPERATIVE: Self = Self(CREATE_OPERATIVE_VALUE, CREATE_OPERATIVE_KEYS);
+    pub const OPERATIVE_CAPTURE: Self = Self(OPERATIVE_VALUE, CAPTURE_OPERATIVE_KEYS);
+    pub const OPERATIVE_COUNTRY: Self = Self(OPERATIVE_VALUE, OPERATIVE_COUNTRY_KEYS);
+    pub const OPERATIVE_EVENT: Self = Self(EVENT_VALUE, OPERATIVE_EVENT_KEYS);
+    pub const ORGANISATION_POLICY: Self = Self(ASSIGNMENT_VALUE, POLICY_TOOLTIP_KEYS);
+    pub const ORGANISATION_TRAIT: Self = Self(ASSIGNMENT_VALUE, TRAIT_TOOLTIP_KEYS);
+    pub const RANDOM_TEMP_VARIABLE: Self = Self(RANDOM_TEMP_VALUE, RANDOM_VARIABLE_KEYS);
+    pub const REMOVE_COMMANDER_ROLE: Self = Self(REMOVE_ROLE, 0);
+    pub const SCIENTIST_CHARACTER: Self = Self(ASSIGNMENT_VALUE, SCIENTIST_ROLE_KEYS);
+    pub const SORTED_TEMP_COUNTRIES: Self = Self(SORTED_TEMP_VALUE, SCORED_ARRAY_KEYS);
+    pub const SUPPLY_VEHICLES: Self = Self(SUPPLY_VALUE, SUPPLY_KEYS);
+    pub const TRAIT_CHOICE: Self = Self(RANDOM_TRAIT_VALUE, 0);
+    pub const TRAIT_EXCHANGE: Self = Self(SWAP_RULER_TRAITS, 0);
+    pub const UNIT_LEADER: Self = Self(REMOVE_UNIT_LEADER_VALUE, 0);
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(super) const SYNTHETIC_EFFECTS: &[(&str, u64, u64)] = &[
     ("show_ideas_tooltip", IDEAS_TOOLTIP_VALUE, 0),
     ("unlock_decision_category_tooltip", DECISION_CATEGORY_VALUE, 0),

@@ -210,6 +210,20 @@ pub fn shape(names: Option<&KeyNames>, field: &Field<'_>) -> Shape<()> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy)]
+pub struct EffectShape(u64, u64);
+
+#[cfg(any(test, feature = "test-support"))]
+impl EffectShape {
+    pub const SCALAR: Self = Self(READ_VALUE, 0);
+    pub const EFFECTS: Self = Self(READ_SCRIPT, READ_EFFECT);
+
+    pub fn register(self, game: synthetic_game::Executable, name: &str, class: u64) -> synthetic_game::Executable {
+        game.effect(name, self.0, self.1, class)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
     let mut game = game;
     for (index, &(name, keys, class)) in key_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
