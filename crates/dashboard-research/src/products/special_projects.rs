@@ -240,12 +240,20 @@ pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPrese
             ProjectState::Cancelled => {}
             ProjectState::Unknown => unknown.push((name(run), project.id.as_str(), index as u32)),
             ProjectState::Completed => {
-                let attempt = at.checked_sub(1).map(|before| &project.statuses[before]).filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused));
+                let mut first = at;
+                while first > 0 && project.statuses[first - 1].state == ProjectState::Completed && project.statuses[first - 1].last_hour.saturating_add(1) == project.statuses[first].first_hour {
+                    first -= 1;
+                }
+                let completed = &project.statuses[first];
+                let attempt = first
+                    .checked_sub(1)
+                    .map(|before| &project.statuses[before])
+                    .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last_hour.saturating_add(1) == completed.first_hour);
                 let date = attempt.and_then(|before| {
                     project
                         .entries
                         .iter()
-                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= run.first_hour && entry.read_hour <= hour)
+                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= completed.first_hour && entry.read_hour <= hour)
                         .map(|entry| entry.date)
                         .max()
                 });

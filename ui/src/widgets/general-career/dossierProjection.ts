@@ -92,7 +92,7 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
     kind: 'item',
     key: 'leader',
     subject: reference,
-    art: { kind: 'art', art: readView.art({ kind: 'portrait', leader: reference, hour: reply.firstSeenHour ?? hour }), ...(name ? { name } : {}) },
+    art: { kind: 'art', art: readView.art({ kind: 'portrait', leader: reference, hour }), ...(name ? { name } : {}) },
     title: name ? knownValue(name) : notRecorded('The name was not recorded'),
     subtitle: `${rank} · ${skill}`,
     ...(owner ? { subtitleFlag: owner.media } : {}),
@@ -101,13 +101,15 @@ function header(readView: Parameters<CardProjection['project']>[0], reply: Leade
   };
 }
 
-function recordRow(reply: LeaderHourReply): CardRow {
+function recordRow(reply: LeaderHourReply, partial: boolean): CardRow {
   const decided = reply.won + reply.lost;
+  if (!decided && partial) return { kind: 'list', key: 'record', label: 'Record', items: [], missing: PARTIAL, none: '' };
   if (!decided) return { kind: 'list', key: 'record', label: 'Record', items: [], none: reply.fought ? `${reply.fought} fought, none with a result yet` : 'No battles yet' };
   return {
     kind: 'meter',
     key: 'record',
     label: 'Record',
+    ...(partial ? { figure: { value: partialValue(`${reply.won} won · ${reply.lost} lost`, PARTIAL), figure: 'Recorded results' } } : {}),
     bar: {
       kind: 'share',
       segments: [
@@ -216,7 +218,7 @@ export const dossierProjection: CardProjection<DossierOptions> = registerFamilyP
     const partial = reply.battlesPartialFrom !== null && reply.battlesPartialFrom <= hour;
     return {
       ...base,
-      rows: [header(readView, reply, reference, partial), recordRow(reply), xpRow(reply, reference, live), traitsRow(reply), ...trainingRows(reply, live)],
+      rows: [header(readView, reply, reference, partial), recordRow(reply, partial), xpRow(reply, reference, live), traitsRow(reply), ...trainingRows(reply, live)],
       ...(partial ? { notes: [PARTIAL] } : {}),
       ...warnings,
     };

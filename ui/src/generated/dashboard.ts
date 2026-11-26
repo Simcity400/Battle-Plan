@@ -3020,6 +3020,10 @@ tag: string | null, slot: number, countryId: number, group: number, runs: Array<
 export type FactionUpgradeGroup = { group: number, name: string | null, reason: string | null, };
 export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes: Array<FactionSelectionLane>, minimums: Array<FactionMinimumLane>, members: Array<FactionMemberUpgradeLane>, doctrines: Array<FactionSelectionLane>, groups: Array<FactionUpgradeGroup>,
 /**
+ * Hours whose faction rules table was not read whole: no count of rules is known then.
+ */
+rulesUnread: Array<HourSpan>,
+/**
  * Hours of the timeline the recording does not hold.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };

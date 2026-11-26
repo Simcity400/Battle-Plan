@@ -308,11 +308,13 @@ export function deriveCardAudit(model: CardModel): FamilyAuditRow[] {
     }
     if (row.kind === 'list') {
       rows.push(auditCell(row.key, 'name', cardRowName(row)));
-      rows.push(auditCell(row.key, 'items', row.missing !== undefined ? `notRecorded:${row.missing}` : row.items.join('|')));
+      rows.push(auditCell(row.key, 'items', row.missing !== undefined ? `notRecorded:${row.missing}` : row.items.length ? row.items.join('|') : `none:${row.none}`));
       continue;
     }
     rows.push(auditCell(row.key, 'title', canonicalAuditValue(row.title)));
     if (row.kind === 'item' && row.titleLoading) rows.push(auditCell(row.key, 'loading', 'title'));
+    const media = row.kind === 'item' ? [['flag', row.flag], ['subtitleFlag', row.subtitleFlag], ['art', row.art]] as const : [['art', row.art]] as const;
+    for (const [cell, held] of media) if (held) rows.push(auditCell(row.key, cell, `${held.kind}:${held.tag ?? ''}:${held.name ?? ''}`));
     if (row.meter) {
       rows.push(auditCell(row.key, 'meter', canonicalAuditValue(row.meter.fraction)));
       if (row.meter.text !== undefined) rows.push(auditCell(row.key, 'meterText', row.meter.text));

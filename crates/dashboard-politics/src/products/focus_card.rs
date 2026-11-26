@@ -1,13 +1,13 @@
 use crate::products::focus::{self, Fold, FocusHourParams, FocusMissing};
 use crate::products::focus_artwork::{self, DatedFocusArtwork, FocusArtworkParams};
 use dashboard_base::Source;
-use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
+use dashboard_base::products::{LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_core::dto::FocusDatabase;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -72,28 +72,40 @@ pub(crate) struct CardShape {
     pub missing: Option<FocusMissing>,
     pub current: Option<(String, bool, bool)>,
     pub progress: Option<(i64, Option<i64>)>,
-    pub completed: Vec<(String, Option<i32>)>,
+    pub completed: Vec<(String, Option<i32>, i32)>,
     pub undated: u32,
-    pub segment_first: Option<i32>,
+}
+
+fn first_seen(fold: &Fold, at: usize, ordinal: u32, token: &str) -> i32 {
+    let held = |segment: &crate::products::focus::Segment| segment.order.completed.iter().any(|entry| entry.ordinal == ordinal && entry.token == token);
+    let mut first = fold.segments[at].first;
+    for back in (0..at).rev() {
+        let (earlier, later) = (&fold.segments[back], &fold.segments[back + 1]);
+        if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first || !held(earlier) {
+            break;
+        }
+        first = earlier.first;
+    }
+    first
 }
 
 pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
-    let Some((_, segment)) = fold.segment_at(hour) else {
+    let Some((index, segment)) = fold.segment_at(hour) else {
         let at = fold.missing.partition_point(|missing| missing.last_hour < hour);
         let missing = fold.missing.get(at).filter(|missing| missing.first_hour <= hour).cloned();
         let next_segment = fold.segments.iter().map(|segment| segment.first).find(|first| *first > hour);
         let valid_through = missing.as_ref().map(|missing| missing.last_hour).or(next_segment.map(|first| first - 1)).unwrap_or(hour);
-        return CardShape { valid_through, missing, current: None, progress: None, completed: Vec::new(), undated: 0, segment_first: None };
+        return CardShape { valid_through, missing, current: None, progress: None, completed: Vec::new(), undated: 0 };
     };
-    let mut dated: Vec<(String, Option<i32>)> = Vec::new();
-    let mut undated: Vec<(String, Option<i32>)> = Vec::new();
+    let mut dated: Vec<(String, Option<i32>, i32)> = Vec::new();
+    let mut undated: Vec<(String, Option<i32>, i32)> = Vec::new();
     for entry in segment.order.completed.iter().rev() {
         match entry.completed_by_hour {
-            Some(when) => dated.push((entry.token.clone(), Some(when))),
-            None => undated.push((entry.token.clone(), None)),
+            Some(when) => dated.push((entry.token.clone(), Some(when), when)),
+            None => undated.push((entry.token.clone(), None, first_seen(fold, index, entry.ordinal, &entry.token))),
         }
     }
-    dated.sort_by_key(|(_, when)| std::cmp::Reverse(*when));
+    dated.sort_by_key(|(_, when, _)| std::cmp::Reverse(*when));
     undated.reverse();
     let undated_count = undated.len() as u32;
     dated.extend(undated);
@@ -110,7 +122,7 @@ pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
     } else {
         segment.last
     };
-    CardShape { valid_through, missing: None, current, progress, completed: dated, undated: undated_count, segment_first: Some(segment.first) }
+    CardShape { valid_through, missing: None, current, progress, completed: dated, undated: undated_count }
 }
 
 pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days: Option<f64>) -> (Option<u32>, Option<u32>, Option<u32>, Option<String>) {
@@ -138,45 +150,15 @@ type Shown = BTreeMap<String, DatedFocusArtwork>;
 type Resolved = Arc<(Shown, Vec<String>, i32)>;
 type ArtKey = (FocusDatabase, i32, Vec<String>);
 
-const KEPT_LIMIT: usize = 512;
-
-#[derive(Default)]
-struct Kept {
-    scope: Option<(u64, Country)>,
-    resolved: Vec<(ArtKey, Resolved)>,
-}
-
 fn resolved_at(source: &Source, context: &LoadContext, params: &FocusHourParams, branch: u64, key: ArtKey, cancelled: &AtomicBool) -> io::Result<Resolved> {
-    let state = source.state::<Kept>();
-    let scope = (branch, params.country.clone());
-    {
-        let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
-        if kept.scope.as_ref() != Some(&scope) {
-            kept.scope = Some(scope.clone());
-            kept.resolved.clear();
-        }
-        if let Some((_, held)) = kept.resolved.iter().find(|(at, _)| *at == key) {
-            return Ok(Arc::clone(held));
-        }
-    }
     let (database, at, tokens) = key.clone();
-    let held = Arc::new(shown(source, context, params, at, database, tokens, cancelled)?);
-    let mut kept = state.lock().unwrap_or_else(PoisonError::into_inner);
-    if kept.scope.as_ref() == Some(&scope) {
-        if kept.resolved.len() >= KEPT_LIMIT {
-            kept.resolved.remove(0);
-        }
-        kept.resolved.push((key, Arc::clone(&held)));
-    }
-    Ok(held)
+    dashboard_base::products::breakdown::held(source, context, (branch, params.country.clone(), key), || shown(source, context, params, at, database, tokens, cancelled))
 }
 
 pub(crate) fn observed_hours(shape: &CardShape) -> BTreeMap<i32, Vec<String>> {
     let mut by_hour: BTreeMap<i32, Vec<String>> = BTreeMap::new();
-    for (token, when) in &shape.completed {
-        if let Some(hour) = when.or(shape.segment_first) {
-            by_hour.entry(hour).or_default().push(token.clone());
-        }
+    for (token, _, seen) in &shape.completed {
+        by_hour.entry(*seen).or_default().push(token.clone());
     }
     for tokens in by_hour.values_mut() {
         tokens.sort_unstable();
@@ -257,11 +239,8 @@ impl Product for FocusCard {
         let completed = shape
             .completed
             .iter()
-            .map(|(token, when)| {
-                let art = when
-                    .or(shape.segment_first)
-                    .and_then(|hour| completed_art.get(&(hour, token.clone())).cloned())
-                    .unwrap_or_else(|| art_of(token, &Shown::new(), UNNAMED));
+            .map(|(token, when, seen)| {
+                let art = completed_art.get(&(*seen, token.clone())).cloned().unwrap_or_else(|| art_of(token, &Shown::new(), UNNAMED));
                 FocusCardCompleted { art, completed_by_hour: *when, date_missing: when.is_none().then(|| UNDATED.to_owned()) }
             })
             .collect();

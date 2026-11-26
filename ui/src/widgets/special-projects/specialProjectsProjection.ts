@@ -103,6 +103,10 @@ export const specialProjectsProjection: CardProjection<Record<string, never>> = 
   },
 }, 'live') as CardProjection<Record<string, never>>;
 
+export function plannedCountry(owner: string): string | null {
+  return owner.startsWith('special-projects:') ? owner.slice(owner.lastIndexOf(':') + 1) || null : null;
+}
+
 export const specialProjectsDeclaration: CardWidgetDeclaration<Record<string, never>> = {
   family: 'card',
   kind: 'special-projects',

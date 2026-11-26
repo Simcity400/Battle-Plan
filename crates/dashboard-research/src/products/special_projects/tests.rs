@@ -1150,6 +1150,10 @@ fn the_card_at_an_hour_orders_running_by_progress_and_dates_a_completion_only_by
     assert_eq!(shown.undated, 3, "a marker read after the hour, a project first seen complete and an earlier attempt's marker date nothing");
     assert!(shown.completed[2..].iter().all(|item| item.date.is_none()));
     assert_eq!(shown_at(&projects, &presentations, &available, 60), ProjectsShown { through: Some(60), ..ProjectsShown::default() }, "an hour not recorded shows nothing");
+    let split = vec![project("s", Running, vec![status(10, 19, 0, Running, 80), status(20, 29, 0, Completed, 100), status(30, 50, 1, Completed, 100)], vec![completion(20, 20)])];
+    assert_eq!(shown_at(&split, &presentations, &available, 40).completed, [ShownCompleted { project: 0, date: Some(20) }], "a presentation change inside the completed status keeps the attempt's completion date");
+    let gapped = vec![project("g", Running, vec![status(10, 15, 0, Running, 80), status(20, 50, 0, Completed, 100)], vec![completion(18, 20)])];
+    assert_eq!(shown_at(&gapped, &presentations, &available, 40).completed, [ShownCompleted { project: 0, date: None }], "a marker across an unread gap does not link the attempt to its completion");
 }
 
 #[test]

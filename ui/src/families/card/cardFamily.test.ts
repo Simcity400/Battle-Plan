@@ -11,6 +11,7 @@ import '../../widgets/definitions.ts';
 import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LANE_THEME } from '../laneRuntime.fixture.ts';
@@ -291,7 +292,7 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   const reply = {
     rules: [{ slot: 0, runs: [run(100, 'Invented rule A')] }, { slot: 1, runs: [run(0, 'Invented rule B')] }, { slot: 2, runs: [run(120, null)] }],
     programmes: [{ slot: 0, runs: [run(60, 'Invented programme')] }], minimums: [], members: [], doctrines: [], groups: [],
-    unobserved: [{ firstHour: 110, lastHour: 119 }], warnings: [],
+    unobserved: [{ firstHour: 110, lastHour: 119 }], rulesUnread: [], warnings: [],
   };
   const model = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', reply]]) }), { groups, subject: 'AAA', branchFirst: 0 });
   assert.deepEqual(model.rows.map(row => (row.kind === 'section' ? `${row.label} ${row.count}` : row.key)), ['Rules 3', 'rule:0', 'rule:1', 'rule:2', 'Upgrades 1', 'programme:0']);
@@ -302,6 +303,9 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   assert.equal((model.rows.find(row => row.key === 'rule:2') as CardItemRow).title.kind, 'notRecorded', 'a name the content refuses is named as missing');
   assert.equal(model.columns.lists, true);
   assert.equal(model.nextChangeAt, 401);
+  const unreadRules = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', { ...reply, rulesUnread: [{ firstHour: 140, lastHour: 160 }] }]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.deepEqual(unreadRules.rows.slice(0, 2).map(row => row.kind === 'section' ? `${row.label} ${row.count ?? ''}` : row.kind === 'list' ? `missing:${row.missing}` : row.key), ['Rules ', 'missing:The faction’s rules were not read at this date'], 'an unread rules table is never "Rules 0"');
+  assert.equal(unreadRules.nextChangeAt, 161);
   const noFactionPlan = factionUpgradesDeclaration.sources({
     track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
     branch: { id: 'b', firstHour: 0, lastHour: 500 },
@@ -355,4 +359,43 @@ test('a general’s dossier splits the record won and lost, measures experience 
   assert.deepEqual([none.empty, none.emptyKind], ['No generals yet.', 'empty']);
   const unread = dossierProjection.project(view(hour, { ...reply, reference: null, role: null, missing: 'Leaders were not recorded' }, live), { reference: null });
   assert.deepEqual([unread.empty, unread.emptyKind], ['Leaders were not recorded', 'unavailable']);
+});
+
+test('a country outside every faction wakes when it joins one, and an incomplete roster is never "in no faction"', async () => {
+  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = (incomplete: readonly { firstHour: number; lastHour: number }[]) => ({
+    factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 300, lastHour: 500 }], incomplete }], unobserved: { factions: [] }, countryIdentities: [],
+  }) as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const before = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map() }), { groups: groups([]), subject: 'AAA', branchFirst: 0 });
+  assert.equal(before.empty, 'This country is in no faction at this date.');
+  assert.equal(before.nextChangeAt, 300, 'the empty card is asked again when the country joins');
+  const unread = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map() }), { groups: groups([{ firstHour: 100, lastHour: 200 }]), subject: 'AAA', branchFirst: 0 });
+  assert.equal(unread.emptyKind, 'unavailable', 'a roster read in part cannot prove the country is in no faction');
+});
+
+test('a member upgrade is named by its recorded slot at the hour, never by its last tag', async () => {
+  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = { factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 0, lastHour: 500 }], incomplete: [] }], unobserved: { factions: [] }, countryIdentities: [] } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const reply = {
+    rules: [], programmes: [], minimums: [], doctrines: [], groups: [{ group: 3, name: 'Invented group', reason: null }],
+    members: [{ key: 'm', tag: 'LATER', slot: 7, countryId: 70, group: 3, runs: [{ firstHour: 100, lastHour: 400, token: null, name: 'Invented upgrade', reason: null, startsSegment: false }] }],
+    unobserved: [], rulesUnread: [], warnings: [],
+  };
+  const asked: string[] = [];
+  const identity = { resolve(kind: string, key: string, atHour: number) {
+    asked.push(key);
+    return { kind, key, atHour, holder: { status: 'ready', value: key }, tag: { status: 'ready', value: 'EARLY' }, name: { status: 'ready', value: 'Early name' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+  } } as never;
+  const model = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', reply]]), identity }), { groups, subject: 'AAA', branchFirst: 0 });
+  const row = model.rows.find(item => item.key === 'member:m') as CardItemRow;
+  assert.match(row.subtitle ?? '', /^Early name/);
+  assert.ok(asked.includes(countryKey(7)));
+});
+
+test('a dossier with a partial battle history never says "No battles yet", and the audit tells empty lists apart', () => {
+  const list = (none: string): CardModel => ({ hour: 1, columns: {}, rowHeight: 36, rows: [{ kind: 'list', key: 'record', label: 'Record', items: [], none }] });
+  const value = (model: CardModel) => deriveCardAudit(model).find(row => row.key === 'record:items')?.value;
+  assert.notEqual(value(list('No battles yet')), value(list('5 fought, none with a result yet')));
+  const flagged: CardModel = { hour: 1, columns: {}, rowHeight: 36, rows: [{ kind: 'item', key: 'leader', title: { kind: 'known', value: 'Invented general' }, subtitleFlag: { kind: 'flag', art: { status: 'absent', reason: 'none' } as never, tag: 'AAA' } }] };
+  assert.equal(deriveCardAudit(flagged).find(row => row.key === 'leader:subtitleFlag')?.value, 'flag:AAA:');
 });

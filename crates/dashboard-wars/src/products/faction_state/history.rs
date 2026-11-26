@@ -129,6 +129,8 @@ pub struct FactionRulesReply {
     pub members: Vec<FactionMemberUpgradeLane>,
     pub doctrines: Vec<FactionSelectionLane>,
     pub groups: Vec<FactionUpgradeGroup>,
+    #[doc = " Hours whose faction rules table was not read whole: no count of rules is known then."]
+    pub rules_unread: Vec<HourSpan>,
     #[doc = " Hours of the timeline the recording does not hold."]
     pub unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
@@ -236,7 +238,9 @@ impl Product for FactionState {
 
 type Steps = Vec<(i32, i32, Option<Box<[Cell]>>)>;
 
-fn histories(query: &Query<'_>, table: TableId, columns: &[usize], keys: Keys<'_>, cancelled: &AtomicBool) -> io::Result<Vec<(u32, bool, i32, i32, BTreeMap<u128, Steps>)>> {
+type Stretch = (u32, bool, i32, i32, BTreeMap<u128, Steps>, Vec<lanes::StatusRun>);
+
+fn histories(query: &Query<'_>, table: TableId, columns: &[usize], keys: Keys<'_>, cancelled: &AtomicBool) -> io::Result<Vec<Stretch>> {
     let mut out = Vec::new();
     for (index, stretch) in query.timeline.stretches.iter().enumerate() {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -251,7 +255,7 @@ fn histories(query: &Query<'_>, table: TableId, columns: &[usize], keys: Keys<'_
             held.insert(key, runs);
         }
         let continues = index > 0 && matches!(stretch.join, Join::Load { .. });
-        out.push((stretch.run, !continues, stretch.first, stretch.last, held));
+        out.push((stretch.run, !continues, stretch.first, stretch.last, held, history.statuses));
     }
     Ok(out)
 }
@@ -281,22 +285,69 @@ impl Lane {
         let starts = starts || self.runs.last().is_none_or(|held| i64::from(held.1) + 1 != i64::from(first));
         self.runs.push((first, last, value, starts));
     }
+
+    fn push_witnessed(&mut self, first: i32, last: i32, value: u64, starts: bool) {
+        if let Some(held) = self.runs.last_mut()
+            && held.2 == value
+            && !starts
+            && i64::from(held.1) + 1 == i64::from(first)
+        {
+            held.1 = last;
+            return;
+        }
+        self.runs.push((first, last, value, starts));
+    }
 }
 
-fn ordinal_lanes(query: &Query<'_>, table: TableId, column: usize, faction: u64, cancelled: &AtomicBool) -> io::Result<BTreeMap<u32, Lane>> {
+fn read_whole(statuses: &[lanes::StatusRun], hour: i32) -> bool {
+    statuses.iter().any(|run| run.first <= hour && hour <= run.last && replay_recording::columnar_frames::complete(run.status))
+}
+
+fn unread_spans(stretches: &[Stretch]) -> Vec<HourSpan> {
+    let mut out: Vec<HourSpan> = Vec::new();
+    for (_, _, first, last, _, statuses) in stretches {
+        let mut hour = *first;
+        while hour <= *last {
+            let run = statuses.iter().find(|run| run.first <= hour && hour <= run.last);
+            let end = match run {
+                Some(run) => run.last.min(*last),
+                None => statuses.iter().map(|run| run.first).filter(|&start| start > hour).min().map_or(*last, |start| start - 1).min(*last),
+            };
+            if !run.is_some_and(|run| replay_recording::columnar_frames::available(run.status)) {
+                match out.last_mut() {
+                    Some(held) if held.last_hour + 1 == hour => held.last_hour = end,
+                    _ => out.push(HourSpan { first_hour: hour, last_hour: end }),
+                }
+            }
+            hour = match end.checked_add(1) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+    }
+    out
+}
+
+fn ordinal_lanes(query: &Query<'_>, table: TableId, column: usize, faction: u64, cancelled: &AtomicBool) -> io::Result<(BTreeMap<u32, Lane>, Vec<HourSpan>)> {
     let (low, high) = ordinals(faction);
+    let stretches = histories(query, table, &[column], Keys::Range(low, high), cancelled)?;
+    Ok((witnessed_lanes(&stretches), unread_spans(&stretches)))
+}
+
+fn witnessed_lanes(stretches: &[Stretch]) -> BTreeMap<u32, Lane> {
     let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
-    for (_, breaks, first, _, held) in histories(query, table, &[column], Keys::Range(low, high), cancelled)? {
+    for (_, breaks, first, _, held, statuses) in stretches {
         for (key, steps) in held {
-            let lane = lanes.entry(key as u32).or_default();
+            let lane = lanes.entry(*key as u32).or_default();
             for (a, b, cells) in steps {
                 if let Some(value) = number(cells.as_deref().and_then(<[Cell]>::first)) {
-                    lane.push(a, b, value as u64, breaks && a == first);
+                    let unwitnessed_before = (*breaks && a == first) || !read_whole(statuses, a - 1);
+                    lane.push_witnessed(*a, *b, value as u64, unwitnessed_before);
                 }
             }
         }
     }
-    Ok(lanes)
+    lanes
 }
 
 #[derive(Default)]
@@ -516,11 +567,11 @@ fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewp
     let mut naming = Naming { query, faction, cat, lexicon: Lexicon::default(), names: Names::new(&query.holders), viewpoint, frames: HashMap::new() };
     let field = dashboard_declare::field;
     let mut warnings = BTreeMap::<String, usize>::new();
-    let lanes = ordinal_lanes(query, TableId::FactionRules, field(TableId::FactionRules, "token")?, faction, cancelled)?;
+    let (lanes, rules_unread) = ordinal_lanes(query, TableId::FactionRules, field(TableId::FactionRules, "token")?, faction, cancelled)?;
     let rules = slot_lanes(&mut naming, lanes, Named::Plain, &mut warnings);
-    let lanes = ordinal_lanes(query, TableId::FactionDoctrine, field(TableId::FactionDoctrine, "token")?, faction, cancelled)?;
+    let (lanes, _) = ordinal_lanes(query, TableId::FactionDoctrine, field(TableId::FactionDoctrine, "token")?, faction, cancelled)?;
     let doctrines = slot_lanes(&mut naming, lanes, Named::Plain, &mut warnings);
-    let lanes = ordinal_lanes(query, TableId::FactionPrograms, field(TableId::FactionPrograms, "reference")?, faction, cancelled)?;
+    let (lanes, _) = ordinal_lanes(query, TableId::FactionPrograms, field(TableId::FactionPrograms, "reference")?, faction, cancelled)?;
     let programmes = slot_lanes(&mut naming, lanes, Named::Programme, &mut warnings);
     let mut groups = BTreeSet::new();
     let mut minimums = Vec::new();
@@ -560,6 +611,7 @@ fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewp
         members,
         doctrines,
         groups,
+        rules_unread,
         unobserved: Vec::new(),
         warnings: warnings.into_iter().map(|(reason, count)| format!("{count} faction facts: {reason}")).collect(),
     })
@@ -576,7 +628,7 @@ fn minimum_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io:
     columns.sort_unstable();
     let (low, high) = ordinals(faction);
     let mut runs: BTreeMap<u32, Vec<(i32, i32, u64, bool)>> = BTreeMap::new();
-    for (_, breaks, first, _, held) in histories(query, table, &columns, Keys::Range(low, high), cancelled)? {
+    for (_, breaks, first, _, held, _) in histories(query, table, &columns, Keys::Range(low, high), cancelled)? {
         for steps in held.into_values() {
             for (a, b, cells) in steps {
                 let cells = cells.as_deref().unwrap_or_default();
@@ -618,7 +670,7 @@ fn member_lanes(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::
     let mut list_columns = [groups_column, tokens_column];
     list_columns.sort_unstable();
     let mut out: BTreeMap<MemberLane, Vec<(i32, i32, u32, bool)>> = BTreeMap::new();
-    for (run, breaks, first, _, held) in histories(query, owners, &owner_columns, Keys::All, cancelled)? {
+    for (run, breaks, first, _, held, _) in histories(query, owners, &owner_columns, Keys::All, cancelled)? {
         let mut spans: BTreeMap<u32, Vec<(i32, i32, u32, u32)>> = BTreeMap::new();
         for (key, steps) in held {
             for (a, b, cells) in steps {
@@ -698,7 +750,7 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
     let mut members: BTreeMap<(u32, u32, Option<u32>), Vec<FactionManpowerRun>> = BTreeMap::new();
     let mut tags: HashMap<(u32, u32, Option<u32>), Option<String>> = HashMap::new();
     let mut unresolved = 0usize;
-    for (run, breaks, first, _, held) in histories(query, table, &columns, Keys::Range(low, high), cancelled)? {
+    for (run, breaks, first, _, held, _) in histories(query, table, &columns, Keys::Range(low, high), cancelled)? {
         let mut segments = Vec::new();
         for (key, steps) in held {
             for (a, b, cells) in steps {
@@ -753,4 +805,22 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
     members.sort_by_key(|member| member.runs.first().map(|run| run.first_hour));
     let warnings = if unresolved > 0 { vec![format!("{unresolved} faction manpower runs name a country no link resolves at their first hour")] } else { Vec::new() };
     Ok(FactionManpowerReply { members, unobserved: Vec::new(), warnings })
+}
+
+#[cfg(test)]
+mod witnessed_tests {
+    use super::*;
+    use replay_columnar::manifest::Status;
+
+    #[test]
+    fn a_rule_first_seen_after_a_witnessed_empty_hour_is_dated_and_an_unread_table_is_not_zero_rules() {
+        let run = |first: i32, last: i32, status: Status| lanes::StatusRun { first, last, status };
+        let cells = |value: i64| Some(vec![Cell::Number(value)].into_boxed_slice());
+        let held = BTreeMap::from([(3u128, vec![(150, 200, cells(42))]), (4u128, vec![(100, 200, cells(7))])]);
+        let stretch: Stretch = (0, true, 100, 200, held, vec![run(100, 159, Status::Complete), run(160, 170, Status::NotRecorded), run(171, 200, Status::Complete)]);
+        let lanes = witnessed_lanes(std::slice::from_ref(&stretch));
+        assert_eq!(lanes[&3].runs, [(150, 200, 42, false)], "the slot was read empty at 149: the rule was enacted at 150");
+        assert_eq!(lanes[&4].runs, [(100, 200, 7, true)], "held when the stretch began: when it began is not known");
+        assert_eq!(unread_spans(&[stretch]), [HourSpan { first_hour: 160, last_hour: 170 }]);
+    }
 }

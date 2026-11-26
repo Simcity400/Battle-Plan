@@ -11,7 +11,7 @@ use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
 };
@@ -169,6 +169,53 @@ dashboard_base::reply_warnings!(WargoalsReply);
 pub struct WargoalContent {
     catalogue: Result<Arc<Catalogue>, String>,
     dates: Result<Arc<Incarnations>, String>,
+    removed: HashMap<(u64, i32), RemovedName>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RemovedName {
+    name: Option<String>,
+    recipient: Option<u32>,
+}
+
+fn removed_names(source: &Source, branch: u64, cat: &Catalogue, dates: &Incarnations, country: &Country) -> io::Result<HashMap<(u64, i32), RemovedName>> {
+    let query = dashboard_base::queries::query(source, branch)?;
+    let held = cat.content.layers.derived::<content_reader_layers::content::diagnostics::Once<Result<content_reader_wargoals::wargoals::Database, String>>>();
+    let definitions = held.get_or_init(|| content_reader_wargoals::wargoals::read(&cat.content.layers).map_err(|why| why.to_string())).as_ref().ok();
+    let mut reads: Vec<dashboard_base::products::at_hour::Read> = [TableId::CountryLinks, TableId::LexicalTokens].into_iter().map(dashboard_base::products::at_hour::Read::all).collect();
+    reads.extend(content_reader_country_names::country_names::TABLES.iter().copied().map(dashboard_base::products::at_hour::Read::all));
+    let mut frames: HashMap<i32, Arc<DecodedFrame>> = HashMap::new();
+    let mut out = HashMap::new();
+    for incarnation in dates.removed() {
+        let hour = incarnation.last_seen;
+        let Some(slot) = query.holders.slot_at(country, hour) else { continue };
+        let frame = match frames.get(&hour) {
+            Some(frame) => Arc::clone(frame),
+            None => {
+                let Ok(frame) = dashboard_base::products::at_hour::frame(&query, hour, &reads, "War goals") else { continue };
+                let frame = Arc::new(frame);
+                frames.insert(hour, Arc::clone(&frame));
+                frame
+            }
+        };
+        let Ok(links) = frame.complete::<tables::CountryLinks>() else { continue };
+        let links: BTreeMap<u32, u32> = links.iter().map(|row| (row.id, row.canonical_slot)).collect();
+        if links.get(&incarnation.country) != Some(&slot) {
+            continue;
+        }
+        let raw = |value: Option<i64>| value.and_then(|raw| u32::try_from(raw).ok());
+        let recipient = raw(incarnation.recipient).and_then(|recipient| links.get(&recipient).copied());
+        let actor = raw(incarnation.actor).and_then(|actor| links.get(&actor).copied());
+        let literal = raw(incarnation.goal_type).and_then(|token| frame.complete::<tables::LexicalTokens>().ok()?.iter().find(|row| row.token == token).map(|row| row.literal.clone()));
+        let name = match (literal, actor, recipient) {
+            (Some(literal), Some(actor), Some(recipient)) => definitions
+                .and_then(|db| db.find(&literal).ok().flatten())
+                .and_then(|definition| localised_goal_name(&frame, &cat.localisation, definition, actor, recipient).ok()),
+            _ => None,
+        };
+        out.insert((incarnation.handle, hour), RemovedName { name, recipient });
+    }
+    Ok(out)
 }
 
 impl AtHour for Wargoals {
@@ -212,23 +259,24 @@ impl AtHour for Wargoals {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
-        Ok(WargoalContent { catalogue, dates: Err("War-goal dates need the branch's history".into()) })
+        Ok(WargoalContent { catalogue, dates: Err("War-goal dates need the branch's history".into()), removed: HashMap::new() })
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
         let catalogue = load.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
-        let dates = params
-            .branch_id
-            .parse::<u64>()
-            .map_err(|_| "Invalid branch".to_owned())
-            .and_then(|branch| wargoal_dates::follow(source, branch).map_err(|why| format!("War-goal dates refused: {why}")));
-        Ok(WargoalContent { catalogue, dates })
+        let branch = params.branch_id.parse::<u64>().map_err(|_| "Invalid branch".to_owned());
+        let dates = branch.clone().and_then(|branch| wargoal_dates::follow(source, branch).map_err(|why| format!("War-goal dates refused: {why}")));
+        let removed = match (&catalogue, &dates, branch) {
+            (Ok(cat), Ok(dates), Ok(branch)) => removed_names(source, branch, cat, dates, &params.country)?,
+            _ => HashMap::new(),
+        };
+        Ok(WargoalContent { catalogue, dates, removed })
     }
 
     fn reply(frame: &DecodedFrame, p: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("War goals country is unavailable at this hour"))?;
         let tag_at = |slot: u32, hour: i32| at.holders.tag_at(&Country::Slot(slot), hour).map(str::to_owned);
-        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: at.holders.name(&p.country, at.hour), country: p.country.clone() }, owner.slot, &at.context.catalogue, &at.context.dates, &tag_at)?;
+        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: at.holders.name(&p.country, at.hour), country: p.country.clone() }, owner.slot, at.context, &tag_at)?;
         let progress = dashboard_declare::field(TableId::WargoalJustifications, "progress_raw")?;
         for justification in &reply.justifications {
             let key = justification.id.parse::<u128>().map_err(|_| invalid("War-goal justification key is not a number"))?;
@@ -242,10 +290,10 @@ fn reply(
     frame: &DecodedFrame,
     p: &WargoalsAsk,
     slot: u32,
-    catalogue: &Result<Arc<Catalogue>, String>,
-    dates: &Result<Arc<Incarnations>, String>,
+    content: &WargoalContent,
     tag_at: &dyn Fn(u32, i32) -> Option<String>,
 ) -> io::Result<WargoalsReply> {
+    let (catalogue, dates) = (&content.catalogue, &content.dates);
     let held = catalogue.as_ref().ok().map(|cat| {
         cat.content
             .layers
@@ -289,18 +337,11 @@ fn reply(
         })
     };
     let mut reply = inventory(frame, p, &mut name_of)?;
-    let literals: BTreeMap<_, _> = frame.complete::<tables::LexicalTokens>()?.iter().map(|r| (r.token, r.literal.clone())).collect();
     let owners: Vec<u32> = links.iter().filter(|(_, held)| **held == slot).map(|(raw, _)| *raw).collect();
     match dates {
         Ok(dates) => apply_dates(&mut reply, dates, p.hour, &owners, |incarnation| {
-            let token = incarnation.goal_type.and_then(|token| u32::try_from(token).ok());
-            let actor = incarnation.actor.and_then(|raw| u32::try_from(raw).ok());
-            let recipient = incarnation.recipient.and_then(|raw| u32::try_from(raw).ok());
-            let name = match (token.and_then(|token| literals.get(&token)), actor, recipient) {
-                (Some(literal), Some(actor), Some(recipient)) => name_of(literal, actor, recipient).ok().filter(|name| name != "Not recorded"),
-                _ => None,
-            };
-            (name, recipient.and_then(|raw| links.get(&raw)).and_then(|slot| tag_at(*slot, incarnation.last_seen)))
+            let held = content.removed.get(&(incarnation.handle, incarnation.last_seen)).cloned().unwrap_or_default();
+            (held.name, held.recipient.and_then(|slot| tag_at(slot, incarnation.last_seen)))
         }),
         Err(why) => {
             for goal in &mut reply.goals {
@@ -854,7 +895,7 @@ mod tests {
             std::collections::HashMap::from([(row(1), vec![(100, 130, Some(42))])]),
             std::collections::HashMap::new(),
         ];
-        let found = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &attributes, Some(100), 130));
+        let found = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &attributes, Some(100), Some(100), 130));
         let seven = found.of_handle(7).next().unwrap();
         assert_eq!((seven.granted, seven.removed, seven.removed_exact, seven.country), (None, Some(121), true, 1), "held at the first read: granted before the branch; removed the hour it was first read gone");
         assert_eq!((seven.recipient, seven.goal_type), (Some(2), Some(42)), "its terms are read from the row that held it last");
@@ -885,7 +926,7 @@ mod tests {
             (row(2), vec![(100, 112, Value(5)), (113, 130, Uncovered)]),
         ]);
         let none: [std::collections::HashMap<u128, replay_lanes::lanes::Runs>; 4] = Default::default();
-        let found = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &none, Some(100), 130));
+        let found = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &none, Some(100), Some(100), 130));
         let seven = found.of_handle(7).next().unwrap();
         assert_eq!((seven.removed, seven.removed_exact, seven.last_seen), (Some(120), false, 109), "removed by the first hour it was read gone, not the hour after it was last seen");
         assert_eq!(seven.granted_missing, Some(wargoal_dates::HELD_AT_BRANCH_START));
@@ -894,6 +935,8 @@ mod tests {
         let five = found.of_handle(5).next().unwrap();
         assert_eq!(five.removed, None, "never read gone is never removed");
         assert_eq!(found.of_country(1).count(), 3);
+        let late = wargoal_dates::Incarnations::new(wargoal_dates::incarnations(&handles, &none, Some(105), Some(100), 130));
+        assert_eq!(late.of_handle(7).next().unwrap().granted_missing, Some(wargoal_dates::FIRST_SEEN_AFTER_GAP), "the first usable read after an initial gap is not the branch start");
     }
     #[test]
     fn a_goal_state_puts_war_before_readiness_and_expiry_before_both_unless_at_war() {
@@ -1109,8 +1152,7 @@ mod tests {
                 country: "ONE".into(),
             },
             1,
-            &Ok(Arc::new(cat)),
-            &Ok(Arc::new(wargoal_dates::Incarnations::new(Vec::new()))),
+            &WargoalContent { catalogue: Ok(Arc::new(cat)), dates: Ok(Arc::new(wargoal_dates::Incarnations::new(Vec::new()))), removed: HashMap::new() },
             &|_, _| None,
         )
         .unwrap();

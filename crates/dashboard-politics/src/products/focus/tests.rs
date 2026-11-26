@@ -450,8 +450,8 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     let query = dashboard_base::queries::query(&source, 1).unwrap();
     let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     let early = card_at(&fold, 103);
-    assert_eq!(early.completed, [("a".to_owned(), None)]);
-    assert_eq!((early.undated, early.segment_first), (1, Some(100)));
+    assert_eq!(early.completed, [("a".to_owned(), None, 100)]);
+    assert_eq!(early.undated, 1);
     assert_eq!(early.current, Some(("b".to_owned(), false, false)));
     assert_eq!(early.progress, Some((200_000, Some(100_000))));
     assert_eq!(early.valid_through, 104, "the answer stands no later than its progress reading");
@@ -461,7 +461,7 @@ fn a_focus_card_lists_dated_completions_newest_first_then_undated_and_holds_only
     assert_eq!((before.progress, before.valid_through), (None, 101));
     assert!(card_at(&delayed, 102).progress.is_some());
     let later = card_at(&fold, 107);
-    assert_eq!(later.completed, [("b".to_owned(), Some(105)), ("a".to_owned(), None)], "dated newest first, the undated after them");
+    assert_eq!(later.completed, [("b".to_owned(), Some(105), 105), ("a".to_owned(), None, 100)], "dated newest first, the undated after them, its art read at the hour it was first seen, not the later segment's start");
     assert_eq!((later.undated, later.current.clone(), later.valid_through), (1, None, 109));
     let gap = card_at(&fold, 110);
     assert!(gap.completed.is_empty() && gap.current.is_none());
@@ -480,7 +480,15 @@ fn completions_are_ordered_by_their_dates_and_each_is_presented_at_the_hour_it_w
     let order = FocusOrder { completed: vec![entry(0, "early", None), entry(1, "later", Some(110)), entry(2, "middle", Some(105))], current: Some("now".into()), continuous: None, paused: false };
     let fold = Fold { segments: vec![Segment { first: 100, last: 200, slot: 7, id: 1, order }], ..Default::default() };
     let card = card_at(&fold, 150);
-    assert_eq!(card.completed, [("later".to_owned(), Some(110)), ("middle".to_owned(), Some(105)), ("early".to_owned(), None)], "a reordered list still reads newest first by date");
+    assert_eq!(card.completed, [("later".to_owned(), Some(110), 110), ("middle".to_owned(), Some(105), 105), ("early".to_owned(), None, 100)], "a reordered list still reads newest first by date");
+    let split = Fold {
+        segments: vec![
+            Segment { first: 100, last: 149, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "early", None)], current: Some("now".into()), continuous: None, paused: false } },
+            Segment { first: 150, last: 200, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "early", None)], current: Some("next".into()), continuous: None, paused: false } },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(card_at(&split, 170).completed, [("early".to_owned(), None, 100)], "a new segment does not move an undated completion's artwork hour");
     let hours = observed_hours(&card);
     assert_eq!(hours.get(&110), Some(&vec!["later".to_owned()]));
     assert_eq!(hours.get(&105), Some(&vec!["middle".to_owned()]));
