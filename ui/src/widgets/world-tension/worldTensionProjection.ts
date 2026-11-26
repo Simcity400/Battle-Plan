@@ -118,9 +118,14 @@ function contributorLabel(
 
 export function tensionBandLooks(readView: BoundedReadView, reply: WorldTensionStackReply, from: number, surface: string) {
   const keys = reply.bands.map(band => countryKey(band.slot));
-  const holders = Object.fromEntries(reply.bands.map((band, i) => [keys[i]!, band.holders ?? (band.tag ? [
-    { tag: band.tag, firstHour: from, lastHour: readView.hour, remembered: band.remembered },
-  ] : [])]));
+  const provenThrough = Math.min(readView.hour, (reply.nextChangeHour ?? Infinity) - 1);
+  const holders = Object.fromEntries(reply.bands.map((band, i) => {
+    const last = band.holders.at(-1);
+    const runs = last && last.lastHour < provenThrough
+      ? [...band.holders.slice(0, -1), { ...last, lastHour: provenThrough }]
+      : band.holders;
+    return [keys[i]!, runs] as const;
+  }));
   const looks = countrySeriesLooks(keys, readView, { holders, from, surface, withFlag: true });
   return keys.map(key => {
     const look = looks.get(key)!;

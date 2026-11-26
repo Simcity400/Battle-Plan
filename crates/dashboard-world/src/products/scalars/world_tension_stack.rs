@@ -74,9 +74,7 @@ pub struct TensionHolder {
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackBand {
     pub slot: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub holders: Option<Vec<TensionHolder>>,
+    pub holders: Vec<TensionHolder>,
     pub tag: Option<String>,
     pub remembered: bool,
     pub values: Vec<Option<f64>>,
@@ -1239,7 +1237,7 @@ pub(super) fn compute_stack(
                 first_hour = at;
             }
             TensionStackBand {
-                holders: Some(holders),
+                holders,
                 slot: entry.slot,
                 tag: entry.resolved.as_ref().map(|(tag, _)| tag.clone()),
                 remembered: entry.resolved.as_ref().is_some_and(|(_, remembered)| *remembered),

@@ -579,8 +579,8 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
 
     let holders = Holders::new(
         BTreeMap::from([
-            ("GER".to_owned(), vec![HolderRun { first: 10, last: 25, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
-            ("D01".to_owned(), vec![HolderRun { first: 26, last: 50, holder: Holder::Found { slot: 1, id: 2 }, starts_segment: true }]),
+            ("GER".to_owned(), vec![HolderRun { first: 12, last: 25, holder: Holder::Found { slot: 1, id: 1 }, starts_segment: true }]),
+            ("D01".to_owned(), vec![HolderRun { first: 28, last: 50, holder: Holder::Found { slot: 1, id: 2 }, starts_segment: true }]),
         ]),
         Vec::new(),
     );
@@ -622,8 +622,9 @@ fn world_tension_stack_resolves_slot_identity_at_drawn_hour_and_bounds_holder_tr
     );
     let history = serde_json::to_value(&out_30.bands[0]).unwrap();
     assert_eq!(history["holders"], serde_json::json!([
-        { "tag": "GER", "firstHour": 10, "lastHour": 25, "remembered": false },
-        { "tag": "D01", "firstHour": 26, "lastHour": 30, "remembered": false },
+        { "tag": "GER", "firstHour": 12, "lastHour": 25, "remembered": false },
+        { "tag": "GER", "firstHour": 26, "lastHour": 27, "remembered": true },
+        { "tag": "D01", "firstHour": 28, "lastHour": 30, "remembered": false },
     ]));
     assert_eq!(out_30.bands[0].tag.as_deref(), Some("D01"), "slot identity resolves at drawn hour 30, not rank_hour 19");
 }
