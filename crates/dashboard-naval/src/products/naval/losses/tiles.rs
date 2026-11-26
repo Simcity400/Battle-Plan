@@ -1,5 +1,5 @@
 use super::{
-    Counts, NavalAttribution, NavalKind, NavalLossesAtParams, NavalPeriod,
+    Counts, MISSING_BASELINE, NavalAttribution, NavalKind, NavalLossesAtParams, NavalPeriod,
     month_start, part_runs, reply_at,
 };
 use dashboard_base::{
@@ -30,7 +30,6 @@ use ts_rs::TS;
 pub const SERIES: &str = "naval-losses-lines";
 const DECIMALS: u8 = 0;
 const SCALE: f64 = 1.0;
-const MISSING_BASELINE: &str = "Naval losses are not known at this hour: their tables were not read whole after the counting began.";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
@@ -350,16 +349,20 @@ mod tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
-    use replay_data::rows::{CountryLinkRow, CountryRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
+    use replay_data::rows::{CountryLinkRow, CountryRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
 
     fn naval_source() -> Source {
+        losses_source(false, None, None)
+    }
+
+    fn losses_source(convoys: bool, refused: Option<(i32, u32)>, unlinked: Option<(i32, i32)>) -> Source {
         const FIRST: i32 = 1_000;
         const LAST: i32 = 1_040;
         let sunk = |name: &[u8], sink_hour: i32| SunkShipEntry {
             ship_name: name.to_vec(),
-            victim_country: 9001,
+            victim_country: if sink_hour > LAST { refused.map_or(9001, |(_, victim)| victim) } else { 9001 },
             attacker_country: 9002,
             sink_hour,
             province: 5,
@@ -391,8 +394,19 @@ mod tests {
                     if hour >= 1_030 {
                         entries.push(sunk(b"C", 1_030));
                     }
+                    if refused.is_some_and(|(at, _)| hour >= at) {
+                        entries.push(sunk(b"D", 5_000));
+                    }
                     *frame.tables[TableId::SunkShips.index()] = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow { entries }]));
                     frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+                }
+                if unlinked.is_some_and(|(first, last)| (first..=last).contains(&hour)) {
+                    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "not read".into() };
+                }
+                if convoys {
+                    let rows = (hour >= 1_010).then(|| SunkConvoyRow { month: 0, killer_country: 9002, owner_country: 9001, convoys: hour - 1_009, ordinal: 0 });
+                    *frame.tables[TableId::SunkConvoys.index()] = TableView::Complete(TableRows::SunkConvoys(rows.into_iter().collect()));
+                    frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
                 }
                 frame
             })
@@ -464,5 +478,66 @@ mod tests {
         assert_eq!(clipped.lines.len(), 1);
         assert_eq!(clipped.lines[0].missing[0].first_hour, 1_005);
         assert_eq!(clipped.lines[0].missing[0].last_hour, 1_009);
+    }
+
+    fn head(src: &Source, hour: i32, countries: Vec<Country>, top: Option<u32>) -> super::super::NavalLossesAtReply {
+        let query = dashboard_base::queries::query(src, 1).unwrap();
+        let load = LoadContext { content: None };
+        let groups = GroupsAt::load(src, &load, "1", None).unwrap();
+        let params = NavalLossesAtParams {
+            branch_id: "1".into(),
+            hour,
+            countries,
+            top,
+            group: None,
+            attribution: NavalAttribution::Lost,
+            kind: NavalKind::Ships,
+            period: NavalPeriod::Running,
+        };
+        reply_at(&query, &params, &groups, &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn a_ships_ranking_is_not_expired_by_convoy_losses_changing_every_hour() {
+        let src = losses_source(true, None, None);
+        let ranked = head(&src, 1_035, Vec::new(), Some(1));
+        assert_eq!(ranked.rows.iter().map(|row| row.slot).collect::<Vec<_>>(), [Some(7)]);
+        assert_eq!((ranked.first_hour, ranked.last_hour), (1_030, 1_040));
+    }
+
+    #[test]
+    fn the_head_ends_where_a_refused_sinking_changes_its_evidence() {
+        let src = losses_source(false, Some((1_033, 9001)), None);
+        let before = head(&src, 1_031, vec![Country::Slot(7)], None);
+        assert_eq!((before.rows[0].total, before.last_hour), (Some(3), 1_032));
+        assert!(before.warnings.is_empty());
+        let after = head(&src, 1_035, vec![Country::Slot(7)], None);
+        assert_eq!((after.rows[0].total, after.first_hour), (Some(3), 1_033));
+        assert!(after.warnings.iter().any(|warning| warning.starts_with("1 sinkings")), "{:?}", after.warnings);
+    }
+
+    #[test]
+    fn an_unread_baseline_keeps_the_chosen_countries_with_its_reason() {
+        let src = naval_source();
+        let chosen = head(&src, 1_005, vec![Country::Slot(7)], None);
+        assert_eq!(chosen.missing, None);
+        assert_eq!(chosen.rows.iter().map(|row| (row.slot, row.total, row.missing.as_deref())).collect::<Vec<_>>(), [(Some(7), None, Some(MISSING_BASELINE))]);
+        assert_eq!(head(&src, 1_005, Vec::new(), Some(1)).missing.as_deref(), Some(MISSING_BASELINE));
+    }
+
+    #[test]
+    fn a_chosen_country_is_proved_by_its_own_losses_only() {
+        let src = losses_source(false, Some((1_033, 9002)), None);
+        assert_eq!(head(&src, 1_031, vec![Country::Slot(7)], None).last_hour, 1_040);
+        assert_eq!(head(&src, 1_031, vec![Country::Slot(8)], None).last_hour, 1_032);
+    }
+
+    #[test]
+    fn a_chosen_country_keeps_its_row_while_its_holder_is_unread() {
+        let src = losses_source(false, None, Some((1_005, 1_007)));
+        let reply = head(&src, 1_006, vec![Country::Slot(7)], None);
+        assert_eq!(reply.missing, None);
+        assert_eq!(reply.rows.len(), 1, "{:?}", reply.rows);
+        assert_eq!((reply.rows[0].total, reply.rows[0].missing.is_some()), (None, true));
     }
 }
