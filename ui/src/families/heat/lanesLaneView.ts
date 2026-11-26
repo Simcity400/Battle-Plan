@@ -56,7 +56,7 @@ const windows = new WeakMap<HeatLanesLayout, { readonly scrollTop: number; reado
 function shown(frame: { readonly model: HeatLanesModel; readonly layout: HeatLanesLayout; readonly binding: { readonly scrollTop: number } }): HeatLanesLayout {
   const held = windows.get(frame.layout);
   if (held && held.scrollTop === frame.binding.scrollTop) return held.layout;
-  const layout = { ...frame.layout, ...lanesWindow(frame.layout, frame.model.rows.length, frame.binding.scrollTop) };
+  const layout = { ...frame.layout, ...lanesWindow(frame.layout, frame.binding.scrollTop) };
   windows.set(frame.layout, { scrollTop: frame.binding.scrollTop, layout });
   return layout;
 }
@@ -100,7 +100,7 @@ export const heatLanesLane: LaneFamily<FamilyHeatLanesBinding, HeatLanesModel, H
     const { model } = frame;
     const focused = frame.binding.focusedKey ? model.rows.findIndex(row => row.id === frame.binding.focusedKey) : -1;
     const toolsRow = hoveredOf(model, frame.inspect).rowIndex ?? (focused >= 0 ? focused : null);
-    const hit = hitHeatLanes(point[0], point[1], frame.binding.scrollTop, frame.layout, model.rows, toolsRow);
+    const hit = hitHeatLanes(point[0], point[1], frame.binding.scrollTop, shown(frame), model.rows, toolsRow);
     if (!hit) return null;
     if (hit.kind === 'add') return regionHitKey('add', REGION_ADD_KEY);
     if (hit.kind === 'remove' || hit.kind === 'grip') return regionHitKey(hit.kind, model.rows[hit.rowIndex]!.id);

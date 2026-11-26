@@ -373,6 +373,12 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   });
   assert.equal(layout.showReadout, true);
 
+  const scrolled = layoutHeatLanes({ width: 720, height: 120, scrollTop: 12, firstHour: model.firstHour,
+    lastHour: model.lastHour, displayedHour: model.hour, rows: Array.from({ length: 10 }, () => model.rows[0]!) });
+  assert.ok(scrolled.rowTops[scrolled.firstRow]! >= 12);
+  assert.ok(scrolled.rowTops[scrolled.endRow - 1]! + scrolled.rowHeight <= 12 + scrolled.plotHeight);
+  assert.equal(hitHeatLanes(scrolled.plotLeft + 20, scrolled.plotTop + 1, 12, scrolled, model.rows), null);
+
   const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows);
   assert.equal(hit?.kind, 'lane');
   if (hit?.kind === 'lane') {

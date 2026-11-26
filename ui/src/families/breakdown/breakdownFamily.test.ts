@@ -555,7 +555,7 @@ test('casualties breakdown resolves slot-keyed enemies at their live or ended ho
       total: { amount: exact('80'), state: 'known', reason: null },
       parts: [
         wire('war:1', 0, '80', {
-          name: 'Second World War',
+          name: 'One side vs Two side', nameMissing: 'War name is unavailable',
           share: 1,
           parentShare: 1,
           children: [
@@ -573,6 +573,8 @@ test('casualties breakdown resolves slot-keyed enemies at their live or ended ho
   assert.equal(projected.total.unit, 'casualties');
   assert.equal(projected.total.verb, 'Lost');
   const enemies = projected.parts[0]!.children!;
+  const war = projected.parts[0]!;
+  assert.deepEqual([war.name, war.nameMissing, war.text, war.notRecorded], ['One side vs Two side', 'War name is unavailable', '80', undefined]);
   assert.deepEqual(enemies.map(part => part.name), [`SOV@${START + 100}`, `POL@${START + 40}`, 'Country not named at this hour']);
   assert.equal(enemies[0]!.flag, 'SOV');
   assert.equal(enemies[1]!.flag, 'POL');

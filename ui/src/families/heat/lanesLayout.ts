@@ -111,7 +111,7 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   const contentHeight = y > 0 ? y - LANE_ROW_GAP + 8 : 0;
   const totalHeight = Math.max(height, plotTop + contentHeight + axisHeight);
 
-  const { firstRow, endRow } = lanesWindow({ rowTops, plotHeight }, input.rows.length, input.scrollTop);
+  const { firstRow, endRow } = lanesWindow({ rowTops, rowHeight, plotHeight }, input.scrollTop);
 
   const firstHour = input.firstHour;
   const lastHour = Math.max(firstHour, input.lastHour);
@@ -143,12 +143,12 @@ export function layoutHeatLanes(input: LayoutHeatLanesInput): HeatLanesLayout {
   };
 }
 
-export function lanesWindow(layout: Pick<HeatLanesLayout, 'rowTops' | 'plotHeight'>, rows: number, scrollTopRaw: number): Pick<HeatLanesLayout, 'firstRow' | 'endRow'> {
+export function lanesWindow(layout: Pick<HeatLanesLayout, 'rowTops' | 'rowHeight' | 'plotHeight'>, scrollTopRaw: number): Pick<HeatLanesLayout, 'firstRow' | 'endRow'> {
   const scrollTop = Math.max(0, scrollTopRaw);
-  return {
-    firstRow: Math.max(0, rowAtOrBelow(layout.rowTops, scrollTop) - 1),
-    endRow: Math.min(rows, rowAtOrBelow(layout.rowTops, scrollTop + layout.plotHeight) + 2),
-  };
+  const at = rowAtOrBelow(layout.rowTops, scrollTop);
+  const firstRow = layout.rowTops[at] === scrollTop ? at : at + 1;
+  const endRow = rowAtOrBelow(layout.rowTops, scrollTop + layout.plotHeight - layout.rowHeight) + 1;
+  return { firstRow, endRow: Math.max(firstRow, endRow) };
 }
 
 export function hourToLaneX(
@@ -339,7 +339,7 @@ export function hitHeatLanes(
   const relY = y - layout.plotTop + scrollTop;
   if (layout.addTop !== null && relY >= layout.addTop && relY <= layout.addTop + layout.rowHeight) return { kind: 'add' };
   const rowIndex = rowAtOrBelow(layout.rowTops, relY);
-  if (rowIndex < 0 || rowIndex >= rows.length) return null;
+  if (rowIndex < layout.firstRow || rowIndex >= layout.endRow || rowIndex >= rows.length) return null;
   const inRowY = relY - layout.rowTops[rowIndex]!;
   if (inRowY > layout.rowHeight) return null;
   if (toolsRow === rowIndex && rows[rowIndex]!.region !== undefined) {
