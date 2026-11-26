@@ -30,5 +30,4 @@ if (typeof self !== 'undefined') {
   const post = (message: FromLane, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
   const dispatch = startLaneWorker(post);
   self.onmessage = ({ data }: MessageEvent<ToLane>) => dispatch(data);
-  self.onerror = event => { post({ type: 'failure', lane: -1, reason: String(event) }); };
 }

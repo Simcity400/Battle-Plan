@@ -193,8 +193,8 @@ export interface DashboardClient {
   openFollow?(ports: readonly MessagePort[]): FollowOpen;
 }
 
-export type OpenedFollow = string | void | { readonly session?: string; close?(): void };
-export type FollowOpen = Promise<OpenedFollow> | { readonly ready: Promise<OpenedFollow>; close(): void };
+export type OpenedFollow = string | void | { readonly session?: string; close?(): void; retireLane?(lane: number): void };
+export type FollowOpen = Promise<OpenedFollow> | { readonly ready: Promise<OpenedFollow>; close(): void; retireLane?(lane: number): void };
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }
 export interface MapToggle { setting: 'dayNight' | 'alliedPlans' | 'fog' }
