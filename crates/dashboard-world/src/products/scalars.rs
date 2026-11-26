@@ -65,24 +65,6 @@ impl Named {
         runs.iter().rev().find(|run| run.1 < hour).map(|run| (run.2.as_str(), true))
     }
 
-    pub(crate) fn next_change(&self, slot: u32, after: i32) -> Option<i32> {
-        let runs = self.slots.get(&slot)?;
-        let mut best: Option<i32> = None;
-        for &(first, last, _) in runs {
-            let candidate = if first > after {
-                Some(first)
-            } else if first <= after && after <= last {
-                last.checked_add(1).filter(|&next| next > after)
-            } else {
-                None
-            };
-            if let Some(hour) = candidate {
-                best = Some(best.map_or(hour, |held| held.min(hour)));
-            }
-        }
-        best
-    }
-
     pub(crate) fn known(&self, slot: u32) -> bool {
         self.slots.contains_key(&slot)
     }

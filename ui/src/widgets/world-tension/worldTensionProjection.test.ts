@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { readyArt } from '../../families/art/types.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../../families/broker.ts';
@@ -47,6 +48,10 @@ function makeIdentity() {
   return createSnapshotIdentityProvider(index);
 }
 
+function held(tag: string, remembered = false) {
+  return [{ tag, firstHour: H1936, lastHour: H1941, remembered }];
+}
+
 function sampleStack(): WorldTensionStackReply {
   return {
     branchId: '1',
@@ -65,9 +70,9 @@ function sampleStack(): WorldTensionStackReply {
     totalRaw: ['0', '35000', '100000'],
     sumRaw: ['0', '3500000', '10000000'],
     bands: [
-      { slot: 1, tag: 'GER', remembered: false, values: [0, 20, 60], valuesRaw: ['0', '2000000', '6000000'], minValues: [], maxValues: [], endValue: 60, endRaw: '6000000', endMissing: null },
-      { slot: 2, tag: 'JAP', remembered: false, values: [0, 10, 25], valuesRaw: ['0', '1000000', '2500000'], minValues: [], maxValues: [], endValue: 25, endRaw: '2500000', endMissing: null },
-      { slot: 3, tag: 'ITA', remembered: false, values: [0, 2, 3], valuesRaw: ['0', '200000', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000', endMissing: null },
+      { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 20, 60], valuesRaw: ['0', '2000000', '6000000'], minValues: [], maxValues: [], endValue: 60, endRaw: '6000000', endMissing: null },
+      { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, 10, 25], valuesRaw: ['0', '1000000', '2500000'], minValues: [], maxValues: [], endValue: 25, endRaw: '2500000', endMissing: null },
+      { slot: 3, tag: 'ITA', remembered: false, holders: held('ITA'), values: [0, 2, 3], valuesRaw: ['0', '200000', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000', endMissing: null },
     ],
     other: { count: 31, values: [0, 3, 12], valuesRaw: ['0', '300000', '1200000'], endValue: 12, endRaw: '1200000', endMissing: null },
     events: [
@@ -131,6 +136,38 @@ describe('world-tension projections', () => {
       { branchId: '1', values: 'recorded', group, countries: [1], hour: at });
     assert.equal(lines.series[0]?.exact?.value, null);
     assert.equal(lines.series[0]?.exact?.reason, reason);
+  });
+
+  it('keeps one series per slot and shows the holder name, flag and colour at the inspected hour', () => {
+    const change = H1936 + 10000;
+    const sample = sampleStack();
+    const previous = { tag: 'JAP', firstHour: H1936 + 2, lastHour: change - 1, remembered: false };
+    const current = { tag: 'GER', firstHour: change, lastHour: change + 4, remembered: false };
+    const reply = { ...sample, bands: [{ ...sample.bands[0]!, holders: [previous, current, { ...current, firstHour: change + 5, lastHour: H1941 - 1, remembered: true }] }], other: null, events: [] };
+    const view = createBoundedReadView({ hour: H1941, panels: new Map([['main', reply]]), identity: makeIdentity(),
+      art: { resolve: handle => readyArt(handle.kind === 'flag' ? handle.choice : 'world') } });
+    const opts = { extent: [H1936, H1941] as const, surface: '#111111', gaps: [] };
+    const lines = worldTensionLinesProjection.project(view, opts);
+    const stack = worldTensionProjection.project(view, { ...opts, values: 'recorded', layers: 1, showMarkers: false });
+    assert.deepEqual(lines.series.map(line => line.id), ['slot:1']);
+    assert.deepEqual(stack.stack?.bands.map(band => band.id), ['slot:1']);
+    for (const model of [lines, stack]) {
+      const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
+      const at = (hour: number) => deriveTimeChartTooltip(model, layout, `plot:${hour}`)?.payload?.items?.find(item => item.label !== 'World tension');
+      const early = at(change - 1);
+      const late = at(change);
+      assert.equal(early?.label, 'Japan');
+      assert.equal(late?.label, 'German Reich');
+      assert.match(early?.countryFlag?.flag ?? '', /JAP/);
+      assert.match(late?.countryFlag?.flag ?? '', /GER/);
+      assert.notEqual(early?.swatch, late?.swatch);
+      const unknown = at(H1936 + 1);
+      assert.equal(unknown?.label, 'Unknown country');
+      assert.equal(unknown?.countryFlag, undefined);
+      assert.equal(at(change + 5)?.label, 'German Reich (former)');
+      assert.equal(at(H1941)?.label, 'German Reich (former)');
+      assert.equal(at(H1941)?.countryFlag?.flag, late?.countryFlag?.flag);
+    }
   });
 
   it('projects stepped stack with Other at bottom, leader on top, shortName at small, and clamps future events', () => {
@@ -224,9 +261,9 @@ describe('world-tension projections', () => {
     const withEdge = {
       ...reply,
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 0.4, 0.4], valuesRaw: ['0', '40000', '40000'], minValues: [], maxValues: [], endValue: 0.4, endRaw: '40000', endMissing: null },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 0.04, 0.04], valuesRaw: ['0', '4000', '4000'], minValues: [], maxValues: [], endValue: 0.04, endRaw: '4000', endMissing: null },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, 1, 1], valuesRaw: ['0', '100000', '100000'], minValues: [], maxValues: [], endValue: Number.NaN, endRaw: '0', endMissing: null },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 0.4, 0.4], valuesRaw: ['0', '40000', '40000'], minValues: [], maxValues: [], endValue: 0.4, endRaw: '40000', endMissing: null },
+        { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, 0.04, 0.04], valuesRaw: ['0', '4000', '4000'], minValues: [], maxValues: [], endValue: 0.04, endRaw: '4000', endMissing: null },
+        { slot: 3, tag: 'ITA', remembered: false, holders: held('ITA'), values: [0, 1, 1], valuesRaw: ['0', '100000', '100000'], minValues: [], maxValues: [], endValue: Number.NaN, endRaw: '0', endMissing: null },
       ],
       other: null,
     };
@@ -266,9 +303,9 @@ describe('world-tension projections', () => {
       totalRaw: ['0', '650000'],
       sumRaw: ['0', '650000'],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 4], valuesRaw: ['0', '400000'], minValues: [], maxValues: [], endValue: 4, endRaw: '400000', endMissing: null },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3], valuesRaw: ['0', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000', endMissing: null },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5], valuesRaw: ['0', '-50000'], minValues: [], maxValues: [], endValue: -0.5, endRaw: '-50000', endMissing: null },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 4], valuesRaw: ['0', '400000'], minValues: [], maxValues: [], endValue: 4, endRaw: '400000', endMissing: null },
+        { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, 3], valuesRaw: ['0', '300000'], minValues: [], maxValues: [], endValue: 3, endRaw: '300000', endMissing: null },
+        { slot: 3, tag: 'ITA', remembered: false, holders: held('ITA'), values: [0, -0.5], valuesRaw: ['0', '-50000'], minValues: [], maxValues: [], endValue: -0.5, endRaw: '-50000', endMissing: null },
       ],
       other: null,
       events: [],
@@ -328,9 +365,9 @@ describe('world-tension projections', () => {
       totalRaw: ['0', '650000', null],
       sumRaw: ['0', '650000', null],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 4, null], valuesRaw: ['0', '400000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 3, null], valuesRaw: ['0', '300000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
-        { slot: 3, tag: 'ITA', remembered: false, values: [0, -0.5, null], valuesRaw: ['0', '-50000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 4, null], valuesRaw: ['0', '400000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
+        { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, 3, null], valuesRaw: ['0', '300000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
+        { slot: 3, tag: 'ITA', remembered: false, holders: held('ITA'), values: [0, -0.5, null], valuesRaw: ['0', '-50000', null], minValues: [], maxValues: [], endValue: null, endRaw: null, endMissing: 'Recording gap' },
       ],
       missing: [{ firstHour: H1936 + 5010, lastHour: H1936 + 5020, reason: 'Recording gap' }],
     };
@@ -366,8 +403,8 @@ describe('world-tension projections', () => {
       totalRaw: [null, null],
       sumRaw: [null, null],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, 127], valuesRaw: ['0', '12700000'], minValues: [], maxValues: [], endValue: 127, endRaw: '12700000', endMissing: null },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, -2], valuesRaw: ['0', '-200000'], minValues: [], maxValues: [], endValue: -2, endRaw: '-200000', endMissing: null },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 127], valuesRaw: ['0', '12700000'], minValues: [], maxValues: [], endValue: 127, endRaw: '12700000', endMissing: null },
+        { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, -2], valuesRaw: ['0', '-200000'], minValues: [], maxValues: [], endValue: -2, endRaw: '-200000', endMissing: null },
       ],
       other: null,
       events: [],
@@ -481,6 +518,7 @@ describe('world-tension projections', () => {
         {
           slot: 1,
           tag: 'GER',
+          holders: held('GER'),
           remembered: false,
           values: [0, 20, 60],
           minValues: [0, 10, 60],
@@ -591,8 +629,8 @@ describe('world-tension projections', () => {
     const sharedTagReply = {
       ...sampleStack(),
       bands: [
-        { slot: 1, tag: 'GER', remembered: true, values: [0, 20, 30], minValues: [], maxValues: [], endValue: 30, endRaw: '3000000', endMissing: null },
-        { slot: 2, tag: 'GER', remembered: false, values: [0, 10, 40], minValues: [], maxValues: [], endValue: 40, endRaw: '4000000', endMissing: null },
+        { slot: 1, tag: 'GER', remembered: true, holders: held('GER', true), values: [0, 20, 30], minValues: [], maxValues: [], endValue: 30, endRaw: '3000000', endMissing: null },
+        { slot: 2, tag: 'GER', remembered: false, holders: held('GER'), values: [0, 10, 40], minValues: [], maxValues: [], endValue: 40, endRaw: '4000000', endMissing: null },
       ],
       other: null,
       events: [
@@ -724,8 +762,8 @@ describe('world-tension projections', () => {
       totalRaw: ['0', '70000'],
       sumRaw: ['0', '700'],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [0, driftFloat], valuesRaw: ['0', '145'], minValues: [], maxValues: [], endValue: driftFloat, endRaw: '145', endMissing: null },
-        { slot: 2, tag: 'JAP', remembered: false, values: [0, 41], valuesRaw: ['0', '410'], minValues: [], maxValues: [], endValue: 41, endRaw: '410', endMissing: null },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [0, driftFloat], valuesRaw: ['0', '145'], minValues: [], maxValues: [], endValue: driftFloat, endRaw: '145', endMissing: null },
+        { slot: 2, tag: 'JAP', remembered: false, holders: held('JAP'), values: [0, 41], valuesRaw: ['0', '410'], minValues: [], maxValues: [], endValue: 41, endRaw: '410', endMissing: null },
       ],
       other: { count: 4, values: [0, driftFloat], valuesRaw: ['0', '145'], endValue: driftFloat, endRaw: '145', endMissing: null },
       events: [],
@@ -755,7 +793,7 @@ describe('world-tension projections', () => {
       totalRaw: ['100000'],
       sumRaw: [bigRaw],
       bands: [
-        { slot: 1, tag: 'GER', remembered: false, values: [bigFloat], valuesRaw: [bigRaw], minValues: [], maxValues: [], endValue: bigFloat, endRaw: bigRaw, endMissing: null },
+        { slot: 1, tag: 'GER', remembered: false, holders: held('GER'), values: [bigFloat], valuesRaw: [bigRaw], minValues: [], maxValues: [], endValue: bigFloat, endRaw: bigRaw, endMissing: null },
       ],
       other: { count: 1, values: [bigFloat], valuesRaw: [bigRaw], endValue: bigFloat, endRaw: bigRaw, endMissing: null },
       events: [],
@@ -788,7 +826,7 @@ describe('world-tension projections', () => {
   it('R2-S11: through the manifest entry, the world label and audit are the recorded world tension in both modes, a negative share keeps its label, and every band, Other and line says its value or why it is missing', async () => {
     const at = H1941;
     const band = (slot: number, tag: string | null, raw: string | null, missing: string | null) => ({
-      slot, tag, remembered: false,
+      slot, tag, remembered: false, holders: tag ? held(tag) : [],
       values: [raw === null ? null : Number(raw) / 100000], valuesRaw: [raw], minValues: [], maxValues: [],
       endValue: raw === null ? null : Number(raw) / 100000, endRaw: raw, endMissing: missing,
     });

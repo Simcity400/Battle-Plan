@@ -1,8 +1,6 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { resolveLineColors, tailColour } from '../../charts/palette.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import {
@@ -13,8 +11,7 @@ import type { ChartGap, ChartInlinePoint, TimeChartModel, TimeChartSeriesModel }
 import { branchGapsOf } from '../../families/time-chart/seriesHelpers.ts';
 import { formatRational, formatRecordedPercent } from '../../families/valueFormat.ts';
 import type { WorldTensionStackReply } from '../../generated/dashboard';
-import { tensionHover, validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
-import { identityName } from '../../families/table/identityCell.ts';
+import { tensionBandLooks, tensionHover, validateWorldTensionHover, validateWorldTensionStack } from './worldTensionProjection.ts';
 
 const TOP_NAMED = 8;
 
@@ -104,27 +101,13 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     const endHour = reply.endHour;
     const labelHour = endHour ?? hour;
     const hasNegative = reply.bands.some(band => [...band.values, ...(band.minValues ?? [])].some(v => v !== null && v < 0));
-    const infos = reply.bands.map(band => {
-      if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
-      const id = readView.who('country', band.tag, hour);
-      const baseName = identityName(readView, 'country', band.tag, hour);
-      return {
-        name: baseName,
-        fullName: band.remembered ? `${baseName} (former)` : baseName,
-        color: id.colour?.status === 'ready' ? id.colour.value : null,
-        flagChoice: id.flagChoice?.status === 'ready' ? id.flagChoice.value : null,
-      };
-    });
+    const looks = tensionBandLooks(readView, reply, reply.hours[0] ?? options.extent[0], options.surface);
     const hover = tensionHover(readView);
-    const topColors = resolveLineColors(reply.bands.slice(0, TOP_NAMED).map((band, i) => ({ key: band.slot, color: infos[i]!.color })), options.surface);
     const scaleBig = reply.contributionScale > 0 ? BigInt(reply.contributionScale) : null;
     const endTexts = new Map<string, string>();
     const series: TimeChartSeriesModel[] = reply.bands.map((band, rank) => {
       const isTop = rank < TOP_NAMED;
-      const info = infos[rank]!;
-      const flag = info.flagChoice
-        ? { art: readView.art(flagArtHandle(info.flagChoice, 'panel')), tag: band.tag ?? undefined, label: info.name }
-        : undefined;
+      const { color, name, shortName, flag, identities } = looks[rank]!;
       const points: ChartInlinePoint[] = [];
       for (let i = 0; i < reply.hours.length; i++) {
         const h = reply.hours[i]!;
@@ -154,8 +137,9 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       return {
         id: `slot:${band.slot}`,
         key: `slot:${band.slot}`,
-        name: info.fullName,
-        color: isTop ? topColors.get(band.slot)! : tailColour(options.surface),
+        name,
+        color,
+        identities,
         role: isTop ? 'primary' : 'tail',
         step: true,
         points,
@@ -167,8 +151,8 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         endLabel: isTop && headText !== null
           ? {
               ...(flag ? { flag } : {}),
-              name: info.name,
-              fullName: info.fullName,
+              name: shortName,
+              fullName: name,
               value: headText,
             }
           : null,
