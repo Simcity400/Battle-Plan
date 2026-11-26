@@ -581,7 +581,7 @@ describe('time-chart PR2 regressions (C1.6, C1.8, C7, R3-S12)', () => {
     const layout = layoutTimeChart(model, 640, 240, FONT, measure);
     assert.equal(layout.gaps.length, 1);
     assert.ok(layout.gaps[0]!.x1 - layout.gaps[0]!.x0 >= 2, 'single-hour gap has a visible, hittable width');
-    assert.equal(hitTestTimeChart(model, layout, [layout.gaps[0]!.x0 + 1, layout.top + 10]), 'gap:0');
+    assert.equal(hitTestTimeChart(model, layout, [layout.gaps[0]!.x0 + 1, layout.top + 10]), `gap:0@${H1936}`);
   });
 
   it('C1.8: summary-only ranked row with empty points samples and hovers at its witnessed head hour', () => {
