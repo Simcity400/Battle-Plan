@@ -1914,7 +1914,7 @@ fn a_followed_top_ranks_a_recorded_row_whose_holder_is_not_resolved_under_its_sl
     let pages = record(quiet);
     let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
     let mut holders = Holders::default();
-    holders.tags.insert("AAA".into(), vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot: 103, id: 103 }, starts_segment: true }]);
+    holders.tags.insert("AAA".into(), vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot: 101, id: 999 }, starts_segment: true }]);
     let identity = Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) };
     let top = Query::series_top(&POWER_SLOT, &POWER_SLOT.measures[0], 3, identity);
     let mut harness = harness(&pages);
@@ -1925,12 +1925,13 @@ fn a_followed_top_ranks_a_recorded_row_whose_holder_is_not_resolved_under_its_sl
     assert_eq!(answer, harness.fresh(&top, hour));
     assert_eq!(answer.not_recorded, None, "rows whose values are recorded never refuse the top");
     assert_eq!(answer.keys.len(), 3, "the top holds its rows whether or not their holders are named");
+    assert_eq!((answer.keys[0], answer.name(0)), (101, Some("AAA")));
     let names: Vec<Option<&str>> = (0..3).map(|row| answer.name(row)).collect();
     for (row, key) in answer.keys.iter().enumerate() {
         let country = dashboard_query::identity::Country::Slot(u32::try_from(*key).unwrap());
-        let wanted = if *key == 103 { "AAA".to_owned() } else { country.key().into_owned() };
+        let wanted = if row == 0 { "AAA".to_owned() } else { country.key().into_owned() };
         assert_eq!(names[row], Some(wanted.as_str()), "row {row} is named by its tag or its slot");
-        assert_eq!(answer.reason(row).map(str::to_owned), (*key != 103).then(|| series_identity(&top).holders.unnamed(&country, hour)));
+        assert_eq!(answer.reason(row).map(str::to_owned), (row != 0).then(|| series_identity(&top).holders.unnamed(&country, hour)));
         assert_eq!(answer.states[row], State::Value);
     }
 }

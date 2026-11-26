@@ -10,7 +10,7 @@ import type { ChartArtSlot, ChartGap, TimeChartSeriesModel } from '../../familie
 import {
   branchGapsOf,
   countrySeriesLooks,
-  exactHoverReadings,
+  exactHoverByCountry,
   memberAt,
   missingSpansOf,
   rankEntry,
@@ -73,8 +73,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       }
     }
 
-    const exact = exactHoverReadings(readView, 'hover', mainMap?.get(tags[0] ?? '')?.decimals ?? 5);
-    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
+    const exactByCountry = exactHoverByCountry(readView, 'hover', mainMap?.get(tags[0] ?? '')?.decimals ?? 5);
     const present = tags.filter(tag => memberAt(options.membership, tag, hour));
     const presentSet = new Set(present);
     const ranking = rankedOrder(readView, present);
@@ -102,6 +101,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       const ceilingBounded = options.showCeiling && !isTail ? (ceilingMap?.get(tag) ?? null) : null;
       const ceilingReading = options.showCeiling && !isTail ? (ceilingByTag.get(tag) ?? null) : null;
       const ceilingHead = headValueOf(ceilingReading);
+      const exact = exactByCountry?.get(tag);
 
       series.push({
         id: tag,
@@ -114,7 +114,7 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
         bounded,
         headValue,
         headHour: hour,
-        exact: exact?.[rowOf.get(tag) ?? -1] ?? null,
+        exact: exact && memberAt(options.membership, tag, exact.hour) ? exact : null,
         flag,
         ...(single ? {} : { identities }),
         icon: single ? measureIcon : undefined,
@@ -245,6 +245,7 @@ export const commandPowerDeclaration: TimeChartWidgetDeclaration<CommandPowerOpt
         read: {
           shape: 'exact-hover',
           product: 'series-state',
+          ...(ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
           params: { branchId: ctx.branch.id, family: mainFamily, reads: countries.map(country => ({ country })) },
         },
       });

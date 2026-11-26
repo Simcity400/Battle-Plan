@@ -999,17 +999,20 @@ describe('time-chart picture authority', () => {
     };
     assert.equal(project({ country: 'GER', hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
     assert.equal(project({ country: 'GER', hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
-    const states = [{ country: 'GER', hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null }];
-    const membership = { ITA: [[hoverAt + 1, hour] as const], GER: [[base, hour] as const] };
-    const grouped = politicalPowerProjection.project(createBoundedReadView({ hour, hovers: new Map([['hover', { hour: hoverAt, data: { states } }]]) }),
-      { tags: ['ITA', 'GER'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
-    assert.equal(grouped.series.find(line => line.key === 'ITA')?.exact, null);
-    assert.equal(grouped.series.find(line => line.key === 'GER')?.exact?.value, 12345);
-    states.push({ ...states[0]!, country: 'ITA' });
-    const early = politicalPowerProjection.project(createBoundedReadView({ hour, hovers: new Map([['hover', { hour: hoverAt, data: { states } }]]) }),
-      { tags: ['GER', 'ITA'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
-    assert.equal(early.series.find(line => line.key === 'ITA')?.exact, null);
   });
+  for (const projection of [politicalPowerProjection, commandPowerProjection]) {
+    it(`matches ${projection.measureTitle} hover readings to members at the hit hour`, () => {
+      const hour = H1936 + 90, hit = H1936 + 50;
+      const state = (country: string) => ({ country, hour: hit, run: { valueRaw: '1234500000' }, missing: null });
+      const options = { tags: ['ITA', 'GER'], membership: { ITA: [[hit + 1, hour] as const], GER: [[H1936, hour] as const] },
+        extent: [H1936, hour] as const, gaps: [], surface: '#111111', showCeiling: false };
+      for (const states of [[state('GER')], [state('GER'), state('ITA')]]) {
+        const grouped = projection.project(createBoundedReadView({ hour, hovers: new Map([['hover', { hour: hit, data: { states } }]]) }), options);
+        assert.equal(grouped.series.find(line => line.key === 'ITA')?.exact, null);
+        assert.equal(grouped.series.find(line => line.key === 'GER')?.exact?.value, 12345);
+      }
+    });
+  }
   it('skips a missing span when sampling a populated bin for a hover dot or hit', () => {
     const from = H1936, until = from + 6;
     const line = makeTiledLine('AAA', [makeBucket(from, until, 7)]);
@@ -1416,6 +1419,7 @@ describe('several countries, one measure', () => {
     const unresolved = navyLinesProjection.project(createBoundedReadView({ hour, answers: new Map([['main', unnamed]]) }), options);
     assert.deepEqual([unresolved.series[0]!.id, unresolved.series[0]!.name, unresolved.series[0]!.headValue], [countryKey(3), 'Country not recorded', 3000]);
     assert.deepEqual(unresolved.series[0]!.flag?.art, { status: 'unavailable', reason: 'The holder was unread' });
+    assert.equal(unresolved.series[0]!.identities?.[0]?.name, 'Country not recorded');
     const slot = countryKey(3);
     const raw = { source: 'main', tag: slot, head: 'h', decimals: 0, binHours: 1, from: base, to: hour, width: 1, buckets: [], missing: [], parts: [] };
     const tiled = new SceneTiles().series({ widget: 1, subs: [], pictures: [], model: null }, { sources: {}, staticAnswers: { main: answer } }, {

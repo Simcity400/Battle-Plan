@@ -2,9 +2,9 @@ import { rankSource } from '../seriesRank.ts';
 import { resolveLineColors, tailColour } from '../../charts/palette.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, cellState, cellValue, rowKey, rowName, rowReason } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
 import { followedRow, keyId } from '../../dashboard/keyedSeriesData.ts';
-import { answerRowOf } from '../sceneTiles.ts';
+import { answerRowOf, followedCountryRank } from '../sceneTiles.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import { FutureDataError, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry } from '../contract.ts';
@@ -81,28 +81,18 @@ export function rowsBySelectedKey<R extends { readonly tag: string | null }>(row
 
 export function rankedCountries(readView: BoundedReadView, name: string) {
   const answer = readView.answer(name);
+  if (answer && answer.kind !== 'notRecorded') return followedCountryRank(answer);
+  const panel = readView.panel<SeriesRankReply>(name);
+  if (!panel) return null;
   const rows = new Map<string, number>();
   const tags = new Map<string, string>();
   const unnamed = new Map<string, string>();
-  if (answer && answer.kind !== 'notRecorded') {
-    for (let row = 0; row < answer.rows; row++) {
-      const key = countryKey(Number(rowKey(answer, row)));
-      rows.set(key, row);
-      const reason = rowReason(answer, row);
-      const tag = rowName(answer, row);
-      if (reason) unnamed.set(key, reason);
-      else if (tag !== null) tags.set(key, tag);
-    }
-  } else {
-    const panel = readView.panel<SeriesRankReply>(name);
-    if (!panel) return null;
-    panel.rows.forEach((item, row) => {
-      const key = countryKey(item.slot ?? item.country);
-      rows.set(key, row);
-      if (item.unnamed) unnamed.set(key, item.unnamed);
-      else if (typeof item.country === 'string') tags.set(key, item.country);
-    });
-  }
+  panel.rows.forEach((item, row) => {
+    const key = countryKey(item.slot ?? item.country);
+    rows.set(key, row);
+    if (item.unnamed) unnamed.set(key, item.unnamed);
+    else if (typeof item.country === 'string') tags.set(key, item.country);
+  });
   return { rows, tags, unnamed };
 }
 
@@ -559,8 +549,9 @@ export function unnamedLooks(
     const identities = look.identities.slice();
     const last = identities.pop();
     if (last) {
-      if (last.firstHour < hour) identities.push({ ...last, lastHour: hour - 1 });
-      identities.push({ ...last, firstHour: hour, name, flag });
+      const firstHour = reason ? last.firstHour : hour;
+      if (last.firstHour < firstHour) identities.push({ ...last, lastHour: firstHour - 1 });
+      identities.push({ ...last, firstHour, name, flag });
     }
     out.set(key, { ...look, name, flag, identities });
   }
