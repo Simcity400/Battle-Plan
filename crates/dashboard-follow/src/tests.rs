@@ -614,7 +614,7 @@ fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
         assert_eq!(names, wanted, "{why}");
     }
     let (_, _, answer) = last(10);
-    assert_eq!((answer.keys[2], answer.values[2], answer.states[2]), (999, 0, State::Value));
+    assert_eq!((answer.keys[2], answer.values[2], answer.states[2]), (9, 0, State::Value));
 }
 
 static PARTS: Series = Series {
@@ -1927,9 +1927,34 @@ fn a_followed_top_ranks_a_recorded_row_whose_holder_is_not_resolved_under_its_sl
     assert_eq!(answer.keys.len(), 3, "the top holds its rows whether or not their holders are named");
     let names: Vec<Option<&str>> = (0..3).map(|row| answer.name(row)).collect();
     for (row, key) in answer.keys.iter().enumerate() {
-        let wanted = if *key == 103 { "AAA".to_owned() } else { dashboard_query::identity::Country::Slot(u32::try_from(*key).unwrap()).key().into_owned() };
+        let country = dashboard_query::identity::Country::Slot(u32::try_from(*key).unwrap());
+        let wanted = if *key == 103 { "AAA".to_owned() } else { country.key().into_owned() };
         assert_eq!(names[row], Some(wanted.as_str()), "row {row} is named by its tag or its slot");
+        assert_eq!(answer.reason(row).map(str::to_owned), (*key != 103).then(|| series_identity(&top).holders.unnamed(&country, hour)));
+        assert_eq!(answer.states[row], State::Value);
     }
+}
+
+#[test]
+fn a_followed_population_rank_of_packed_holders_returns_the_country_slot() {
+    static PACKED: Series = Series { kind: "test-packed-power", key: Key::Holder, ..POWER };
+    let pages = record(|at, changes| {
+        if at == 0 {
+            changes.insert_at(0, Key::Holder.of(9, 999)).unwrap();
+            changes.write(0, 2, Cell::OptionalI64(Some(45))).unwrap();
+        }
+    });
+    let timeline = Stretches { id: 1, first: 0, last: HOURS as Hour - 1, stretches: vec![Stretch { run: 0, first: 0, last: HOURS as Hour - 1, join: Join::Start }], unheld: Vec::new() };
+    let mut holders = Holders::default();
+    holders.tags.insert("AAA".into(), vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot: 9, id: 999 }, starts_segment: true }]);
+    let query = Query::series_top(&PACKED, &PACKED.measures[0], 1, Identity { holders: Arc::new(holders), timeline: Arc::new(timeline) });
+    let mut harness = harness(&pages);
+    harness.follow.follow(5, query.clone()).unwrap();
+    harness.seek(0);
+    let (_, hour, answer) = harness.play(40).iter().flat_map(Played::answers).next_back().expect("a ranked answer");
+    assert_eq!(answer, harness.fresh(&query, hour));
+    assert_eq!(answer.keys, [9]);
+    assert_eq!((answer.values[0], answer.name(0)), (45, Some("AAA")));
 }
 
 #[test]

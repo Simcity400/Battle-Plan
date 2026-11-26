@@ -1979,6 +1979,8 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
     let mut query = fixture.query();
     let mut holders = crate::identity::Holders::default();
     holders.tags.insert("GER".to_owned(), vec![crate::identity::HolderRun { first: FIRST, last: ITA_FROM + 200, holder: crate::identity::Holder::Found { slot: 9001, id: 9001 }, starts_segment: true }]);
+    let linked = ITA_FROM + 11;
+    holders.tags.insert("ITA".to_owned(), vec![crate::identity::HolderRun { first: linked, last: ITA_FROM + 200, holder: crate::identity::Holder::Found { slot: 9002, id: 9002 }, starts_segment: true }]);
     query.holders = std::sync::Arc::new(holders);
     let line = Line::new(&query, &SLOT_POWER, &SLOT_POWER.measures[0]).unwrap();
     let hour = ITA_FROM + 10;
@@ -1996,6 +1998,9 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
     assert_eq!(reply.rows[1].readings[0].run.as_ref().map(|run| run.value_raw.clone()), power(9001, hour).map(|value| value.to_string()));
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 2, "hour": hour })).unwrap();
     assert!(tiles.lines.is_empty() && tiles.ranking.unwrap().refused.is_some_and(|reason| reason.ends_with("so its line cannot be drawn")), "a line of an unnamed row is refused by name");
+    let named = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(linked).div_euclid(BINS as i64), "top": 2, "hour": linked })).unwrap();
+    let proof = named.ranking.unwrap();
+    assert_eq!((proof.refused, proof.from), (None, linked), "a named ranking cannot extend into an hour whose winner was unnamed");
 }
 
 #[test]
@@ -2011,7 +2016,7 @@ fn territory_ranking_skips_world_summary_row() {
     assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
     let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour })).unwrap();
     assert_eq!(tiles.ranking.as_ref().and_then(|r| r.refused.as_deref()), None);
-    assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), vec![Country::from("GER"), Country::from("ITA")]);
+    assert_eq!(tiles.lines.iter().map(|l| l.country.clone()).collect::<Vec<_>>(), ranked.iter().map(|country| Country::Slot(query.holders.slot_at(country, hour).unwrap())).collect::<Vec<_>>());
 }
 
 #[test]

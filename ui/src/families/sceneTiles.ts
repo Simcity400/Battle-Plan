@@ -1,6 +1,7 @@
 import type { ChartBucket } from '../charts/chartSummary';
 import type { Run } from '../charts/series';
-import { rowName, type FollowedAnswer } from '../dashboard/follow/message.ts';
+import { countryKey } from '../dashboard/countryKey.ts';
+import { rowKey, rowName, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { rowAmount } from '../dashboard/follow/painters.ts';
 import { followedRow, keyId } from '../dashboard/keyedSeriesData.ts';
 import type { TiledLine } from '../dashboard/tiles/view';
@@ -29,6 +30,7 @@ export interface SerializedTiledLine {
 export interface SeriesHeadSource {
   readonly answerName: string;
   readonly tags: readonly string[];
+  readonly rankedSlots?: boolean;
   readonly keys?: readonly { readonly tag: string; readonly part: string }[];
   readonly partBits?: number;
   readonly decimals?: number;
@@ -106,17 +108,19 @@ function rowIndexOf(tags: readonly string[]): ReadonlyMap<string, number> {
 }
 
 const answerRows = new WeakMap<FollowedAnswer, ReadonlyMap<string, number>>();
+const slotRows = new WeakMap<FollowedAnswer, ReadonlyMap<string, number>>();
 
-export function answerRowOf(answer: FollowedAnswer | undefined, tag: string): number {
+export function answerRowOf(answer: FollowedAnswer | undefined, tag: string, rankedSlots = false): number {
   if (!answer || answer.kind === 'notRecorded') return -1;
-  let rows = answerRows.get(answer);
+  const cache = rankedSlots ? slotRows : answerRows;
+  let rows = cache.get(answer);
   if (!rows) {
     const named = new Map<string, number>();
     for (let row = 0; row < answer.rows; row++) {
-      const key = rowName(answer, row);
+      const key = rankedSlots ? countryKey(Number(rowKey(answer, row))) : rowName(answer, row);
       if (key && !named.has(key)) named.set(key, row);
     }
-    answerRows.set(answer, rows = named);
+    cache.set(answer, rows = named);
   }
   return rows.get(tag) ?? -1;
 }
@@ -134,7 +138,7 @@ function headRow(answer: FollowedAnswer, head: SeriesHeadSource, tag: string): n
     const matched = keyOf(head.keys, tag);
     return matched ? followedRow(answer, matched, head.partBits) : -1;
   }
-  return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag);
+  return head.tags.length ? rowIndexOf(head.tags).get(tag) ?? -1 : answerRowOf(answer, tag, head.rankedSlots);
 }
 
 export class SceneTiles {

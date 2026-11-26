@@ -4,6 +4,7 @@ import type { ChartBucket } from '../../charts/chartSummary.ts';
 import { measureColour } from '../../charts/palette.ts';
 import type { Canvas2D, MeasureText } from '../../charts/textWidth.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
@@ -992,12 +993,22 @@ describe('time-chart picture authority', () => {
       const model = politicalPowerProjection.project(createBoundedReadView({
         hour,
         series: new Map([['main', new Map([['GER', boundTiledSeries(line, displayedHour(hour), { headValue: knownValue(20) })]])]]),
-        hovers: new Map([['hover', { hour: hoverAt, data: [state] }]]),
+        hovers: new Map([['hover', { hour: hoverAt, data: { states: [state] } }]]),
       }), { tags: ['GER'], extent: [base, base + 95], gaps: [], surface: '#111111' });
       return deriveTimeChartTooltip(model, layoutTimeChart(model, 600, 260, FONT, measure), `plot:${hoverAt}`)?.payload?.items?.[0];
     };
-    assert.equal(project({ hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
-    assert.equal(project({ hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
+    assert.equal(project({ country: 'GER', hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null })?.value, '12,345');
+    assert.equal(project({ country: 'GER', hour: hoverAt, run: null, missing: 'Countries not read at this hour' })?.missingReason, 'Countries not read at this hour');
+    const states = [{ country: 'GER', hour: hoverAt, run: { valueRaw: '1234500000' }, missing: null }];
+    const membership = { ITA: [[hoverAt + 1, hour] as const], GER: [[base, hour] as const] };
+    const grouped = politicalPowerProjection.project(createBoundedReadView({ hour, hovers: new Map([['hover', { hour: hoverAt, data: { states } }]]) }),
+      { tags: ['ITA', 'GER'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(grouped.series.find(line => line.key === 'ITA')?.exact, null);
+    assert.equal(grouped.series.find(line => line.key === 'GER')?.exact?.value, 12345);
+    states.push({ ...states[0]!, country: 'ITA' });
+    const early = politicalPowerProjection.project(createBoundedReadView({ hour, hovers: new Map([['hover', { hour: hoverAt, data: { states } }]]) }),
+      { tags: ['GER', 'ITA'], membership, extent: [base, base + 95], gaps: [], surface: '#111111' });
+    assert.equal(early.series.find(line => line.key === 'ITA')?.exact, null);
   });
   it('skips a missing span when sampling a populated bin for a hover dot or hit', () => {
     const from = H1936, until = from + 6;
@@ -1385,21 +1396,33 @@ describe('several countries, one measure', () => {
   });
 
   it('orders and audits a top by the dated head ranking, not by an older tile ranking, so it agrees with the exact read', () => {
-    const stale = new Map(['A01', 'A02', 'A03'].map(tag => [tag, lines.get(tag)!]));
-    const answer = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n, 3n], columns: 1, values: [9000n, 3000n], names: ['A09', 'A03'] } }])).answers[0]!.answer;
+    const stale = new Map([1, 2, 3].map(slot => [countryKey(slot), lines.get(`A0${slot}`)!]));
+    const answer = parseFollowed(message(hour, [{ id: 1, answer: { keys: [9n, 3n], columns: 1, values: [9000n, 3000n], names: ['A09', 'NEW'] } }])).answers[0]!.answer;
     const options = { tags: [], top: 2, membership: null, decimals: 0, unavailable: null, digits: null, endLabels: true, second: null, options: {}, extent: [base, base + 95] as const, gaps: [], surface: '#111111' };
     const shown = navyLinesProjection.project(createBoundedReadView({ hour, series: new Map([['main', stale]]), answers: new Map([['main', answer]]) }), options);
     const reading = (raw: string) => ({ hour, run: { valueRaw: raw }, missing: null });
-    const ranked = { hour, measures: [{ name: 'm', decimals: 0 }], rows: [{ country: 'A09', readings: [reading('9000')] }, { country: 'A03', readings: [reading('3000')] }], refused: null, from: hour, until: hour };
-    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]) }), options);
+    const ranked = { hour, measures: [{ name: 'm', decimals: 0 }], rows: [{ country: 'A09', slot: 9, readings: [reading('9000')] }, { country: 'NEW', slot: 3, readings: [reading('3000')] }], refused: null, from: hour, until: hour };
+    const exact = navyLinesProjection.project(createBoundedReadView({ hour, panels: new Map([['main', ranked]]), series: new Map([['main', stale]]) }), options);
     const rows = (model: TimeChartModel) => model.auditRows?.map(row => `${row.row}=${row.value}`);
-    assert.deepEqual(rows(shown), ['A09=9,000', 'A03=3,000']);
+    assert.deepEqual(rows(shown), [`${countryKey(9)}=9,000`, `${countryKey(3)}=3,000`]);
     assert.deepEqual(rows(shown), rows(exact));
-    assert.deepEqual(shown.series.map(s => s.id), ['A09', 'A03'], 'the lines of the top at the displayed hour, in its order');
     const baseLayout = layoutTimeChart(shown, 600, 240, FONT, measure);
     const fields = timeChartLane.structure({ layout: { model: shown, base: baseLayout } } as Parameters<typeof timeChartLane.structure>[0]);
-    assert.deepEqual(fields.drawnKeys, { main: ['A09', 'A03'] });
-    assert.ok(shown.series.find(s => s.id === 'A03')!.bounded, 'a ranked country keeps its drawn history');
+    assert.deepEqual(fields.drawnKeys, { main: [countryKey(9), countryKey(3)] });
+    assert.deepEqual(shown.series.map(s => s.id), [countryKey(9), countryKey(3)], 'the lines of the top at the displayed hour, in its order');
+    assert.equal(shown.series[1]!.bounded, stale.get(countryKey(3)), 'a winning slot retains its drawn history across a tag change');
+    assert.equal(shown.series[1]!.name, 'NEW');
+    const unnamed = parseFollowed(message(hour, [{ id: 1, answer: { keys: [3n], columns: 1, values: [3000n], names: [countryKey(3)], reasons: ['The holder was unread'] } }])).answers[0]!.answer;
+    const unresolved = navyLinesProjection.project(createBoundedReadView({ hour, answers: new Map([['main', unnamed]]) }), options);
+    assert.deepEqual([unresolved.series[0]!.id, unresolved.series[0]!.name, unresolved.series[0]!.headValue], [countryKey(3), 'Country not recorded', 3000]);
+    assert.deepEqual(unresolved.series[0]!.flag?.art, { status: 'unavailable', reason: 'The holder was unread' });
+    const slot = countryKey(3);
+    const raw = { source: 'main', tag: slot, head: 'h', decimals: 0, binHours: 1, from: base, to: hour, width: 1, buckets: [], missing: [], parts: [] };
+    const tiled = new SceneTiles().series({ widget: 1, subs: [], pictures: [], model: null }, { sources: {}, staticAnswers: { main: answer } }, {
+      tiledBySource: { main: { [slot]: raw } },
+      headSourceBySeries: { main: { answerName: 'main', tags: [], rankedSlots: true } },
+    }, hour);
+    assert.deepEqual(tiled?.get('main')?.get(slot)?.headValue, knownValue(3000));
   });
 
   it('draws a second measure dashed beside each country in the same colour, keyed apart, with a legend naming both', () => {

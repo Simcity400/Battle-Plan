@@ -176,28 +176,23 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
         }
     };
     let ranker = by.as_ref().unwrap_or(line);
-    let (tags, ranking) = match ranker.rank_at(hour, n, params.least)? {
-        Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
-        Ok(ranked) => match ranked.iter().find(|country| line.query().holders.tag_at(country, hour).is_none()) {
-            Some(unnamed) => {
-                let reason = format!("{}, so its line cannot be drawn", line.query().holders.unnamed(unnamed, hour));
-                (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) })
-            }
-            None => {
-                let holders = &line.query().holders;
-                let held = |list: &[Country], at: i32| list.iter().map(|country| holders.slot_at(country, at).map_or_else(|| country.clone(), Country::Slot)).collect::<std::collections::BTreeSet<Country>>();
-                let winners = held(&ranked, hour);
-                let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at, list| held(list, at) == winners)?;
-                (ranked, TileRanking { hour, from, until, refused: None })
-            }
-        },
-    };
     let holders = &line.query().holders;
-    let asks: Vec<Ask> = tags.iter().map(|country| Ask::whole(holders.slot_at(country, hour).map_or_else(|| country.clone(), Country::Slot))).collect();
+    let named_slot = |country: &Country, at| holders.tag_at(country, at).and_then(|_| holders.slot_at(country, at));
+    let slots = ranker.rank_at(hour, n, params.least)?.and_then(|ranked| {
+        ranked.iter().map(|country| named_slot(country, hour).ok_or_else(|| format!("{}, so its line cannot be drawn", holders.unnamed(country, hour)))).collect::<Result<Vec<_>, _>>()
+    });
+    let (asks, ranking) = match slots {
+        Err(reason) => (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) }),
+        Ok(slots) => {
+            let winners: std::collections::HashSet<u32> = slots.iter().copied().collect();
+            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at, list| {
+                list.len() == winners.len() && list.iter().all(|country| named_slot(country, at).is_some_and(|slot| winners.contains(&slot)))
+            })?;
+            let asks = slots.into_iter().map(|slot| Ask::whole(Country::Slot(slot))).collect();
+            (asks, TileRanking { hour, from, until, refused: None })
+        }
+    };
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
-    for (drawn, tag) in reply.lines.iter_mut().zip(tags) {
-        drawn.country = tag;
-    }
     reply.ranking = Some(ranking);
     Ok(reply)
 }
