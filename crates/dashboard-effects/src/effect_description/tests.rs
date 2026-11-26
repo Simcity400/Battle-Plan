@@ -519,13 +519,15 @@ fn native_country_targets_read_custom_target_fields() {
     game::enter();
     let fixture = Fixture::new();
     for body in [
-        "puppet={target=BBB}",
+        "fixture_make_subject={target=BBB}",
+        "fixture_declare_conflict={target=BBB}",
         "fixture_revoke_objective={target=BBB}",
         "fixture_subject_release={target=BBB}",
         "fixture_subject_level={target=BBB}",
         "fixture_equipment_delivery={target=BBB}",
         "fixture_send_share={target=BBB}",
         "fixture_move_share={target=BBB}",
+        "fixture_release_country=BBB",
     ] {
         let parsed = content_reader_parser::parser::parse(body.as_bytes()).unwrap();
         let target = fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
@@ -533,6 +535,51 @@ fn native_country_targets_read_custom_target_fields() {
         });
         assert_eq!(target, Ok(Some(2)), "{body}");
     }
+    let block = content_reader_parser::parser::parse(b"fixture_unverified={target=BBB}").unwrap();
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let why = renderer.country_target(&block.items[0], Scopes::empty()).unwrap_err();
+        assert!(why.contains("fixture_unverified") && why.contains("reader"), "{why}");
+    });
+}
+
+#[test]
+fn authored_ideology_accessor_uses_the_ruling_party_at_the_effect_hour() {
+    game::enter();
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=12}}"),
+        ("common/scripted_localisation/fixture.txt",
+         "defined_text={name=GetCopperParty text={localization_key=SYN_CURRENT_PARTY}}"),
+        ("localisation/fixture_l_english.yml", concat!(
+            "\u{feff}l_english:\n",
+            " SYN_TIP:0 \"[ROOT.GetCopperParty]\"\n",
+            " SYN_UNKNOWN:0 \"[ROOT.GetTinParty]\"\n",
+            " SYN_CURRENT_PARTY:0 \"[THIS.GetRulingParty]\"\n",
+            " AAA_syn_copper_party:0 \"Copper circle\"\n",
+            " AAA_syn_tin_party:0 \"Tin circle\"\n",
+        )),
+    ]);
+    catalogue.scripted_content().unwrap().set_synthetic_environment(Default::default());
+    fixture.catalogue = catalogue;
+    *fixture.frame.tables[TableId::PoliticalParties.index()] = TableView::Complete(
+        TableRows::PoliticalParties(["syn_copper", "syn_tin"].into_iter().enumerate()
+            .map(|(i, group)| PoliticalPartyRow {
+                country: 100, id: i as u32 + 1, tag: 100, name_default: 1, token: group.into(),
+                ..Default::default()
+            }).collect())
+    );
+    for (hour, ruling, expected) in [(7, 1, "Copper circle"), (19, 2, "Tin circle")] {
+        fixture.frame.hour = hour;
+        *fixture.frame.tables[TableId::Politics.index()] = TableView::Complete(
+            TableRows::Politics(vec![PoliticsRow { country: 100, ruling_party: Some(ruling), ..Default::default() }])
+        );
+        let out = fixture.render("fixture_written_tooltip=SYN_TIP", &mut fresh(), Content::default());
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        assert_eq!(out.text.trim_end(), expected);
+    }
+    let out = fixture.render("fixture_written_tooltip=SYN_UNKNOWN", &mut fresh(), Content::default());
+    assert!(out.text.is_empty());
+    assert!(out.refusals.keys().any(|why| why.contains("GetTinParty")), "{:?}", out.refusals);
 }
 
 #[test]
