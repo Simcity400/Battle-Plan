@@ -41,7 +41,8 @@ export function resetStamps() {
   };
 }
 
-export function splitForLanes(bytes: Uint8Array, lanes: number, stats?: { recordVisits: number }): Split {
+export function splitForLanes(input: Uint8Array | ArrayBuffer, lanes: number, stats?: { recordVisits: number }): Split {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const failure = followFailure(bytes);
   if (failure !== null) return { kind: 'failure', reason: failure };
   const kind = wireKind(bytes);
@@ -71,22 +72,26 @@ export function splitForLanes(bytes: Uint8Array, lanes: number, stats?: { record
     if (record.lane === 'all') { shared += size; for (let lane = 0; lane < lanes; lane++) { sizes[lane]! += size; counts[lane]!++; } }
     else { sizes[record.lane]! += size; counts[record.lane]!++; owned[record.lane]! += follow ? 16 + 2 * Math.max(size - 16, data.getUint32(record.start + 12, true)) : 2 * size; }
   }
-  const out = sizes.map((size, index) => follow || counts[index] ? new Uint8Array(size) : null), put = sizes.map(() => 24);
+  const whole = input instanceof ArrayBuffer ? counts.findIndex(n => n === count && (follow || count > 0)) : -1;
+  const out: (Uint8Array | null)[] = sizes.map((size, index) => index !== whole && (follow || counts[index]) ? new Uint8Array(size) : null);
+  const put = sizes.map(() => 24);
   out.forEach((lane, index) => {
     if (!lane) return;
     lane.set(bytes.subarray(0, 24));
     new DataView(lane.buffer).setUint32(follow ? 12 : 8, counts[index]!, true);
   });
   for (const record of records) {
+    if (record.lane === whole) continue;
     const piece = bytes.subarray(record.start, record.end);
     if (record.lane === 'all') {
       if (stats) stats.recordVisits += lanes;
-      for (let lane = 0; lane < lanes; lane++) { out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length; }
+      for (let lane = 0; lane < lanes; lane++) { out[lane]?.set(piece, put[lane]!); put[lane]! += piece.length; }
     } else {
       if (stats) stats.recordVisits++;
       const lane = record.lane;
       out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length;
     }
   }
+  if (whole >= 0) out[whole] = bytes;
   return { kind: follow ? 'follow' : 'panels', lanes: out, owned, header: 24 + 2 * shared };
 }

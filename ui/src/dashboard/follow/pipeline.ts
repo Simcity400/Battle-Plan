@@ -629,9 +629,9 @@ export class Pipeline {
     }
     let identity: number | null | undefined;
     if (change.identity !== undefined) {
-      const encoded = sender.acquire(change.identity === null ? {} : { identitySnapshot: change.identity });
-      const [next] = encoded.ids;
       const [held] = widget.payloads.identity;
+      const encoded = sender.acquire(change.identity === null ? {} : { identitySnapshot: change.identity }, held);
+      const [next] = encoded.ids;
       if (next === held) sender.release(encoded.ids);
       else {
         released.push(widget.payloads.identity);
