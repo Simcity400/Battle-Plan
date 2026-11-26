@@ -287,37 +287,151 @@ impl NextHour {
     }
 }
 
-fn next_roster_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
+fn next_ranking_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
     let recording = query.replay.recording();
     let leaders = TableId::UnitLeaders;
-    let mut columns = vec![
-        field(leaders, "owner")?,
-        field(leaders, "kind")?,
-        field(leaders, "skill_valid")?,
-        field(leaders, "skill_level")?,
-    ];
-    columns.sort_unstable();
+    let components = field(leaders, "skill_category")? + 1;
+    let characters = TableId::Characters;
+    let inputs = [
+        (leaders, vec![field(leaders, "owner")?, field(leaders, "kind")?, field(leaders, "skill_valid")?, field(leaders, "skill_level")?, components, components + 1, components + 2, components + 3]),
+        (TableId::LeaderBattleTotals, (0..TableId::LeaderBattleTotals.field_count()).collect()),
+        (characters, vec![field(characters, "name_token_id")?, field(characters, "name")?, field(characters, "token")?]),
+    ]
+    .map(|(table, mut columns)| {
+        columns.sort_unstable();
+        (table, columns)
+    });
+    let block = replay_columnar::envelope::UNIT_ORDINALS as i32;
     let mut next = NextHour(None, hour);
     for stretch in &query.timeline.stretches {
         if stretch.last <= hour {
             continue;
         }
-        let from = hour.max(stretch.first);
-        let history = dashboard_query::cost::storage(|| {
-            replay_lanes::lanes::history(recording, stretch.run, leaders, &columns, LaneKeys::All, from, stretch.last)
-        })?;
-        for (_, steps) in &history.keys {
-            for step in steps {
-                if step.hour > hour {
+        let origin = recording.run(stretch.run)?.first_hour;
+        let mut from = hour.max(stretch.first);
+        while from <= stretch.last {
+            let to = stretch.last.min(origin + ((from - origin) / block + 1) * block - 1);
+            for (table, columns) in &inputs {
+                if recording.predates(table.index()).is_some() || recording.withheld_reason(table.index()).is_some() {
+                    continue;
+                }
+                let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, LaneKeys::All, from, to))?;
+                for step in history.keys.iter().flat_map(|(_, steps)| steps) {
                     next.see(step.hour);
                 }
             }
-        }
-        if next.0.is_some() {
-            break;
+            if next.0.is_some() {
+                return Ok(next.0);
+            }
+            from = to + 1;
         }
     }
     Ok(next.0)
+}
+
+struct Full {
+    runs: Vec<(i32, i32, Option<String>, RunValues)>,
+    seen: Vec<(u32, i32, i32)>,
+    commands: Vec<(i32, i32, u64, u8, Option<Vec<u8>>)>,
+    gains: Vec<(i32, String, u8)>,
+    battles: Vec<CareerBattle>,
+    partial: Option<i32>,
+}
+
+#[derive(Default)]
+struct Careers(HashMap<(u64, u64), std::sync::Arc<Full>>);
+
+fn full_career(source: &Source, query: &Query<'_>, leader: u64, cancelled: &AtomicBool) -> io::Result<std::sync::Arc<Full>> {
+    let state = source.state::<Careers>();
+    let key = (query.timeline.id, leader);
+    if let Some(full) = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key) {
+        return Ok(std::sync::Arc::clone(full));
+    }
+    let full = std::sync::Arc::new(read_full(source, query, leader, cancelled)?);
+    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.insert(key, std::sync::Arc::clone(&full));
+    Ok(full)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static FULL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn read_full(source: &Source, query: &Query<'_>, leader: u64, cancelled: &AtomicBool) -> io::Result<Full> {
+    #[cfg(test)]
+    FULL_READS.with(|reads| reads.set(reads.get() + 1));
+    let key = u128::from(leader);
+    let recording = query.replay.recording();
+    let names = Names::new(&query.holders);
+    let run_columns = RunColumns::new()?;
+    let mut ascending = run_columns.columns.clone();
+    ascending.sort_unstable();
+    let (mut runs, mut seen, mut commands) = (Vec::new(), Vec::new(), Vec::new());
+    for stretch in &query.timeline.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let links: std::sync::Arc<RunLinks> = dashboard_base::queries::links(source, stretch.run)?;
+        let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::UnitLeaders, &ascending, LaneKeys::These(&[key]), stretch.first, stretch.last))?;
+        let steps: Vec<(i32, Option<RunValues>)> = history
+            .keys
+            .iter()
+            .filter(|(held, _)| *held == key)
+            .flat_map(|(_, steps)| steps.iter().map(|step| (step.hour, step.cells.as_deref().and_then(|cells| values_of(&history, cells, &run_columns.columns)))))
+            .collect();
+        for (first, last, values) in career_runs(&steps, history.to) {
+            seen.push((stretch.run, first, last));
+            for (tag, a, b) in names.tags_over(&links, values.owner, first, last) {
+                runs.push((a, b, tag.map(str::to_owned), values));
+            }
+        }
+        let open = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, stretch.run, TableId::LeaderCommandSpans, stretch.last, None))?;
+        let view = open.view();
+        for slot in view.rows() {
+            if view.number(0, slot).map(|held| held as u64) != Some(leader) {
+                continue;
+            }
+            let (Some(key), Some(first), Some(kind)) = (view.key(slot), view.number(1, slot), view.number(2, slot)) else { continue };
+            commands.push(((first as i32).max(stretch.first), stretch.last, key as u64, kind as u8, view.list(3, slot).map(<[u8]>::to_vec)));
+        }
+    }
+    let (command_columns, command_rows) = leader_rows(query, "leader-commands", (leader >> 32) as u32, leader)?;
+    let at = |name: &str| column(&command_columns, name);
+    let (formation, kind, first, last, name) = (at("formation")?, at("kind")?, at("first_hour")?, at("last_hour")?, at("name")?);
+    for row in &command_rows {
+        let Some(stretch) = query.timeline.at(row.hour) else { continue };
+        let number = |at: usize| cell_number(&row.cells[at]);
+        let (Some(formation), Some(kind), Some(first), Some(last)) = (number(formation), number(kind), number(first), number(last)) else { continue };
+        let name = match &row.cells[name] {
+            dashboard_query::log::Cell::List(bytes) => Some(bytes.clone()),
+            _ => None,
+        };
+        commands.push(((first as i32).max(stretch.first), last as i32, formation as u64, kind as u8, name));
+    }
+    commands.sort_by_key(|command| (command.0, command.2.to_string()));
+    let id = (leader >> 32) as u32;
+    let (gain_columns, gain_rows) = leader_rows(query, "leader-trait-gains", id, leader)?;
+    let (class, spelling) = (column(&gain_columns, "class")?, column(&gain_columns, "spelling")?);
+    let gains: Vec<(i32, String, u8)> = gain_rows
+        .iter()
+        .filter_map(|row| Some((row.hour, cell_text(&row.cells[spelling])?, cell_number(&row.cells[class])? as u8)))
+        .collect();
+    let (battle_columns, battle_rows) = leader_rows(query, "leader-battles", id, leader)?;
+    let at = |name: &str| column(&battle_columns, name);
+    let (entry, kind, combat, start, unknown, outcome, result_hour) = (at("entry")?, at("kind")?, at("combat")?, at("start_hour")?, at("start_unknown")?, at("outcome")?, at("result_hour")?);
+    let battle_input: Vec<BattleRow> = battle_rows
+        .iter()
+        .filter_map(|row| {
+            let number = |at: usize| cell_number(&row.cells[at]);
+            Some((row.hour, number(entry)? as u8, number(kind)? as u8, number(combat)? as u64, number(start)? as i32, number(unknown)? != 0, number(outcome).map(|value| value as u8), number(result_hour).map(|value| value as i32)))
+        })
+        .collect();
+    Ok(Full {
+        runs,
+        seen,
+        commands,
+        gains: career_gains(&gains),
+        battles: join_battles(&battle_input),
+        partial: super::battles_partial_from(query, query.timeline.first, query.timeline.last)?,
+    })
 }
 
 fn resolve_selection_at(
@@ -403,7 +517,7 @@ impl Product for LeaderCareer {
         let (leader, selection_warnings) = match (&params.reference, &params.selection) {
             (Some(text), None) => (reference(text).map_err(dashboard_core::invalid)?, Vec::new()),
             (None, Some(selection)) => {
-                if let Some(roster_at) = next_roster_change(&query, hour)? {
+                if let Some(roster_at) = next_ranking_change(&query, hour)? {
                     next.see(roster_at);
                 }
                 let (picked, missing, warnings) = resolve_selection_at(source, &params.branch_id, selection, hour, load, cancelled)?;
@@ -443,86 +557,21 @@ impl Product for LeaderCareer {
         let key = u128::from(leader);
         let content = Content::load(source, load);
         let recording = query.replay.recording();
-        let names = Names::new(&query.holders);
-        let run_columns = RunColumns::new()?;
-        let mut full_runs = Vec::new();
-        let mut last_seen: Option<(u32, i32)> = None;
-        let mut full_commands: Vec<LeaderCommand> = Vec::new();
+        let full = full_career(source, &query, leader, cancelled)?;
         for stretch in &query.timeline.stretches {
-            dashboard_text::metadata::check_cancel(cancelled)?;
             next.span(stretch.first, stretch.last);
-            let links: std::sync::Arc<RunLinks> = dashboard_base::queries::links(source, stretch.run)?;
-            let mut ascending = run_columns.columns.clone();
-            ascending.sort_unstable();
-            let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, TableId::UnitLeaders, &ascending, LaneKeys::These(&[key]), stretch.first, stretch.last))?;
-            let steps: Vec<(i32, Option<RunValues>)> = history
-                .keys
-                .iter()
-                .filter(|(held, _)| *held == key)
-                .flat_map(|(_, steps)| steps.iter().map(|step| (step.hour, step.cells.as_deref().and_then(|cells| values_of(&history, cells, &run_columns.columns)))))
-                .collect();
-            for (first, last, values) in career_runs(&steps, history.to) {
-                if first <= hour {
-                    last_seen = Some((stretch.run, last.min(hour)));
-                }
-                for (tag, a, b) in names.tags_over(&links, values.owner, first, last) {
-                    full_runs.push(CareerRun { first_hour: a, last_hour: b, role: content.role(tag.map(str::to_owned), values.kind, values.category, values.skill), skill: values.skill, components: values.components });
-                }
-            }
-            let open = dashboard_query::cost::storage(|| replay_lanes::lanes::at(recording, stretch.run, TableId::LeaderCommandSpans, stretch.last, None))?;
-            let view = open.view();
-            for slot in view.rows() {
-                if view.number(0, slot).map(|held| held as u64) != Some(leader) {
-                    continue;
-                }
-                let (Some(key), Some(first), Some(kind)) = (view.key(slot), view.number(1, slot), view.number(2, slot)) else { continue };
-                let name = view.list(3, slot).and_then(|bytes| stored_name(&content, bytes));
-                full_commands.push(LeaderCommand { first_hour: (first as i32).max(stretch.first), last_hour: stretch.last, formation: (key as u64).to_string(), kind: command_kind(kind as u8), name });
-            }
         }
-        let (command_columns, command_rows) = leader_rows(&query, "leader-commands", (leader >> 32) as u32, leader)?;
-        let at = |name: &str| column(&command_columns, name);
-        let (formation, kind, first, last, name) = (at("formation")?, at("kind")?, at("first_hour")?, at("last_hour")?, at("name")?);
-        for row in &command_rows {
-            let Some(stretch) = query.timeline.at(row.hour) else { continue };
-            let number = |at: usize| cell_number(&row.cells[at]);
-            let (Some(formation), Some(kind), Some(first), Some(last)) = (number(formation), number(kind), number(first), number(last)) else { continue };
-            let name = match &row.cells[name] {
-                dashboard_query::log::Cell::List(bytes) => stored_name(&content, bytes),
-                _ => None,
-            };
-            full_commands.push(LeaderCommand { first_hour: (first as i32).max(stretch.first), last_hour: last as i32, formation: (formation as u64).to_string(), kind: command_kind(kind as u8), name });
-        }
-        full_commands.sort_by_key(|command| (command.first_hour, command.formation.clone()));
-        let id = (leader >> 32) as u32;
-        let (gain_columns, gain_rows) = leader_rows(&query, "leader-trait-gains", id, leader)?;
-        let (class, spelling) = (column(&gain_columns, "class")?, column(&gain_columns, "spelling")?);
-        let gains: Vec<(i32, String, u8)> = gain_rows
-            .iter()
-            .filter_map(|row| Some((row.hour, cell_text(&row.cells[spelling])?, cell_number(&row.cells[class])? as u8)))
-            .collect();
-        let full_gains = career_gains(&gains);
+        let last_seen = full.seen.iter().rfind(|seen| seen.1 <= hour).map(|&(run, _, last)| (run, last.min(hour)));
         let mut traits = TraitList::default();
         let mut trait_gains = Vec::new();
-        for (gain_hour, token, gain_class) in &full_gains {
+        for (gain_hour, token, gain_class) in &full.gains {
             next.see(*gain_hour);
             if *gain_hour <= hour {
                 trait_gains.push((*gain_hour, traits.index(token, &content), *gain_class));
             }
         }
-        let (battle_columns, battle_rows) = leader_rows(&query, "leader-battles", id, leader)?;
-        let at = |name: &str| column(&battle_columns, name);
-        let (entry, kind, combat, start, unknown, outcome, result_hour) = (at("entry")?, at("kind")?, at("combat")?, at("start_hour")?, at("start_unknown")?, at("outcome")?, at("result_hour")?);
-        let battle_input: Vec<BattleRow> = battle_rows
-            .iter()
-            .filter_map(|row| {
-                let number = |at: usize| cell_number(&row.cells[at]);
-                Some((row.hour, number(entry)? as u8, number(kind)? as u8, number(combat)? as u64, number(start)? as i32, number(unknown)? != 0, number(outcome).map(|value| value as u8), number(result_hour).map(|value| value as i32)))
-            })
-            .collect();
-        let full_battles = join_battles(&battle_input);
         let mut battles = Vec::new();
-        for battle in full_battles {
+        for battle in &full.battles {
             let visible_at = battle.start.max(battle.read);
             next.see(visible_at);
             if let Some(rr) = battle.result_read {
@@ -534,34 +583,36 @@ impl Product for LeaderCareer {
             }
             let result_known = battle.result_read.is_some_and(|rr| rr <= hour) && battle.result_hour.is_none_or(|rh| rh <= hour);
             battles.push(CareerBattle {
-                start: battle.start,
-                read: battle.read,
-                unknown: battle.unknown,
-                kind: battle.kind,
                 won: if result_known { battle.won } else { None },
                 result_hour: if result_known { battle.result_hour } else { None },
                 result_read: if result_known { battle.result_read } else { None },
+                ..battle.clone()
             });
         }
         let mut runs = Vec::new();
-        for run in full_runs {
-            next.span(run.first_hour, run.last_hour);
-            if run.first_hour <= hour {
-                runs.push(CareerRun { last_hour: run.last_hour.min(hour), ..run });
+        for (first, last, tag, values) in &full.runs {
+            next.span(*first, *last);
+            if *first <= hour {
+                runs.push(CareerRun { first_hour: *first, last_hour: (*last).min(hour), role: content.role(tag.clone(), values.kind, values.category, values.skill), skill: values.skill, components: values.components });
             }
         }
         let mut commands = Vec::new();
-        for cmd in full_commands {
-            next.span(cmd.first_hour, cmd.last_hour);
-            if cmd.first_hour <= hour {
-                commands.push(LeaderCommand { last_hour: cmd.last_hour.min(hour), ..cmd });
+        for (first, last, formation, kind, name) in &full.commands {
+            next.span(*first, *last);
+            if *first <= hour {
+                commands.push(LeaderCommand {
+                    first_hour: *first,
+                    last_hour: (*last).min(hour),
+                    formation: formation.to_string(),
+                    kind: command_kind(*kind),
+                    name: name.as_deref().and_then(|bytes| stored_name(&content, bytes)),
+                });
             }
         }
-        let full_partial = super::battles_partial_from(&query, query.timeline.first, query.timeline.last)?;
-        if let Some(partial_at) = full_partial {
+        if let Some(partial_at) = full.partial {
             next.see(partial_at);
         }
-        let battles_partial_from = full_partial.filter(|&at| at <= hour);
+        let battles_partial_from = full.partial.filter(|&at| at <= hour);
         let (name, portrait_hour, missing) = match last_seen {
             Some((run, seen_hour)) => {
                 let leaders = [key];

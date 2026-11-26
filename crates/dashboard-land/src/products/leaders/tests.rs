@@ -376,12 +376,12 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
                 components: [2, 2, 2, 2],
                 ..Default::default()
             };
-            frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader])).into();
-            frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![CharacterRow {
-                id: 77,
-                token: b"JAP_yamashita".to_vec(),
-                ..Default::default()
-            }]))
+            let rival = UnitLeaderRow { id: 43, character_id: 78, skill_level: 5, components: if hour < 117 { [1; 4] } else { [3; 4] }, ..leader.clone() };
+            frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![leader, rival])).into();
+            frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
+                CharacterRow { id: 77, token: b"JAP_yamashita".to_vec(), ..Default::default() },
+                CharacterRow { id: 78, token: b"JAP_homma".to_vec(), ..Default::default() },
+            ]))
             .into();
             frame
         })
@@ -413,6 +413,12 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     assert_eq!((early.runs[0].first_hour, early.runs[0].last_hour, early.runs[0].skill), (100, 105, Some(3)));
     assert_eq!(early.portrait_hour, Some(105));
     assert_eq!(early.observed, vec![(100, 105)]);
+    let ask = |hour| LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: Some(handle_ref.clone()), selection: None, hour }, &load, &cancelled).unwrap();
+    let reads = || super::career::FULL_READS.with(std::cell::Cell::get);
+    let before = reads();
+    ask(111);
+    ask(112);
+    assert_eq!(reads() - before, 0, "a later hour cuts the career already read for this leader and branch");
 
     let late = LeaderCareer::load(
         &src,
@@ -422,7 +428,9 @@ fn leader_career_cuts_at_hour_computes_next_change_and_resolves_selection() {
     )
     .unwrap();
     assert_eq!(late.reference.as_deref(), Some(handle_ref.as_str()));
-    assert_eq!((late.hour, late.next_change), (115, None));
+    assert_eq!((late.hour, late.next_change), (115, Some(117)), "a change in what ranks the generals ends the top general's career");
     assert_eq!(late.runs.len(), 2);
     assert_eq!(late.runs[1].skill, Some(5));
+    let overtaken = LeaderCareer::load(&src, &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(LeaderSelection::All), hour: 117 }, &load, &cancelled).unwrap();
+    assert_eq!(overtaken.reference, Some(((43u64 << 32) | 1).to_string()), "the tie of equal skill turns to the rival once its components are higher");
 }
