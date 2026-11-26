@@ -39,6 +39,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
 }
 
 struct Columns {
+    occurrence: usize,
     hour: usize,
     agreement: usize,
     country: usize,
@@ -56,6 +57,7 @@ impl Columns {
     fn read() -> io::Result<Self> {
         let field = |name| dashboard_declare::field(TableId::MarketEvents, name);
         Ok(Self {
+            occurrence: field("occurrence")?,
             hour: field("hour")?,
             agreement: field("agreement")?,
             country: field("country")?,
@@ -115,7 +117,7 @@ const UNTOLD_REMOVAL: &str = "do not record whether a removal ended a request or
 const UNDATED: &str = "do not record their own hour";
 const UNTOLD: [&str; 2] = [UNTOLD_REMOVAL, UNDATED];
 const NO_DESIGN: &str = "A delivery's design was not recorded";
-const NO_TOTAL: &str = "A delivery's cumulative total was not recorded";
+const NO_AMOUNT: &str = "A delivery's amount was not recorded";
 const CERTIFIED_TOTAL: i64 = 0x80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -139,7 +141,7 @@ pub struct MarketContractItem {
     pub name: Option<String>,
     pub name_missing: Option<String>,
     pub icon: Option<String>,
-    #[doc = " The latest certified cumulative delivery read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded."]
+    #[doc = " The latest certified cumulative delivery plus the deliveries witnessed after it, read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded."]
     pub delivered_raw: Option<String>,
     pub contracted_raw: Option<String>,
     pub delivery_unavailable: Option<String>,
@@ -322,6 +324,7 @@ type Rank = (i32, u128);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Delivered {
     certified: Option<(i64, Rank)>,
+    witnessed: Option<i64>,
     refused: Option<(Rank, &'static str)>,
 }
 
@@ -351,6 +354,7 @@ impl Measures {
         let mut out = Self::default();
         let mut paid: i64 = 0;
         let mut designs: HashMap<u64, usize> = HashMap::new();
+        let mut uncertified: Vec<Vec<(Rank, i64)>> = Vec::new();
         for (place, child) in children.iter().enumerate() {
             let (place, rank) = (place as u32, child.rank());
             match (child.kind, child.variant) {
@@ -371,20 +375,31 @@ impl Measures {
                 (MarketContractEventKind::Delivery | MarketContractEventKind::DeliveryUnavailable, Some(variant)) => {
                     let at = *designs.entry(variant).or_insert_with(|| {
                         out.designs.push(Design { variant, first: place, steps: Vec::new() });
+                        uncertified.push(Vec::new());
                         out.designs.len() - 1
                     });
-                    let design = &mut out.designs[at];
+                    let (design, increments) = (&mut out.designs[at], &mut uncertified[at]);
                     let last = design.steps.last().map(|&(_, held)| held);
                     let mut held = last.unwrap_or_default();
-                    match child.total.filter(|_| child.kind == MarketContractEventKind::Delivery) {
-                        Some(total) => {
-                            if held.certified.is_none_or(|(_, at)| rank > at) {
+                    let after = held.certified.is_none_or(|(_, at)| rank > at);
+                    match (child.kind, child.total, child.amount) {
+                        (MarketContractEventKind::Delivery, Some(total), _) => {
+                            if after {
                                 held.certified = Some((total, rank));
+                                let covered = increments.partition_point(|&(at, _)| at <= rank);
+                                let dropped = increments.drain(..covered).fold(0i64, |sum, (_, amount)| sum.saturating_add(amount));
+                                held.witnessed = held.witnessed.map(|sum| sum.saturating_sub(dropped)).filter(|_| !increments.is_empty());
                             }
                         }
-                        None => {
+                        (MarketContractEventKind::Delivery, None, Some(amount)) => {
+                            if after {
+                                increments.insert(increments.partition_point(|&(at, _)| at < rank), (rank, amount));
+                                held.witnessed = Some(held.witnessed.unwrap_or(0).saturating_add(amount));
+                            }
+                        }
+                        _ => {
                             if held.refused.is_none_or(|(at, _)| rank > at) {
-                                held.refused = Some((rank, child.reason.unwrap_or(NO_TOTAL)));
+                                held.refused = Some((rank, child.reason.unwrap_or(NO_AMOUNT)));
                             }
                         }
                     }
@@ -408,8 +423,8 @@ impl Measures {
         at.checked_sub(1).map(|at| (self.refused_all[at].1, self.refused_all[at].2))
     }
 
-    fn designs_by(&self, read: usize) -> impl Iterator<Item = &Design> {
-        self.designs.iter().filter(move |design| (design.first as usize) < read)
+    fn designs_by(&self, read: usize) -> &[Design] {
+        &self.designs[..self.designs.partition_point(|design| (design.first as usize) < read)]
     }
 }
 
@@ -503,6 +518,13 @@ enum Line {
 struct Opening {
     expanded: BTreeSet<u32>,
     full: BTreeSet<u32>,
+    from: Option<i32>,
+    to: Option<i32>,
+}
+
+struct Lines {
+    index: Index<Line>,
+    read: HashMap<u32, Box<[i32]>>,
 }
 
 type TermsKey = (i32, u32, u64, u8);
@@ -512,8 +534,8 @@ struct Ledger {
     by_key: HashMap<u128, u32>,
     unread: Unread,
     untold: Vec<(i32, [u32; 2])>,
-    closed: Arc<Index<Line>>,
-    opened: Mutex<Option<(Opening, Arc<Index<Line>>)>>,
+    closed: Arc<Lines>,
+    opened: Mutex<Option<(Opening, Arc<Lines>)>>,
     terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
 }
 
@@ -524,10 +546,10 @@ impl Ledger {
         };
         let expanded = find(&params.expanded);
         let full = find(&params.full).intersection(&expanded).copied().collect();
-        Opening { expanded, full }
+        Opening { expanded, full, from: params.from, to: params.to }
     }
 
-    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Index<Line>>> {
+    fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Lines>> {
         if opening.expanded.is_empty() {
             return Ok(Arc::clone(&self.closed));
         }
@@ -553,8 +575,10 @@ fn following(states: &[(i32, u8)], from: i32, hidden: Option<i32>) -> Box<[(i32,
     out.into_boxed_slice()
 }
 
-fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Index<Line>> {
+fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Lines> {
     let opened: usize = opening.expanded.iter().map(|&at| contracts[at as usize].contract.children.len() + 1).sum();
+    let bounds = opening.from.unwrap_or(i32::MIN)..=opening.to.unwrap_or(i32::MAX);
+    let mut read = HashMap::with_capacity(opening.expanded.len());
     let mut entries = Vec::with_capacity(contracts.len() + opened);
     let mut push = |payload: Line, placed: &Placed, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
         entries.push(Occurrence {
@@ -578,7 +602,8 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
         }
         let children = &placed.contract.children;
         let full = opening.full.contains(&at);
-        let mut ranked: Vec<u32> = (0..children.len() as u32).collect();
+        let within: Vec<u32> = (0..children.len() as u32).filter(|&place| bounds.contains(&children[place as usize].hour)).collect();
+        let mut ranked = within.clone();
         ranked.sort_unstable_by_key(|&place| Reverse(children[place as usize].rank()));
         let mut newer: BinaryHeap<i32> = BinaryHeap::with_capacity(CHILDREN_SHOWN + 1);
         for place in ranked {
@@ -595,11 +620,12 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
             }
             push(Line::Event(at, place), placed, EVENT, child.observed, following(&placed.states, child.observed, hidden));
         }
-        if let Some(first) = children.get(CHILDREN_SHOWN) {
+        if let Some(first) = within.get(CHILDREN_SHOWN).map(|&place| &children[place as usize]) {
             push(Line::More(at), placed, MORE, first.observed, following(&placed.states, first.observed, None));
         }
+        read.insert(at, within.iter().map(|&place| children[place as usize].observed).collect());
     }
-    Index::new(entries, gaps, &LIVE)
+    Ok(Lines { index: Index::new(entries, gaps, &LIVE)?, read })
 }
 
 #[derive(Default)]
@@ -702,7 +728,10 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
     let mut made: Vec<(Contract, u32, u128)> = Vec::new();
     let mut open: Opened = HashMap::new();
     let mut incarnations: HashMap<(Option<i64>, u64, bool), u32> = HashMap::new();
+    let mut removed: HashMap<(Option<i64>, u64), (usize, u32, u64)> = HashMap::new();
+    let run_of = |hour: i32| query.timeline.at(hour).map(|stretch| stretch.run);
     for (observed, key, kind, hour, cells) in rows {
+        let occurrence = number(&cells, columns.occurrence).map(|occurrence| occurrence as u64);
         let mode = number(&cells, columns.mode);
         if kind == 34 && mode.is_some_and(|mode| mode != 20) {
             continue;
@@ -741,12 +770,16 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
                     None => begin(&mut made, &mut open, &mut incarnations, fresh(request), key),
                 };
                 made[at].0.ended = Some((hour, observed));
+                if let (false, Some(run), Some(occurrence)) = (request, run_of(observed), occurrence) {
+                    removed.insert((seller, agreement), (at, run, occurrence));
+                }
                 (at, if request { MarketContractEventKind::RequestEnded } else { MarketContractEventKind::ContractEnded })
             }
             _ => {
-                let at = match still_open(&open, &made, (seller, agreement, false)) {
-                    Some(at) => at,
-                    None => begin(&mut made, &mut open, &mut incarnations, fresh(false), key),
+                let ending = removed.get(&(seller, agreement)).filter(|&&(_, run, ending)| run_of(observed) == Some(run) && occurrence.is_some_and(|occurrence| occurrence <= ending));
+                let at = match (ending, still_open(&open, &made, (seller, agreement, false))) {
+                    (Some(&(at, ..)), _) | (None, Some(at)) => at,
+                    (None, None) => begin(&mut made, &mut open, &mut incarnations, fresh(false), key),
                 };
                 let child_kind = match kind {
                     20 => MarketContractEventKind::Delivery,
@@ -788,8 +821,8 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
     for (contract, incarnation, first_key) in made {
         let Some(first) = contract.children.first() else { continue };
         let (date, observed) = (first.hour, first.observed);
-        let opening = [slot(contract.seller, observed), slot(contract.buyer, observed)];
-        let text = opening.iter().flatten().filter_map(|&slot| tags.slot_tag(slot, observed)).collect::<Vec<_>>().join(" ");
+        let opening = [slot(contract.seller, date), slot(contract.buyer, date)];
+        let text = opening.iter().flatten().filter_map(|&slot| tags.slot_tag(slot, date)).collect::<Vec<_>>().join(" ");
         let later = contract.buyer_later.map(|(raw, seen)| Role { slot: slot(Some(raw), seen), at: seen });
         let roles: Box<[Role]> = opening.into_iter().map(|slot| Role { slot, at: date }).chain(later).collect();
         let party = |raw: Option<i64>, hour: i32| resolve_party(query, &links, &tags, raw, hour);
@@ -801,8 +834,8 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             states: states(&contract, &unread),
             text: text.into_boxed_str(),
             measures: Measures::of(&contract.children),
-            seller: party(contract.seller, observed),
-            buyer: party(contract.buyer, observed),
+            seller: party(contract.seller, date),
+            buyer: party(contract.buyer, date),
             buyer_later: contract.buyer_later.map(|(raw, seen)| (seen, party(Some(raw), seen))),
             contract,
         });
@@ -949,7 +982,7 @@ const UNNAMED: &str = "The recording does not name this design at the ledger's r
 
 struct Prepared {
     ledger: Arc<Ledger>,
-    index: Arc<Index<Line>>,
+    lines: Arc<Lines>,
     selection: Option<Selection>,
     context: Arc<names::Context>,
     namings: Arc<BTreeMap<u32, Arc<names::Naming>>>,
@@ -973,8 +1006,8 @@ fn prepare(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, 
     let ledger = ledger(source, query, branch, cancelled)?;
     let opening = ledger.opening(params);
     let full = opening.full.clone();
-    let index = ledger.index(opening, cancelled)?;
-    Ok(Prepared { ledger, index, selection, context: Arc::new(context), namings: Arc::new(namings), full })
+    let lines = ledger.index(opening, cancelled)?;
+    Ok(Prepared { ledger, lines, selection, context: Arc::new(context), namings: Arc::new(namings), full })
 }
 
 type NameOf<'a> = &'a dyn Fn(i32, u64) -> (Option<String>, Option<String>, Option<String>);
@@ -989,21 +1022,21 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
     let found = contract.seller.and_then(|raw| u32::try_from(raw).ok()).zip(contract.agreement).and_then(|(seller, agreement)| terms.get(&(at, seller, agreement, u8::from(!contract.request))));
     let terms_missing = found.is_none().then(|| "The contract's terms were not recorded at its start".to_owned());
     let refused_all = measures.refused_all_by(read);
-    let designs: HashMap<u64, Delivered> = measures.designs_by(read).map(|design| (design.variant, design.by(read))).collect();
+    let designs: HashMap<u64, Delivered> = measures.designs_by(read).iter().map(|design| (design.variant, design.by(read))).collect();
     let contracted: HashMap<u64, i64> = found.map(|terms| terms.equipment.iter().copied().collect()).unwrap_or_default();
     let mut order: Vec<u64> = found.map(|terms| terms.equipment.iter().map(|&(variant, _)| variant).collect()).unwrap_or_default();
-    order.extend(measures.designs_by(read).map(|design| design.variant).filter(|variant| !contracted.contains_key(variant)));
-    let items = order
+    order.extend(measures.designs_by(read).iter().map(|design| design.variant).filter(|variant| !contracted.contains_key(variant)));
+    let items: Vec<MarketContractItem> = order
         .iter()
         .map(|&variant| {
             let (name, icon, name_missing) = name_of(at, variant);
             let held = designs.get(&variant).copied().unwrap_or_default();
             let refusal = held.refused.into_iter().chain(refused_all).max_by_key(|&(rank, _)| rank);
             let (delivered, unavailable) = match held.certified {
-                Some((total, rank)) => (Some(total), refusal.filter(|&(refused, _)| refused > rank).map(|(_, why)| why.to_owned()).or_else(|| ledger.unread.within(rank.0.saturating_add(1), hour, ended))),
+                Some((total, rank)) => (Some(total.saturating_add(held.witnessed.unwrap_or(0))), refusal.filter(|&(refused, _)| refused > rank).map(|(_, why)| why.to_owned()).or_else(|| ledger.unread.within(rank.0.saturating_add(1), hour, ended))),
                 None => {
                     let why = refusal.map(|(_, why)| why.to_owned()).or_else(|| uncovered.clone());
-                    (why.is_none().then_some(0), why)
+                    (held.witnessed.or_else(|| why.is_none().then_some(0)), why)
                 }
             };
             MarketContractItem {
@@ -1029,6 +1062,7 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
                 .collect()
         })
         .unwrap_or_default();
+    let settled = found.is_some() && items.iter().all(|item| item.delivery_unavailable.is_none());
     let unrecorded = measures.paid_unrecorded.is_some_and(|place| (place as usize) < read).then(|| "A payment's amount was not recorded".to_owned());
     let ((seller, seller_not_recorded), (buyer, buyer_not_recorded)) = (placed.seller.clone(), placed.buyer_at(hour).clone());
     MarketContractRow {
@@ -1048,7 +1082,7 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
         buyer,
         buyer_not_recorded,
         items,
-        delivery_missing: refused_all.map(|(_, why)| why.to_owned()).or_else(|| uncovered.clone()),
+        delivery_missing: refused_all.map(|(_, why)| why.to_owned()).or_else(|| uncovered.clone()).filter(|_| !settled),
         paid_raw: measures.paid_by(read).map(|paid| paid.to_string()),
         paid_missing: uncovered.or(unrecorded),
         quotes,
@@ -1059,7 +1093,7 @@ fn contract_row(ledger: &Ledger, shown: &Shown, placed: &Placed, hour: i32, term
 
 fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<MarketLedgerTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let (ledger, index) = (&prepared.ledger, &prepared.index);
+    let (ledger, index) = (&prepared.ledger, &prepared.lines.index);
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let states: Vec<u8> = match &params.statuses {
         Some(statuses) => statuses.iter().map(|status| status.code()).collect(),
@@ -1115,7 +1149,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
                 if let (Some(seller), Some(agreement)) = (contract.seller.and_then(|raw| u32::try_from(raw).ok()), contract.agreement) {
                     terms_wanted.entry((run, placed.observed)).or_default().push((seller, agreement, u8::from(!contract.request)));
                 }
-                variants_wanted.entry((run, placed.observed)).or_default().extend(placed.measures.designs_by(read).map(|design| design.variant));
+                variants_wanted.entry((run, placed.observed)).or_default().extend(placed.measures.designs_by(read).iter().map(|design| design.variant));
             }
             Line::Event(_, place) => {
                 let child = &contract.children[place as usize];
@@ -1172,7 +1206,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             }
             Line::More(at) => {
                 let placed = &ledger.contracts[at as usize];
-                let total = placed.contract.read_by(hour);
+                let total = prepared.lines.read.get(&at).map_or(0, |read| read.partition_point(|&observed| observed <= hour));
                 let hidden = if prepared.full.contains(&at) { 0 } else { total.saturating_sub(CHILDREN_SHOWN) };
                 MarketLedgerLine::More(MarketEventsMore { key: format!("more:{}", placed.key), hour: placed.date, contract: placed.key.to_string(), total: total.to_string(), hidden: hidden.to_string() })
             }

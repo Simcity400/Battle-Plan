@@ -3438,7 +3438,7 @@ export type MarketContractStatus = "requested" | "active" | "ended" | "notRecord
 export type MarketContractEventKind = "requestPosted" | "contractStarted" | "contractEnded" | "requestEnded" | "delivery" | "payment" | "deliveryUnavailable";
 export type MarketContractItem = { variant: string, name: string | null, nameMissing: string | null, icon: string | null,
 /**
- * The latest certified cumulative delivery read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded.
+ * The latest certified cumulative delivery plus the deliveries witnessed after it, read by the hour asked; with `deliveryUnavailable` only a lower bound, null when none was recorded.
  */
 deliveredRaw: string | null, contractedRaw: string | null, deliveryUnavailable: string | null, };
 export type MarketQuote = { variant: string, name: string | null, nameMissing: string | null,

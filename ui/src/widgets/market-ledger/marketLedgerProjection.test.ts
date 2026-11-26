@@ -62,6 +62,10 @@ test('a collapsed contract is a closed group that counts its events, and opening
   assert.deepEqual(opened.slice(1).map(row => [row.key, row.pageParent]), [['ev:3', 'group:18'], ['ev:2', 'group:18']]);
   assert.equal(opened[1]!.cells.status.value.kind === 'known' ? opened[1]!.cells.status.value.value : null, 'Paid', 'an event line is labelled from its own parties');
   assert.deepEqual(closed[0]!.cells, opened[0]!.cells, 'opening a contract changes none of its row');
+  const withdrawn = project([{ line: 'contract', ...contract, request: true, status: 'requestEnded' }, { line: 'event', key: '4', contract: '18', seller: 'GER', buyer: 'FRA', hour: 109, kind: 'requestEnded', variant: null, equipment: null, equipmentMissing: null, amountRaw: null, amountNotRecorded: false, reason: null }], ['group:18']).rows[1]!;
+  const statusText = withdrawn.cells.status.value.kind === 'known' ? withdrawn.cells.status.value.value : null;
+  const itemText = withdrawn.cells.item.value.kind === 'known' ? withdrawn.cells.item.value.value : null;
+  assert.deepEqual([withdrawn.name, itemText, statusText, withdrawn.muted], ['Request ended', 'Request ended', 'Request ended', true], 'a request removal is named as one, never as a contract ending');
 });
 
 test('the line after a capped contract offers the rest, and toggles back once every event is listed', () => {

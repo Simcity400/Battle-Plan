@@ -44,6 +44,13 @@ const CONTRACT_STATUS_TEXT: Record<MarketContractStatus, { readonly label: strin
   notRecorded: { label: 'Not recorded', mark: 'ended', muted: true },
 };
 
+const LIFECYCLE_TEXT: Record<'requestPosted' | 'contractStarted' | 'contractEnded' | 'requestEnded', { readonly label: string; readonly mark: 'running' | 'waiting' | 'ended'; readonly muted?: boolean }> = {
+  requestPosted: { label: 'Request posted', mark: 'waiting' },
+  contractStarted: { label: 'Contract started', mark: 'running' },
+  contractEnded: { label: 'Contract ended', mark: 'ended', muted: true },
+  requestEnded: { label: 'Request ended', mark: 'ended', muted: true },
+};
+
 function formatUnits(raw: string): string {
   const n = BigInt(raw);
   return formatFixed5Amount(n < 0n ? -n : n);
@@ -238,26 +245,21 @@ function buildChildEventRow(event: MarketContractEvent, perspective: string | nu
       },
     };
   }
-  const lifecycleLabel = event.kind === 'contractStarted'
-    ? 'Contract started'
-    : event.kind === 'requestPosted'
-      ? 'Request posted'
-      : 'Contract ended';
-  const mark = event.kind === 'contractStarted' ? 'running' : event.kind === 'requestPosted' ? 'waiting' : 'ended';
+  const lifecycle = LIFECYCLE_TEXT[event.kind];
   return {
     key: `ev:${event.key}`,
-    name: lifecycleLabel,
+    name: lifecycle.label,
     rowHour: event.hour,
     ...parent,
-    muted: event.kind === 'contractEnded',
+    muted: lifecycle.muted === true,
     cells: {
       date: baseDate,
       kind: blank,
       country: blank,
-      item: { value: knownValue(lifecycleLabel) },
+      item: { value: knownValue(lifecycle.label) },
       delivered: blank,
       paid: blank,
-      status: logStatusCell(lifecycleLabel, mark, event.kind === 'contractEnded' ? 'muted' : undefined),
+      status: logStatusCell(lifecycle.label, lifecycle.mark, lifecycle.muted ? 'muted' : undefined),
       action: blank,
     },
   };

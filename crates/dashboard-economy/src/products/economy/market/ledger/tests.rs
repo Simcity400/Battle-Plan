@@ -123,7 +123,7 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
                 TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow { id: 6, equipment_token: 1, display_name: b"Brasswick Rifle Set".to_vec(), ..Default::default() }]));
             let events = match hour {
                 100 => vec![event(1, hour, 11, MarketEventRow::default())],
-                104 => vec![delivered(3, hour, 6, 250_000, 250_000)],
+                104 => vec![event(3, hour, 20, MarketEventRow { variant: 6, amount_raw: 250_000, ..Default::default() })],
                 _ => Vec::new(),
             };
             *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
@@ -137,6 +137,11 @@ fn a_contract_is_one_row_with_its_measures_at_the_hour_and_quotes_labelled_per_v
     bare_prepared.namings = Arc::new(namings(&bare, &bare_query).unwrap());
     let unopened = load_tail_at(&bare_prepared, &bare_query, &ask(105), 105, &AtomicBool::new(false)).unwrap();
     assert_eq!(contracts(&unopened)[0].items[0].name.as_deref(), Some("Brasswick Rifle Set"), "a design the contract only received is named at the contract's start, whatever else is on the page or opened");
+    assert_eq!(
+        (contracts(&unopened)[0].items[0].delivered_raw.as_deref(), contracts(&unopened)[0].items[0].delivery_unavailable.as_deref()),
+        (Some("250000"), None),
+        "a delivery with no cumulative total counts its own amount, in full when every hour since the start was read"
+    );
     assert_eq!(mid.next_change, Some(106), "the next payment is the next change");
     let done = load_tail_at(&prepared, &query, &ask(110), 110, &AtomicBool::new(false)).unwrap();
     let finished = contracts(&done)[0];
@@ -214,6 +219,11 @@ fn a_removal_ends_only_the_kind_it_records_and_an_isolated_one_makes_no_contract
                 106 => vec![event(5, hour, 12, MarketEventRow::default())],
                 107 => vec![event(6, hour, 12, MarketEventRow { flags: 2, ..Default::default() })],
                 108 => vec![MarketEventRow { agreement: 0x13, ..event(7, hour, 12, MarketEventRow { flags: 1, ..Default::default() }) }],
+                109 => vec![
+                    MarketEventRow { agreement: 0x14, ..event(8, hour, 11, MarketEventRow::default()) },
+                    MarketEventRow { agreement: 0x14, ..event(9, hour, 12, MarketEventRow { flags: 1, ..Default::default() }) },
+                    MarketEventRow { agreement: 0x14, occurrence: 9, ..event(10, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }) },
+                ],
                 _ => Vec::new(),
             };
             *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
@@ -249,6 +259,13 @@ fn a_removal_ends_only_the_kind_it_records_and_an_isolated_one_makes_no_contract
         (false, MarketContractStatus::Ended, false, None, Some(START_UNSEEN)),
         "a contract removal with no open contract is a contract whose start and payments were not recorded"
     );
+    let refused = load(&src, &ask(110));
+    let terminal: Vec<_> = contracts(&refused).into_iter().filter(|row| row.hour == 109).map(|row| (row.status, row.live, row.events_total.clone(), row.delivery_missing.clone())).collect();
+    assert_eq!(
+        terminal,
+        [(MarketContractStatus::Ended, false, "3".into(), Some("Delivery amount unavailable: purchase manifest not acquired before removal".into()))],
+        "a refusal published after its removal, from the removal's own occurrence, belongs to the ended contract and starts no other"
+    );
 }
 
 #[test]
@@ -264,14 +281,25 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
                     101 => vec![
                         MarketEventRow { agreement: 0x13, ..event(4, hour, 21, MarketEventRow { amount_raw: 2_000, ..Default::default() }) },
                         MarketEventRow { agreement: 0x13, ..delivered(5, hour, 6, 3_000, 9_000) },
+                        MarketEventRow { agreement: 0x13, ..event(8, hour, 20, MarketEventRow { variant: 7, amount_raw: 4_000, ..Default::default() }) },
                     ],
                     102 => vec![event(2, hour, 34, MarketEventRow { mode: 20, ordinal: 4, ..Default::default() }), event(3, hour, 21, MarketEventRow { amount_raw: 5_000, ..Default::default() })],
                     107 => vec![event(6, 104, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
-                    109 => vec![event(7, hour, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() })],
+                    109 => vec![event(7, hour, 21, MarketEventRow { amount_raw: 1_000, ..Default::default() }), delivered(9, hour, 6, 900_000, 900_000)],
                     _ => Vec::new(),
                 };
                 TableView::Complete(TableRows::MarketEvents(events))
             };
+            if hour == 100 {
+                *frame.tables[TableId::MarketContractTerms.index()] = TableView::Complete(TableRows::MarketContractTerms(vec![MarketContractTermsRow {
+                    country: 9001,
+                    buyer: 44,
+                    id: 0x12,
+                    kind: 1,
+                    equipment: MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 2_000_000 }] }.into(),
+                    ..Default::default()
+                }]));
+            }
             frame
         })
         .collect();
@@ -280,8 +308,12 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
     let before_gap = load(&src, &ask(104));
     let row = witnessed(&before_gap);
     assert_eq!((row.status, row.paid_raw.as_deref(), row.paid_missing.as_deref()), (MarketContractStatus::Active, Some("5000"), None));
-    assert!(row.items.is_empty());
-    assert_eq!(row.delivery_missing.as_deref(), Some("Delivery amount unavailable: purchase manifest not acquired before removal"), "a refusal naming no design stands for the whole contract, never \"no deliveries\"");
+    let refusal = "Delivery amount unavailable: purchase manifest not acquired before removal";
+    assert_eq!(
+        row.items.iter().map(|item| (item.variant.as_str(), item.delivered_raw.as_deref(), item.delivery_unavailable.as_deref())).collect::<Vec<_>>(),
+        [("6", None, Some(refusal))]
+    );
+    assert_eq!(row.delivery_missing.as_deref(), Some(refusal), "a refusal naming no design stands for the whole contract, never \"no deliveries\"");
     let unseen = contracts(&before_gap).into_iter().find(|row| !row.exact).unwrap();
     assert_eq!(
         (unseen.hour, unseen.started_hour, unseen.paid_raw.as_deref(), unseen.paid_missing.as_deref()),
@@ -292,6 +324,11 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
         (unseen.items[0].delivered_raw.as_deref(), unseen.items[0].delivery_unavailable.as_deref(), unseen.delivery_missing.as_deref()),
         (Some("9000"), None, Some(START_UNSEEN)),
         "a delivery's certified cumulative total is the design's whole delivery, even when the start was not recorded"
+    );
+    assert_eq!(
+        (unseen.items[1].delivered_raw.as_deref(), unseen.items[1].delivery_unavailable.as_deref()),
+        (Some("4000"), Some(START_UNSEEN)),
+        "a delivery with no cumulative total, seen after an unrecorded start, is at least its own amount"
     );
     let inside = witnessed(&load(&src, &ask(105)));
     assert_eq!(inside.status, MarketContractStatus::NotRecorded, "an unread stretch with no recorded end leaves the status unknown");
@@ -306,6 +343,11 @@ fn a_contract_wide_refusal_and_an_unread_stretch_withhold_the_measures_with_thei
     let after_gap = load(&src, &ask(110));
     let row = witnessed(&after_gap);
     assert_eq!((row.status, row.paid_raw.as_deref()), (MarketContractStatus::Active, Some("7000")), "a payment dated after the unread stretch shows the contract alive, and the payments stay a lower bound");
+    assert_eq!(
+        (row.items[0].delivered_raw.as_deref(), row.items[0].contracted_raw.as_deref(), row.items[0].delivery_unavailable.as_deref(), row.delivery_missing.as_deref()),
+        (Some("900000"), Some("2000000"), None, None),
+        "a certified total after the stretch and the refusal covers the only design of the terms, so the contract's deliveries are known"
+    );
     assert!(row.paid_missing.as_deref().is_some_and(|reason| reason.contains("not recorded from 105 to 106")), "{:?}", row.paid_missing);
     let unseen = contracts(&after_gap).into_iter().find(|row| !row.exact).unwrap();
     assert_eq!(unseen.items[0].delivered_raw.as_deref(), Some("9000"));
@@ -371,13 +413,41 @@ fn an_opened_contract_pages_its_events_after_it_and_lists_the_newest_until_asked
     assert!(matches!(every.rows.last(), Some(MarketLedgerLine::More(more)) if more.hidden == "0"));
     let page = load(&src, &MarketLedgerTailParams { offset: Some("35".into()), limit: 4, ..all });
     assert_eq!(events(&page).iter().map(|ev| ev.hour).collect::<Vec<_>>(), [106, 105, 104, 103], "an opened contract's events page like any other line");
+    let bounded = load(&src, &MarketLedgerTailParams { to: Some(135), ..opened.clone() });
+    assert_eq!(
+        (events(&bounded).first().map(|ev| ev.hour), events(&bounded).last().map(|ev| ev.hour), bounded.rows.last()),
+        (Some(135), Some(104), Some(&MarketLedgerLine::More(MarketEventsMore { key: format!("more:{key}"), hour: 100, contract: key.clone(), total: "37".into(), hidden: "5".into() }))),
+        "the asked range bounds each event by its own hour before the newest are listed and the rest counted"
+    );
     let early = load(&src, &MarketLedgerTailParams { hour: Some(120), ..opened });
     assert_eq!((early.total.as_str(), early.rows.iter().any(|line| matches!(line, MarketLedgerLine::More(_)))), ("22", false), "the cap counts only the events read by the hour asked");
     stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 64, "expanded": [key] }), &[120, 131, 132, 133, 140, 141, 136]);
 }
 
 #[test]
-fn a_buyer_first_recorded_later_is_a_party_only_from_then() {
+fn a_party_is_named_at_the_contracts_date_and_a_buyer_first_recorded_later_only_from_then() {
+    let relinked: Vec<_> = (100..=104)
+        .map(|hour| {
+            let mut frame = ownership_frame(1, hour, 9001);
+            if hour > 100
+                && let TableView::Complete(TableRows::CountryLinks(rows)) = &mut *frame.tables[TableId::CountryLinks.index()]
+            {
+                rows.iter_mut().filter(|row| row.id == 9001).for_each(|row| row.canonical_slot = 10);
+            }
+            let events = if hour == 102 { vec![event(1, 100, 11, MarketEventRow::default())] } else { Vec::new() };
+            *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+            frame
+        })
+        .collect();
+    let moved = opened("mkt-relinked", relinked);
+    let picked = |tag: &str| load(&moved, &MarketLedgerTailParams { countries: Some(vec![Country::Tag(tag.into())]), ..ask(103) }).total;
+    let searched = |text: &str| load(&moved, &MarketLedgerTailParams { search: Some(text.into()), ..ask(103) }).total;
+    assert_eq!(contracts(&load(&moved, &ask(103)))[0].seller.as_deref(), Some("GER"), "the seller is named as it was at the acceptance, not at the later read");
+    assert_eq!(
+        (picked("GER"), picked("MOD"), searched("GER"), searched("MOD")),
+        ("1".to_owned(), "0".to_owned(), "1".to_owned(), "0".to_owned()),
+        "selection and search see the seller of the acceptance's own hour"
+    );
     let src = opened(
         "mkt-buyer",
         frames(100..=106, |hour| match hour {
