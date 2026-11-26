@@ -436,12 +436,13 @@ fn elections_follow_only_schedule_and_eligibility_changes_on_the_selected_branch
             if (120..123).contains(&hour) {
                 *frame.tables[TableId::Politics.index()] = TableView::Unavailable { reason: "damaged election schedule".into() };
             } else if (125..129).contains(&hour) {
-                *frame.tables[TableId::Politics.index()] = TableView::Truncated { rows: TableRows::Politics(vec![politics.remove(1)]), missing: 1 };
+                *frame.tables[TableId::Politics.index()] = TableView::Truncated { rows: TableRows::Politics(vec![politics.remove(0)]), missing: 1 };
             } else {
                 set(&mut frame, TableId::Politics, TableRows::Politics(politics));
             }
             let mut counters = frame.complete::<replay_data::rows::tables::CountryCounterInputs>().unwrap().to_vec();
             if counters[0].owned_state_count > 0 { counters[0].owned_state_count += hour; }
+            if matches!(hour, 125 | 126 | 128) { counters[0].owned_state_count = 1; }
             set(&mut frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(counters));
             frame
         }).collect();

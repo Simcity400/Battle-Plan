@@ -101,12 +101,18 @@ impl AtHour for NextElections {
         vec![TableId::Politics, TableId::CountryCounterInputs]
     }
 
-    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
+        if step == 1 {
+            let politics = &held.tables[TableId::Politics.index()];
+            let witnessed = matches!(politics.held(), TableView::Complete(_))
+                || (politics.keys() != &Keys::All && matches!(politics.held(), TableView::Truncated { .. }));
+            return witnessed.then(|| Read { table: TableId::CountryCounterInputs, keys: politics.keys().clone() }).into_iter().collect();
+        }
         if step != 0 {
             return Vec::new();
         }
         match asked(params, at.context, at.hour) {
-            Ok(Ok(None)) => vec![Read::all(TableId::Politics), Read::all(TableId::CountryCounterInputs)],
+            Ok(Ok(None)) => vec![Read::all(TableId::Politics)],
             Err(_) | Ok(Err(_)) => Vec::new(),
             Ok(Ok(Some(countries))) => {
                 let keys: Vec<u128> = countries
@@ -116,7 +122,7 @@ impl AtHour for NextElections {
                         _ => None,
                     })
                     .collect();
-                vec![Read::these(TableId::Politics, keys.clone()), Read::these(TableId::CountryCounterInputs, keys)]
+                vec![Read::these(TableId::Politics, keys)]
             }
         }
     }
@@ -135,11 +141,13 @@ impl AtHour for NextElections {
     }
 
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, frame: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
-        let through = if stage == 0 { at.context.valid_through(params.group.as_ref(), at.hour).min(before(at.holders.next_change(at.hour))) } else { i32::MAX };
+        let through = if stage <= 1 { at.context.valid_through(params.group.as_ref(), at.hour).min(before(at.holders.next_change(at.hour))) } else { i32::MAX };
         (Self::reads_in(params, owner, stage, frame, at), through)
     }
 
-    fn plan_changes(_: usize, _: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool { false }
+    fn plan_changes(stage: usize, edits: &Edits, _: &DecodedFrame, _: &ReadsAt<'_, Self::Context>) -> bool {
+        stage == 1 && edits.replaced.contains(&TableId::Politics)
+    }
 
     fn compares_previous(table: TableId) -> bool { matches!(table, TableId::Politics | TableId::CountryCounterInputs) }
 
