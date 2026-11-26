@@ -150,3 +150,107 @@ fn a_chosen_country_whose_holder_is_not_known_at_the_hour_is_kept_as_not_recorde
     assert_eq!(rows.len(), 1, "the chosen country is kept");
     assert_eq!((rows[0].slot, rows[0].total, rows[0].missing.as_deref()), (None, None, Some("Who holds GER is not known: Countries was not complete at these hours")));
 }
+
+mod unlinked_slot {
+    use super::*;
+    use crate::products::army::ArmyAt;
+    use dashboard_base::{
+        products::at_hour::{AtHour, Read, exact_panel, frame},
+        test_fixtures::{CAMPAIGN, ownership_frame, records},
+    };
+    use dashboard_query::identity::TAG_UNLINKED;
+    use replay::campaign::Replay;
+    use replay_data::rows::{AirWingRow, ShipRow, TableRows, TaskForceRow, WingEquipmentRow, tables};
+    use replay_frame::frame::TableView;
+    use serde_json::{Value, json};
+    use std::sync::atomic::AtomicBool;
+
+    fn recording() -> Source {
+        let frames = (100..=102).map(|hour| {
+            let mut frame = ownership_frame(1, hour, 11);
+            if hour == 101 {
+                let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+                links.retain(|link| link.id != 9001);
+            }
+            *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![
+                AirWingRow { id: 1, owner: 11, planes: if hour == 101 { -1 } else { hour - 90 }, ..Default::default() },
+                AirWingRow { id: 2, owner: 44, planes: 0, ..Default::default() },
+            ]));
+            *frame.tables[TableId::WingEquipment.index()] = TableView::Complete(TableRows::WingEquipment(vec![WingEquipmentRow { wing: 2, variant: 5, ..Default::default() }]));
+            *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![ShipRow { id: 1, task_force: 2, strength: 41, ..Default::default() }]));
+            *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(vec![TaskForceRow { id: 2, roster_owner: 11, logical_owner: 11, ..Default::default() }]));
+            *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(Vec::new()));
+            *frame.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(Vec::new()));
+            frame
+        }).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        Source::from_replay(dashboard_base::SourceKey { source_id: "forces".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    }
+
+    #[test]
+    fn selection_keeps_the_row_between_known_counts() {
+        let src = recording();
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        for (hour, count) in [(100, Some(10)), (101, None), (102, Some(12))] {
+            let frame = frame(&query, hour, &[Read::all(TableId::AirForceTotals)], "planes").unwrap();
+            let rows = at_hour::select_explicit::<tables::AirForceTotals>(
+                &frame, &[Country::Slot(7), Country::Slot(8)], |row| at_hour::recorded_value(row.roster_planes), |_| None, None, &query.holders, hour, "planes",
+            );
+            let chosen = rows.iter().find(|row| row.country == Country::Slot(7)).expect("the chosen slot keeps its row");
+            assert_eq!(chosen.total, count);
+            if hour == 101 {
+                assert!(chosen.missing.as_deref().unwrap().contains(TAG_UNLINKED));
+            } else {
+                assert_eq!(chosen.missing, None);
+            }
+            let linked = rows.iter().find(|row| row.country == Country::Slot(8)).unwrap();
+            assert_eq!((linked.total, linked.missing.as_deref()), (Some(0), None));
+        }
+    }
+
+    fn gap_row<P: AtHour>(mut params: Value) -> (Value, Vec<Value>)
+    where P::Params: Sync, P::Context: Sync {
+        params["branchId"] = json!("1");
+        params["countries"] = json!([7, 8, 77]);
+        let panel = exact_panel::<P>(&recording(), &LoadContext { content: None }, &params).unwrap();
+        let reply = (panel.exact().unwrap().cold)(101, &AtomicBool::new(false)).unwrap();
+        let rows = reply["rows"].as_array().unwrap();
+        let linked = rows.iter().find(|row| row["country"] == 8).unwrap();
+        assert_eq!(linked["total"], 0);
+        assert_eq!(linked["missing"], Value::Null);
+        let row = rows.iter().find(|row| row["country"] == 7).expect("the reply keeps the chosen slot");
+        assert_eq!(row["slot"], Value::Null);
+        assert_eq!(row["tag"], "7");
+        let absent = rows.iter().find(|row| row["country"] == 77).unwrap();
+        assert_eq!(absent["total"], Value::Null);
+        assert!(absent["missing"].as_str().unwrap().contains(TAG_UNLINKED));
+        assert!(absent["values"].as_array().unwrap().iter().all(Value::is_null));
+        (row.clone(), reply["warnings"].as_array().unwrap().clone())
+    }
+
+    #[test]
+    fn air_force_keeps_the_missing_plane_count() {
+        let (row, _) = gap_row::<AirForceAt>(json!({ "measure": "planes", "ownership": "roster" }));
+        assert_eq!(row["total"], Value::Null);
+        assert_eq!(row["missing"], format!("Who holds 7 is not known: {TAG_UNLINKED}. No total was recorded for air planes at this hour"));
+        assert_eq!(row["values"], json!([null, 0]));
+    }
+
+    #[test]
+    fn navy_keeps_witnessed_hull_strength_and_class() {
+        let (row, warnings) = gap_row::<NavyAt>(json!({ "measure": "strength", "ownership": "roster", "grouping": "class" }));
+        assert_eq!(row["total"], 41);
+        assert_eq!(row["missing"], Value::Null);
+        assert!(warnings.contains(&json!(format!("Who holds 7 is not known: {TAG_UNLINKED}"))));
+        assert_eq!(row["values"], json!([41]));
+        assert_eq!(row["referenceTotal"], Value::Null);
+    }
+
+    #[test]
+    fn army_keeps_a_recorded_zero() {
+        let (row, warnings) = gap_row::<ArmyAt>(json!({ "countFor": "owner" }));
+        assert_eq!(row["total"], 0);
+        assert_eq!(row["missing"], Value::Null);
+        assert!(warnings.contains(&json!(format!("Who holds 7 is not known: {TAG_UNLINKED}"))));
+    }
+}
