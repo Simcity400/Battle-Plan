@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient } from '../../dashboard/client';
-import { readPlanExact } from '../../families/broker.ts';
+import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { FrozenGate } from '../../families/sources.ts';
@@ -108,6 +108,15 @@ describe('world-tension projections', () => {
     const stack = worldTensionProjection.project(view(data), { ...opts, layers: 1, values: 'share', showMarkers: false });
     const items = stack.hoverDetail!.items.filter(item => !['World tension', 'Uncapped sum'].includes(item.label));
     assert.deepEqual(items.map(item => [item.label, item.value]), [['German Reich', '20%'], ['Other (1)', '30%']]);
+    const ctx = {
+      track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
+      branch: { id: '1', firstHour: H1936, lastHour: H1941, gaps: [] },
+      countries: { all: false, tags: ['GER'], top: null }, options: { values: 'share' },
+      widget: { countries: { kind: 'group', group: { type: 'humans' }, membership: 'hour' } },
+    } as unknown as FamilyPlanContext;
+    const plan = worldTensionDeclaration.sources(ctx, { width: 800, height: 300, following: false, staticSpan: null });
+    const [ask] = hoverAsks(plan, at, name => stack.drawnKeys?.[name]);
+    assert.deepEqual(ask?.request.params, { branchId: '1', values: 'share', group: { type: 'humans', membership: 'hour' }, countries: [1], hour: at });
     for (const detail of [data, { ...data, contributions: [] }]) {
       const lines = worldTensionLinesProjection.project(view(detail), {
         ...opts, membership: { GER: [[at + 1, H1941]] },
