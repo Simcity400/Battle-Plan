@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer, type ServerResponse } from 'node:http';
@@ -16,7 +17,7 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
     const socket = new WebSocket(endpoint);
     const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); socket.close(); };
     const abort = () => { cleanup(); reject(signal!.reason); };
-    const timeout = setTimeout(() => { cleanup(); reject(new Error(`${method} timed out`)); }, 30_000);
+    const timeout = signal ? undefined : setTimeout(() => { cleanup(); reject(new Error(`${method} timed out`)); }, 30_000);
     signal?.addEventListener('abort', abort, { once: true });
     socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method, params })));
     socket.addEventListener('message', event => {
@@ -25,6 +26,38 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
       if (message.error) reject(new Error(JSON.stringify(message.error))); else done(message.result);
     });
     socket.addEventListener('error', () => { cleanup(); reject(new Error(`${method} connection failed`)); });
+  });
+}
+
+function navigate(endpoint: string, url: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  return new Promise<void>((done, reject) => {
+    const socket = new WebSocket(endpoint);
+    const methods = ['Page.enable', 'Page.setLifecycleEventsEnabled', 'Page.navigate'];
+    const loaded = new Set<string>();
+    let loader: string | undefined;
+    const finish = (error?: unknown) => { signal.removeEventListener('abort', abort); socket.close(); if (error) reject(error); else done(); };
+    const abort = () => finish(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify({ id: 1, method: methods[0] }));
+      socket.send(JSON.stringify({ id: 2, method: methods[1], params: { enabled: true } }));
+      socket.send(JSON.stringify({ id: 3, method: methods[2], params: { url } }));
+    });
+    socket.addEventListener('message', event => {
+      const message = JSON.parse(String(event.data));
+      if (message.error) finish(new Error(`${methods[message.id - 1]}: ${JSON.stringify(message.error)}`));
+      else if (message.id === 3 && message.result.errorText) finish(new Error(`Page.navigate to ${url}: ${message.result.errorText}`));
+      else if (message.id === 3) {
+        loader = message.result.loaderId;
+        if (loader !== undefined && loaded.has(loader)) finish();
+      } else if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') {
+        loaded.add(message.params.loaderId);
+        if (message.params.loaderId === loader) finish();
+      }
+    });
+    socket.addEventListener('error', () => finish(new Error('Page.navigate connection failed')));
+    socket.addEventListener('close', () => finish(new Error('Page.navigate connection closed before the page loaded')));
   });
 }
 
@@ -60,6 +93,7 @@ export interface NativePage {
 }
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const PAGE_LOAD_MS = 180_000;
 const TYPES: Readonly<Record<string, string>> = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.webp': 'image/webp', '.wasm': 'application/wasm', '.woff2': 'font/woff2' };
 const builds = new Map<string, Promise<string>>();
@@ -146,22 +180,23 @@ export async function withNativePage(name: string, fixture: string, run: (page: 
     const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
     const targets = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
     const target = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
+    const guard = new AsyncLocalStorage<AbortSignal>();
     const evaluate = async <T = any,>(expression: string): Promise<T> => {
-      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, guard.getStore());
       assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
       return result.result.value as T;
     };
-    await cdp(target, 'Page.navigate', { url: `http://127.0.0.1:${address.port}${route}` });
-    await browserStage(browser, `${name} page navigation`, async signal => {
-      while (await evaluate('location.pathname') !== route) await pause(50, undefined, { signal });
-    });
-    await evaluate(`import(${JSON.stringify(served.fixture)}).then(() => true)`);
-    const press = async (key: NativeKey, shift = false) => {
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 });
-      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 });
-    };
     const owned = browser;
-    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(owned, label, work, timeout);
+    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) =>
+      browserStage(owned, label, signal => guard.run(signal, () => work(signal)), timeout);
+    await stage(`${name} page load`, async signal => {
+      await navigate(target, `http://127.0.0.1:${address.port}${route}`, signal);
+      await evaluate(`import(${JSON.stringify(served.fixture)}).then(() => true)`);
+    }, PAGE_LOAD_MS);
+    const press = async (key: NativeKey, shift = false) => {
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 }, guard.getStore());
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 }, guard.getStore());
+    };
     await run({ evaluate, press, page: target, stage });
   } finally {
     try {
