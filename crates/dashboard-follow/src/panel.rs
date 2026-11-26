@@ -55,9 +55,6 @@ pub trait Panel: Send {
     fn exact(&self) -> Option<&AtHour> { None }
     fn tables(&self) -> &[TableId];
     fn data(&mut self, frame: &DecodedFrame) -> PanelData;
-    fn unchanged(&mut self, _frame: &DecodedFrame) -> bool {
-        false
-    }
     fn live(&self) -> Option<&Live> {
         None
     }

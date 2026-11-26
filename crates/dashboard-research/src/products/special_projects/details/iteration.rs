@@ -292,7 +292,7 @@ impl AtHour for SpecialProjectIterationAt {
     const TITLE: &'static str = "Special project iteration";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
-    const REPLY_DATES_REQUEST_HOUR: bool = true;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectIterationParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project, ordinal, read: Read];
     type Reply = SpecialProjectIteration;

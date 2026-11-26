@@ -265,7 +265,6 @@ pub struct Context {
     replay: Arc<Replay>,
     index: Arc<Index>,
     visibility: visibility::Cache,
-    scoped_details: std::sync::atomic::AtomicBool,
     coverage: std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
     links: Links,
 }
@@ -279,7 +278,6 @@ fn context(source: &Source, load: &LoadContext) -> Context {
         replay: source.replay(),
         index: dashboard_base::queries::index(source),
         visibility: visibility::Cache::default(),
-        scoped_details: false.into(),
         coverage: Default::default(),
         links: Default::default(),
     }
@@ -667,7 +665,7 @@ impl AtHour for SpecialProjectDetailsAt {
     const TITLE: &'static str = "Special project details";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
-    const REPLY_DATES_REQUEST_HOUR: bool = true;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectDetailsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = SpecialProjectDetails;
@@ -804,8 +802,6 @@ impl AtHour for SpecialProjectDetailsAt {
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.programs = programs(&owners, &reads, &mut namer, &mut out.unavailable);
         out.projects = projects(&owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
-        let scoped = !namer.scoped.is_empty();
-        at.context.scoped_details.store(scoped, std::sync::atomic::Ordering::Relaxed);
         out.through = namer.through.min(through.load(Ordering::Relaxed));
         out.warnings = namer.warnings();
         Ok(out)
@@ -813,7 +809,7 @@ impl AtHour for SpecialProjectDetailsAt {
 }
 
 fn reread(frame: &DecodedFrame, params: &SpecialProjectDetailsParams, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, data: &mut impl std::ops::DerefMut<Target = serde_json::Value>) -> io::Result<bool> {
-    if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
+    if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) { return Ok(false); }
     let Some(holder) = at.owner else { return Ok(false) };
     let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
     let reads = Reads { through: None, query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
@@ -1324,9 +1320,10 @@ fn effects(
                 return Err("Unknown program reference type".to_owned());
             }
             let id = (project.program_reference >> 32) as u32;
-            watched.push(TableRead::fields(TableId::RaidFacilities, &["province"]).row(u128::from(id)));
+            watched.push(TableRead::fields(TableId::RaidFacilities, &["id"]));
             let facility =
                 frame.complete::<tables::RaidFacilities>().map_err(|why| why.to_string())?.iter().find(|row| row.id == id).ok_or("raid facilities lacks the selected project program")?;
+            watched.push(TableRead::fields(TableId::RaidFacilities, &["province"]).row(facility.key()));
             watched.push(TableRead::fields(TableId::Provinces, &["state"]).row(u128::from(facility.province)));
             let provinces = frame.complete::<tables::Provinces>().map_err(|why| why.to_string())?;
             let state = provinces.iter().find(|row| row.id == facility.province).ok_or("Provinces lacks the facility province")?.state;
@@ -1346,7 +1343,7 @@ impl AtHour for SpecialProjectEffectsAt {
     const TITLE: &'static str = "Special project effects";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
-    const REPLY_DATES_REQUEST_HOUR: bool = true;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = SpecialProjectEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, owner, project];
     type Reply = SpecialProjectEffects;

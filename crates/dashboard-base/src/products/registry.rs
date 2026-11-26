@@ -68,7 +68,7 @@ pub enum PanelKind {
     Interval,
     DayThroughHour,
     LogTail,
-    WholeFrame { every_frame: bool },
+    WholeFrame,
 }
 
 #[derive(Clone, Copy)]

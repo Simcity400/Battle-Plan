@@ -164,9 +164,8 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
         "wargoals", "world-tension",
     ];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
-        matches!(reader.kind, PanelKind::WholeFrame { every_frame: true } | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
+        matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
     }).collect();
-    assert!(READERS.values().all(|reader| reader.kind != PanelKind::WholeFrame { every_frame: false }));
     let conditional: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
         PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
         _ => None,

@@ -68,7 +68,7 @@ impl AtHour for TechnologyEffectsAt {
     const TITLE: &'static str = "Technology effects";
     const CONTENT_DEPENDENT: bool = true;
     const CLOCK: Clock = Clock::Boundaries;
-    const REPLY_DATES_REQUEST_HOUR: bool = true;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(dashboard_base::products::at_hour::at_hour);
     type Params = TechnologyEffectsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, token, databaseIndex];
     type Reply = TechnologyEffects;

@@ -495,7 +495,7 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
 
 #[test]
 fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predecessors_project_values() {
-    use replay_data::rows::{CountryCounterInputRow, CountryRow, ProjectVariable, ProjectVariableStore};
+    use replay_data::rows::{CountryCounterInputRow, CountryRow, ProjectVariable, ProjectVariableStore, ProvinceRow, RaidFacilityRow};
     dashboard_core::test_fixtures::game::enter();
     const REPLACED: i32 = 35;
     const BEFORE: i32 = 30;
@@ -515,7 +515,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         ),
         (
             "common/special_projects/projects/test.txt",
-            "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward} project_output={country_effects={if={limit={ALT={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}}}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
+            "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward} project_output={country_effects={if={limit={ALT={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}} facility_state_effects={add_manpower=5}}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
         ),
         ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"$VAL|1$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_RESEARCH_OUTPUT:0 \"Project output\"\n"),
     ] {
@@ -533,11 +533,14 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         let replaced = hour >= REPLACED;
         let variables = ProjectVariableStore { seed: 1, entries: vec![ProjectVariable { name: b"mod_value".to_vec(), value_raw: if replaced { 200_000 } else { 100_000 } }] };
         let runtime = Recorded::Value(ProjectRuntime { variables: Some(variables.into()), ..Default::default() });
-        let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, program_reference: 1, started: 1, ..Default::default() };
+        let mut project = ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, program_reference: (9 << 32) | u64::from(PROGRAM_REFERENCE), started: 1, ..Default::default() };
         project.state.current_offset = 0x18;
         project.state.not_completed = 1;
         let rival = ProjectRow { owner: RIVAL_OWNER, local_id: 1, definition_id: 79, completed: 1, ..Default::default() };
         set(&mut frame, TableId::Projects, TableRows::Projects(vec![project, rival]));
+        let facility = RaidFacilityRow { country: 9001, ordinal: 2, id: 9, province: 7, ..Default::default() };
+        set(&mut frame, TableId::RaidFacilities, TableRows::RaidFacilities(if hour == 45 { Vec::new() } else { vec![facility] }));
+        set(&mut frame, TableId::Provinces, TableRows::Provinces(vec![ProvinceRow { id: 7, state: 1, ..Default::default() }]));
         let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
         countries[0].tag = b"HOM".to_vec();
         countries.insert(0, CountryRow { id: OTHER_OWNER, canonical_slot: 8, tag: b"ALT".to_vec(), ..Default::default() });
@@ -602,7 +605,8 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         materialized["hour"] = step.hour.into();
         assert_eq!(materialized, (reader.cold)(step.hour, &false.into()).unwrap(), "effects at {}", step.hour);
         assert_eq!(materialized["output"]["runs"].to_string().contains("4.0"), !(48..50).contains(&step.hour), "{materialized}");
-        if step.hour > LISTED + 2 { assert_eq!(step.product_calls, u64::from(matches!(step.hour, 48 | 50)), "effects at {}", step.hour); }
+        assert_eq!(materialized["output"]["refusals"].to_string().contains("raid facilities lacks the selected project program"), step.hour == 45, "facility at {}", step.hour);
+        if step.hour > LISTED + 2 { assert_eq!(step.product_calls, u64::from(matches!(step.hour, 45 | 46 | 48 | 50)), "effects at {}", step.hour); }
     }
     for hour in [48, LISTED + 2] {
         assert_eq!(*(reader.advance)(hour, true, &false.into(), None).value, (reader.cold)(hour, &false.into()));

@@ -412,8 +412,8 @@ fn current_values<P: AtHour>(state: &mut Stream, input: &mut Input<'_>) -> io::R
             let live = state.extra.values(&state.live, &mut state.frame);
             if let Ok(Value::Object(data)) = Arc::make_mut(&mut state.data) { data.insert("live".into(), live); }
         }
-        if P::REPLY_DATES_REQUEST_HOUR && let Ok(data) = Arc::make_mut(&mut state.data) {
-            at_hour(data, input.hour);
+        if let Some(date) = P::DATE_HELD_REPLY && let Ok(data) = Arc::make_mut(&mut state.data) {
+            date(data, input.hour);
         }
         state.values_at = Some(input.hour);
     }

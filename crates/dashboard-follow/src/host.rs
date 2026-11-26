@@ -541,26 +541,24 @@ fn evaluate(id: u32, shown: &mut Shown, stamp: (i32, u32, u32, u32), version: u6
     let mut updates = Vec::new();
     let data;
     if !shown.frame.as_ref().is_some_and(|last| Arc::ptr_eq(last, &frame)) {
-        if shown.data.is_none() || !shown.panel.unchanged(&frame) {
-            let made = catch_unwind(AssertUnwindSafe(|| shown.panel.data(&frame)))
-                .unwrap_or_else(|p| Err(format!("This panel could not be made at hour {} ({})", frame.hour, panicked(&*p))));
-            let (mut bound, host) = {
-                let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
-                if !current() || reads.seek != seek { return; }
-                (reads.cells.remove(&id).unwrap_or_default(), reads.host.clone())
-            };
-            data = with_cells(&frame, &made, shown.panel.live(), &mut bound, host.as_ref(), shown.class);
+        let made = catch_unwind(AssertUnwindSafe(|| shown.panel.data(&frame)))
+            .unwrap_or_else(|p| Err(format!("This panel could not be made at hour {} ({})", frame.hour, panicked(&*p))));
+        let (mut bound, host) = {
             let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
-            if !current() || reads.seek != seek {
-                drop(reads);
-                release(&mut bound, host.as_ref());
-                return;
-            }
-            if !bound.is_empty() { reads.cells.insert(id, bound); }
-            updates.push(Update::Data(id, frame.hour, &data));
-            shown.data = Some(made);
-            shown.pushed = Some(frame.hour);
+            if !current() || reads.seek != seek { return; }
+            (reads.cells.remove(&id).unwrap_or_default(), reads.host.clone())
+        };
+        data = with_cells(&frame, &made, shown.panel.live(), &mut bound, host.as_ref(), shown.class);
+        let mut reads = active.lock().unwrap_or_else(PoisonError::into_inner);
+        if !current() || reads.seek != seek {
+            drop(reads);
+            release(&mut bound, host.as_ref());
+            return;
         }
+        if !bound.is_empty() { reads.cells.insert(id, bound); }
+        updates.push(Update::Data(id, frame.hour, &data));
+        shown.data = Some(made);
+        shown.pushed = Some(frame.hour);
         shown.frame = Some(frame);
     }
     if shown.pushed.is_some_and(|last| through > last) {

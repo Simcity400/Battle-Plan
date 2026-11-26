@@ -147,8 +147,7 @@ pub trait AtHour: 'static {
 
     const CLOCK: Clock;
 
-    const REPLY_NAMES_NO_HOUR: bool = false;
-    const REPLY_DATES_REQUEST_HOUR: bool = false;
+    const DATE_HELD_REPLY: Option<fn(&mut Value, i32)> = None;
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
         i32::MAX
@@ -590,7 +589,6 @@ struct Followed<P: AtHour> {
     context: P::Context,
     content_warnings: Vec<String>,
     live: Option<Live>,
-    answered: Option<(Option<Owner>, Vec<replay_frame::frame::SharedView>)>,
     executable: Option<engine_executable::executable_tables::Tables>,
     product: PhantomData<fn() -> P>,
 }
@@ -600,16 +598,7 @@ impl<P: AtHour> Panel for Followed<P> {
         &self.tables
     }
 
-    fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
-        let Some((owner, views)) = &self.answered else { return false };
-        skips_unchanged::<P>()
-            && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
-            && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
-    }
-
     fn data(&mut self, frame: &DecodedFrame) -> PanelData {
-        self.answered = None;
-        let held = holder::<P>(&self.holders, &self.params, frame.hour).ok();
         let cancelled = AtomicBool::new(false);
         let mut own = OwnRefusals::default();
         let cells = Cells::default();
@@ -623,11 +612,7 @@ impl<P: AtHour> Panel for Followed<P> {
         let mut reply = made.map_err(|error| error.to_string())?;
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
-        let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
-        if skips_unchanged::<P>() && let Some(owner) = held {
-            self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
-        }
-        Ok(data)
+        serde_json::to_value(&reply).map_err(|error| error.to_string())
     }
 
     fn live(&self) -> Option<&Live> {
@@ -645,7 +630,7 @@ pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
     let context = P::context_for(source, load, &params).map_err(|error| error.to_string())?;
-    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, answered: None, executable: source.tables(), product: PhantomData }))
+    Ok(Box::new(Followed::<P> { tables: P::tables(&params), params, holders, context, content_warnings: content_warnings::<P>(source, load), live: None, executable: source.tables(), product: PhantomData }))
 }
 
 #[cfg(any(test, feature = "export-types"))]
@@ -659,13 +644,9 @@ where
     out
 }
 
-const fn skips_unchanged<P: AtHour>() -> bool {
-    P::REPLY_NAMES_NO_HOUR && matches!(P::CLOCK, Clock::InputsOnly)
-}
-
 pub const fn whole_frame<P: AtHour>() -> PanelReader {
     PanelReader {
-        kind: PanelKind::WholeFrame { every_frame: !skips_unchanged::<P>() },
+        kind: PanelKind::WholeFrame,
         open: |source, load, asked| frame_panel::<P>(source, load, asked),
     }
 }

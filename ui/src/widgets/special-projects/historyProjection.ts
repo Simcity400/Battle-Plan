@@ -54,7 +54,7 @@ function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: numb
   for (const span of reply.available) {
     if (span.firstHour > hour) break;
     if (span.firstHour > cursor + 1) gaps.push({ firstHour: cursor + 1, lastHour: span.firstHour - 1 });
-    cursor = Math.max(cursor, Math.min(span.lastHour, hour));
+    cursor = Math.max(cursor, span.lastHour);
   }
   if (cursor < hour) gaps.push({ firstHour: cursor + 1, lastHour: hour });
   return mergeSpans(clipSpansToHour([...gaps, ...reply.partial, ...reply.unresolved], hour));
