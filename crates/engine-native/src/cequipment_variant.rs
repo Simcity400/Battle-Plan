@@ -778,19 +778,23 @@ impl WitnessSites {
             .token_names
             .get_or_insert_with(|| cpdx_lexer::TokenNames::witnessed(memory, base).ok())
             .ok_or("variant stat organisation bonus names unreadable")?;
-        let text = names.text(memory, token)?;
-        let mut name = [0_u8; 32];
-        let lane = match name.get_mut(..text.len()) {
-            Some(name) => {
-                text.copy(memory, name)?;
-                STAT_LANES.iter().position(|lane| lane.name.as_bytes() == name)
-            }
-            None => None,
-        };
-        if let Err(reason) = cpdx_lexer::unchanged(memory, base, witness) {
+        let read: Result<Option<usize>, &'static str> = (|| {
+            let text = names.text(memory, token)?;
+            let mut name = [0_u8; 32];
+            Ok(match name.get_mut(..text.len()) {
+                Some(name) => {
+                    text.copy(memory, name)?;
+                    STAT_LANES.iter().position(|lane| lane.name.as_bytes() == name)
+                }
+                None => None,
+            })
+        })();
+        let unchanged = cpdx_lexer::unchanged(memory, base, witness);
+        if read.is_err() || unchanged.is_err() {
             self.token_names = None;
-            return Err(reason);
         }
+        unchanged?;
+        let lane = read?;
         engine_allocation::reserve(&mut self.token_lanes, 1).map_err(|_| "variant stat allocation failed")?;
         self.token_lanes.push((token, lane));
         Ok(lane)

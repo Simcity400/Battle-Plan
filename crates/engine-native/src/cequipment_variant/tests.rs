@@ -1731,6 +1731,12 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
     assert_eq!(values, [None; STAT_LANE_COUNT], "a name read while the lexer moves is never trusted");
     assert!(withheld.iter().all(|(_, reason)| *reason == "lexer changed during lookup"));
 
+    let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
+    let world = World { bytes: &bytes, lexer: Some(lexer), moves: true, headers: Cell::new(0) };
+    assert_eq!(walk_stats_carried(&world, 0, &[row, row], &mut rows, &mut (), &mut witness), Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert_eq!(rows[1].values, cached.map(Some), "the next design reads the moved table afresh");
+
     let (entries_off, module_off, module_stats_off) = (0x1600, 0x1700, 0x1800);
     let module_add = engine_native_parts::cequipment_module::ADD_STATS;
     bytes[variant + MODULES + 8..variant + MODULES + 16].copy_from_slice(&((base_ptr + entries_off) as u64).to_le_bytes());
