@@ -64,7 +64,6 @@ fn recording_the_retained_months_keeps_their_values_without_growing_the_replay()
         }
     }
     let sizes = (previous.bytes().len(), retained.bytes().len());
-    eprintln!("three-hour equipment fixture: {} bytes with window replacements, {} bytes with retained months", sizes.0, sizes.1);
     assert!(sizes.1 <= sizes.0, "{sizes:?}");
 }
 

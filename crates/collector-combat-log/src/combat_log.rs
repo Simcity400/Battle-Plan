@@ -362,12 +362,15 @@ impl Captured {
     /// Caller holds hourly capture admission as the sole combat-log consumer while prune storage
     /// stays live.
     unsafe fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
-        let new_session = store.signal != Some(self.signal)
-            || store.hour.and_then(|last| last.checked_add(1)) != Some(hour);
+        let new_session =
+            store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
+        let discontinuity =
+            new_session || store.hour.and_then(|last| last.checked_add(1)) != Some(hour);
         if new_session {
             store.signal = Some(self.signal);
             store.finals.clear();
-            store.countries.clear();
+        }
+        if discontinuity {
             store.last_difference = None;
         }
         store.hour = Some(hour);
@@ -375,7 +378,7 @@ impl Captured {
         store
             .retained
             .begin(self.signal, force_full || forget || new_session);
-        if forget {
+        if forget || discontinuity {
             store.countries.clear();
         }
         if forget || force_full {
@@ -429,7 +432,7 @@ impl Captured {
             };
         }
         let selection = &self.selection;
-        let outcome = native::walk_retaining(
+        let outcome = native::walk_prepared(
             memory,
             base,
             game_state,
@@ -440,15 +443,13 @@ impl Captured {
                 }
                 let read = store.country(country)?;
                 read.visited = hour;
-                let months = if force_full || needs_all(read.last_whole, hour) {
+                let whole = force_full || needs_all(read.last_whole, hour);
+                if whole {
                     read.last_whole = hour;
-                    native::Months::All
-                } else {
-                    native::Months::Window
-                };
-                Ok(Some(native::MonthRead {
-                    months,
-                    sealed: Some(&mut read.sealed),
+                }
+                Ok(Some(native::Months::Retaining {
+                    whole,
+                    sealed: &mut read.sealed,
                 }))
             },
             &mut self.rows.rows,
@@ -788,13 +789,25 @@ mod tests {
             base: 0x1000,
             bytes,
         };
-        captured.set_signal(signal);
-        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
-        unsafe { captured.capture(&memory, 0, 0x1000, hour, force_full) };
+        capture_at(captured, &memory, 0, 0x1000, signal, hour, force_full);
         let Outcome::Rows { len } = captured.rows.outcome else {
             panic!("complete read at {hour}: {:?}", captured.rows.outcome);
         };
         captured.rows.rows[..len].to_vec()
+    }
+
+    fn capture_at(
+        captured: &mut Captured,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        signal: i64,
+        hour: i32,
+        force_full: bool,
+    ) {
+        captured.set_signal(signal);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(memory, base, game_state, hour, force_full) };
     }
 
     fn buffers() -> [Captured; 4] {
@@ -871,8 +884,9 @@ mod tests {
         let [mut a, mut b, ..] = buffers();
         crate::combat_log_prune::append_for_test(SIGNAL, &[row(29, 7)]);
         assert_eq!(capture(&mut a, &bytes, SIGNAL, 5, false), [row(29, 7)]);
-        assert_eq!(capture(&mut b, &bytes, SIGNAL, 6, true), [row(29, 7)]);
-        assert!(capture(&mut a, &bytes, SIGNAL, 9, true).is_empty());
+        assert_eq!(capture(&mut b, &bytes, SIGNAL, 9, true), [row(29, 7)]);
+        forget_reads();
+        assert_eq!(capture(&mut a, &bytes, SIGNAL, 12, false), [row(29, 7)]);
     }
 
     fn day(year: i32, day: i32) -> i32 {

@@ -107,10 +107,16 @@ impl World {
         hour: i32,
         full: bool,
     ) -> Vec<i64> {
-        captured.set_signal(signal);
         self.rows_read.set(0);
-        // SAFETY: This test owns the fixture and its thread-local capture store.
-        unsafe { captured.capture(self, self.heap.origin, self.heap.origin, hour, full) };
+        capture_at(
+            captured,
+            self,
+            self.heap.origin,
+            self.heap.origin,
+            signal,
+            hour,
+            full,
+        );
         let [TableView::Complete(rows), ..] = captured.ordinary_tables() else {
             panic!("incomplete read at {hour}: {:?}", captured.rows.outcome);
         };
@@ -208,15 +214,16 @@ fn sealed_month_identity_changes_read_the_pool_and_a_whole_audit_reports_changed
         [9, 17, 22, 23]
     );
     assert_eq!(world.rows_read.get(), 4);
-    let diff = last_sealed_month_difference().unwrap();
+    let status = serde_json::to_value(crate::history_events::refusals()).unwrap();
     assert_eq!(
-        (diff.hour, diff.country, diff.group, diff.kind, diff.date),
-        (june, 1, 3, 0, day(11, 34))
+        status["last_sealed_equipment_month_changed_on_whole_read"],
+        serde_json::json!({"hour": june, "country": 1, "group": 3, "kind": 0, "date": day(11, 34)})
     );
 }
 
 #[test]
 fn a_clock_discontinuity_reads_every_pool_on_the_first_selected_hour() {
+    let _lock = crate::combat_log_prune::test_lock();
     let mut world = World::new();
     let [mut first, mut second, ..] = buffers();
     let hour = day(11, 100);
@@ -239,7 +246,7 @@ fn a_clock_discontinuity_reads_every_pool_on_the_first_selected_hour() {
     {
         world.heap.u64(world.pools[0] + 8, 40 + i as u64);
         assert_eq!(
-            world.clock_sample(&mut first, signal, at, false)[0],
+            world.clock_sample(&mut first, signal, at, true)[0],
             40 + i as i64
         );
         assert_eq!(world.rows_read.get(), 4);
