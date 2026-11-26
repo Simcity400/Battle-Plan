@@ -1,19 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
+import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
+import { groupUnobserved } from '../../dashboard/groups.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
 import { useGate } from '../../dashboard/regionGate.ts';
+import type { BoundHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { groupSelection } from '../../families/groupSelection.ts';
-import type { EventFeedActivityReply, MissingSpan } from '../../generated/dashboard';
+import { useCountryGroups } from '../../dashboard/useCountryGroups.ts';
+import { effectiveCountryUnobserved } from '../../families/sources.ts';
+import type { EventFeedActivityReply } from '../../generated/dashboard';
+import {
+  activityCountryFilter,
+  activityDisplayedHour,
+  activityRequestPlan,
+  activityScopeKey,
+  activityStripStart,
+  buildFullActivityStrip,
+  canDisplayStrip,
+  createActivityClockTracker,
+  mergeActivityStrip,
+  stripBinCoverage,
+  stripBinHours,
+  subscribeActivityClock,
+  type StripState,
+} from './activityStrip.ts';
 import { CATEGORIES } from './definition.ts';
 import './eventFeedActivityStrip.css';
-
-const STRIP_WINDOW_HOURS = 60 * 24;
 
 export interface EventFeedActivityStripProps {
   readonly widget: WidgetBase;
@@ -24,23 +38,8 @@ export interface EventFeedActivityStripProps {
   readonly excludedKinds?: readonly string[];
   readonly from: number | null;
   readonly pinnedHour?: number | null;
-}
-
-interface StripState {
-  readonly key: string;
-  readonly firstHour: number;
-  readonly askedFrom: number;
-  readonly lastHour: number;
-  readonly binHours: number;
-  readonly binCount: number;
-  readonly series: readonly { readonly category: string; readonly counts: readonly number[] }[];
-  readonly missing: readonly MissingSpan[];
-}
-
-function stripBinHours(spanHours: number): number {
-  if (spanHours <= 72 * 24) return 24;
-  const days = Math.max(1, Math.ceil(spanHours / 24 / 60));
-  return days * 24;
+  readonly frozenHour?: number | null;
+  readonly installedHour?: number | null;
 }
 
 function stripDateLabel(hour: number): string {
@@ -58,115 +57,172 @@ export default function EventFeedActivityStrip({
   excludedKinds,
   from,
   pinnedHour,
+  frozenHour,
+  installedHour,
 }: EventFeedActivityStripProps) {
   const gate = useGate(runtime, widget);
-  const shown = usePlaybackHour(runtime.clock);
   const [strip, setStrip] = useState<StripState | null>(null);
+  const stripRef = useRef<StripState | null>(null);
+  stripRef.current = strip;
   const lastKeyRef = useRef('');
 
-  const displayedHour = useMemo(() => {
-    if (!track) return null;
-    const raw = pinnedHour != null ? pinnedHour : Math.floor(shown - track.axisOffset);
-    if (!Number.isFinite(raw)) return null;
-    if (raw < track.branch.firstHour) return null;
-    return Math.min(track.branch.lastHour, raw);
-  }, [track, pinnedHour, shown]);
+  const asked = useMemo(
+    () => CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value),
+    [categories],
+  );
 
-  const queryKey = useMemo(() => {
-    if (!track || !active || displayedHour === null || !categories.length) return null;
-    const stripFrom = Math.max(track.branch.firstHour, from ?? (displayedHour - STRIP_WINDOW_HOURS));
+  const needsGroups = widget.countries.kind === 'tags'
+    || widget.countries.kind === 'selected'
+    || widget.countries.kind === 'group';
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const groupsReady = !needsGroups || Boolean(groups.data);
+  const identities = useMemo(
+    () => (groups.data && validCountryIdentityHistories(groups.data.countryIdentities)
+      ? countryIdentityIndex(groups.data.countryIdentities)
+      : null),
+    [groups.data],
+  );
+
+  const groupGaps = useMemo(
+    () => (widget.countries.kind === 'group' && groups.data
+      ? effectiveCountryUnobserved(widget.countries, groupUnobserved(groups.data, widget.countries.group))
+      : undefined),
+    [widget.countries, groups.data],
+  );
+
+  const followClock = active && Boolean(track) && pinnedHour == null;
+  const tracker = useMemo(
+    () => createActivityClockTracker(track, from, frozenHour, groupGaps),
+    [track, from, frozenHour, groupGaps],
+  );
+  const subscribe = useCallback(
+    (changed: () => void) => subscribeActivityClock(runtime.clock, tracker, followClock, changed),
+    [runtime.clock, tracker, followClock],
+  );
+  const readClock = useCallback(
+    () => (followClock ? tracker.read(runtime.clock.getHour()) : 0),
+    [followClock, tracker, runtime.clock],
+  );
+  const shown = useSyncExternalStore(subscribe, readClock, readClock);
+
+  const displayedHour = useMemo(
+    () => activityDisplayedHour(track, pinnedHour, shown, frozenHour, installedHour, runtime.clock.getHour()),
+    [track, pinnedHour, shown, frozenHour, installedHour, runtime.clock],
+  );
+
+  const countryFilter = useMemo(
+    () => activityCountryFilter(widget.countries, track, identities),
+    [widget.countries, track, identities],
+  );
+
+  const target = useMemo(() => {
+    if (!track || !groupsReady || displayedHour === null || !asked.length || countryFilter.kind === 'empty') return null;
+    const stripFrom = activityStripStart(track.branch.firstHour, from, displayedHour);
     if (stripFrom > displayedHour) return null;
     const bound = gate.span(stripFrom, displayedHour);
     if (!bound) return null;
+    const cutoff = gate.recorded(bound.lastHour);
+    if (cutoff === null) return null;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
-    const exKey = excludedKinds?.length ? [...excludedKinds].sort().join(',') : '';
-    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries, selectedCountryKeys(widget.countries, track)]);
-  }, [track, active, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
+    const scopeKey = activityScopeKey({
+      sourceId: track.source.id,
+      revision: track.source.revision,
+      branchId: track.branch.id,
+      binHours,
+      categories: asked,
+      excludedKinds,
+      countryFilter,
+    });
+    const queryKey = JSON.stringify([scopeKey, bound.firstHour, bound.lastHour]);
+    return { bound, cutoff, binHours, scopeKey, queryKey };
+  }, [track, groupsReady, displayedHour, asked, countryFilter, from, gate, excludedKinds]);
 
   useEffect(() => {
-    if (!track || !queryKey || displayedHour === null) return;
-    if (lastKeyRef.current === queryKey) return;
-    const stripFrom = Math.max(track.branch.firstHour, from ?? (displayedHour - STRIP_WINDOW_HOURS));
-    const bound = gate.span(stripFrom, displayedHour);
-    if (!bound) return;
-    const binHours = stripBinHours(bound.lastHour - bound.firstHour);
-    const asked = CATEGORIES.filter(cat => categories.includes(cat.value)).map(cat => cat.value);
-    if (!asked.length) {
-      setStrip(null);
+    if (!track || !target) {
+      lastKeyRef.current = '';
+      if (stripRef.current !== null) setStrip(null);
       return;
     }
-    const cutoff = gate.recorded(bound.lastHour);
-    if (cutoff === null) return;
-    const group = groupSelection(widget.countries);
-    const countries = widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? selectedCountryKeys(widget.countries, track).map(countryFromKey) : null;
-    const request = productRequest({
+    if (!active) return;
+    if (lastKeyRef.current === target.queryKey) return;
+
+    const plan = activityRequestPlan(
+      stripRef.current,
+      target.scopeKey,
+      target.bound.firstHour,
+      target.bound.lastHour,
+      target.binHours,
+    );
+    if (plan.invalidatePrev) {
+      setStrip(null);
+    }
+
+    const requestSpan = plan.incremental ? gate.span(plan.requestFrom, target.bound.lastHour) : target.bound;
+    const effectivePlan = requestSpan
+      ? plan
+      : { ...plan, requestFrom: target.bound.firstHour, incremental: false };
+    const fromHour = (requestSpan ? requestSpan.firstHour : target.bound.firstHour) as BoundHour;
+    const filterParams = countryFilter.kind === 'group'
+      ? { group: countryFilter.group }
+      : countryFilter.kind === 'countries'
+        ? { countries: countryFilter.countries }
+        : {};
+    const makeRequest = (startHour: BoundHour) => productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
       product: 'event-feed-activity',
       params: {
         branchId: track.branch.id,
-        hour: cutoff,
-        from: bound.firstHour,
-        binHours,
+        hour: target.cutoff,
+        from: startHour,
+        binHours: target.binHours,
         categories: asked,
         ...(excludedKinds?.length ? { exclude: excludedKinds } : {}),
-        ...(group ? { group } : countries ? { countries } : {}),
+        ...filterParams,
       },
     });
+    const request = makeRequest(fromHour);
     const controller = new AbortController();
     runtime.client.product(request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
       const data = validateProductReply(reply, request).data as EventFeedActivityReply;
-      const binCount = Math.max(0, Math.floor((bound.lastHour - data.firstHour) / data.binHours) + 1);
-      lastKeyRef.current = queryKey;
-      setStrip({
-        key: queryKey,
-        firstHour: data.firstHour,
-        askedFrom: bound.firstHour,
-        lastHour: bound.lastHour,
-        binHours: data.binHours,
-        binCount,
-        series: data.lines.map(line => {
-          const counts = new Array<number>(binCount).fill(0);
-          for (const [at, count] of line.bins) if (at < binCount) counts[at] = count;
-          return { category: line.category, counts };
-        }),
-        missing: data.missing,
+      const merged = mergeActivityStrip(stripRef.current, data, effectivePlan);
+      if (merged !== null) {
+        lastKeyRef.current = target.queryKey;
+        setStrip(merged);
+        return;
+      }
+      const fullRequest = makeRequest(target.bound.firstHour);
+      return runtime.client.product(fullRequest, controller.signal).then(fullReply => {
+        if (controller.signal.aborted) return;
+        const fullData = validateProductReply(fullReply, fullRequest).data as EventFeedActivityReply;
+        lastKeyRef.current = target.queryKey;
+        setStrip(buildFullActivityStrip(fullData, {
+          ...effectivePlan,
+          requestFrom: target.bound.firstHour,
+          incremental: false,
+        }));
       });
     }).catch(() => {});
     return () => controller.abort();
-  }, [track, runtime.client, queryKey, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
+  }, [track, runtime.client, active, target, asked, excludedKinds, countryFilter, gate]);
 
-  if (!strip || strip.binCount === 0 || strip.key !== queryKey) return null;
+  if (!canDisplayStrip(strip, target)) return null;
 
   const totals = new Array<number>(strip.binCount).fill(0);
   for (const s of strip.series) {
     for (let i = 0; i < strip.binCount; i++) totals[i]! += s.counts[i] ?? 0;
   }
   const maxTotal = Math.max(1, ...totals);
-  const missingHours = new Array<number>(strip.binCount).fill(0);
-  const binStart = (idx: number) => Math.max(strip.firstHour + idx * strip.binHours, strip.askedFrom);
-  const binEnd = (idx: number) => Math.min(strip.firstHour + (idx + 1) * strip.binHours - 1, strip.lastHour);
-  const unread: [number, number][] = [];
-  for (const span of [...strip.missing].map(span => [Math.max(span.firstHour, strip.askedFrom), Math.min(span.lastHour, strip.lastHour)] as [number, number]).filter(([first, last]) => first <= last).sort((a, b) => a[0] - b[0])) {
-    const held = unread[unread.length - 1];
-    if (held && span[0] <= held[1] + 1) held[1] = Math.max(held[1], span[1]);
-    else unread.push(span);
-  }
-  for (const span of unread.map(([firstHour, lastHour]) => ({ firstHour, lastHour }))) {
-    const firstIdx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
-    const lastIdx = Math.max(firstIdx, Math.min(strip.binCount - 1, Math.floor((span.lastHour - strip.firstHour) / strip.binHours)));
-    for (let idx = firstIdx; idx <= lastIdx; idx++) {
-      missingHours[idx]! += Math.max(0, Math.min(span.lastHour, binEnd(idx)) - Math.max(span.firstHour, binStart(idx)) + 1);
-    }
-  }
-  const gapBins = new Set<number>();
-  const partBins = new Set<number>();
-  for (let idx = 0; idx < strip.binCount; idx++) {
-    if (missingHours[idx]! <= 0) continue;
-    if (missingHours[idx]! >= binEnd(idx) - binStart(idx) + 1) gapBins.add(idx);
-    else partBins.add(idx);
-  }
+  const { gapBins, partBins } = stripBinCoverage(
+    strip.firstHour,
+    strip.boundFirstHour,
+    strip.lastHour,
+    strip.binHours,
+    strip.binCount,
+    strip.missing,
+    groupGaps,
+  );
 
   const tickCount = Math.min(5, Math.max(2, Math.floor(strip.binCount / 10) + 1));
   const ticks: { readonly pct: number; readonly label: string; readonly first: boolean; readonly last: boolean }[] = [];
