@@ -350,6 +350,7 @@ pub struct EventFeedItem {
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedOption {
     pub ordinal: u32,
+    #[doc = " In a list row only the chosen option's name; the opened row holds every option's."]
     pub name: Option<String>,
 }
 

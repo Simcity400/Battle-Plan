@@ -458,7 +458,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         .zip(shapes)
         .map(|(shown, (head_at, choice))| {
             let occurrence = feed.index.get(shown.at);
-            let (key, row, choice) = match &occurrence.payload {
+            let (key, mut row, mut choice) = match &occurrence.payload {
                 Item::Family(row) => (row.id.clone(), Some(row.as_ref().clone()), None),
                 Item::Log { .. } => {
                     let row = presented[head_at].take();
@@ -466,6 +466,12 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                     (events[head_at].id(), row, choice)
                 }
             };
+            if !opened {
+                let chosen = choice.as_ref().and_then(|choice| choice.option).or_else(|| row.as_ref().and_then(|row| row.cause.as_ref()).and_then(|cause| cause.selected_option));
+                for item in row.as_mut().and_then(|row| row.item.as_mut()).into_iter().chain(choice.as_mut().and_then(|choice| choice.row.item.as_mut())) {
+                    chosen_names(item, chosen);
+                }
+            }
             EventFeedPageRow {
                 key,
                 hour: occurrence.date,
@@ -552,6 +558,14 @@ fn only_row(scanned: &index::Scanned, index: &Index<Item>, row: Option<&str>, an
     true
 }
 
+fn chosen_names(item: &mut super::EventFeedItem, chosen: Option<i32>) {
+    for option in item.options.iter_mut().flatten() {
+        if chosen.is_none_or(|chosen| i64::from(chosen) != i64::from(option.ordinal)) {
+            option.name = None;
+        }
+    }
+}
+
 fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
     for row in rows.iter_mut().flatten() {
         if let Some(cause) = row.cause.as_mut() {
@@ -620,12 +634,16 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         }
         let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
         if !opened_row {
+            let chosen = edges.iter().find_map(|edge| edge.option);
             let mut named = false;
             for edge in &mut edges {
                 if named {
                     edge.row.item = None;
                 }
                 named |= edge.row.item.is_some();
+                if let Some(item) = edge.row.item.as_mut() {
+                    chosen_names(item, chosen);
+                }
             }
         }
         let Item::Log { head, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
