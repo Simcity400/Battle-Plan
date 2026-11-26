@@ -2058,8 +2058,15 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   const released = replacePagers(frozenAt100(), 'expanded', [expanded]);
   assert.deepEqual(hours(pagerWindow(released, expanded, scrolled, 124).step), [100]);
   pagerWindow(released, expanded, { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
-  assert.deepEqual(hours(pagerWindow(released, expanded, scrolled, 124).step), [100], 'gaps after the head, once the replacement asked, keep the frozen hour');
+  assert.equal(pagerWindow(released, expanded, scrolled, 124).pager.hour, 100, 'gaps after the head, once the replacement asked, keep the frozen hour');
   assert.deepEqual(hours(pagerWindow(replacePagers(released, 'collapsed', [paged()]), paged(), scrolled, 124).step), [100], 'and through the next plan change');
+  const unchanged = frozenAt100();
+  pagerWindow(unchanged, paged(), { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
+  assert.equal(pagerWindow(unchanged, paged(), scrolled, 124).pager.hour, 100, 'gaps just after the head keep a frozen page frozen, with no plan change');
+  const soughtBack = replacePagers(frozenAt100(), 'sought back', [expanded]);
+  assert.deepEqual(hours(pagerWindow(soughtBack, expanded, scrolled, 90).step), [90]);
+  pagerWindow(soughtBack, expanded, { first: 64, count: 2, dataFirst: 64, dataCount: 0 }, 124);
+  assert.equal(pagerWindow(soughtBack, expanded, scrolled, 124).pager.hour, 90, 'after a plan change and a seek back, gaps after the head keep the page at 90');
   const homed = replacePagers(frozenAt100(), 'home', [expanded]);
   pagerWindow(homed, expanded, head, 124);
   assert.deepEqual(hours(pagerWindow(homed, expanded, scrolled, 130).step), [130], 'returning to the head drops the frozen hour');

@@ -477,8 +477,8 @@ export class SnapshotPager<TRow extends DatedLogRow = DatedLogRow> {
     if (displayCount === 0) return NO_STEP;
     const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
     const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
-    if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
     if (count === 0) return NO_STEP;
+    if (first + count <= this.#headLimit) return { fetch: [], cancel: this.#release() };
     if (installedHour === null || !Number.isFinite(installedHour)) return NO_STEP;
     const hour = Math.floor(installedHour);
     const cancel: number[] = [];
