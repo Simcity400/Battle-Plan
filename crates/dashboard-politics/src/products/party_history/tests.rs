@@ -42,7 +42,12 @@ fn frame(hour: i32) -> DecodedFrame {
     }
     let spelled = if hour >= 122 { &[(51, "democratic"), (52, "fascism"), (61, "TEST_LEADER_SCRIPT")][..] } else { &[(51, "democratic"), (52, "fascism")][..] };
     let words = spelled.iter().map(|&(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect();
-    set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(words));
+    if hour == 122 {
+        frame.tables[TableId::LexicalTokens.index()] = TableView::Truncated { rows: TableRows::LexicalTokens(words), missing: 1 }.into();
+        frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+    } else {
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(words));
+    }
     let change = |sequence, epoch, hour, before_ideology, after_ideology, cause| GovernmentChangeRow { country: GER, sequence, epoch, hour, before_ideology, after_ideology, cause, ..Default::default() };
     let coup = |epoch| change(1, epoch, 110, Some(51), Some(52), GovernmentCause::CoupCompletion);
     let drained = match hour {
@@ -117,8 +122,8 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person, first_hour: first, last_hour: last, starts_segment };
     assert_eq!(
         parties.leaders,
-        [leader(None, 100, 104, true), leader(Some(0), 105, 114, false), leader(Some(0), 116, 119, true), leader(Some(1), 120, 120, false), leader(Some(2), 121, 121, false), leader(Some(3), 122, LAST, false)],
-        "an unread party table does not discard the leader read beside it, a leader renamed or newly spelled is named anew from the hour it was read, and a character carried unread is unnamed"
+        [leader(None, 100, 104, true), leader(Some(0), 105, 114, false), leader(Some(0), 116, 119, true), leader(Some(1), 120, 120, false), leader(Some(2), 121, 121, false), leader(Some(1), 122, 122, false), leader(Some(3), 123, LAST, false)],
+        "an unread party table does not discard the leader read beside it, a leader renamed or newly spelled is named anew from the hour it was read, a character carried unread is unnamed, and a name spelled in a truncated lexicon is named once the lexicon is complete"
     );
     assert_eq!(
         parties.people.iter().map(|person| (person.character.id, person.character.token.as_str(), person.character.name.as_str())).collect::<Vec<_>>(),
@@ -173,16 +178,19 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
 }
 
 const NAMED: u32 = 4401;
+const OPPOSED: u32 = 4402;
 
 fn naming_frame(hour: i32) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow { id, canonical_slot, tag: tag.to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() };
     let other = if (210..214).contains(&hour) { b"BBB" } else { b"AAA" };
-    set(&mut frame, TableId::Countries, TableRows::Countries(vec![country(NAMED, 20, other), country(GER, 7, b"GER")]));
-    let links = [(11, 7), (NAMED, 20), (GER, 7)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot });
+    let opposed = if hour >= 208 { b"FFF" } else { b"EEE" };
+    set(&mut frame, TableId::Countries, TableRows::Countries(vec![country(NAMED, 20, other), country(OPPOSED, 21, opposed), country(GER, 7, b"GER")]));
+    let links = [(11, 7), (NAMED, 20), (OPPOSED, 21), (GER, 7)].map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot });
     set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(links.to_vec()));
     let party = PoliticalPartyRow { country: GER, id: 1, popularity: 10_000_000, is_ruling: 1, token: b"democratic".to_vec(), tag: if hour >= 214 { 0 } else { NAMED }, name_default: 1, ..Default::default() };
-    set(&mut frame, TableId::PoliticalParties, TableRows::PoliticalParties(vec![party]));
+    let opposition = PoliticalPartyRow { country: GER, id: 2, popularity: 0, is_ruling: 0, token: b"fascism".to_vec(), tag: OPPOSED, name_default: 1, ..Default::default() };
+    set(&mut frame, TableId::PoliticalParties, TableRows::PoliticalParties(vec![party, opposition]));
     let look = |country| CountryAppearanceRow { country, original_tag_reference: Recorded::Value(Some(0)), ..Default::default() };
     match hour {
         205 => carried(&mut frame, TableId::CountryAppearance, TableRows::CountryAppearance(vec![look(NAMED), look(GER)])),
@@ -219,6 +227,13 @@ fn a_party_named_for_another_country_follows_that_countrys_naming_and_never_brid
     let ruling_only = read(&query, &"GER".into(), super::PartyRead::Ruling, &AtomicBool::new(false)).unwrap();
     assert_eq!(ruling_only.ruling.name_runs, parties.ruling.name_runs);
     assert_eq!(ruling_only.ruling.namings, parties.ruling.namings);
+    let run = query.timeline.stretches[0].run;
+    let recording = query.replay.recording();
+    let columns = super::Columns::new(super::PartyRead::Ruling).unwrap();
+    let key = u128::from(GER);
+    let held = replay_lanes::lanes::history(recording, run, TableId::PoliticalParties, &columns.party, replay_lanes::lanes::Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF), 200, 220).unwrap();
+    let hours = super::naming_changes(recording, run, &columns, &held, (7, GER), 200, 220).unwrap().hours;
+    assert!(hours.contains(&210) && !hours.contains(&208), "only a ruling party's country names it: {hours:?}");
 }
 
 const HELD: u32 = 5501;

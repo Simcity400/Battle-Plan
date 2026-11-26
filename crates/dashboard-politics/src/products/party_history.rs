@@ -332,6 +332,17 @@ fn numbers(history: &History, column: usize) -> BTreeSet<u32> {
         .collect()
 }
 
+fn ruling_tags(history: &History, columns: &Columns) -> BTreeSet<u32> {
+    let (Ok(ruling), Ok(tag)) = (history.columns.binary_search(&columns.party[0]), history.columns.binary_search(&columns.party[2])) else { return BTreeSet::new() };
+    history
+        .keys
+        .iter()
+        .flat_map(|(_, steps)| steps.iter().filter_map(|step| step.cells.as_deref()))
+        .filter(|cells| number(cells[ruling]).is_some_and(|ruling| ruling != 0))
+        .map(|cells| number(cells[tag]).and_then(|raw| u32::try_from(raw).ok()).unwrap_or_default())
+        .collect()
+}
+
 fn steps_into(history: &History, hours: &mut Vec<i32>) {
     hours.extend(history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
 }
@@ -368,7 +379,7 @@ fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run:
     for (table, held) in NAMING.into_iter().zip(&mut reads) {
         *held = unless_withheld(complete_reads(recording, run, table, first, last))?;
     }
-    let raws: Vec<u128> = numbers(parties, columns.party[2]).into_iter().map(u128::from).collect();
+    let raws: Vec<u128> = ruling_tags(parties, columns).into_iter().map(u128::from).collect();
     if raws.is_empty() {
         return Ok(Naming { hours: Vec::new(), reads });
     }
@@ -417,6 +428,7 @@ fn character_changes(recording: &replay_recording::columnar_frames::Recording, r
     let words: Vec<u128> = numbers(&characters, columns.character[0]).into_iter().filter(|word| *word != 0).map(u128::from).collect();
     if !words.is_empty() {
         steps_into(&unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?, &mut hours);
+        read_bounds_into(&unless_withheld(complete_reads(recording, run, TableId::LexicalTokens, first, last))?, &mut hours);
     }
     let reads = unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?;
     read_bounds_into(&reads, &mut hours);

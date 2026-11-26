@@ -120,7 +120,7 @@ function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply
     items.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', partyLabel ?? 'Not recorded'].join(' · ') });
   }
   if (at >= hour) {
-    items.push({ label: 'Government changes', missingReason: 'Not read yet', tone: 'muted' });
+    items.push({ label: 'Government changes', missingReason: 'Not recorded yet', tone: 'muted' });
   } else if (within(at, history.governmentUnobserved)) {
     items.push({ label: 'Government changes', missingReason: 'Not recorded', tone: 'muted' });
   }
@@ -184,7 +184,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
       const unrecorded: ChartGap[] = [
         ...options.gaps,
         ...government,
-        { firstHour: hour, lastHour: hour, reason: 'Government changes are not read yet' },
+        { firstHour: hour, lastHour: hour, reason: 'Government changes for this hour are not recorded yet' },
       ];
       return witnessed.length
         ? { ...base, summaryText, markers: witnessed, gaps: unrecorded, warnings: [...history.warnings, message], empty: null }

@@ -1945,11 +1945,16 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     const older = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: unrecorded });
     assert.deepEqual(older.gaps, [
       { firstHour: base, lastHour: hour - 1, reason: 'Government changes were not recorded' },
-      { firstHour: hour, lastHour: hour, reason: 'Government changes are not read yet' },
+      { firstHour: hour, lastHour: hour, reason: 'Government changes for this hour are not recorded yet' },
     ], 'the playhead hour waits for the drain after it');
     const olderLayout = layoutTimeChart(older, 720, 260, FONT, measure);
     const gapTip = deriveTimeChartTooltip(older, olderLayout, `gap:${olderLayout.gaps[0]!.index}`);
     assert.ok(JSON.stringify(gapTip).includes('Government changes were not recorded'), 'a chart of markers alone says where government changes were not recorded');
+    const pending = olderLayout.gaps.find(gap => gap.gap.firstHour === hour)!;
+    const pendingKey = hitTestTimeChart(older, olderLayout, [pending.x0, 100]);
+    assert.equal(pendingKey, `gap:${pending.index}@${hour}`);
+    const pendingTip = deriveTimeChartTooltip(older, olderLayout, pendingKey)?.payload;
+    assert.deepEqual([pendingTip?.title, pendingTip?.note], ['Not recorded', 'Government changes for this hour are not recorded yet'], 'the playhead hour is not recorded yet, and says so in one voice');
 
     const failsNext = { ...history, governmentUnobserved: [{ firstHour: hour, lastHour: hour }] };
     const playheadHover = (reply: PartyHistoryReply) => {
@@ -1959,7 +1964,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       return deriveTimeChartTooltip(projected, layoutTimeChart(projected, 720, 260, FONT, measure), `plot:${hour}`)?.payload?.items;
     };
     assert.deepEqual(playheadHover(failsNext), playheadHover(history), 'whether the next drain fails is not known at the playhead');
-    assert.ok(playheadHover(history)?.some(item => item.label === 'Government changes' && item.missingReason === 'Not read yet'));
+    assert.ok(playheadHover(history)?.some(item => item.label === 'Government changes' && item.missingReason === 'Not recorded yet'));
     const markersOnly = (reply: PartyHistoryReply) => rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...reply, parties: [] } }).gaps;
     assert.deepEqual(markersOnly(failsNext), markersOnly(history), 'nor on a chart of markers alone');
 
