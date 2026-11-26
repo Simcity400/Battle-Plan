@@ -1,4 +1,5 @@
 use crate::windows;
+pub use replay_settings::recorder_settings::cache_directory;
 use std::{
     ffi::{OsStr, OsString},
     io,

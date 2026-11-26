@@ -88,7 +88,7 @@ receipt and do not repeat the workspace checks.
 .EXAMPLE
 powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt "$env:LOCALAPPDATA\BattlePlan\captures\checkpoint\build-receipt.json" -BinaryDirectory "$env:LOCALAPPDATA\BattlePlan\captures\checkpoint\bin" -ExpectedSave save.hoi4 -UiConfig "$env:LOCALAPPDATA\BattlePlan\captures\smoke_config\ui.json" -Out "$env:LOCALAPPDATA\BattlePlan\captures\smoke_new" -WaitForUiReview
 .EXAMPLE
-powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave -ExpectedSave baseline.hoi4
+powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave -ExpectedSave baseline.hoi4 -Out ./smoke-run
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Screenshot -Out "$env:LOCALAPPDATA\BattlePlan\captures\probe\menu.png"
 .EXAMPLE
@@ -739,7 +739,9 @@ function Start-SmokeTool {
         RedirectStandardError = $stderrPath
     }
     if ($joinedArgs.Length -gt 0) { $startParams.ArgumentList = $joinedArgs }
-    $process = Microsoft.PowerShell.Management\Start-Process @startParams
+    $process = Invoke-WithRecorderCache $OutputDir {
+        Microsoft.PowerShell.Management\Start-Process @startParams
+    }
     $null = $process.Handle
     $run = [pscustomobject]@{
         Process = $process
@@ -1174,14 +1176,14 @@ function Invoke-FullSmoke {
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
         $recorderRun=Launch-Tool $recorder @('record','--once','--out',$recordRoot,'--user-dir',$userPath) 'record'
-        $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory $bin -Action Launch -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
+        $launch=& $driver -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory $bin -Action Launch -Out $output -GameExe $gamePath -UserDirectory $userPath -ContinueLastSave -ExpectedSave $ExpectedSave -Foreground:$Foreground
         $game=Get-Process -Id $launch.GameId
         $null=$game.Handle
         $limit=[DateTime]::UtcNow.AddSeconds(300)
         do {
             $game.Refresh(); if ($game.HasExited) { throw 'Game exited before loading.' }
             if ($null -eq $reader) {
-                try { $reader=Open-GameClock $game.Id $recorder }
+                try { $reader=Open-GameClock $game.Id $recorder $output }
                 catch { if ($_.Exception.Message -like 'Clock reading is withheld*') { throw } }
                 if ($reader) { foreach ($withheld in Get-ClockWithheld $reader) { Write-Warning "Game clock field withheld: $withheld" } }
             }
@@ -1505,9 +1507,11 @@ if ($Action -eq 'Launch') {
                 } elseif ($null -eq $quietSince) { $quietSince = [DateTime]::UtcNow }
                 if ($null -eq $clockUnavailable -and $null -eq $reader) {
                     try {
-                        $reader = Open-GameClock $started.Id $clockRecorder
+                        $reader = Open-GameClock $started.Id $clockRecorder $Out
                         $withheld = @(Get-ClockWithheld $reader)
                         if ($withheld.Count) { $clockUnavailable = "Game clock fields withheld: $($withheld -join '; ')."; $reader.Dispose(); $reader = $null }
+                    } catch [ArgumentException] {
+                        $clockUnavailable = $_.Exception.Message
                     } catch {
                         $reader = $null
                         if ($_.Exception.Message -like 'Clock reading is withheld*') { $clockUnavailable = $_.Exception.Message }
@@ -1612,7 +1616,7 @@ if ($Action -eq 'Reload') {
             Start-Sleep -Milliseconds 250
         } while ($true)
     }
-    $reader = Open-GameClock $game.Id $clockRecorder
+    $reader = Open-GameClock $game.Id $clockRecorder $Out
     try {
         $withheld = @(Get-ClockWithheld $reader)
         if ($withheld.Count) { throw "Reload needs the paused camera and load witness, and this build withholds: $($withheld -join '; ')" }
@@ -1654,7 +1658,7 @@ if ($Action -eq 'Reload') {
 }
 if ($Action -eq 'Clock') {
     $gameBuild = Write-GameBuildWarning $gamePath
-    $reader = Open-GameClock $game.Id (Resolve-ClockRecorder $BinaryDirectory)
+    $reader = Open-GameClock $game.Id (Resolve-ClockRecorder $BinaryDirectory) $Out
     try { $reader.Sample() } finally { $reader.Dispose() }
     return
 }
@@ -1688,7 +1692,7 @@ if ($Action -eq 'Baseline') {
     $summary = $null
     $stopReason = 'duration completed'
     try {
-        $reader = Open-GameClock $game.Id $clockRecorder
+        $reader = Open-GameClock $game.Id $clockRecorder (Split-Path -Parent $capturePath)
         $processStart = $game.StartTime.ToUniversalTime().ToFileTimeUtc()
         $stream = [IO.File]::Open($capturePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $writer = [IO.StreamWriter]::new($stream, [Text.UTF8Encoding]::new($false))

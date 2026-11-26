@@ -73,7 +73,7 @@ QUICK_SESSIONS = (
     ("widget costs", "widget-costs", {}),
 )
 CACHES = ("local/BattlePlan/viewer", "local/BattlePlan/shader-cache", "local/BattlePlan/artwork", "local/Microsoft",
-          "roaming", "webview")
+          "roaming", "webview", "recorder-cache")
 KEPT = ("local/BattlePlan/captures",)
 APPS = Path(tempfile.gettempdir()) / "battleplan-e2e" / "apps"
 APP_EXE = "replay-desktop.exe"
@@ -563,6 +563,7 @@ def app_environment(profile, port, extra):
         "--disable-renderer-backgrounding --disable-background-timer-throttling")
     environment.pop("BATTLEPLAN_PERF_LOG", None)
     environment.update(extra)
+    environment["BATTLEPLAN_CACHE"] = str(profile / "recorder-cache")
     return environment
 
 

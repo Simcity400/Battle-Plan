@@ -202,7 +202,7 @@ $script:freshLaunch = $false
 function Start-SaveLaunch {
     $extra = @('-start_save=' + [string]$spec.save)
     if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }
-    & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory (Split-Path -Parent $clockRecorder) -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
+    & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -BinaryDirectory (Split-Path -Parent $clockRecorder) -Action Launch -Out $Out -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
 }
 function Connect-Game {
     $games = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
@@ -230,7 +230,7 @@ function Connect-Game {
         if (-not $ok) { Start-Sleep -Milliseconds 500 }
         if ([DateTime]::UtcNow -gt $limit) { throw 'The game window did not appear.' }
     } while (-not $ok)
-    $script:reader = Open-GameClock $script:game.Id $clockRecorder
+    $script:reader = Open-GameClock $script:game.Id $clockRecorder $Out
     $script:rect = $r
     $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
     if ($w -ne [int]$ui.width -or $h -ne [int]$ui.height) { throw "Game window is ${w}x${h}; UI calibration expects $($ui.width)x$($ui.height)." }
@@ -520,9 +520,11 @@ function Start-Candidate($candidate, [string]$runDir) {
         $arguments = @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"'))
         if ($candidate.PSObject.Properties['capture_mode']) { $arguments += @('--capture-mode', [string]$candidate.capture_mode) }
         if ($candidate.PSObject.Properties['recorder_args']) { $arguments += @($candidate.recorder_args | ForEach-Object { [string]$_ }) }
-        $process = Start-Process -FilePath $recorderExe -ArgumentList $arguments `
-            -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
+        $process = Invoke-WithRecorderCache $runDir {
+            Start-Process -FilePath $recorderExe -ArgumentList $arguments `
+                -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
+                -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
+        }
     } finally {
         $env:BATTLEPLAN_WORKER_SAMPLER = $previousSampler
     }
@@ -606,8 +608,10 @@ function Update-RecorderPeak($attached) {
 function Begin-Stop($attached, [string]$runDir) {
     if ($attached.PSObject.Properties['detach'] -and $attached.detach) { return }
     $recorderExe = Join-Path $attached.frozen 'recorder.exe'
-    $detach = Start-Process -FilePath $recorderExe -ArgumentList @('detach', '--out', ('"' + $attached.recording + '"')) -WorkingDirectory $attached.frozen -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput (Join-Path $runDir 'detach.stdout.log') -RedirectStandardError (Join-Path $runDir 'detach.stderr.log')
+    $detach = Invoke-WithRecorderCache $runDir {
+        Start-Process -FilePath $recorderExe -ArgumentList @('detach', '--out', ('"' + $attached.recording + '"')) -WorkingDirectory $attached.frozen -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $runDir 'detach.stdout.log') -RedirectStandardError (Join-Path $runDir 'detach.stderr.log')
+    }
     $null = $detach.Handle
     [void]$script:recorders.Add($detach)
     $attached | Add-Member -Force -NotePropertyName detach -NotePropertyValue $detach
@@ -718,8 +722,10 @@ function Get-ExactMetrics($attached, [string]$runDir, [int]$firstHour, [int]$las
     $failures = @()
     foreach ($branch in @(1, 2, 3)) {
         try {
-            $text = & $MetricsTool $replays[0].FullName $branch $firstHour ($lastHour - 1) 2>(Join-Path $runDir ('metrics_branch' + $branch + '.stderr.log')) | Out-String
-            if ($LASTEXITCODE -ne 0) { throw "reader exit $LASTEXITCODE (see metrics_branch$branch.stderr.log)" }
+            $text = Invoke-WithRecorderCache $runDir {
+                & $MetricsTool $replays[0].FullName $branch $firstHour ($lastHour - 1) 2>(Join-Path $runDir ('metrics_branch' + $branch + '.stderr.log')) | Out-String
+                if ($LASTEXITCODE -ne 0) { throw "reader exit $LASTEXITCODE (see metrics_branch$branch.stderr.log)" }
+            }
             $metrics = $text | ConvertFrom-Json
             if ($metrics.hours -ne $expectedFrames -or $metrics.observed_first -ne $firstHour -or
                 $metrics.observed_last -ne ($lastHour - 1) -or $metrics.callback.samples -ne $expectedFrames) {

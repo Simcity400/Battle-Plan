@@ -188,11 +188,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         user_dir: user_dir
             .map(Ok)
             .unwrap_or_else(|| crate::directories::resolve_user_directory().map_err(invalid))?,
-        cache_dir: PathBuf::from(
-            std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
-        )
-        .join("BattlePlan")
-        .join("recorder"),
+        cache_dir: crate::directories::cache_directory(),
     };
     println!(
         "Oracle: save {} / hour {hour}, session {}, branch {}",

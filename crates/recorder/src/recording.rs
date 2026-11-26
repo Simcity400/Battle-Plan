@@ -845,6 +845,7 @@ unsafe extern "system" fn console_control(kind: u32) -> i32 {
 
 struct Options {
     output: PathBuf,
+    cache: PathBuf,
     user: Option<PathBuf>,
     once: bool,
     game_score: bool,
@@ -921,7 +922,7 @@ fn usage() -> String {
     format!(
         "BattlePlan command-line recorder
 
-recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
+recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--cache-dir <directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -936,6 +937,7 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 {}
 {}
 {}
+Environment: BATTLEPLAN_CACHE names the recorder content cache. --cache-dir overrides it for a recording.
 Environment: BATTLEPLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
   Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.
 Environment: BATTLEPLAN_MAP_EVENTS (comma-separated map event family names, or none)
@@ -963,6 +965,7 @@ fn map_event_config(mut config: serde_json::Value, families: &str) -> serde_json
 fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> {
     let mut options = Options {
         output: default_capture_directory(),
+        cache: crate::directories::cache_directory(),
         user: None,
         once: false,
         game_score: true,
@@ -976,6 +979,9 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--out") => options.output = PathBuf::from(args.next().ok_or_else(usage)?),
+            Some("--cache-dir") if command == "record" => {
+                options.cache = PathBuf::from(args.next().filter(|path| !path.is_empty()).ok_or_else(usage)?);
+            }
             Some("--user-dir") if command == "record" => {
                 options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
@@ -1742,6 +1748,7 @@ fn record(options: Options) -> Result<(), String> {
 
 pub(crate) struct CaptureOptions<'a> {
     pub output: &'a Path,
+    pub cache: &'a Path,
     pub target: &'a Path,
     pub user: &'a Path,
     pub game_score: bool,
@@ -1848,6 +1855,7 @@ fn await_scan(
 fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
     CaptureOptions {
         output: &options.output,
+        cache: &options.cache,
         target: &options.output,
         user,
         game_score: options.game_score,
@@ -2014,6 +2022,7 @@ pub(crate) fn capture(
 ) -> Result<CaptureOutcome, String> {
     let CaptureOptions {
         output,
+        cache,
         target,
         user,
         game_score,
@@ -2103,11 +2112,10 @@ pub(crate) fn capture(
         .parent()
         .ok_or("game executable has no folder")?
         .to_owned();
-    let facts_cache = replay_settings::recorder_settings::directory();
     let gather_options = GatherOptions {
         game_dir,
         user_dir: user.to_owned(),
-        cache_dir: facts_cache.clone(),
+        cache_dir: cache.to_owned(),
         dlc_order: None,
     };
     println!("Verifying game, DLC and enabled mod hashes in the background...");
@@ -2152,7 +2160,7 @@ pub(crate) fn capture(
                 &content,
                 &orphan.session.identity,
                 &orphan.directory,
-                &facts_cache,
+                cache,
             );
             (
                 orphan.directory,
@@ -2207,7 +2215,7 @@ pub(crate) fn capture(
                 )
                 .map_err(|e| e.to_string())?;
             let game_facts =
-                game_facts::GameFacts::start(&content, &identity, &directory, &facts_cache);
+                game_facts::GameFacts::start(&content, &identity, &directory, cache);
             let mut frequency = 0;
             if unsafe { QueryPerformanceFrequency(&raw mut frequency) } == 0 || frequency <= 0 {
                 return Err("QueryPerformanceFrequency failed".into());
@@ -5157,7 +5165,7 @@ fn installed_content() -> Result<content_reader_layers::ResolveOptions, String> 
     Ok(content_reader_layers::ResolveOptions {
         game_dir,
         user_dir,
-        cache_dir: replay_settings::recorder_settings::directory(),
+        cache_dir: crate::directories::cache_directory(),
     })
 }
 

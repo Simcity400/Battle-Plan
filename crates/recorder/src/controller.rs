@@ -41,6 +41,7 @@ pub fn record(
 ) -> Result<CaptureOutcome, String> {
     let options = CaptureOptions {
         output: recording.output,
+        cache: &crate::directories::cache_directory(),
         target: recording.target,
         user: recording.user,
         game_score: true,

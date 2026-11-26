@@ -98,12 +98,7 @@ fn content(
             Some(directory) => directory,
             None => crate::directories::resolve_user_directory().map_err(io::Error::other)?,
         },
-        cache_dir: PathBuf::from(
-            std::env::var_os("LOCALAPPDATA")
-                .ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?,
-        )
-        .join("BattlePlan")
-        .join("recorder"),
+        cache_dir: crate::directories::cache_directory(),
     };
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let resolved = content_reader_layers::resolve(identity, &options)?.exact()?;
