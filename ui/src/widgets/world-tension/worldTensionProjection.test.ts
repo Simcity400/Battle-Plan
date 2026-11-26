@@ -395,8 +395,13 @@ describe('world-tension projections', () => {
     const hoverHour = H1936 + 5000;
     const reply: WorldTensionStackReply = {
       ...sampleStack(),
+      listingMissing: 'Fixture listing unread',
       events: [
-        { hour: hoverHour, country: 9001, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
+        ...[0, 1].map(place => ({
+          hour: hoverHour, country: 9001, slot: 1, secondCountry: 0, place, tag: 'GER', remembered: false, reason: 'Fixture event',
+          addedRaw: place === 0 ? '900000' : '100000', markerRaw: place === 0 ? '500000' : '300000',
+          firstRead: hoverHour, lastRead: null,
+        })),
       ],
     };
     const hoverReply: WorldTensionReply = {
@@ -406,7 +411,7 @@ describe('world-tension projections', () => {
       unnamed: false,
       contributions: [{ slot: 1, tag: 'GER', remembered: false, reading: { Ok: '500000' } }],
       sources: [
-        { ordinal: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', finalRaw: '500000', dailyRaw: '0', date: hoverHour },
+        { ordinal: 0, tag: 'GER', remembered: false, reason: 'Fixture event', finalRaw: '500000', dailyRaw: '0', date: hoverHour },
       ],
       missing: null,
       warnings: [],
@@ -445,14 +450,24 @@ describe('world-tension projections', () => {
       showMarkers: true,
       gaps: [],
     });
-    const evItem = model.hoverDetail?.items.find(item => item.label === 'Remilitarised the Rhineland');
+    const evItem = model.hoverDetail?.items.find(item => item.label === 'Fixture event');
     assert.equal(evItem?.value, '+5%', 'hover shows +5% recorded at hoverHour, not +9% revised later at playhead');
     const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
     const markerIndex = model.markers?.findIndex(marker => marker.hour === hoverHour) ?? -1;
     assert.ok(markerIndex >= 0, 'the event has a marker at its hour');
     const markerTip = deriveTimeChartTooltip(model, layout, `marker:${markerIndex}@${hoverHour}`);
-    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Remilitarised the Rhineland');
-    assert.equal(listed.length, 1, `the marker lists its event once: ${JSON.stringify(markerTip?.payload?.items)}`);
+    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Fixture event');
+    assert.deepEqual(listed.map(item => item.value), ['+5%', '+3%']);
+    assert.equal(model.markers![markerIndex]!.detail, '+5%');
+    const table = worldTensionEventsProjection.project(readView, { branchFirst: H1936 });
+    for (const row of table.rows) {
+      assert.deepEqual(row.cells.until?.value, { kind: 'notRecorded', reason: 'Fixture listing unread' });
+    }
+    const empty = worldTensionEventsProjection.project(createBoundedReadView({
+      hour: H1941, panels: new Map([['main', { ...reply, events: [] }]]),
+    }), { branchFirst: H1936 });
+    assert.equal(empty.emptyKind, 'unavailable');
+    assert.equal(empty.empty, 'Fixture listing unread');
   });
 
   it('S11: downsampled world-tension lines paint interval bounds, hover as ranges before exact hover, and show exact hovered-hour contributions once loaded', () => {

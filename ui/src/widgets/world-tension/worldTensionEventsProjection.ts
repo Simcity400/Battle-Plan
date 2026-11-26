@@ -23,6 +23,7 @@ interface ParsedEvents {
   readonly events: readonly TensionStackEvent[];
   readonly scale: number;
   readonly refused: string | null;
+  readonly listingMissing?: string;
   readonly nextChangeHour: number | null;
   readonly warnings: readonly string[];
 }
@@ -33,6 +34,7 @@ function parseEvents(raw: unknown): ParsedEvents {
     events: reply.events,
     scale: reply.contributionScale,
     refused: reply.refused,
+    listingMissing: reply.listingMissing,
     nextChangeHour: reply.nextChangeHour,
     warnings: reply.warnings,
   };
@@ -92,8 +94,9 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
         }
         return {
           ...spec,
-          value: row => (row.lastRead === null ? knownValue('Still listed') : knownValue(formatDateOnly(row.lastRead))),
-          sortValue: (row, _live, hour) => knownValue(row.lastRead === null ? hour + 1 : row.lastRead),
+          value: row => row.lastRead !== null ? knownValue(formatDateOnly(row.lastRead))
+            : parsed.listingMissing ? notRecorded(parsed.listingMissing) : knownValue('Still listed'),
+          sortValue: (row, _live, hour) => row.lastRead === null && parsed.listingMissing ? notRecorded(parsed.listingMissing) : knownValue(row.lastRead ?? hour + 1),
         };
       });
     },
@@ -103,6 +106,7 @@ export const worldTensionEventsProjection: TableProjection<WorldTensionEventsOpt
       }
       const shown = parsed.events.filter(ev => ev.firstRead <= hour && ev.hour <= hour);
       if (!shown.length) {
+        if (parsed.listingMissing) return { rows: [], empty: parsed.listingMissing, emptyKind: 'unavailable', warnings: parsed.warnings };
         return { rows: [], empty: `No threat event recorded by ${formatDateOnly(hour)}.`, emptyKind: 'empty', warnings: parsed.warnings };
       }
       return { rows: shown, warnings: parsed.warnings };
