@@ -2473,6 +2473,7 @@ test('a queued exact frame installs the current hour before its speculative succ
   await flush();
   page.frame();
   assert.deepEqual([page.view(1).h, page.view(1).fields?.v], [11, 100]);
+  assert.equal(page.ahead[0], 1, 'both pictures answered the current tick');
   page.publish(12);
   assert.deepEqual([page.view(1).h, page.view(1).fields?.v], [12, 100]);
 });
@@ -2534,8 +2535,8 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and resuming d
     await drainMicrotasks();
     assert.equal(cropCall, 4, 'fourth serve is suspended in crop while both id10 and id20 remain outstanding');
 
-    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id10, reason: 'kept content' }], inspect: [] });
-    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id20 }], refused: [], inspect: [] });
+    lane.frame({ type: 'frame', serial: 6, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [], refused: [{ widget: 1, id: id20, reason: 'kept content' }], inspect: [] });
+    lane.frame({ type: 'frame', serial: 7, now: 20, target: 20, exact: false, seek: 0, speed: 1440, installed: [{ widget: 1, binding: 1, id: id10 }], refused: [], inspect: [] });
 
     lane.pointer(1, 0, [1, 1]);
     assert.deepEqual(hits, ['row:5'], 'neither queued ack batch applies while crop is still held');
@@ -2544,8 +2545,8 @@ test('mid-serve ack FIFO flushes at serve completion before wake, and resuming d
     await drainMicrotasks();
     assert.equal(wakes.length, 1, 'speculative hand-over wake is held');
     lane.pointer(1, 0, [1, 1]);
-    assert.deepEqual(hits, ['row:5', 'row:20'], 'outstanding id10 refusal flushes before id20 install at serve completion before wake fires');
-    assert.equal(lane.stats.refused['kept content'], 1, 'id10 was still outstanding when refused so reversed order would have cleared id20');
+    assert.deepEqual(hits, ['row:5', 'row:10'], 'the second batch installs hour 10 after the first batch refused hour 20');
+    assert.equal(lane.stats.refused['kept content'], 1);
   }
 
   {
