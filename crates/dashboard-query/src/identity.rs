@@ -246,9 +246,13 @@ impl Holders {
         self.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last).map(|(_, _, reason)| reason.as_str())
     }
 
+    pub fn not_known(&self, country: &Country, hour: i32) -> Option<String> {
+        self.unknown_reason(hour).map(|reason| format!("Who holds {} is not known: {reason}", self.label(country, hour).unwrap_or_else(|| country.key().into_owned())))
+    }
+
     pub fn unnamed(&self, country: &Country, hour: i32) -> String {
-        if let Some(reason) = self.unknown_reason(hour) {
-            return format!("Who holds {} is not known: {reason}", country.key());
+        if let Some(reason) = self.not_known(country, hour) {
+            return reason;
         }
         if matches!(country, Country::Slot(_)) {
             let unlinked = self.unlinked();

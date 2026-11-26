@@ -128,6 +128,8 @@ fn an_hour_whose_holders_are_not_known_answers_unknown_never_no_holder() {
     assert_eq!(holders.at(&Country::Slot(5), 111).map(|run| run.holder), Some(Holder::Unresolved), "and every slot");
     assert_eq!(holders.unnamed(&Country::from("GER"), 111), format!("Who holds GER is not known: {reason}"));
     assert_eq!((holders.unknown_reason(111), holders.unknown_reason(113)), (Some(reason), None));
+    assert_eq!(holders.not_known(&Country::from("GER"), 111), Some(format!("Who holds GER is not known: {reason}")));
+    assert_eq!(holders.not_known(&Country::from("GER"), 113), None, "a known hour has no such reason");
     assert!(holders.at("GER", 125).is_none(), "outside them an hour no run holds is still no holder");
     assert_eq!(holders.at("GER", 105).map(|run| run.holder), Some(GER));
 }
