@@ -152,6 +152,7 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
         }
         visits.push(total);
     }
+    println!("slot and event edit visits: {visits:?}");
     assert!(visits.iter().all(|&count| count <= 15 * 6), "stack and event visits for fifteen entry and expiry steps: {visits:?}");
 }
 
@@ -618,6 +619,37 @@ fn downsampled_world_tension_stack_preserves_band_min_max_bounds() {
         let recorded = vals[(*hour / 10) as usize];
         assert_eq!(band.values_raw[at], Some(recorded.to_string()), "a reduced bin's figure is the one recorded at its own hour {hour}, never a later sample's");
     }
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures};
+    use replay_data::rows::{TableId, TableRows, ThreatCountryAggregateRow};
+    use replay_frame::frame::TableView;
+    use world_tension_stack::{WorldTensionStack, WorldTensionStackParams};
+
+    let frames = (10..380).map(|hour| {
+        let mut frame = test_fixtures::source(1, hour, None);
+        let rows = vec![ThreatCountryAggregateRow { country_slot: 4, total_raw: i64::from(hour) }];
+        *frame.tables[TableId::ThreatCountryAggregates.index()] = TableView::Complete(TableRows::ThreatCountryAggregates(rows));
+        frame
+    }).collect();
+    let cancelled = false.into();
+    let replay = test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(SourceKey { source_id: "rolling-tension".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), std::sync::Arc::new(replay), &cancelled).unwrap();
+    for (first, last) in [(10, 301), (11, 302), (15, 306), (89, 378), (10, 308), (10, 197)] {
+        let out = WorldTensionStack::load(&source, &WorldTensionStackParams {
+            branch_id: "1".into(), first_hour: first, last_hour: last, layers: 2, values: TensionValueMode::Recorded,
+            countries: None, top: None, group: None, width: Some(120), include_stack: Some(true), include_events: Some(false),
+        }, &LoadContext { content: None }, &cancelled).unwrap();
+        assert!(out.downsampled);
+        assert_eq!(out.hours[0], first);
+        assert_eq!(out.hours.last(), Some(&last));
+        for (index, &hour) in out.hours.iter().enumerate() {
+            let through = out.hours.get(index + 1).map_or(last, |next| next - 1);
+            assert_eq!(out.bands[0].values_raw[index], Some(hour.to_string()));
+            assert_eq!(out.bands[0].min_values[index], Some(f64::from(hour) / 100000.0));
+            assert_eq!(out.bands[0].max_values[index], Some(f64::from(through) / 100000.0));
+        }
+    }
+
 }
 
 #[test]
