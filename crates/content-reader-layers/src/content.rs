@@ -482,6 +482,20 @@ pub enum ArtFileSource {
     Missing,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArtFileRead {
+    Mounted {
+        layer: usize,
+        path: LayerPath,
+        bytes: Bytes,
+    },
+    Unmounted {
+        layer: usize,
+        reason: String,
+    },
+    Missing,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DescriptorHash {
     bytes: [u8; 32],
@@ -784,10 +798,17 @@ struct EffectiveFile {
     archive: bool,
 }
 
+struct OpenedArchive {
+    archive: physfs_zip::Archive,
+    entry: physfs_zip::Entry,
+    password: Option<Vec<u8>>,
+}
+
 struct RecordedHit {
     layer: usize,
     path: LayerPath,
     folder: Option<File>,
+    archive: Option<OpenedArchive>,
     fact: Option<u32>,
 }
 
@@ -795,7 +816,29 @@ struct ResolvedFile {
     layer: usize,
     path: LayerPath,
     folder: std::sync::Mutex<Option<File>>,
+    archive: std::sync::Mutex<Option<OpenedArchive>>,
     fact: Option<u32>,
+}
+
+impl ResolvedFile {
+    fn release_handles(&self) {
+        self.folder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        self.archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
+}
+
+struct ReleaseHandles<'a>(&'a ResolvedFile);
+
+impl Drop for ReleaseHandles<'_> {
+    fn drop(&mut self) {
+        self.0.release_handles();
+    }
 }
 
 impl From<RecordedHit> for ResolvedFile {
@@ -804,6 +847,7 @@ impl From<RecordedHit> for ResolvedFile {
             layer: hit.layer,
             path: hit.path,
             folder: std::sync::Mutex::new(hit.folder),
+            archive: std::sync::Mutex::new(hit.archive),
             fact: hit.fact,
         }
     }
@@ -1880,6 +1924,8 @@ impl ResolvedLayer {
         let Ok(text) = std::str::from_utf8(relative) else {
             return Ok(None);
         };
+        #[cfg(test)]
+        tests::FOLDER_OPENS.with(|count| count.set(count.get() + 1));
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return match self.covered_folder_entry(relative) {
@@ -2031,9 +2077,20 @@ impl ResolvedLayer {
         if self.fact_path(&entry.name) {
             return Err(fact_alias(request, &entry.name).into());
         }
+        self.read_archive_entry(&mut archive, entry, password, request, observed)
+    }
+
+    fn read_archive_entry(
+        &self,
+        archive: &mut physfs_zip::Archive,
+        entry: &physfs_zip::Entry,
+        password: Option<&[u8]>,
+        request: &[u8],
+        observed: &ReadObservation,
+    ) -> ObservedResult<Option<ReadSuccess<Vec<u8>>>> {
         let context = |error: io::Error| invalid(format!("{}: {error}", display(request)));
         if self.verifies() && self.files.contains_key(&entry.name) {
-            let record = record_digest_observed(&mut archive, entry, observed)
+            let record = record_digest_observed(archive, entry, observed)
                 .map_err(|failure| failure.context(context))?;
             let digest = match &record {
                 ReadSuccess::Untraced((digest, _, _))
@@ -2093,6 +2150,101 @@ impl ResolvedLayer {
             io_counts::layer_bytes(self, &entry.name, &bytes);
             observed.bytes((), &bytes).map(|()| bytes)
         }))
+    }
+
+    fn unchanged_archive_index(&self, path: &Path) -> Option<&physfs_zip::Index> {
+        if self.verifies() || self.archive_stamp.is_none() {
+            return None;
+        }
+        let index = self.lookup.archive.as_ref()?;
+        (Stamp::read(path).ok().as_ref() == self.archive_stamp.as_ref()).then_some(index)
+    }
+
+    fn archive_scan_entry(
+        &self,
+        request: &[u8],
+        observed: &ReadObservation,
+    ) -> ObservedResult<Option<OpenedArchive>> {
+        let LayerSource::Archive(path) = &self.source else {
+            return Err(invalid(format!("layer {} is not an archive", self.id)).into());
+        };
+        if let Some(index) = self.unchanged_archive_index(path) {
+            return match index.mounted.lookup(request) {
+                Some((entry, _)) if entry.symlink => Err(unfollowed_link(request).into()),
+                Some((entry, _)) if self.fact_path(&entry.name) => {
+                    Err(fact_alias(request, &entry.name).into())
+                }
+                Some((entry, password))
+                    if index
+                        .opening(&entry.name)
+                        .is_some_and(|opening| opening.opens(password)) =>
+                {
+                    let archive = physfs_zip::Archive::open(path)?;
+                    Ok(Some(OpenedArchive {
+                        archive,
+                        entry: entry.clone(),
+                        password: password.map(<[u8]>::to_vec),
+                    }))
+                }
+                _ => Ok(None),
+            };
+        }
+        let (mut archive, mounted) = self.verified_archive()?;
+        match mounted.lookup(request) {
+            Some((entry, _)) if entry.symlink => Err(unfollowed_link(request).into()),
+            Some((entry, _)) if self.fact_path(&entry.name) => {
+                Err(fact_alias(request, &entry.name).into())
+            }
+            Some((entry, password)) => {
+                let opening = archive.opening(entry)?;
+                if self.verifies()
+                    && self.files.contains_key(&entry.name)
+                    && self
+                        .lookup
+                        .archive
+                        .as_ref()
+                        .map(|index| index.opening(&entry.name))
+                        != Some(opening.as_ref())
+                {
+                    return Err(changed(&entry.name).into());
+                }
+                if opening.is_some_and(|opening| opening.opens(password)) {
+                    return Ok(Some(OpenedArchive {
+                        archive,
+                        entry: entry.clone(),
+                        password: password.map(<[u8]>::to_vec),
+                    }));
+                }
+                if self.verifies() && self.files.contains_key(&entry.name) {
+                    match self.read_archive_entry(&mut archive, entry, password, request, observed)?
+                    {
+                        Some(bytes) => return bytes.verified(Err(changed(request))).map(|_| None),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn archive_probe_exists(&self, request: &[u8]) -> io::Result<bool> {
+        let LayerSource::Archive(path) = &self.source else {
+            return Err(invalid(format!("layer {} is not an archive", self.id)));
+        };
+        if let Some(index) = self.unchanged_archive_index(path) {
+            return match index.mounted.lookup(request) {
+                Some((entry, _)) if entry.symlink => Err(unfollowed_link(request)),
+                Some((entry, _)) if self.fact_path(&entry.name) => {
+                    Err(fact_alias(request, &entry.name))
+                }
+                Some((entry, password)) => Ok(index
+                    .opening(&entry.name)
+                    .is_some_and(|opening| opening.opens(password))),
+                None => Ok(false),
+            };
+        }
+        self.archive_exists(request)
     }
 
     fn archive_exists(&self, request: &[u8]) -> io::Result<bool> {
@@ -3392,10 +3544,7 @@ impl ResolvedLayers {
             .resolved_file(&relative, !self.covered_path(&relative))
             .ok()?;
         let hit = hit.as_ref().as_ref()?;
-        hit.folder
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
+        hit.release_handles();
         Some(hit.layer)
     }
 
@@ -3475,10 +3624,7 @@ impl ResolvedLayers {
         };
         let hit = self.resolved_file(&path, !self.covered_path(&path))?;
         let answered = hit.as_ref().as_ref().map(|file| {
-            file.folder
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
+            file.release_handles();
             (file.layer, file.path.clone())
         });
         if let Some(unmounted) = self.unmounted_art_above(answered.as_ref().map(|(layer, _)| *layer), &path) {
@@ -3494,6 +3640,34 @@ impl ResolvedLayers {
         Ok(match answered {
             Some((layer, path)) => ArtFileSource::Mounted { layer, path },
             None => ArtFileSource::Missing,
+        })
+    }
+
+    pub fn read_art_file(&self, relative: &[u8]) -> io::Result<ArtFileRead> {
+        let Some(path) = sanitize(relative) else {
+            return Ok(ArtFileRead::Missing);
+        };
+        let hit = self.resolved_file(&path, !self.covered_path(&path))?;
+        let _release = hit.as_ref().as_ref().map(ReleaseHandles);
+        let answered = hit.as_ref().as_ref().map(|file| file.layer);
+        if let Some(unmounted) = self.unmounted_art_above(answered, &path) {
+            let reason = self.layers[unmounted]
+                .art_unmounted
+                .clone()
+                .unwrap_or_else(|| "not mounted".to_owned());
+            return Ok(ArtFileRead::Unmounted {
+                layer: unmounted,
+                reason,
+            });
+        }
+        let Some(file) = hit.as_ref().as_ref() else {
+            return Ok(ArtFileRead::Missing);
+        };
+        let bytes = self.shared_read_in(&file.path, true, Some(file))?;
+        Ok(ArtFileRead::Mounted {
+            layer: file.layer,
+            path: file.path.clone(),
+            bytes,
         })
     }
 
@@ -3531,11 +3705,12 @@ impl ResolvedLayers {
         uncovered: bool,
     ) -> io::Result<Arc<Option<ResolvedFile>>> {
         let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
-        let mut parameters = vec![u8::from(uncovered)];
+        let scan_uncovered = uncovered && !self.covered_path(&path);
+        let mut parameters = vec![u8::from(scan_uncovered)];
         parameters.extend_from_slice(&path);
         self.product("effective file resolution", 1, &parameters, |reader| {
             let mut observed = reader.observation();
-            let hit = if uncovered && !reader.covered_path(&path) {
+            let hit = if scan_uncovered {
                 if reader.recorded_fact(&path) {
                     return Err(unproven(&path, reader.coverage));
                 }
@@ -3543,11 +3718,12 @@ impl ResolvedLayers {
                     .scan_uncovered(&path, &mut observed)
                     .map_err(|failure| failure.error)?
             } else {
-                reader.lookup_path(&path)?
+                let hit = reader.lookup_path(&path)?;
+                reader
+                    .verify_passed(&path, hit.as_ref().map(|hit| hit.layer), &mut observed)
+                    .map_err(|failure| failure.error)?;
+                hit
             };
-            reader
-                .verify_passed(&path, hit.as_ref().map(|hit| hit.layer), &mut observed)
-                .map_err(|failure| failure.error)?;
             Ok(hit.map(ResolvedFile::from))
         })
     }
@@ -3565,15 +3741,6 @@ impl ResolvedLayers {
         let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
         let mut observed = self.observation();
         let result = (|| -> ObservedResult<ReadSuccess<Bytes>> {
-            struct ReleaseFolder<'a>(&'a std::sync::Mutex<Option<File>>);
-            impl Drop for ReleaseFolder<'_> {
-                fn drop(&mut self) {
-                    self.0
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .take();
-                }
-            }
             let resolved;
             let file = match file {
                 Some(file) => file,
@@ -3585,7 +3752,7 @@ impl ResolvedLayers {
                     file
                 }
             };
-            let _release = ReleaseFolder(&file.folder);
+            let _release = ReleaseHandles(file);
             observed.at(file.layer);
             let layer = &self.layers[file.layer];
             let real = layer.record_name(&file.path);
@@ -3656,10 +3823,7 @@ impl ResolvedLayers {
                 });
                 (result, reads, diagnostics)
             })?;
-            file.folder
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
+            file.release_handles();
             product.diagnostics.credit();
             let bytes = product.value::<Bytes>().map_err(|error| ReadFailure {
                 error,
@@ -3765,10 +3929,73 @@ impl ResolvedLayers {
                 }
             }
             LayerSource::Archive(path) => {
-                let archive = File::open(path)?;
-                self.generation.witnesses.record_file(path, &archive)?;
-                layer
-                    .archive_open_observed(&file.path, observed)?
+                let opened = file
+                    .archive
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let bytes = match opened {
+                    Some(mut opened) => {
+                        self.generation
+                            .witnesses
+                            .record_file(path, opened.archive.file())?;
+                        layer.read_archive_entry(
+                            &mut opened.archive,
+                            &opened.entry,
+                            opened.password.as_deref(),
+                            &file.path,
+                            observed,
+                        )?
+                    }
+                    None => {
+                        if let Some(index) = layer.unchanged_archive_index(path) {
+                            match index.mounted.lookup(&file.path) {
+                                Some((entry, _)) if entry.symlink => {
+                                    return Err(unfollowed_link(&file.path).into());
+                                }
+                                Some((entry, _)) if layer.fact_path(&entry.name) => {
+                                    return Err(fact_alias(&file.path, &entry.name).into());
+                                }
+                                Some((entry, password)) => {
+                                    let mut archive = physfs_zip::Archive::open(path)?;
+                                    self.generation
+                                        .witnesses
+                                        .record_file(path, archive.file())?;
+                                    layer.read_archive_entry(
+                                        &mut archive,
+                                        entry,
+                                        password,
+                                        &file.path,
+                                        observed,
+                                    )?
+                                }
+                                None => None,
+                            }
+                        } else {
+                            let (mut archive, mounted) = layer.verified_archive()?;
+                            self.generation
+                                .witnesses
+                                .record_file(path, archive.file())?;
+                            match mounted.lookup(&file.path) {
+                                Some((entry, _)) if entry.symlink => {
+                                    return Err(unfollowed_link(&file.path).into());
+                                }
+                                Some((entry, _)) if layer.fact_path(&entry.name) => {
+                                    return Err(fact_alias(&file.path, &entry.name).into());
+                                }
+                                Some((entry, password)) => layer.read_archive_entry(
+                                    &mut archive,
+                                    entry,
+                                    password,
+                                    &file.path,
+                                    observed,
+                                )?,
+                                None => None,
+                            }
+                        }
+                    }
+                };
+                bytes
                     .map(|bytes| bytes.map(Bytes::from))
                     .ok_or_else(|| changed(&file.path).into())
             }
@@ -4103,6 +4330,7 @@ impl ResolvedLayers {
                         layer: index,
                         path,
                         folder: None,
+                        archive: None,
                         fact: Some(file),
                     }));
                 }
@@ -4124,6 +4352,7 @@ impl ResolvedLayers {
                             layer: index,
                             path,
                             folder: Some(handle),
+                            archive: None,
                             fact: None,
                         })
                 }
@@ -4136,6 +4365,7 @@ impl ResolvedLayers {
                         layer: index,
                         path: relative.to_vec(),
                         folder: None,
+                        archive: None,
                         fact: None,
                     }),
             };
@@ -4171,6 +4401,7 @@ impl ResolvedLayers {
             if self.hides(layer, &lower) {
                 continue;
             }
+            observed.at(index);
             match &layer.source {
                 LayerSource::Folder(_) => {
                     self.watch_directory(layer, relative)?;
@@ -4179,22 +4410,23 @@ impl ResolvedLayers {
                             layer: index,
                             path,
                             folder: Some(file),
+                            archive: None,
                             fact: None,
                         }));
                     }
                 }
-                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
-                    return Ok(Some(RecordedHit {
-                        layer: index,
-                        path: relative.to_vec(),
-                        folder: None,
-                        fact: None,
-                    }));
+                LayerSource::Archive(_) => {
+                    if let Some(opened) = layer.archive_scan_entry(relative, observed)? {
+                        return Ok(Some(RecordedHit {
+                            layer: index,
+                            path: relative.to_vec(),
+                            folder: None,
+                            archive: Some(opened),
+                            fact: None,
+                        }));
+                    }
                 }
-                LayerSource::Archive(_) => {}
             }
-            observed.at(index);
-            layer.verify_miss(relative, observed)?;
             if layer
                 .replace_paths
                 .iter()
@@ -4209,10 +4441,7 @@ impl ResolvedLayers {
     pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
         let hit = self.resolved_file(relative.as_bytes(), true)?;
         if let Some(file) = hit.as_ref() {
-            file.folder
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take();
+            file.release_handles();
         }
         Ok(hit.as_ref().as_ref().is_some_and(|file| file.layer == 0))
     }
@@ -4231,15 +4460,17 @@ impl ResolvedLayers {
                             layer: index,
                             path,
                             folder: None,
+                            archive: None,
                             fact: None,
                         }));
                     }
                 }
-                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
+                LayerSource::Archive(_) if layer.archive_probe_exists(relative)? => {
                     return Ok(Some(RecordedHit {
                         layer: index,
                         path: relative.to_vec(),
                         folder: None,
+                        archive: None,
                         fact: None,
                     }));
                 }
@@ -4265,7 +4496,9 @@ impl ResolvedLayers {
             if self.hides(layer, &lower) {
                 continue;
             }
-            layer.verify_miss_probe(relative)?;
+            if matches!(layer.source, LayerSource::Archive(_)) {
+                layer.verify_miss_probe(relative)?;
+            }
             if layer
                 .replace_paths
                 .iter()
@@ -4291,8 +4524,10 @@ impl ResolvedLayers {
             if self.hides(layer, &lower) {
                 continue;
             }
-            observed.at(index);
-            layer.verify_miss(relative, observed)?;
+            if matches!(layer.source, LayerSource::Archive(_)) {
+                observed.at(index);
+                layer.verify_miss(relative, observed)?;
+            }
             if layer
                 .replace_paths
                 .iter()

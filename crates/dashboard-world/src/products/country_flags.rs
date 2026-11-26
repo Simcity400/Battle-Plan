@@ -600,22 +600,19 @@ fn flag_file(
                 ))
             }
             ArtFile::Missing(searched) => FlagFile::Missing(searched),
-            ArtFile::Mounted { layer, path } => {
+            ArtFile::Mounted { layer, bytes, .. } => {
                 let origin =
                     dashboard_base::products::artwork::ArtOrigin::from_layer(&layers.layers[layer]);
-                match layers.read_uncovered_path(&path) {
-                    Ok(bytes) => match content_reader_gui::flags::decode_checked(&bytes, cell) {
-                        Ok(_) if files.probing => FlagFile::Image {
-                            image: probed(),
-                            origin,
-                        },
-                        Ok(image) => FlagFile::Image {
-                            image: Arc::new(image),
-                            origin,
-                        },
-                        Err(reason) => FlagFile::Refused(reason),
+                match content_reader_gui::flags::decode_checked(&bytes, cell) {
+                    Ok(_) if files.probing => FlagFile::Image {
+                        image: probed(),
+                        origin,
                     },
-                    Err(error) => return Err(error),
+                    Ok(image) => FlagFile::Image {
+                        image: Arc::new(image),
+                        origin,
+                    },
+                    Err(reason) => FlagFile::Refused(reason),
                 }
             }
         })

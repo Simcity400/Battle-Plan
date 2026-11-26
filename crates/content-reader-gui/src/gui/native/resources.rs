@@ -5,7 +5,7 @@ use super::{
     sprites::{self, Plain, SpriteFacts, Sprites},
 };
 use content_reader_image::native;
-use content_reader_layers::{ResolvedLayers, content::ArtFileSource};
+use content_reader_layers::{ResolvedLayers, content::ArtFileRead};
 use content_reader_layers::textures::texture_within;
 pub use content_reader_layers::textures::{NoTexture, Texture, texture};
 use content_reader_parser::crt::truncate_f32;
@@ -149,9 +149,9 @@ pub fn stack_texture_within(
         if unmounted.borrow().is_some() {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
-        match layers.art_file_source(path)? {
-            ArtFileSource::Mounted { path, .. } => layers.read_uncovered_path(&path),
-            ArtFileSource::Unmounted { layer, reason } => {
+        match layers.read_art_file(path)? {
+            ArtFileRead::Mounted { bytes, .. } => Ok(bytes),
+            ArtFileRead::Unmounted { layer, reason } => {
                 let layer = layers.layers[layer]
                     .display_name()
                     .map_or_else(|| layers.layers[layer].id.clone(), str::to_owned);
@@ -161,7 +161,7 @@ pub fn stack_texture_within(
                 });
                 Err(io::Error::from(io::ErrorKind::NotFound))
             }
-            ArtFileSource::Missing => Err(io::Error::from(io::ErrorKind::NotFound)),
+            ArtFileRead::Missing => Err(io::Error::from(io::ErrorKind::NotFound)),
         }
     };
     let found = texture_within(name, &read, decode, max_texels)?;

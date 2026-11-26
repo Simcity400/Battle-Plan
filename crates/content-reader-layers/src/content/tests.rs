@@ -3295,6 +3295,9 @@ fn has_file_replace_path_stops_fallthrough_without_payload_reads() {
 
 thread_local! {
     pub(super) static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static FOLDER_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static ARCHIVE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static ARCHIVE_MOUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 thread_local! {
@@ -3994,4 +3997,170 @@ fn playback_and_visual_share_workshop_mod_discovery_with_empty_user_dir() {
     assert!(deduped.find_mod("2777392649").is_ok());
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn uncovered_art_lookup_scans_each_layer_once() {
+    let root = std::env::temp_dir().join(format!(
+        "uncovered-art-lookup-counts-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[
+            ("gfx/models/base_only.dds", b"base-model"),
+            ("gfx/interface/Base_Icon.dds", b"base-icon"),
+            ("gfx/models/shared.dds", b"base-shared"),
+        ],
+    );
+    let zip_path = root.join("dlc.zip");
+    fs::write(
+        &zip_path,
+        raw_zip(&[
+            (b"gfx/models/from_dlc.dds", 0, b"dlc-model"),
+            (b"gfx/models/shared.dds", 0, b"dlc-shared"),
+        ]),
+    )
+    .unwrap();
+    let upper = folder_of(
+        "mod",
+        &root.join("mod"),
+        &[("gfx/models/mod_only.dds", b"mod-model")],
+    );
+    let _generation = Generation::enter();
+    let _loading = Generation::loading();
+    let mut layers = ResolvedLayers {
+        layers: vec![base, archive_layer("dlc", &zip_path, &[]), upper],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+
+    let reset = || {
+        FOLDER_OPENS.with(|c| c.set(0));
+        ARCHIVE_OPENS.with(|c| c.set(0));
+        ARCHIVE_MOUNTS.with(|c| c.set(0));
+    };
+    let counts = || {
+        (
+            FOLDER_OPENS.with(|c| c.get()),
+            ARCHIVE_OPENS.with(|c| c.get()),
+            ARCHIVE_MOUNTS.with(|c| c.get()),
+        )
+    };
+
+    reset();
+    assert_eq!(
+        layers.read_uncovered("gfx/models/base_only.dds").unwrap(),
+        b"base-model"
+    );
+    let base_counts = counts();
+
+    reset();
+    assert_eq!(
+        layers.read_uncovered("gfx/models/from_dlc.dds").unwrap(),
+        b"dlc-model"
+    );
+    let dlc_counts = counts();
+
+    reset();
+    assert_eq!(
+        layers
+            .read_uncovered("gfx/models/absent.dds")
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    let missing_counts = counts();
+
+    reset();
+    let mounted = layers.read_art_file(b"gfx/interface/base_icon.dds").unwrap();
+    let ArtFileRead::Mounted { layer, path, bytes } = mounted else {
+        panic!("expected mounted, got {mounted:?}");
+    };
+    assert_eq!(layer, 0);
+    assert_eq!(path, b"gfx/interface/Base_Icon.dds");
+    assert_eq!(bytes, b"base-icon");
+    let covered_art_counts = counts();
+
+    reset();
+    let repeat = layers.read_art_file(b"gfx/interface/base_icon.dds").unwrap();
+    let ArtFileRead::Mounted { bytes, .. } = repeat else {
+        panic!("expected cached mounted, got {repeat:?}");
+    };
+    assert_eq!(bytes, b"base-icon");
+    let cached_counts = counts();
+
+    reset();
+    let dlc_art = layers.read_art_file(b"gfx/models/shared.dds").unwrap();
+    let ArtFileRead::Mounted { layer, bytes, .. } = dlc_art else {
+        panic!("expected dlc mounted, got {dlc_art:?}");
+    };
+    assert_eq!(layer, 1);
+    assert_eq!(bytes, b"dlc-shared");
+    let dlc_art_counts = counts();
+
+    let mut unverified_layers = ResolvedLayers {
+        layers: vec![
+            folder_of("base", &root.join("base"), &[]),
+            {
+                let mut dlc = archive_layer("dlc", &zip_path, &[]);
+                dlc.overlay = Some(Overlay {
+                    name: "unverified-dlc".into(),
+                    verified: false,
+                });
+                dlc
+            },
+            folder_of("mod", &root.join("mod"), &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    unverified_layers.finish().unwrap();
+
+    reset();
+    let unverified_base = unverified_layers
+        .read_art_file(b"gfx/models/base_only.dds")
+        .unwrap();
+    let ArtFileRead::Mounted { bytes, .. } = unverified_base else {
+        panic!("expected mounted, got {unverified_base:?}");
+    };
+    assert_eq!(bytes, b"base-model");
+    let unverified_miss_counts = counts();
+
+    reset();
+    let unverified_dlc = unverified_layers
+        .read_art_file(b"gfx/models/from_dlc.dds")
+        .unwrap();
+    let ArtFileRead::Mounted { bytes, .. } = unverified_dlc else {
+        panic!("expected mounted, got {unverified_dlc:?}");
+    };
+    assert_eq!(bytes, b"dlc-model");
+    let unverified_hit_counts = counts();
+
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        (
+            base_counts,
+            dlc_counts,
+            missing_counts,
+            covered_art_counts,
+            cached_counts,
+            dlc_art_counts,
+            unverified_miss_counts,
+            unverified_hit_counts,
+        ),
+        (
+            (2, 1, 1),
+            (1, 1, 1),
+            (2, 1, 1),
+            (2, 1, 1),
+            (0, 0, 0),
+            (1, 1, 1),
+            (2, 0, 0),
+            (1, 1, 0),
+        ),
+        "after counts (folder_opens, archive_opens, archive_mounts)"
+    );
 }
