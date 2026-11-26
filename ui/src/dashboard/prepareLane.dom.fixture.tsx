@@ -114,9 +114,11 @@ const fixture = {
     await frame(); await frame();
     const before = { requests: requests.length, commits: visibleCommits, prepared: preparedRenders };
     await frame();
+    let laid = false;
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
       await frame();
+      laid ||= fixture.hostShown();
     }
     clock.playing = false; clock.anchor();
     const asked = requests.slice(before.requests);
@@ -124,7 +126,7 @@ const fixture = {
       commits: visibleCommits - before.commits,
       preparedRenders: preparedRenders - before.prepared,
       asked: asked.map(item => item.product),
-      hostWhilePlaying: false,
+      hostWhilePlaying: laid,
     };
   },
   hostShown: () => !!document.querySelector('[data-prepare]'),

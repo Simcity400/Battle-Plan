@@ -3,7 +3,7 @@ import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
 type Mounted = { asked: string[]; shownOnPause: number };
-type Played = { commits: number; preparedRenders: number; asked: string[] };
+type Played = { commits: number; preparedRenders: number; asked: string[]; hostWhilePlaying: boolean };
 
 test('at 15 hours a frame for 600 frames, the page plays the same with the prepare lane on as with it off; paused, the lane prepares every other page', async t => {
   await withNativePage('prepare-lane', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('prepare lane', async () => {
@@ -23,7 +23,7 @@ test('at 15 hours a frame for 600 frames, the page plays the same with the prepa
     assert.equal(on.played.preparedRenders, 0, 'playing, no prepared page renders');
     assert.deepEqual(on.played.asked, off.played.asked, 'playing, the same requests at the head, lane on or off');
     assert.equal(on.played.commits, off.played.commits, 'playing, the page commits as often, lane on or off');
-    assert.equal(await act<boolean>('hostShown()'), false, 'no prepared page laid out at the end of play');
+    assert.equal(on.played.hostWhilePlaying, false, 'no prepared page laid out on any playing frame, the last included');
     assert.deepEqual(await act('heldFirstRender()'), { product: true, followed: true }, 'a reply the lane holds shows from the first render: no loading state, not for a frame');
     assert.deepEqual(await act('heldBetweenRenders()'), { product: true, products: true, followed: true },
       'a reply settling while its reader waits is shown by the update that hands it over, so what it starts runs');
