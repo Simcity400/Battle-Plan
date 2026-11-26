@@ -498,18 +498,7 @@ mod tests {
             metrics: Default::default(),
             tables: TableId::ALL.map(|id| TableView::Complete(TableRows::empty(id)).into()),
         };
-        *frame.tables[TableId::StateBaseResources.index()] =
-            TableView::Complete(TableRows::StateBaseResources(vec![StateBaseResourceRow {
-                state: 3,
-                resource: 7,
-                amount: ONE,
-                ..Default::default()
-            }]));
         let buildings = Buildings::default();
-        for table in [TableId::StateBaseResources, TableId::StateBuildings,
-            TableId::CountryBuildingResources, TableId::ResourceDefinitions] {
-            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
-        }
         *frame.tables[TableId::StateResources.index()] =
             TableView::Complete(TableRows::StateResources(vec![StateResourceRow {
                 state: 3, resource: 7, pool: ONE, ..Default::default()
