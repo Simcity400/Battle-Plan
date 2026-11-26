@@ -123,17 +123,51 @@ impl ScopedResolver {
     }
 }
 
+#[inline(always)]
+fn root_slot(handle: u64) -> u32 {
+    let kind = handle as u32;
+    if kind < LOW_ROOT_COUNT {
+        kind
+    } else if kind < MID_TYPE_LIMIT {
+        LOW_ROOT_COUNT
+    } else {
+        LOW_ROOT_COUNT + 1
+    }
+}
+
+#[inline(always)]
+fn located_tag() -> usize {
+    engine_sites::located().map_or(0, |located| located as *const _ as usize)
+}
+
 #[derive(Default)]
 pub struct HeaderResolver {
-    headers: [Option<(usize, Header)>; 4],
+    headers: [Option<(usize, usize, u32, Header)>; 4],
     next: usize,
 }
 
 impl HeaderResolver {
     pub fn holds(&self, base: usize, handle: u64) -> bool {
-        handle != 0
-            && root_address(base, handle)
-                .is_ok_and(|root| self.headers.iter().flatten().any(|(key, _)| *key == root))
+        if handle == 0 {
+            return false;
+        }
+        let located = located_tag();
+        if located != 0 {
+            let slot = root_slot(handle);
+            return self
+                .headers
+                .iter()
+                .flatten()
+                .any(|&(tag, cached_base, cached_slot, _)| {
+                    tag == located && cached_base == base && cached_slot == slot
+                });
+        }
+        root_address(base, handle).is_ok_and(|root| {
+            self.headers
+                .iter()
+                .flatten()
+                .any(|&(tag, key, _, _)| tag == 0 && key == root)
+        })
     }
 
     pub fn first_cell(
@@ -145,18 +179,44 @@ impl HeaderResolver {
         if handle == 0 {
             return Ok(None);
         }
-        let root = root_address(base, handle)?;
-        let (header, taken) = if let Some((_, header)) =
-            self.headers.iter().flatten().find(|(key, _)| *key == root)
-        {
-            (*header, true)
+        let located = located_tag();
+        let (header, taken) = if located != 0 {
+            let slot = root_slot(handle);
+            if let Some(&(_, _, _, header)) = self
+                .headers
+                .iter()
+                .flatten()
+                .find(|&&(tag, cached_base, cached_slot, _)| {
+                    tag == located && cached_base == base && cached_slot == slot
+                })
+            {
+                (header, true)
+            } else {
+                let root = root_address(base, handle)?;
+                let Some(header) = read_header(memory, base, root)? else {
+                    return Ok(None);
+                };
+                self.headers[self.next] = Some((located, base, slot, header));
+                self.next = (self.next + 1) % self.headers.len();
+                (header, false)
+            }
         } else {
-            let Some(header) = read_header(memory, base, root)? else {
-                return Ok(None);
-            };
-            self.headers[self.next] = Some((root, header));
-            self.next = (self.next + 1) % self.headers.len();
-            (header, false)
+            let root = root_address(base, handle)?;
+            if let Some(&(_, _, _, header)) = self
+                .headers
+                .iter()
+                .flatten()
+                .find(|&&(tag, key, _, _)| tag == 0 && key == root)
+            {
+                (header, true)
+            } else {
+                let Some(header) = read_header(memory, base, root)? else {
+                    return Ok(None);
+                };
+                self.headers[self.next] = Some((0, root, 0, header));
+                self.next = (self.next + 1) % self.headers.len();
+                (header, false)
+            }
         };
         Ok(first_cell(header, handle)?.map(|cell| (header, cell, taken)))
     }
@@ -180,18 +240,44 @@ impl HeaderResolver {
         if handle == 0 {
             return Ok(None);
         }
-        let root = root_address(base, handle)?;
-        let header = if let Some((_, header)) =
-            self.headers.iter().flatten().find(|(key, _)| *key == root)
-        {
-            *header
+        let located = located_tag();
+        let header = if located != 0 {
+            let slot = root_slot(handle);
+            if let Some(&(_, _, _, header)) = self
+                .headers
+                .iter()
+                .flatten()
+                .find(|&&(tag, cached_base, cached_slot, _)| {
+                    tag == located && cached_base == base && cached_slot == slot
+                })
+            {
+                header
+            } else {
+                let root = root_address(base, handle)?;
+                let Some(header) = read_header(memory, base, root)? else {
+                    return Ok(None);
+                };
+                self.headers[self.next] = Some((located, base, slot, header));
+                self.next = (self.next + 1) % self.headers.len();
+                header
+            }
         } else {
-            let Some(header) = read_header(memory, base, root)? else {
-                return Ok(None);
-            };
-            self.headers[self.next] = Some((root, header));
-            self.next = (self.next + 1) % self.headers.len();
-            header
+            let root = root_address(base, handle)?;
+            if let Some(&(_, _, _, header)) = self
+                .headers
+                .iter()
+                .flatten()
+                .find(|&&(tag, key, _, _)| tag == 0 && key == root)
+            {
+                header
+            } else {
+                let Some(header) = read_header(memory, base, root)? else {
+                    return Ok(None);
+                };
+                self.headers[self.next] = Some((0, root, 0, header));
+                self.next = (self.next + 1) % self.headers.len();
+                header
+            }
         };
         probe(memory, header, handle)
     }

@@ -219,9 +219,9 @@ pub struct Located {
     by_live: Vec<(u32, u32, u16)>,
     live_code_min: u32,
     live_code_max: u32,
-    globals: Vec<(u32, u32)>,
     resolved_keys: RvaMap,
-    globals_map: RvaMap,
+    live_keys: RvaMap,
+    all_keys_verified: bool,
     originals: Vec<([u8; ORIGINAL], u8)>,
     layout: Result<(), Reason>,
     messages: Vec<Option<String>>,
@@ -478,40 +478,30 @@ impl Located {
             by_live,
             live_code_min,
             live_code_max,
-            globals: Vec::new(),
             resolved_keys: RvaMap::empty(),
-            globals_map: RvaMap::empty(),
+            live_keys: RvaMap::empty(),
+            all_keys_verified: false,
             originals,
             layout,
             messages: Vec::new(),
             summary: Summary::default(),
         };
-        located.globals = KEYS
-            .iter()
-            .filter_map(|k| {
-                let live = match k.kind {
-                    Kind::Vtable(v) => located.vtables[v as usize],
-                    Kind::Data(d) => located.data[d as usize],
-                    Kind::Code(_) => return None,
-                };
-                live.ok().map(|live| (live, k.rva))
-            })
-            .collect();
-        located.globals.sort_unstable();
-        located.globals_map = RvaMap::from_pairs(
-            located.globals.len(),
-            located.globals.iter().copied(),
-        );
         if located.layout.is_ok() {
-            let pairs = KEYS.iter().filter_map(|k| {
+            let mut forward = Vec::with_capacity(KEYS.len());
+            let mut reverse = Vec::with_capacity(KEYS.len());
+            for k in KEYS {
                 let live = match k.kind {
                     Kind::Code(f) => located.code_address(f, k.rva),
                     Kind::Vtable(v) => located.vtables[v as usize].ok(),
                     Kind::Data(d) => located.data[d as usize].ok(),
-                }?;
-                Some((k.rva, live))
-            });
-            located.resolved_keys = RvaMap::from_pairs(KEYS.len(), pairs);
+                };
+                if let Some(live) = live {
+                    forward.push((k.rva, live));
+                    reverse.push((live, k.rva));
+                }
+            }
+            located.resolved_keys = RvaMap::from_pairs(forward.len(), forward.into_iter());
+            located.live_keys = RvaMap::from_pairs(reverse.len(), reverse.into_iter());
         }
         located.messages = KEYS
             .iter()
@@ -533,6 +523,7 @@ impl Located {
                 (Some(_), Kind::Data(_)) => summary.data_withheld += 1,
             }
         }
+        located.all_keys_verified = located.layout.is_ok() && summary.keys_verified == summary.keys;
         summary.elapsed = started.elapsed();
         located.summary = summary;
         located
@@ -678,10 +669,35 @@ impl Located {
     }
 
     #[inline]
+    pub(crate) fn live_key(&self, base: usize, address: usize) -> Option<Rva> {
+        let rva = u32::try_from(address.checked_sub(base)?).ok()?;
+        if base != self.base || self.layout.is_err() {
+            return None;
+        }
+        self.live_keys.get(rva).map(|key| Rva(key as usize))
+    }
+
+    #[inline]
+    pub(crate) fn resolved_key(&self, key: Rva) -> Option<usize> {
+        let rva = u32::try_from(key.0).ok()?;
+        self.resolved_keys
+            .get(rva)
+            .map(|live| self.base + live as usize)
+    }
+
+    #[inline]
+    pub(crate) fn all_keys_verified(&self) -> bool {
+        self.all_keys_verified
+    }
+
+    #[inline]
     pub(crate) fn reference(&self, base: usize, address: usize) -> Option<Rva> {
         let rva = u32::try_from(address.checked_sub(base)?).ok()?;
         if base != self.base || self.layout.is_err() {
             return None;
+        }
+        if let Some(key) = self.live_keys.get(rva) {
+            return Some(Rva(key as usize));
         }
         if rva >= self.live_code_min && rva < self.live_code_max {
             let i = self.by_live.partition_point(|&(s, _, _)| s <= rva).checked_sub(1);
@@ -692,7 +708,7 @@ impl Located {
                 }
             }
         }
-        self.globals_map.get(rva).map(|key| Rva(key as usize))
+        None
     }
 }
 

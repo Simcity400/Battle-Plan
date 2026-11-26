@@ -113,6 +113,54 @@ pub fn start(memory: &impl Memory, base: usize, status: usize) -> Result<Started
     Ok(start_held(memory, base, status, None)?.0)
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedSites {
+    located: usize,
+    base: usize,
+    fuel_vtable: Option<usize>,
+    game_state: Option<usize>,
+    country_vtable: Option<usize>,
+    army_vtable: Option<usize>,
+    task_force_vtable: Option<usize>,
+    air_base_vtable: Option<usize>,
+    air_container_vtable: Option<usize>,
+}
+
+std::thread_local! {
+    static RESOLVED_SITES: std::cell::Cell<Option<ResolvedSites>> = const { std::cell::Cell::new(None) };
+}
+
+#[inline]
+fn cached_sites(base: usize) -> Option<ResolvedSites> {
+    let located = engine_sites::located().map_or(0, |l| l as *const _ as usize);
+    if located == 0 {
+        return None;
+    }
+    if let Some(sites) = RESOLVED_SITES.get()
+        && sites.located == located
+        && sites.base == base
+    {
+        return Some(sites);
+    }
+    let sites = ResolvedSites {
+        located,
+        base,
+        fuel_vtable: engine_sites::resolve(base, fuel::VTABLE_RVA).ok(),
+        game_state: engine_sites::resolve(base, cgame_state::SINGLETON_RVA).ok(),
+        country_vtable: engine_sites::resolve(base, ccountry::VTABLE_RVA).ok(),
+        army_vtable: engine_sites::resolve(base, engine_native::carmy::VTABLE_RVA).ok(),
+        task_force_vtable: engine_sites::resolve(base, engine_native::ctask_force::VTABLE_RVA).ok(),
+        air_base_vtable: engine_sites::resolve(
+            base,
+            engine_native_parts::cair_base_layout::VTABLE_RVA,
+        )
+        .ok(),
+        air_container_vtable: engine_sites::resolve(base, ccountry_air_container::VTABLE_RVA).ok(),
+    };
+    RESOLVED_SITES.set(Some(sites));
+    Some(sites)
+}
+
 pub fn start_held(
     memory: &impl Memory,
     base: usize,
@@ -124,12 +172,18 @@ pub fn start_held(
     if status == 0 {
         return Err(MISMATCH);
     }
-    let expected = engine_sites::at(base, fuel::VTABLE_RVA).ok_or(MISMATCH)?;
-    let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA);
+    let sites = cached_sites(base);
+    let expected = sites
+        .and_then(|s| s.fuel_vtable)
+        .or_else(|| engine_sites::at(base, fuel::VTABLE_RVA))
+        .ok_or(MISMATCH)?;
+    let singleton = sites
+        .and_then(|s| s.game_state)
+        .or_else(|| engine_sites::at(base, cgame_state::SINGLETON_RVA));
     let mut status_block = [0_u8; fuel::COUNTRY + 8];
     let mut singleton_bytes = [0_u8; 8];
     let status_ok = singleton.is_some_and(|singleton| {
-        memory.copy_scattered(
+        memory.copy_scattered_prefetched(
             [status, singleton],
             &mut [&mut status_block[..], &mut singleton_bytes[..]],
         ) == 2
@@ -158,7 +212,10 @@ pub fn start_held(
     }
     let owner = u64_at(fuel::COUNTRY) as usize;
     let game_state = u64::from_le_bytes(singleton_bytes) as usize;
-    let expected_country = engine_sites::at(base, ccountry::VTABLE_RVA).map(|at| at as u64);
+    let expected_country = sites
+        .and_then(|s| s.country_vtable)
+        .or_else(|| engine_sites::at(base, ccountry::VTABLE_RVA))
+        .map(|at| at as u64);
     let mut owner_vtable = [0_u8; 8];
     let mut backlink = [0_u8; 8];
     let mut surrender = [0_u8; 4];
@@ -174,7 +231,7 @@ pub fn start_held(
             game_state.checked_add(cgame_state::COUNTRIES)?,
             game_state.checked_add(cgame_state::COUNTRY_LINKS)?,
         ];
-        (memory.copy_scattered(
+        (memory.copy_scattered_prefetched(
             addresses,
             &mut [
                 &mut owner_vtable[..],
@@ -517,14 +574,16 @@ pub fn unit_with_name(
         2 => 1_u32,
         _ => return Err("fuel recipient kind unsupported"),
     };
-    let expected_vtable = engine_sites::at(
-        base,
-        if class == 0 {
-            engine_native::carmy::VTABLE_RVA
-        } else {
-            engine_native::ctask_force::VTABLE_RVA
-        },
-    )
+    let sites = cached_sites(base);
+    let expected_vtable = if class == 0 {
+        sites
+            .and_then(|s| s.army_vtable)
+            .or_else(|| engine_sites::at(base, engine_native::carmy::VTABLE_RVA))
+    } else {
+        sites
+            .and_then(|s| s.task_force_vtable)
+            .or_else(|| engine_sites::at(base, engine_native::ctask_force::VTABLE_RVA))
+    }
     .ok_or("counter unit module overflow")? as u64;
     if pointer != 0
         && let Some(owner_addr) = pointer.checked_add(cunit::ROSTER_OWNER)
@@ -536,7 +595,7 @@ pub fn unit_with_name(
                 .checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)
                 .and_then(|member_addr| {
                     let mut member_bytes = [0_u8; 8];
-                    (memory.copy_scattered(
+                    (memory.copy_scattered_prefetched(
                         [pointer, owner_addr, member_addr],
                         &mut [&mut header[..], &mut owner_bytes[..], &mut member_bytes[..]],
                     ) == 3)
@@ -548,7 +607,7 @@ pub fn unit_with_name(
         } else {
             pointer.checked_add(TASK_FORCE_NAME).and_then(|name_addr| {
                 let mut name_header = [0_u8; msvc_string::STRIDE];
-                (memory.copy_scattered(
+                (memory.copy_scattered_prefetched(
                     [pointer, owner_addr, name_addr],
                     &mut [&mut header[..], &mut owner_bytes[..], &mut name_header[..]],
                 ) == 3)
@@ -576,8 +635,10 @@ pub fn unit_with_name(
                         {
                             let mut bucket = [0_u8; 24];
                             let mut desc = [0_u8; msvc_string::STRIDE];
-                            if memory.copy_scattered([cell, name_at], &mut [&mut bucket, &mut desc])
-                                == 2
+                            if memory.copy_scattered_prefetched(
+                                [cell, name_at],
+                                &mut [&mut bucket, &mut desc],
+                            ) == 2
                             {
                                 (
                                     registry.0.resolve_gathered(memory, header, handle, bucket)?,
@@ -672,9 +733,15 @@ pub fn air_held_with(
     if pointer == 0 || container == 0 {
         return Err(MISMATCH);
     }
-    let expected_base = engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA).ok_or(MISMATCH)?;
-    let expected_container =
-        engine_sites::at(base, ccountry_air_container::VTABLE_RVA).ok_or(MISMATCH)?;
+    let sites = cached_sites(base);
+    let expected_base = sites
+        .and_then(|s| s.air_base_vtable)
+        .or_else(|| engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA))
+        .ok_or(MISMATCH)?;
+    let expected_container = sites
+        .and_then(|s| s.air_container_vtable)
+        .or_else(|| engine_sites::at(base, ccountry_air_container::VTABLE_RVA))
+        .ok_or(MISMATCH)?;
     let (
         mut base_vtable,
         mut handle_bytes,
@@ -734,8 +801,10 @@ pub fn air_held_with(
                 if let Some(slot_at) = containers.element(country.canonical_slot, 8) {
                     let mut bucket = [0_u8; 24];
                     let mut backlink = [0_u8; 8];
-                    if memory.copy_scattered([cell, slot_at], &mut [&mut bucket, &mut backlink])
-                        == 2
+                    if memory.copy_scattered_prefetched(
+                        [cell, slot_at],
+                        &mut [&mut bucket, &mut backlink],
+                    ) == 2
                     {
                         gathered_backlink = Some(u64::from_le_bytes(backlink));
                         registry.0.resolve_gathered(memory, header, reference, bucket)?

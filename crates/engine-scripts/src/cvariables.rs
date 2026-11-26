@@ -825,7 +825,31 @@ fn walk_head_buffer(
             if batch.is_empty() {
                 return Ok(());
             }
-            let fast_ok = {
+            const STACK_NAME_LIMIT: usize = 128;
+            let fast_ok = if batch.iter().all(|entry| entry.name_len < STACK_NAME_LIMIT) {
+                let mut addresses = [0_usize; HEAP_BATCH];
+                let mut stage = [[0_u8; STACK_NAME_LIMIT]; HEAP_BATCH];
+                let mut dests: [&mut [u8]; HEAP_BATCH] = std::array::from_fn(|_| &mut [][..]);
+                for (i, (entry, buf)) in batch.iter().zip(stage.iter_mut()).enumerate() {
+                    addresses[i] = entry.source;
+                    dests[i] = &mut buf[..entry.name_len + 1];
+                }
+                let copied = memory.copy_scattered_prefetched(addresses, &mut dests);
+                if copied == HEAP_BATCH
+                    && batch
+                        .iter()
+                        .enumerate()
+                        .all(|(i, entry)| stage[i][entry.name_len] == 0)
+                {
+                    for (i, entry) in batch.iter().enumerate() {
+                        names[entry.dst_start..entry.dst_start + entry.name_len]
+                            .copy_from_slice(&stage[i][..entry.name_len]);
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
                 let mut addresses = [0_usize; HEAP_BATCH * 2];
                 let mut terms = [[1_u8]; HEAP_BATCH];
                 let mut dests: [&mut [u8]; HEAP_BATCH * 2] = std::array::from_fn(|_| &mut [][..]);
