@@ -12,7 +12,7 @@ import type { FamilyTheme, InstalledAction, InstalledPicture, MirrorModel } from
 import { heatLanesHostAdapter, heatMatrixHostAdapter, parseHeatLanesHit, parseHeatMatrixHit } from '../heat/hostAdapter.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
 import { familyBinding, lazyActionKeys, nextReportedRowWindow, reconcileInstalledRowWindow, requestedRowWindow, type FamilyBindingContext, type FamilyHostAdapter, type ParsedFamilyHit } from './adapter.ts';
-import { BoundSelections, displayedHoverKeys, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate } from './installed.ts';
+import { BoundSelections, displayedHoverKeys, focusedSubject, installedRecordOf, recordInstalled, resolveHostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { hoverAsks, readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
@@ -2003,4 +2003,18 @@ test('R4-S3 host: ordinal bounds, gap skipping, key directions and held mirror f
     (globalThis as { document?: unknown }).document = prevDoc;
     (globalThis as { HTMLElement?: unknown }).HTMLElement = prevEl;
   }
+
+test('a focused row is the subject the installed picture holds for it, a grid cell inside the grid even with no action, and none once the picture lacks it', () => {
+  const nav: FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', null], ['FRA', 'France', 1, -1, '', null]];
+  const shown = (fields: Record<string, unknown>): InstalledRecord => recordInstalled({
+    id: 1, owner: 'owner-A', generation: { seek: 1, reset: 0, binding: 1 }, factRevisions: {}, validInterval: [100, 120], through: 100, hour: displayedHour(100),
+    viewport: { width: 200, height: 100, dpr: 1, scrollLeft: 0, scrollTop: 0 }, optionsRevision: '', themeRevision: '',
+    actionKeys: lazyActionKeys(nav, displayedHour(100)), accessibleDescription: null,
+  }, fields, null);
+  const rows = shown({ nav });
+  const noGrid = () => null;
+  assert.deepEqual(['GER', 'FRA', 'ITA', null].map(key => focusedSubject(tableHostAdapter, rows, key, noGrid)), ['GER', 'FRA', null, null], 'a key the picture no longer lists is no focused row');
+  assert.equal(focusedSubject(tableHostAdapter, null, 'GER', noGrid), null, 'and nor is any key before a picture is installed');
+  const grid = shown({ extent: { rows: [{ label: 'Germany' }, { label: 'France' }], columns: [{ label: '1936' }], margin: 'Total', cellSize: 10, gridLeft: 0, gridTop: 0 } });
+  assert.deepEqual(['0:0', '1:1', '2:0'].map(key => focusedSubject(heatMatrixHostAdapter, grid, key, noGrid)), ['0:0', '1:1', null], 'a margin cell is focused by its own key; a cell outside the grid is none');
 });

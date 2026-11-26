@@ -69,7 +69,7 @@ import {
   type TableOrdinalMetrics,
 } from './keyboard.ts';
 import { NO_EXPANSION, type FamilyExpansion } from './expansion.ts';
-import { BoundSelections, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type DrawnKeys, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
+import { BoundSelections, focusedSubject, inputBlocked, installedRecordOf, recordInstalled, resolveHostInput, type DrawnKeys, type HostCommand, type HostInput, type HostInputGate, type InstalledRecord } from './installed.ts';
 import { keepEqual } from './stableValue.ts';
 import { mirrorRowSelector, mirrorToSync, syncListboxMirror, syncTableMirror, type ListboxMirrorItem } from './mirror.ts';
 import { bindFamilyPointer } from './pointer.ts';
@@ -90,7 +90,7 @@ import {
 import { useFamilyTheme } from './theme.ts';
 import { FamilyHeaderSummary } from './FamilyHeaderSummary.tsx';
 import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
-import { rowHoverPublisher, type TooltipRowSource } from './hoverRow.ts';
+import { rowHoverPublisher, rowPublisher, type TooltipRowSource } from './hoverRow.ts';
 import type { FamilyTooltipField } from './tooltips.ts';
 import './familyHost.css';
 
@@ -501,11 +501,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return report ? (subject: string | null) => report(subject, by) : undefined;
   }, []);
   const publishHoverRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, tooltipRow('pointer')), [tooltipRow]);
-  const publishFocusRow = useMemo(() => rowHoverPublisher(() => latestRef.current.adapter, () => recordRef.current, tooltipRow('focus')), [tooltipRow]);
-  const publishFocusKey = useCallback(() => {
-    const key = focusInsideRef.current ? focusedKeyRef.current : null;
-    publishFocusRow(key === null ? null : { key });
-  }, [publishFocusRow]);
+  const publishFocusRow = useMemo(() => rowPublisher<string | null>(key => focusedSubject(latestRef.current.adapter, recordRef.current, key, parseGridKey), tooltipRow('focus')), [tooltipRow]);
+  const publishFocusKey = useCallback(() => publishFocusRow(focusInsideRef.current ? focusedKeyRef.current : null), [publishFocusRow]);
 
   const publishHoverHour = useCallback((nextHour: number | null) => {
     const normalized = nextHour !== null && Number.isFinite(nextHour) ? Math.floor(nextHour) : null;
@@ -990,6 +987,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
       if (!visible || !fields || shown?.id === undefined) {
         recordRef.current = null;
+        publishFocusKey();
         describe(null);
         if (lastMirrorObjRef.current !== null) {
           lastMirrorObjRef.current = null;
@@ -1324,6 +1322,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       syncMirrorRef.current(null);
       recordRef.current = null;
       publishHoverHour(null);
+      publishFocusKey();
       mounted.unmount();
       surfaceRef.current = null;
       holdElement(frameRef.current, false);

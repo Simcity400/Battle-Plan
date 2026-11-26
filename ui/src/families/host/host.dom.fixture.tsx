@@ -685,6 +685,7 @@ window.hostDom = {
     const subs = subsForPipe(pipeId);
     const before = focused().length;
     const startHour = clock.getSnapshot().hour;
+    const installsBefore = installCalls.get(pipeId) ?? 0;
     await frames(2);
     commits = 0;
     clock.setSpeed(24);
@@ -695,10 +696,21 @@ window.hostDom = {
     }
     await frames(4);
     clock.setPlaying(false);
-    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, calls: focused().length - before, commits };
+    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, installs: (installCalls.get(pipeId) ?? 0) - installsBefore, calls: focused().length - before, commits };
+    clock.seek(2500);
+    seek = clock.getSnapshot().seekSequence;
+    await until(() => focused().length > before, 2000);
+    const outside = focused().slice(before);
+    clock.seek(40);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subs, 40, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeId)?.mode === 'picture' && !pipeline.view(pipeId)?.dim);
+    rows()[1]!.focus();
+    await until(() => focused().at(-1) === 'FRA', 2000);
+    const settled = focused().length;
     (document.activeElement as HTMLElement | null)?.blur();
     await until(() => focused().at(-1) === null, 2000);
-    return { moved, playing, left: focused().slice(before) };
+    return { moved, playing, outside, left: focused().slice(settled) };
   },
 
   async testF3UnrelatedAppearanceAndF4ReducedMotion() {
