@@ -19,6 +19,8 @@ mod fixtures {
     pub use dashboard_text::catalogue::tests::Folder;
     use dashboard_text::catalogue::{Catalogue, tests};
 
+    pub mod game;
+
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
         let (catalogue, folder) = tests::folder_catalogue(files);
         (

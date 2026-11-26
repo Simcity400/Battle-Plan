@@ -137,10 +137,10 @@ impl Renderer<'_, '_, '_> {
             return true;
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x1427f3a70) => field(children(item), "tooltip")
+            Some(effect_identity::LOOP_SCOPES) => field(children(item), "tooltip")
                 .and_then(|item| item.value.scalar())
                 .is_some_and(|key| !key.is_empty()),
-            Some(0x1428527b0) => self
+            Some(effect_identity::CONDITIONAL) => self
                 .if_chain(item, branches, scopes, 0, true)
                 .is_some_and(|text| !text.is_empty()),
             _ => {
@@ -176,13 +176,13 @@ impl Renderer<'_, '_, '_> {
         let class = self.effect_class(item)?;
         let result = match class.vtable {
             effect_identity::SCRIPTED => self.scripted_effect(item, scopes, indent),
-            0x142A321B0 => self.random_effect(item, scopes, indent),
-            0x142A32320 => self
+            effect_identity::CHANCE_BRANCH => self.random_effect(item, scopes, indent),
+            effect_identity::WEIGHTED_CHOICES => self
                 .random_list(item, scopes)
                 .map(|text| format!("{}{text}", "   ".repeat(indent))),
-            0x1427f3a70 => self.scope_loop(item, scopes, indent),
-            0x1427F5440 => self.meta_effect(item, scopes, indent),
-            0x142A320B8 => self.override_tooltip(item, scopes, indent),
+            effect_identity::LOOP_SCOPES => self.scope_loop(item, scopes, indent),
+            effect_identity::EXPAND_TEXT => self.meta_effect(item, scopes, indent),
+            effect_identity::OVERRIDE_TEXT => self.override_tooltip(item, scopes, indent),
             _ => return None,
         };
         Some(match result {

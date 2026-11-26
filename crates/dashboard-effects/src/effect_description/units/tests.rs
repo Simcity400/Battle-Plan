@@ -6,10 +6,9 @@ use EventObject::{Country as C, State as S, Unit as U};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
 use std::collections::BTreeSet;
+use crate::fixtures::game;
 
 fn fixture() -> Fixture {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for unit name fixtures");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -101,10 +100,10 @@ fn fixture() -> Fixture {
                 ("AAA_syn_unit", "Perspective unit"),
                 ("UNLOCK_SUBUNIT_EFFECT", "UnlockType $NAME$ [This.GetName]"),
                 ("syn_equipment", "Equipment [This.GetName]"),
-                ("STAT_COMMON_BUILD_COST_IC", "Cost"),
-                ("STAT_ARMY_SOFT_ATTACK", "Attack"),
-                ("STAT_AIR_RANGE", "Range"),
-                ("STAT_AIR_RANGE_MOD_DIFF", "Custom $VALUE|2$"),
+                ("STAT_SYNTHETIC_COST", "Cost"),
+                ("STAT_SYNTHETIC_SOFT_ATTACK", "Attack"),
+                ("STAT_SYNTHETIC_AIR_ATTACK", "Range"),
+                ("STAT_SYNTHETIC_AIR_ATTACK_MOD_DIFF", "Custom $VALUE|2$"),
                 ("STAT_MODIFIER_DIFF_NEG", "Bad $VALUE|2$"),
                 ("STAT_MODIFIER_DIFF", "Good $VALUE|2$"),
                 ("Syn_Category", "Category"),
@@ -112,8 +111,8 @@ fn fixture() -> Fixture {
                 ("SUBUNIT_BONUS_HEADER", "$ICON$$NAME$"),
                 ("STAT_ARMY_COMBAT_WIDTH", "Width"),
                 ("STAT_ARMY_COMBAT_WIDTH_DIFF", " $VALUE|2$"),
-                ("STAT_ARMY_DEFENSE", "Defense"),
-                ("STAT_ARMY_SOFT_ATTACK_MOD_VALUE", " custom $VALUE|2$"),
+                ("STAT_SYNTHETIC_DEFENSE", "Defense"),
+                ("STAT_SYNTHETIC_SOFT_ATTACK_MOD_VALUE", " custom $VALUE|2$"),
                 ("STAT_MODIFIER_VALUE", " value $VALUE|2$"),
                 ("STAT_ADJUSTER_MOVEMENT", "Move"),
                 ("STAT_ADJUSTER_MOVEMENT_DIFF", " $VALUE|2$"),
@@ -129,7 +128,7 @@ fn fixture() -> Fixture {
                 ("SUBUNIT_CATEGORY_MULT_STAT", "Mult $NAME$ $VALUE|2$"),
                 ("SUBUNIT_CATEGORY_NEG_ADD_STAT", "BadAdd $NAME$ $VALUE|2$"),
                 ("SUBUNIT_CATEGORY_NEG_MULT_STAT", "BadMult $NAME$ $VALUE|2$"),
-                ("STAT_ARMY_SUPPLY_CONSUMPTION", "Supply"),
+                ("STAT_SYNTHETIC_SUPPLY_CONSUMPTION", "Supply"),
                 ("ZZZ", "Many"),
             ]
             .into_iter()
@@ -229,8 +228,7 @@ fn bonus_names() -> content_reader_script::key_names::KeyNames {
 
 #[test]
 fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let (mut catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -242,7 +240,7 @@ fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
     catalogue.localisation = fixture.catalogue.localisation.clone();
     fixture.catalogue = catalogue;
     let names = bonus_names();
-    let body = "add_unit_bonus={name=ignored syn_category={soft_attack=8 combat_width=99 night={attack=99}} syn_unit={soft_attack=2 defense=3 soft_attack=bad combat_width=-0.5 night={defence=3 attack=2 movement=1 attack=bad} alpha={attack=5} zeta={attack=4}} syn_category={defense=9} missing_unit={soft_attack=99}}";
+    let body = "fixture_unit_stat_bonus={name=ignored syn_category={soft_attack=8 combat_width=99 night={attack=99}} syn_unit={soft_attack=2 defense=3 soft_attack=bad combat_width=-0.5 night={defence=3 attack=2 movement=1 attack=bad} alpha={attack=5} zeta={attack=4}} syn_category={defense=9} missing_unit={soft_attack=99}}";
     for nato in [false, true] {
         let out = render_with_nato(
             &fixture,
@@ -268,13 +266,12 @@ fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
 
 #[test]
 fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_header() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let names = bonus_names();
     let out = render(
         &fixture,
-        "add_unit_bonus={syn_unit={battalion_mult={category=syn_category display_as_percentage=yes soft_attack=0.5 defense=1 soft_attack=0.25 soft_attack=0 soft_attack=bad supply_consumption=-0.2} battalion_mult={category=Syn_Category display_as_percentage=yes add=yes soft_attack=0.1 supply_consumption=0.2}}}",
+        "fixture_unit_stat_bonus={syn_unit={battalion_mult={category=syn_category display_as_percentage=yes soft_attack=0.5 defense=1 soft_attack=0.25 soft_attack=0 soft_attack=bad supply_consumption=-0.2} battalion_mult={category=Syn_Category display_as_percentage=yes add=yes soft_attack=0.1 supply_consumption=0.2}}}",
         C(1),
         Content {
             key_names: Some(&names),
@@ -291,8 +288,7 @@ fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_he
 
 #[test]
 fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -305,7 +301,7 @@ fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
     let names = bonus_names();
     let out = render(
         &fixture,
-        "add_unit_bonus={syn_unit={soft_attack=2 night={attack=1}} syn_category={defense=3}}",
+        "fixture_unit_stat_bonus={syn_unit={soft_attack=2 night={attack=1}} syn_category={defense=3}}",
         C(1),
         Content {
             key_names: Some(&names),
@@ -398,8 +394,7 @@ fn unit_fixture() -> Fixture {
 
 #[test]
 fn unit_carrier_empty_and_organization_table() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = unit_fixture();
     for object in [
         C(1),
@@ -410,9 +405,9 @@ fn unit_carrier_empty_and_organization_table() {
         EventObject::Raid(UNIT),
     ] {
         for body in [
-            "change_division_template={division_template=missing}",
-            "destroy_unit=no",
-            "set_unit_organization=var:unrecorded^random",
+            "fixture_revise_unit_template={division_template=missing}",
+            "fixture_dissolve_unit=no",
+            "fixture_readiness_level=var:unrecorded^random",
         ] {
             let out = render(&fixture, body, object, Content::default(), &[]);
             assert!(out.text.is_empty(), "{body}/{object:?}: {}", out.text);
@@ -424,36 +419,36 @@ fn unit_carrier_empty_and_organization_table() {
         }
     }
     for (body, expected) in [
-        ("set_unit_organization=0", "SetOrg 0.00 [This.GetName]"),
-        ("set_unit_organization=0.25", "SetOrg 0.25 [This.GetName]"),
-        ("set_unit_organization=-0.5", "SetOrg -0.50 [This.GetName]"),
+        ("fixture_readiness_level=0", "SetOrg 0.00 [This.GetName]"),
+        ("fixture_readiness_level=0.25", "SetOrg 0.25 [This.GetName]"),
+        ("fixture_readiness_level=-0.5", "SetOrg -0.50 [This.GetName]"),
         (
-            "set_unit_organization=2.49999",
+            "fixture_readiness_level=2.49999",
             "SetOrg 2.49 [This.GetName]",
         ),
         (
-            "set_unit_organization=syn_amount",
+            "fixture_readiness_level=syn_amount",
             "SetOrg 0.25 [This.GetName]",
         ),
         (
-            "set_unit_organization=AAA.syn_amount",
+            "fixture_readiness_level=AAA.syn_amount",
             "SetOrg 2.49 [This.GetName]",
         ),
-        ("set_unit_organization=THIS", "SetOrg 0.00 [This.GetName]"),
+        ("fixture_readiness_level=THIS", "SetOrg 0.00 [This.GetName]"),
         (
-            "set_unit_organization=event_target:absent",
+            "fixture_readiness_level=event_target:absent",
             "SetOrg 0.00 [This.GetName]",
         ),
-        ("change_division_template={division_template=missing}", ""),
+        ("fixture_revise_unit_template={division_template=missing}", ""),
         (
-            "change_division_template={division_template=\"Roster only\"}",
+            "fixture_revise_unit_template={division_template=\"Roster only\"}",
             "",
         ),
         (
-            "change_division_template={division_template=\"raw [This.GetName]\"}",
+            "fixture_revise_unit_template={division_template=\"raw [This.GetName]\"}",
             "",
         ),
-        ("change_division_template={division_template=DEF}", ""),
+        ("fixture_revise_unit_template={division_template=DEF}", ""),
     ] {
         let out = render(&fixture, body, U(UNIT), Content::default(), &[]);
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
@@ -463,22 +458,21 @@ fn unit_carrier_empty_and_organization_table() {
 
 #[test]
 fn unit_carrier_shared_name_and_recording_gap_table() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = unit_fixture();
     for (body, expected) in [
         (
-            "change_division_template={division_template=\"Raw [This.GetName]\"}",
+            "fixture_revise_unit_template={division_template=\"Raw [This.GetName]\"}",
             "Template Raw [This.GetName]/Selected [This.GetName] [Root.GetName]",
         ),
         (
-            "change_division_template={division_template=missing division_template=alpha}",
+            "fixture_revise_unit_template={division_template=missing division_template=alpha}",
             "Template alpha/Selected [This.GetName] [Root.GetName]",
         ),
-        ("destroy_unit=yes", "Destroy Selected NULL NULL\n"),
-        ("destroy_unit=THIS", "Destroy Selected NULL NULL\n"),
+        ("fixture_dissolve_unit=yes", "Destroy Selected NULL NULL\n"),
+        ("fixture_dissolve_unit=THIS", "Destroy Selected NULL NULL\n"),
         (
-            "destroy_unit=var:unrecorded^random",
+            "fixture_dissolve_unit=var:unrecorded^random",
             "Destroy Selected NULL NULL\n",
         ),
     ] {
@@ -493,16 +487,16 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     }
     for (body, class) in [
         (
-            "change_division_template={division_template=\"Raw [This.GetName]\"}",
-            "change_division_template",
+            "fixture_revise_unit_template={division_template=\"Raw [This.GetName]\"}",
+            "fixture_revise_unit_template",
         ),
         (
-            "change_division_template={division_template=missing division_template=alpha}",
-            "change_division_template",
+            "fixture_revise_unit_template={division_template=missing division_template=alpha}",
+            "fixture_revise_unit_template",
         ),
-        ("destroy_unit=yes", "destroy_unit"),
-        ("destroy_unit=THIS", "destroy_unit"),
-        ("destroy_unit=var:unrecorded^random", "destroy_unit"),
+        ("fixture_dissolve_unit=yes", "fixture_dissolve_unit"),
+        ("fixture_dissolve_unit=THIS", "fixture_dissolve_unit"),
+        ("fixture_dissolve_unit=var:unrecorded^random", "fixture_dissolve_unit"),
     ] {
         let out = render(
             &fixture,
@@ -514,10 +508,10 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         assert!(out.text.is_empty(), "{body}: {}", out.text);
         let expected = format!(
             "synthetic effect {class}: key {}: naming of division status not recorded",
-            if class == "destroy_unit" {
-                "destroy_unit"
+            if class == "fixture_dissolve_unit" {
+                "fixture_dissolve_unit"
             } else {
-                "change_division_template"
+                "fixture_revise_unit_template"
             },
         );
         assert_eq!(out.refusals, BTreeMap::from([(expected, 2)]), "{body}");
@@ -529,7 +523,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     }
     let out = render(
         &fixture,
-        "change_division_template={division_template=missing}",
+        "fixture_revise_unit_template={division_template=missing}",
         U(UNIT),
         Content::default(),
         &[],
@@ -557,7 +551,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         }
         let out = render(
             &fixture,
-            "change_division_template={division_template=missing}",
+            "fixture_revise_unit_template={division_template=missing}",
             U(UNIT),
             Content::default(),
             &[],
@@ -572,13 +566,13 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
     }
     for (body, class) in [
         (
-            "change_division_template={division_template=missing}",
-            "change_division_template",
+            "fixture_revise_unit_template={division_template=missing}",
+            "fixture_revise_unit_template",
         ),
-        ("destroy_unit=yes", "destroy_unit"),
+        ("fixture_dissolve_unit=yes", "fixture_dissolve_unit"),
         (
-            "set_unit_organization=var:unrecorded^random",
-            "set_unit_organization",
+            "fixture_readiness_level=var:unrecorded^random",
+            "fixture_readiness_level",
         ),
     ] {
         let missing = UNIT + (1_u64 << 32);
@@ -596,9 +590,9 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
         reason: "synthetic unit gap".into(),
     };
     for body in [
-        "change_division_template={division_template=missing}",
-        "destroy_unit=yes",
-        "set_unit_organization=1",
+        "fixture_revise_unit_template={division_template=missing}",
+        "fixture_dissolve_unit=yes",
+        "fixture_readiness_level=1",
     ] {
         let out = render(&fixture, body, U(UNIT), Content::default(), &[]);
         assert!(out.text.is_empty());
@@ -615,8 +609,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
 
 #[test]
 fn unit_carrier_graph_links_keep_operand_scope() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = unit_fixture();
     let mut scopes = EventScopes::new(vec![
         EventScope {
@@ -629,7 +622,7 @@ fn unit_carrier_graph_links_keep_operand_scope() {
         },
     ]);
     let out = fixture.render(
-        "FROM={set_unit_organization=ROOT.syn_amount}",
+        "FROM={fixture_readiness_level=ROOT.syn_amount}",
         &mut scopes,
         Content::default(),
     );
@@ -640,8 +633,7 @@ fn unit_carrier_graph_links_keep_operand_scope() {
 
 #[test]
 fn unit_carrier_format98_naming_table() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let names = content_reader_division_names::division_names::parse(
         br#"SYN_G={prefix="P " ordered={12={"%s/%d %s"}}
             unordered={a={"Literal %d"}} fallback_name="Fallback %d"}
@@ -723,7 +715,7 @@ fn unit_carrier_format98_naming_table() {
                 group: group.as_bytes().to_vec(),
             }));
         }
-        let body = "change_division_template={division_template=\"Raw [This.GetName]\"}";
+        let body = "fixture_revise_unit_template={division_template=\"Raw [This.GetName]\"}";
         let out = render(&fixture, body, U(UNIT), content, &[]);
         match expected {
             Ok(name) => {
@@ -766,7 +758,7 @@ fn unit_carrier_format98_naming_table() {
         }
         let out = render(
             &fixture,
-            "destroy_unit=yes destroy_unit=yes",
+            "fixture_dissolve_unit=yes fixture_dissolve_unit=yes",
             U(UNIT),
             content,
             &[],
@@ -780,7 +772,7 @@ fn unit_carrier_format98_naming_table() {
         );
         let out = render(
             &fixture,
-            "set_unit_organization=0.25",
+            "fixture_readiness_level=0.25",
             U(UNIT),
             content,
             &[],
@@ -792,8 +784,7 @@ fn unit_carrier_format98_naming_table() {
 
 #[test]
 fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use crate::fixtures::{folder_catalogue, layers_catalogue};
     let (_, base) = folder_catalogue(&[
         (
@@ -846,7 +837,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
     std::fs::write(later.0.join("common/units/names_divisions/a.txt"), "G={}").unwrap();
     let out = render(
         &fixture,
-        "destroy_unit=yes",
+        "fixture_dissolve_unit=yes",
         U(UNIT),
         Content::default(),
         &[],
@@ -857,8 +848,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
 
 #[test]
 fn unit_carrier_naming_has_no_country_or_division_cap() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = unit_fixture();
     let countries = crate::effect_description::tests::synthetic_countries(24);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
@@ -901,7 +891,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
         ));
     let out = render(
         &fixture,
-        "destroy_unit=yes",
+        "fixture_dissolve_unit=yes",
         U(*ids.last().unwrap()),
         Content::default(),
         &[],
@@ -912,8 +902,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
 
 #[test]
 fn units_output_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let equipment = equipment();
     let mut sub_units = content_reader_script::sub_units::SubUnits::default();
@@ -926,225 +915,225 @@ fn units_output_branches() {
         ..Default::default()
     };
     for (body, object, expected) in [
-        ("air_experience=1.25", C(1), "Air 1.25\n"),
-        ("navy_experience=syn_amount", C(1), "Navy 2.49\n"),
-        ("raid_add_unit_experience=-0.5", C(1), "RaidXP -0.50\n"),
-        ("add_manpower=syn_amount", C(1), "Men Alpha/2\n"),
-        ("add_manpower=-1.5", S(1), "StateMen One/-2\n"),
+        ("fixture_air_points=1.25", C(1), "Air 1.25\n"),
+        ("fixture_fleet_points=syn_amount", C(1), "Navy 2.49\n"),
+        ("fixture_raid_unit_points=-0.5", C(1), "RaidXP -0.50\n"),
+        ("fixture_recruit_pool=syn_amount", C(1), "Men Alpha/2\n"),
+        ("fixture_recruit_pool=-1.5", S(1), "StateMen One/-2\n"),
         (
-            "delete_units={division_template=Raw}",
+            "fixture_retire_formation={division_template=Raw}",
             C(1),
             "DeleteUnits Raw\n",
         ),
         (
-            "delete_units={division_template=Raw disband=yes}",
+            "fixture_retire_formation={division_template=Raw disband=yes}",
             C(1),
             "DisbandUnits Raw\n",
         ),
         (
-            "delete_units={division_template=Raw air_experience=1}",
+            "fixture_retire_formation={division_template=Raw fixture_air_points=1}",
             C(1),
             "DeleteUnits Raw\nAir 1.00\n",
         ),
         (
-            "delete_unit_template_and_units={division_template=Raw}",
+            "fixture_dissolve_template={division_template=Raw}",
             C(1),
             "Delete Raw\n",
         ),
         (
-            "delete_unit_template_and_units={division_template=Raw disband=yes}",
+            "fixture_dissolve_template={division_template=Raw disband=yes}",
             C(1),
             "Disband Raw\n",
         ),
         (
-            "delete_unit_template_and_units={division_template=Raw air_experience=1}",
+            "fixture_dissolve_template={division_template=Raw fixture_air_points=1}",
             C(1),
             "Delete Raw\n",
         ),
         (
-            "set_division_template_lock={division_template=Raw is_locked=yes}",
+            "fixture_lock_template={division_template=Raw is_locked=yes}",
             C(1),
             "Lock Raw\n",
         ),
         (
-            "set_division_template_lock={division_template=Raw}",
+            "fixture_lock_template={division_template=Raw}",
             C(1),
             "Unlock Raw\n",
         ),
         (
-            "clear_division_template_cap={division_template=Raw}",
+            "fixture_clear_template_limit={division_template=Raw}",
             C(1),
             "ClearCap Raw\n",
         ),
         (
-            "set_division_template_cap={division_template=Raw division_cap=syn_amount}",
+            "fixture_template_limit={division_template=Raw division_cap=syn_amount}",
             C(1),
             "Cap Raw/2\n",
         ),
         (
-            "set_division_template_cap={division_template=Raw division_cap=-2.9}",
+            "fixture_template_limit={division_template=Raw division_cap=-2.9}",
             C(1),
             "Cap Raw/-2\n",
         ),
         (
-            "set_division_force_allow_recruiting={division_template=Raw force_allow_recruiting=yes}",
+            "fixture_allow_recruitment={division_template=Raw force_allow_recruiting=yes}",
             C(1),
             "Recruit Raw/yes\n",
         ),
         (
-            "set_division_force_allow_recruiting={division_template=Raw}",
+            "fixture_allow_recruitment={division_template=Raw}",
             C(1),
             "Recruit Raw/no\n",
         ),
-        ("country_lock_all_division_template=yes", C(1), "LockAll\n"),
+        ("fixture_lock_country_templates=yes", C(1), "LockAll\n"),
         (
-            "country_lock_all_division_template={is_locked=no}",
+            "fixture_lock_country_templates={is_locked=no}",
             C(1),
             "UnlockAll\n",
         ),
-        ("transfer_navy={target=BBB}", C(1), "NavyTo beta\n"),
+        ("fixture_move_fleet={target=BBB}", C(1), "NavyTo beta\n"),
         (
-            "transfer_units_fraction={target=BBB fraction=0.25}",
+            "fixture_move_share={target=BBB fraction=0.25}",
             C(1),
             "UnitsTo beta",
         ),
         (
-            "send_equipment_fraction={target=BBB fraction=1.5}",
+            "fixture_send_share={target=BBB fraction=1.5}",
             C(1),
             "Fraction 1.00/Beta\n",
         ),
         (
-            "send_equipment_fraction={target=BBB fraction=-0.5}",
+            "fixture_send_share={target=BBB fraction=-0.5}",
             C(1),
             "Fraction 0.00/Beta\n",
         ),
-        ("set_equipment_fraction=2.5", C(1), "Adjust 1.50\n"),
-        ("set_equipment_fraction=0", C(1), "Adjust -1.00\n"),
+        ("fixture_equipment_share=2.5", C(1), "Adjust 1.50\n"),
+        ("fixture_equipment_share=0", C(1), "Adjust -1.00\n"),
         (
-            "add_design_template_bonus={name=syn_bonus cost_factor=-0.2 uses=3}",
+            "fixture_design_bonus={name=syn_bonus cost_factor=-0.2 uses=3}",
             C(1),
             "Design -0.20/3/Bonus [This.GetName] [This.GetName]\n",
         ),
         (
-            "add_design_template_bonus={name=syn_bonus cost_factor=syn_amount uses=oops}",
+            "fixture_design_bonus={name=syn_bonus cost_factor=syn_amount uses=oops}",
             C(1),
             "Design 0.00/0/Bonus [This.GetName] [This.GetName]\n",
         ),
         (
-            "add_equipment_production={equipment={version_name=Raw type=missing} equipment={type=another}}",
+            "fixture_equipment_order={equipment={version_name=Raw type=missing} equipment={type=another}}",
             C(1),
             "Produce Raw Alpha",
         ),
         (
-            "add_units_to_division_template={template_name=Raw}",
+            "fixture_template_members={template_name=Raw}",
             C(1),
             "Add Alpha/Raw\n",
         ),
-        ("set_naval_oob=Raw", C(1), "OOB Raw Alpha"),
+        ("fixture_naval_roster=Raw", C(1), "OOB Raw Alpha"),
         (
-            "create_ship={equipment_variant=Raw}",
+            "fixture_launch_ship={equipment_variant=Raw}",
             C(1),
             "Ship Raw/alpha Alpha",
         ),
         (
-            "create_ship={equipment_variant=Raw creator=BBB}",
+            "fixture_launch_ship={equipment_variant=Raw creator=BBB}",
             C(1),
             "Ship Raw/beta Alpha",
         ),
-        ("create_ship={equipment_variant=Raw creator=ZZZ}", C(1), ""),
-        ("create_ship={equipment_variant=Raw}", S(1), ""),
-        ("create_unit={owner=AAA}", C(1), "Unit Alphan"),
-        ("create_unit={owner=BBB count=2.5}", C(1), "Units Betan/3"),
-        ("create_unit={owner=AAA count=0}", S(1), ""),
-        ("create_unit={owner=AAA}", S(1), "UnitAt Alphan/One"),
+        ("fixture_launch_ship={equipment_variant=Raw creator=ZZZ}", C(1), ""),
+        ("fixture_launch_ship={equipment_variant=Raw}", S(1), ""),
+        ("fixture_raise_unit={owner=AAA}", C(1), "Unit Alphan"),
+        ("fixture_raise_unit={owner=BBB count=2.5}", C(1), "Units Betan/3"),
+        ("fixture_raise_unit={owner=AAA count=0}", S(1), ""),
+        ("fixture_raise_unit={owner=AAA}", S(1), "UnitAt Alphan/One"),
         (
-            "create_unit={owner=AAA count=2}",
+            "fixture_raise_unit={owner=AAA count=2}",
             S(1),
             "UnitsAt Alphan/2/One",
         ),
         (
-            "create_unit={owner=AAA prioritize_location=2}",
+            "fixture_raise_unit={owner=AAA prioritize_location=2}",
             S(1),
             "UnitAt Alphan/Two",
         ),
         (
-            "create_unit={owner=AAA prioritize_location=2}",
+            "fixture_raise_unit={owner=AAA prioritize_location=2}",
             C(1),
             "Unit Alphan",
         ),
         (
-            "create_unit={owner=AAA country_score={base=0}}",
+            "fixture_raise_unit={owner=AAA country_score={base=0}}",
             S(1),
             "Unit Alphan",
         ),
         (
-            "create_unit={owner=AAA country_score={base=1 modifier={factor=0 NOT={PREV={impassable=no}}}}}",
+            "fixture_raise_unit={owner=AAA country_score={base=1 modifier={factor=0 NOT={PREV={impassable=no}}}}}",
             S(1),
             "UnitAt Alphan/One",
         ),
         (
-            "raid_damage_units={plane_loss=2 damage=3 str_damage=4 org_damage=5}",
+            "fixture_raid_damage={plane_loss=2 damage=3 str_damage=4 org_damage=5}",
             C(1),
             "Plane 2.00",
         ),
         (
-            "raid_damage_units={plane_loss=2 ratio=yes}",
+            "fixture_raid_damage={plane_loss=2 ratio=yes}",
             C(1),
             "PlaneRatio 2.00",
         ),
         (
-            "raid_damage_units={damage=3 ratio=yes org_damage=5}",
+            "fixture_raid_damage={damage=3 ratio=yes org_damage=5}",
             C(1),
             "Strength 3.00",
         ),
         (
-            "raid_damage_units={str_damage=4 org_damage=5}",
+            "fixture_raid_damage={str_damage=4 org_damage=5}",
             C(1),
             "Both 4.00/5.00",
         ),
         (
-            "raid_damage_units={str_damage=4 org_damage=5 ratio=yes}",
+            "fixture_raid_damage={str_damage=4 org_damage=5 ratio=yes}",
             C(1),
             "BothRatio 4.00/5.00",
         ),
         (
-            "raid_damage_units={str_damage=syn_amount}",
+            "fixture_raid_damage={str_damage=syn_amount}",
             C(1),
             "Strength 2.49",
         ),
         (
-            "raid_damage_units={str_damage=4 ratio=yes}",
+            "fixture_raid_damage={str_damage=4 ratio=yes}",
             C(1),
             "StrengthRatio 4.00",
         ),
-        ("raid_damage_units={org_damage=5}", C(1), "Org 5.00"),
+        ("fixture_raid_damage={org_damage=5}", C(1), "Org 5.00"),
         (
-            "raid_damage_units={org_damage=5 ratio=yes}",
+            "fixture_raid_damage={org_damage=5 ratio=yes}",
             C(1),
             "OrgRatio 5.00",
         ),
-        ("raid_damage_units={ratio=yes}", C(1), ""),
+        ("fixture_raid_damage={ratio=yes}", C(1), ""),
         (
-            "unlock_subunit=syn_unit",
+            "fixture_allow_subunit=syn_unit",
             C(2),
             "UnlockType Perspective unit [This.GetName]",
         ),
-        ("add_unit_bonus={name=ignored}", C(1), ""),
-        ("add_equipment_to_stockpile={}", C(1), ""),
-        ("create_equipment_variant={}", C(1), ""),
-        ("create_equipment_variant={type=missing}", S(0), ""),
-        ("create_equipment_variant={type=missing}", S(5), ""),
-        ("create_equipment_variant={type=missing}", C(0), ""),
-        ("destroy_ships={count=all}", C(1), ""),
-        ("send_equipment={amount=1}", C(1), ""),
-        ("damage_units={}", C(1), ""),
+        ("fixture_unit_stat_bonus={name=ignored}", C(1), ""),
+        ("fixture_warehouse_delivery={}", C(1), ""),
+        ("fixture_equipment_model={}", C(1), ""),
+        ("fixture_equipment_model={type=missing}", S(0), ""),
+        ("fixture_equipment_model={type=missing}", S(5), ""),
+        ("fixture_equipment_model={type=missing}", C(0), ""),
+        ("fixture_scrap_ships={count=all}", C(1), ""),
+        ("fixture_equipment_delivery={amount=1}", C(1), ""),
+        ("fixture_empty_body={}", C(1), ""),
         (
-            "add_equipment_bonus={name=ignored bonus={syn_equipment={build_cost_ic=-1 soft_attack=2 soft_attack=-2 air_range=3}}}",
+            "fixture_equipment_change={name=ignored bonus={syn_equipment={build_cost_ic=-1 soft_attack=2 soft_attack=-2 air_attack=3}}}",
             C(1),
             "\u{11}YEquipment [This.GetName]\u{11}!: \n    CostBad -1.00\n    AttackGood 0.00\n    RangeCustom 3.00",
         ),
         (
-            "BBB={transfer_units_fraction={target=AAA} set_equipment_fraction=2}",
+            "BBB={fixture_move_share={target=AAA} fixture_equipment_share=2}",
             C(1),
             "\u{12}BBBBeta:\n   UnitsTo alpha   Adjust 1.00\n",
         ),
@@ -1159,13 +1148,13 @@ fn units_output_branches() {
         ..EventScope::of(C(1))
     }]);
     let before = graph.clone();
-    let out = fixture.render("create_unit={owner=AAA count=2}", &mut graph, content);
+    let out = fixture.render("fixture_raise_unit={owner=AAA count=2}", &mut graph, content);
     assert_eq!(out.text, "Units Alphan/2");
     assert_eq!(graph, before);
     for state in [999, u32::MAX] {
         let out = render(
             &fixture,
-            "create_equipment_variant={type=syn_arch}",
+            "fixture_equipment_model={type=syn_arch}",
             S(state),
             content,
             &[],
@@ -1184,8 +1173,7 @@ fn units_output_branches() {
 
 #[test]
 fn navy_unknown_target_uses_reserved_country_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -1207,7 +1195,7 @@ fn navy_unknown_target_uses_reserved_country_name() {
             ]));
         let out = render(
             &fixture,
-            "transfer_navy={target=ZZZ}",
+            "fixture_move_fleet={target=ZZZ}",
             C(1),
             Content::default(),
             &[],
@@ -1219,8 +1207,7 @@ fn navy_unknown_target_uses_reserved_country_name() {
 
 #[test]
 fn units_admission_and_named_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
@@ -1360,7 +1347,7 @@ fn units_admission_and_named_refusals() {
                 vec![]
             }));
         let body = format!(
-            "create_unit={{owner=AAA allow_spawning_on_enemy_provs={} {}}}",
+            "fixture_raise_unit={{owner=AAA allow_spawning_on_enemy_provs={} {}}}",
             if enemy { "yes" } else { "no" },
             if score { "country_score={base=1}" } else { "" },
         );
@@ -1376,49 +1363,49 @@ fn units_admission_and_named_refusals() {
     }
     for (body, class, reason) in [
         (
-            "add_equipment_production={equipment={type=missing}}",
-            "add_equipment_production",
+            "fixture_equipment_order={equipment={type=missing}}",
+            "fixture_equipment_order",
             "equipment content unavailable",
         ),
         (
-            "add_equipment_to_stockpile={type=missing amount=1}",
-            "add_equipment_to_stockpile",
+            "fixture_warehouse_delivery={type=missing amount=1}",
+            "fixture_warehouse_delivery",
             "equipment content unavailable",
         ),
         (
-            "add_equipment_subsidy={equipment_type=missing}",
-            "add_equipment_subsidy",
+            "fixture_equipment_credit={equipment_type=missing}",
+            "fixture_equipment_credit",
             "equipment content unavailable",
         ),
         (
-            "create_equipment_variant={type=missing}",
-            "create_equipment_variant",
+            "fixture_equipment_model={type=missing}",
+            "fixture_equipment_model",
             "equipment content unavailable",
         ),
         (
-            "destroy_ships={type=missing count=all}",
-            "destroy_ships",
+            "fixture_scrap_ships={type=missing count=all}",
+            "fixture_scrap_ships",
             "equipment content unavailable",
         ),
         (
-            "send_equipment={type=missing target=BBB}",
-            "send_equipment",
+            "fixture_equipment_delivery={type=missing target=BBB}",
+            "fixture_equipment_delivery",
             "equipment content unavailable",
         ),
         (
-            "unlock_subunit=undefined",
-            "unlock_subunit",
+            "fixture_allow_subunit=undefined",
+            "fixture_allow_subunit",
             "content unavailable",
         ),
         (
-            "transfer_navy={target=ZZZ}",
-            "transfer_navy",
+            "fixture_move_fleet={target=ZZZ}",
+            "fixture_move_fleet",
             "reserved country naming has no singleton row",
         ),
-        ("create_unit={}", "create_unit", "reserved country zero"),
+        ("fixture_raise_unit={}", "fixture_raise_unit", "reserved country zero"),
         (
-            "create_unit=THIS",
-            "create_unit",
+            "fixture_raise_unit=THIS",
+            "fixture_raise_unit",
             "the scalar create_unit body is rejected and retains constructor defaults",
         ),
     ] {
@@ -1458,7 +1445,7 @@ fn units_admission_and_named_refusals() {
         }]));
     let out = render(
         &fixture,
-        "create_unit={owner=AAA country_score={base=1 modifier={factor=1 tag=BBB has_cosmetic_tag=syn_costume}}}",
+        "fixture_raise_unit={owner=AAA country_score={base=1 modifier={factor=1 tag=BBB has_cosmetic_tag=syn_costume}}}",
         S(1),
         Content::default(),
         &[],
@@ -1475,13 +1462,12 @@ fn units_admission_and_named_refusals() {
 
 #[test]
 fn units_have_no_country_count_cap() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = equipment_fixture();
     fixture.set_countries(crate::effect_description::tests::synthetic_countries(24));
     let out = render(
         &fixture,
-        "add_manpower=2.5",
+        "fixture_recruit_pool=2.5",
         C(24),
         Content::default(),
         &[],
@@ -1495,11 +1481,11 @@ fn units_have_no_country_count_cap() {
     };
     for (body, expected) in [
         (
-            "send_equipment={type=syn_arch target=AAA amount=1}",
+            "fixture_equipment_delivery={type=syn_arch target=AAA amount=1}",
             "SendOld 1/Alpha gear Many/Alpha Many\n",
         ),
         (
-            "create_equipment_variant={type=syn_arch allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_arch allow_without_tech=yes}",
             "LegacyTechUnnamed Base short",
         ),
     ] {
@@ -1737,8 +1723,7 @@ fn equipment_fixture() -> Fixture {
 
 #[test]
 fn units_equipment_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = equipment_fixture();
     let equipment = equipment();
     let names = content_reader_script::key_names::KeyNames::default();
@@ -1749,276 +1734,276 @@ fn units_equipment_branches() {
     };
     for (body, object, expected) in [
         (
-            "add_equipment_production={equipment={type=syn_arch}}",
+            "fixture_equipment_order={equipment={type=syn_arch}}",
             C(1),
             "Produce Zero gear Alpha Alpha",
         ),
         (
-            "add_equipment_production={equipment={type=syn_arch creator=AAA}}",
+            "fixture_equipment_order={equipment={type=syn_arch creator=AAA}}",
             C(2),
             "Produce Alpha gear Beta Beta",
         ),
         (
-            "add_equipment_production={equipment={type=syn_concrete creator=BBB} equipment={version_name=\"\"}}",
+            "fixture_equipment_order={equipment={type=syn_concrete creator=BBB} equipment={version_name=\"\"}}",
             C(1),
             "Produce Beta model Alpha",
         ),
         (
-            "add_equipment_production={equipment={type=syn_arch creator=ROOT}}",
+            "fixture_equipment_order={equipment={type=syn_arch creator=ROOT}}",
             C(1),
             "Produce Zero gear Alpha Alpha",
         ),
         (
-            "add_equipment_production={equipment={type=syn_arch version_name=\"Raw [This.GetName]\"}}",
+            "fixture_equipment_order={equipment={type=syn_arch version_name=\"Raw [This.GetName]\"}}",
             C(2),
             "Produce Raw Beta Beta",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_alias amount=2.4}",
+            "fixture_warehouse_delivery={type=syn_alias amount=2.4}",
             C(2),
             "Store 2/Alpha gear Beta\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_arch amount=0}",
+            "fixture_warehouse_delivery={type=syn_arch amount=0}",
             C(1),
             "Take 0/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_arch amount=1}",
+            "fixture_warehouse_delivery={type=syn_arch amount=1}",
             S(1),
             "Store 1/Alpha gear One\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_arch amount=-1.5 producer=BBB}",
+            "fixture_warehouse_delivery={type=syn_arch amount=-1.5 producer=BBB}",
             C(1),
             "TakeForeign -2/Alpha gear Alpha/Betan\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_arch amount=1 producer=BBB}",
+            "fixture_warehouse_delivery={type=syn_arch amount=1 producer=BBB}",
             C(1),
             "StoreForeign 1/Alpha gear Alpha/Betan\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_concrete amount=1 variant_name=Ignored}",
+            "fixture_warehouse_delivery={type=syn_concrete amount=1 variant_name=Ignored}",
             C(1),
             "Store 1/First Alpha Mark\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_concrete amount=1 producer=BBB}",
+            "fixture_warehouse_delivery={type=syn_concrete amount=1 producer=BBB}",
             C(1),
             "StoreForeign 1/Beta model Foreign/Betan\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_concrete amount=1 producer=BBB}",
+            "fixture_warehouse_delivery={type=syn_concrete amount=1 producer=BBB}",
             S(1),
             "StoreForeign 1/Beta model Foreign/Betan\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_hull amount=1}",
+            "fixture_warehouse_delivery={type=syn_hull amount=1}",
             C(1),
             "",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_hull amount=1 producer=BBB}",
+            "fixture_warehouse_delivery={type=syn_hull amount=1 producer=BBB}",
             C(1),
             "StoreForeign 1/Ship/Betan\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_basic_hull amount=1}",
+            "fixture_warehouse_delivery={type=syn_basic_hull amount=1}",
             C(1),
             "",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_type amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_type amount=1}",
             C(1),
             "Store 1/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_fraction amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_fraction amount=1}",
             C(1),
             "Store 1/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_negative amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_negative amount=1}",
             C(1),
             "Store 1/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_type type=syn_hull amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_type type=syn_hull amount=1}",
             C(1),
             "Store 1/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_negative type=syn_type amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_negative type=syn_type amount=1}",
             C(1),
             "Store 1/Alpha gear Alpha\n",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_arch type=missing amount=1}",
+            "fixture_warehouse_delivery={type=syn_arch type=missing amount=1}",
             C(1),
             "",
         ),
         (
-            "add_equipment_to_stockpile={type=syn_type amount=1}",
+            "fixture_warehouse_delivery={type=syn_type amount=1}",
             C(1),
             "",
         ),
         (
-            "add_equipment_to_stockpile={type=VAR:syn_type amount=1}",
+            "fixture_warehouse_delivery={type=VAR:syn_type amount=1}",
             C(1),
             "",
         ),
         (
-            "send_equipment={type=syn_arch target=BBB amount=syn_amount old_prioritised=yes}",
+            "fixture_equipment_delivery={type=syn_arch target=BBB amount=syn_amount old_prioritised=yes}",
             C(1),
             "SendOld 2/Alpha gear Alpha/Beta Alpha\n",
         ),
         (
-            "send_equipment={equipment=syn_arch target=BBB amount=-1.5 new_prioritised=yes}",
+            "fixture_equipment_delivery={equipment=syn_arch target=BBB amount=-1.5 new_prioritised=yes}",
             C(1),
             "SendNew -2/Alpha gear Alpha/Beta Alpha\n",
         ),
         (
-            "send_equipment={type=var:syn_type equipment=syn_hull target=BBB amount=1}",
+            "fixture_equipment_delivery={type=var:syn_type equipment=syn_hull target=BBB amount=1}",
             C(1),
             "SendOld 1/Alpha gear Alpha/Beta Alpha\n",
         ),
         (
-            "send_equipment={type=missing target=ZZZ amount=not_recorded}",
+            "fixture_equipment_delivery={type=missing target=ZZZ amount=not_recorded}",
             C(1),
             "",
         ),
         (
-            "destroy_ships={type=syn_arch count=1.5}",
+            "fixture_scrap_ships={type=syn_arch count=1.5}",
             C(1),
             "DestroyOne 1/Alpha gear Alpha\n",
         ),
         (
-            "destroy_ships={type=syn_arch count=0x10}",
+            "fixture_scrap_ships={type=syn_arch count=0x10}",
             C(1),
             "DestroyMany 0/Alpha gear Alpha\n",
         ),
         (
-            "destroy_ships={type=syn_arch count=all}",
+            "fixture_scrap_ships={type=syn_arch count=all}",
             C(1),
             "DestroyMany all Alpha/Alpha gear Alpha\n",
         ),
         (
-            "destroy_ships={type=syn_arch count=\"all\"}",
+            "fixture_scrap_ships={type=syn_arch count=\"all\"}",
             C(1),
             "DestroyMany 0/Alpha gear Alpha\n",
         ),
         (
-            "destroy_ships={type=syn_arch count=-2}",
+            "fixture_scrap_ships={type=syn_arch count=-2}",
             C(1),
             "DestroyMany all Alpha/Alpha gear Alpha\n",
         ),
         (
-            "destroy_ships={type=syn_arch count=syn_amount}",
+            "fixture_scrap_ships={type=syn_arch count=syn_amount}",
             C(1),
             "DestroyMany 0/Alpha gear Alpha\n",
         ),
         (
-            "create_equipment_variant={type=syn_concrete name=Raw allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_concrete name=Raw allow_without_tech=yes}",
             C(1),
             "LegacyTech Model short/Raw",
         ),
         (
-            "create_equipment_variant={type=syn_concrete allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_concrete allow_without_tech=yes}",
             C(1),
             "LegacyTechUnnamed Model short",
         ),
         (
-            "create_equipment_variant={type=syn_concrete name=Raw}",
+            "fixture_equipment_model={type=syn_concrete name=Raw}",
             C(1),
             "LegacyNoTech Model short/Raw",
         ),
         (
-            "create_equipment_variant={type=syn_concrete}",
+            "fixture_equipment_model={type=syn_concrete}",
             C(1),
             "LegacyNoTechUnnamed Model short",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull name=Raw allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull name=Raw allow_without_tech=yes}",
             C(1),
             "ModularTech Alpha ship short/Raw/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull allow_without_tech=yes}",
             C(1),
             "ModularTechUnnamed Alpha ship short/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull name=Raw}",
+            "fixture_equipment_model={type=syn_basic_hull name=Raw}",
             C(1),
             "ModularNoTech Alpha ship short/Raw/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull}",
+            "fixture_equipment_model={type=syn_basic_hull}",
             C(1),
             "ModularNoTechUnnamed Alpha ship short/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull allow_without_tech=yes}",
             S(1),
             "ModularTechUnnamed Alpha ship short/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull allow_without_tech=yes}",
             C(2),
             "ModularTechUnnamed Ship short/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_arch allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_arch allow_without_tech=yes}",
             C(1),
             "LegacyTechUnnamed Alpha short",
         ),
         (
-            "create_equipment_variant={type=syn_hull modules={main=empty} allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_hull modules={main=empty} allow_without_tech=yes}",
             C(1),
             "ModularTechUnnamed Alpha ship short/Carrier",
         ),
         (
-            "create_equipment_variant={type=syn_hull modules={main=syn_sub} allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_hull modules={main=syn_sub} allow_without_tech=yes}",
             C(1),
             "ModularTechUnnamed Alpha ship short/Carrier",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull modules={main=syn_carrier MAIN=syn_sub} allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull modules={main=syn_carrier MAIN=syn_sub} allow_without_tech=yes}",
             C(1),
             "ModularTechUnnamed Alpha ship short/Specific capital",
         ),
         (
-            "create_equipment_variant={type=syn_basic_hull modules={main=syn_carrier} modules={MAIN=missing} allow_without_tech=yes}",
+            "fixture_equipment_model={type=syn_basic_hull modules={main=syn_carrier} modules={MAIN=missing} allow_without_tech=yes}",
             C(1),
             "ModularTechUnnamed Alpha ship short/Carrier",
         ),
-        ("create_equipment_variant={type=syn_arch}", S(0), ""),
-        ("create_equipment_variant={type=syn_arch}", S(5), ""),
-        ("create_equipment_variant={type=syn_arch}", C(0), ""),
-        ("create_equipment_variant={type=missing}", S(999), ""),
+        ("fixture_equipment_model={type=syn_arch}", S(0), ""),
+        ("fixture_equipment_model={type=syn_arch}", S(5), ""),
+        ("fixture_equipment_model={type=syn_arch}", C(0), ""),
+        ("fixture_equipment_model={type=missing}", S(999), ""),
         (
-            "add_equipment_subsidy={equipment_type=syn_arch cic=syn_amount}",
+            "fixture_equipment_credit={equipment_type=syn_arch cic=syn_amount}",
             C(1),
             "Subsidy Alpha/2.49/Alpha gear Alpha/\n",
         ),
         (
-            "add_equipment_subsidy={equipment_type=syn_arch seller_tags={BBB AAA} seller_tags={BBB ZZZ} seller_trigger=syn_trigger}",
+            "fixture_equipment_credit={equipment_type=syn_arch seller_tags={BBB AAA} seller_tags={BBB ZZZ} seller_trigger=syn_trigger}",
             C(1),
             "Subsidy Alpha/0.00/Alpha gear Alpha/Beta|Alpha|Beta\n",
         ),
         (
-            "add_equipment_subsidy={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=\"\"}",
+            "fixture_equipment_credit={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=\"\"}",
             C(1),
             "Subsidy Alpha/0.00/Alpha gear Alpha/\n",
         ),
         (
-            "add_equipment_subsidy={equipment_type=missing}",
+            "fixture_equipment_credit={equipment_type=missing}",
             C(1),
             "Subsidy Alpha/0.00/Null type/\n",
         ),
         (
-            "BBB={send_equipment={type=syn_arch target=AAA amount=1} destroy_ships={type=syn_arch count=1}}",
+            "BBB={fixture_equipment_delivery={type=syn_arch target=AAA amount=1} fixture_scrap_ships={type=syn_arch count=1}}",
             C(1),
             "\u{12}BBBBeta:\n   SendOld 1/Alpha gear Beta/Alpha Beta\n   DestroyOne 1/Alpha gear Beta\n",
         ),
@@ -2035,7 +2020,7 @@ fn units_equipment_branches() {
     }
     let out = render(
         &fixture,
-        "create_equipment_variant={type=syn_basic_hull allow_without_tech=yes}",
+        "fixture_equipment_model={type=syn_basic_hull allow_without_tech=yes}",
         C(1),
         content,
         &[],
@@ -2046,8 +2031,7 @@ fn units_equipment_branches() {
 
 #[test]
 fn units_equipment_named_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = equipment_fixture();
     let equipment = equipment();
     let content = Content {
@@ -2056,15 +2040,15 @@ fn units_equipment_named_refusals() {
     };
     for (body, reason) in [
         (
-            "add_equipment_to_stockpile={type={var=syn_type} amount=1}",
+            "fixture_warehouse_delivery={type={var=syn_type} amount=1}",
             "equipment-type block operand",
         ),
         (
-            "add_equipment_to_stockpile={type=var:syn_missing amount=1}",
+            "fixture_warehouse_delivery={type=var:syn_missing amount=1}",
             "lexical tokens lacks equipment variable token 999",
         ),
         (
-            "add_equipment_subsidy={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=syn_trigger}",
+            "fixture_equipment_credit={equipment_type=syn_arch seller_tags={ZZZ} seller_trigger=syn_trigger}",
             "trigger-template description",
         ),
     ] {
@@ -2085,7 +2069,7 @@ fn units_equipment_named_refusals() {
     for object in [C(0), S(1)] {
         let out = render(
             &fixture,
-            "add_equipment_to_stockpile={type=syn_concrete amount=1}",
+            "fixture_warehouse_delivery={type=syn_concrete amount=1}",
             object,
             content,
             &[],
@@ -2102,7 +2086,7 @@ fn units_equipment_named_refusals() {
     }
     let out = render(
         &fixture,
-        "add_equipment_to_stockpile={type=syn_concrete amount=1}",
+        "fixture_warehouse_delivery={type=syn_concrete amount=1}",
         C(9999),
         content,
         &[],
@@ -2123,7 +2107,7 @@ fn units_equipment_named_refusals() {
     }
     let out = render(
         &fixture,
-        "create_equipment_variant={type=syn_concrete}",
+        "fixture_equipment_model={type=syn_concrete}",
         C(1),
         content,
         &[],
@@ -2139,7 +2123,7 @@ fn units_equipment_named_refusals() {
     );
     let out = render(
         &fixture,
-        "create_equipment_variant={type=syn_concrete allow_without_tech=yes}",
+        "fixture_equipment_model={type=syn_concrete allow_without_tech=yes}",
         C(1),
         content,
         &[],
@@ -2158,7 +2142,7 @@ fn units_equipment_named_refusals() {
     }
     let out = render(
         &fixture,
-        "add_equipment_to_stockpile={type=syn_concrete amount=1}",
+        "fixture_warehouse_delivery={type=syn_concrete amount=1}",
         C(1),
         content,
         &[],
@@ -2169,8 +2153,7 @@ fn units_equipment_named_refusals() {
 
 #[test]
 fn units_recorded_variant_no_tech_probe() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2225,7 +2208,7 @@ fn units_recorded_variant_no_tech_probe() {
         }
         let out = render(
             &fixture,
-            "create_equipment_variant={type=syn_concrete}",
+            "fixture_equipment_model={type=syn_concrete}",
             C(1),
             content,
             &[],
@@ -2245,7 +2228,7 @@ fn units_recorded_variant_no_tech_probe() {
     }
     let out = render(
         &fixture,
-        "create_equipment_variant={type=syn_concrete} create_equipment_variant={type=syn_concrete}",
+        "fixture_equipment_model={type=syn_concrete} fixture_equipment_model={type=syn_concrete}",
         C(1),
         content,
         &[],
@@ -2267,7 +2250,7 @@ fn units_recorded_variant_no_tech_probe() {
     }
     let out = render(
         &fixture,
-        "create_equipment_variant={type=syn_concrete}",
+        "fixture_equipment_model={type=syn_concrete}",
         C(1),
         content,
         &[],
@@ -2278,8 +2261,7 @@ fn units_recorded_variant_no_tech_probe() {
 
 #[test]
 fn units_recorded_variant_pool_order_and_equality() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2370,7 +2352,7 @@ fn units_recorded_variant_pool_order_and_equality() {
                 },
             ]));
         let body = format!(
-            "create_purchase_contract={{seller=AAA buyer=BBB equipment={{type=syn_concrete producer=AAA amount=2}} equipment={{type={right_type} producer=BBB amount=3}}}}"
+            "fixture_purchase_order={{seller=AAA buyer=BBB equipment={{type=syn_concrete producer=AAA amount=2}} equipment={{type={right_type} producer=BBB amount=3}}}}"
         );
         let out = render(&fixture, &body, C(1), content, &[]);
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
@@ -2399,40 +2381,49 @@ fn units_recorded_variant_pool_order_and_equality() {
 
 #[test]
 fn units_equipment_role_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cases = [
-        ("capital_ship", "ship_designer_capital_ship"),
-        ("submarine", "ship_designer_submarine"),
-        ("screen_ship", "ship_designer_screen"),
-        ("carrier", "ship_designer_carrier"),
-        ("capital_ship carrier", "ship_designer_carrier"),
-        ("armor", "tank_designer_"),
-        ("fighter", "plane_designer_fighter"),
-        ("interceptor", "plane_designer_interceptor"),
-        ("tactical_bomber", "plane_designer_tactical_bomber"),
-        ("strategic_bomber", "plane_designer_strategic_bomber"),
-        ("cas", "plane_designer_cas"),
-        ("naval_bomber", "plane_designer_naval_bomber"),
-        ("suicide", "plane_designer_suicide"),
-        ("scout_plane", "plane_designer_scout_plane"),
-        (
-            "maritime_patrol_plane",
-            "plane_designer_maritime_patrol_plane",
-        ),
-        ("armor flame", "tank_designer_flame"),
-        ("armor amphibious", "tank_designer_amphibious"),
-        ("armor anti_air", "tank_designer_anti_air"),
-        ("armor artillery", "tank_designer_artillery"),
-        ("armor anti_tank", "tank_designer_anti_tank"),
-        ("armor rocket", "tank_designer_rocket"),
-        ("heavy_fighter", "plane_designer_heavy_fighter"),
-        ("fighter armor", "unknown"),
+        ("fixture_capital_ship", role::CAPITAL_SHIP, "ship_designer_capital_ship"),
+        ("fixture_submarine", role::SUBMARINE, "ship_designer_submarine"),
+        ("fixture_screen", role::SCREEN, "ship_designer_screen"),
+        ("fixture_carrier", role::CARRIER, "ship_designer_carrier"),
+        ("fixture_capital_carrier", role::CAPITAL_CARRIER, "ship_designer_carrier"),
+        ("fixture_tank", role::TANK, "tank_designer_"),
+        ("fixture_fighter", role::FIGHTER, "plane_designer_fighter"),
+        ("fixture_interceptor", role::INTERCEPTOR, "plane_designer_interceptor"),
+        ("fixture_tactical_bomber", role::TACTICAL_BOMBER, "plane_designer_tactical_bomber"),
+        ("fixture_strategic_bomber", role::STRATEGIC_BOMBER, "plane_designer_strategic_bomber"),
+        ("fixture_close_air_support", role::CLOSE_AIR_SUPPORT, "plane_designer_cas"),
+        ("fixture_naval_bomber", role::NAVAL_BOMBER, "plane_designer_naval_bomber"),
+        ("fixture_suicide_aircraft", role::SUICIDE_AIRCRAFT, "plane_designer_suicide"),
+        ("fixture_scout_plane", role::SCOUT_PLANE, "plane_designer_scout_plane"),
+        ("fixture_maritime_patrol", role::MARITIME_PATROL, "plane_designer_maritime_patrol_plane"),
+        ("fixture_flame_tank", role::FLAME_TANK, "tank_designer_flame"),
+        ("fixture_amphibious_tank", role::AMPHIBIOUS_TANK, "tank_designer_amphibious"),
+        ("fixture_anti_air_tank", role::ANTI_AIR_TANK, "tank_designer_anti_air"),
+        ("fixture_artillery_tank", role::ARTILLERY_TANK, "tank_designer_artillery"),
+        ("fixture_anti_tank", role::ANTI_TANK, "tank_designer_anti_tank"),
+        ("fixture_rocket_tank", role::ROCKET_TANK, "tank_designer_rocket"),
+        ("fixture_heavy_fighter", role::HEAVY_FIGHTER, "plane_designer_heavy_fighter"),
+        ("fixture_mixed", role::FIGHTER | role::TANK, "unknown"),
     ];
+    let game = game::executable().words(cases.iter().map(|&(name, _, _)| name));
+    let categories: Vec<_> = cases.iter().map(|&(name, mask, _)| {
+        (game.token(name).expect("registered equipment category"), mask, name)
+    }).collect();
+    game.auxiliary(|tables| {
+        tables.category_names = Ok(categories.iter().map(|&(_, mask, name)| (name, mask)).collect());
+        let families = tables.category_families.as_mut().unwrap();
+        families.plane_designer = cases.iter()
+            .filter(|(_, _, key)| key.starts_with("plane_designer_"))
+            .fold(0, |mask, (_, role, _)| mask | role);
+        families.ship_designer = role::SHIP_CATEGORIES;
+        families.tank_designer = role::TANK;
+        tables.equipment_categories = Ok(categories);
+    }).enter();
     let mut source = String::from("equipments={");
     let mut localisation = Vec::new();
     let mut expected = Vec::new();
-    for (index, (category, key)) in cases.into_iter().enumerate() {
+    for (index, (category, _, key)) in cases.into_iter().enumerate() {
         let name = format!("syn_role_{index}");
         source.push_str(&format!(
             "{name}={{is_archetype=yes type={{{category}}} module_slots={{main={{}}}}}}"
@@ -2472,7 +2463,7 @@ fn units_equipment_role_branches() {
         ..Default::default()
     };
     for (name, key) in expected {
-        let body = format!("create_equipment_variant={{type={name} allow_without_tech=yes}}");
+        let body = format!("fixture_equipment_model={{type={name} allow_without_tech=yes}}");
         let out = render(&fixture, &body, C(1), content, &[]);
         assert_eq!(
             out.text,

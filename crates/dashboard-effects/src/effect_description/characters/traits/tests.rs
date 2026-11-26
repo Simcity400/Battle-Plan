@@ -6,6 +6,7 @@ use crate::{
 };
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -46,7 +47,7 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_ADD_COUNTRY_LEADER_TRAIT:0 \"country+<$LEADER$>$TRAIT$END\"\n EFFECT_REMOVE_COUNTRY_LEADER_TRAIT:0 \"country-<$LEADER$>$TRAIT$END\"\n",
                 " EFFECT_SWAP_RULER_TRAITS_MODIFY:0 \"modify<$LEADER$>/$REMOVE$ [Root.GetTag]\"\n EFFECT_SWAP_RULER_TRAITS_REPLACE:0 \"swap<$LEADER$>/$REMOVE$/$ADD$ [Root.GetTag]\"\n EFFECT_ADD_MAX_TRAIT:0 \"maximum $NUM$ [Root.GetTag]\"\n",
                 " EFFECT_CONTEXT_COUNTRY:0 \"@$TAG$/$COUNTRY$: \"\n POWER:0 \"Power\"\n COST:0 \"Cost\"\n trait_bonus_all:0 \"All=$VAL$\"\n trait_bonus_leader_default_proximity_offset:0 \"Distance=$NAME$\"\n LEADER_PROXIMITY_MEDIUM_TITLE:0 \"Medium\"\n trait_xp_factor:0 \"XP=$NAME$/$VAL$\"\n",
-                " syn_gun:0 \"Gun\"\n STAT_ARMY_SOFT_ATTACK:0 \"Soft\"\n STAT_ARMY_SUPPLY_CONSUMPTION:0 \"Supply\"\n STAT_MODIFIER_DIFF:0 \"+$VALUE$\"\n STAT_MODIFIER_DIFF_NEG:0 \"-$VALUE$\"\n"
+                " syn_gun:0 \"Gun\"\n STAT_SYNTHETIC_SOFT_ATTACK:0 \"Soft\"\n STAT_SYNTHETIC_SUPPLY_CONSUMPTION:0 \"Supply\"\n STAT_MODIFIER_DIFF:0 \"+$VALUE$\"\n STAT_MODIFIER_DIFF_NEG:0 \"-$VALUE$\"\n"
             ),
         ),
     ]);
@@ -175,10 +176,9 @@ fn assert_render(body: &str, scopes: &mut EventScopes, expected: &str) {
 
 #[test]
 fn add_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_country}",
+        "fixture_grant_personal={trait=syn_country}",
         &mut character(),
         "unit+[Country trait]|  -Country body [Root.GetTag]\n",
     );
@@ -186,10 +186,9 @@ fn add_trait() {
 
 #[test]
 fn remove_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "remove_trait={trait=syn_country}",
+        "fixture_revoke_personal={trait=syn_country}",
         &mut character(),
         "remove[Current]/[Country trait]|  -Country body [Root.GetTag]\n",
     );
@@ -197,10 +196,9 @@ fn remove_trait() {
 
 #[test]
 fn add_country_leader_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_country_leader_trait=syn_country",
+        "fixture_grant_ruling=syn_country",
         &mut country(),
         "country+<Current>\n    \u{11}HCountry trait\u{11}!\n  - Country body AAA\n\nEND",
     );
@@ -208,10 +206,9 @@ fn add_country_leader_trait() {
 
 #[test]
 fn remove_country_leader_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "remove_country_leader_trait=syn_country",
+        "fixture_revoke_ruling=syn_country",
         &mut character(),
         "country-<Current>\n    \u{11}HCountry trait\u{11}!\n  - Country body AAA\n\nEND",
     );
@@ -219,16 +216,15 @@ fn remove_country_leader_trait() {
 
 #[test]
 fn scalar_unit_leader_traits_use_viewing_country_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
-            "add_unit_leader_trait=syn_unit",
+            "fixture_grant_unit=syn_unit",
             "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
         ),
         (
-            "remove_unit_leader_trait=syn_unit",
+            "fixture_revoke_unit=syn_unit",
             "unit-[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
         ),
     ] {
@@ -240,9 +236,8 @@ fn scalar_unit_leader_traits_use_viewing_country_name() {
 
 #[test]
 fn untimed_unit_traits_do_not_read_timed_own_fields() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    for key in ["add_unit_leader_trait", "remove_unit_leader_trait"] {
+    game::enter();
+    for key in ["fixture_grant_unit", "fixture_revoke_unit"] {
         assert_render(
             &format!("{key}={{trait=syn_held days=10}}"),
             &mut character(),
@@ -253,10 +248,9 @@ fn untimed_unit_traits_do_not_read_timed_own_fields() {
 
 #[test]
 fn swap_ruler_traits() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "swap_ruler_traits={add=syn_new remove=syn_old}",
+        "fixture_exchange_ruling={add=syn_new remove=syn_old}",
         &mut country(),
         "swap<Current>/Old/New AAA\nPower: \u{11}G+0.26\u{11}!\n",
     );
@@ -264,10 +258,9 @@ fn swap_ruler_traits() {
 
 #[test]
 fn swap_country_leader_traits() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "swap_country_leader_traits={add=syn_new remove=syn_old}",
+        "fixture_exchange_personal={add=syn_new remove=syn_old}",
         &mut character(),
         "swap<Current>/Old/New [Root.GetTag]\nPower: \u{11}G+0.26\u{11}!\n",
     );
@@ -275,10 +268,9 @@ fn swap_country_leader_traits() {
 
 #[test]
 fn add_timed_unit_leader_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_timed_unit_leader_trait={days=017 trait=syn_unit}",
+        "fixture_grant_for_days={days=017 trait=syn_unit}",
         &mut character(),
         "timed[Viewing Unit trait]/17|      - Unit body [Root.GetTag]\n",
     );
@@ -286,10 +278,9 @@ fn add_timed_unit_leader_trait() {
 
 #[test]
 fn add_random_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_random_trait={syn_unit syn_held}",
+        "fixture_choose_trait={syn_unit syn_held}",
         &mut character(),
         "unit+[Viewing Unit trait]|      - Unit body [Root.GetTag]\n",
     );
@@ -297,15 +288,14 @@ fn add_random_trait() {
 
 #[test]
 fn add_max_trait() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_max_trait=6.5",
+        "fixture_raise_limit=6.5",
         &mut character(),
         "maximum 7 [Root.GetTag]\n",
     );
     assert_render(
-        "add_max_trait=-6.5",
+        "fixture_raise_limit=-6.5",
         &mut character(),
         "maximum -7 [Root.GetTag]\n",
     );
@@ -313,10 +303,9 @@ fn add_max_trait() {
 
 #[test]
 fn named_character_trait_uses_raw_modifiers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={character=syn_character trait=syn_country}",
+        "fixture_grant_personal={character=syn_character trait=syn_country}",
         &mut country(),
         "add[Current]/[Country trait]|  -Country body [Root.GetTag]\n",
     );
@@ -324,20 +313,19 @@ fn named_character_trait_uses_raw_modifiers() {
 
 #[test]
 fn empty_trait_gates_and_swap_error_literal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=absent} remove_trait={trait=absent} add_country_leader_trait=absent remove_country_leader_trait=absent add_unit_leader_trait=absent remove_unit_leader_trait=absent",
+        "fixture_grant_personal={trait=absent} fixture_revoke_personal={trait=absent} fixture_grant_ruling=absent fixture_revoke_ruling=absent fixture_grant_unit=absent fixture_revoke_unit=absent",
         &mut character(),
         "",
     );
     assert_render(
-        "swap_ruler_traits={remove=absent add=syn_new}",
+        "fixture_exchange_ruling={remove=absent add=syn_new}",
         &mut country(),
         "ERROR: TRAITS ARE MISSING\n",
     );
     assert_render(
-        "swap_country_leader_traits={remove=absent add=syn_new}",
+        "fixture_exchange_personal={remove=absent add=syn_new}",
         &mut character(),
         "",
     );
@@ -345,10 +333,9 @@ fn empty_trait_gates_and_swap_error_literal() {
 
 #[test]
 fn numeric_trait_preserves_separator_and_raw_tooltip() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_unit_leader_trait=syn_numeric",
+        "fixture_grant_unit=syn_numeric",
         &mut character(),
         "unit+[Numeric]|      - Power: \u{11}G+0.10\u{11}!\n      - Cost: \u{11}R-0.20\u{11}!\nUnit body [Root.GetTag]\n",
     );
@@ -356,10 +343,9 @@ fn numeric_trait_preserves_separator_and_raw_tooltip() {
 
 #[test]
 fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_full}",
+        "fixture_grant_personal={trait=syn_full}",
         &mut character(),
         "unit+[Full]|  -Power: \u{11}G+0.10\u{11}!\nOther\nAll=1\nDistance=Medium\nXP=Viewing Unit trait/0.20\n\n",
     );
@@ -367,10 +353,9 @@ fn unit_trait_body_preserves_block_order_and_fixed5_scale() {
 
 #[test]
 fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_override}",
+        "fixture_grant_personal={trait=syn_override}",
         &mut character(),
         "unit+[Overriding]|  -Override [Root.GetTag]\n\n",
     );
@@ -378,10 +363,9 @@ fn unit_helper_override_suppresses_modifiers_and_separate_custom_lines() {
 
 #[test]
 fn country_helper_equipment_uses_stat_labels_and_polarity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_country_leader_trait=syn_equipment",
+        "fixture_grant_ruling=syn_equipment",
         &mut character(),
         "country+<Current>\n    \u{11}HEquipment\u{11}!\n  - \u{11}YGun\u{11}!: \n        Soft+0.10\n        Supply--0.20\nEND",
     );
@@ -389,10 +373,9 @@ fn country_helper_equipment_uses_stat_labels_and_polarity() {
 
 #[test]
 fn targeted_trait_uses_country_prefix_and_default_mask() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_country_leader_trait=syn_targeted",
+        "fixture_grant_ruling=syn_targeted",
         &mut character(),
         "country+<Current>\n    \u{11}HTargeted\u{11}!\n  - \u{12}BBB/Beta: Power: \u{11}G+0.20\u{11}!\n\nEND",
     );
@@ -400,8 +383,7 @@ fn targeted_trait_uses_country_prefix_and_default_mask() {
 
 #[test]
 fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
         let scopes = renderer.evaluator().unwrap().event_scopes(0).unwrap();
@@ -417,25 +399,23 @@ fn targeted_trait_keeps_raw_prefix_separator_and_empty_target_scope() {
 
 #[test]
 fn discarded_targeted_operand_refuses_instead_of_inventing_unprefixed_text() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let result = fixture.render(
-        "add_country_leader_trait=syn_targeted_dynamic",
+        "fixture_grant_ruling=syn_targeted_dynamic",
         &mut character(),
         Content::default(),
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect add_country_leader_trait: key add_country_leader_trait: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue".into(),
+        "synthetic effect fixture_grant_ruling: key fixture_grant_ruling: country trait syn_targeted_dynamic targeted-country operand is not retained by the shared catalogue".into(),
         1,
     )]));
 }
 
 #[test]
 fn trait_masks_keep_high_categories_only_in_primary_blocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -444,7 +424,7 @@ fn trait_masks_keep_high_categories_only_in_primary_blocks() {
     };
     definitions[0].category_mask = 1 << 31;
     let result = fixture.render(
-        "add_trait={trait=syn_full}",
+        "fixture_grant_personal={trait=syn_full}",
         &mut character(),
         Content::default(),
     );
@@ -454,7 +434,7 @@ fn trait_masks_keep_high_categories_only_in_primary_blocks() {
     );
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
     let result = fixture.render(
-        "add_country_leader_trait=syn_new",
+        "fixture_grant_ruling=syn_new",
         &mut character(),
         Content::default(),
     );
@@ -477,8 +457,7 @@ fn trait_masks_keep_high_categories_only_in_primary_blocks() {
 
 #[test]
 fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -494,7 +473,7 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
             },
         ]));
     let result = fixture.render(
-        "add_random_trait={syn_unit syn_held}",
+        "fixture_choose_trait={syn_unit syn_held}",
         &mut character(),
         Content::default(),
     );
@@ -507,10 +486,9 @@ fn random_trait_reference_role_uses_recorded_assigned_definition_ordinals() {
 
 #[test]
 fn empty_country_trait_keeps_name_and_bullet() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_country_leader_trait=syn_empty",
+        "fixture_grant_ruling=syn_empty",
         &mut character(),
         "country+<Current>\n    \u{11}HEmpty\u{11}!\n  - \nEND",
     );
@@ -518,29 +496,27 @@ fn empty_country_trait_keeps_name_and_bullet() {
 
 #[test]
 fn unknown_trait_modifier_has_named_definition_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
     let result = fixture.render(
-        "add_unit_leader_trait=syn_numeric",
+        "fixture_grant_unit=syn_numeric",
         &mut character(),
         Content::default(),
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect add_unit_leader_trait: key add_unit_leader_trait: idea modifier political_power_gain has no recorded definition".into(),
+        "synthetic effect fixture_grant_unit: key fixture_grant_unit: idea modifier political_power_gain has no recorded definition".into(),
         1,
     )]));
 }
 
 #[test]
 fn sub_unit_modifiers_keep_first_nonempty_definition() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_sub}",
+        "fixture_grant_personal={trait=syn_sub}",
         &mut character(),
         "unit+[Sub]|  -\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n\n",
     );
@@ -548,10 +524,9 @@ fn sub_unit_modifiers_keep_first_nonempty_definition() {
 
 #[test]
 fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_sub_full}",
+        "fixture_grant_personal={trait=syn_sub_full}",
         &mut character(),
         "unit+[Sub full]|  -\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n    Cost: \u{11}R-0.20\u{11}!\nUnit body [Root.GetTag]\n\n",
     );
@@ -559,10 +534,9 @@ fn sub_unit_prefix_applies_to_every_numeric_row_and_no_custom_tooltip() {
 
 #[test]
 fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_corps_sub}",
+        "fixture_grant_personal={trait=syn_corps_sub}",
         &mut character(),
         "unit+[Corps sub]|  -Power: \u{11}G+0.30\u{11}!\u{11}HFoot\u{11}!\n    Power: \u{11}G+0.10\u{11}!\n\n",
     );
@@ -570,10 +544,9 @@ fn sub_unit_buffer_appends_directly_after_corps_modifiers() {
 
 #[test]
 fn hidden_sub_unit_keeps_header_without_numeric_line() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_trait={trait=syn_hidden_sub}",
+        "fixture_grant_personal={trait=syn_hidden_sub}",
         &mut character(),
         "unit+[Hidden sub]|  -\u{11}HFoot\u{11}!\n\n",
     );
@@ -581,8 +554,7 @@ fn hidden_sub_unit_keeps_header_without_numeric_line() {
 
 #[test]
 fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     fixture.with_renderer(&mut character(), Content::default(), |renderer| {
         assert_eq!(
@@ -603,21 +575,20 @@ fn trait_modifier_lookup_preserves_shared_token_ambiguity() {
         literal: b"POLITICAL_POWER_GAIN".to_vec(),
     });
     let result = fixture.render(
-        "add_trait={trait=syn_sub}",
+        "fixture_grant_personal={trait=syn_sub}",
         &mut character(),
         Content::default(),
     );
     assert_eq!(result.text, "");
     assert_eq!(result.refusals, BTreeMap::from([(
-        "synthetic effect add_trait: key add_trait: refused token: POLITICAL_POWER_GAIN names several lexer tokens".into(),
+        "synthetic effect fixture_grant_personal: key fixture_grant_personal: refused token: POLITICAL_POWER_GAIN names several lexer tokens".into(),
         1,
     )]));
 }
 
 #[test]
 fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let (catalogue, _conditional_folder) = folder_catalogue(&[
         (
@@ -672,8 +643,7 @@ fn conditional_unit_catalogue_preserves_shared_token_ambiguity() {
 
 #[test]
 fn empty_plain_trait_needs_no_recorded_modifier_tables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     for table in [TableId::ModifierDefinitions, TableId::LexicalTokens] {
         *fixture.frame.tables[table.index()] = TableView::Unavailable {
@@ -681,8 +651,8 @@ fn empty_plain_trait_needs_no_recorded_modifier_tables() {
         };
     }
     for (effect, expected) in [
-        ("add_unit_leader_trait=syn_held", "unit+[Held]|"),
-        ("remove_unit_leader_trait=syn_held", "unit-[Held]|"),
+        ("fixture_grant_unit=syn_held", "unit+[Held]|"),
+        ("fixture_revoke_unit=syn_held", "unit-[Held]|"),
     ] {
         let result = fixture.render(effect, &mut character(), Content::default());
         assert_eq!(result.text, expected);
@@ -692,15 +662,14 @@ fn empty_plain_trait_needs_no_recorded_modifier_tables() {
 
 #[test]
 fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "swap_ruler_traits={remove=syn_old add=syn_hidden}",
+        "fixture_exchange_ruling={remove=syn_old add=syn_hidden}",
         &mut country(),
         "swap<Current>/Old/Hidden AAA\nPower: \u{11}G+0.19\u{11}!\n",
     );
     assert_render(
-        "swap_country_leader_traits={remove=syn_country add=syn_country}",
+        "fixture_exchange_personal={remove=syn_country add=syn_country}",
         &mut character(),
         "modify<Current>/Country trait [Root.GetTag]\n\n",
     );
@@ -708,10 +677,9 @@ fn swap_root_delta_does_not_copy_custom_tooltips_or_hidden_sets() {
 
 #[test]
 fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_render(
-        "add_country_leader_trait=syn_targeted_custom",
+        "fixture_grant_ruling=syn_targeted_custom",
         &mut character(),
         "country+<Current>\n    \u{11}HTarget custom\u{11}!\n  - Target first\n  - target second\n\nEND",
     );
@@ -719,8 +687,7 @@ fn targeted_custom_trait_keeps_embedded_separator_and_trailing_lf() {
 
 #[test]
 fn scoped_modifier_entry_point_allows_expressions_and_embedded_lf() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -729,7 +696,7 @@ fn scoped_modifier_entry_point_allows_expressions_and_embedded_lf() {
     };
     definitions[0].name_key = b"POWER_SCOPED_LF".to_vec();
     let result = fixture.render(
-        "add_scientist_trait=syn_scientist",
+        "fixture_researcher_trait=syn_scientist",
         &mut character(),
         Content::default(),
     );

@@ -2,11 +2,11 @@ use super::*;
 use crate::effect_description::tests::{Fixture, fresh};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 #[test]
 fn format99_country_rosters_preserve_stored_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let countries = crate::effect_description::tests::synthetic_countries(24);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
@@ -36,7 +36,7 @@ fn format99_country_rosters_preserve_stored_order() {
             occupied: Recorded::Value(Some(references)),
             ..Default::default()
         }]));
-    let item = content_reader_parser::parser::parse(b"every_neighbor_country={}")
+    let item = content_reader_parser::parser::parse(b"fixture_list_neighbor_country={}")
         .unwrap()
         .items
         .remove(0);
@@ -113,8 +113,7 @@ fn format99_country_rosters_preserve_stored_order() {
 
 #[test]
 fn state_divisions_follow_native_province_and_mixed_unit_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use crate::triggers::ContentFacts;
     let mut fixture = Fixture::new();
     let first = 39 | 1_u64 << 32;
@@ -200,7 +199,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             scripted_stack: Vec::new(),
             concise: None,
         };
-        let item = content_reader_parser::parser::parse(b"every_state_division={}")
+        let item = content_reader_parser::parser::parse(b"fixture_list_state_division={}")
             .unwrap()
             .items
             .remove(0);
@@ -251,8 +250,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
 
 #[test]
 fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Scientists.index()] =
         TableView::Complete(TableRows::Scientists(
@@ -268,7 +266,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
                 .collect(),
         ));
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-        let item = content_reader_parser::parser::parse(b"every_active_scientist={}")
+        let item = content_reader_parser::parser::parse(b"fixture_list_active_scientist={}")
             .unwrap()
             .items
             .remove(0);
@@ -291,7 +289,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
         };
         rows[0].active = unavailable;
         fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
-            let item = content_reader_parser::parser::parse(b"random_active_scientist={}")
+            let item = content_reader_parser::parser::parse(b"fixture_select_active_scientist={}")
                 .unwrap()
                 .items
                 .remove(0);
@@ -318,7 +316,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
         });
         assert_eq!(
             fixture.render(
-                "every_active_scientist={limit={always=no} army_experience=2}",
+                "fixture_list_active_scientist={limit={always=no} fixture_points=2}",
                 &mut fresh(),
                 Content::default()
             ),
@@ -329,8 +327,7 @@ fn format99_active_scientists_use_raw_nonzero_byte_and_native_order() {
 
 #[test]
 fn inactive_scientists_still_consume_limit_variable_randomness() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Scientists.index()] =
         TableView::Complete(TableRows::Scientists(vec![ScientistRow {
@@ -357,7 +354,7 @@ fn inactive_scientists_still_consume_limit_variable_randomness() {
         let evaluator = renderer.evaluator().unwrap();
         assert_eq!(evaluator.scoped_value(b"random_seed", scopes), Ok(967));
         let item = content_reader_parser::parser::parse(
-            b"every_active_scientist={limit={check_variable={random < 1}}}",
+            b"fixture_list_active_scientist={limit={check_variable={random < 1}}}",
         )
         .unwrap()
         .items
@@ -384,8 +381,7 @@ fn inactive_scientists_still_consume_limit_variable_randomness() {
 
 #[test]
 fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_failure() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     fixture.triggers.counts = Some(content_reader_script::trigger_keys::CountTriggerNames {
         ideology_types: [b"synthetic_type".to_vec()].into(),
@@ -425,7 +421,7 @@ fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_fail
             ideology: -7,
             current_ideology: Recorded::Value(Some(Some(11))),
         }]));
-    let body = "party_leader={limit={has_ideology=synthetic_type} army_experience=2}";
+    let body = "fixture_party_leader={limit={has_ideology=synthetic_type} fixture_points=2}";
     let output = fixture.render(body, &mut fresh(), Content::default());
     assert!(output.text.contains("Nine") && output.text.contains("XP2"));
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
@@ -458,8 +454,7 @@ fn format99_party_leader_selector_uses_current_ideology_and_refuses_capture_fail
 
 #[test]
 fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibility() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(vec![
@@ -505,14 +500,14 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
         ..Default::default()
     };
     let out = fixture.render(
-        "every_military_industrial_organization={limit={OWNER={tag=AAA}} army_experience=2}",
+        "fixture_list_organisation={limit={OWNER={tag=AAA}} fixture_points=2}",
         &mut fresh(),
         content,
     );
     assert_eq!(out.text, "\u{11}YAAA\u{11}!: \n   XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "every_military_industrial_organization={include_invisible=yes army_experience=2}",
+        "fixture_list_organisation={include_invisible=yes fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -520,7 +515,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let mut graph = fresh();
     let out = fixture.render(
-        "random_military_industrial_organization={army_experience=2}",
+        "fixture_select_organisation={fixture_points=2}",
         &mut graph,
         content,
     );
@@ -535,7 +530,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
         },
         EventScope::of(EventObject::Country(1)),
     ]);
-    let out = fixture.render("THIS={army_experience=2}", &mut graph, content);
+    let out = fixture.render("THIS={fixture_points=2}", &mut graph, content);
     assert_eq!(out.text, "AAA \u{12}AAA XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     database = content_reader_military::industrial_organisations::Database::default();
@@ -546,7 +541,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
         )
         .unwrap();
     let out = fixture.render(
-        "every_military_industrial_organization={army_experience=2}",
+        "fixture_list_organisation={fixture_points=2}",
         &mut fresh(),
         Content {
             industrial_organisations: Some(&database),
@@ -555,7 +550,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     );
     assert_eq!(out.text, "\u{11}Yx\u{11}!: \n   XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    let out = fixture.render("every_military_industrial_organization={include_invisible=yes limit={check_variable={var=unrecorded value=1}} army_experience=2}", &mut fresh(), Content::default());
+    let out = fixture.render("fixture_list_organisation={include_invisible=yes limit={check_variable={var=unrecorded value=1}} fixture_points=2}", &mut fresh(), Content::default());
     assert!(out.text.is_empty());
     assert_eq!(out.refusals.values().sum::<usize>(), 1);
     assert!(
@@ -569,12 +564,11 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
 
 #[test]
 fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     for (limit, expected) in [("NOT={state=5}", "Four"), ("always=yes", "2 others")] {
         let out = fixture.render(
-            &format!("every_state={{limit={{{limit}}} army_experience=2}}"),
+            &format!("fixture_all_states={{limit={{{limit}}} fixture_points=2}}"),
             &mut fresh(),
             Content::default(),
         );
@@ -582,11 +576,11 @@ fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
         assert!(out.text.contains(expected), "{}", out.text);
         assert_eq!(out.text.matches("XP2").count(), 1);
     }
-    let out = fixture.render("every_state={limit={state=1} display_individual_scopes=yes army_experience=2} every_state={limit={always=no} visible_when_empty=yes tooltip=TIP army_experience=3}", &mut fresh(), Content::default());
+    let out = fixture.render("fixture_all_states={limit={state=1} display_individual_scopes=yes fixture_points=2} fixture_all_states={limit={always=no} visible_when_empty=yes tooltip=TIP fixture_points=3}", &mut fresh(), Content::default());
     assert_eq!(out.text, "(\u{11}YOne\u{11}!):\n   XP2\ntip:\n   XP3\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "BBB={every_state={limit={state=1} army_experience=2}}",
+        "BBB={fixture_all_states={limit={state=1} fixture_points=2}}",
         &mut fresh(),
         Content::default(),
     );
@@ -598,12 +592,11 @@ fn shared_multiple_iterator_truncates_and_keeps_native_layout_options() {
 
 #[test]
 fn random_country_labels_share_native_marked_definite_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     for (tag, name) in [("AAA", "Alpha"), ("BBB", "Beta")] {
         let out = fixture.render(
-            &format!("random_country={{limit={{tag={tag}}} army_experience=2}}"),
+            &format!("fixture_select_country={{limit={{tag={tag}}} fixture_points=2}}"),
             &mut fresh(),
             Content::default(),
         );
@@ -617,8 +610,7 @@ fn random_country_labels_share_native_marked_definite_names() {
 
 #[test]
 fn unrecorded_subjects_refuse_the_subject_roster() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -627,7 +619,7 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
     };
     rows[0].subjects = Recorded::NotRecorded;
     let out = fixture.render(
-        "every_subject_country={army_experience=2}",
+        "fixture_list_subject_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -642,8 +634,7 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
 
 #[test]
 fn subject_roster_preserves_alias_duplicates_after_native_filters() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     crate::test_country_links::extend(
         &mut fixture.frame,
@@ -671,7 +662,7 @@ fn subject_roster_preserves_alias_duplicates_after_native_filters() {
     };
     rows[1].owned_state_count = 0;
     let out = fixture.render(
-        "every_subject_country={army_experience=2}",
+        "fixture_list_subject_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -684,8 +675,7 @@ fn subject_roster_preserves_alias_duplicates_after_native_filters() {
 
 #[test]
 fn subject_roster_reads_existence_before_excluding_caller_alias() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -707,7 +697,7 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
     };
     rows.retain(|row| row.country != 100);
     let out = fixture.render(
-        "every_subject_country={army_experience=2} random_subject_country={army_experience=3}",
+        "fixture_list_subject_country={fixture_points=2} fixture_select_subject_country={fixture_points=3}",
         &mut fresh(),
         Content::default(),
     );
@@ -727,11 +717,10 @@ fn subject_roster_reads_existence_before_excluding_caller_alias() {
 
 #[test]
 fn recorded_country_subject_and_character_rosters_select_natively() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let out = fixture.render(
-        "every_other_country={army_experience=2}",
+        "fixture_list_other_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -742,7 +731,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
         rows[0].subjects = vec![300, 200].into();
     }
     let out = fixture.render(
-        "every_subject_country={army_experience=2}",
+        "fixture_list_subject_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -762,7 +751,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "every_character={army_experience=2}",
+        "fixture_list_character={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -778,7 +767,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
     assert_eq!(
         fixture
             .render(
-                "random_scientist={army_experience=2}",
+                "fixture_select_scientist={fixture_points=2}",
                 &mut fresh(),
                 Content::default()
             )
@@ -804,7 +793,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
             },
         ]));
     let out = fixture.render(
-        "every_allied_country={army_experience=2}",
+        "fixture_list_allied_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -818,7 +807,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "every_enemy_country={army_experience=2}",
+        "fixture_list_enemy_country={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -828,7 +817,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
         crate::scripted_text::EventScopes::new(vec![crate::scripted_text::EventScope::of(
             crate::scripted_text::EventObject::State(1),
         )]);
-    let out = fixture.render("every_neighbor_state={army_experience=2} random_neighbor_state={prioritize={4} army_experience=3}", &mut graph, Content::default());
+    let out = fixture.render("fixture_list_neighbor_state={fixture_points=2} fixture_select_neighbor_state={prioritize={4} fixture_points=3}", &mut graph, Content::default());
     assert_eq!(
         out.text,
         "(\u{11}YTwo\u{11}!, \u{11}YFour\u{11}!):\n   XP2\n(\u{11}YFour\u{11}!): XP3\n"
@@ -838,8 +827,7 @@ fn recorded_country_subject_and_character_rosters_select_natively() {
 
 #[test]
 fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
         TableView::Complete(TableRows::CountryCharacters(
@@ -928,7 +916,7 @@ fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "character_list_tooltip={}",
+        "fixture_character_roster={}",
         &mut fresh(),
         Content::default(),
     );
@@ -945,7 +933,7 @@ fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "character_list_tooltip={}",
+        "fixture_character_roster={}",
         &mut fresh(),
         Content::default(),
     );
@@ -959,8 +947,7 @@ fn character_sections_sort_all_roles_and_refuse_missing_command_assignments() {
 
 #[test]
 fn scope_chains_and_character_headers_keep_native_graph_selection() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use crate::scripted_text::{EventObject, EventScope, Link};
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::Characters.index()] =
@@ -980,7 +967,7 @@ fn scope_chains_and_character_headers_keep_native_graph_selection() {
         .saved_targets
         .insert(2, vec![(b"advisor".to_vec(), EventObject::Character(9))]);
     let out = fixture.render(
-        "FROM.FROM={ROOT={army_experience=2}} event_target:advisor={army_experience=3}",
+        "FROM.FROM={ROOT={fixture_points=2}} event_target:advisor={fixture_points=3}",
         &mut graph,
         Content::default(),
     );
@@ -995,8 +982,7 @@ fn scope_chains_and_character_headers_keep_native_graph_selection() {
 
 #[test]
 fn country_iterator_sizes_from_live_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let countries = (1..=24)
@@ -1036,7 +1022,7 @@ fn country_iterator_sizes_from_live_rows() {
         TableView::Complete(TableRows::Countries(countries));
     let mut graph = fresh();
     let out = fixture.render(
-        "every_country={tooltip=TIP army_experience=2}",
+        "fixture_list_country={tooltip=TIP fixture_points=2}",
         &mut graph,
         Content::default(),
     );
@@ -1046,8 +1032,7 @@ fn country_iterator_sizes_from_live_rows() {
 
 #[test]
 fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
@@ -1075,18 +1060,18 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
         ));
     for (script, class, why) in [
         (
-            "every_owned_state={army_experience=2}",
-            "every_owned_state",
+            "fixture_list_owned_state={fixture_points=2}",
+            "fixture_list_owned_state",
             "owned states of country counter inputs",
         ),
         (
-            "random_army_leader={army_experience=2}",
-            "random_army_leader",
+            "fixture_select_army_leader={fixture_points=2}",
+            "fixture_select_army_leader",
             "army leaders of country counter inputs not recorded",
         ),
         (
-            "every_active_scientist={army_experience=2}",
-            "every_active_scientist",
+            "fixture_list_active_scientist={fixture_points=2}",
+            "fixture_list_active_scientist",
             "active of scientists",
         ),
     ] {
@@ -1102,7 +1087,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
         );
     }
     let out = fixture.render(
-        "set_politics={elections_allowed=yes election_frequency=48 last_election=1936.1.1}",
+        "fixture_government_detail={elections_allowed=yes election_frequency=48 last_election=1936.1.1}",
         &mut fresh(),
         Content::default(),
     );
@@ -1163,7 +1148,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
                 crate::scripted_text::EventObject::Country(country),
             )]);
         let out = fixture.render(
-            &format!("set_politics={{{body}}}"),
+            &format!("fixture_government_detail={{{body}}}"),
             &mut scopes,
             Content {
                 key_names: Some(&names),
@@ -1177,8 +1162,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
 
 #[test]
 fn random_selectors_and_character_list_use_native_multiple_virtual() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
         for &(_, name) in content_reader_script::effect_keys::REGISTERED_EFFECTS.iter() {
@@ -1187,13 +1171,13 @@ fn random_selectors_and_character_list_use_native_multiple_virtual() {
                 .items
                 .remove(0);
             let class = renderer.effect_class(&item).unwrap();
-            if iterator_kind(class.vtable).is_some() || class.vtable == 0x1427BEDB8 {
+            if iterator_kind(class.vtable).is_some() || class.vtable == effect_identity::CHARACTER_ROSTER {
                 assert!(renderer.iterator_multiple(&item), "{name}");
             }
         }
     });
     let out = fixture.render(
-        "BBB={random_state={limit={state=1} army_experience=2}}",
+        "BBB={fixture_pick_state={limit={state=1} fixture_points=2}}",
         &mut fresh(),
         Content::default(),
     );
@@ -1203,11 +1187,10 @@ fn random_selectors_and_character_list_use_native_multiple_virtual() {
 
 #[test]
 fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     let mut graph = fresh();
-    let out = fixture.render("every_state={limit={OR={state=1 state=2}} display_individual_scopes=yes random_state={army_experience=2}}", &mut graph, Content::default());
+    let out = fixture.render("fixture_all_states={limit={OR={state=1 state=2}} display_individual_scopes=yes fixture_pick_state={fixture_points=2}}", &mut graph, Content::default());
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert_eq!(out.text.matches("XP2").count(), 2);
     assert_eq!(graph.scopes[0].random_seed, 1);
@@ -1215,7 +1198,7 @@ fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
         == crate::scripted_text::EventObject::State(2)
         && scope.random_seed == 3));
     let out = fixture.render(
-        "random_state={army_experience=2 add_political_power=3 unported_effect=1}",
+        "fixture_pick_state={fixture_points=2 add_political_power=3 unported_effect=1}",
         &mut fresh(),
         Content::default(),
     );
@@ -1230,8 +1213,7 @@ fn individual_targets_share_one_scope_seed_and_probe_refusals_count_once() {
 
 #[test]
 fn format98_state_iterators_list_and_select_in_recorded_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
@@ -1247,7 +1229,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
         ("core", ["One", "Three", "Two"], "Two"),
     ] {
         let out = fixture.render(
-            &format!("every_{kind}_state={{army_experience=2}}"),
+            &format!("fixture_list_{kind}_state={{fixture_points=2}}"),
             &mut fresh(),
             Content::default(),
         );
@@ -1261,7 +1243,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
         let mut graph = fresh();
         let out = fixture.render(
-            &format!("random_{kind}_state={{army_experience=2}}"),
+            &format!("fixture_pick_{kind}_state={{fixture_points=2}}"),
             &mut graph,
             Content::default(),
         );
@@ -1270,7 +1252,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
         assert_eq!(graph.scopes[0].random_seed, 2);
     }
     let out = fixture.render(
-        "random_owned_state={prioritize={1 3} army_experience=2}",
+        "fixture_pick_owned_state={prioritize={1 3} fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1283,7 +1265,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
     };
     rows[2].controller = 200;
     let out = fixture.render(
-        "random_owned_controlled_state={army_experience=2}",
+        "fixture_select_owned_controlled_state={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1293,8 +1275,7 @@ fn format98_state_iterators_list_and_select_in_recorded_order() {
 
 #[test]
 fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
@@ -1322,13 +1303,13 @@ fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
     rows[0].army_leaders = Recorded::Value(Some(vec![2 << 32, 1 << 32]));
     rows[0].navy_leaders = Recorded::Value(Some(vec![4 << 32, 3 << 32]));
     for (key, ids) in [
-        ("every_army_leader", vec![2, 1]),
-        ("every_navy_leader", vec![4, 3]),
-        ("every_unit_leader", vec![2, 1, 4, 3]),
-        ("global_every_army_leader", vec![2, 1, 2, 1]),
+        ("fixture_list_army_leader", vec![2, 1]),
+        ("fixture_list_navy_leader", vec![4, 3]),
+        ("fixture_list_unit_leader", vec![2, 1, 4, 3]),
+        ("fixture_list_global_army", vec![2, 1, 2, 1]),
     ] {
         let out = fixture.render(
-            &format!("{key}={{army_experience=2}}"),
+            &format!("{key}={{fixture_points=2}}"),
             &mut fresh(),
             Content::default(),
         );
@@ -1341,12 +1322,12 @@ fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
         assert!(out.refusals.is_empty(), "{key}: {:?}", out.refusals);
     }
     for (key, picked) in [
-        ("random_army_leader", 2),
-        ("random_navy_leader", 4),
-        ("random_unit_leader", 4),
+        ("fixture_select_army_leader", 2),
+        ("fixture_select_navy_leader", 4),
+        ("fixture_select_unit_leader", 4),
     ] {
         let out = fixture.render(
-            &format!("{key}={{army_experience=2}}"),
+            &format!("{key}={{fixture_points=2}}"),
             &mut fresh(),
             Content::default(),
         );
@@ -1361,8 +1342,7 @@ fn format98_leaders_use_army_then_navy_order_and_native_global_repetition() {
 
 #[test]
 fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     for unavailable in [Recorded::NotRecorded, Recorded::Value(None)] {
         let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
@@ -1379,14 +1359,14 @@ fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
         };
         rows[0].navy_leaders = rows[0].army_leaders.clone();
         for (key, name) in [
-            ("every_owned_state", "owned states of country counter inputs"),
-            ("every_controlled_state", "controlled states of country counter inputs"),
-            ("every_core_state", "core states of country counter inputs"),
-            ("every_army_leader", "army leaders of country counter inputs"),
-            ("every_navy_leader", "navy leaders of country counter inputs"),
+            ("fixture_list_owned_state", "owned states of country counter inputs"),
+            ("fixture_list_controlled_state", "controlled states of country counter inputs"),
+            ("fixture_list_core_state", "core states of country counter inputs"),
+            ("fixture_list_army_leader", "army leaders of country counter inputs"),
+            ("fixture_list_navy_leader", "navy leaders of country counter inputs"),
         ] {
             let out = fixture.render(
-                &format!("{key}={{limit={{state=1}} army_experience=2}}"),
+                &format!("{key}={{limit={{state=1}} fixture_points=2}}"),
                 &mut fresh(),
                 Content::default(),
             );
@@ -1404,8 +1384,7 @@ fn format98_orders_require_recorded_fields_even_for_single_passing_targets() {
 
 #[test]
 fn format98_operative_memberships_supply_native_order_and_full_handles() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(
@@ -1440,7 +1419,7 @@ fn format98_operative_memberships_supply_native_order_and_full_handles() {
             .to_vec(),
         ));
     let out = fixture.render(
-        "every_operative={army_experience=2}",
+        "fixture_list_operative={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1450,7 +1429,7 @@ fn format98_operative_memberships_supply_native_order_and_full_handles() {
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "random_operative={army_experience=2}",
+        "fixture_select_operative={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1463,7 +1442,7 @@ fn format98_operative_memberships_supply_native_order_and_full_handles() {
     };
     rows.remove(0);
     let out = fixture.render(
-        "every_operative={army_experience=2}",
+        "fixture_list_operative={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1506,17 +1485,16 @@ fn unrecorded_operative_fixture(name: &[u8]) -> Fixture {
 
 #[test]
 fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = unrecorded_operative_fixture(b"Leader");
     let out = fixture.render(
-        "random_operative={limit={always=no} army_experience=2}",
+        "fixture_select_operative={limit={always=no} fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
     assert_eq!(out, Description::default());
     let out = fixture.render(
-        "random_operative={army_experience=2}",
+        "fixture_select_operative={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1529,7 +1507,7 @@ fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
     };
     rows.pop();
     let out = fixture.render(
-        "random_operative={army_experience=2}",
+        "fixture_select_operative={fixture_points=2}",
         &mut fresh(),
         Content::default(),
     );
@@ -1539,8 +1517,7 @@ fn unrecorded_operative_order_allows_pure_empty_and_singleton_selections() {
 
 #[test]
 fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_matches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = unrecorded_operative_fixture(b"");
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(vec![ScriptVariablesRow {
@@ -1562,7 +1539,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
                 .store_description_temp(b"stable".to_vec(), 100_000);
             assert_eq!(renderer.scoped_value(b"random_seed", scopes), Ok(967));
             let item = content_reader_parser::parser::parse(
-                format!("random_operative={{limit={{{limit}}}}}").as_bytes(),
+                format!("fixture_select_operative={{limit={{{limit}}}}}").as_bytes(),
             )
             .unwrap()
             .items
@@ -1596,7 +1573,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
         evaluator.store_description_temp(b"stable".to_vec(), 100_000);
         let effects = evaluator.variable_effects();
         let item = content_reader_parser::parser::parse(
-            b"random_operative={limit={divide_temp_variable={stable=0} always=no}}",
+            b"fixture_select_operative={limit={divide_temp_variable={stable=0} always=no}}",
         )
         .unwrap()
         .items
@@ -1625,8 +1602,7 @@ fn unrecorded_operative_order_refuses_reached_limit_writes_and_rng_even_for_no_m
 
 #[test]
 fn party_leader_without_mandatory_ideology_is_empty_even_with_two_leaders() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::PoliticalParties.index()] =
         TableView::Complete(TableRows::PoliticalParties(
@@ -1651,7 +1627,7 @@ fn party_leader_without_mandatory_ideology_is_empty_even_with_two_leaders() {
         ));
     let mut graph = fresh();
     let out = fixture.render(
-        "party_leader={army_experience=2}",
+        "fixture_party_leader={fixture_points=2}",
         &mut graph,
         Content::default(),
     );
@@ -1661,8 +1637,7 @@ fn party_leader_without_mandatory_ideology_is_empty_even_with_two_leaders() {
 
 #[test]
 fn fresh_country_state_environment_does_not_inherit_caller_links() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     let mut graph = fresh();
     graph.scopes[0].root = crate::scripted_text::Link::Unknown;
@@ -1693,8 +1668,7 @@ fn fresh_country_state_environment_does_not_inherit_caller_links() {
 
 #[test]
 fn collection_builder_renders_header_in_caller_and_body_in_representative() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
@@ -1709,20 +1683,19 @@ fn collection_builder_renders_header_in_caller_and_body_in_representative() {
                 ordinal: 1,
             },
         ]));
-    let out = fixture.render("every_collection_element={input={input=game:scope operators={faction_members limit={tag=BBB}}} if={limit={tag=BBB} army_experience=2}}", &mut fresh(), Content::default());
+    let out = fixture.render("fixture_collection_members={input={input=game:scope operators={faction_members limit={tag=BBB}}} if={limit={tag=BBB} fixture_points=2}}", &mut fresh(), Content::default());
     assert_eq!(out.text, "Faction roster:\n   XP2\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
-    let out = fixture.render("every_collection_element={input={input=game:scope name=REFERENCE operators={faction_members}} army_experience=2}", &mut fresh(), Content::default());
+    let out = fixture.render("fixture_collection_members={input={input=game:scope name=REFERENCE operators={faction_members}} fixture_points=2}", &mut fresh(), Content::default());
     assert_eq!(out.text, "AAA:\n   XP2\n");
     assert!(out.refusals.is_empty());
-    let out = fixture.render("every_collection_element={input={input=game:scope operators={faction_members limit={always=no}}} army_experience=2}", &mut fresh(), Content::default());
+    let out = fixture.render("fixture_collection_members={input={input=game:scope operators={faction_members limit={always=no}}} fixture_points=2}", &mut fresh(), Content::default());
     assert!(out.text.is_empty() && out.refusals.is_empty());
 }
 
 #[test]
 fn ability_context_header_uses_country_while_character_getters_keep_leader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use crate::scripted_text::{EventObject, EventScope, EventScopes};
     let mut fixture = Fixture::new();
     let leader = 9_u64 << 32 | 3;
@@ -1752,7 +1725,7 @@ fn ability_context_header_uses_country_while_character_getters_keep_leader() {
             44
         );
     });
-    let out = fixture.render("ROOT={army_experience=2}", &mut graph, Content::default());
+    let out = fixture.render("ROOT={fixture_points=2}", &mut graph, Content::default());
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert!(
         out.text.contains("Beta") && out.text.contains("XP2"),
@@ -1765,8 +1738,7 @@ fn ability_context_header_uses_country_while_character_getters_keep_leader() {
 
 #[test]
 fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use crate::scripted_text::{EventObject, EventScope, EventScopes};
     let mut fixture = Fixture::new();
     let leader = 9_u64 << 32 | 3;
@@ -1797,7 +1769,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
     };
     let object = EventObject::CountryUnitLeader { country: 2, leader };
     let mut graph = EventScopes::new(vec![EventScope::of(object)]);
-    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    let out = fixture.render("fixture_notify_state={id=synthetic.1}", &mut graph, content);
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     assert!(
         graph
@@ -1820,7 +1792,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
         ..Default::default()
     });
     let mut graph = EventScopes::new(vec![EventScope::of(object)]);
-    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    let out = fixture.render("fixture_notify_state={id=synthetic.1}", &mut graph, content);
     assert!(
         out.refusals
             .keys()
@@ -1829,7 +1801,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
         out.refusals
     );
     let mut graph = EventScopes::new(vec![EventScope::of(EventObject::Character(44))]);
-    let out = fixture.render("state_event={id=synthetic.1}", &mut graph, content);
+    let out = fixture.render("fixture_notify_state={id=synthetic.1}", &mut graph, content);
     assert!(
         out.refusals
             .keys()
@@ -1841,8 +1813,7 @@ fn state_event_uses_current_character_role_or_refuses_ambiguous_association() {
 
 #[test]
 fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before_lookup() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -1865,7 +1836,7 @@ fn original_tag_effect_rosters_keep_native_order_and_skip_nonpositive_raw_before
             },
         ]));
     let item =
-        content_reader_parser::parser::parse(b"every_country_with_original_tag={original_tag=THIS}")
+        content_reader_parser::parser::parse(b"fixture_list_country_with_original_tag={original_tag=THIS}")
             .unwrap()
             .items
             .remove(0);

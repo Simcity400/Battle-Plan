@@ -77,6 +77,7 @@ mod dispatch;
 mod empty;
 mod entity_links;
 pub use entity_links::{EntityKind, Span, spans};
+pub(crate) const DEPENDENT_OPTION_TOOLTIP_TOKEN: u32 = 0x3FF4;
 mod events;
 pub use events::decision_name_key_at;
 mod lists;
@@ -1400,7 +1401,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.effect_class(item).is_some_and(|class| {
             matches!(
                 class.vtable,
-                0x1427f39a0 | 0x1427f3d30 | 0x1427f3c38 | 0x1427E4808 | 0x1427FC050 | 0x1427FBF80
+                effect_identity::EMPTY_OVERRIDE | effect_identity::EMPTY_COUNTED_LOOP | effect_identity::EMPTY_CONDITIONAL_LOOP | 0x1427E4808 | 0x1427FC050 | 0x1427FBF80
             )
         })
     }

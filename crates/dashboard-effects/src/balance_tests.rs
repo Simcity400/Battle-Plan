@@ -1,3 +1,4 @@
+use crate::fixtures::game;
 use crate::{ScriptedEffects, effect_describer, effect_description};
 use dashboard_text::{
     catalogue::{
@@ -26,8 +27,7 @@ fn fixture(bop: Option<&str>) -> (Catalogue, Folder, DecodedFrame) {
 
 #[test]
 fn nested_balance_effects_keep_the_viewer_nato_preference() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
     ));
@@ -59,8 +59,7 @@ fn nested_balance_effects_keep_the_viewer_nato_preference() {
 
 #[test]
 fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={custom_effect_tooltip=LOOP}}}",
     ));
@@ -110,8 +109,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
 
 #[test]
 fn custom_only_balance_effects_do_not_require_world_or_environment() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, mut frame) = fixture(None);
     *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
         reason: "synthetic province gap".into(),
@@ -132,8 +130,7 @@ fn custom_only_balance_effects_do_not_require_world_or_environment() {
 
 #[test]
 fn balance_context_headers_use_the_viewing_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, mut frame) = fixture(Some(
         "balance={range={id=active on_activate={SOV={custom_effect_tooltip=NEXT}}}}",
     ));
@@ -169,10 +166,9 @@ fn balance_context_headers_use_the_viewing_country() {
 
 #[test]
 fn activation_uses_the_shared_numeric_and_conditional_descriptions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, frame) = fixture(Some(
-        "balance={range={id=active on_activate={add_political_power=2 if={limit={always=no} army_experience=9} else={army_experience=3}}}}",
+        "balance={range={id=active on_activate={add_political_power=2 if={limit={always=no} fixture_points=9} else={fixture_points=3}}}}",
     ));
     catalogue
         .scripted_content()
@@ -188,8 +184,7 @@ fn activation_uses_the_shared_numeric_and_conditional_descriptions() {
 
 #[test]
 fn active_range_effect_refusals_are_named_and_counted() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, frame) = fixture(Some(
         r#"balance={range={id=active
             on_activate={unported=1 hidden_effect={other=2}
@@ -221,8 +216,7 @@ fn active_range_effect_refusals_are_named_and_counted() {
 
 #[test]
 fn active_range_missing_feature_mask_and_null_balance() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder, mut frame) = fixture(None);
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
         &mut *frame.tables[TableId::ModifierDefinitions.index()]
@@ -251,8 +245,7 @@ fn active_range_missing_feature_mask_and_null_balance() {
 
 #[test]
 fn balance_nested_description_inherits_the_active_variable_session() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -320,8 +313,10 @@ fn balance_nested_description_inherits_the_active_variable_session() {
 
 #[test]
 fn balance_modifier_description_derives_from_sources_and_localised_static_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::executable().pinned_modifiers([
+        (engine_executable::modifier_keys::POWER_BALANCE_DAILY, "fixture_balance_daily"),
+        (engine_executable::modifier_keys::POWER_BALANCE_WEEKLY, "fixture_balance_weekly"),
+    ]).enter();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/00_defines.lua",
@@ -333,7 +328,7 @@ fn balance_modifier_description_derives_from_sources_and_localised_static_keys()
         ),
         (
             "common/modifiers/00_balance.txt",
-            "SOURCE = { power_balance_daily = 0.01234 power_balance_weekly = -0.02345 }\nZERO = { power_balance_daily = 0 }\nEMPTY = { }\n",
+            "SOURCE = { fixture_balance_daily = 0.01234 fixture_balance_weekly = -0.02345 }\nZERO = { fixture_balance_daily = 0 }\nEMPTY = { }\n",
         ),
     ]);
     let scripted = catalogue.scripted_content().unwrap();
@@ -392,11 +387,11 @@ fn balance_modifier_description_derives_from_sources_and_localised_static_keys()
         vec![
             LexicalTokenRow {
                 token: 7_001,
-                literal: b"power_balance_daily".to_vec(),
+                literal: b"fixture_balance_daily".to_vec(),
             },
             LexicalTokenRow {
                 token: 7_002,
-                literal: b"power_balance_weekly".to_vec(),
+                literal: b"fixture_balance_weekly".to_vec(),
             },
         ],
     );

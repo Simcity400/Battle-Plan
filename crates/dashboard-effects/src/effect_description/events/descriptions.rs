@@ -858,16 +858,16 @@ impl Renderer<'_, '_, '_> {
                 if item
                     .keyword()
                     .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()))
-                    == Some(0x3FF4)
+                    == Some(DEPENDENT_OPTION_TOOLTIP_TOKEN)
                 {
                     return Ok(true);
                 }
                 pending.push(self.effect_children(item));
-                if class.vtable == 0x1428527b0 {
+                if class.vtable == effect_identity::CONDITIONAL {
                     for branch in branches {
                         pending.push(self.effect_children(branch));
                     }
-                } else if class.vtable == 0x142A32320 {
+                } else if class.vtable == effect_identity::WEIGHTED_CHOICES {
                     for member in content_reader_script::effect_keys::random_list_members(item)? {
                         pending.push(content_reader_script::effect_keys::random_member_fields(&member));
                     }

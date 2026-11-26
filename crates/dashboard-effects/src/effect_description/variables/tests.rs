@@ -3,6 +3,7 @@ use crate::effect_description::tests::{Fixture, fresh};
 use crate::scripted_text::EventScope;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -26,8 +27,7 @@ fn fixture() -> Fixture {
 
 #[test]
 fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     for seed in [
         Recorded::Value(None),
@@ -41,7 +41,7 @@ fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
         };
         rows[0].seed = seed;
         let out = fixture.render(
-            "set_variable={var=x value=2 tooltip=VARIABLE_TIP} army_experience=x",
+            "set_variable={var=x value=2 tooltip=VARIABLE_TIP} fixture_points=x",
             &mut fresh(),
             Content::default(),
         );
@@ -52,8 +52,7 @@ fn persistent_arithmetic_keeps_unchanged_prefix_without_rng_seed() {
 
 #[test]
 fn persistent_arithmetic_only_describes_authored_tooltips() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     for operation in [
         "set_variable",
@@ -63,7 +62,7 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
         "divide_variable",
     ] {
         let out = fixture.render(&format!(
-            "{operation}={{var=x value={{value=2 add=2}} tooltip=VARIABLE_TIP}} army_experience=x"
+            "{operation}={{var=x value={{value=2 add=2}} tooltip=VARIABLE_TIP}} fixture_points=x"
         ), &mut fresh(), Content::default());
         assert_eq!(out.text, "AAA:3/4\nXP3\n", "{operation}");
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
@@ -78,8 +77,7 @@ fn persistent_arithmetic_only_describes_authored_tooltips() {
 
 #[test]
 fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -104,7 +102,7 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
     ));
     let out = fixture.render(
         "set_temp_variable={n=2} set_variable={var=ALI.x value=n tooltip=VARIABLE_TIP}
-         army_experience=n set_temp_variable={n=ALI.x tooltip=VARIABLE_TIP} army_experience=n",
+         fixture_points=n set_temp_variable={n=ALI.x tooltip=VARIABLE_TIP} fixture_points=n",
         &mut fresh(),
         Content::default(),
     );
@@ -114,8 +112,7 @@ fn tooltip_evaluates_right_before_left_and_repeats_temp_rhs() {
 
 #[test]
 fn temporary_scalars_execute_before_tooltip_in_one_session() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n={value=3 add=1} tooltip=VARIABLE_TIP}
@@ -123,7 +120,7 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
          subtract_from_temp_variable={n=1 tooltip=VARIABLE_TIP}
          multiply_temp_variable={n=2 tooltip=VARIABLE_TIP}
          divide_temp_variable={n=2 tooltip=VARIABLE_TIP}
-         BBB={army_experience=n}",
+         BBB={fixture_points=n}",
         &mut fresh(),
         Content::default(),
     );
@@ -133,7 +130,7 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "army_experience=temp_var:n",
+        "fixture_points=temp_var:n",
         &mut fresh(),
         Content::default(),
     );
@@ -142,8 +139,7 @@ fn temporary_scalars_execute_before_tooltip_in_one_session() {
 
 #[test]
 fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n=8} set_temp_variable={fallback=3}
@@ -151,7 +147,7 @@ fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
          divide_temp_variable={n=0 if_zero=fallback if_zero=9 tooltip=VARIABLE_TIP}
          divide_temp_variable={n=0 if_zero=9 tooltip=VARIABLE_TIP}
          set_temp_variable={n=8} divide_temp_variable={n=2 if_zero=fallback}
-         army_experience=n",
+         fixture_points=n",
         &mut fresh(),
         Content::default(),
     );
@@ -171,25 +167,19 @@ fn effect_division_reads_if_zero_from_tls_even_for_nonzero_divisors() {
 
 #[test]
 fn clamp_and_modulo_execute_but_empty_setters_do_not() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n=7.9} clamp_temp_variable={var=n min=5 max=2}
-         modulo_temp_variable={n=2} round_temp_variable=n randomize_temp_variable={var=n min=9 max=9}
-         clear_variable=n clear_temp_array=n add_to_temp_array={array=n value=9}
-         remove_from_temp_array={array=n value=1} resize_temp_array={array=n value=2}
-         find_highest_in_array={array=n value=n} find_lowest_in_array={array=n value=n}
-         army_experience=n",
+         modulo_temp_variable={n=2} fixture_ignored_assignment=n
+         fixture_ignored_arguments={var=n min=9 max=9} fixture_ignored_arguments={array=n value=9}
+         fixture_points=n",
         &mut fresh(), Content::default(),
     );
     assert_eq!(out.text, "XP1\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "add_to_array={} remove_from_array={} resize_array={} clear_array={}
-         clamp_variable={} round_variable=x randomize_variable={}
-         get_sorted_scored_countries={} get_highest_scored_country={}
-         modulo_variable={} set_variable_to_random={} army_experience=x",
+        "fixture_ignored_arguments={} fixture_ignored_assignment=x fixture_points=x",
         &mut fresh(),
         Content::default(),
     );
@@ -199,13 +189,12 @@ fn clamp_and_modulo_execute_but_empty_setters_do_not() {
 
 #[test]
 fn global_tooltip_target_replaces_in_order_and_cleans_up() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let mut graph = fresh();
     let out = fixture.render(
-        "save_global_event_target_as=selected BBB={save_global_event_target_as=selected}
-         event_target:selected={army_experience=2}",
+        "fixture_global_target=selected BBB={fixture_global_target=selected}
+         event_target:selected={fixture_points=2}",
         &mut graph,
         Content::default(),
     );
@@ -231,14 +220,13 @@ fn global_tooltip_target_replaces_in_order_and_cleans_up() {
 
 #[test]
 fn known_noops_do_not_need_rng_or_supply_totals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let out = fixture.render(
         "set_temp_variable={n=5} set_temp_variable_to_random={var=n min=3 max=2}
          get_supply_vehicles_temp={var=vehicles type=unknown}
          get_supply_vehicles_temp={var=vehicles type=\"truck\"}
-         army_experience=n army_experience=vehicles",
+         fixture_points=n fixture_points=vehicles",
         &mut fresh(),
         Content::default(),
     );
@@ -261,7 +249,7 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
             "get_supply_vehicles_temp={var=n type=train need=yes}",
             "train inventory, required trains",
         ),
-        ("get_supply_vehicles={var=n}", "description is unsupported"),
+        ("fixture_unported={var=n}", "description is unsupported"),
     ] {
         let out = fixture.render(script, &mut fresh(), Content::default());
         assert_eq!(
@@ -282,7 +270,7 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
         );
     }
     let out = fixture.render(
-        "set_temp_variable_to_random={var=n} army_experience=n",
+        "set_temp_variable_to_random={var=n} fixture_points=n",
         &mut fresh(),
         Content::default(),
     );
@@ -296,8 +284,7 @@ fn known_noops_do_not_need_rng_or_supply_totals() {
 
 #[test]
 fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
@@ -376,7 +363,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
     });
     assert_eq!(graph.scopes[0].random_seed, 1);
     let out = fixture.render(
-        "set_temp_variable_to_random={var=n min=2 max=4} army_experience=n",
+        "set_temp_variable_to_random={var=n min=2 max=4} fixture_points=n",
         &mut fresh(),
         Content::default(),
     );
@@ -386,8 +373,7 @@ fn format98_random_temp_uses_store_seed_and_keeps_one_tls_session() {
 
 #[test]
 fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::ScriptVariables(rows)) =
         &mut *fixture.frame.tables[TableId::ScriptVariables.index()]
@@ -432,8 +418,7 @@ fn format98_random_seed_uses_immediate_from_and_integer_flooring() {
 
 #[test]
 fn format98_variable_rng_selects_state_character_and_global_stores() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(
@@ -482,8 +467,7 @@ fn format98_variable_rng_selects_state_character_and_global_stores() {
 
 #[test]
 fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     for seed in [Recorded::NotRecorded, Recorded::Value(None)] {
         let TableView::Complete(TableRows::ScriptVariables(rows)) =
@@ -493,7 +477,7 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
         };
         rows[0].seed = seed;
         let out = fixture.render(
-            "army_experience=2 set_temp_variable_to_random={var=n} army_experience=n",
+            "fixture_points=2 set_temp_variable_to_random={var=n} fixture_points=n",
             &mut fresh(),
             Content::default(),
         );
@@ -517,8 +501,7 @@ fn format98_random_seed_unavailable_or_old_records_refuse_without_losing_prefix(
 
 #[test]
 fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     for (kind, need, raw, expected) in [
         ("truck", false, -4, -400_000),
@@ -560,7 +543,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
         });
     }
     let out = fixture.render(
-        "get_supply_vehicles_temp={var=n type=train} army_experience=n",
+        "get_supply_vehicles_temp={var=n type=train} fixture_points=n",
         &mut fresh(),
         Content::default(),
     );
@@ -576,8 +559,7 @@ fn format98_supply_temps_use_stored_scalars_ceiling_and_content_minimum() {
 
 #[test]
 fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     for unavailable in [false, true] {
         let TableView::Complete(TableRows::TrainInventory(rows)) =
@@ -607,7 +589,7 @@ fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
         ] {
             let out = fixture.render(
                 &format!(
-                    "get_supply_vehicles_temp={{var=n type={kind} need={need}}} army_experience=n"
+                    "get_supply_vehicles_temp={{var=n type={kind} need={need}}} fixture_points=n"
                 ),
                 &mut fresh(),
                 Content::default(),
@@ -632,8 +614,7 @@ fn format98_supply_unavailable_and_old_scalars_keep_named_refusals() {
 
 #[test]
 fn withheld_required_trucks_refuses_only_truck_need_while_other_vehicle_temps_work() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::TrainInventory(rows)) =
         &mut *fixture.frame.tables[TableId::TrainInventory.index()]
@@ -645,7 +626,7 @@ fn withheld_required_trucks_refuses_only_truck_need_while_other_vehicle_temps_wo
     rows[0].required_trains = Recorded::Value(Some(6));
 
     let refused = fixture.render(
-        "get_supply_vehicles_temp={var=n type=truck need=yes} army_experience=n",
+        "get_supply_vehicles_temp={var=n type=truck need=yes} fixture_points=n",
         &mut fresh(),
         Content::default(),
     );

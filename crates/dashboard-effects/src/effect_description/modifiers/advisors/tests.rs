@@ -3,6 +3,7 @@ use crate::fixtures::{Folder, folder_catalogue};
 use crate::effect_description::tests::{Fixture, fresh};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = super::super::tests::fixture();
@@ -89,8 +90,7 @@ fn roles(fixture: &mut Fixture) -> &mut Vec<AdvisorRoleRow> {
 
 #[test]
 fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
         TableView::Complete(TableRows::AvailableAdvisors(vec![
@@ -126,13 +126,13 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     };
     let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     for (body, expected) in [
-        ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
+        ("fixture_gain_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
-            "remove_ideas={SYN_ADVISOR SYN_ADVISOR}",
+            "fixture_lose_ideas={SYN_ADVISOR SYN_ADVISOR}",
             "Remove First, First",
         ),
         (
-            "show_ideas_tooltip={SYN_ADVISOR SYN_ADVISOR}",
+            "fixture_idea_details={SYN_ADVISOR SYN_ADVISOR}",
             "First, First",
         ),
     ] {
@@ -155,9 +155,9 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), file.ideas);
     let names = content_reader_politics::names::NameLists::default();
     for (body, expected) in [
-        ("add_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
+        ("fixture_gain_ideas={SYN_ADVISOR SYN_ADVISOR}", "Add First, First"),
         (
-            "show_ideas_tooltip={SYN_ADVISOR SYN_ADVISOR}",
+            "fixture_idea_details={SYN_ADVISOR SYN_ADVISOR}",
             "FirstSYN_ADVISOR, FirstSYN_ADVISOR",
         ),
     ] {
@@ -177,8 +177,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
 
 #[test]
 fn retired_fallback_folds_the_token_and_keeps_record_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AvailableAdvisors(rows)) =
         &mut *fixture.frame.tables[TableId::AvailableAdvisors.index()]
@@ -206,7 +205,7 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
         ]));
     roles(&mut fixture)[1].idea = b"syn_advisor".to_vec();
     let result = fixture.render(
-        "add_ideas={SYN_ADVISOR SYN_ADVISOR}",
+        "fixture_gain_ideas={SYN_ADVISOR SYN_ADVISOR}",
         &mut fresh(),
         Content::default(),
     );
@@ -214,15 +213,14 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
     assert!(result.refusals.is_empty());
     *fixture.frame.tables[TableId::CountryRetiredCharacters.index()] =
         TableView::Complete(TableRows::CountryRetiredCharacters(Vec::new()));
-    let result = fixture.render("add_ideas=SYN_ADVISOR", &mut fresh(), Content::default());
+    let result = fixture.render("fixture_gain_ideas=SYN_ADVISOR", &mut fresh(), Content::default());
     assert!(result.text.is_empty());
     assert!(result.refusals.is_empty());
 }
 
 #[test]
 fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let later = AdvisorRoleRow {
         ordinal: 4,
@@ -240,9 +238,9 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
     };
     definitions[1].category_mask = 1 << 31;
     for (body, prefix) in [
-        ("add_ideas=SYN_ADVISOR", "Add "),
-        ("remove_ideas=SYN_ADVISOR", "Remove "),
-        ("show_ideas_tooltip=SYN_ADVISOR", ""),
+        ("fixture_gain_ideas=SYN_ADVISOR", "Add "),
+        ("fixture_lose_ideas=SYN_ADVISOR", "Remove "),
+        ("fixture_idea_details=SYN_ADVISOR", ""),
     ] {
         let result = fixture.render(body, &mut fresh(), Content::default());
         assert_eq!(
@@ -268,15 +266,14 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
 
 #[test]
 fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].modifier_cache = Recorded::Value(Some(AdvisorModifierCache::default()));
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "unused with no numeric entries".into(),
     };
     let result = fixture.render(
-        "show_ideas_tooltip=SYN_ADVISOR",
+        "fixture_idea_details=SYN_ADVISOR",
         &mut fresh(),
         Content::default(),
     );
@@ -294,8 +291,7 @@ fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
 
 #[test]
 fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].idea = b"SYN_BONUS_ADVISOR".to_vec();
     *fixture.frame.tables[TableId::AdvisorTokens.index()] =
@@ -340,7 +336,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
         ..definitions[0].clone()
     });
     let result = fixture.render(
-        "show_ideas_tooltip=SYN_BONUS_ADVISOR",
+        "fixture_idea_details=SYN_BONUS_ADVISOR",
         &mut fresh(),
         Content::default(),
     );
@@ -366,8 +362,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
 
 #[test]
 fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     for (cache, reason) in [
         (
@@ -381,7 +376,7 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
     ] {
         roles(&mut fixture)[0].modifier_cache = cache;
         let result = fixture.render(
-            "show_ideas_tooltip=SYN_ADVISOR",
+            "fixture_idea_details=SYN_ADVISOR",
             &mut fresh(),
             Content::default(),
         );
@@ -392,7 +387,7 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] = TableView::Unavailable {
         reason: "synthetic unavailable".into(),
     };
-    let result = fixture.render("add_ideas=SYN_ADVISOR", &mut fresh(), Content::default());
+    let result = fixture.render("fixture_gain_ideas=SYN_ADVISOR", &mut fresh(), Content::default());
     assert!(result.text.is_empty());
     assert_eq!(result.refusals.values().sum::<usize>(), 1);
     assert!(
@@ -407,8 +402,7 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
 
 #[test]
 fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
@@ -437,9 +431,9 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
     ] {
         roles(&mut fixture)[0].tooltip_keys = Recorded::Value(keys);
         for (body, prefix) in [
-            ("add_ideas=SYN_ADVISOR", "Add "),
-            ("remove_ideas=SYN_ADVISOR", "Remove "),
-            ("show_ideas_tooltip=SYN_ADVISOR", ""),
+            ("fixture_gain_ideas=SYN_ADVISOR", "Add "),
+            ("fixture_lose_ideas=SYN_ADVISOR", "Remove "),
+            ("fixture_idea_details=SYN_ADVISOR", ""),
         ] {
             let result = fixture.render(body, &mut fresh(), Content::default());
             assert_eq!(
@@ -467,8 +461,7 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
 
 #[test]
 fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let read_at = fixture.frame.hour - 23;
     *fixture.frame.tables[TableId::SliceReads.index()] =
@@ -482,7 +475,7 @@ fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
     };
     let ideas = content_reader_politics::ideas::IdeaContent::from_parsed(Vec::new(), Vec::new());
     let result = fixture.render(
-        "add_ideas={SYN_ADVISOR SYN_ADVISOR}",
+        "fixture_gain_ideas={SYN_ADVISOR SYN_ADVISOR}",
         &mut fresh(),
         Content {
             ideas: Some(&ideas),

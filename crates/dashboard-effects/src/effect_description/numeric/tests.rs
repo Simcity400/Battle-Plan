@@ -3,6 +3,7 @@ use crate::effect_description::tests::{Fixture, fresh};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
 use std::sync::Arc;
+use crate::fixtures::game;
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -92,59 +93,56 @@ fn text(fixture: &Fixture, body: &str) -> String {
 
 #[test]
 fn fixed5_template_and_numeric_integer_forms() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     assert_eq!(
         text(
             &fixture,
-            "add_command_power=amount add_fuel=-2.019 add_mio_funds=2.019 set_mio_design_team_assign_cost=0.25"
+            "fixture_command_points=amount fixture_fuel_gain=-2.019 fixture_organisation_funds=2.019 fixture_organisation_assignment_cost=0.25"
         ),
         "Command 2.50 AAA\nFuel -2.01 AAA\nFunds 2.01\nCost 0.25\n"
     );
     assert_eq!(
         text(
             &fixture,
-            "add_attack=1.5 add_defense=-1.5 add_logistics=1.49 add_planning=-1.49 add_coordination=0.5 add_maneuver=-0.5 add_skill_level=0.49 add_nuclear_bombs=1.5"
+            "fixture_attack_gain=1.5 fixture_defense_gain=-1.5 fixture_logistics_gain=1.49 fixture_planning_gain=-1.49 fixture_coordination_gain=0.5 fixture_maneuver_gain=-0.5 fixture_skill_gain=0.49 fixture_stockpile_gain=1.5"
         ),
         "Attack 2 [This.GetTag]\nDefense -2\nLogistics 1\nPlanning -1\nCoordination 1\nManeuver -1\nSkill 0\nNukes 2\n"
     );
     assert_eq!(
         text(
             &fixture,
-            "add_cic=-1.9 add_mio_task_capacity=1.9 add_mio_size=1.9 add_mio_size=2.9 add_mio_size=-2.9"
+            "fixture_industrial_gain=-1.9 fixture_task_slots=1.9 fixture_organisation_growth=1.9 fixture_organisation_growth=2.9 fixture_organisation_growth=-2.9"
         ),
         "CIC -1\nTasks 1\nSize 1\nSizes 2\nSize -2\n"
     );
     assert_eq!(
-        text(&fixture, "add_command_power=ROOT"),
+        text(&fixture, "fixture_command_points=ROOT"),
         "Command 0.00 AAA\n"
     );
 }
 
 #[test]
 fn int_effect_literal_scoped_clamp_sign_and_no_line_feed() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
-    assert_eq!(text(&fixture, "gain_xp=010"), "XP 8 [This.GetTag]");
-    assert_eq!(text(&fixture, "gain_xp=amount"), "XP 2 [This.GetTag]");
-    assert_eq!(text(&fixture, "gain_xp=-2"), "XP 0 [This.GetTag]");
+    assert_eq!(text(&fixture, "fixture_experience_gain=010"), "XP 8 [This.GetTag]");
+    assert_eq!(text(&fixture, "fixture_experience_gain=amount"), "XP 2 [This.GetTag]");
+    assert_eq!(text(&fixture, "fixture_experience_gain=-2"), "XP 0 [This.GetTag]");
     assert_eq!(
-        text(&fixture, "add_threat=-2 add_threat=0 add_threat=amount"),
+        text(&fixture, "fixture_threat_change=-2 fixture_threat_change=0 fixture_threat_change=amount"),
         "Remove threat 2\nRemove threat 0\nThreat 2\n"
     );
 }
 
 #[test]
 fn garrison_colour_percent_and_zero_plus_follow_the_helper() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     assert_eq!(
         text(
             &fixture,
-            "set_garrison_strength=1.59 set_garrison_strength=-1.59 set_garrison_strength=0"
+            "fixture_garrison_readiness=1.59 fixture_garrison_readiness=-1.59 fixture_garrison_readiness=0"
         ),
         "Garrison \u{11}G+1.5%\u{11}!\nGarrison \u{11}R-1.5%\u{11}!\nGarrison \u{11}Y+0.0%\u{11}!\n"
     );
@@ -152,14 +150,13 @@ fn garrison_colour_percent_and_zero_plus_follow_the_helper() {
 
 #[test]
 fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     assert_eq!(
-        text(&fixture, "add_collaboration={target=BBB value=-0.25}"),
+        text(&fixture, "fixture_collaboration_gain={target=BBB value=-0.25}"),
         "Remove collaboration beta/0.25"
     );
-    assert_eq!(text(&fixture, "add_collaboration={target=BBB value=0}"), "");
+    assert_eq!(text(&fixture, "fixture_collaboration_gain={target=BBB value=0}"), "");
     *fixture.frame.tables[TableId::SimulationFeatures.index()] =
         TableView::Complete(TableRows::SimulationFeatures(vec![
             SimulationFeatureRow::default(),
@@ -168,20 +165,19 @@ fn collaboration_gate_and_sign_do_not_add_a_line_feed() {
         reason: "synthetic gap".into(),
     };
     assert_eq!(
-        text(&fixture, "add_collaboration={target=BBB value=amount}"),
+        text(&fixture, "fixture_collaboration_gain={target=BBB value=amount}"),
         ""
     );
 }
 
 #[test]
 fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     assert_eq!(
         text(
             &fixture,
-            "add_decryption={target=BBB amount=1.5} add_decryption={target=BBB ratio=0.25 amount=8} add_decryption={target=AAA ratio=amount}"
+            "fixture_decryption_gain={target=BBB amount=1.5} fixture_decryption_gain={target=BBB ratio=0.25 amount=8} fixture_decryption_gain={target=AAA ratio=amount}"
         ),
         "Decrypt \u{12}BBB Beta/2\nRatio \u{12}BBB Beta/0.25\n"
     );
@@ -189,13 +185,12 @@ fn decryption_ratio_assignment_wins_and_marked_country_is_capitalized() {
 
 #[test]
 fn intel_uses_owned_state_existence_and_domain_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     assert_eq!(
         text(
             &fixture,
-            "add_intel={target=BBB airforce_intel=0 navy_intel=-0.125 civilian_intel=12.34 army_intel=amount}"
+            "fixture_intel_gain={target=BBB airforce_intel=0 navy_intel=-0.125 civilian_intel=12.34 army_intel=amount}"
         ),
         "Intel alpha/beta:\nCivilian: 12.34%, \nArmy: 2.5%, \nNavy: -0.125%"
     );
@@ -219,15 +214,14 @@ fn intel_uses_owned_state_existence_and_domain_order() {
             },
         ]));
     assert_eq!(
-        text(&fixture, "add_intel={target=BBB civilian_intel=amount}"),
+        text(&fixture, "fixture_intel_gain={target=BBB civilian_intel=amount}"),
         ""
     );
 }
 
 #[test]
 fn intel_nonowning_target_requires_its_original_tag_bucket() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
         &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
@@ -247,7 +241,7 @@ fn intel_nonowning_target_requires_its_original_tag_bucket() {
                 },
             ]));
         let out = fixture.render(
-            "add_intel={target=BBB civilian_intel=1}",
+            "fixture_intel_gain={target=BBB civilian_intel=1}",
             &mut fresh(),
             Content::default(),
         );
@@ -265,8 +259,7 @@ fn intel_nonowning_target_requires_its_original_tag_bucket() {
 
 #[test]
 fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     fixture.frame.hour = game_model::calendar::HOUR_EPOCH + 1936 * 8760 + 23;
     fixture.catalogue.localisation = std::sync::Arc::new(
@@ -279,15 +272,14 @@ fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
             .collect(),
     );
     assert_eq!(
-        text(&fixture, "set_truce={target=BBB days=1.5}"),
+        text(&fixture, "fixture_truce_length={target=BBB days=1.5}"),
         "Truce beta/3 SyntheticJanuary, 1936"
     );
 }
 
 #[test]
 fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let resources = [content_reader_key_names::resources::Resource {
         token: "syn_resource".into(),
@@ -296,19 +288,19 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
     let names = content_reader_script::key_names::KeyNames::default();
     for (body, expected) in [
         (
-            "create_import={resource=syn_resource amount=4 exporter=BBB factories=100}",
+            "fixture_import_order={resource=syn_resource amount=4 exporter=BBB factories=100}",
             "Import 4\u{13}resources_strip|7 /Alpha/Beta",
         ),
         (
-            "create_import={resource=syn_resource amount=4 exporter=BBB start_date=1940.2.3}",
+            "fixture_import_order={resource=syn_resource amount=4 exporter=BBB start_date=1940.2.3}",
             "Import 4\u{13}resources_strip|7 /Alpha/Beta/1940.2.3",
         ),
         (
-            "create_production_license={target=BBB equipment={version_name=\"Raw [This.GetTag]\"} cost_factor=9 new_prioritised=yes}",
+            "fixture_licensed_production={target=BBB equipment={version_name=\"Raw [This.GetTag]\"} cost_factor=9 new_prioritised=yes}",
             "License beta/Raw AAA\n",
         ),
         (
-            "create_production_license={equipment={version_name=Raw}}",
+            "fixture_licensed_production={equipment={version_name=Raw}}",
             "License alpha/Raw\n",
         ),
     ] {
@@ -328,8 +320,7 @@ fn imports_and_licenses_use_content_and_ignore_execution_only_fields() {
 
 #[test]
 fn imports_and_licenses_resolve_reserved_country_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -346,11 +337,11 @@ fn imports_and_licenses_resolve_reserved_country_names() {
     let names = content_reader_script::key_names::KeyNames::default();
     for (body, expected) in [
         (
-            "create_import={resource=syn_resource amount=4 exporter=0}",
+            "fixture_import_order={resource=syn_resource amount=4 exporter=0}",
             "Import 4\u{13}resources_strip|7 /Alpha/Beta",
         ),
         (
-            "create_production_license={target=0 equipment={version_name=Raw}}",
+            "fixture_licensed_production={target=0 equipment={version_name=Raw}}",
             "License beta/Raw\n",
         ),
     ] {
@@ -370,11 +361,10 @@ fn imports_and_licenses_resolve_reserved_country_names() {
 
 #[test]
 fn mines_missing_instance_names_are_counted_and_launch_nuke_returns_empty() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let out = fixture.render(
-        "add_mines={region=0 amount=amount} add_mines={region=7 amount=1} launch_nuke={state=1}",
+        "fixture_mine_total={region=0 amount=amount} fixture_mine_total={region=7 amount=1} fixture_launch_strike={state=1}",
         &mut fresh(),
         Content::default(),
     );
@@ -383,6 +373,6 @@ fn mines_missing_instance_names_are_counted_and_launch_nuke_returns_empty() {
     assert!(
         out.refusals
             .keys()
-            .any(|name| name.contains("add_mines") && name.contains("unrecorded instance name"))
+            .any(|name| name.contains("fixture_mine_total") && name.contains("unrecorded instance name"))
     );
 }

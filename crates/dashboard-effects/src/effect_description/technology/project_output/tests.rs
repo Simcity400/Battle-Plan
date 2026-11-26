@@ -3,6 +3,7 @@ use crate::fixtures::{Folder, folder_catalogue};
 use crate::effect_description::tests::{Fixture, fresh};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture(output: &str) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -46,7 +47,7 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n",
                 " SPECIAL_PROJECT_OUTPUT_SUBUNITS:0 \"Subunits:\"\n SPECIAL_PROJECT_OUTPUT_EQUIPMENT:0 \"Equipment:\"\n SPECIAL_PROJECT_OUTPUT_MODULE:0 \"Modules:\"\n",
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n",
-                " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
+                " STAT_SYNTHETIC_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
                 " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n",
                 " SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT:0 \"Equipment got\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE:0 \"Modules got\"\n",
                 " mod_armor:0 \"Armor technology\"\n AND:0 \"and \"\n EFFECT_TECH_BONUS_USES:0 \"$USES$x \"\n EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"$USES$$BONUS|%0+$ Research bonus for: $LIST|Y$.\"\n",
@@ -204,12 +205,11 @@ fn render(fixture: &Fixture, body: &str) -> Description {
 
 #[test]
 fn template_output_header_unlocks_limits_and_module_country_gate() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(
         "enable_equipment_modules={mod_forbidden_module mod_module} enable_subunits={mod_unit limit={always=yes}} enable_equipments={mod_equipment} enable_subunits={mod_unit limit={always=no}}",
     );
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Subunits:\n  Alpha unit\n  Equipment:\n  Alpha equipment\n  Modules:\n  Alpha module\n"
@@ -219,24 +219,22 @@ fn template_output_header_unlocks_limits_and_module_country_gate() {
 
 #[test]
 fn subunit_unlock_duplicate_keeps_its_first_limit_before_admission() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(
         "enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}",
     );
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(output.text, "Complete Project AAA\n  Output\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
 fn country_effects_use_fresh_owner_root_and_prev() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY}");
     let output = render(
         &fixture,
-        "complete_special_project={project=sp:mod_project show_modifiers=yes iteration_output={mod_reward=mod_option}}",
+        "fixture_finish_project={project=sp:mod_project show_modifiers=yes iteration_output={mod_reward=mod_option}}",
     );
     assert_eq!(
         output.text,
@@ -247,10 +245,9 @@ fn country_effects_use_fresh_owner_root_and_prev() {
 
 #[test]
 fn country_output_from_link_preserves_the_project_carrier() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("country_effects={FROM={add_project_progress_ratio=0.37}}");
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Project context Project AAA Progress Project AAA 0.37\n\n"
@@ -260,10 +257,9 @@ fn country_output_from_link_preserves_the_project_carrier() {
 
 #[test]
 fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}");
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Scientist First\n\n"
@@ -271,7 +267,7 @@ fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
     let output = render(
         &fixture,
-        "complete_special_project={project=sp:mod_project scientist=mod_first scientist=mod_later}",
+        "fixture_finish_project={project=sp:mod_project scientist=mod_first scientist=mod_later}",
     );
     assert_eq!(
         output.text,
@@ -282,12 +278,11 @@ fn scientist_fallback_uses_roster_order_and_fresh_character_root() {
 
 #[test]
 fn effects_keep_country_scientist_facility_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST} facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}",
     );
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Country AAA/AAA\n\n  Scientist First\n\n  Facility Two/2\n\n"
@@ -297,8 +292,7 @@ fn effects_keep_country_scientist_facility_order() {
 
 #[test]
 fn unrostered_scientist_refusal_preserves_country_output() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}",
     );
@@ -316,7 +310,7 @@ fn unrostered_scientist_refusal_preserves_country_output() {
         ]));
     let output = render(
         &fixture,
-        "complete_special_project={project=sp:mod_project scientist=mod_later}",
+        "fixture_finish_project={project=sp:mod_project scientist=mod_later}",
     );
     assert_eq!(
         output.text,
@@ -327,20 +321,19 @@ fn unrostered_scientist_refusal_preserves_country_output() {
 
 #[test]
 fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) =
         fixture("facility_state_effects={custom_effect_tooltip=PROJECT_FACILITY}");
     let output = render(
         &fixture,
-        "complete_special_project={project=sp:mod_project state=2 state=1}",
+        "fixture_finish_project={project=sp:mod_project state=2 state=1}",
     );
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Facility One/1\n\n"
     );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  Facility Two/2\n\n"
@@ -350,12 +343,11 @@ fn facility_selector_precedes_specialization_and_injects_stored_province_id() {
 
 #[test]
 fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(
         "equipment_bonus={mod_equipment={soft_attack=0.2}} sub_unit_bonus={mod_unit={soft_attack=0.1}} enable_equipments={mod_equipment}",
     );
-    let output = render(&fixture, "complete_special_project=sp:mod_project");
+    let output = render(&fixture, "fixture_finish_project=sp:mod_project");
     assert_eq!(
         output.text,
         "Complete Project AAA\n  Output\n  \u{13}GFX_mod_unit_icon_small|1 Alpha unit\n     Soft:0.10\n  \u{11}YEquipment\u{11}!: \n      Soft:0.20\n  Equipment:\n  Alpha equipment\n"
@@ -365,8 +357,7 @@ fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
 
 #[test]
 fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_falls_back() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation");
+    game::enter();
     let (mut fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_VARIABLE} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}",
     );
@@ -416,8 +407,7 @@ fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_f
 
 #[test]
 fn iteration_output_follows_the_history_view_and_links_its_unlocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    game::enter();
     let (fixture, _folder) = fixture(
         "country_effects={custom_effect_tooltip=PROJECT_COUNTRY} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST} enable_equipments={mod_equipment} enable_equipment_modules={mod_module}",
     );
@@ -524,8 +514,7 @@ fn iteration(fixture: &Fixture) -> IterationDescription {
 
 #[test]
 fn iteration_scientist_rewards_gated_on_the_scientists_level_render() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    game::enter();
     for (gate, shown) in [("level < 5", true), ("level > 1", false)] {
         let (mut rewards, _folder) = fixture(&format!(
             "scientist_effects={{if={{limit={{has_scientist_level={{{gate} specialization=mod_science}}}} add_scientist_xp={{experience=15 specialization=mod_science}}}}}}"
@@ -549,8 +538,7 @@ fn iteration_scientist_rewards_gated_on_the_scientists_level_render() {
 
 #[test]
 fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    game::enter();
     let (rewards, _folder) = fixture(concat!(
         "country_effects={add_tech_bonus={name=mod_bonus bonus=0.2 uses=1 category=mod_armor} FROM={add_project_progress_ratio=0.15} ",
         "add_breakthrough_progress={specialization=mod_science value=sp_breakthrough_progress.medium} navy_experience=15 custom_effect_tooltip=PROJECT_COUNTRY} ",
@@ -582,7 +570,7 @@ fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
     assert!(described.refusals.is_empty(), "{:?}", described.refusals);
     let output = render(
         &rewards,
-        "complete_special_project=sp:mod_project add_breakthrough_progress={specialization=mod_science value=0.25}",
+        "fixture_finish_project=sp:mod_project add_breakthrough_progress={specialization=mod_science value=0.25}",
     );
     for game in [
         "1x \u{11}G20%\u{11}! Research bonus for: \u{11}YArmor technology\u{11}!.",

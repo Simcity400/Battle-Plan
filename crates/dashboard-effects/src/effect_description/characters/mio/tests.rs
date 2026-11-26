@@ -6,16 +6,17 @@ use crate::{
 };
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 const MIO: u64 = 79 | 1 << 32;
 const EFFECTS: [(&str, &str, &str); 2] = [
     (
-        "unlock_mio_trait_tooltip",
+        "fixture_show_organisation_trait",
         "MIO trait tooltip",
         "Unlock Owner trait AAA\n",
     ),
     (
-        "complete_mio_trait",
+        "fixture_finish_organisation_trait",
         "MIO trait completion",
         "Complete Owner trait AAA\n",
     ),
@@ -41,7 +42,7 @@ fn fixture() -> (Fixture, Folder) {
                 " EFFECT_MIO_UNLOCK_POLICY:0 \"Policy $NAME$\"\n",
                 " SYN_TRAIT:0 \"Base trait\"\n AAA_SYN_TRAIT:0 \"Owner trait\"\n",
                 " synthetic_mio_synthetic_empty_trait:0 \"Unmodified trait\"\n",
-                " STAT_ARMY_SOFT_ATTACK:0 \"Soft\"\n STAT_ARMY_SUPPLY_CONSUMPTION:0 \"Supply\"\n",
+                " STAT_SYNTHETIC_SOFT_ATTACK:0 \"Soft\"\n STAT_SYNTHETIC_SUPPLY_CONSUMPTION:0 \"Supply\"\n",
                 " STAT_MODIFIER_DIFF:0 \"+$VALUE|2$\"\n STAT_MODIFIER_DIFF_NEG:0 \"-$VALUE|2$\"\n",
                 " PP:0 \"Power\"\n RAW_BODY:0 \"Raw [Root.GetTag]\"\n",
                 " BONUS_PRODUCTION_CAPACITY_FACTOR:0 \"Capacity\"\n",
@@ -115,28 +116,27 @@ fn scopes() -> EventScopes {
 
 #[test]
 fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
-            "unlock_mio_trait_tooltip={trait=synthetic_convoy_production show_modifiers=no}",
+            "fixture_show_organisation_trait={trait=synthetic_convoy_production show_modifiers=no}",
             "Unlock Owner trait AAA\n",
         ),
         (
-            "unlock_mio_trait_tooltip={trait=synthetic_convoy_production show_modifiers=no show_modifiers=YES}",
+            "fixture_show_organisation_trait={trait=synthetic_convoy_production show_modifiers=no show_modifiers=YES}",
             "Unlock Owner trait AAA\n",
         ),
         (
-            "complete_mio_trait=unknown_trait",
+            "fixture_finish_organisation_trait=unknown_trait",
             "Complete unknown_trait AAA\n",
         ),
         (
-            "complete_mio_trait=UNKNOWN_TRAIT",
+            "fixture_finish_organisation_trait=UNKNOWN_TRAIT",
             "Complete UNKNOWN_TRAIT AAA\n",
         ),
         (
-            "complete_mio_trait=initial_trait",
+            "fixture_finish_organisation_trait=initial_trait",
             "Complete initial_trait AAA\n",
         ),
     ] {
@@ -145,7 +145,7 @@ fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
     let out = fixture.render(
-        "complete_mio_trait=unknown_trait",
+        "fixture_finish_organisation_trait=unknown_trait",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Country(1))]),
         Content::default(),
     );
@@ -155,8 +155,7 @@ fn mio_missing_traits_keep_raw_token_and_show_modifiers_can_be_disabled() {
 
 #[test]
 fn mio_catalogue_is_cached_once_per_stack() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, folder) = fixture();
     let content = fixture
         .catalogue
@@ -181,7 +180,7 @@ fn mio_catalogue_is_cached_once_per_stack() {
             .unwrap()
     ));
     let out = fixture.render(
-        "complete_mio_trait=synthetic_empty_trait",
+        "fixture_finish_organisation_trait=synthetic_empty_trait",
         &mut scopes(),
         Content::default(),
     );
@@ -191,12 +190,11 @@ fn mio_catalogue_is_cached_once_per_stack() {
 
 #[test]
 fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for body in [
-        "unlock_mio_trait_tooltip={trait=unknown_trait trait=synthetic_convoy_production show_modifiers=no show_modifiers=yes}",
-        "unlock_mio_trait_tooltip={trait=synthetic_convoy_production show_modifiers=no show_modifiers=\"yes\" show_modifiers=YES}",
+        "fixture_show_organisation_trait={trait=unknown_trait trait=synthetic_convoy_production show_modifiers=no show_modifiers=yes}",
+        "fixture_show_organisation_trait={trait=synthetic_convoy_production show_modifiers=no show_modifiers=\"yes\" show_modifiers=YES}",
     ] {
         let out = fixture.render(body, &mut scopes(), Content::default());
         assert_eq!(
@@ -209,8 +207,7 @@ fn mio_repeated_trait_and_valid_boolean_assignments_keep_the_last_value() {
 
 #[test]
 fn mio_production_bonus_uses_q15_rounding_and_quantized_zero_sign() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for (key, _, header) in EFFECTS {
         let out = fixture.render(
@@ -261,8 +258,7 @@ fn mio_production_percent_keeps_sign_rounding_and_wrapping() {
 
 #[test]
 fn mio_policy_uses_the_same_production_bonus_formatter() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let mut database = content_reader_military::industrial_organisations::Database::default();
     database.policies.read_file(
@@ -285,7 +281,7 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
     };
     rows[0].mio_policies = Recorded::Value(Some(vec![15]));
     let out = fixture.render(
-        "unlock_mio_policy_tooltip={policy=synthetic_policy}",
+        "fixture_offer_policy={policy=synthetic_policy}",
         &mut crate::effect_description::tests::fresh(),
         Content {
             industrial_organisations: Some(&database),
@@ -301,8 +297,7 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
 
 #[test]
 fn mio_inherited_organisation_block_renders_copied_numeric_and_tooltip_entries() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::LexicalTokens(tokens)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -337,8 +332,7 @@ fn mio_inherited_organisation_block_renders_copied_numeric_and_tooltip_entries()
 
 #[test]
 fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] =
         TableView::Complete(TableRows::ModifierDefinitions(vec![]));
@@ -380,8 +374,7 @@ fn mio_organisation_eligibility_or_formatter_error_keeps_bonus_fragments() {
 
 #[test]
 fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -395,7 +388,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "unlock_mio_trait_tooltip={trait=synthetic_convoy_production}",
+        "fixture_show_organisation_trait={trait=synthetic_convoy_production}",
         &mut scopes(),
         Content::default(),
     );
@@ -405,7 +398,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
     );
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     let out = fixture.render(
-        "unlock_mio_trait_tooltip={trait=numeric_zero}",
+        "fixture_show_organisation_trait={trait=numeric_zero}",
         &mut scopes(),
         Content::default(),
     );
@@ -418,7 +411,7 @@ fn mio_effective_empty_gate_uses_the_recorded_feature_mask() {
     };
     features[0].dlc_mask = 4;
     let out = fixture.render(
-        "unlock_mio_trait_tooltip={trait=numeric_zero}",
+        "fixture_show_organisation_trait={trait=numeric_zero}",
         &mut scopes(),
         Content::default(),
     );

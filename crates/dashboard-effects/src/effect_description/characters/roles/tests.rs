@@ -4,6 +4,7 @@ use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> (Fixture, Folder) {
     fixture_with_advisor_modifier("")
@@ -210,32 +211,29 @@ fn text(source: &str, expected: &str) {
 
 #[test]
 fn create_country_leader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     text(
-        "create_country_leader={traits={} expire=2037.6.23 name=\"Archived Label\" ideology=synthetic_ideology picture=GFX_synthetic desc=synthetic_desc}",
+        "fixture_new_ruler={traits={} expire=2037.6.23 name=\"Archived Label\" ideology=synthetic_ideology picture=GFX_synthetic desc=synthetic_desc}",
         "Promote Catalogued predecessor/Group [Root.GetTag]\n",
     );
 }
 
 #[test]
 fn promoted_role_preserves_traits_and_no_scoped_expansion() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     text(
-        "add_country_leader_role={character=synthetic_character promote_leader=yes country_leader={ideology=synthetic_ideology traits={synthetic_trait}}}",
+        "fixture_assign_ruler={character=synthetic_character promote_leader=yes country_leader={ideology=synthetic_ideology traits={synthetic_trait}}}",
         "Promote Current name/Group [Root.GetTag]\n    \u{11}HTrait\u{11}!\n",
     );
 }
 
 #[test]
 fn country_role_description_keeps_trait_lines_and_core_children() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
-        "add_country_leader_role={character=synthetic_character country_leader={ideology=synthetic_ideology traits={synthetic_numeric}} army_experience=2}",
+        "fixture_assign_ruler={character=synthetic_character country_leader={ideology=synthetic_ideology traits={synthetic_numeric}} fixture_points=2}",
         &mut country_scopes(),
     );
     assert_eq!(
@@ -247,8 +245,7 @@ fn country_role_description_keeps_trait_lines_and_core_children() {
 
 #[test]
 fn promote_character_uses_character_scope_reader_fields() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::Characters(rows)) =
         &mut *fixture.frame.tables[TableId::Characters.index()]
@@ -281,13 +278,13 @@ fn promote_character_uses_character_scope_reader_fields() {
         });
     }
     for (body, expected) in [
-        ("promote_character=missing_ideology", ""),
+        ("fixture_promote_candidate=missing_ideology", ""),
         (
-            "promote_character=yes",
+            "fixture_promote_candidate=yes",
             "Promote Current name/Group [Root.GetTag]\n",
         ),
         (
-            "promote_character={character=synthetic_unrecruited ideology=synthetic_ideology}",
+            "fixture_promote_candidate={character=synthetic_unrecruited ideology=synthetic_ideology}",
             "Promote Current name/Group [Root.GetTag]\n",
         ),
     ] {
@@ -299,18 +296,17 @@ fn promote_character_uses_character_scope_reader_fields() {
 
 #[test]
 fn promote_scalar_and_template_fallback_keep_single_role_gate() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     text(
-        "promote_character=synthetic_character",
+        "fixture_promote_candidate=synthetic_character",
         "Promote Current name/Group [Root.GetTag]\n",
     );
     text(
-        "promote_character={character=synthetic_unrecruited ideology=synthetic_ideology}",
+        "fixture_promote_candidate={character=synthetic_unrecruited ideology=synthetic_ideology}",
         "Promote Unrecruited [Root.GetTag]/Group [Root.GetTag]\n",
     );
     text(
-        "promote_character=synthetic_unrecruited",
+        "fixture_promote_candidate=synthetic_unrecruited",
         "Promote Unrecruited [Root.GetTag]/ [Root.GetTag]\n",
     );
     let (mut fixture, _folder) = fixture();
@@ -331,7 +327,7 @@ fn promote_scalar_and_template_fallback_keep_single_role_gate() {
         ]));
     let out = render(
         &fixture,
-        "promote_character=synthetic_character",
+        "fixture_promote_candidate=synthetic_character",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
@@ -340,19 +336,18 @@ fn promote_scalar_and_template_fallback_keep_single_role_gate() {
 
 #[test]
 fn template_promote_names_the_unrecorded_tag_map_winner() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
-        "promote_character={character=synthetic_split_name ideology=synthetic_ideology}",
+        "fixture_promote_candidate={character=synthetic_split_name ideology=synthetic_ideology}",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
     assert_eq!(
         out.refusals,
         BTreeMap::from([(
-            "synthetic effect promote_character: key promote_character: character template synthetic_split_name selected identity/presence is unrecorded".into(),
+            "synthetic effect fixture_promote_candidate: key fixture_promote_candidate: character template synthetic_split_name selected identity/presence is unrecorded".into(),
             1,
         )])
     );
@@ -360,19 +355,18 @@ fn template_promote_names_the_unrecorded_tag_map_winner() {
 
 #[test]
 fn agreeing_conditional_templates_do_not_prove_tag_presence() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
-        "promote_character={character=synthetic_conditional ideology=synthetic_ideology}",
+        "fixture_promote_candidate={character=synthetic_conditional ideology=synthetic_ideology}",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
     assert_eq!(
         out.refusals,
         BTreeMap::from([(
-            "synthetic effect promote_character: key promote_character: character template synthetic_conditional selected identity/presence is unrecorded".into(),
+            "synthetic effect fixture_promote_candidate: key fixture_promote_candidate: character template synthetic_conditional selected identity/presence is unrecorded".into(),
             1,
         )])
     );
@@ -380,18 +374,16 @@ fn agreeing_conditional_templates_do_not_prove_tag_presence() {
 
 #[test]
 fn advisor_role_sums_trait_and_authored_modifiers_before_formatting() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     text(
-        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot traits={synthetic_numeric} modifier={political_power_gain=0.2}} activate=yes}",
+        "fixture_assign_advisor_role={character=synthetic_character advisor={slot=synthetic_slot traits={synthetic_numeric} modifier={political_power_gain=0.2}} activate=yes}",
         "Appoint Current name/Slot AAA/Power: \u{11}G+0.30\u{11}! AAA",
     );
 }
 
 #[test]
 fn advisor_role_includes_the_high_category_bit() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::ModifierDefinitions(definitions)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -401,7 +393,7 @@ fn advisor_role_includes_the_high_category_bit() {
     definitions[0].category_mask = 1 << 31;
     let out = render(
         &fixture,
-        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.1}}}",
+        "fixture_assign_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.1}}}",
         &mut country_scopes(),
     );
     assert_eq!(
@@ -413,8 +405,7 @@ fn advisor_role_includes_the_high_category_bit() {
 
 #[test]
 fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let mut localisation = fixture
         .catalogue
@@ -442,7 +433,7 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
     definitions[0].postfix_key = b"ADVISOR_OPEN_SCOPE".to_vec();
     let out = render(
         &fixture,
-        "add_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.2}}}",
+        "fixture_assign_advisor_role={character=synthetic_character advisor={slot=synthetic_slot modifier={political_power_gain=0.2}}}",
         &mut country_scopes(),
     );
     assert_eq!(
@@ -454,12 +445,11 @@ fn advisor_role_expands_modifiers_only_after_wrapper_substitution() {
 
 #[test]
 fn current_character_omission_and_slot_parentheses_match_inverted_guard() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
-        "set_can_be_fired_in_advisor_role={value=no slot=synthetic_slot}",
+        "fixture_allow_dismissal={value=no slot=synthetic_slot}",
         &mut character_scopes(),
     );
     assert_eq!(out.text, "Keep /(Slot AAA) AAA");
@@ -468,8 +458,7 @@ fn current_character_omission_and_slot_parentheses_match_inverted_guard() {
 
 #[test]
 fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for (modifier, refuses) in [
         ("", false),
         ("political_power_gain=0.47", false),
@@ -479,8 +468,8 @@ fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history
         let (fixture, _folder) = fixture_with_advisor_modifier(modifier);
         for (key, effect_key, expected) in [
             (
-                "activate_advisor",
-                "activate_advisor",
+                "fixture_appoint_advisor",
+                "fixture_appoint_advisor",
                 "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA",
             ),
             (
@@ -519,8 +508,7 @@ fn advisor_own_block_tooltips_refuse_both_lines_without_guessing_refresh_history
 
 #[test]
 fn advisor_cache_not_recorded_refuses_each_class() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AdvisorRoles(rows)) =
         &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
@@ -528,7 +516,7 @@ fn advisor_cache_not_recorded_refuses_each_class() {
         unreachable!()
     };
     rows[0].modifier_cache = Recorded::NotRecorded;
-    for key in ["activate_advisor", "deactivate_advisor"] {
+    for key in ["fixture_appoint_advisor", "deactivate_advisor"] {
         let out = render(
             &fixture,
             &format!("{key}=synthetic_advisor"),
@@ -548,12 +536,11 @@ fn advisor_cache_not_recorded_refuses_each_class() {
 
 #[test]
 fn complete_rosters_prove_absent_advisor_is_empty() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = render(
         &fixture,
-        "activate_advisor=absent_advisor deactivate_advisor=absent_advisor",
+        "fixture_appoint_advisor=absent_advisor deactivate_advisor=absent_advisor",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
@@ -587,15 +574,14 @@ fn faction_fixture(name: &[u8], template_token: Option<u32>) -> (Fixture, Folder
 
 #[test]
 fn empty_faction_name_uses_bound_template_with_empty_supplied_arguments() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for (token, expected) in [
         (Some(601), "Lead Template AAA AAA\n"),
         (Some(602), "Lead Root Nested Word AAA\n"),
         (None, "Lead  AAA\n"),
     ] {
         let (fixture, _folder) = faction_fixture(b"", token);
-        let out = render(&fixture, "set_faction_leader=yes", &mut country_scopes());
+        let out = render(&fixture, "fixture_select_chair=yes", &mut country_scopes());
         assert_eq!(out.text, expected);
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     }
@@ -603,8 +589,7 @@ fn empty_faction_name_uses_bound_template_with_empty_supplied_arguments() {
 
 #[test]
 fn empty_display_name_uses_recorded_original_key() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![CharacterRow {
@@ -614,15 +599,14 @@ fn empty_display_name_uses_recorded_original_key() {
             token: b"synthetic_name".to_vec(),
             ..Default::default()
         }]));
-    let out = render(&fixture, "retire_country_leader=yes", &mut country_scopes());
+    let out = render(&fixture, "fixture_retire_ruler=yes", &mut country_scopes());
     assert_eq!(out.text, "Retire leader Content name AAA\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn advisor_lookup_without_character_roster_join() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *fixture.frame.tables[TableId::CountryLinks.index()]
@@ -680,7 +664,7 @@ fn advisor_lookup_without_character_roster_join() {
     };
     let out = render(
         &fixture,
-        "activate_advisor=synthetic_advisor deactivate_advisor=absent_advisor",
+        "fixture_appoint_advisor=synthetic_advisor deactivate_advisor=absent_advisor",
         &mut country_scopes(),
     );
     assert_eq!(
@@ -692,8 +676,7 @@ fn advisor_lookup_without_character_roster_join() {
 
 #[test]
 fn advisor_roster_and_cache_capture_failures_are_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
         &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
@@ -702,27 +685,26 @@ fn advisor_roster_and_cache_capture_failures_are_named() {
     }
     let out = render(
         &fixture,
-        "activate_advisor=synthetic_advisor",
+        "fixture_appoint_advisor=synthetic_advisor",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: advisor modifier cache capture unavailable".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_appoint_advisor: key fixture_appoint_advisor: advisor modifier cache capture unavailable".into(), 1)]));
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] = TableView::Unavailable {
         reason: "format 97 lacks available advisors".into(),
     };
     let out = render(
         &fixture,
-        "activate_advisor=synthetic_advisor",
+        "fixture_appoint_advisor=synthetic_advisor",
         &mut country_scopes(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect activate_advisor: key activate_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks available advisors".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_appoint_advisor: key fixture_appoint_advisor: hour 1 AvailableAdvisors is unavailable: format 97 lacks available advisors".into(), 1)]));
 }
 
 #[test]
 fn advisor_primary_order_precedes_retired_case_folded_lookup() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::Characters(rows)) =
         &mut *fixture.frame.tables[TableId::Characters.index()]
@@ -774,7 +756,7 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
     ] {
         let out = render(
             &fixture,
-            &format!("activate_advisor={token}"),
+            &format!("fixture_appoint_advisor={token}"),
             &mut country_scopes(),
         );
         assert_eq!(
@@ -787,8 +769,7 @@ fn advisor_primary_order_precedes_retired_case_folded_lookup() {
 
 #[test]
 fn advisor_cache_role_requires_unambiguous_pointer_identity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     for second_idea in ["synthetic_advisor", "SYNTHETIC_ADVISOR"] {
         let (mut fixture, _folder) = fixture();
         if let TableView::Complete(TableRows::AdvisorRoles(rows)) =
@@ -816,8 +797,8 @@ fn advisor_cache_role_requires_unambiguous_pointer_identity() {
             ]));
         for (key, effect_key, expected) in [
             (
-                "activate_advisor",
-                "activate_advisor",
+                "fixture_appoint_advisor",
+                "fixture_appoint_advisor",
                 "Activate Current name/Power: \u{11}G+0.20\u{11}! AAA",
             ),
             (
@@ -854,8 +835,7 @@ fn advisor_cache_role_requires_unambiguous_pointer_identity() {
 
 #[test]
 fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
         &mut *fixture.frame.tables[TableId::ModifierDefinitions.index()]
@@ -904,7 +884,7 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
             },
         ]));
     for (key, effect_key) in [
-        ("activate_advisor", "activate_advisor"),
+        ("fixture_appoint_advisor", "fixture_appoint_advisor"),
         ("deactivate_advisor", "deactivate_advisor"),
     ] {
         let out = render(
@@ -916,7 +896,7 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
             out.text,
             format!(
                 "{} Current name/Power: \u{11}G+0.30\u{11}!\nPower: \u{11}G+0.20\u{11}!\nTip AAA AAA",
-                if key == "activate_advisor" {
+                if key == "fixture_appoint_advisor" {
                     "Activate"
                 } else {
                     "Deactivate"
@@ -956,8 +936,7 @@ fn advisor_single_tooltip_is_derivable_but_several_need_recorded_slot_order() {
 
 #[test]
 fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AdvisorRoles(rows)) =
         &mut *fixture.frame.tables[TableId::AdvisorRoles.index()]
@@ -972,7 +951,7 @@ fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
     }));
     rows[0].tooltip_keys = Recorded::Value(Some(vec![b"CACHE_B".to_vec(), b"CACHE_A".to_vec()]));
     for (effect, expected) in [
-        ("activate_advisor", "Activate"),
+        ("fixture_appoint_advisor", "Activate"),
         ("deactivate_advisor", "Deactivate"),
     ] {
         let out = render(
@@ -994,7 +973,7 @@ fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
     rows[0].tooltip_keys = Recorded::NotRecorded;
     let out = render(
         &fixture,
-        "activate_advisor=synthetic_advisor",
+        "fixture_appoint_advisor=synthetic_advisor",
         &mut country_scopes(),
     );
     assert_eq!(
@@ -1006,8 +985,7 @@ fn format99_advisor_cache_keeps_stored_tooltip_order_and_old_format_fallback() {
 
 #[test]
 fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_refuse() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture_with_advisor_modifier("custom_modifier_tooltip=SYN_TIP");
     *fixture.frame.tables[TableId::CharacterRoleTraits.index()] = TableView::Unavailable {
         reason: "unused by recorded tooltip cache".into(),
@@ -1030,7 +1008,7 @@ fn recorded_advisor_tooltip_keys_override_authored_blocks_and_failed_captures_re
         };
         rows[0].tooltip_keys = keys;
         for (key, effect_key, verb) in [
-            ("activate_advisor", "activate_advisor", "Activate"),
+            ("fixture_appoint_advisor", "fixture_appoint_advisor", "Activate"),
             ("deactivate_advisor", "deactivate_advisor", "Deactivate"),
         ] {
             let out = render(

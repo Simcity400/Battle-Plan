@@ -7,6 +7,32 @@ const ROSTER_VARIANT: u64 = mask::<replay_data::rows::AvailableEquipmentVariantR
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
+mod role {
+    pub(super) const SHIP_CATEGORIES: u64 = 0x80004003C1;
+    pub(super) const CAPITAL_SHIP: u64 = 0x40;
+    pub(super) const SUBMARINE: u64 = 0x80;
+    pub(super) const SCREEN: u64 = 0x100;
+    pub(super) const CARRIER: u64 = 0x400000;
+    pub(super) const CAPITAL_CARRIER: u64 = 0x400040;
+    pub(super) const TANK: u64 = 4;
+    pub(super) const FIGHTER: u64 = 0x400;
+    pub(super) const INTERCEPTOR: u64 = 0x800;
+    pub(super) const TACTICAL_BOMBER: u64 = 0x1000;
+    pub(super) const STRATEGIC_BOMBER: u64 = 0x2000;
+    pub(super) const CLOSE_AIR_SUPPORT: u64 = 0x4000;
+    pub(super) const NAVAL_BOMBER: u64 = 0x8000;
+    pub(super) const SUICIDE_AIRCRAFT: u64 = 0x20000;
+    pub(super) const SCOUT_PLANE: u64 = 0x40000;
+    pub(super) const MARITIME_PATROL: u64 = 0x200000;
+    pub(super) const FLAME_TANK: u64 = 0x2000004;
+    pub(super) const AMPHIBIOUS_TANK: u64 = 0x4000004;
+    pub(super) const ANTI_AIR_TANK: u64 = 0x8000004;
+    pub(super) const ARTILLERY_TANK: u64 = 0x10000004;
+    pub(super) const ANTI_TANK: u64 = 0x20000004;
+    pub(super) const ROCKET_TANK: u64 = 0x40000004;
+    pub(super) const HEAVY_FIGHTER: u64 = 0x100000000;
+}
+
 mod bonuses;
 
 #[cfg(test)]
@@ -496,7 +522,7 @@ impl Renderer<'_, '_, '_> {
                     return Err("equipment ship-classifier archetype cycle".into());
                 }
                 let kind = &database.equipment[at];
-                ship |= database.category(kind) & 0x80004003C1 != 0;
+                ship |= database.category(kind) & role::SHIP_CATEGORIES != 0;
                 match kind.archetype {
                     Some(archetype) if archetype != at => at = archetype,
                     _ => break,
@@ -837,11 +863,11 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let archetype = parser::text(archetype).map_err(|why| why.to_string())?;
-        let ship = match category & 0x80004003C1 {
-            0x40 => Some("ship_designer_capital_ship"),
-            0x80 => Some("ship_designer_submarine"),
-            0x100 => Some("ship_designer_screen"),
-            0x400000 | 0x400040 => Some("ship_designer_carrier"),
+        let ship = match category & role::SHIP_CATEGORIES {
+            role::CAPITAL_SHIP => Some("ship_designer_capital_ship"),
+            role::SUBMARINE => Some("ship_designer_submarine"),
+            role::SCREEN => Some("ship_designer_screen"),
+            role::CARRIER | role::CAPITAL_CARRIER => Some("ship_designer_carrier"),
             _ => None,
         };
         let key = if let Some(ship) = ship {
@@ -853,23 +879,23 @@ impl Renderer<'_, '_, '_> {
             }
         } else {
             match category {
-                4 => format!("tank_designer_{archetype}"),
-                0x400 => "plane_designer_fighter".into(),
-                0x800 => "plane_designer_interceptor".into(),
-                0x1000 => "plane_designer_tactical_bomber".into(),
-                0x2000 => "plane_designer_strategic_bomber".into(),
-                0x4000 => "plane_designer_cas".into(),
-                0x8000 => "plane_designer_naval_bomber".into(),
-                0x20000 => "plane_designer_suicide".into(),
-                0x40000 => "plane_designer_scout_plane".into(),
-                0x200000 => "plane_designer_maritime_patrol_plane".into(),
-                0x2000004 => "tank_designer_flame".into(),
-                0x4000004 => "tank_designer_amphibious".into(),
-                0x8000004 => "tank_designer_anti_air".into(),
-                0x10000004 => "tank_designer_artillery".into(),
-                0x20000004 => "tank_designer_anti_tank".into(),
-                0x40000004 => "tank_designer_rocket".into(),
-                0x100000000 => "plane_designer_heavy_fighter".into(),
+                role::TANK => format!("tank_designer_{archetype}"),
+                role::FIGHTER => "plane_designer_fighter".into(),
+                role::INTERCEPTOR => "plane_designer_interceptor".into(),
+                role::TACTICAL_BOMBER => "plane_designer_tactical_bomber".into(),
+                role::STRATEGIC_BOMBER => "plane_designer_strategic_bomber".into(),
+                role::CLOSE_AIR_SUPPORT => "plane_designer_cas".into(),
+                role::NAVAL_BOMBER => "plane_designer_naval_bomber".into(),
+                role::SUICIDE_AIRCRAFT => "plane_designer_suicide".into(),
+                role::SCOUT_PLANE => "plane_designer_scout_plane".into(),
+                role::MARITIME_PATROL => "plane_designer_maritime_patrol_plane".into(),
+                role::FLAME_TANK => "tank_designer_flame".into(),
+                role::AMPHIBIOUS_TANK => "tank_designer_amphibious".into(),
+                role::ANTI_AIR_TANK => "tank_designer_anti_air".into(),
+                role::ARTILLERY_TANK => "tank_designer_artillery".into(),
+                role::ANTI_TANK => "tank_designer_anti_tank".into(),
+                role::ROCKET_TANK => "tank_designer_rocket".into(),
+                role::HEAVY_FIGHTER => "plane_designer_heavy_fighter".into(),
                 _ => "unknown".into(),
             }
         };
@@ -967,7 +993,7 @@ impl Renderer<'_, '_, '_> {
         };
         let role = if modular {
             let mut category = database.category(kind);
-            if category & 0x80004003C1 != 0 {
+            if category & role::SHIP_CATEGORIES != 0 {
                 let mut modules = BTreeMap::new();
                 for body in fields.iter().filter(|field| field.keyword_is("modules")) {
                     for module in children(body) {

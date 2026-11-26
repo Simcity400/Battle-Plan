@@ -73,7 +73,7 @@ impl Renderer<'_, '_, '_> {
         let number = level.to_string();
         let (key, number_argument, expand): (&[u8], _, _) =
             match self.effect_class(item).map(|class| class.vtable) {
-                Some(0x1427CB748) => {
+                Some(effect_identity::CONSTRUCTION_ORDER) => {
                     let province = plain_integer(children(item), "province").unwrap_or(0) != 0;
                     let instant = parser::read_bool_field(children(item), "instant_build", true);
                     let key: &[u8] = match (province, instant) {
@@ -84,12 +84,12 @@ impl Renderer<'_, '_, '_> {
                     };
                     (key, Argument::Int32(level), false)
                 }
-                Some(0x1427CB918) => (
+                Some(effect_identity::BUILDING_LEVEL) => (
                     b"EFFECT_SET_BUILDING_CONSTRUCTION",
                     Argument::Text(&number),
                     false,
                 ),
-                Some(0x14283B1E0) => (
+                Some(effect_identity::EXTERNAL_BUILDING) => (
                     b"EFFECT_ADD_OFFSITE_BUILDING",
                     Argument::Text(&number),
                     true,

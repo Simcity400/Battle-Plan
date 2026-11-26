@@ -3,7 +3,7 @@ use replay_frame::frame::DecodedSource;
 
 #[test]
 fn decoded_source_keeps_effect_text_bytes_and_dormant_refusals() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::fixtures::game::enter();
     let fixture = Fixture::new();
     let source: &dyn DecodedSource = &fixture.frame;
     let scripted = fixture.catalogue.scripted_content().unwrap();
@@ -20,7 +20,7 @@ fn decoded_source_keeps_effect_text_bytes_and_dormant_refusals() {
         Content::default(),
     );
     let body = content_reader_parser::parser::parse(
-        b"if={limit={always=no} unported_effect=1} else={add_political_power=3 army_experience=2}",
+        b"if={limit={always=no} unported_effect=1} else={add_political_power=3 fixture_points=2}",
     )
     .unwrap();
     let description = describe(&body.items, &context, &mut fresh());
