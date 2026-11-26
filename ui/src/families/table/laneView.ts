@@ -21,7 +21,7 @@ import {
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
+import { createTablePicture, drawFamilyTable, drawPaneFrame, glideCrossing, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
@@ -460,7 +460,9 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   paint(ctx, frame) {
     const { layout, binding, model, theme } = frame;
     const shape = layout.shape;
-    const { duration, glide } = liveGlide(frame);
+    const live = liveGlide(frame);
+    const gliding = live.glide.offsets.size > 0 && glideCrossing(live.glide, layout.localScrollTop, layout.localScrollTop + layout.height).length > 0;
+    const { duration, glide } = gliding ? live : { duration: live.duration, glide: NO_GLIDE };
     const motion = motionOf(frame);
     const list = picturesFor(ctx, frame.surface, frame.art.version);
     const common = {
@@ -532,7 +534,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         clockSummary: model.clockSummary,
       }, picture).drew;
     }
-    if (glide.offsets.size > 0) return { drew, next: true };
+    if (gliding) return { drew, next: true };
     const until = nextExpiry(motion, frame.now);
     return { drew, next: Number.isFinite(until) ? until : false };
   },

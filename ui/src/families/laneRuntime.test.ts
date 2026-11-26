@@ -379,7 +379,7 @@ test('a seek to an hour the held proof cannot locate paints at that hour, throug
   }
 });
 
-test('across the worker boundary a scroll, a focus change and an art arrival cost no projection, layout or index, and two placements share one index', () => {
+test('across the worker boundary a scroll, a focus change and an art arrival cost no projection, layout or index, an arrival or snapshot the picture does not read redraws nothing, and two placements share one index', () => {
   reset();
   const recording = installRecordingCanvas();
   const original = IdentityIndex.fromSnapshot;
@@ -404,22 +404,24 @@ test('across the worker boundary a scroll, a focus change and an art arrival cos
     paintBoth(bound());
     assert.deepEqual([counts.project, counts.layout, built], [2, 2, 1], 'two placements of one snapshot share one index, though each was cloned');
     const sent = transport.sent.payloads;
-    const steps: [string, Binding, number][] = [
-      ['a scroll', bound({ viewport: { ...viewport, scrollTop: 40 } }), 0],
-      ['a focus change', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), 0],
-      ['an art arrival', { ...bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), artResolutions: { 'sprite:x': { status: 'noArtExpected' } } }, 1],
+    const steps: [string, Binding, number, number, number][] = [
+      ['a scroll', bound({ viewport: { ...viewport, scrollTop: 40 } }), 0, 2, 1],
+      ['a focus change', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), 0, 2, 1],
+      ['an art arrival', { ...bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), artResolutions: { 'sprite:x': { status: 'noArtExpected' } } }, 1, 0, 1],
+      ['a new identity snapshot', { ...bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), artResolutions: { 'sprite:x': { status: 'noArtExpected' } }, identitySnapshot: { scope: { ...snapshot.scope, content: 2 } } }, 2, 0, 2],
     ];
     let payloads = sent;
-    for (const [label, binding, crossed] of steps) {
+    for (const [label, binding, crossed, painted, indexes] of steps) {
       reset();
       paintBoth(binding);
-      assert.deepEqual([counts.project, counts.layout, built], [0, 0, 1], `${label}: no projection, no layout, no index build`);
+      assert.deepEqual([counts.project, counts.layout, built], [0, 0, indexes], `${label}: no projection, no layout`);
       assert.equal(transport.sent.payloads - payloads, crossed, `${label}: crosses only what changed`);
       payloads = transport.sent.payloads;
-      assert.equal(counts.paint, 2, `${label}: each placement redraws`);
+      assert.equal(counts.paint, painted, painted ? `${label}: each placement redraws` : `${label}: the picture does not read it, so nothing redraws`);
     }
+    const indexed = built;
     for (let hour = 12; hour < 400; hour++) for (const [at, view] of views.entries()) view.next!({ widget: 1, subs: [], pictures: [], model: lanes[at]!.model() }, hour, lanes[at]!.state);
-    assert.equal(built, 1, 'next() never indexes a snapshot');
+    assert.equal(built, indexed, 'next() never indexes a snapshot');
   } finally {
     IdentityIndex.fromSnapshot = original;
     recording.restore();

@@ -2272,6 +2272,42 @@ test('a log scrolled deep into its rows numbers them from the top of the log, in
   }
 });
 
+test('a glide whose movers all stay below the viewport asks for no animation frame', () => {
+  type Row = { id: string; v: number };
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'v', label: 'Val', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+  ];
+  registerFamilyProjection({
+    kind: 'test-offscreen-glide',
+    family: 'table', theme: TEST_THEME,
+    project: readView => ({
+      hour: readView.hour, columns,
+      rows: (readView.panel('main') as { rows: Row[] }).rows.map(r => ({ key: r.id, name: r.id, cells: { name: { value: knownValue(r.id) }, v: { value: knownValue(r.v), format: 'integer' } } })),
+    }),
+  });
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction: 'descending' } });
+  const rows = Array.from({ length: 200 }, (_, i): Row => ({ id: `C${String(i).padStart(3, '0')}`, v: 1000 - i }));
+  const swapped = rows.map(row => (row.id === 'C150' ? { ...row, v: 1000 - 151 } : row.id === 'C151' ? { ...row, v: 1000 - 150 } : row));
+  const panels = new Map<Row[], { readonly main: { readonly rows: Row[] } }>();
+  const bound = (list: Row[], scrollTop: number) => ({
+    family: 'table' as const, theme: TEST_THEME, kind: 'test-offscreen-glide', options: NO_OPTIONS, settings, sources: NO_SOURCES, staticPanels: panels.get(list) ?? panels.set(list, { main: { rows: list } }).get(list)!,
+    width: 400, height: 300, scrollLeft: 0, scrollTop, focusedKey: null, reducedMotion: false,
+  });
+  const recording = installRecordingCanvas();
+  try {
+    const lane = driveLane(createLaneView(tableLane, () => {}), recording.canvases, { width: 400, height: 300, dpr: 1 });
+    const first = lane.paint({ label: 'first', binding: bound(rows, 0), hour: 1, speed: 24, seek: 1, now: 1000 });
+    const below = lane.paint({ label: 'two rows far below swap', binding: bound(swapped, 0), hour: 2, speed: 24, seek: 1, now: 2000 });
+    assert.equal(below.motion, false, 'nothing on screen moves, so no frame is asked for');
+    assert.equal(below.surfaces[0]?.content, first.surfaces[0]?.content, 'and the rows on screen are not drawn again');
+    const scrolled = lane.paint({ label: 'scrolled to the swap while it glides', binding: bound(swapped, 150 * ROW_HEIGHT.normal), hour: 2, speed: 24, seek: 1, now: 2050 });
+    assert.equal(scrolled.motion, true, 'a glide scrolled into view moves again');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('the movers a viewport evaluates are exactly those whose path crosses it', () => {
   const N = 1500;
   const rows = Array.from({ length: N }, (_, i): FlatTableRow => ({ kind: 'data', key: `R${i}`, name: `R${i}`, level: 1, rank: i + 1, row: { key: `R${i}`, name: `R${i}`, cells: {} } } as FlatTableRow));
