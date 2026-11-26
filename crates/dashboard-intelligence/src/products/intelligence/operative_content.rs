@@ -100,7 +100,7 @@ impl OperativeContent {
         let layers = &catalogue.content.layers;
         let leaders = Leaders::<String>::load(layers, &|_| None)?;
         let operations = content_reader_military::intelligence::read(layers)?;
-        let capture_days = content_reader_defines::defines::read(layers)
+        let capture_days = catalogue.read_defines()
             .and_then(|defines| defines.int32("NOperatives", "OPERATIVE_CAPTURE_DURATION_IN_DAYS"))
             .map_err(|error| format!("NDefines.NOperatives.OPERATIVE_CAPTURE_DURATION_IN_DAYS is unavailable: {error}"));
         let mut warnings = politics.warnings.clone();

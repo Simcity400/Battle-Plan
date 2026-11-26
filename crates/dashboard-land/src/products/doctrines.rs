@@ -157,6 +157,10 @@ pub(crate) fn database(source: &Source, resolved: &Arc<content_reader_layers::co
     Ok(Arc::clone(&state.database.as_ref().expect("doctrine content").1))
 }
 
+pub(super) fn default_reward(layers: &content_reader_layers::ResolvedLayers) -> io::Result<i64> {
+    catalogue::defines_for_layers(layers)?.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")
+}
+
 impl Product for Doctrines {
     const KEY: &'static str = "doctrines";
     const CONTENT_DEPENDENT: bool = true;
@@ -211,10 +215,7 @@ impl Product for Doctrines {
                 ));
             }
         };
-        let default_reward = Some(
-            content_reader_defines::defines::read(&resolved.layers)?
-                .fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY")?,
-        );
+        let default_reward = Some(default_reward(&resolved.layers)?);
         check_cancel(cancelled)?;
         let mut reply = project(&frame, params, &database, &localisation, default_reward)?;
         let catalogue = catalogue::catalogue(source, options)?;

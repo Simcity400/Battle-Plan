@@ -2,6 +2,7 @@ use content_reader_politics::faction_templates::FactionTemplateProducts as _;
 
 use crate::scripted_text::EffectDescriberFactory;
 use crate::{artwork::png_url, invalid};
+use content_reader_defines::defines::Defines;
 use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
@@ -712,6 +713,22 @@ impl replay_spool::Spooled for Catalogue {
     }
 }
 
+#[derive(Default)]
+struct LayerDefines(Once<Result<Defines, ContentError>>);
+
+impl LayerDefines {
+    fn read(&self, layers: &ResolvedLayers) -> io::Result<&Defines> {
+        self.0
+            .get_or_init(|| content_reader_defines::defines::read(layers).map_err(ContentError::from))
+            .as_ref()
+            .map_err(ContentError::error)
+    }
+}
+
+pub fn defines_for_layers(layers: &ResolvedLayers) -> io::Result<Defines> {
+    layers.derived::<LayerDefines>().read(layers).cloned()
+}
+
 pub struct Catalogue {
     pub content: Arc<ResolvedContent>,
     pub presentation: Presentation,
@@ -733,7 +750,7 @@ pub struct Catalogue {
     findings: Option<Mutex<BTreeSet<Finding>>>,
     effect_describer: Option<EffectDescriberFactory>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
-    defines: Once<Result<content_reader_defines::defines::Defines, String>>,
+    defines: Arc<LayerDefines>,
     war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
     recorded: Once<Arc<Catalogue>>,
@@ -863,6 +880,7 @@ impl Catalogue {
             ));
         }
         Self {
+            defines: content.layers.derived(),
             content,
             presentation,
             localisation,
@@ -877,7 +895,6 @@ impl Catalogue {
             findings: None,
             effect_describer,
             scripted: Once::new(),
-            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),
@@ -1041,11 +1058,12 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
-    pub fn defines(&self) -> Result<&content_reader_defines::defines::Defines, String> {
-        self.defines
-            .get_or_init(|| content_reader_defines::defines::read(&self.content.layers).map_err(|why| why.to_string()))
-            .as_ref()
-            .map_err(Clone::clone)
+    pub fn defines(&self) -> Result<&Defines, String> {
+        self.read_defines().map_err(|why| why.to_string())
+    }
+
+    pub fn read_defines(&self) -> io::Result<&Defines> {
+        self.defines.read(&self.content.layers)
     }
 
     pub fn war_participation_factors(
@@ -2180,6 +2198,44 @@ pub mod tests {
         assert_eq!(defines.number("NProduction", "MAX_CIV_FACTORIES_PER_LINE").unwrap(), 20.0);
     }
 
+    #[test]
+    fn shared_defines_read_ahead_and_layer_callers_parse_once_per_stack() {
+        let stack = |value| {
+            let script = format!("NDefines={{Probe={{Value={value}}}}}");
+            let (layers, folder) = write_folder(&[("common/defines/probe.lua", &script)]);
+            (layers_catalogue(layers), folder)
+        };
+        let (first, _first_folder) = stack(37);
+        let (second, _second_folder) = stack(83);
+        for (catalogue, expected) in [(&first, 37), (&second, 83)] {
+            let layers = &catalogue.content.layers;
+            let _generation = layers.enter_generation();
+            let parses = || layers.product_counts().iter()
+                .filter(|product| product.parser == "defines Lua 5.1")
+                .map(|product| product.builds)
+                .sum::<u64>();
+            assert_eq!(parses(), 0);
+            catalogue.read_readers();
+            assert_eq!(parses(), 1);
+            assert!(catalogue.defines.0.peek().is_some());
+            assert_eq!(defines_for_layers(layers).unwrap().int32("Probe", "Value").unwrap(), expected);
+            assert_eq!(catalogue.defines().unwrap().int32("Probe", "Value").unwrap(), expected);
+            assert_eq!(parses(), 1);
+        }
+    }
+
+    #[test]
+    fn shared_defines_keep_a_layers_first_script_error_for_the_catalogue() {
+        let (layers, _folder) = write_folder(&[("common/defines/refused.lua", "error('refused probe')")]);
+        let first = defines_for_layers(&layers).unwrap_err();
+        assert_eq!(first.kind(), io::ErrorKind::InvalidData);
+        let reason = first.to_string();
+        assert!(reason.contains("common/defines/refused.lua") && reason.contains("refused probe"), "{reason}");
+        let catalogue = layers_catalogue(layers);
+        assert_eq!(catalogue.read_defines().unwrap_err().kind(), first.kind());
+        assert_eq!(catalogue.defines().unwrap_err(), reason);
+    }
+
     pub fn folder_catalogue(files: &[(&str, &str)]) -> (Catalogue, Folder) {
         let (layers, folder) = write_folder(files);
         (layers_catalogue(layers), folder)
@@ -2210,6 +2266,7 @@ pub mod tests {
         let localisation = content_reader_localisation::localisation::read(&layers, "english").unwrap();
         let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         Catalogue {
+            defines: layers.derived(),
             content: Arc::new(ResolvedContent {
                 layers,
                 stats: Default::default(),
@@ -2229,7 +2286,6 @@ pub mod tests {
             findings: None,
             effect_describer: None,
             scripted: Once::new(),
-            defines: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
             recorded: Once::new(),

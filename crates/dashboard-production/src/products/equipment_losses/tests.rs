@@ -4,6 +4,25 @@ use replay_data::rows::{EquipmentLossCoverageRow as Row, Recorded};
 
 const LEGACY_PARTIAL_TEXT: &str = "equipment destruction first/branch interval is partial";
 
+#[test]
+fn shared_defines_keep_the_mod_combat_log_retention_and_name_an_unreadable_value() {
+    let read = |changes| {
+        let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+            "NDefines={NGame={COMBAT_LOG_MAX_MONTHS=3}}",
+            changes,
+            &[],
+        );
+        let content = content::Content::load(&source, &load, LandSource::CombatLog).unwrap();
+        let params = EquipmentLossesParams { branch_id: "1".into(), country: Country::Slot(7), hour: 100, land_source: LandSource::CombatLog };
+        let reply = EquipmentLosses::load(&source, &params, &load, &AtomicBool::new(false)).unwrap();
+        (content.retained_months, reply.warnings)
+    };
+    assert_eq!(read("NDefines.NGame.COMBAT_LOG_MAX_MONTHS=23").0, Some(23));
+    let (months, warnings) = read("NDefines.NGame=nil");
+    assert_eq!(months, None);
+    assert!(warnings.iter().any(|why| why == "The Combat Log's retention is unavailable: missing NDefines.NGame.COMBAT_LOG_MAX_MONTHS"), "{warnings:?}");
+}
+
 fn run(drain: &str, unread: u8) -> Option<RunCells> {
     Some(RunCells {
         drain: Some(drain.to_owned()),

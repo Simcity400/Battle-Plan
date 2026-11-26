@@ -322,7 +322,7 @@ impl IconContent {
     ) -> io::Result<Self> {
         let default_map = content_reader_key_names::terrain::read_default_map(&layers)?;
         let provinces = content_reader_map::map::load_definitions(&layers)?;
-        let defines = content_reader_defines::defines::read(&layers)?;
+        let defines = crate::catalogue::defines_for_layers(&layers)?;
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(&layers, &default_map, &mut warnings)?;
         let enablers = content_reader_military::technology::read_enablers(&layers, |limit| {
@@ -373,7 +373,7 @@ impl IconContent {
         let layers = &catalogue.content.layers;
         let default_map = content_reader_key_names::terrain::read_default_map(layers)?;
         let provinces = content_reader_map::map::load_definitions(layers)?;
-        let defines = content_reader_defines::defines::read(layers)?;
+        let defines = catalogue.read_defines()?;
         let mut warnings = Vec::new();
         let files = Arc::clone(&catalogue);
         let (names, pools, enablers, units, geography) = std::thread::scope(|threads| {
@@ -417,7 +417,7 @@ impl IconContent {
                     layers,
                     &default_map,
                     &provinces,
-                    &defines,
+                    defines,
                 )
             });
             let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings);
