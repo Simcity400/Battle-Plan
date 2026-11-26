@@ -7,7 +7,7 @@ import { MAX_THEME_NAME, parseJsonc, parseThemeText, serializeTheme, uniqueTheme
 import { latestIconImage } from './iconImage.ts';
 import { iconStyleOf, withIconStyle } from './iconStyle.ts';
 import type { AppearanceSettings } from './settings.ts';
-import { APPEARANCE_KEY, DEFAULT_APPEARANCE, loadAppearance, migrateLegacy, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
+import { APPEARANCE_KEY, DEFAULT_APPEARANCE, loadAppearance, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
 function assertMutedOnFills(colors: ThemeColors, mode: 'dark' | 'light', name: string) {
@@ -257,17 +257,28 @@ test('changing one part of an icon style keeps the other, and a style with neith
 });
 
 
-test('the first appearance format migrates presets to the default and keeps customised palettes', () => {
-  assert.deepEqual(migrateLegacy({ id: 'paper', mode: 'light', colors: {} }), { ...DEFAULT_APPEARANCE, scheme: 'light' });
-  const custom = migrateLegacy({ id: 'custom', mode: 'dark', colors: { background: '#101418', surface: '#161c22', raised: '#1e2630', border: '#2c3844',
-    text: '#e6edf3', muted: '#9fb0c0', accent: '#ff8800', selection: '#ff8800', positive: '#00aa55', warning: '#ddaa00', error: '#ee4455' } })!;
-  assert.equal(custom.themes.dark, 'migrated-custom');
-  assert.equal(custom.custom[0].variants.dark!.canvas, '#101418');
-  assert.equal(custom.custom[0].variants.dark!.accent, '#ff8800');
-  assert.equal(migrateLegacy({ mode: 'sepia', colors: {} }), null);
+test('old-format appearance keys and payloads are ignored without crashing or overwriting saved data', () => {
+  const legacyPayload = JSON.stringify({ id: 'custom', mode: 'light', colors: { background: '#101418', surface: '#161c22', accent: '#ff8800' } });
+  const readKeys: string[] = [];
+  const writtenKeys: string[] = [];
+  const legacyOnly = memoryStorage({ 'battleplan.appearance.v1': legacyPayload });
+  const tracked = {
+    getItem: (key: string) => { readKeys.push(key); return legacyOnly.getItem(key); },
+    setItem: (key: string, value: string) => { writtenKeys.push(key); legacyOnly.setItem(key, value); },
+  };
+  assert.deepEqual(loadAppearance(tracked), { settings: DEFAULT_APPEARANCE, warning: null });
+  assert.deepEqual(readKeys, [APPEARANCE_KEY]);
+  assert.deepEqual(writtenKeys, []);
+  assert.equal(legacyOnly.getItem('battleplan.appearance.v1'), legacyPayload);
 
-  const storage = memoryStorage({ 'battleplan.appearance.v1': JSON.stringify({ id: 'atlas', mode: 'dark', colors: {} }) });
-  assert.deepEqual(loadAppearance(storage), { settings: DEFAULT_APPEARANCE, warning: null });
+  const oldUnderCurrentKey = memoryStorage({ [APPEARANCE_KEY]: legacyPayload });
+  assert.deepEqual(loadAppearance(oldUnderCurrentKey), { settings: DEFAULT_APPEARANCE, warning: null });
+  assert.equal(oldUnderCurrentKey.getItem(APPEARANCE_KEY), legacyPayload);
+
+  const currentSettings = { ...DEFAULT_APPEARANCE, scheme: 'light' as const, themes: { dark: 'iris', light: 'field' } };
+  const both = memoryStorage({ 'battleplan.appearance.v1': legacyPayload, [APPEARANCE_KEY]: JSON.stringify(currentSettings) });
+  assert.deepEqual(loadAppearance(both), { settings: currentSettings, warning: null });
+  assert.equal(both.getItem('battleplan.appearance.v1'), legacyPayload);
 });
 
 test('appearance persists and resolves the system scheme', () => {

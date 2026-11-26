@@ -39,7 +39,7 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.reads=[{owner:9,firstHour:100,lastHour:120,readHour:100},{owner:9,firstHour:110,lastHour:130,readHour:110}];},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
 });
-test('View is also a setting, and saved layouts drop the retired completed-project retention', () => {
+test('View is also a setting, and removed options are ignored while current options load', () => {
   const view = OPTIONS.find(field => field.key === 'view')!;
   assert.equal(view.visibleWhen, undefined, 'View stays reachable when the header is narrow');
   for (const saved of ['live', 'history']) {
@@ -48,13 +48,9 @@ test('View is also a setting, and saved layouts drop the retired completed-proje
     assert.equal('completedRetentionDays' in options, false);
     assert.equal('grow' in options, false, 'the timeline family sets the History axis; grow is no longer an option');
   }
+  assert.equal(resolveOptions(OPTIONS, { view: 'retired-view', completedRetentionDays: 30 }).view, 'live');
   assert.equal(OPTIONS.some(field => field.key === 'completedRetentionDays'), false);
   assert.equal(definition.version, 2);
-  const stored = (options?: Record<string, string | number | boolean>) => ({ id: 'projects', kind: 'special-projects', configVersion: 1, title: 'Special projects', trackIds: ['main'],
-    countries: { kind: 'selected' }, time: { mode: 'campaign' }, ...(options ? { options } : {}) }) as unknown as Parameters<typeof definition.migrate>[1];
-  assert.deepEqual(definition.migrate(1, stored({ completedRetentionDays: 12, view: 'history', grow: true }))?.options, { view: 'history', grow: true });
-  assert.equal('options' in definition.migrate(1, stored({ completedRetentionDays: 30 }))!, false, 'a widget left with no options stores none');
-  assert.equal(definition.migrate(1, stored())?.title, 'Special projects');
 });
 
 

@@ -110,10 +110,12 @@ test('saved templates strip runtime fields and reject corruption without binding
   assert.equal(bindTracks(parsed, new Map()).length, 0);
 });
 
-test('widget versions migrate independently and unavailable widgets survive template round trips', () => {
+test('older widget versions load at the current version while newer or uninstalled widgets stay retained as unavailable', () => {
   const legacy = defaultTemplate();
   const input = { ...legacy, widgets: legacy.widgets.map(({ configVersion: _version, ...widget }) => widget) };
-  assert.equal(parseTemplate(input)?.widgets[0].configVersion, 1);
+  const parsedLegacy = parseTemplate(input);
+  assert.ok(parsedLegacy);
+  assert.deepEqual(parsedLegacy.widgets.map(widget => widget.configVersion), legacy.widgets.map(widget => widget.configVersion));
   const template = defaultTemplate();
   template.widgets[0].kind = 'future-widget';
   template.widgets[1].configVersion = 12;
@@ -160,6 +162,7 @@ test('previews show each campaign at its end, where widgets have data', () => {
 test('a widget is at its default only when a reset would change nothing visible', () => {
   const widget = createWidget('army-size', 'main', 'army');
   assert.equal(widgetAtDefault(widget, 'main'), true);
+  assert.equal(widgetAtDefault({ ...widget, configVersion: 1 }, 'main'), true, 'an older version loads as the current widget');
   assert.equal(widgetAtDefault({ ...widget, options: { view: 'race' } }, 'main'), true, 'a stored default value changes nothing');
   assert.equal(widgetAtDefault({ ...widget, trackIds: ['other'] }, 'main'), true, 'a widget following the sidebar ignores stale tracks');
   for (const changed of [{ ...widget, title: 'My army' }, { ...widget, contentScale: 90 }, { ...widget, options: { view: 'lines' } },

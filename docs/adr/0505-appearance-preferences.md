@@ -1,8 +1,8 @@
-# 0505. Preserve appearance choices through rendering and migration
+# 0505. Preserve appearance choices through rendering
 
 The shell applies saved appearance before React renders to avoid a first frame in the default theme. Component styles follow the shared design styles. Changes apply immediately, and canvas charts are notified to read their computed theme tokens again. Tables use the interface size so they match adjacent charts. Diagnostics keep a separate default. Backdrop image bytes are shared through IndexedDB and the preferences retain image IDs. An imported image can select itself only if no later backdrop choice took place, including reselecting the original image.
 
-Older flat palettes become built-in defaults or custom themes when read. The split opacity settings preserve the prior sidebar and top bar appearance. A theme variant can select the mode it supports, with missing roles derived from the chosen canvas and accent. Import accepts VS Code theme files with comments and trailing commas while preserving commas inside strings. A generated name keeps its copy suffix and stays within the saved length limit.
+Appearance reads only the current storage key and leaves older keys untouched; unreadable data falls back to defaults without overwriting storage. The split opacity settings preserve the prior sidebar and top bar appearance. A theme variant can select the mode it supports, with missing roles derived from the chosen canvas and accent. Import accepts VS Code theme files with comments and trailing commas while preserving commas inside strings. A generated name keeps its copy suffix and stays within the saved length limit.
 
 Icon overrides are stored by sidebar item or widget kind. A missing part uses the default and a kind is retained even when its widget is absent. Uploaded artwork is rasterized to a small square PNG. MIME is supplied for an SVG when the file does not provide it. Only the newest choice for an icon can land. A closed picker restores focus to the opening control, or the widget settings button when its icon cannot take focus, if the user has not moved focus elsewhere.
 

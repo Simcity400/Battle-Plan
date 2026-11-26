@@ -3,14 +3,13 @@ import { isWidgetKind, parseIconStyles } from './iconStyle.ts';
 import type { WidgetIconStyles } from './iconStyle.ts';
 import { isSidebarIconId } from './sidebarIcons.ts';
 import type { SidebarIconStyles } from './sidebarIcons.ts';
-import { BUILT_IN_THEMES, DEFAULT_SEEDS, DEFAULT_THEME_ID, completeColors, findTheme, themeColors, themeRoles } from './themes.ts';
+import { BUILT_IN_THEMES, DEFAULT_THEME_ID, findTheme, themeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 import { MAX_THEME_NAME } from './themeFile.ts';
 import { DEFAULT_TYPOGRAPHY, parseTypography } from './typography.ts';
 import type { FontFamilies, TypographySettings } from './typography.ts';
 
 export const APPEARANCE_KEY = 'battleplan.appearance.v2';
-const LEGACY_KEY = 'battleplan.appearance.v1';
 export const MAX_CUSTOM_THEMES = 48;
 
 export type ColorScheme = 'system' | ThemeMode;
@@ -126,31 +125,11 @@ export function parseAppearance(input: unknown): AppearanceSettings {
   };
 }
 
-const legacyPresets = new Set(['atlas', 'graphite', 'field', 'paper']);
-
-export function migrateLegacy(input: unknown): AppearanceSettings | null {
-  if (!object(input) || !object(input.colors) || (input.mode !== 'dark' && input.mode !== 'light')) return null;
-  const mode = input.mode;
-  const settings = structuredClone(DEFAULT_APPEARANCE);
-  settings.scheme = mode;
-  if (typeof input.id === 'string' && legacyPresets.has(input.id)) return settings;
-  const old = input.colors;
-  const colors = completeColors({
-    canvas: old.background, chrome: old.surface, surface: old.surface, raised: old.raised, overlay: old.surface, border: old.border,
-    text: old.text, muted: old.muted, accent: old.accent, selection: old.selection, positive: old.positive, warning: old.warning, error: old.error,
-  }, { canvas: DEFAULT_SEEDS[mode].canvas, accent: DEFAULT_SEEDS.dark.accent });
-  settings.custom = [{ id: 'migrated-custom', name: 'My theme', variants: { [mode]: colors } }];
-  settings.themes[mode] = 'migrated-custom';
-  return settings;
-}
-
 export function loadAppearance(storage?: Storage): { settings: AppearanceSettings; warning: string | null } {
   try {
     const target = storage ?? localStorage;
     const raw = target.getItem(APPEARANCE_KEY);
     if (raw !== null) return { settings: parseAppearance(JSON.parse(raw)), warning: null };
-    const legacy = target.getItem(LEGACY_KEY);
-    if (legacy !== null) return { settings: migrateLegacy(JSON.parse(legacy)) ?? structuredClone(DEFAULT_APPEARANCE), warning: null };
   } catch {
     return { settings: structuredClone(DEFAULT_APPEARANCE), warning: 'Saved appearance couldn’t be restored. The default theme is in use.' };
   }
