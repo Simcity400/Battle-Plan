@@ -3755,7 +3755,7 @@ impl<S: Schedule> Processor<S> {
                 ordinal: *ordinal,
                 record: Record::Control(ControlRecord::PlayerCommands {
                     session: self.session.id,
-                    packet,
+                    packet: Box::new(packet),
                 }),
                 attempted: false,
                 storage: None,
@@ -5471,7 +5471,7 @@ mod tests {
                 ordinal: 0,
                 record: Record::Control(ControlRecord::PlayerCommands {
                     session: processor.session.id,
-                    packet,
+                    packet: Box::new(packet),
                 }),
                 attempted: false,
                 storage: None,

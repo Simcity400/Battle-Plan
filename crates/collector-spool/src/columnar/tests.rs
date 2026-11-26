@@ -616,7 +616,7 @@ fn commands_without_an_hour_reach_the_journal_at_once() {
     let folder = Folder::new("commands");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &journal_thread());
     let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();
-    let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
+    let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet: Box::new(packet) });
     columnar.note(std::slice::from_ref(&record));
     columnar.settle();
     assert_eq!(

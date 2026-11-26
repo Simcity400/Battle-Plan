@@ -5,7 +5,7 @@ use std::io;
 pub enum ControlRecord {
     PlayerCommands {
         session: u64,
-        packet: crate::command_packet::Packet,
+        packet: Box<crate::command_packet::Packet>,
     },
     Detach {
         session: u64,
@@ -185,7 +185,7 @@ impl ControlRecord {
             format.require(RecordKind::PlayerCommands)?;
             return Ok(Self::PlayerCommands {
                 session: input.u64()?,
-                packet: crate::command_packet::Packet::decode(input)?,
+                packet: Box::new(crate::command_packet::Packet::decode(input)?),
             });
         }
         format.require(match tag {
@@ -259,5 +259,13 @@ impl ControlRecord {
             },
             _ => return Err(invalid("unknown control record tag")),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_control_record_is_sized_for_its_common_variants() {
+        assert_eq!(size_of::<super::ControlRecord>(), 48);
     }
 }

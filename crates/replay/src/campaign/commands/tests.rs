@@ -170,7 +170,7 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
     action.origin = Origin::Unresolved;
     let second = ControlRecord::PlayerCommands {
         session: 7,
-        packet: Packet::pack(
+        packet: Box::new(Packet::pack(
             5,
             1,
             2,
@@ -190,14 +190,14 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
                 ..Default::default()
             },
         )
-        .unwrap(),
+        .unwrap()),
     };
     let mut renamed = actor(2, 20, 130);
     renamed.name = b"later name".to_vec();
     renamed.at_qpc = 260;
     let third = ControlRecord::PlayerCommands {
         session: 7,
-        packet: Packet::pack(
+        packet: Box::new(Packet::pack(
             6,
             1,
             2,
@@ -217,7 +217,7 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
                 ..Default::default()
             },
         )
-        .unwrap(),
+        .unwrap()),
     };
     let controls = vec![first.clone(), second.clone(), third.clone()];
     let expected = analyze(&[session()], &controls, 5).unwrap();

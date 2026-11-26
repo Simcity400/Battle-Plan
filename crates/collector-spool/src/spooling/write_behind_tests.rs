@@ -1265,7 +1265,7 @@ fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
         }
         let record = Record::Control(ControlRecord::PlayerCommands {
             session: processor.session.id,
-            packet: replay_recording::command_packet::Packet::pack(
+            packet: Box::new(replay_recording::command_packet::Packet::pack(
                 branch,
                 1,
                 100,
@@ -1275,7 +1275,7 @@ fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
                 0,
                 &batch,
             )
-            .unwrap(),
+            .unwrap()),
         });
         processor.command_ready.insert(
             (100, ordinal),
@@ -1357,7 +1357,7 @@ fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry(
             ordinal: 0,
             record: Record::Control(ControlRecord::PlayerCommands {
                 session: processor.session.id,
-                packet,
+                packet: Box::new(packet),
             }),
             attempted: false,
             storage: None,
