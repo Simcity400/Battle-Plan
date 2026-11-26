@@ -427,17 +427,17 @@ fn dated_interval(
     });
     let cold_read = Arc::clone(&read);
     let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
-    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>)>);
+    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>, u64)>);
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !seed && let Some((interval, value)) = &mut *held && interval.contains(&hour) {
+        if !seed && let Some((interval, value, rows)) = &mut *held && interval.contains(&hour) {
             date(value, hour);
-            return ProductRead { value: value.clone(), rows: 0, fresh: false, pending: false, live: None, lanes: Vec::new() };
+            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
         }
         let (value, rows) = match read(hour, cancelled) {
             Ok((reply, through, rows)) => {
                 let value = Arc::new(Ok(reply));
-                *held = Some((hour..=through, value.clone()));
+                *held = Some((hour..=through, value.clone(), rows));
                 (value, rows)
             }
             Err(error) => {
