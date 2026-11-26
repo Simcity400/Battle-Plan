@@ -1,5 +1,5 @@
 mod roster;
-use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe};
+use super::{CareerFacts, CareerMedal, Content, Countries, DecoratedDivisions, Facts, Levels, MedalIndex, Refusals, attributed, describe, enemy_killed};
 use crate::products::{army::ArmyAttribution, division_log};
 use dashboard_base::queries::country_ids::{RunLinks, run_links};
 use dashboard_base::{
@@ -298,6 +298,17 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
         battle_entries(query, stretch, &links, &mut entries, &mut participated, cancelled)?;
         let (first, last, run) = (stretch.first, stretch.last, stretch.run);
         roster::scan(query, stretch, &links, divisions, &mut roster.templates, &content, cancelled)?;
+        if recording.predates(TableId::DivisionKills.index()).is_none() {
+            let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?, dashboard_declare::field(TableId::DivisionKills, "incomplete_from")?], LaneKeys::All, first, last)?;
+            for (key, steps) in &kills.keys {
+                if let Some(division) = divisions.get_mut(&(*key as u64)) {
+                    division.facts.extend(steps.iter().map(|step| step.hour));
+                }
+            }
+            for change in kills.statuses.windows(2).filter(|pair| pair[0].status != pair[1].status) {
+                divisions.values_mut().for_each(|division| division.facts.push(change[1].first));
+            }
+        }
         for (table, reason) in [
             (TableId::Divisions, "Division census incomplete"),
             (TableId::DivisionHistory, "Division history incomplete"),
@@ -609,6 +620,7 @@ fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &ro
     let reads = [
         Read { table: TableId::DivisionHistory, keys: at_hour::Keys::Ranges(vec![(key, key), (awards, awards | u128::from(u32::MAX))]) },
         Read::these(TableId::LexicalTokens, division.tokens.iter().copied()),
+        Read::these(TableId::DivisionKills, [u128::from(id)]),
     ];
     let frame = at_hour::frame_with(
         query,
@@ -624,7 +636,7 @@ fn summary(query: &Query<'_>, content: &Content, id: u64, at: i32, division: &ro
     let mut details = Facts { frame: &frame, content, medals: MedalIndex::default(), levels: Levels::read(content) };
     let mut notes = Refusals::default();
     let (experience, casualties) = division.measures.at(at).copied().unwrap_or_default();
-    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, &mut notes);
+    let facts = details.measured(witnessed_rows::<tables::DivisionHistory>(&frame).rows, experience, casualties, enemy_killed(&frame, id), &mut notes);
     Ok(Summary { facts, medals: details.medals.medals, notes })
 }
 

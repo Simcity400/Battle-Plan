@@ -95,4 +95,5 @@ replay_rows::row_ops! {
     AirLossTotals => AirLossTotalRow,
     BombingTotals => BombingTotalRow,
     GarrisonStrengths => GarrisonStrengthRow,
+    DivisionKills => DivisionKillsRow,
 }

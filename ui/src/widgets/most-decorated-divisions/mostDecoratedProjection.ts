@@ -10,7 +10,7 @@ import { CELL_INSET, ROW_HEIGHT, TABLE_SETTINGS_KEY, tableSettingsOf, type Table
 import { ICON_STRIP_GAP, MEDAL_ICON_SIZE } from '../../draw/kit.ts';
 import { knownValue, textValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { CareerMedal, CareerRow, CareerTemplate, CountryHours, DecoratedDivisionsReply, DecoratedRank } from '../../generated/dashboard';
-import { COLUMNS, TABLE_BASE } from './definition.ts';
+import { COLUMNS, ENEMY_KILLED_NOTE, TABLE_BASE } from './definition.ts';
 
 export interface DecoratedOptions {
   readonly filter: DeclaredCountryFilter;
@@ -31,7 +31,7 @@ interface DecoratedRow {
 const UNIDENTIFIED = 'Medal not identified';
 const PREMEASURE_ROWS = 32;
 
-const RANKS: Readonly<Record<string, DecoratedRank>> = { medals: 'medals', experience: 'experience', casualtiesTaken: 'casualtiesTaken', division: 'divisionName', country: 'countryName' };
+const RANKS: Readonly<Record<string, DecoratedRank>> = { medals: 'medals', experience: 'experience', enemyKilled: 'enemyKilled', casualtiesTaken: 'casualtiesTaken', division: 'divisionName', country: 'countryName' };
 
 export function decoratedRank(settings: TableSettings): { readonly by: DecoratedRank; readonly descending: boolean } {
   const by = RANKS[settings.sort.column];
@@ -95,7 +95,7 @@ function medalStrip(row: CareerRow, reply: DecoratedDivisionsReply, art: readonl
   }));
 }
 
-const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, CASUALTIES] = COLUMNS;
+const [KIND, COUNTRY, DIVISION, MEDALS, EXPERIENCE, ENEMY_KILLED, CASUALTIES] = COLUMNS;
 
 export const CASUALTIES_TAKEN_NOTE = 'The game’s own count of the men this division has lost, as shown on its history tab in the game. It leaves out the men lost when a division is destroyed and losses from paradrop landings.';
 
@@ -115,7 +115,9 @@ const DECORATED_COLUMNS: readonly DeclarativeColumnSpec<DecoratedRow, DecoratedO
     value: item => count(item.row.facts.medals, item.row.facts.historyMissing ?? 'Medals not recorded'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
   { ...EXPERIENCE!, priority: 4, text: true, widest: ['Veterans'],
     value: item => textValue(item.row.facts.levelName, 'Experience not recorded'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
-  { ...CASUALTIES!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], hint: CASUALTIES_TAKEN_NOTE,
+  { ...ENEMY_KILLED!, priority: 3, numeric: true, format: 'integer', widest: ['999,999'], hint: ENEMY_KILLED_NOTE,
+    value: item => count(item.row.facts.enemyKilled, item.row.facts.enemyKilledMissing ?? 'Enemies killed not recorded'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
+  { ...CASUALTIES!, priority: 6, numeric: true, format: 'integer', widest: ['999,999'], hint: CASUALTIES_TAKEN_NOTE,
     value: item => count(item.row.facts.casualtiesTaken, 'Casualties taken not recorded'), sortValue: (item, _live, _hour, options) => inProductOrder(item, options) },
 ];
 

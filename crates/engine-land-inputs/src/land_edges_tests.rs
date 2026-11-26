@@ -123,14 +123,17 @@ fn naval_and_unregistered_combats_have_no_land_edge() {
 #[test]
 fn an_exit_carries_the_casualties_counter_on_both_sides_of_the_flush() {
     let mut memory = fixture();
+    memory.qword(0x20000 + carmy::PENDING_STRENGTH_DAMAGE, 2_500_000);
     let exit = Exit::before(&memory, 0, 0x20000, COMBAT).expect("a land combat");
     memory.dword(0x20000 + unit_history::CAREER_COUNTER, 812);
     memory.dword(0x24000 + manpower_value_entry::COUNT, 4188);
+    memory.qword(0x20000 + carmy::PENDING_STRENGTH_DAMAGE, 0);
     let words = copied(|put| exit.copy(&memory, 0, 0x20000, put));
     assert_eq!(EXIT_WORDS, words.len() + 1);
     assert_eq!(
         words,
-        [EXITED, BATTLE, optional(Some(80)), 0, 1, SECOND, optional(Some(0)), optional(Some(812)), optional(Some(4188))]
+        [EXITED, BATTLE, optional(Some(80)), 0, 1, SECOND, optional(Some(0)), optional(Some(812)), optional(Some(4188)), 2_500_000],
+        "the pending strength damage is the pool read before the flush clears it"
     );
 }
 
@@ -140,10 +143,10 @@ fn an_exit_names_what_it_could_not_read() {
     memory.army(0x50000, FIRST, [1, 1], 5);
     let stranger = Exit::before(&memory, 0, 0x50000, COMBAT).expect("a land combat");
     let words = copied(|put| stranger.copy(&memory, 0, 0x50000, put));
-    assert_eq!(&words[3..6], [u64::from(SIDE_UNKNOWN), u64::from(NO_SIDE), FIRST]);
+    assert_eq!(&words[3..6], [u64::from(SIDE_UNKNOWN | POOL_UNREADABLE), u64::from(NO_SIDE), FIRST]);
     let unknown = Exit::before(&memory, 0, 0x40000, COMBAT).expect("a land combat");
     let words = copied(|put| unknown.copy(&memory, 0, 0x40000, put));
-    assert_eq!(&words[3..], [u64::from(DIVISION_UNREADABLE), 1, 0, 0, 0, 0]);
+    assert_eq!(&words[3..], [u64::from(DIVISION_UNREADABLE | POOL_UNREADABLE), 1, 0, 0, 0, 0, 0]);
     memory.0.remove(&(0x1000 + cgame_state::CURRENT_HOUR));
     let hourless = Exit::before(&memory, 0, 0x10000, COMBAT).expect("a land combat");
     let words = copied(|put| hourless.copy(&memory, 0, 0x10000, put));
@@ -151,7 +154,45 @@ fn an_exit_names_what_it_could_not_read() {
     let freed = Exit::before(&memory, 0, 0x10000, COMBAT).expect("a land combat");
     memory.qword(0x10000, 0);
     let words = copied(|put| freed.copy(&memory, 0, 0x10000, put));
-    assert_eq!(&words[6..], [optional(Some(300)), optional(None), optional(None)], "a division gone after the flush is not read");
+    assert_eq!(&words[6..], [optional(Some(300)), optional(None), optional(None), 0], "a division gone after the flush is not read");
     assert_eq!(unpack(optional(Some(-3))), Some(-3));
     assert_eq!(unpack(optional(None)), None);
+}
+
+const GROUP: u64 = 0x8000_0004_0000_0010;
+
+fn hit_fixture() -> Fixture {
+    let mut memory = fixture();
+    memory.qword(0x10000 + carmy::ORDERS_GROUP, 0x60000);
+    memory.qword(0x60000 + engine_native::corders_group::HANDLE, GROUP);
+    memory.qword(0x20000 + carmy::ORDERS_GROUP, 0);
+    memory
+}
+
+#[test]
+fn a_hit_names_its_combat_attacker_target_and_the_attackers_army() {
+    let memory = hit_fixture();
+    let observer = 0x3000 + side::STATS_OBSERVER;
+    let hit = Hit::read(&memory, 0, observer, 0x10000, 0x20000, 412_345);
+    assert_eq!(hit, Hit { combat: BATTLE, attacker: FIRST, target: SECOND, army: GROUP, strength: 412_345, withheld: 0 });
+    let words = copied(|put| hit.copy(put));
+    assert_eq!(HIT_WORDS, words.len() + 1);
+    assert_eq!(Hit::decode(&words), Some(hit));
+    let outside = Hit::read(&memory, 0, 0x3800 + side::STATS_OBSERVER, 0x20000, 0x10000, 7);
+    assert_eq!((outside.army, outside.withheld), (0, 0), "a division in no army is no army, not unreadable");
+}
+
+#[test]
+fn a_hit_names_each_part_it_could_not_read() {
+    let mut memory = hit_fixture();
+    let observer = 0x3000 + side::STATS_OBSERVER;
+    let stranger = Hit::read(&memory, 0, 0x9000, 0x40000, 0x50000, 1);
+    assert_eq!(stranger.withheld, COMBAT_UNREADABLE | DIVISION_UNREADABLE | TARGET_UNREADABLE | ARMY_UNREADABLE);
+    assert_eq!((stranger.combat, stranger.attacker, stranger.target, stranger.army), (0, 0, 0, 0));
+    memory.qword(0x60000 + engine_native::corders_group::HANDLE, 0);
+    assert_eq!(Hit::read(&memory, 0, observer, 0x10000, 0x20000, 1).withheld, ARMY_UNREADABLE);
+    memory.qword(COMBAT, cnaval_combat::VTABLE_RVA.0 as u64);
+    assert_eq!(Hit::read(&memory, 0, observer, 0x10000, 0x20000, 1).withheld & COMBAT_UNREADABLE, COMBAT_UNREADABLE);
+    assert_eq!(Hit::decode(&[EXITED, 0, 0, 0, 0, 0, 0]), None);
+    assert_eq!(Hit::decode(&[HIT, 0, 0]), None);
 }

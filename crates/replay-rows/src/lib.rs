@@ -19,7 +19,7 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = rows::compatibility::RECORDING_SIZE_AUDIT_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::DIVISION_DAMAGE_FORMAT;
 
 #[doc(hidden)]
 pub use engine_allocation as __allocation;

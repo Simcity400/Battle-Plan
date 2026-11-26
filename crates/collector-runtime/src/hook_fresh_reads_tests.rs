@@ -616,6 +616,7 @@ fn missing_land_observer_keeps_actual_incomplete_coverage_and_refuses_events() {
             TableId::LandCombatResults,
             TableId::LandCombatResultObservers,
             TableId::DestroyedDivisions,
+            TableId::LandDivisionDamage,
         ] {
             assert!(matches!(
                 &frame.tables[table.index()],

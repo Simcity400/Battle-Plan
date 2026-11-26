@@ -189,6 +189,7 @@ compared_tables!(
     BuildingBombingDamage,
     CombatEngagementRefreshes,
     LandCombatEdges,
+    LandDivisionDamage,
     NuclearStrikes,
     RaidPlayerAllowedTypes,
     CountryExperienceGains,

@@ -1,7 +1,7 @@
 use recorder_derive_air::{air_force, air_ledger_totals, air_missions, air_owner_days, air_region_activity, air_region_days, air_region_wings, air_theatre_regions, nuke_totals, raid_ends};
 use recorder_derive_economy::{aid, construction_projects, construction_spend, fuel_days, fuel_demand, produced_values, production, supply_health, trade_flows};
 use recorder_derive_equipment::{division_equipment, equipment_losses, stock};
-use recorder_derive_land::{army, casualties, deployed, division_events, experience, garrison_strength, land_battles, leader_battles, leader_commands, leader_traits};
+use recorder_derive_land::{army, casualties, deployed, division_events, division_kills, experience, garrison_strength, land_battles, leader_battles, leader_commands, leader_traits};
 use recorder_derive_naval::{dockyard_repairs, naval_battles, naval_control, naval_losses, navy};
 use recorder_derive_politics::{faction_accounts, faction_totals, game_score, peace, power_ledger, research, stability, stability_parts, threat_totals, threats};
 use recorder_derive_world::{drops, feed, groups, identity, looks, occupation, territory, territory_regions};
@@ -81,6 +81,7 @@ fn writer_list() -> Vec<Box<dyn Writer>> {
         Box::new(casualties::Casualties::default()),
         Box::new(occupation::Occupation::default()),
         Box::new(garrison_strength::GarrisonStrength::default()),
+        Box::new(division_kills::DivisionKills),
         Box::new(air_missions::AirMissions::default()),
         Box::new(air_region_wings::AirRegionWings::default()),
         Box::new(naval_control::NavalControl::default()),

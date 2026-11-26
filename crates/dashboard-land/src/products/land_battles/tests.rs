@@ -149,7 +149,7 @@ fn unread_end_kind_hour_and_side_lists_stay_unknown_in_the_course() {
 fn a_battle_course_carries_its_opening_roster_and_each_exit_and_names_what_was_not_recorded() {
     use replay_data::rows::LandCombatEdgesRow as Edge;
     let edge = |id, kind, hour, division: Option<u64>, side, values: [Option<i32>; 3], withheld| Edge {
-        id, kind, hour, combat: 9, division, side, manpower: values[0], casualties_before: values[1], casualties_after: values[2], withheld,
+        id, kind, hour, combat: 9, division, side, manpower: values[0], casualties_before: values[1], casualties_after: values[2], withheld, pending_strength_raw: None,
     };
     let rows = [
         edge(1, Edge::OPENED, 10, Some(5), 0, [Some(9000), Some(300), None], 0),

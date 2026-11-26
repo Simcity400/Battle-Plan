@@ -2,6 +2,7 @@ pub mod army;
 pub mod casualties;
 pub mod deployed;
 pub mod division_events;
+pub mod division_kills;
 pub mod experience;
 pub mod garrison_strength;
 pub mod land_battles;

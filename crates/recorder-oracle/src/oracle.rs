@@ -351,6 +351,9 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             .collect();
         land::compare_edges(&replay, &frame, &killed, report)
     });
+    report.attempt_table(TableId::LandDivisionDamage, |report| {
+        land::compare_damage(&replay, &frame, report)
+    });
     report.attempt_table(TableId::NavalResultSources, |report| {
         naval_result_sources::compare(&replay, &frame, report)
     });

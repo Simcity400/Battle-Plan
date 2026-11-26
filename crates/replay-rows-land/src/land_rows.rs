@@ -168,6 +168,7 @@ pub struct LandCombatEdgesRow {
     pub casualties_before: Option<i32>,
     pub casualties_after: Option<i32>,
     pub withheld: u8,
+    pub pending_strength_raw: Option<i64>,
 }
 impl LandCombatEdgesRow {
     pub const OPENED: u8 = 0;
@@ -210,13 +211,48 @@ typed_codec!(
         4 => (manpower): OptionalI32,
         5 => (casualties_before): OptionalI32,
         6 => (casualties_after): OptionalI32,
-        7 => (withheld): U8
+        7 => (withheld): U8,
+        8 => (pending_strength_raw): OptionalI64
     },
     |r| {
         if r.kind > LandCombatEdgesRow::EXITED {
             Err(invalid("land combat edge kind invalid"))
         } else if r.side > 1 && r.side != LandCombatEdgesRow::NO_SIDE {
             Err(invalid("land combat edge side invalid"))
+        } else {
+            Ok(())
+        }
+    }
+);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct LandDivisionDamageRow {
+    pub id: u64,
+    pub hour: i32,
+    pub combat: u64,
+    pub target: u64,
+    pub attacker: u64,
+    pub army: Option<u64>,
+    pub strength_raw: i64,
+}
+typed_codec!(
+    LandDivisionDamageRow,
+    128,
+    |r| (r.combat as u128) << 64 | r.id as u128,
+    |k| Self { combat: (k >> 64) as u64, id: k as u64, ..Default::default() },
+    {
+        0 => (hour): I32,
+        1 => (target): U64,
+        2 => (attacker): U64,
+        3 => (army): OptionalU64,
+        4 => (strength_raw): I64
+    },
+    |r| {
+        if r.strength_raw <= 0 {
+            Err(invalid("division damage must be positive"))
+        } else if r.target == 0 || r.attacker == 0 || r.combat == 0 {
+            Err(invalid("division damage names no combat, target or attacker"))
         } else {
             Ok(())
         }

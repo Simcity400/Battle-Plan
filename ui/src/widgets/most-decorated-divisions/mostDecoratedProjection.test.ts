@@ -15,7 +15,7 @@ import { TABLE_VIEWS } from '../manifest/table.ts';
 
 const division = (id: string, extra: Partial<CareerRow['facts']> = {}): CareerRow => ({
   division: id, tag: 'CHI', template: '4', name: `${id}th Division`, nameMissing: null,
-  facts: { medals: 2, awards: [{ medal: 0, count: 2 }], historyMissing: null, experienceRaw: '30000', level: 1, levelName: 'Trained', casualtiesTaken: 13671, ...extra },
+  facts: { medals: 2, awards: [{ medal: 0, count: 2 }], historyMissing: null, experienceRaw: '30000', level: 1, levelName: 'Trained', casualtiesTaken: 13671, enemyKilled: 4210, enemyKilledMissing: null, ...extra },
 });
 
 const reply = (divisions: CareerRow[], partial: string | null = null): DecoratedDivisionsReply => ({
@@ -58,6 +58,8 @@ test('the stored sort, the row height and the dated country filter reach the pro
   const byCountry = { [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...defaults, sort: { column: 'country', direction: 'ascending' } }) };
   const byDivision = { [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...defaults, sort: { column: 'division', direction: 'descending' } }) };
   assert.deepEqual([params(byCountry, 360).params.by, params(byCountry, 360).params.descending, params(byDivision, 360).params.by], ['countryName', false, 'divisionName'], 'country and division sort in the product, by name at the hour');
+  const byKills = { [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...defaults, sort: { column: 'enemyKilled', direction: 'descending' } }) };
+  assert.equal(params(byKills, 360).params.by, 'enemyKilled', 'enemies killed rank in the product');
   const germany: DeclaredCountryFilter = { passing: { GER: [[0, 99], [200, 300]] }, unrecorded: [], bounds: [0, 100, 200, 301] };
   assert.deepEqual(params({}, 360, germany).params.countries, [{ tag: 'GER', firstHour: 0, lastHour: 99 }, { tag: 'GER', firstHour: 200, lastHour: 300 }]);
 });
@@ -77,7 +79,7 @@ test('a division shows its recorded medals, experience word and casualties; an u
   const table = await hosted();
   const answered = reply([
     division('66'),
-    division('7', { medals: null, historyMissing: 'Medal history was not read', awards: [], casualtiesTaken: 0 }),
+    division('7', { medals: null, historyMissing: 'Medal history was not read', awards: [], casualtiesTaken: 0, enemyKilled: null, enemyKilledMissing: 'A battle exit’s losses or pending damage was not recorded, so this division’s kills are not known from then on' }),
     division('8', { medals: 3, awards: [{ medal: 0, count: 1 }, { medal: null, count: 2 }] }),
   ], '2 of 40 divisions’ medals were not read at this hour; they follow the others');
   const readView = createBoundedReadView({ hour: 61000000, panels: new Map([['main', answered]]) });
@@ -86,6 +88,8 @@ test('a division shows its recorded medals, experience word and casualties; an u
   assert.deepEqual([decorated!.cells.medals!.value, decorated!.cells.experience!.value, decorated!.cells.casualtiesTaken!.value], [knownValue(2), knownValue('Trained'), knownValue(13671)]);
   assert.deepEqual(unread!.cells.medals!.value, notRecorded('Medal history was not read'));
   assert.deepEqual(unread!.cells.casualtiesTaken!.value, zeroValue(0));
+  assert.deepEqual(decorated!.cells.enemyKilled!.value, knownValue(4210));
+  assert.deepEqual(unread!.cells.enemyKilled!.value, notRecorded('A battle exit’s losses or pending damage was not recorded, so this division’s kills are not known from then on'), 'kills that are not known are missing, never zero');
   const strip = decorated!.cells.medals!.icons ?? [];
   assert.deepEqual(strip.map(item => [item.name, item.count, item.art.status]), [['Order of the Cloud', 2, 'pending']], 'each medal draws its own sprite');
   assert.deepEqual(partlyKnown!.cells.medals!.icons?.map(item => [item.name, item.count ?? 1, item.art.status]),

@@ -548,6 +548,170 @@ pub fn compare_events(
     Ok(())
 }
 
+pub fn compare_damage(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    const SELECTED: [TableId; 5] = [
+        TableId::LandDivisionDamage,
+        TableId::LandCombatResultObservers,
+        TableId::LandCombatEdges,
+        TableId::DestroyedDivisions,
+        TableId::LandEventCoverage,
+    ];
+    let mut recorded = Recorded::default();
+    let mut blocks = replay
+        .index
+        .iter()
+        .filter(|b| b.branch == frame.branch && b.first_hour <= frame.hour)
+        .collect::<Vec<_>>();
+    blocks.sort_by_key(|b| b.first_hour);
+    for b in blocks {
+        replay.visit_blocks(
+            &[&b],
+            &SELECTED,
+            |_, _, decoded| {
+                if decoded.hour > frame.hour {
+                    return Ok(false);
+                }
+                let [coverage] = decoded.complete::<tables::LandEventCoverage>()? else {
+                    return Err(invalid("land event coverage must have one row"));
+                };
+                let read = (
+                    decoded.complete::<tables::LandDivisionDamage>(),
+                    decoded.complete::<tables::LandCombatResultObservers>(),
+                    decoded.complete::<tables::LandCombatEdges>(),
+                    decoded.complete::<tables::DestroyedDivisions>(),
+                );
+                match read {
+                    (Ok(damage), Ok(observers), Ok(edges), Ok(destroyed)) if coverage.complete => {
+                        recorded.damage.extend_from_slice(damage);
+                        recorded.observers.extend_from_slice(observers);
+                        for edge in edges {
+                            if edge.kind == replay_data::rows::LandCombatEdgesRow::OPENED {
+                                if *recorded.opened.entry(edge.combat).or_insert(decoded.hour) != decoded.hour {
+                                    recorded.reused.insert(edge.combat);
+                                }
+                            } else if let Some(division) = edge.division {
+                                recorded.exits.insert(edge.id, (division, edge.pending_strength_raw));
+                            }
+                        }
+                        for row in destroyed.iter().filter(|row| row.triggering_combat.is_some()) {
+                            recorded.wiped.extend(row.combats.iter().chain(row.triggering_combat.as_ref()).map(|&combat| (combat, row.division)));
+                        }
+                        for observer in observers {
+                            if recorded.ended.insert(observer.combat, decoded.hour).is_some_and(|hour| hour != decoded.hour) {
+                                recorded.reused.insert(observer.combat);
+                            }
+                        }
+                    }
+                    (damage, ..) => {
+                        recorded.unrecorded.insert(decoded.hour);
+                        if let Err(error) = damage {
+                            report.limitation("division damage was not recorded for this hour", format!("hour {}: {error}", decoded.hour));
+                        }
+                    }
+                }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
+    }
+    check_damage(&recorded, report);
+    Ok(())
+}
+
+#[derive(Default)]
+struct Recorded {
+    damage: Vec<replay_data::rows::LandDivisionDamageRow>,
+    observers: Vec<replay_data::rows::CombatLogObserverRow>,
+    opened: BTreeMap<u64, i32>,
+    ended: BTreeMap<u64, i32>,
+    wiped: BTreeSet<(u64, u64)>,
+    unrecorded: BTreeSet<i32>,
+    exits: BTreeMap<u64, (u64, Option<i64>)>,
+    reused: BTreeSet<u64>,
+}
+
+fn check_damage(recorded: &Recorded, report: &mut Report) {
+    use replay_data::rows::CombatLogObserverKind as K;
+    let whole = |combat: u64| match (recorded.opened.get(&combat), recorded.ended.get(&combat)) {
+        (Some(&opened), Some(&ended)) => opened <= ended && recorded.unrecorded.range(opened..=ended).next().is_none(),
+        _ => false,
+    };
+    let mut groups = BTreeMap::new();
+    let mut expected = BTreeMap::<(u64, u64, u64), i64>::new();
+    for row in &recorded.observers {
+        if row.kind == K::Activity as u8 {
+            groups.insert((row.combat, row.attacker, row.item), row.identity);
+        }
+    }
+    for row in recorded.observers.iter().filter(|row| row.kind == K::ActivityDamage as u8) {
+        let Some(&group) = groups.get(&(row.combat, row.attacker, row.item)) else {
+            report.difference(format!("LandCombatResultObservers combat {} activity {}", row.combat, row.item), "damage without its activity", "an activity naming its army");
+            continue;
+        };
+        *expected.entry((row.combat, group, row.identity)).or_default() += row.a;
+    }
+    let mut actual = BTreeMap::<(u64, u64, u64), i64>::new();
+    let mut armyless = 0;
+    for row in &recorded.damage {
+        match row.army {
+            Some(army) => *actual.entry((row.combat, army, row.target)).or_default() += row.strength_raw,
+            None => armyless += 1,
+        }
+    }
+    let (mut compared, mut partial) = (0, BTreeSet::new());
+    for key in expected.keys().chain(actual.keys()).copied().collect::<BTreeSet<_>>() {
+        let (combat, army, target) = key;
+        if !recorded.ended.contains_key(&combat) {
+            continue;
+        }
+        if recorded.reused.contains(&combat) {
+            partial.insert(combat);
+            continue;
+        }
+        if !whole(combat) {
+            partial.insert(combat);
+            continue;
+        }
+        if recorded.wiped.contains(&(combat, target)) {
+            continue;
+        }
+        compared += 1;
+        let (recorded_damage, game) = (actual.get(&key).copied().unwrap_or(0), expected.get(&key).copied().unwrap_or(0));
+        if recorded_damage != game {
+            report.difference(
+                format!("LandDivisionDamage combat {combat} army {army} target {target} strength"),
+                recorded_damage,
+                format!("{game}, the game's own activity damage for that army and target"),
+            );
+        }
+    }
+    report.compared("LandDivisionDamage per army and target", compared);
+    let mut dealt = BTreeMap::<(u64, u64), i64>::new();
+    for row in &recorded.damage {
+        *dealt.entry((row.id >> 16, row.target)).or_default() += row.strength_raw;
+    }
+    for (&(exit, target), &strength) in &dealt {
+        match recorded.exits.get(&exit) {
+            None => report.difference(format!("LandDivisionDamage target {target} exit {exit}"), "damage published", "only when its target leaves a combat"),
+            Some((division, _)) if *division != target => report.difference(format!("LandDivisionDamage exit {exit}"), target, format!("{division}, the division that left")),
+            Some((_, Some(pool))) if strength > *pool => report.difference(
+                format!("LandDivisionDamage exit {exit} target {target} strength"),
+                strength,
+                format!("at most {pool}, the strength damage pending on it when it left"),
+            ),
+            Some(_) => {}
+        }
+    }
+    report.compared("LandDivisionDamage within its target's pending strength damage", dealt.len());
+    if !partial.is_empty() {
+        report.limitation("a battle not recorded from its opening to its end, or a combat handle that opened or ended more than once, is not compared", format!("{} battles", partial.len()));
+    }
+    if armyless > 0 {
+        report.limitation("the game logs no activity for a division in no army, so its damage has nothing to compare with", format!("{armyless} rows"));
+    }
+    report.limitation("a division destroyed inside its battle never leaves it, so its damage is never published; the game's activity for it is not compared", "LandDivisionDamage");
+}
+
 pub fn compare_edges(
     replay: &Replay,
     frame: &DecodedFrame,
@@ -630,6 +794,54 @@ fn check_edges(rows: &[replay_data::rows::LandCombatEdgesRow], killed: &BTreeMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn division_damage_summed_per_army_must_equal_the_games_activity_damage_for_whole_battles() {
+        use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow, LandDivisionDamageRow};
+        let activity = |combat, attacker, item, group| CombatLogObserverRow { combat, attacker, kind: K::Activity as u8, item, identity: group, ..Default::default() };
+        let damage = |combat, attacker, item, target, a| CombatLogObserverRow { combat, attacker, kind: K::ActivityDamage as u8, item, identity: target, a, ..Default::default() };
+        let row = |combat, target, attacker, army, strength_raw| LandDivisionDamageRow { id: target << 16, combat, target, attacker, army, strength_raw, ..Default::default() };
+        let exits = BTreeMap::from([(5, (5, Some(2_000))), (6, (6, Some(40))), (1, (1, None))]);
+        let mut recorded = Recorded {
+            observers: vec![activity(9, true, 0, 70), damage(9, true, 0, 5, 1_500), damage(9, true, 0, 6, 40), activity(9, false, 0, 71), damage(9, false, 0, 1, 300)],
+            damage: vec![row(9, 5, 2, Some(70), 1_000), row(9, 5, 3, Some(70), 500), row(9, 6, 2, Some(70), 40), row(9, 1, 5, Some(71), 300), row(9, 1, 6, None, 77)],
+            opened: BTreeMap::from([(9, 10)]),
+            ended: BTreeMap::from([(9, 20)]),
+            exits,
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        check_damage(&recorded, &mut report);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        recorded.damage[1].strength_raw = 499;
+        recorded.damage.remove(2);
+        let mut wrong = Report::default();
+        check_damage(&recorded, &mut wrong);
+        assert_eq!(wrong.differences.len(), 2, "a lost hit and a missing target are both differences: {:?}", wrong.differences);
+        recorded.wiped.insert((9, 6));
+        recorded.unrecorded.insert(15);
+        let mut gapped = Report::default();
+        check_damage(&recorded, &mut gapped);
+        assert!(gapped.differences.is_empty(), "a battle with an unrecorded hour is not compared: {:?}", gapped.differences);
+        let mut reused = Recorded { unrecorded: BTreeSet::new(), reused: BTreeSet::from([9]), ..std::mem::take(&mut recorded) };
+        let mut ambiguous = Report::default();
+        check_damage(&reused, &mut ambiguous);
+        assert!(ambiguous.differences.iter().all(|line| !line.contains("activity")), "a reused combat handle is not compared: {:?}", ambiguous.differences);
+        reused.reused.clear();
+        reused.opened.insert(9, 30);
+        reused.unrecorded.insert(25);
+        let mut reopened = Report::default();
+        check_damage(&reused, &mut reopened);
+        assert!(reopened.differences.iter().all(|line| !line.contains("activity")), "a handle that ended before its seen opening is not compared: {:?}", reopened.differences);
+        recorded = std::mem::take(&mut reused);
+        recorded.opened.insert(9, 10);
+        recorded.unrecorded.clear();
+        recorded.unrecorded.insert(15);
+        recorded.exits.insert(5, (5, Some(1_000)));
+        recorded.exits.remove(&6);
+        let mut overdrawn = Report::default();
+        check_damage(&recorded, &mut overdrawn);
+        assert_eq!(overdrawn.differences.len(), 1, "more damage than the target's pending strength damage is a difference: {:?}", overdrawn.differences);
+    }
     #[test]
     fn edge_casualties_above_the_saved_lifetime_count_or_falling_at_an_exit_are_differences() {
         use replay_data::rows::LandCombatEdgesRow;

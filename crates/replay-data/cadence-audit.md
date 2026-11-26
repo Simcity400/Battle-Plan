@@ -29,10 +29,10 @@ otherwise reads its independently demanded XP fresh before resume.
 |---|---|---|
 | hourly tick | Native writer class | 165 |
 | any hour | Native writer class | 108 |
-| hook log | Native writer class | 22 |
+| hook log | Native writer class | 23 |
 | load | Native writer class | 2 |
-| recorder | Native writer class | 95 |
-| total | | 392 |
+| recorder | Native writer class | 96 |
+| total | | 394 |
 
 The market family publishes exact Hourly rows through certified owner and exact agreement-key updates, not daily slices. Initial/load and lost-interval recovery use the existing authenticated economy resource/contract census. A fresh epoch publishes all three complete state baselines independently of event-interval refusal or the caller full flag; off the daily contract slot the resource census completes only a skipped owned-contract census once, never retrying a failed attempt. A spool-only loss requires no second census in the next intact interval. Quiet epochs add no native list read. Ordinary inventory, agreement transfer/once and contract/route callbacks publish constant-size identity marks; the worker reads only marked surviving holders and differences native cumulative totals. Rare amendment/removal callbacks copy final delivered/sunk pools before erasure into prepared storage; worker differencing retains the final increment and discards intermediate snapshots. Actual agreement amendments copy all three schedules; both local incoming/outgoing action drafts are excluded. Country reset and variable stores keep their existing patch owners, using nonzero encoded country receiver keys including country zero. Active contract removal retains final scalar totals before handle retirement; deferred destruction does not duplicate the lifetime. All 25 dedicated sites (23 detours plus 2 taps) and both forwarding owners gate carry; four nested per-item/pool sites are covered by the outer delivery/rebuild owners and are unpatched. There is no new hourly native task, roster scan or callback allocation. Missing closure/lost intervals refuse uncertified state; selected-read failures stay local to their table.
 
@@ -194,7 +194,8 @@ NavalRefitShips.line also carries its stored full reference without destination-
 | LandCombatProgress | hourly tick | Hourly combat manager updates. |
 | LandCombatResults | hook log | land_events log. |
 | LandCombatResultObservers | hook log | land_events log: terminal combat-log observer rows copied before side deletion. |
-| LandCombatEdges | hook log | land_events log: each land combat's opening roster at the start routine's return and each division's exit around its loss flush. |
+| LandCombatEdges | hook log | land_events log: each land combat's opening roster at the start routine's return and each division's exit around its loss flush, with its pending strength damage read before the flush clears it. |
+| LandDivisionDamage | hook log | land_events log: the attack resolver's per-hit attacker, target, attacker's army and strength lost, folded at the observer boundary per target, combat, attacker and army, and published when the target leaves any combat, since that exit flushes the target's whole pending damage. |
 | CombatEngagementRefreshes | hook log | combat_engagement_refreshes sparse hourly event ledger: unit add/remove, naval convoy transfer, controller reassignment target, and local all-combat refresh hooks. |
 | LandCombatSides | hourly tick | Hourly combat manager updates. |
 | LandCombats | hourly tick | Combat manager updates from the hourly game-state update. |
@@ -459,6 +460,7 @@ MIO mutable details and country policy rosters share the existing daily producti
 | ProducedValues | recorder | Derived by the recorder's ProducedValues writer from ProductionCountryTotals, ProductionTypeTotals, ProductionCoverage, RocketProductionOutput and VariantDefinitions: each producer's running totals of every type, of each archetype and of an archetype it has no row of, and the one row dating them by production's reads. |
 | AirLossTotals | recorder | Derived by the recorder's AirLossTotals writer from AirLossEvents (its appended rows), CountryLinks and TagHolders: each holder's running totals of aircraft lost and credited by region and cause, through the reads both the log and the links were available. |
 | BombingTotals | recorder | Derived by the recorder's BombingTotals writer from BuildingBombingDamage (its appended rows), CountryLinks and TagHolders: each holder's running totals of building damage dealt and taken by aircraft, by caller, through the reads both the log and the links were available. |
+| DivisionKills | recorder | Derived by the recorder's DivisionKills writer from LandDivisionDamage and LandCombatEdges (the rows of each hour): when a division leaves a combat, its realised losses are shared among the divisions that damaged it in proportion to the strength damage each dealt, against its whole pending strength damage; complete from the first hour both are recorded until either goes unrecorded in the branch. |
 | GarrisonStrengths | recorder | Derived each hour by the recorder's GarrisonStrength writer from StateGarrisons, StateAssignedManpower and CountryLinks with the garrison strength powers defines (the recording's facts): each garrison's displayed strength, not recorded with its reason where an input is not known. |
 | ThreatEvents | recorder | Derived by the recorder's Threats writer from ThreatSources: a source first listed or listed again, changed or dropped, with its place among equal sources, each living the hour it was read. |
 | TradeFlows | recorder | Derived by the recorder's TradeFlows writer from ResourceExchanges, CountryLinks and TagHolders: the deals of one resource from one seller to one buyer, summed; a row lives while a deal counts toward it. |

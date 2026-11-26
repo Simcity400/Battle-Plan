@@ -67,6 +67,7 @@ pub(crate) struct Observer {
     active: Padded<AtomicUsize>,
     producers: Padded<AtomicUsize>,
     lost: AtomicU64,
+    pub(crate) damage: Mutex<crate::extended::division_damage::Fold>,
 }
 
 impl Observer {
@@ -98,6 +99,7 @@ impl Observer {
             active: Padded(AtomicUsize::new(0)),
             producers: Padded(AtomicUsize::new(0)),
             lost: AtomicU64::new(0),
+            damage: Mutex::new(crate::extended::division_damage::Fold::new()),
         }
     }
 
@@ -182,6 +184,7 @@ impl Observer {
             self.consumed.store(self.cursor.load(Ordering::SeqCst), Ordering::SeqCst);
             self.storage_lost.store(u64::MAX, Ordering::SeqCst);
             drop(self.spill.take());
+            self.forget_damage();
             (std::mem::take(&mut *swap), std::mem::take(&mut *self.spilled()))
         };
         drop(buffers);
@@ -282,8 +285,13 @@ impl Observer {
         log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
     }
 
+    pub(crate) fn forget_damage(&self) {
+        self.damage.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    }
+
     pub(crate) fn lost_drain(&self, hour: i32, reason: &'static str) -> Drain {
         self.fail();
+        self.forget_damage();
         let first = self.consumed.load(Ordering::SeqCst);
         Drain {
             epoch: self.epoch.load(Ordering::SeqCst),
@@ -595,12 +603,17 @@ const WIPE_ORIGINAL: usize = 5;
 const DESTRUCTION_ORIGINAL: usize = 6;
 const START_COMBAT: usize = 7;
 const ARMY_COMBAT_ENDED: usize = 8;
-static ORIGINAL: [AtomicUsize; 9] = [const { AtomicUsize::new(0) }; 9];
+const ATTACK_ACTIVITY: usize = 9;
+static ORIGINAL: [AtomicUsize; 10] = [const { AtomicUsize::new(0) }; 10];
 const CORE_HOOKS: usize = 9;
 const EDGE_HOOKS: usize = 2;
+const DAMAGE_HOOKS: usize = 1;
 static EDGES_ARMED: AtomicBool = AtomicBool::new(false);
 static EDGES_WITHHELD: Mutex<Option<String>> = Mutex::new(None);
 const EDGES_UNARMED: &str = "land combat edge hooks were not installed";
+static DAMAGE_ARMED: AtomicBool = AtomicBool::new(false);
+static DAMAGE_WITHHELD: Mutex<Option<String>> = Mutex::new(None);
+const DAMAGE_UNARMED: &str = "division damage hook was not installed";
 
 pub(crate) fn edges_armed() -> bool {
     EDGES_ARMED.load(Ordering::Acquire)
@@ -618,6 +631,24 @@ pub fn with_edges_withheld<T>(f: impl FnOnce(Option<&str>) -> T) -> T {
 
 pub fn edges_withheld() -> Option<String> {
     with_edges_withheld(|reason| reason.map(str::to_owned))
+}
+
+pub(crate) fn damage_armed() -> bool {
+    DAMAGE_ARMED.load(Ordering::Acquire)
+}
+
+pub fn with_damage_withheld<T>(f: impl FnOnce(Option<&str>) -> T) -> T {
+    if damage_armed() {
+        return f(None);
+    }
+    let guard = DAMAGE_WITHHELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(Some(guard.as_deref().unwrap_or(DAMAGE_UNARMED)))
+}
+
+pub fn damage_withheld() -> Option<String> {
+    with_damage_withheld(|reason| reason.map(str::to_owned))
 }
 #[derive(Clone, Copy)]
 struct Border {
@@ -1267,6 +1298,37 @@ unsafe extern "system-unwind" fn army_combat_ended(army: usize, combat: usize) {
     _call.finish();
 }
 
+unsafe extern "system-unwind" fn attack_activity(observer: usize, attacker: usize, target: usize, strength: i64) {
+    let _call = Call::enter();
+    if observing() && target != 0 && strength > 0 {
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
+        let hit = edges::Hit::read(&memory, BASE.load(Ordering::Relaxed), observer, attacker, target, strength);
+        append(edges::HIT_WORDS, |put| {
+            hit.copy(put);
+            Ok(())
+        });
+    }
+    let original: unsafe extern "system-unwind" fn(usize, usize, usize, i64) =
+        unsafe { std::mem::transmute(ORIGINAL[ATTACK_ACTIVITY].load(Ordering::Acquire)) };
+    _call.original(|| unsafe { original(observer, attacker, target, strength) });
+    _call.finish();
+}
+
+/// # Safety
+/// `base` identifies the authenticated executable in this process; the hook is published,
+/// restored and quiesced with the rest of the land-event family.
+unsafe fn damage_hooks(base: usize) -> Result<Vec<Hook>, String> {
+    let target = engine_sites::resolve(base, edges::GROUP_ACTIVITY_RVA)
+        .map_err(|cause| format!("division damage site withheld: {cause}"))?;
+    let (at, original) = engine_sites::hook(base, edges::ATTACK_ACTIVITY_CALL_RVA)
+        .and_then(|code| Ok((code.address, code.sentinel::<16>()?)))
+        .map_err(|cause| format!("division damage site withheld: {cause}"))?;
+    let hook = unsafe { Hook::new_call(at, attack_activity as *const () as usize, original) }
+        .map_err(|cause| format!("division damage hook withheld: {cause}"))?;
+    ORIGINAL[ATTACK_ACTIVITY].store(target, Ordering::Release);
+    Ok(vec![hook])
+}
+
 /// # Safety
 /// `base` identifies the authenticated executable in this process; the hooks are published,
 /// restored and quiesced with the rest of the land-event family.
@@ -1328,6 +1390,7 @@ impl Hooks {
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Vec<Hook>, String> {
         EDGES_ARMED.store(false, Ordering::Release);
+        DAMAGE_ARMED.store(false, Ordering::Release);
         let sites = [
             (
                 FINALIZE,
@@ -1420,6 +1483,40 @@ impl Hooks {
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
             }
         }
+        let damage = if EDGES_ARMED.load(Ordering::Acquire) {
+            let (damage, report) = installation::capture(|| unsafe { damage_hooks(base) });
+            match (damage, report.failure) {
+                (Ok(damage), None) => {
+                    for site in report.sites {
+                        installation::site(site);
+                    }
+                    Ok(damage)
+                }
+                (damage, failure) => {
+                    if let Some(fatal) = failure.as_ref().filter(|failure| failure.kind.fatal()) {
+                        installation::refused(fatal.kind, fatal.site, &fatal.cause);
+                    }
+                    Err(match (damage, failure) {
+                        (Err(reason), _) => reason,
+                        (Ok(_), Some(failure)) => format!("division damage hook withheld: {}", failure.cause),
+                        (Ok(_), None) => unreachable!(),
+                    })
+                }
+            }
+        } else {
+            Err("division damage needs the land combat edge hooks, which were withheld".to_owned())
+        };
+        match damage {
+            Ok(damage) => {
+                hooks.extend(damage);
+                DAMAGE_ARMED.store(true, Ordering::Release);
+            }
+            Err(reason) => {
+                *DAMAGE_WITHHELD
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+            }
+        }
         Ok(hooks)
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
@@ -1450,7 +1547,9 @@ impl Hooks {
         }
         #[cfg(test)]
         tests::escape_after_publication();
-        let expected = CORE_HOOKS + if EDGES_ARMED.load(Ordering::Acquire) { EDGE_HOOKS } else { 0 };
+        let expected = CORE_HOOKS
+            + if EDGES_ARMED.load(Ordering::Acquire) { EDGE_HOOKS } else { 0 }
+            + if DAMAGE_ARMED.load(Ordering::Acquire) { DAMAGE_HOOKS } else { 0 };
         LIVE.enabled.store(enabled && self.hooks.len() == expected, Ordering::SeqCst);
         if let Some(reason) = escaped_unwind_reason().filter(|_| enabled) {
             LIVE.enabled.store(false, Ordering::SeqCst);

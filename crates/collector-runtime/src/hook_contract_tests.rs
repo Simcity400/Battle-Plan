@@ -43,6 +43,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
             DestroyedDivisions,
             LandCombatEdges,
             LandCombatResultObservers,
+            LandDivisionDamage,
         ],
         Family::Construction => &[ConstructionLineOutput],
         Family::LineOutput => &[ProductionLineOutput, RocketProductionOutput],
@@ -167,6 +168,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
             land_wipe::LIFECYCLE_RVA,
             engine_land_inputs::land_edges::START_COMBAT_RVA,
             engine_land_inputs::land_edges::ARMY_COMBAT_ENDED_RVA,
+            engine_land_inputs::land_edges::ATTACK_ACTIVITY_CALL_RVA,
         ]
         .into_iter()
         .chain(land_events::DISPATCH_LEADER_CALLS)

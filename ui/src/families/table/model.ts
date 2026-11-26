@@ -185,6 +185,7 @@ export interface TableSubjectFigure {
   readonly label: string;
   readonly value: Value;
   readonly pictures?: readonly TableSubjectPicture[];
+  readonly hint?: string;
 }
 
 export interface TableSubjectSummary {

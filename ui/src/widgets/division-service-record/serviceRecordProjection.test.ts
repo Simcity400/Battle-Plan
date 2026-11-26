@@ -10,20 +10,26 @@ test('a removed division keeps its last recorded facts and the opponent of its r
   const head: ServiceRecordTailReply = {
     branchId: '1', selected: { division: '17', name: 'Second division', template: 'Infantry',
       sprite: null, lastSeen: 91, removedAt: 92, removed: 'division_destroyed', tag: 'ABC', medals: 0 },
-    facts: { level: null, levelName: null, experienceRaw: null, casualtiesTaken: null, medals: 0, awards: [], historyMissing: null },
+    facts: { level: null, levelName: null, experienceRaw: null, casualtiesTaken: null, medals: 0, awards: [], historyMissing: null,
+      enemyKilled: null, enemyKilledMissing: 'Enemy killed is not recorded at this hour: added in format 152' },
     medals: [], total: '1', offset: '0', missing: [], unavailable: null, warnings: [], nextChange: null,
     rows: [{ key: 'loss:17', hour: 92, observed: 94, kind: 'removed', exact: false, tag: 'ABC', other: 'DEF',
       province: 5, placeHour: 91, title: null, status: 'division_destroyed', medal: null }],
   };
-  const source = buildRowSourceFromHead('branch', head, undefined, 100)!;
-  const view = createBoundedReadView({ hour: 100, rows: new Map([['main', source]]), identity: {
+  const viewOf = (reply: ServiceRecordTailReply) => createBoundedReadView({ hour: 100, rows: new Map([['main', buildRowSourceFromHead('branch', reply, undefined, 100)!]]), identity: {
     resolve: (kind, key, atHour) => ({ kind, key, atHour, name: { status: 'ready', value: `${key} at ${atHour}` },
       holder: { status: 'absent', reason: 'fixture' }, validInterval: [atHour, atHour], nextChangeAt: Infinity }),
   } });
-  const model = serviceRecordProjection.project(view, { campaign: 'c', chosen: subjectToken('c', '17') });
+  const model = serviceRecordProjection.project(viewOf(head), { campaign: 'c', chosen: subjectToken('c', '17') });
   assert.equal(model.empty, undefined);
   assert.deepEqual(model.subjectSummary?.country, { kind: 'known', value: 'ABC at 91' });
   assert.deepEqual(model.subjectSummary?.figures.map(figure => [figure.label, figure.value.kind]), [['Casualties taken', 'notRecorded'], ['Enemy killed', 'notRecorded']]);
+  const killed = model.subjectSummary?.figures[1];
+  assert.deepEqual(killed?.value, { kind: 'notRecorded', reason: 'Enemy killed is not recorded at this hour: added in format 152' }, 'a recording without the count says why');
+  assert.match(killed?.hint ?? '', /shared among the divisions that damaged it/, 'the tooltip says how the figure is worked out');
+  const counted = serviceRecordProjection.project(viewOf({ ...head, facts: { ...head.facts!, enemyKilled: 480, enemyKilledMissing: null } }),
+    { campaign: 'c', chosen: subjectToken('c', '17') });
+  assert.deepEqual(counted.subjectSummary?.figures[1]?.value, { kind: 'known', value: 480 });
   assert.equal(model.kindFilter?.single?.label, 'Second division');
   const cells = model.rows[0]!.cells;
   assert.deepEqual(cells.place!.value, { kind: 'known', value: '5 at 91' });
