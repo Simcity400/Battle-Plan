@@ -44,7 +44,7 @@ pub fn executable() -> Executable {
             "is_in_home_area", "is_on_continent", "is_owned_and_controlled_by", "state",
         ]),
         (country | character | combat, Assign, &["tag"]),
-        (character, Assign, &["has_ideology", "is_active_scientist", "is_deployed", "is_ruling"]),
+        (character, Assign, &["has_ideology", "is_active_scientist", "is_deployed"]),
         (character, Body, &["has_scientist_level"]),
         (combat, Assign, &["is_fighting_in_strategic_region", "night"]),
         (organisation, Assign, &[
