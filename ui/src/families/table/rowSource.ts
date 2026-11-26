@@ -161,24 +161,6 @@ export function validateRowTailReply<TRow extends DatedLogRow>(
   return { total, offset, baseOrdinal, firstOrdinal, rows, facetTotals, ...(facetMissing.size ? { facetMissing } : {}), missing };
 }
 
-export function validateTailReply(value: unknown, readAt?: number): TailReply<LogReplyRow> {
-  return validateRowTailReply(
-    value,
-    (row, columns): LogReplyRow => {
-      if (!Array.isArray(row.cells) || row.cells.length !== columns.length || !row.cells.every(isCell)) {
-        throw new Error('The log tail reply is malformed.');
-      }
-      return {
-        key: row.key as string,
-        hour: row.hour as number,
-        cells: Object.fromEntries(columns.map((column, index) => [column, (row.cells as LogCell[])[index]!])),
-        fields: row,
-      };
-    },
-    readAt,
-  );
-}
-
 export function validateGenericTailReply(value: unknown, readAt?: number): TailReply<DatedLogRow> {
   return validateRowTailReply(
     value,

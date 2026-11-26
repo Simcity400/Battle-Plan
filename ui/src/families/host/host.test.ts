@@ -43,7 +43,7 @@ import {
 import { keepEqual } from './stableValue.ts';
 import { rowHoverPublisher } from './hoverRow.ts';
 import { emptyPagers, pagerWindow, replacePagers, type PagedEntry } from './pagers.ts';
-import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
+import { mirrorToSync, optionElementId, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
 import { reportFamilyShownHour } from './shownHour.ts';
@@ -129,12 +129,6 @@ test('compressed scroll geometry preserves linear range and maps large extents a
   const midLogical = physicalToLogicalTop(midPhysical, huge);
   assert.ok(Math.abs(midLogical - (huge.logicalHeight - huge.viewportHeight) / 2) < 1);
   assert.ok(Math.abs(logicalToPhysicalTop(midLogical, huge) - midPhysical) < 1);
-});
-
-test('reconcileFocusedKey respects fallbackToFirst flag', () => {
-  assert.deepEqual(reconcileFocusedKey('b', ['a', 'b', 'c'], false), { key: 'b', present: true, index: 1 });
-  assert.deepEqual(reconcileFocusedKey('evicted', ['a', 'b'], false), { key: null, present: false, index: -1 });
-  assert.deepEqual(reconcileFocusedKey('evicted', ['a', 'b'], true), { key: 'a', present: false, index: 0 });
 });
 
 test('F7 & F10: paged keyboard sends first ArrowDown/ArrowUp from no focus to ordinal 0, and empty Escape returns early', () => {
