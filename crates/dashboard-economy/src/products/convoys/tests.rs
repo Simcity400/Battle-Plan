@@ -311,3 +311,26 @@ fn a_value_a_truncated_hour_reached_is_kept_and_an_unreached_hour_says_why() {
         "the truncated hours that reached the region keep its value; the rest are not recorded with their reason, never the earlier value"
     );
 }
+
+#[test]
+fn a_history_extended_by_each_new_day_is_the_history_read_whole() {
+    let hours: Vec<_> = (0..96)
+        .map(|hour| {
+            let held = !(46..=49).contains(&hour);
+            let efficiency = match hour {
+                ..30 => vec![(17, 50_000)],
+                30..60 => vec![(17, 50_000), (19, 70_000)],
+                _ => vec![(17, 40_000), (18, 90_000)],
+            };
+            (hour, held, efficiency)
+        })
+        .collect();
+    let followed = synthetic("convoy-followed", &hours);
+    for last in [23, 47, 71, 95] {
+        let asked = ConvoyHealthParams { every: Some(true), ..regions(0, last) };
+        let whole = health_of(&synthetic("convoy-whole", &hours), &asked);
+        assert_eq!(health_of(&followed, &asked), whole, "through hour {last}: a region first seen on a later day takes the earlier days' cells of a region without one");
+        let top = ConvoyHealthParams { top: Some(1), pinned_regions: Some(vec![19]), ..regions(0, last) };
+        assert_eq!(health_of(&followed, &top), health_of(&synthetic("convoy-whole-top", &hours), &top));
+    }
+}

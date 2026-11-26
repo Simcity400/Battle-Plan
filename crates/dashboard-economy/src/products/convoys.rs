@@ -975,6 +975,89 @@ fn window<'q>(source: &Source, query: &'q Query<'_>, params: &ConvoyHealthParams
     Ok(Window { gathered, known, unheld, gaps })
 }
 
+#[derive(Clone, Default)]
+struct RegionHistory {
+    reach: i32,
+    regions: BTreeMap<u32, (Vec<ConvoyCellRun>, Vec<(i32, i32, i64)>)>,
+    absent: Vec<ConvoyCellRun>,
+    known: Vec<HourSpan>,
+    unheld: Vec<HourSpan>,
+    used: u64,
+}
+
+fn join_cells(held: &mut Vec<ConvoyCellRun>, next: Vec<ConvoyCellRun>) {
+    let mut next = next.into_iter();
+    if let (Some(last), Some(first)) = (held.last_mut(), next.as_slice().first())
+        && last.state == first.state
+        && i64::from(last.last_hour) + 1 == i64::from(first.first_hour)
+    {
+        last.last_hour = first.last_hour;
+        next.next();
+    }
+    held.extend(next);
+}
+
+impl RegionHistory {
+    fn read(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Self> {
+        let window = window(source, query, params, from, to, cancelled)?;
+        let absent = window.cells(ABSENT, &[], from, to);
+        let regions = window.gathered.regions.iter().map(|(&region, efficiency)| (region, (window.cells(region, efficiency, from, to), efficiency.clone()))).collect();
+        let known = window.known.into_iter().next().unwrap_or_default();
+        Ok(Self { reach: to, regions, absent, known, unheld: window.unheld, used: 0 })
+    }
+
+    fn join(&mut self, next: Self) {
+        for (region, (cells, _)) in &mut self.regions {
+            if !next.regions.contains_key(region) {
+                join_cells(cells, next.absent.clone());
+            }
+        }
+        for (region, (cells, efficiency)) in next.regions {
+            let (held_cells, held_efficiency) = self.regions.entry(region).or_insert_with(|| (self.absent.clone(), Vec::new()));
+            join_cells(held_cells, cells);
+            for run in efficiency {
+                push(held_efficiency, run);
+            }
+        }
+        join_cells(&mut self.absent, next.absent);
+        self.known = dashboard_world::products::subjects::settle(std::mem::take(&mut self.known).into_iter().chain(next.known).collect());
+        self.unheld = dashboard_world::products::subjects::settle(std::mem::take(&mut self.unheld).into_iter().chain(next.unheld).collect());
+        self.reach = next.reach;
+    }
+}
+
+#[derive(Default)]
+struct HeldRegions {
+    histories: HashMap<String, RegionHistory>,
+    uses: u64,
+}
+
+const HELD_REGIONS: usize = 16;
+
+fn region_history(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, from: i32, reach: i32, cancelled: &AtomicBool) -> io::Result<RegionHistory> {
+    let key = format!("{}|{:?}|{from}", params.branch_id, params.country);
+    let state = source.state::<HeldRegions>();
+    let held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).histories.get(&key).filter(|held| held.reach <= reach).cloned();
+    let history = match held {
+        Some(held) if held.reach == reach => held,
+        Some(mut held) => {
+            held.join(RegionHistory::read(source, query, params, held.reach + 1, reach, cancelled)?);
+            held
+        }
+        None => RegionHistory::read(source, query, params, from, reach, cancelled)?,
+    };
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.uses += 1;
+    let used = state.uses;
+    if state.histories.len() >= HELD_REGIONS && !state.histories.contains_key(&key)
+        && let Some(oldest) = state.histories.iter().min_by_key(|(_, held)| held.used).map(|(key, _)| key.clone())
+    {
+        state.histories.remove(&oldest);
+    }
+    state.histories.insert(key, RegionHistory { used, ..history.clone() });
+    Ok(history)
+}
+
 fn has_efficiency(cells: &[ConvoyCellRun]) -> bool {
     cells.iter().any(|run| matches!(run.state, ConvoyCellState::Efficiency { .. }))
 }
@@ -1025,23 +1108,36 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     let reach = if from <= to { to.div_euclid(DAY).saturating_mul(DAY).saturating_add(DAY - 1).min(query.timeline.last).max(to) } else { to };
     let every = params.every == Some(true);
     let mut warnings = Vec::new();
-    let mut held = window(source, &query, params, from, reach, cancelled)?;
-    let gap_spans: Vec<HourSpan> = held.gaps.iter().map(|(span, _)| *span).collect();
+    let gap_spans: Vec<HourSpan> = query.timeline.unheld.iter().filter_map(|gap| {
+        let (a, b) = (gap.first.max(from), gap.last.min(reach));
+        (a <= b).then_some(HourSpan { first_hour: a, last_hour: b })
+    }).collect();
+    let (mut history, mut gathered, mut known, mut unheld) = match params.view {
+        ConvoyView::Regions => {
+            let history = if from <= to { region_history(source, &query, params, from, reach, cancelled)? } else { RegionHistory::read(source, &query, params, from, reach, cancelled)? };
+            let (known, unheld) = (vec![history.known.clone(), Vec::new(), Vec::new()], history.unheld.clone());
+            (history, Gathered::default(), known, unheld)
+        }
+        ConvoyView::Trade => {
+            let held = window(source, &query, params, from, reach, cancelled)?;
+            (RegionHistory::default(), held.gathered, held.known, held.unheld)
+        }
+    };
     let mut valid = reach;
-    for spans in held.known.iter().chain([&held.unheld, &gap_spans]) {
+    for spans in known.iter().chain([&unheld, &gap_spans]) {
         valid = valid.min(unchanged_through(spans, to));
     }
     let done = params.list_from.filter(|&list_from| params.view == ConvoyView::Trade && list_from < from).map(|list_from| listed_since(source, &query, params, list_from, from - 1, cancelled)).transpose()?;
 
     let mut region_ids: BTreeSet<u32> = BTreeSet::new();
     if params.view == ConvoyView::Regions {
-        region_ids.extend(held.gathered.regions.keys().copied());
+        region_ids.extend(history.regions.keys().copied());
         region_ids.extend(params.regions.iter().flatten().copied());
         region_ids.extend(params.pinned_regions.iter().flatten().copied());
     }
     let named = region_names(source, context, &region_ids, &mut warnings);
     let absent = (params.view == ConvoyView::Regions).then(|| {
-        let mut cells = held.cells(ABSENT, &[], from, reach);
+        let mut cells = history.absent.clone();
         valid = valid.min(unchanged_through(&cells, to));
         cut(&mut cells, to);
         cells
@@ -1052,8 +1148,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     let mut active_unlisted = ActiveRegions::default();
     let mut all_regions: BTreeMap<u32, ConvoyRegion> = BTreeMap::new();
     for region in region_ids {
-        let mut efficiency = held.gathered.regions.remove(&region).unwrap_or_default();
-        let mut cells = held.cells(region, &efficiency, from, reach);
+        let (mut cells, mut efficiency) = history.regions.remove(&region).unwrap_or_else(|| (history.absent.clone(), Vec::new()));
         valid = valid.min(unchanged_through(&cells, to));
         cut(&mut cells, to);
         cut(&mut efficiency, to);
@@ -1116,8 +1211,8 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
     };
 
     let listed = |key: &u128, set: fn(&Listed) -> &BTreeSet<u128>| done.as_ref().is_some_and(|done| set(done).contains(key));
-    let mut deals: BTreeMap<u128, ConvoyDeal> = std::mem::take(&mut held.gathered.deals);
-    let mut leases: BTreeMap<u128, ConvoyLease> = std::mem::take(&mut held.gathered.leases);
+    let mut deals: BTreeMap<u128, ConvoyDeal> = std::mem::take(&mut gathered.deals);
+    let mut leases: BTreeMap<u128, ConvoyLease> = std::mem::take(&mut gathered.leases);
     if let Some(done) = &done {
         for &key in &done.deals {
             deals.entry(key).or_insert_with(|| deal(key));
@@ -1164,9 +1259,7 @@ fn health(source: &Source, params: &ConvoyHealthParams, context: &LoadContext, c
             }
         }
     }
-    let mut known = std::mem::take(&mut held.known);
     known.iter_mut().for_each(|spans| cut(spans, to));
-    let mut unheld = std::mem::take(&mut held.unheld);
     cut(&mut unheld, to);
     let mut gaps = gap_spans;
     cut(&mut gaps, to);
