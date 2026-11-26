@@ -24,24 +24,11 @@ pub struct SubUnits {
     groups: BTreeMap<Vec<u8>, Result<Option<Vec<u8>>, String>>,
     categories_by_unit: BTreeMap<Vec<u8>, Result<u64, String>>,
     air_wings: BTreeMap<Vec<u8>, Result<AirWing, String>>,
-    domains: BTreeMap<Vec<u8>, Result<Option<Domain>, String>>,
     uncertain: Option<String>,
     warnings: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Domain {
-    Land,
-    Sea,
-}
-
-fn domain_of(value: &[u8]) -> Result<Domain, String> {
-    match value.to_ascii_lowercase().as_slice() {
-        b"infantry" | b"armored" | b"other" => Ok(Domain::Land),
-        b"ship" | b"transport" | b"uboat" => Ok(Domain::Sea),
-        other => Err(format!("map icon category {} is not one the game knows", String::from_utf8_lossy(other))),
-    }
-}
+const NAVAL_CATEGORIES: u64 = 0x80_0040_03C1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AirWing {
@@ -76,6 +63,10 @@ impl SubUnits {
         let mut units: Vec<_> = self.indices.values().collect();
         units.sort_unstable_by_key(|(_, index)| *index);
         units.into_iter().map(|(spelling, _)| spelling.as_slice())
+    }
+
+    pub fn naval(&self, name: &[u8]) -> Result<bool, String> {
+        self.category(name).map(|categories| categories & NAVAL_CATEGORIES != 0)
     }
 
     pub fn categories(&self) -> &BTreeSet<Vec<u8>> {
@@ -196,15 +187,6 @@ impl SubUnits {
                     String::from_utf8_lossy(name)
                 )),
             },
-        }
-    }
-
-    pub fn domain(&self, name: &[u8]) -> Result<Domain, String> {
-        match self.domains.get(&identity(name)) {
-            Some(Ok(Some(domain))) => Ok(*domain),
-            Some(Ok(None)) => Err(format!("sub-unit {} declares no map icon category", String::from_utf8_lossy(name))),
-            Some(Err(reason)) => Err(reason.clone()),
-            None => Err(self.uncertain.clone().unwrap_or_else(|| format!("sub-unit {} is not in the content's sub_units", String::from_utf8_lossy(name)))),
         }
     }
 
@@ -339,7 +321,6 @@ impl SubUnits {
             let mut special_forces = false;
             let mut categories = scalar_categories[index];
             let mut air_wing = AirWing::default();
-            let mut domain: Result<Option<Domain>, String> = Ok(None);
             let unit = identity(entry.key.as_deref().unwrap_or_default());
             let mut group = self.groups.get(&unit).cloned().unwrap_or_else(|| {
                 self.uncertain
@@ -387,21 +368,13 @@ impl SubUnits {
                             categories |= category(text, item.kind);
                         }
                     }
-                } else if field.keyword_is("map_icon_category") {
-                    domain = field
-                        .value
-                        .scalar()
-                        .ok_or_else(|| "map icon category is not a word".to_owned())
-                        .and_then(|value| domain_of(c_string(value)))
-                        .map(Some);
                 } else if field.keyword_is("group") {
                     let spelling = c_string(field.value.scalar().unwrap_or_default());
                     group = Ok((!content_reader_parser::tokens::Token::register(spelling).is_rejected())
                         .then(|| spelling.to_vec()));
                 }
             }
-            self.groups.insert(unit.clone(), group);
-            self.domains.insert(unit, domain);
+            self.groups.insert(unit, group);
             self.air_wings.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
                 Ok(air_wing),
@@ -468,9 +441,6 @@ impl SubUnits {
             for value in self.air_wings.values_mut() {
                 *value = Err(reason.clone());
             }
-            for value in self.domains.values_mut() {
-                *value = Err(reason.clone());
-            }
             if let Some(key) = keys.last() {
                 self.artillery.insert(identity(key), Err(reason.clone()));
                 self.special_forces
@@ -480,7 +450,6 @@ impl SubUnits {
                     .insert(identity(key), Err(reason.clone()));
                 self.groups.insert(identity(key), Err(reason.clone()));
                 self.air_wings.insert(identity(key), Err(reason.clone()));
-                self.domains.insert(identity(key), Err(reason.clone()));
             }
             self.uncertain.get_or_insert(reason);
         }
@@ -492,25 +461,24 @@ pub fn identity(name: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod domain_tests {
+mod naval_tests {
     use super::*;
 
     #[test]
-    fn a_sub_units_domain_is_what_its_definition_declares_and_an_unknown_one_is_refused_by_name() {
+    fn a_sub_unit_is_naval_by_its_type_categories_not_its_map_icon() {
         crate::test_game::enter();
         let mut units = SubUnits::default();
         units.read(
-            b"sub_units = { line = { map_icon_category = infantry group = foot } escort = { map_icon_category = ship } diver = { map_icon_category = uboat } balloon = { map_icon_category = zeppelin } plain = { } }",
+            b"sub_units = { line = { type = { infantry } map_icon_category = ship } escort = { type = { screen_ship } map_icon_category = infantry } diver = { type = { submarine } } plain = { } }",
             "common/units/base.txt",
         );
-        assert_eq!(units.domain(b"line"), Ok(Domain::Land));
-        assert_eq!(units.domain(b"ESCORT"), Ok(Domain::Sea), "names are matched as the game matches them");
-        assert_eq!(units.domain(b"diver"), Ok(Domain::Sea));
-        assert!(units.domain(b"balloon").is_err_and(|why| why.contains("zeppelin")), "a value the game does not know is refused by name");
-        assert!(units.domain(b"plain").is_err(), "no declaration is not land");
-        assert!(units.domain(b"absent").is_err());
-        assert_eq!(units.in_content_order().collect::<Vec<_>>(), [&b"line"[..], b"escort", b"diver", b"balloon", b"plain"], "the content's own order, not the alphabet");
-        units.read(b"sub_units = { line = { map_icon_category = transport } }", "common/units/mod_override.txt");
-        assert_eq!(units.domain(b"line"), Ok(Domain::Sea), "a mod's later definition replaces the earlier one");
+        assert_eq!(units.naval(b"line"), Ok(false), "the map icon is presentation; the type decides");
+        assert_eq!(units.naval(b"ESCORT"), Ok(true), "names are matched as the game matches them");
+        assert_eq!(units.naval(b"diver"), Ok(true));
+        assert_eq!(units.naval(b"plain"), Ok(false));
+        assert!(units.naval(b"absent").is_err());
+        assert_eq!(units.in_content_order().collect::<Vec<_>>(), [&b"line"[..], b"escort", b"diver", b"plain"], "the content's own order, not the alphabet");
+        units.read(b"sub_units = { line = { type = { capital_ship } } }", "common/units/mod_override.txt");
+        assert_eq!(units.naval(b"line"), Ok(true), "a mod's later definition replaces the earlier one");
     }
 }

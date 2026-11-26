@@ -2,7 +2,7 @@ use super::{
     AirForceMeasure, AirForceOwnership, Content, ForcePart, Named, NavyGrouping, NavyMeasure, NavyOwnership, UNRESOLVED, equipment, split, unidentified, validate_selection, variant_part,
 };
 use content_reader_key_names::unit_leader::AirWings as _;
-use content_reader_script::sub_units::{Domain, SubUnit, SubUnits};
+use content_reader_script::sub_units::{SubUnit, SubUnits};
 use dashboard_base::{
     Source,
     catalogue::{self, Catalogue},
@@ -511,15 +511,20 @@ fn name_navy_classes(frame: &DecodedFrame, parts: &BTreeSet<u128>, content: &Con
                 }
             }
         };
-        if let (Some(spelling), Some(units)) = (spelling, units.as_deref())
-            && let Err(why) = units.domain(spelling.as_bytes())
-        {
-            unplaced.insert((named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour.")));
+        if let (Some(spelling), Some(units)) = (spelling, units.as_deref()) {
+            let why = match units.naval(spelling.as_bytes()) {
+                Ok(true) => None,
+                Ok(false) => Some("its recorded type is not a naval category".to_owned()),
+                Err(why) => Some(why),
+            };
+            if let Some(why) = why {
+                unplaced.insert((named.key.clone(), format!("{spelling}: {why}; its part is drawn in the neutral colour.")));
+            }
         }
         resolved.insert(part, named);
     }
     let order = units.as_deref().filter(|units| units.gap().is_none()).into_iter().flat_map(|units| {
-        units.in_content_order().filter(|unit| units.domain(unit) == Ok(Domain::Sea)).filter_map(|unit| match grouping {
+        units.in_content_order().filter(|unit| units.naval(unit) == Ok(true)).filter_map(|unit| match grouping {
             NavyGrouping::Class => std::str::from_utf8(unit).ok().map(|unit| format!("class:{unit}")),
             NavyGrouping::Type => units.category(unit).ok().map(|mask| format!("type:{mask}")),
         })
