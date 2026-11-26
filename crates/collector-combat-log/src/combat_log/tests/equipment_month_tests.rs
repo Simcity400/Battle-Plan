@@ -165,6 +165,7 @@ fn a_window_keeps_older_equipment_until_the_game_removes_it() {
 
 #[test]
 fn sealed_month_identity_changes_read_the_pool_and_a_whole_audit_reports_changed_values() {
+    let _lock = crate::combat_log_prune::test_lock();
     let mut world = World::new();
     let mut buffer = Captured::vacant();
     let april = day(11, 100);
@@ -236,6 +237,33 @@ fn a_clock_discontinuity_reads_every_pool_on_the_first_selected_hour() {
         [20, 21, 22, 23]
     );
     assert_eq!(world.rows_read.get(), 2);
+    let audit = hour + 2;
+    world.heap.u64(world.pools[0] + 8, 37);
+    world.heap.u64(world.pools[3], 0);
+    capture_at(
+        &mut first,
+        &world,
+        world.heap.origin,
+        world.heap.origin,
+        SIGNAL,
+        audit,
+        true,
+    );
+    assert!(matches!(
+        first.rows.outcome,
+        Outcome::Unavailable {
+            reason: "combat log pool variant pointer null"
+        }
+    ));
+    assert_eq!(last_sealed_month_difference().map(|d| d.hour), Some(audit));
+    world
+        .heap
+        .u64(world.pools[3], world.heap.ptr(world.variant));
+    assert_eq!(
+        world.clock_sample(&mut second, SIGNAL, audit + 1, true),
+        [37, 21, 22, 23]
+    );
+    assert_eq!(world.rows_read.get(), 4);
     for (i, (signal, at)) in [
         (SIGNAL, hour + 25),
         (SIGNAL, hour + 1),
@@ -250,6 +278,6 @@ fn a_clock_discontinuity_reads_every_pool_on_the_first_selected_hour() {
             40 + i as i64
         );
         assert_eq!(world.rows_read.get(), 4);
-        assert!(last_sealed_month_difference().is_none());
+        assert_eq!(last_sealed_month_difference().map(|d| d.hour), Some(audit));
     }
 }

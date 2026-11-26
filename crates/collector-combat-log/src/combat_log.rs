@@ -61,7 +61,6 @@ struct Store {
     hour: Option<i32>,
     finals: Vec<Final>,
     countries: Vec<CountryRead>,
-    last_difference: Option<AuditDifference>,
 }
 
 struct CountryRead {
@@ -80,8 +79,10 @@ pub(crate) struct AuditDifference {
     date: i32,
 }
 
+static LAST_SEALED_MONTH_DIFFERENCE: Mutex<Option<AuditDifference>> = Mutex::new(None);
+
 pub(crate) fn last_sealed_month_difference() -> Option<AuditDifference> {
-    with_store(|store| store.last_difference)
+    *lock(&LAST_SEALED_MONTH_DIFFERENCE)
 }
 
 impl Store {
@@ -124,7 +125,6 @@ const EMPTY_STORE: Store = Store {
     hour: None,
     finals: Vec::new(),
     countries: Vec::new(),
-    last_difference: None,
 };
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -139,8 +139,8 @@ thread_local! {
     static DRAINS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn lock(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
-    store.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    value.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
@@ -370,9 +370,6 @@ impl Captured {
             store.signal = Some(self.signal);
             store.finals.clear();
         }
-        if discontinuity {
-            store.last_difference = None;
-        }
         store.hour = Some(hour);
         let forget = take_forget();
         store
@@ -455,13 +452,9 @@ impl Captured {
             &mut self.rows.rows,
             &mut self.memo,
         );
-        let Outcome::Rows { len } = outcome else {
-            store.countries.clear();
-            return outcome;
-        };
         store.countries.retain_mut(|read| {
             if let Some((group, kind, date)) = read.sealed.audit_difference.take() {
-                store.last_difference = Some(AuditDifference {
+                *lock(&LAST_SEALED_MONTH_DIFFERENCE) = Some(AuditDifference {
                     hour,
                     country: read.country,
                     group,
@@ -471,6 +464,10 @@ impl Captured {
             }
             read.visited == hour || !selection.contains(read.country)
         });
+        let Outcome::Rows { len } = outcome else {
+            store.countries.clear();
+            return outcome;
+        };
         let pending = store
             .finals
             .iter()
