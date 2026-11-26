@@ -18,7 +18,11 @@ pub mod game {
     use std::sync::OnceLock;
 
     pub fn executable() -> synthetic_game::Executable {
-        content_reader_script::test_game::executable().words(["language", "force_pow2_textures"])
+        use engine_executable::executable_tables::effect_identity::{CONTEXT, SCRIPTED};
+        content_reader_script::test_game::executable()
+            .words(["language", "force_pow2_textures"])
+            .named_effect_class("fixture_context_effect", CONTEXT)
+            .named_effect_class("fixture_scripted_effect", SCRIPTED)
     }
 
     pub fn enter() -> Tables {
