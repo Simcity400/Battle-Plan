@@ -1,5 +1,4 @@
-import { formatNativeFixed5 } from '../../charts/valueAxis.ts';
-import type { OptionField, OptionValue } from '../../dashboard/options.ts';
+import type { OptionField } from '../../dashboard/options.ts';
 import type { FamilyTheme } from '../contract.ts';
 import type { BarsBehindMode } from '../settingsControls.ts';
 
@@ -88,14 +87,9 @@ export interface GlideOffset {
 export const TABLE_SETTINGS_KEY = 'tableSettings';
 export const TABLE_SETTINGS_VERSION = 2;
 
-export const HEADER_HEIGHT = 40;
-export const HEADER_TALL_HEIGHT = 52;
-export const HEADER_CARET_LANE = 0;
 export const ROW_HEIGHT: Readonly<Record<TableDensity, number>> = { compact: 28, normal: 36, comfortable: 44 };
 export const MEDIA_ROW_HEIGHT: Readonly<Record<TableDensity, number>> = { compact: 40, normal: 48, comfortable: 58 };
 export const CHILD_ROW_HEIGHT = 36;
-export const METER_HEIGHT = 6;
-export const TRACK_HEIGHT = 6;
 export const SORT_GLIDE_MS = 160;
 export const RANK_HOLD_MS = 2500;
 export const CELL_INSET = 10;
@@ -173,18 +167,6 @@ export function rankMarkers(
     }
   });
   return next;
-}
-
-export function percentCell(raw: string | bigint): string {
-  const value = BigInt(raw);
-  const rounded = BigInt.asIntN(32, (value + (value < 0n ? -50000n : 50000n)) / 100000n);
-  const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
-  return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
-}
-
-export function amountCell(raw: string | bigint): string {
-  const amount = BigInt(raw);
-  return amount === 0n ? '-' : amount < 0n ? '!' : formatNativeFixed5(amount, 2);
 }
 
 export function strengthBar(raw: string | bigint): bigint {
@@ -300,10 +282,6 @@ export function encodeTableSettings(settings: TableSettings): string {
     columns: settings.columns,
     sort: settings.sort,
   });
-}
-
-export function tableSettingValue(settings: TableSettings): OptionValue {
-  return encodeTableSettings(settings);
 }
 
 export function cloneTableSettings(settings: TableSettings): TableSettings {

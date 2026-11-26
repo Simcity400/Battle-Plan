@@ -28,12 +28,3 @@ export interface BarsWidgetDeclaration<TProjectionOptions = Record<string, never
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
-
-export type AnyBarsWidgetDeclaration = BarsWidgetDeclaration<any, any>;
-
-export function isBarsWidgetDeclaration(value: unknown): value is AnyBarsWidgetDeclaration {
-  return !!value && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'bars'
-    && 'sources' in value
-    && 'projection' in value;
-}

@@ -21,16 +21,14 @@ test('actual queued drill close restores its own focus and preserves a later wid
     removeEventListener(name: string) { this.listeners.delete(name); }
     focus() { this.focuses++; }
   }
-  const body = new SurfaceElement(), panel = new SurfaceElement(), otherPanel = new SurfaceElement();
-  const ownControl = new SurfaceElement(panel), otherControl = new SurfaceElement(otherPanel), button = new SurfaceElement();
-  const anchorControl = new SurfaceElement(), disconnected = new SurfaceElement(); disconnected.isConnected = false;
+  const body = new SurfaceElement(), panel = new SurfaceElement();
+  const ownControl = new SurfaceElement(panel), anchorControl = new SurfaceElement();
   panel.contains = target => target === ownControl;
   const handlers = new Map<string, (event: unknown) => void>(), queued: FrameRequestCallback[] = [];
   const browser = { body, activeElement: ownControl as SurfaceElement | null,
     addEventListener: (name: string, callback: (event: unknown) => void) => handlers.set(name, callback),
     removeEventListener: (name: string) => handlers.delete(name) };
   const state = { effects: [] as (() => unknown)[], close: undefined as (() => void) | undefined,
-    toggle: undefined as ((event: { newState: string }) => void) | undefined,
     menu: { popup: { current: panel as SurfaceElement | null }, openAt() {} } };
   const host = globalThis as typeof globalThis & { __drillFocus?: typeof state; __drillFocusEffect?: (effect: () => unknown) => void };
   const before = { document: globalThis.document, window: globalThis.window, Element: globalThis.Element,
@@ -48,69 +46,30 @@ test('actual queued drill close restores its own focus and preserves a later wid
         if (!id.replaceAll('\\', '/').endsWith('/drill/DrillHost.tsx') && !id.replaceAll('\\', '/').endsWith('/host/DetailWindowHost.tsx')) return;
         return code.replace("from '../../components/Popover'", "from 'drill-focus-surface'")
           .replace(/\buse(?:Layout)?Effect\(/g, 'globalThis.__drillFocusEffect(')
-          .replaceAll('onClick={requestClose}', 'onClick={(globalThis.__drillFocus.close = requestClose)}');
+          .replaceAll('onClick={onClose}', 'onClick={(globalThis.__drillFocus.close = onClose)}');
       },
       resolveId(id) { if (id === 'drill-focus-surface') return '\0drill-focus-surface'; },
       load(id) { if (id === '\0drill-focus-surface') return `import { createElement } from 'react';
         export const usePopover = () => globalThis.__drillFocus.menu;
-        export const Popover = props => { globalThis.__drillFocus.toggle = props.onToggle; return createElement('div', null, props.children); };`; },
+        export const Popover = props => createElement('div', null, props.children);`; },
     }] });
   try {
     const { default: DrillHost } = await vite.ssrLoadModule('/ui/src/charts/drill/DrillHost.tsx') as typeof import('./DrillHost');
-    for (const scenario of [
-      { event: 'close', mode: 'popout', next: otherControl, restore: false },
-      { event: 'outside', mode: 'popout', next: button, restore: false },
-      { event: 'toggle', mode: 'popout', next: body, restore: true },
-      { event: 'escape', mode: 'popout', next: ownControl, restore: true },
-      { event: 'close', mode: 'popout', next: disconnected, restore: true },
-      { event: 'close', mode: 'popout', next: null, restore: true },
-      { event: 'close', mode: 'inline', next: anchorControl, restore: true },
-      { event: 'close', mode: 'popout', next: body, restore: false, unmounted: true },
-      { event: 'close', mode: 'popout', next: body, restore: false, detached: true },
-      { event: 'close', mode: 'popout', next: body, restore: false, defaultFocus: true },
-    ] as const) {
-      let closes = 0, focuses = 0;
-      const selected: string[] = [], cleanups: (() => void)[] = [];
-      const target = { isConnected: true, contains: (focused: unknown) => focused === anchorControl,
-        querySelector: (selector: string) => { selected.push(selector); return { focus: (options: FocusOptions) => {
-          assert.equal(options.preventScroll, true); focuses++;
-        } }; } } as unknown as HTMLElement;
-      const anchor = { current: target as HTMLElement | null };
-      state.effects = []; state.menu.popup.current = panel; browser.activeElement = scenario.mode === 'inline' ? anchorControl : ownControl;
-      const html = renderToStaticMarkup(createElement(DrillHost, { mode: scenario.mode, drill: drillOf(true), runtime: RUNTIME, title: 'Recorded parts', day: 'Recorded day',
-        canFollow: false, anchor, returnFocus: 'defaultFocus' in scenario ? undefined : '.country-race-chart canvas',
-        main: null, children: null, onClose() { closes++; state.menu.popup.current = null; } }));
-      assert.match(html, scenario.mode === 'inline' ? /Back/ : /Close breakdown/);
-      try {
-        for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
-        if (scenario.mode === 'popout') {
-          browser.activeElement = otherControl;
-          handlers.get('keydown')!({ key: 'Escape' });
-          handlers.get('pointerdown')!({ target: otherControl });
-          assert.equal(closes, 0, 'another popover keeps its own Escape and pointer events');
-          browser.activeElement = ownControl;
-        }
-        if (scenario.event === 'outside') handlers.get('pointerdown')!({ target: button });
-        else if (scenario.event === 'escape') handlers.get('keydown')!({ key: 'Escape' });
-        else if (scenario.event === 'toggle') state.toggle!({ newState: 'closed' });
-        else state.close!();
-        assert.equal(closes, 1);
-        assert.equal(state.menu.popup.current, null, 'closing clears the live popup ref before the queued callback');
-        if ('defaultFocus' in scenario) { assert.equal(queued.length, 0, 'callers without returnFocus retain their own close behavior'); continue; }
-        assert.equal(queued.length, 1);
-        if (scenario.mode === 'popout') {
-          state.toggle!({ newState: 'closed' });
-          assert.equal(closes, 1, 'a programmatic hide cannot close twice before the state render');
-          assert.equal(queued.length, 1);
-        }
-        browser.activeElement = scenario.next;
-        if ('unmounted' in scenario) anchor.current = null;
-        if ('detached' in scenario) Object.assign(target, { isConnected: false });
-        queued.shift()!(0);
-        assert.equal(focuses, scenario.restore ? 1 : 0, `${scenario.event}: preserve the focus reached before RAF`);
-        assert.deepEqual(selected, scenario.restore ? ['.country-race-chart canvas'] : []);
-      } finally { for (const cleanup of cleanups.reverse()) cleanup(); }
-    }
+    let closes = 0;
+    const cleanups: (() => void)[] = [];
+    const target = { isConnected: true, contains: (focused: unknown) => focused === anchorControl } as unknown as HTMLElement;
+    const anchor = { current: target as HTMLElement | null };
+    state.effects = []; browser.activeElement = anchorControl;
+    const html = renderToStaticMarkup(createElement(DrillHost, { drill: drillOf(true), runtime: RUNTIME, title: 'Recorded parts', day: 'Recorded day',
+      canFollow: false, anchor, children: null, onClose() { closes++; } }));
+    assert.match(html, /Back/);
+    try {
+      for (const effect of state.effects) { const cleanup = effect(); if (typeof cleanup === 'function') cleanups.push(cleanup as () => void); }
+      handlers.get('keydown')!({ key: 'Escape' });
+      assert.equal(closes, 1);
+      state.close!();
+      assert.equal(closes, 2);
+    } finally { for (const cleanup of cleanups.reverse()) cleanup(); }
 
     const { DetailWindowHost } = await vite.ssrLoadModule('/ui/src/families/host/DetailWindowHost.tsx') as typeof import('../../families/host/DetailWindowHost');
     let paused = 0, resumed = 0, closed = 0, windowFocuses = 0;

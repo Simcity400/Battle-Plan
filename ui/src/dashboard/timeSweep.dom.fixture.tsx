@@ -144,7 +144,7 @@ function regionStates(element: Element | null) {
 
 function read(item: Case) {
   const host = document.getElementById(item.id);
-  const drill = host?.querySelector('.drill-host[data-open] > .drill-view, .drill-saved, .drill-popout:has(.drill-body)');
+  const drill = host?.querySelector('.drill-host[data-open] > .drill-view');
   const all = regionStates(host ?? null), inDrill = regionStates(drill ?? null);
   const main = all.filter(state => !inDrill.includes(state));
   const drawn = !!host?.querySelector('canvas, svg, table, [role="grid"], [role="table"], [role="status"]') || !!host?.textContent?.trim();

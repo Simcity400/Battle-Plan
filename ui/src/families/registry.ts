@@ -2,8 +2,6 @@ import type { FamilyProjection } from './contract.ts';
 import { DEFAULT_VIEW, normalizeView, type FamilyViewEntry, type FamilyViewModule } from './manifest.ts';
 import type { FamilyId } from './plan.ts';
 
-export { DEFAULT_VIEW };
-
 const projections = new Map<string, FamilyProjection<any, any>>();
 const manifestByKey = new Map<string, FamilyViewEntry>();
 const pendingLoads = new Map<string, Promise<FamilyProjection<any, any> | undefined>>();
@@ -27,14 +25,6 @@ export function bindFamilyManifest(entries: readonly FamilyViewEntry[]): void {
 export function registerFamilyProjection<P extends FamilyProjection<any, any>>(projection: P, view = DEFAULT_VIEW): P {
   projections.set(registryKey(projection.family, projection.kind, view), projection);
   return projection;
-}
-
-export function familyProjection<TModel = unknown, TOptions = unknown>(
-  family: FamilyId,
-  kind: string,
-  view?: string,
-): FamilyProjection<TModel, TOptions> | undefined {
-  return projections.get(resolveLookupKey(family, kind, view)) as FamilyProjection<TModel, TOptions> | undefined;
 }
 
 export function registeredFamilyProjections(family?: FamilyId): { readonly family: FamilyId; readonly kind: string; readonly view: string }[] {

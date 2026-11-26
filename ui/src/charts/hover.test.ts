@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { keyedHour, keyStops } from './frame.ts';
-import { actionHour, hoverAt, NO_HOVER, pointerMenu, pointerTarget, reduceHover } from './hover.ts';
+import { actionHour, hoverAt, NO_HOVER, pointerMenu, reduceHover } from './hover.ts';
 import type { HoverState } from './hover';
 
 type Point = { x: number };
@@ -65,21 +65,4 @@ test('the browser’s menu event after the menu key opens no second menu', () =>
   state = reduceHover(state, { type: 'pointer-down' });
   assert.equal(pointerMenu(state), true);
   assert.equal(pointerMenu(reduceHover(NO_HOVER, { type: 'contextmenu' })), true);
-});
-
-test('a strip hover is about the bar under it; the plot keeps its own hover and snaps only in view', () => {
-  const describe = (hour: number) => hour > 976 && hour <= 1000 ? 1000 : hour > 1000 && hour <= 1024 ? 1024 : hour;
-  const extent = [900, 2000] as const;
-  assert.deepEqual(pointerTarget('plot', 1012, [900, 2000], null, extent, { describe }), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('strip', 1012, [900, 2000], null, extent, { describe }), { at: 1012, describes: 1024 });
-  assert.deepEqual(pointerTarget('strip', 1012, [990, 1016], null, extent, { describe }), { at: 1012, describes: 1024 });
-  assert.deepEqual(pointerTarget('strip', 1012, [900, 2000], 1020, extent, { describe }), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('strip', 1012, [900, 1016], null, [900, 1016], { describe }), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('strip', 1500, [900, 2000], null, extent, { describe }), { at: 1500, describes: 1500 });
-  assert.deepEqual(pointerTarget('strip', 1012, [900, 2000], null, extent), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('strip', 1012, [900, 2000], null, extent, { snap: () => 1010 }), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('plot', 1012, [900, 2000], null, extent, { snap: () => 1010 }), { at: 1010, describes: 1010 });
-  assert.deepEqual(pointerTarget('plot', 1012, [1011, 2000], null, extent, { snap: () => 1010 }), { at: 1012, describes: 1012 });
-  assert.deepEqual(pointerTarget('plot', 1012, [900, 2000], 1013, extent, { snap: () => 1020 }), { at: 1012, describes: 1012 });
-  assert.equal(pointerTarget('plot', null, [900, 2000], null, extent), null);
 });

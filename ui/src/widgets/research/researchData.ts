@@ -1,4 +1,3 @@
-import { runAt } from '../../charts/series.ts';
 import type { Artwork, ResearchBound, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchFolder, ResearchHistoryReply, ResearchItem, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
@@ -48,25 +47,6 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
 
 export function isUnjoinedResearch(state: ResearchSlotState | null): state is ResearchSlotState & { token: string } {
   return !!state?.token && state.entryFirstObservedHour === null;
-}
-
-export function researchStateAt(slot: ResearchSlotHistory, hour: number): ResearchSlotState | null {
-  if (Number.isNaN(hour)) return null;
-  if (!runAt(slot.availability, hour)) return null;
-  const state = runAt(slot.states, hour);
-  if (!state) return null;
-  return state.details?.remainingDays == null ? state : { ...state, details: { ...state.details,
-    remainingDays: Math.max(0, state.details.remainingDays - Math.floor((hour - state.firstHour) / 24)),
-  } };
-}
-
-export function researchProgressAt(slot: ResearchSlotHistory, entryFirstObservedHour: number, hour: number): number | null {
-  if (Number.isNaN(hour)) return null;
-  const sample = runAt(slot.progress, hour);
-  if (!sample?.baseDaysRaw || sample.entryFirstObservedHour !== entryFirstObservedHour) return null;
-  const base = BigInt(sample.baseDaysRaw), done = BigInt(sample.progressRaw);
-  if (base <= 0n || done < 0n) return null;
-  return done >= base ? 1 : Number(done * 10_000n / base) / 10_000;
 }
 
 export function researchRateAt(state: ResearchSlotState, hour: number): { rateRaw: string; penaltyRaw: string; floored: boolean } | null {

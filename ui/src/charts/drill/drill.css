@@ -1,20 +1,15 @@
 .drill-host { position: relative; flex: 1; min-height: 0; height: 100%; overflow: hidden; }
 .drill-face { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; transition: transform var(--t) var(--ease), opacity var(--t) var(--ease); }
-.drill-main { transform: translateX(0); }
 .drill-view { transform: translateX(100%); opacity: 0; background: var(--surface); }
-.drill-host[data-open] .drill-main { transform: translateX(-30%); opacity: 0; }
 .drill-host[data-open] .drill-view { transform: translateX(0); opacity: 1; }
 :root[data-motion='reduced'] .drill-face { transition: none; }
 
-.drill-saved { display: flex; flex: 1; flex-direction: column; min-height: 0; height: 100%; }
 .drill-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line-soft); font-size: var(--type-md); }
 .drill-header > strong { font-weight: 600; }
 .drill-day { color: var(--muted); font-variant-numeric: tabular-nums; }
 .drill-header > .drill-follow { margin-left: auto; }
 .drill-follow[aria-pressed="true"] { color: var(--accent); background: var(--hover); }
 .drill-body { display: flex; flex: 1; flex-direction: column; gap: var(--space-4); min-height: 0; padding: var(--space-3); overflow: auto; }
-.drill-popout { width: min(440px, calc(100vw - 24px)); max-height: min(560px, calc(100vh - 24px)); padding: 0; display: flex; flex-direction: column; }
-.drill-popout .drill-body { min-height: 200px; }
 
 .drill-parts { display: grid; grid-template-columns: minmax(0, max-content) minmax(60px, 1fr) auto auto; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; padding: 0; list-style: none; font-size: var(--type-sm); }
 .drill-parts li { display: contents; }
@@ -38,4 +33,3 @@
 .drill-part-row:is(.is-muted, .is-unattributed) .drill-part-label { color: var(--muted); }
 .drill-part-row.is-unattributed .drill-part-label { font-style: italic; }
 .drill-total { grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) max-content 50px; padding: var(--space-2); border-top: 1px solid var(--line-soft); font-weight: 600; }
-.drill-header .icon-button[aria-disabled="true"] { cursor: default; opacity: 0.55; }

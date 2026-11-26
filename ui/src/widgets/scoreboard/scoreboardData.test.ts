@@ -8,7 +8,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, parseAnswer } from '../../dashboard/follow/message.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
-import { createBoundedReadView, emptyReadView } from '../../families/boundedView.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import { compileFollowPlan } from '../../families/broker.ts';
 import { buildColumnLayouts } from '../../families/table/layout.ts';
 import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
@@ -154,7 +154,7 @@ test('followed scoreboard filters selected countries by holder existence at hour
     deriveTableAudit({ model: followed, flatRows: resolveTableRows(followed, settings), visibleColumns: layouts }),
     deriveTableAudit({ model: exact, flatRows: resolveTableRows(exact, settings), visibleColumns: layouts }),
   );
-  assert.equal(scoreboardProjection.nextChange?.(emptyReadView(100), opts), 105, 'nextChange reports slot tag switch boundary');
+  assert.equal(scoreboardProjection.nextChange?.(createBoundedReadView({ hour: 100 }), opts), 105, 'nextChange reports slot tag switch boundary');
 });
 
 test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, colours score cells with the dated country colour, and keeps rows when all columns are unavailable', () => {
@@ -233,7 +233,7 @@ test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, m
   assert.equal(unavailPlan.unavailable, undefined);
   assert.equal(unavailPlan.allowEmptyFollow, true);
 
-  const unavailModel = scoreboardProjection.project(emptyReadView(50), {
+  const unavailModel = scoreboardProjection.project(createBoundedReadView({ hour: 50 }), {
     shown: [casualties],
     candidates: ['GER'],
     holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] },

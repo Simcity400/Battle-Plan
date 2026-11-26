@@ -8,7 +8,6 @@ import type {
   CountryGroupReply,
   CountryIdentitiesReply,
   CountryStyle,
-  HourSpan,
   RecordingGap,
 } from '../../generated/dashboard';
 
@@ -224,8 +223,6 @@ export interface IdentitySnapshot {
   readonly drawnFlags?: Readonly<Record<string, DrawnFlagEntry>>;
   readonly failures?: SnapshotFailures;
 }
-
-export type { HourSpan };
 
 export interface IdentityAsk {
   readonly key: IdentityKey;

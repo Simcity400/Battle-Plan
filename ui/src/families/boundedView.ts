@@ -375,11 +375,6 @@ export function clipMissingSpans(spans: readonly MissingSpan[], hour: DisplayedH
   return [...sliceMissingSpans(spans, hour).slice];
 }
 
-
-export function clipRuns(runs: readonly Run[], hour: DisplayedHour): Run[] {
-  return [...sliceRuns(runs, hour).slice];
-}
-
 export interface UnrecordedLine {
   readonly summary: { readonly from: number; readonly to: number };
   readonly missing: readonly MissingSpan[];
@@ -773,8 +768,4 @@ export function createBoundedReadView(input: BoundedReadViewInput): BoundedReadV
       return result;
     },
   };
-}
-
-export function emptyReadView(hour: number): BoundedReadView {
-  return createBoundedReadView({ hour });
 }

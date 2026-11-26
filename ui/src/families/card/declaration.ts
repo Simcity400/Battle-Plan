@@ -27,12 +27,3 @@ export interface CardWidgetDeclaration<TProjectionOptions = Record<string, never
   readonly jumpToDate?: boolean;
   readonly keyByBranch?: boolean;
 }
-
-export type AnyCardWidgetDeclaration = CardWidgetDeclaration<any, any>;
-
-export function isCardWidgetDeclaration(value: unknown): value is AnyCardWidgetDeclaration {
-  return !!value && typeof value === 'object'
-    && (value as { family?: unknown }).family === 'card'
-    && 'sources' in value
-    && 'projection' in value;
-}

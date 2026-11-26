@@ -59,15 +59,6 @@ export function formatFixed(raw: string | bigint, scale: number, digits: number)
   return `${negative && /[1-9]/.test(text) ? '−' : ''}${grouped}${fraction}`;
 }
 
-export function formatNativeFixed5(raw: string | bigint, digits = 2): string {
-  if (!Number.isInteger(digits) || digits < 0 || digits > 5) throw new RangeError('Native fixed5 precision must be 0–5.');
-  const value = typeof raw === 'bigint' ? raw : BigInt(raw);
-  const magnitude = value < 0n ? -value : value;
-  const whole = BigInt.asIntN(32, magnitude / 100000n).toString();
-  const fraction = digits ? `.${(magnitude % 100000n).toString().padStart(5, '0').slice(0, digits)}` : '';
-  return `${value < 0n ? '-' : ''}${whole}${fraction}`;
-}
-
 export function fixedNumber(raw: string | bigint, scale: number): number {
   return Number(typeof raw === 'bigint' ? raw : BigInt(raw)) / 10 ** scale;
 }
@@ -124,8 +115,4 @@ export function formatAxisValue(value: number, ticks: readonly number[] = [value
   const kPlaces = Math.max(0, ...decimals.map(decimal => trimDecimal(decimal.units, decimal.scale + 3).scale));
   if (Math.abs(value) >= 1000 && kPlaces <= 1) return `${formatFixed(own.units, own.scale + 3, kPlaces)}k`;
   return formatFixed(own.units, own.scale, places);
-}
-
-export function formatAxisPercent(value: number, ticks: readonly number[] = [value]): string {
-  return `${formatAxisValue(value, ticks)}%`;
 }

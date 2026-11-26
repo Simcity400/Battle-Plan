@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchEntry, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from './types';
 import { researchArt, researchArtwork, researchAt, researchEntryAt,
-  researchProgressAt, researchRateAt, researchReadName, researchRecordedTemplates, researchStateAt, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
+  researchRateAt, researchReadName, researchRecordedTemplates, validateResearchBreakdown, validateResearchReply, validateResearchSlots,
   withBreakdown } from './researchData.ts';
 
 const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = end === null ? 'active' : 'completed', databaseIndex = 3): ResearchEntry => ({
@@ -53,12 +53,7 @@ test('the slots at an hour join their slot and assignment; an hour without a rea
       progress: { firstHour: 24, lastHour: 24, entryFirstObservedHour: 10, baseDaysRaw: '1000000', progressRaw: '250000' }, definition: null }] }) };
   const [clipped] = researchAt(data.history, 30);
   const slot = { ...clipped!, states: [now.slots[0]!.state], progress: [now.slots[0]!.progress!] };
-  const shown = researchStateAt(slot, 30)!;
-  assert.equal(shown.details?.remainingDays, 9);
-  assert.equal(researchStateAt(slot, 31), null, 'past its last hour a state is not carried');
-  assert.equal(researchEntryAt(slot, shown, 30)?.token, 'tech_beta');
-  assert.equal(researchProgressAt(slot, 10, 24), 0.25);
-  assert.equal(researchProgressAt(slot, 0, 24), null, 'never another assignment\'s progress');
+  assert.equal(researchEntryAt(slot, now.slots[0]!.state, 30)?.token, 'tech_beta');
   assert.throws(() => validateResearchSlots({ ...now, slots: [now.slots[0], now.slots[0]] }), /do not match/);
   assert.throws(() => validateResearchSlots({ ...now, grants: { nextId: 2 ** 40, grants: [], unavailable: null } }), /Invalid/);
   const estimate = (remainingDays: number, estimateRaw: string) => () => validateResearchSlots({ ...now,

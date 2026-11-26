@@ -132,13 +132,6 @@ export function clockBounds(tracks: BoundTrack[]): HourWindow | null {
   };
 }
 
-export function widgetTracks(widget: WidgetBase, tracks: BoundTrack[]): BoundTrack[] {
-  return widget.trackIds.flatMap((id) => {
-    const track = tracks.find((item) => item.id === id);
-    return track ? [track] : [];
-  });
-}
-
 export function lastRecordedBranchHour(
   branch: { readonly firstHour: number; readonly lastHour: number; readonly gaps?: readonly { readonly firstHour: number; readonly lastHour: number }[] },
 ): number | null {

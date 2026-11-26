@@ -1,9 +1,14 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { EventBadge } from '../../charts/badges';
 import { GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { HourSpan, LeaderRun, PartOwnership, PartyHistoryReply } from '../../generated/dashboard';
 import type { SeriesKey } from '../../dashboard/keyedSeriesData';
+
+export interface EventBadge {
+  hour: number;
+  glyph: string;
+  label: string;
+}
 
 export const POPULARITY_FAMILY = { kind: 'party-popularity', measure: 'popularity' } as const;
 export const POPULARITY_PART_BITS = 32;
