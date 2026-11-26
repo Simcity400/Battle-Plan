@@ -248,6 +248,13 @@ pub(crate) struct Feed {
     pub warnings: families::DatedNotes,
     pub unattributed: Vec<i32>,
     pub unrecorded: Vec<families::Unrecorded>,
+    unsettled: bool,
+}
+
+impl Feed {
+    pub(crate) fn unsettled(&self) -> bool {
+        self.unsettled
+    }
 }
 
 #[derive(Default)]
@@ -671,11 +678,22 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
 
 type Notice = (Vec<EventFeedCategory>, String, String, String, Option<u32>);
 
-fn family<T>(made: io::Result<T>, categories: &[EventFeedCategory], kind: &str, label: &str, refused: &mut Vec<Notice>, cancelled: &AtomicBool) -> io::Result<Option<T>> {
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FAULT: std::cell::Cell<Option<(&'static str, io::ErrorKind)>> = const { std::cell::Cell::new(None) };
+}
+
+fn family<T>(made: io::Result<T>, categories: &[EventFeedCategory], kind: &str, label: &str, refused: &mut Vec<Notice>, (cancelled, unsettled): (&AtomicBool, &mut bool)) -> io::Result<Option<T>> {
+    #[cfg(test)]
+    let made = match FAULT.with(std::cell::Cell::get) {
+        Some((family, error)) if family == kind => Err(io::Error::from(error)),
+        _ => made,
+    };
     match made {
         Ok(made) => Ok(Some(made)),
         Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => Err(error),
         Err(error) => {
+            *unsettled |= error.kind() != io::ErrorKind::InvalidData && dashboard_core::refusal(&error).is_none();
             refused.push((categories.to_vec(), kind.to_owned(), label.to_owned(), error.to_string(), None));
             Ok(None)
         }
@@ -686,19 +704,20 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     use EventFeedCategory::{Diplomacy, Milestones, WarsPeace};
     let (first, last) = (query.timeline.first, query.timeline.last);
     let mut refused: Vec<Notice> = Vec::new();
+    let mut unsettled = false;
     let mut rows: Vec<EventFeedRow> = Vec::new();
     let mut warnings: families::DatedNotes = Vec::new();
     let mut unattributed = Vec::new();
     let mut unrecorded = Vec::new();
-    if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
+    if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
         warnings.extend(notes);
         unattributed = left_out;
     }
-    if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, cancelled)? {
+    if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
     }
-    if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, cancelled)? {
+    if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
         warnings.extend(notes.into_iter().map(|note| (first, note)));
         unrecorded.push(projects);
@@ -712,7 +731,7 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     }
     let localise = |spelling: &str| localisation.as_ref().ok().and_then(|held| dashboard_text::catalogue::localised(held, spelling, dashboard_text::catalogue::View::Plain).ok());
     let mut notices = Notices::default();
-    if let Some(made) = family(super::nuclear::strike_rows(query, first, last, &localise, &mut notices, cancelled), &[WarsPeace], "nuclearStrike", "Nuclear strikes", &mut refused, cancelled)? {
+    if let Some(made) = family(super::nuclear::strike_rows(query, first, last, &localise, &mut notices, cancelled), &[WarsPeace], "nuclearStrike", "Nuclear strikes", &mut refused, (cancelled, &mut unsettled))? {
         rows.extend(made);
     }
     refused.extend(notices.into_list().into_iter().map(|notice| (vec![WarsPeace], notice.kind, notice.label, notice.reason, notice.count)));
@@ -727,7 +746,7 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     warnings.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
     warnings.dedup_by(|later, earlier| later.1 == earlier.1);
     warnings.sort();
-    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, unrecorded })
+    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, unrecorded, unsettled })
 }
 
 fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {
@@ -784,7 +803,9 @@ pub(crate) fn feed_for(source: &Source, query: &Query<'_>, branch: u64, context:
     }
     let scanned = scanned(source, query, branch, &mut held, cancelled)?;
     let made = Arc::new(feed(source, query, context, &scanned, cancelled)?);
-    held.feed = Some((catalogue.map(Arc::downgrade), Arc::clone(&made)));
+    if !made.unsettled {
+        held.feed = Some((catalogue.map(Arc::downgrade), Arc::clone(&made)));
+    }
     Ok(made)
 }
 
