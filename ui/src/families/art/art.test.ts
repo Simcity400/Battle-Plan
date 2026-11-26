@@ -734,9 +734,13 @@ test('missing artwork in equipment designs and spirit history preserves asset id
     accent: '#3987e5', green: '#199e70', grey: '#666666', dark: true, font: 'sans-serif',
     fontSize: { small: 11, body: 12 },
   };
-  const slotResult = drawArtSlot(fakeSlotCtx as never, 0, 0, 28, 28, toArtSlotState(kindCell.art!, kindCell.artName), slotTheme as never);
-  assert.equal(slotResult.drawn, 'unrecorded');
-  assert.ok(slotResult.label && slotTexts.includes(slotResult.label), `design placeholder paints visible identifier (drawn=${slotResult.drawn}, label=${slotResult.label}, texts=${slotTexts.join(',')})`);
+  const unrecordedSlot = drawArtSlot(fakeSlotCtx as never, 0, 0, 28, 28, toArtSlotState(kindCell.art!, kindCell.artName), slotTheme as never);
+  assert.equal(unrecordedSlot.drawn, 'unrecorded');
+  assert.equal(unrecordedSlot.label, undefined, 'unrecorded slot stays hatch-only distinct from confirmedMissing');
+  assert.equal(slotTexts.length, 0);
+  const missingSlot = drawArtSlot(fakeSlotCtx as never, 0, 0, 28, 28, toArtSlotState(missingArt('Sprite absent in current install'), kindCell.artName), slotTheme as never);
+  assert.equal(missingSlot.drawn, 'missing');
+  assert.ok(missingSlot.label && slotTexts.includes(missingSlot.label), `confirmedMissing placeholder paints visible identifier (label=${missingSlot.label}, texts=${slotTexts.join(',')})`);
 
   const spiritReply = {
     hour: 100,

@@ -391,7 +391,7 @@ export type ArtSlotState =
   | { readonly kind: 'pending'; readonly width?: number; readonly height?: number }
   | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
   | { readonly kind: 'missing'; readonly reason: string; readonly label?: string }
-  | { readonly kind: 'unrecorded'; readonly reason: string; readonly label?: string }
+  | { readonly kind: 'unrecorded'; readonly reason: string }
   | { readonly kind: 'refused'; readonly reason: string }
   | { readonly kind: 'failed'; readonly reason: string; readonly retryable: boolean };
 
@@ -479,7 +479,7 @@ function drawSlotMark(
 ): void {
   if (state.kind === 'missing' || state.kind === 'unrecorded') {
     drawHatchRect(ctx, x, y, width, height, radius, theme);
-    if (label) {
+    if (state.kind === 'missing' && label) {
       ctx.font = `${VALUE_WEIGHT} ${labelSize}px ${theme.font}`;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'center';
@@ -536,9 +536,7 @@ export function drawArtSlot(
     return { x, y, width, height, drawn: 'ready' };
   }
   const edge = Math.min(width, height);
-  const label = (state.kind === 'missing' || (state.kind === 'unrecorded' && Boolean(state.label))) && edge >= 14
-    ? (artInitials(state.label) || '?')
-    : '';
+  const label = state.kind === 'missing' && edge >= 14 ? (artInitials(state.label) || '?') : '';
   drawSlotMark(ctx, x, y, width, height, state, label, Math.max(7, Math.min(13, Math.round(edge * 0.34))), radius, theme);
   ctx.restore();
   return { x, y, width, height, drawn: state.kind, ...(label ? { label } : {}) };
