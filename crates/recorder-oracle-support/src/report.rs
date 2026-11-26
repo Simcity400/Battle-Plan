@@ -131,6 +131,8 @@ pub struct Report {
     pub observed_refresh: Vec<replay_data::cadence::Cadence>,
     pub intel_walked: bool,
     pub forced_full: bool,
+    pub read_now: BTreeSet<TableId>,
+    pub save_after_frame: Option<String>,
     pub hour: Hour,
     pub load_hour: bool,
     pub read_hours: Option<BTreeMap<TableId, Hour>>,
@@ -296,7 +298,7 @@ impl Report {
         if table == TableId::CountryIntel {
             return self.full_refresh() || self.intel_walked;
         }
-        self.full_refresh() || self.refresh_is_current(table, self.hour)
+        self.full_refresh() || self.read_now.contains(&table) || self.refresh_is_current(table, self.hour)
     }
 
     pub fn carried_owners(&mut self, table: TableId, oldest: Option<Hour>) {
@@ -357,15 +359,13 @@ impl Report {
             .filter(|table| !frame.recorded(*table))
             .collect();
         self.observed_refresh.clear();
-        self.forced_full = TableId::ALL.into_iter().any(|table| {
+        self.read_now = TableId::ALL.into_iter().filter(|table| frame.metrics.table_ns[table.index()] != 0).collect();
+        let mut daily = TableId::ALL.into_iter().filter(|&table| {
             table != TableId::CountryIntel
-                && frame.metrics.table_ns[table.index()] != 0
-                && matches!(
-                    replay_data::cadence::cadence(table),
-                    replay_data::cadence::Cadence::Daily(_)
-                )
-                && !replay_data::cadence::is_refresh(table, frame.hour)
+                && frame.recorded(table)
+                && matches!(replay_data::cadence::cadence(table), replay_data::cadence::Cadence::Daily(_))
         });
+        self.forced_full = daily.next().is_some_and(|first| self.read_now.contains(&first)) && daily.all(|table| self.read_now.contains(&table));
         self.intel_walked = frame.metrics.table_ns[TableId::CountryIntel.index()] != 0;
         let mut field_gaps = BTreeMap::<String, usize>::new();
         for table in TableId::ALL {
@@ -719,6 +719,9 @@ impl Report {
     pub fn print(&self, format: replay_data::format::FormatVersion) {
         if let Some(warning) = self.content_warning() {
             println!("Warning: {warning}");
+        }
+        if let Some(boundary) = &self.save_after_frame {
+            println!("Warning: {boundary}");
         }
         println!("{}", Self::format_line(format));
         println!(

@@ -5296,6 +5296,7 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         "{verdict}"
     );
     assert!(verdict.contains("does not prove"), "{verdict}");
+    assert!(report.save_after_frame.is_none() && !report.failed_comparisons.contains_key("boundary"));
     assert!(
         verdict.contains("writes after the save and untracked allocations"),
         "{verdict}"
@@ -5318,6 +5319,8 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     let report = compare_at(&frame, &save, &membership, &equipment, after).unwrap();
     let verdict = report.boundary_verdict.clone().unwrap();
     assert!(verdict.contains("higher in the save than in the compared frame"), "{verdict}");
+    assert!(report.save_after_frame.as_deref().is_some_and(|warning| warning.contains("not certified")));
+    assert!(report.failed_comparisons.contains_key("boundary"));
     assert!(verdict.contains("a frame read before the save"), "{verdict}");
     assert!(verdict.contains("debug_current_ref_id "), "{verdict}");
     let end = compare(&frame, &save, &membership, &equipment).unwrap();
