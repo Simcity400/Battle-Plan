@@ -811,6 +811,7 @@ export function hoverAsks(
   plan: SourcePlan,
   hoverHour: number | null | undefined,
   displayed: (entry: string) => readonly string[] | undefined = () => undefined,
+  previous: readonly HoverAsk[] = NO_HOVER_ASKS,
 ): readonly HoverAsk[] {
   if (hoverHour === null || hoverHour === undefined || !Number.isFinite(hoverHour)) return NO_HOVER_ASKS;
   const hour = Math.floor(hoverHour);
@@ -828,7 +829,8 @@ export function hoverAsks(
       ...(read.validate ? { validate: read.validate } : {}),
     });
   }
-  return asks.length ? asks : NO_HOVER_ASKS;
+  if (!asks.length) return NO_HOVER_ASKS;
+  return asks.length === previous.length && asks.every((ask, at) => ask.name === previous[at]!.name && ask.key === previous[at]!.key) ? previous : asks;
 }
 
 const NO_HOVER_ASKS: readonly HoverAsk[] = [];
@@ -837,16 +839,13 @@ const NO_HOVERS: Readonly<Record<string, { readonly hour: number; readonly data:
 export function currentHovers(
   asks: readonly HoverAsk[],
   held: Readonly<Record<string, HeldHover>>,
-  previous: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> = NO_HOVERS,
 ): Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> {
   let out: Record<string, { readonly hour: number; readonly data: unknown }> | null = null;
   for (const ask of asks) {
     const hover = held[ask.name];
     if (hover && hover.key === ask.key) (out ??= {})[ask.name] = { hour: hover.hour, data: hover.data };
   }
-  if (!out) return NO_HOVERS;
-  const names = Object.keys(out);
-  return names.length === Object.keys(previous).length && names.every(name => previous[name]?.hour === out![name]!.hour && previous[name]!.data === out![name]!.data) ? previous : out;
+  return out ?? NO_HOVERS;
 }
 
 interface InFlightRequest {

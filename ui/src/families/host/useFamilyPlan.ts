@@ -38,6 +38,7 @@ import {
   FamilySourceBroker,
   hoverAsks,
   type HeldHover,
+  type HoverAsk,
   readPlanExact,
   stabilizeCanvasDimension,
 } from '../broker.ts';
@@ -694,12 +695,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const hoverBrokerRef = useRef<FamilySourceBroker | null>(null);
   const [heldHovers, setHeldHovers] = useState<Readonly<Record<string, HeldHover>>>({});
   const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
+  const asksRef = useRef<readonly HoverAsk[] | undefined>(undefined);
   const asks = useMemo(
-    () => (active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }) : []),
+    () => (asksRef.current = active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }, asksRef.current) : []),
     [active, plan, hoverHour, displayedSeries],
   );
-  const hoversRef = useRef<ReturnType<typeof currentHovers> | undefined>(undefined);
-  const hovers = useMemo(() => (hoversRef.current = currentHovers(asks, heldHovers, hoversRef.current)), [asks, heldHovers]);
+  const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
