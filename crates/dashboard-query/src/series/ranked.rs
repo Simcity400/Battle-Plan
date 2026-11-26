@@ -213,7 +213,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         }
     }
     let (from, until) = if let Some(n) = top {
-        line.rank_holds(hour, n, ask.least, held, |at| at == asked.as_slice())?
+        line.rank_holds(hour, n, ask.least, held, |_, at| at == asked.as_slice())?
     } else if ask.top.is_some() {
         line.query.timeline.unheld.iter().find(|gap| gap.first <= hour && hour <= gap.last)
             .map_or((hour, hour), |gap| (gap.first.max(held.0), gap.last.min(held.1)))

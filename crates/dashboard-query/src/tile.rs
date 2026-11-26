@@ -184,13 +184,20 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
                 (Vec::new(), TileRanking { hour, from: hour, until: hour, refused: Some(reason) })
             }
             None => {
-                let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at| at.len() == ranked.len() && at.iter().all(|country| ranked.contains(country)))?;
+                let holders = &line.query().holders;
+                let held = |list: &[Country], at: i32| list.iter().map(|country| holders.slot_at(country, at).map_or_else(|| country.clone(), Country::Slot)).collect::<std::collections::BTreeSet<Country>>();
+                let winners = held(&ranked, hour);
+                let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), |at, list| held(list, at) == winners)?;
                 (ranked, TileRanking { hour, from, until, refused: None })
             }
         },
     };
-    let asks: Vec<Ask> = tags.iter().map(Ask::whole).collect();
+    let holders = &line.query().holders;
+    let asks: Vec<Ask> = tags.iter().map(|country| Ask::whole(holders.slot_at(country, hour).map_or_else(|| country.clone(), Country::Slot))).collect();
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
+    for (drawn, tag) in reply.lines.iter_mut().zip(tags) {
+        drawn.country = tag;
+    }
     reply.ranking = Some(ranking);
     Ok(reply)
 }
