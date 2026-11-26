@@ -2280,7 +2280,11 @@ bad: Array<[number, number, number]>,
 convoys: Array<Array<[number, number, number]>>, };
 export type ConvoyResource = { id: number, token: string, name: string | null, };
 export type ProductionSpendingScope = "military" | "dockyards" | "dockyardPurposes" | "airPurposes" | "landPurposes";
-export type ProductionSpendingParams = { branchId: string, country: CountryRef, hour: number, scope: ProductionSpendingScope, includeRefits: boolean, };
+export type ProductionSpendingParams = { branchId: string, country: CountryRef, hour: number, scope: ProductionSpendingScope, includeRefits: boolean,
+/**
+ * The first hour of a chosen range: spending from it through `hour`; from the observation start when absent.
+ */
+fromHour?: number, };
 export type ProductionSpendingReply = {
 /**
  * The branch's first hour: spending is counted from it.
@@ -3691,7 +3695,16 @@ measure: string,
 /**
  * When set, keep the top N named countries and roll the rest into Rest of the world.
  */
-top?: number, };
+top?: number,
+/**
+ * The chosen countries: a tag is its holder at the hour, a slot is that recorded slot. Their shares of the
+ * world, the rest of it as one part.
+ */
+countries: Array<CountryRef>,
+/**
+ * A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`.
+ */
+group?: GroupSelection, };
 export type TerritoryShareReply = { hour: number, measure: string, breakdown: Breakdown, warnings: Array<string>, };
 export type TerritoryShareParamsAtHour = TerritoryShareParams & { hour: number };
 export type TerritoryBreakdownParams = { branchId: string,
@@ -6397,7 +6410,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "production-licences": { "hour": "read" },
   "production-line-breakdown": { "hour": "read" },
   "production-lines-at": { "hour": "read" },
-  "production-spending": { "hour": "end" },
+  "production-spending": { "fromHour": "start", "hour": "end" },
   "production-spending-months": { "firstHour": "start", "lastHour": "end" },
   "raid-log": { "from": "start", "to": "end" },
   "raid-log-tail": { "hour": "read", "from": "start", "to": "end" },
@@ -6569,7 +6582,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "production-licences": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
   "production-line-breakdown": { "branchId": "leaf", "country": "any", "group": "leaf", "handle": "leaf", "hour": "leaf" },
   "production-lines-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "order": "leaf" },
-  "production-spending": { "branchId": "leaf", "country": "any", "hour": "leaf", "includeRefits": "leaf", "scope": "leaf" },
+  "production-spending": { "branchId": "leaf", "country": "any", "fromHour": "leaf", "hour": "leaf", "includeRefits": "leaf", "scope": "leaf" },
   "production-spending-months": { "branchId": "leaf", "country": "any", "domain": "leaf", "firstHour": "leaf", "lastHour": "leaf", "repairs": "leaf" },
   "raid-log": { "branchId": "leaf", "catalogue": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "to": "leaf" },
   "raid-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "raidTypes": "node", "raidTypes[]": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
@@ -6604,7 +6617,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "technology-effects": { "branchId": "leaf", "country": "any", "databaseIndex": "leaf", "hour": "leaf", "token": "leaf" },
   "template-roster": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "territory-breakdown": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "rule": "leaf" },
-  "territory-share": { "branchId": "leaf", "hour": "leaf", "measure": "leaf", "top": "leaf" },
+  "territory-share": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "top": "leaf" },
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
@@ -6741,7 +6754,7 @@ export type RequestParams<E, B> = {
   "production-licences": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-line-breakdown": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "production-lines-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
-  "production-spending": { readonly [key: string]: unknown; readonly "hour"?: B | null };
+  "production-spending": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: B | null };
   "production-spending-months": { readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null };
   "raid-log": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "to"?: B | null };
   "raid-log-tail": { readonly [key: string]: unknown; readonly "from"?: B | null; readonly "hour"?: E | null; readonly "to"?: B | null };

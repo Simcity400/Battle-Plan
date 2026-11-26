@@ -18,7 +18,7 @@ use dashboard_world::products::{
 };
 use replay_columnar::manifest::Status;
 use replay_data::rows::{CasualtyLifetimeRow, TableId};
-use replay_lanes::lanes::{self, Cell, History, Keys, Reading, StatusRun};
+use replay_lanes::lanes::{self, Cell, History, Keys, Reading, StatusRun, Step};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -369,6 +369,7 @@ impl CasualtyIndex {
             Reading::Unread { status, reason } => row_coverage(TableId::CasualtyTotals, status, reason, false).into_missing(),
         };
         let mut active: Vec<(&TrackedLife, Node, bool)> = Vec::new();
+        let mut labels: HashMap<String, (i32, Node)> = HashMap::new();
         let mut pair_last: HashMap<(String, u32), Option<i32>> = HashMap::new();
         for life in &stretch.lives {
             if life.country != identity || life.born > i64::from(hour) {
@@ -377,6 +378,13 @@ impl CasualtyIndex {
             let living = i64::from(hour) <= life.gone;
             let grouping_hour = if living { hour } else { life.gone as i32 };
             let war = self.war_node(grouping_at(&life.groupings, grouping_hour), grouping_hour);
+            match labels.get_mut(&war.key) {
+                Some(held) if held.0 >= grouping_hour => {}
+                Some(held) => *held = (grouping_hour, war.clone()),
+                None => {
+                    labels.insert(war.key.clone(), (grouping_hour, war.clone()));
+                }
+            }
             let pair_key = (war.key.clone(), life.enemy.0);
             match pair_last.get_mut(&pair_key) {
                 Some(held) => {
@@ -394,6 +402,7 @@ impl CasualtyIndex {
         }
         let mut leaves = Vec::new();
         for (life, war, living) in active {
+            let war = labels.get(&war.key).map_or(war, |(_, label)| label.clone());
             let value = if living {
                 match stretch.lifetimes.reading(life.key, hour) {
                     Reading::Cells(cells) => {
@@ -434,7 +443,7 @@ impl CasualtyIndex {
         } else if leaves.is_empty()
             && let Some(reason) = totals_issue
         {
-            leaves.push(Leaf { path: Vec::new(), amount: Amount::Partial(Exact::ZERO, reason), count: None, last: None });
+            leaves.push(Leaf { path: Vec::new(), amount: Amount::NotRecorded(reason), count: None, last: None });
         }
         reply_with(&leaves)
     }
@@ -574,9 +583,16 @@ fn finalize_index(
         for run in &stretch.lifetimes.statuses {
             push_span_edges(&mut changes, first, last, run.first, run.last);
         }
-        for (_, steps) in &stretch.lifetimes.keys {
-            for step in steps {
-                push_edge(&mut changes, first, last, i64::from(step.hour));
+        let steps_of: HashMap<u128, &[Step]> = stretch.lifetimes.keys.iter().map(|(key, steps)| (*key, steps.as_slice())).collect();
+        for life in &stretch.lives {
+            let column = if life.is_a { stretch.taken_a_pos } else { stretch.taken_b_pos };
+            let mut held: Option<Option<Cell>> = None;
+            for step in steps_of.get(&life.key).copied().unwrap_or_default() {
+                let cell = step.cells.as_ref().and_then(|cells| cells.get(column).copied());
+                if held != Some(cell) {
+                    push_edge(&mut changes, first, last, i64::from(step.hour));
+                    held = Some(cell);
+                }
             }
         }
         for run in &stretch.totals.statuses {

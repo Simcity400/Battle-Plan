@@ -6,11 +6,7 @@ import { OPTIONS as DOCKYARD_OPTIONS } from '../dockyard-spending/definition.ts'
 import { OPTIONS as FACTORY_OPTIONS } from '../military-factory-spending/definition.ts';
 import { OPTIONS as TERRITORY_OPTIONS } from '../territory/definition.ts';
 
-const TERRITORY_SHARE_OPTIONS: readonly OptionField[] = [
-  ...TERRITORY_OPTIONS.filter(field => field.key === 'view' || field.key === 'measure'),
-  { key: 'rule', section: 'options', label: 'Territory rule', kind: 'choice', default: 'controlled',
-    choices: [{ value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }] },
-];
+const TERRITORY_SHARE_OPTIONS: readonly OptionField[] = TERRITORY_OPTIONS.filter(field => field.key === 'view' || field.key === 'measure' || field.key === 'rule');
 
 function breakdownView(kind: string, load: () => Promise<BreakdownWidgetSpec<any>>): FamilyViewEntry {
   return {

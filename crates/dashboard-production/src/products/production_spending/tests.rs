@@ -31,6 +31,7 @@ fn read(span: Span) -> SpanRead {
         country: shifted(vec![(0, 9, Some((Some(100_000), Some(90_000)))), (10, 14, None), (15, 29, Some((Some(150_000), None)))], by),
         rows,
         archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::new(),
         equipment_observations: BTreeSet::new(),
         repairs: None,
     }
@@ -112,6 +113,7 @@ fn breakdown_scopes_answer_at_hour_with_exact_fractions_and_quiet_through_bounds
         country: vec![(0, 100, Some((Some(1_050_000), Some(1_000_000))))],
         rows,
         archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(2, 0)]),
         equipment_observations: BTreeSet::new(),
         repairs: Some(repairs),
     };
@@ -182,6 +184,7 @@ fn dockyard_purposes_keeps_known_repairs_when_equipment_is_not_recorded_and_with
         country: vec![(0, 50, None)],
         rows: BTreeMap::new(),
         archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::new(),
         equipment_observations: BTreeSet::new(),
         repairs: Some(repairs),
     };
@@ -208,4 +211,74 @@ fn dockyard_purposes_keeps_known_repairs_when_equipment_is_not_recorded_and_with
     let air = index.at(30, ProductionSpendingScope::AirPurposes, true);
     assert_eq!(air.breakdown.total.state, BreakdownState::NotRecorded);
     assert!(air.breakdown.parts.is_empty());
+}
+
+#[test]
+fn a_design_counts_under_its_type_only_from_the_hour_its_classification_is_recorded_and_unassigned_spending_leaves_the_factory_total_unknown() {
+    let mut rows = BTreeMap::new();
+    rows.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(100_000)))]);
+    rows.insert((false, 2, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(200_000)))]);
+    let span_read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 100, Some((Some(300_000), Some(300_000))))],
+        rows,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(1, 0), (2, 40)]),
+        equipment_observations: BTreeSet::new(),
+        repairs: None,
+    };
+    let design = |type_key: &str, domain: Domain| Design {
+        type_key: type_key.into(),
+        name: Some(type_key.into()),
+        domain: Some(domain),
+        names: vec![StockVariantName { first_hour: 60, name: Some(format!("{type_key} I")), known: true, design: None }],
+    };
+    let designs = HashMap::from([(1, design("infantry_equipment", Domain::Land)), (2, design("destroyer", Domain::Naval))]);
+    let index = SpendingIndex {
+        from: 0,
+        to: 100,
+        country_label: "GER".into(),
+        unknown: Vec::new(),
+        unresolved: Vec::new(),
+        spans: vec![IndexedSpan::new(span_read, designs, Vec::new())],
+        rocket_source: None,
+        warnings: Vec::new(),
+    };
+    let early = index.at(20, ProductionSpendingScope::Military, false);
+    assert_eq!(early.through, 39, "the reply holds until the destroyer's classification is recorded");
+    assert_eq!((early.breakdown.total.state, early.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "an unclassified design's IC may not be the military factories'");
+    let unresolved = early.breakdown.parts.iter().find(|part| part.key == "~unresolved").expect("the unclassified design is kept");
+    assert_eq!(unresolved.amount, Some(BreakdownAmount { numerator: "2".into(), denominator: "1".into() }), "its witnessed 2 IC stays, unassigned");
+    assert_eq!(unresolved.share, None);
+    let late = index.at(50, ProductionSpendingScope::Military, false);
+    assert_eq!((late.breakdown.total.state, late.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() })), "once it is a destroyer, the military factories spent exactly 1");
+    let docks = index.at(50, ProductionSpendingScope::Dockyards, false);
+    assert_eq!(docks.breakdown.total.amount, Some(BreakdownAmount { numerator: "2".into(), denominator: "1".into() }));
+}
+
+#[test]
+fn a_range_counts_only_what_was_spent_inside_it_and_refuses_a_baseline_across_a_restart() {
+    let mut rows = BTreeMap::new();
+    rows.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 49, row(Some(10_000_000))), (50, 100, row(Some(12_000_000)))]);
+    let span_read = |first: i32, last: i32| SpanRead {
+        span: span(first, last, false),
+        lines: vec![(first, last, Context::Known)],
+        rocket: vec![(first, last, Context::Known)],
+        country: vec![(first, last, Some((Some(12_000_000), Some(12_000_000))))],
+        rows: rows.iter().map(|(key, pieces)| (*key, pieces.iter().filter(|piece| piece.1 >= first && piece.0 <= last).map(|&(a, b, row)| (a.max(first), b.min(last), row)).collect())).collect(),
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(1, 0)]),
+        equipment_observations: BTreeSet::new(),
+        repairs: None,
+    };
+    let design = Design { type_key: "infantry_equipment".into(), name: Some("Infantry".into()), domain: Some(Domain::Land), names: vec![StockVariantName { first_hour: 0, name: Some("Rifle".into()), known: true, design: None }] };
+    let index = |spans: Vec<IndexedSpan>| SpendingIndex { from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), spans, rocket_source: None, warnings: Vec::new() };
+    let whole = index(vec![IndexedSpan::new(span_read(0, 100), HashMap::from([(1, design.clone())]), Vec::new())]);
+    let ranged = whole.between(50, 80, ProductionSpendingScope::Military, false);
+    assert_eq!((ranged.from, ranged.breakdown.total.amount), (50, Some(BreakdownAmount { numerator: "20".into(), denominator: "1".into() })), "100 IC before the range and 20 inside it show 20");
+    let restarted = index(vec![IndexedSpan::new(span_read(0, 39), HashMap::from([(1, design.clone())]), Vec::new()), IndexedSpan::new(span_read(40, 100), HashMap::from([(1, design)]), Vec::new())]);
+    let across = restarted.between(30, 80, ProductionSpendingScope::Military, false);
+    assert_eq!(across.breakdown.total.state, BreakdownState::NotRecorded, "a range whose baseline is in an earlier observation is not a difference of two counters");
 }

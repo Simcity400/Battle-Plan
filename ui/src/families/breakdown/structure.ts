@@ -57,6 +57,9 @@ export function deriveBreakdownAudit(model: BreakdownModel, layout: BreakdownLay
   }
   if (model.empty) rows.push(auditRow('__empty__', `${model.empty}${model.emptyDetail ? `:${model.emptyDetail}` : ''}`));
   for (const item of layout?.items ?? []) rows.push(auditRow(item.key, drawn(item)));
+  if (layout?.view === 'parts') {
+    for (const row of layout.rows) for (const segment of row.segments) rows.push(auditRow(`${segment.key}:segment`, segment.text));
+  }
   return rows;
 }
 

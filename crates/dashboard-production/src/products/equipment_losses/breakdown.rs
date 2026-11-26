@@ -163,11 +163,27 @@ struct LossesIndex {
     content_warnings: Vec<String>,
 }
 
+pub(super) fn loss_amount(total: Option<i64>, issue: Option<&str>) -> Option<Amount> {
+    Some(match total {
+        Some(0) => Amount::NotRecorded(issue?.to_owned()),
+        Some(value) => match exact_loss(i128::from(value)) {
+            Amount::Known(exact) => match issue {
+                Some(reason) => Amount::Partial(exact, reason.to_owned()),
+                None => Amount::Known(exact),
+            },
+            other => other,
+        },
+        None => Amount::NotRecorded(issue.unwrap_or(NOT_OBSERVED).to_owned()),
+    })
+}
+
 impl LossesIndex {
     fn next_change(&self, hour: i32, segment: Option<&SegmentData>) -> i32 {
         let mut through = self.to.max(hour);
-        tighten(&mut through, next_span_edge(&self.unknown_holders, hour, |&(a, b, _)| (a, b)));
-        tighten(&mut through, next_span_edge(&self.unlinked_holders, hour, |&(a, b)| (a, b)));
+        if !covering(&self.holders, hour, |run| (run.first, run.last)).is_some_and(|run| matches!(run.holder, Holder::Found { .. })) {
+            tighten(&mut through, next_span_edge(&self.unknown_holders, hour, |&(a, b, _)| (a, b)));
+            tighten(&mut through, next_span_edge(&self.unlinked_holders, hour, |&(a, b)| (a, b)));
+        }
         tighten(&mut through, next_span_edge(&self.holders, hour, |run| (run.first, run.last)));
         tighten(&mut through, next_span_edge(&self.segments, hour, |seg| (seg.first, seg.last)));
         let Some(seg) = segment else {
@@ -258,23 +274,25 @@ impl LossesIndex {
         let segment = covering(&self.segments, hour, |seg| (seg.first, seg.last));
         let through = self.next_change(hour, segment);
         let reply = |breakdown: Breakdown, warnings: Vec<String>| EquipmentLossesReply {
-            from: self.from,
+            from: segment.map_or(self.from, |seg| seg.first),
             hour,
             through,
             land_source: self.land_source,
             breakdown,
             warnings,
         };
-        if let Some((_, _, reason)) = covering(&self.unknown_holders, hour, |&(a, b, _)| (a, b)) {
-            return reply(not_recorded(reason.clone()), self.content_warnings.clone());
-        }
-        if covering(&self.unlinked_holders, hour, |&(a, b)| (a, b)).is_some() {
-            return reply(not_recorded(TAG_UNLINKED), self.content_warnings.clone());
-        }
         match covering(&self.holders, hour, |run| (run.first, run.last)).map(|run| run.holder) {
-            Some(Holder::Unresolved) => return reply(not_recorded(HOLDER_UNRESOLVED), self.content_warnings.clone()),
-            None => return reply(not_recorded(NOT_PRESENT), self.content_warnings.clone()),
             Some(Holder::Found { .. }) => {}
+            held => {
+                if let Some((_, _, reason)) = covering(&self.unknown_holders, hour, |&(a, b, _)| (a, b)) {
+                    return reply(not_recorded(reason.clone()), self.content_warnings.clone());
+                }
+                if covering(&self.unlinked_holders, hour, |&(a, b)| (a, b)).is_some() {
+                    return reply(not_recorded(TAG_UNLINKED), self.content_warnings.clone());
+                }
+                let why = if held.is_some() { HOLDER_UNRESOLVED } else { NOT_PRESENT };
+                return reply(not_recorded(why), self.content_warnings.clone());
+            }
         }
         let Some(seg) = segment else {
             return reply(not_recorded(NOT_OBSERVED), self.content_warnings.clone());
@@ -457,24 +475,7 @@ impl LossesIndex {
                     .as_deref()
                     .or(cause_issue)
                     .or_else(|| incomplete_from.filter(|&from| from <= hour).map(|_| "Some losses for this item were not recorded"));
-                let amount = match total {
-                    Some(0) if leaf_issue.is_none() => continue,
-                    Some(0) => {
-                        if let Some(reason) = unread_why {
-                            Amount::NotRecorded(reason.clone())
-                        } else {
-                            continue;
-                        }
-                    }
-                    Some(value) => match exact_loss(i128::from(value)) {
-                        Amount::Known(exact) => match leaf_issue {
-                            Some(reason) => Amount::Partial(exact, reason.to_owned()),
-                            None => Amount::Known(exact),
-                        },
-                        other => other,
-                    },
-                    None => Amount::NotRecorded(leaf_issue.unwrap_or(NOT_OBSERVED).to_owned()),
-                };
+                let Some(amount) = loss_amount(total, leaf_issue) else { continue };
                 emitted_for_cause = true;
                 if is_destruction && leaf_issue.is_some() {
                     destruction_qualified = true;

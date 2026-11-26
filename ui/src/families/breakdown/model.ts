@@ -84,8 +84,6 @@ export const PATH = '\u001f';
 export const PARTIAL_KEY = '__partial__';
 export const COMPARISON_KEY = '__comparison__';
 
-const TOOLTIP_PARTS = 8;
-
 export function partColour(part: BreakdownPart, theme: FamilyTheme): string {
   if (part.color) return part.color;
   if (part.neutral) return theme.grey;
@@ -106,7 +104,7 @@ export function drawnChildren(part: BreakdownPart, first = true): readonly Break
   if (!children?.length) return [];
   if (!first) return children;
   const [only] = children;
-  const repeats = children.length === 1 && !only!.children?.length && only!.value === part.value && !only!.notRecorded === !part.notRecorded && !only!.partial === !part.partial;
+  const repeats = children.length === 1 && !only!.children?.length && only!.name === part.name && only!.value === part.value && !only!.notRecorded === !part.notRecorded && !only!.partial === !part.partial;
   return repeats ? [] : children;
 }
 
@@ -201,21 +199,20 @@ export function buildBreakdownTooltip(
     items.push({ label: level.total.verb, missingReason: part.missingReason ?? 'Not recorded', swatch });
   } else {
     items.push({ label: level.total.verb, value: withUnit(part.exact ?? part.text, unit), swatch, strong: true });
-    if (!level.total.atLeast && part.share != null) items.push({ label: 'Share', value: formatShare(part.share) });
-    if (!level.total.atLeast && parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
+    if (part.share != null) items.push({ label: 'Share', value: formatShare(part.share) });
+    if (parent && part.parentShare != null) items.push({ label: `Share of ${parent.name}`, value: formatShare(part.parentShare) });
     if (part.count !== undefined && part.count > 0) items.push({ label: part.countLabel ?? 'Count', value: formatScalar(part.count, 'integer') });
   }
   if (part.nameMissing) items.push({ label: 'Name', missingReason: part.nameMissing });
   if (part.partial && part.partialReason) items.push({ label: 'Coverage', value: part.partialReason, tone: 'muted' });
   if (part.detailRows) items.push(...part.detailRows);
   const children = part.notRecorded ? [] : part.children ?? [];
-  children.slice(0, TOOLTIP_PARTS).forEach((child, at) => items.push({
+  children.forEach((child, at) => items.push({
     label: child.name,
     ...(child.notRecorded || child.value === null ? { missingReason: child.missingReason ?? 'Not recorded' } : { value: withUnit(child.text, unit) }),
     indent: true,
     ...(at === 0 ? { divider: true } : {}),
   }));
-  if (children.length > TOOLTIP_PARTS) items.push({ label: `${children.length - TOOLTIP_PARTS} more in the list`, tone: 'muted', indent: true });
   const subtitle = part.subtitle ?? parent?.name;
   const note = [part.note, level.total.atLeast ? level.total.reason : undefined].filter((entry): entry is string => Boolean(entry && entry.trim())).join(' ');
   return ({
@@ -223,6 +220,7 @@ export function buildBreakdownTooltip(
     hour: model.hour,
     ...(subtitle ? { subtitle } : {}),
     items,
+    ...(children.length > 8 ? { scrollable: true, scrollId: part.key } : {}),
     ...(note ? { note } : {}),
   });
 }

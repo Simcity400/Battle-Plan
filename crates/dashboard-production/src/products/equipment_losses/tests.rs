@@ -709,6 +709,15 @@ fn at_hour_breakdown_gates_startup_withheld_supplemental_gaps_unavailable_totals
     assert_eq!(at_121.breakdown.total.state, BreakdownState::Known, "slot 7 continues seamlessly after tag change GER -> BBB: {:?}", at_121.breakdown);
     assert_eq!(at_121.breakdown.total.amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "2".into() }), "250000 / 100000 reduces to exact 5/2");
     assert_eq!(at_121.through, 130, "quiet stretch stands through the segment end in one request");
+    assert_eq!(at_121.from, 120, "a count that restarted after the load is dated from its own start, never the branch start");
+}
+
+#[test]
+fn an_item_with_no_recorded_loss_yet_but_incomplete_coverage_stays_as_missing_never_vanishes() {
+    use super::breakdown::loss_amount;
+    use dashboard_base::products::breakdown::Amount;
+    assert_eq!(loss_amount(Some(0), Some("Some losses for this item were not recorded")), Some(Amount::NotRecorded("Some losses for this item were not recorded".into())));
+    assert_eq!(loss_amount(Some(0), None), None, "a complete zero adds no part");
 }
 
 #[test]

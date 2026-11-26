@@ -52,6 +52,10 @@ pub struct ProductionSpendingParams {
     pub scope: ProductionSpendingScope,
     #[serde(default)]
     pub include_refits: bool,
+    #[doc = " The first hour of a chosen range: spending from it through `hour`; from the observation start when absent."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from_hour: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -219,6 +223,7 @@ pub(crate) struct SpanRead {
     country: Vec<Piece<Option<(Option<i64>, Option<i64>)>>>,
     pub(crate) rows: BTreeMap<LeafKey, Vec<Piece<Option<Row>>>>,
     pub(crate) archetypes: BTreeMap<u64, u32>,
+    pub(crate) archetype_since: BTreeMap<u64, i32>,
     pub(crate) equipment_observations: BTreeSet<i32>,
     pub(crate) repairs: Option<RepairRead>,
 }
@@ -258,10 +263,15 @@ impl SpanRead {
         let totals = Read::of(query, &span, TableId::ProductionTotals, &["spent", "spent_reason", "unproven", "archetype"], Keys::Range(id << 72, id << 72 | ((1u128 << 72) - 1)))?;
         let mut rows = BTreeMap::new();
         let mut archetypes = BTreeMap::new();
+        let mut archetype_since: BTreeMap<u64, i32> = BTreeMap::new();
         for (key, steps) in &totals.history.keys {
             let variant = (key >> 8) as u64;
             if let Some(archetype) = steps.iter().rev().filter_map(|step| step.cells.as_deref()).filter_map(|cells| totals.number(cells, 3)).find(|&token| token > 0) {
                 archetypes.insert(variant, archetype as u32);
+            }
+            if let Some(first) = steps.iter().find(|step| step.cells.as_deref().and_then(|cells| totals.number(cells, 3)).is_some_and(|token| token > 0)) {
+                let first = first.hour.max(span.first);
+                archetype_since.entry(variant).and_modify(|held| *held = (*held).min(first)).or_insert(first);
             }
             let row = totals.pieces(*key, &span, |read, cells| Row { spent: read.number(cells, 0), reason: read.number(cells, 1).map_or(0, |code| code as u8), unproven: read.number(cells, 2) });
             rows.insert((false, variant, Some(*key as u8)), row);
@@ -277,7 +287,7 @@ impl SpanRead {
         }
 
         let repairs = repairs.then(|| RepairRead::read(query, &span)).transpose()?;
-        Ok(Self { lines, rocket, country, rows, archetypes, equipment_observations, repairs, span })
+        Ok(Self { lines, rocket, country, rows, archetypes, archetype_since, equipment_observations, repairs, span })
     }
 
     fn context(&self, rocket: bool) -> &[Piece<Context>] {
@@ -568,7 +578,7 @@ impl Product for ProductionSpending {
     const KEY: &'static str = "production-spending";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionSpendingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: End, scope, includeRefits];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, fromHour: Start, hour: End, scope, includeRefits];
     type Reply = ProductionSpendingReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

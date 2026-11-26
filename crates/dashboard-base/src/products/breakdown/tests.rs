@@ -257,3 +257,43 @@ fn fractions_add_up_exactly_and_a_sum_too_fine_to_add_is_not_recorded() {
     assert_eq!((reply.total.amount, reply.total.state), (None, BreakdownState::NotRecorded), "an overflowed sum is never a figure");
     assert_eq!(reply.total.reason.as_deref(), Some(INEXACT));
 }
+
+#[test]
+fn a_known_amount_beside_an_unread_one_that_may_be_negative_is_no_lower_bound() {
+    let signed = breakdown(&[leaf(&[node("gain", 0)], Amount::Known(Exact::whole(50))), leaf(&[node("correction", 1)], Amount::NotRecordedSigned("correction not read".into()))], &Unrecorded::default());
+    assert_eq!((signed.total.amount.clone(), signed.total.state), (None, BreakdownState::NotRecorded), "50 is not even a lower bound when the unread amount may be -20");
+    assert_eq!(signed.total.reason.as_deref(), Some("correction not read"));
+    assert_eq!(signed.parts[0].amount, figure("50"), "the known amount is kept");
+    let evidently = breakdown(&[leaf(&[node("a", 0)], Amount::Known(Exact::whole(-5))), leaf(&[node("b", 1)], Amount::NotRecorded("b not read".into()))], &Unrecorded::default());
+    assert_eq!(evidently.total.state, BreakdownState::NotRecorded, "a breakdown with a recorded negative amount is signed");
+    let counted = breakdown(&[leaf(&[node("a", 0)], Amount::Known(Exact::whole(5))), leaf(&[node("b", 1)], Amount::NotRecorded("b not read".into()))], &Unrecorded::default());
+    assert_eq!((counted.total.amount, counted.total.state), (figure("5"), BreakdownState::AtLeast), "amounts that cannot be negative still give a lower bound");
+}
+
+#[test]
+fn a_complete_part_keeps_its_own_shares_when_another_part_is_unread() {
+    let war = node("war-a", 0);
+    let reply = breakdown(
+        &[
+            leaf(&[war.clone(), node("x", 0)], Amount::Known(Exact::whole(30))),
+            leaf(&[war, node("y", 1)], Amount::Known(Exact::whole(70))),
+            leaf(&[node("war-b", 1)], Amount::NotRecorded("counter not read".into())),
+        ],
+        &Unrecorded::default(),
+    );
+    assert_eq!(reply.total.state, BreakdownState::AtLeast);
+    let a = &reply.parts[0];
+    assert_eq!((a.children[0].parent_share, a.children[1].parent_share), (Some(0.7), Some(0.3)), "war A is complete: its enemies' shares of it are proven");
+    assert_eq!(a.children[0].share, None, "a share of the unproven whole is not");
+}
+
+#[test]
+fn a_recorded_whole_is_the_denominator_and_an_unread_one_keeps_every_known_part() {
+    let parts = [leaf(&[node("a", 0)], Amount::Known(Exact::whole(5))), leaf(&[node("b", 1)], Amount::NotRecorded("b not read".into()))];
+    let world = breakdown_of(&parts, &Amount::Known(Exact::whole(12)));
+    assert_eq!((world.total.amount.clone(), world.total.state), (figure("12"), BreakdownState::Known));
+    assert_eq!(world.parts[0].share, Some(5.0 / 12.0));
+    let unread = breakdown_of(&parts, &Amount::NotRecorded("world not read".into()));
+    assert_eq!((unread.total.amount, unread.total.state), (None, BreakdownState::NotRecorded));
+    assert_eq!((unread.parts[0].amount.clone(), unread.parts[0].share), (figure("5"), None));
+}

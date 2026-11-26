@@ -247,12 +247,17 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.stroke();
       ctx.restore();
 
+      let nameX = row.nameX;
+      if (row.depth === 1 && row.part.flagArt && !layout.narrow) {
+        drawMediaSlot(ctx, nameX, cy, FLAG_SLOT_WIDTH, FLAG_SLOT_HEIGHT, { kind: 'flag', art: row.part.flagArt, ...(row.part.flag ? { tag: row.part.flag } : {}) }, theme, { artCache });
+        nameX += FLAG_SLOT_WIDTH + 6;
+      }
       ctx.save();
       ctx.font = row.depth === 1 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
       ctx.fillStyle = row.depth === 1 ? theme.text : theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      drawPartName(ctx, row.part, row.nameX, cy, row.nameWidth, theme);
+      drawPartName(ctx, row.part, nameX, cy, Math.max(10, row.nameX + row.nameWidth - nameX), theme);
       ctx.restore();
 
       const barH = row.depth === 1 ? 8 : 6;
@@ -653,6 +658,17 @@ function drawMosaicView(ctx: Canvas2D, input: BreakdownPaintInput, layout: Mosai
   for (const tile of layout.tiles) {
     drawMosaicTile(ctx, tile, theme, inspectedKey, focusedKey, 3);
   }
+  if (layout.undrawn) drawUndrawn(ctx, layout.undrawn, layout.area, theme);
+}
+
+function drawUndrawn(ctx: Canvas2D, text: string, area: Rect, theme: FamilyTheme): void {
+  ctx.save();
+  ctx.font = `400 12px ${theme.font}`;
+  ctx.fillStyle = theme.muted;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(fitText(ctx, text, Math.max(20, area.width - 16)), area.x + area.width / 2, area.y + area.height / 2);
+  ctx.restore();
 }
 
 export function drawBreakdown(ctx: Canvas2D, input: BreakdownPaintInput): void {

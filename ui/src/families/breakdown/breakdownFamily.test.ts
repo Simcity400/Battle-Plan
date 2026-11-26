@@ -314,8 +314,9 @@ test('the list scrolls to its last row and shows every item under an open part',
   const last = parts.rows[parts.rows.length - 1]!;
   assert.ok(parts.contentHeight >= parts.bodyTop + last.y + last.height, 'the scroll extent counts the total line above the list');
   assert.equal(parts.rows.filter(row => row.depth === 2).length, 11, 'every item of an open category is a row');
-  const tip = JSON.stringify(buildBreakdownTooltip(model(nested()), level, `New${PATH}type:7`, THEME));
-  assert.ok(tip.includes('3 more in the list'), 'the tooltip names what it leaves to the list');
+  const tip = buildBreakdownTooltip(model(nested()), level, `New${PATH}type:7`, THEME)!;
+  assert.equal(tip.items!.filter(item => item.indent).length, 11, 'the tooltip lists every item itself, never promising a list a narrow view does not have');
+  assert.equal(tip.scrollable, true);
   const row = parts.rows[3]!;
   assert.equal(hitTestBreakdown(parts, 40, parts.bodyTop + row.y + 2, 0), `row:${row.key}`);
 });
@@ -334,14 +335,17 @@ test('the audit lists what the installed view draws: shares, open children and t
   assert.notDeepEqual(deriveBreakdownAudit(model(moved), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(moved)), view: 'parts', userExpanded: { New: true } })), deriveBreakdownAudit(model(nested()), layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(nested())), view: 'parts', userExpanded: { New: true } })), 'moving spending between children under a fixed part changes the audit');
 });
 
-test('a lone sub-part that repeats its part is not drawn as a split, but its name stays in the tooltip', () => {
+test('a lone sub-part that repeats its part is not drawn as a split, but a lone sub-part that is another thing keeps its row', () => {
   const lone: Breakdown = { total: { amount: exact('20'), state: 'known', reason: null }, unrecordedHours: 0,
-    parts: [wire('Daily', 0, '20', { share: 1, parentShare: 1, children: [wire('One daily cost', 0, '20', { share: 1, parentShare: 1 })] })] };
+    parts: [wire('Daily', 0, '20', { share: 1, parentShare: 1, children: [wire('Daily', 0, '20', { share: 1, parentShare: 1 })] })] };
   const read = model(lone);
   const parts = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(read), view: 'parts', userExpanded: {} }) as PartsViewLayout;
   assert.deepEqual(parts.rows.map(row => row.key), ['Daily']);
   assert.equal(parts.rows[0]!.segments.length, 0);
-  assert.ok(JSON.stringify(buildBreakdownTooltip(read, breakdownLevel(read), 'Daily', THEME)).includes('One daily cost'));
+  const war: Breakdown = { total: { amount: exact('20'), state: 'known', reason: null }, unrecordedHours: 0,
+    parts: [wire('War', 0, '20', { share: 1, parentShare: 1, children: [wire('Only enemy', 0, '20', { share: 1, parentShare: 1 })] })] };
+  const one = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(war)), view: 'parts', userExpanded: {} }) as PartsViewLayout;
+  assert.deepEqual(one.rows.map(row => row.part.name), ['War', 'Only enemy'], 'a war with one recorded enemy keeps the enemy as its own row');
 });
 
 test('a lone item under a category is still a row', () => {
@@ -485,7 +489,7 @@ test('R3-S1/R3-S7: recorded corrections and partial totals lay out and hover wit
   assert.equal(lostTip.items?.some(item => item.label === 'Share') ?? false, false);
   assert.equal(returnedTip.items?.some(item => item.label === 'Share') ?? false, false);
   assert.ok(JSON.stringify(lostTip).includes('100'));
-  assert.ok(JSON.stringify(returnedTip).includes('-13'));
+  assert.match(JSON.stringify(returnedTip), /[-−]13/);
 
   const partial: Breakdown = {
     unrecordedHours: 2,
@@ -631,9 +635,14 @@ test('territory share resolves slot-keyed countries, keeps Rest of the world neu
   const allPlan = territoryShare.sources(ctx({ kind: 'all' }, 'owned'), { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]);
   assert.deepEqual((allPlan.entries[0]!.read as { params: unknown }).params, { branchId: '1', measure: 'ownedStates' });
 
-  const occupiedCtx = ctx({ kind: 'all' }, 'occupied');
-  assert.ok(territoryShare.unavailable!(occupiedCtx), 'occupied rule is refused on world share');
-  assert.equal(territoryShare.sources(occupiedCtx, { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1]).entries.length, 0);
+  const view = { width: 800, height: 300 } as Parameters<typeof territoryShare.sources>[1];
+  const occupied = territoryShare.sources(ctx({ kind: 'all' }, 'occupied'), view);
+  assert.deepEqual((occupied.entries[0]!.read as { params: unknown }).params, { branchId: '1', measure: 'occupiedStates' }, 'a saved occupied rule is read as occupied, never as controlled');
+  assert.equal(territoryShareProjection.project(readView, { measure: 'states', rule: 'occupied' }).periodLabel, 'Share of all occupied states');
+  const picked = territoryShare.sources(ctx({ kind: 'tags', tags: ['LUX'] } as CountrySelection), view);
+  assert.deepEqual((picked.entries[0]!.read as { params: unknown }).params, { branchId: '1', measure: 'controlledStates', countries: ['LUX'] }, 'a chosen small country is asked for, never the world top ten');
+  const faction = territoryShare.sources(ctx({ kind: 'group', group: { type: 'faction', id: '4' }, membership: 'hour', aggregate: false }), view);
+  assert.deepEqual((faction.entries[0]!.read as { params: { group?: unknown } }).params.group, { type: 'faction', id: '4', membership: 'hour' });
 });
 
 test('production, dockyard and military factory spending share one at-hour product, follow it, and separate owners by scope', () => {
@@ -825,4 +834,64 @@ test('bombing damage breakdown projects taken/dealt, keeps slivers non-zero, sep
   assert.deepEqual(dealtPlan.entries[0]!.read.params, { branchId: '1', country: 7, direction: 'dealt' });
 
   assertFollowsProduct(takenPlan.entries[0]!.read);
+});
+
+test('a signed split is not drawn to a scale it cannot have: no segment, slice or tile outgrows its part', () => {
+  const signed: Breakdown = { total: { amount: exact('1'), state: 'known', reason: null }, unrecordedHours: 0,
+    parts: [wire('Net', 0, '1', { share: 1, parentShare: 1, children: [wire('Gain', 0, '100'), wire('Loss', 1, '-99')] })] };
+  const level = breakdownLevel(model(signed));
+  const parts = layoutBreakdown({ ...at(1111, 346), level, view: 'parts', userExpanded: { Net: false } }) as PartsViewLayout;
+  const row = parts.rows.find(item => item.key === 'Net')!;
+  assert.ok(row.segments.every(segment => segment.x + segment.width <= row.barX + row.barFillWidth + 0.5), 'no segment runs past its parent bar');
+  const ring = layoutBreakdown({ ...at(1111, 346), level, view: 'ring', userExpanded: {} }) as RingViewLayout;
+  const inner = ring.innerSlices[0]!;
+  assert.ok(ring.outerSlices.every(slice => slice.a0 >= inner.a0 - 1e-9 && slice.a1 <= inner.a1 + 1e-9), 'no outer slice leaves its parent arc');
+  const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
+  assert.ok(mosaic.tiles.every(tile => !tile.isGroup), 'no group of children scaled against a net it exceeds');
+  assert.ok(mosaic.items.length >= 1);
+});
+
+test('a reply with only a missing part still shows why and keeps the part to inspect, in Mosaic and narrow Ring', () => {
+  const missing: Breakdown = { total: { amount: null, state: 'notRecorded', reason: 'Relations were not read' }, unrecordedHours: 0,
+    parts: [wire('Relations', 0, null)] };
+  const level = breakdownLevel(model(missing));
+  const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
+  assert.deepEqual(mosaic.items.map(item => item.key), ['Relations'], 'the missing part is a navigation stop');
+  assert.match(mosaic.undrawn ?? '', /Relations were not read/);
+  const ring = layoutBreakdown({ ...at(320, 346), level, view: 'ring', userExpanded: {} }) as RingViewLayout;
+  assert.equal(ring.sideList, null);
+  assert.deepEqual(ring.items.map(item => item.key), ['Relations']);
+});
+
+test('a ring of very many slices keeps its gaps inside the circle and every slice apart', () => {
+  const many = Array.from({ length: 1500 }, (_, at) => wire(`enemy${at}`, at, '1'));
+  const war: Breakdown = { total: { amount: exact('1500'), state: 'known', reason: null }, unrecordedHours: 0,
+    parts: [wire('War', 0, '1500', { share: 1, parentShare: 1, children: many.map(child => ({ ...child, parentShare: 1 / 1500 })) }), ...many.slice(0, 40).map((child, at) => ({ ...child, key: `top${at}` }))] };
+  const ring = layoutBreakdown({ ...at(1111, 346), level: breakdownLevel(model(war)), view: 'ring', userExpanded: {} }) as RingViewLayout;
+  const inner = [...ring.innerSlices].sort((a, b) => a.a0 - b.a0);
+  assert.ok(inner[inner.length - 1]!.a1 <= inner[0]!.a0 + Math.PI * 2 + 1e-9, 'the slices fit one turn');
+  for (let i = 1; i < inner.length; i++) assert.ok(inner[i]!.a0 >= inner[i - 1]!.a1 - 1e-9, 'slices never overlap');
+  const outer = ring.outerSlices.filter(slice => slice.parentKey === 'War').sort((a, b) => a.a0 - b.a0);
+  assert.equal(outer.length, 1500);
+  for (let i = 1; i < outer.length; i++) assert.ok(outer[i]!.a0 >= outer[i - 1]!.a1 - 1e-9);
+  assert.ok(outer[outer.length - 1]!.a1 <= inner.find(slice => slice.key === 'War')!.a1 + 1e-9);
+});
+
+test('a complete war keeps its enemies\' shares in hover while another war is unread', () => {
+  const partial: Breakdown = { total: { amount: exact('100'), state: 'atLeast', reason: 'War B was not read' }, unrecordedHours: 0,
+    parts: [wire('A', 0, '100', { children: [wire('X', 0, '70', { parentShare: 0.7 }), wire('Y', 1, '30', { parentShare: 0.3 })] }), wire('B', 1, null)] };
+  const read = model(partial);
+  const tip = buildBreakdownTooltip(read, breakdownLevel(read), `A${PATH}X`, THEME);
+  assert.ok(tip?.items?.some(item => item.label === 'Share of A' && item.value === '70%'), 'a proven local share is shown under an unproven whole');
+});
+
+test('hover and audit read the recorded amount, not the label\'s rounding', () => {
+  const tiny: Breakdown = { total: { amount: exact('1/10000'), state: 'known', reason: null }, unrecordedHours: 0, parts: [wire('Factory', 0, '1/10000', { share: 1 })] };
+  const read = model({ ...tiny });
+  const words: BreakdownWords = { ...WORDS, format: (numerator, denominator) => (Number(numerator) / Number(denominator)).toFixed(2) };
+  const parts = breakdownParts(tiny, words);
+  assert.equal(parts[0]!.text, '0.00');
+  assert.equal(parts[0]!.exact, '0.0001', 'a ten-thousandth of a building level is shown as itself on inspection');
+  assert.equal(breakdownTotal(tiny, words).exact, '0.0001');
+  assert.ok(read.parts.length === 1);
 });
