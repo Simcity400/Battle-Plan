@@ -33,7 +33,9 @@ import {
   handleFamilyPointsKeyDown,
   navPageSteps,
   nearestDataOrdinal,
+  resolveInstalledOrdinal,
   tableOrdinalBounds,
+  tablePageSteps,
   usableRowHeight,
   type FamilyNavTuple,
 } from './keyboard.ts';
@@ -1864,6 +1866,32 @@ test('R4-S3 host: ordinal bounds, gap skipping, key directions and held mirror f
     handleFamilyKeyDown(mkEvent(key).event, keyOpts);
   }
   assert.deepEqual(moves, [[0, 1], [1999, -1], [611, 1], [609, -1], [615, 1], [605, -1]]);
+
+  const pageTable = { count: 2000, totalHeight: 2000 * 36 };
+  const narrowSlice: FamilyNavTuple[] = Array.from({ length: 9 }, (_, i) => [`R${615 + i}`, `Row ${615 + i}`, 615 + i, -1, '', null, (615 + i) * 36, 36]);
+  assert.deepEqual(tablePageSteps(pageTable, narrowSlice, 619, 20 * 36), { down: 19, up: 19 }, 'PageDown and PageUp cross past the four overscan rows using viewport height and absolute row geometry');
+  assert.deepEqual(tablePageSteps(pageTable, [], 1999, 20 * 36), { down: 1, up: 19 }, 'PageUp from a pending End ordinal uses viewport height even when nav is empty');
+  assert.deepEqual(tablePageSteps({ count: 10, totalHeight: 414, extents }, [], 0, 144), { down: 2, up: 1 }, 'variable extents account for taller rows in page steps');
+
+  const foldedNav: FamilyNavTuple[] = Array.from({ length: 5 }, (_, i) => [`R${1990 + i}`, `Row ${1990 + i}`, 1990 + i, -1, '', null, (1990 + i) * 36, 36]);
+  const foldedKeys = new Map(foldedNav.map(entry => [entry[0], true]));
+  const endWindow = { first: 1990, count: 10 };
+  const rowOf = (key: string, rowIndex: number, name = key) => ({ key, name, rowIndex, cells: [{ column: 'name', spoken: name }] });
+  assert.equal(
+    resolveInstalledOrdinal(navSample, 1999, pageTable, endWindow, { first: 610, total: 2000, rows: [rowOf('R610', 610)] }, new Map([['R610', true]])),
+    null,
+    'a stale slice before the endpoint window does not resolve End',
+  );
+  assert.equal(
+    resolveInstalledOrdinal(foldedNav, 1999, pageTable, endWindow, { first: 1990, total: 2000, rows: [rowOf('R1990', 1990), rowOf('loading:1995', 1995, 'Loading')] }, foldedKeys),
+    null,
+    'an endpoint window that still holds loading rows keeps waiting',
+  );
+  assert.equal(
+    resolveInstalledOrdinal(foldedNav, 1999, pageTable, endWindow, { first: 1990, total: 2000, rows: foldedNav.map(e => rowOf(e[0], e[2])) }, foldedKeys)?.[0],
+    'R1994',
+    'a settled endpoint window with a folded run resolves End onto its last navigable row',
+  );
 
   const prevDoc = (globalThis as { document?: unknown }).document;
   const prevEl = (globalThis as { HTMLElement?: unknown }).HTMLElement;

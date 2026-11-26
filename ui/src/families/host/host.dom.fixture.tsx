@@ -300,6 +300,7 @@ const DEEP_LOG_COLUMNS: readonly TableColumnSpec[] = [
 const DEEP_LOG_SETTINGS = tableSettingsOf(undefined, DEEP_LOG_COLUMNS, { density: 'normal', sort: { column: 'name', direction: 'ascending' } });
 const DEEP_LOG_OPTIONS = {};
 let deepLogHeldRanges: Array<readonly [number, number]> = [];
+let deepLogFoldEnd = 0;
 let deepLogCommits = 0;
 
 const deepLogProjection = registerFamilyProjection({
@@ -311,12 +312,14 @@ const deepLogProjection = registerFamilyProjection({
     const count = Math.max(0, Math.min(DEEP_LOG_TOTAL - first, win.count));
     const slots: TableModelSlot[] = [];
     const rows: TableRow[] = [];
+    const foldStart = deepLogFoldEnd > 1 ? DEEP_LOG_TOTAL - deepLogFoldEnd : DEEP_LOG_TOTAL;
     for (let i = 0; i < count; i++) {
       const ord = first + i;
       const held = deepLogHeldRanges.some(([lo, hi]) => ord >= lo && ord <= hi);
       if (held) {
         slots.push({ kind: 'loading', key: `loading:${ord}` });
       } else {
+        if (ord > foldStart) continue;
         const row: TableRow = {
           key: `R${ord}`,
           name: `Row ${ord}`,
@@ -538,7 +541,7 @@ function renderApp() {
           )}
           {currentState.deepLogMounted && (
             <Profiler id="deep-log-host" onRender={() => { deepLogCommits++; }}>
-              <div data-slot="deep-log" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
+              <div data-slot="deep-log" style={{ width: '460px', height: '440px', display: 'flex', flexDirection: 'column' }}>
                 <FamilyHost
                   adapter={tableHostAdapter}
                   chrome={TableChrome}
@@ -1198,12 +1201,12 @@ window.hostDom = {
     await frames(2);
     deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
-    await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
-    bodyD.scrollTop = (DEEP_LOG_TOTAL - 10) * ROW_HEIGHT.normal;
+    const scrollCancelLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    bodyD.scrollTop = (DEEP_LOG_TOTAL - 15) * ROW_HEIGHT.normal;
     bodyD.dispatchEvent(new Event('scroll'));
     await frames(2);
     releasePages();
-    await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
+    const scrollCancelArrived = await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
     await frames(4);
     const scrollCancelKey = activeInfo().key;
 
@@ -1212,12 +1215,45 @@ window.hostDom = {
     await frames(2);
     deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
-    await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    const keyCancelLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
     (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     releasePages();
-    await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
+    const keyCancelArrived = await until(() => !!rowEl(DEEP_LOG_TOTAL - 1), 2000);
     await frames(4);
     const keyCancelKey = activeInfo().key;
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(2);
+    deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const endUpLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    releasePages();
+    const endUpArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 2}`, 2000);
+    const endUpActive = activeInfo();
+
+    await scrollToRow(610);
+    const visibleCount = Math.floor(bodyD.clientHeight / ROW_HEIGHT.normal);
+    const bottomVisible = 610 + visibleCount - 1;
+    rowEl(bottomVisible)!.focus();
+    await frames(2);
+    const expectedPageDown = bottomVisible + Math.max(1, visibleCount - 1);
+    rowEl(bottomVisible)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }));
+    const pageDownArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${expectedPageDown}`, 2000);
+    const pageDownActive = activeInfo();
+
+    await scrollToRow(610);
+    rowEl(610)!.focus();
+    await frames(2);
+    deepLogFoldEnd = 6;
+    deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
+    rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    const foldedLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
+    releasePages();
+    const foldedArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === `R${DEEP_LOG_TOTAL - 6}`, 2000);
+    const foldedActive = activeInfo();
+    deepLogFoldEnd = 0;
 
     await scrollToRow(610);
     rowEl(610)!.focus();
@@ -1241,6 +1277,7 @@ window.hostDom = {
     await frames(2);
 
     deepLogHeldRanges = [];
+    deepLogFoldEnd = 0;
     currentState = { ...currentState, deepLogMounted: false, deepLogPaged: undefined };
     renderApp();
     await frames(2);
@@ -1257,8 +1294,21 @@ window.hostDom = {
       endScrollKeptGen,
       endArrived,
       endActive,
+      scrollCancelLoaded,
+      scrollCancelArrived,
       scrollCancelKey,
+      keyCancelLoaded,
+      keyCancelArrived,
       keyCancelKey,
+      endUpLoaded,
+      endUpArrived,
+      endUpActive,
+      expectedPageDown,
+      pageDownArrived,
+      pageDownActive,
+      foldedLoaded,
+      foldedArrived,
+      foldedActive,
       playCommits,
       playBinds,
       playPaints,

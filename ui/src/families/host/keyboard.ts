@@ -1,5 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { MirrorModel } from '../contract.ts';
 import { extentTop, type RowExtents } from '../table/layout.ts';
+import type { FamilyRowWindow } from './adapter.ts';
 
 export const TYPEAHEAD_RESET_MS = 700;
 
@@ -58,6 +60,65 @@ export function tableOrdinalBounds(
   const rowHeight = sampleHeight && sampleHeight > 0 ? sampleHeight : table.totalHeight / table.count;
   if (!(rowHeight > 0)) return null;
   return { top: ordinal * rowHeight, height: rowHeight };
+}
+
+export function tablePageSteps(
+  table: TableOrdinalMetrics,
+  nav: readonly FamilyNavTuple[],
+  currentOrdinal: number,
+  viewportHeight: number,
+): FamilyPageSteps {
+  const count = table.count;
+  if (count <= 1 || viewportHeight <= 0) return { down: 1, up: 1 };
+  const sampleHeight = nav[0]?.[7];
+  const rowHeight = table.extents
+    ? table.extents.rowHeight
+    : (sampleHeight && sampleHeight > 0 ? sampleHeight : table.totalHeight / count);
+  if (!(rowHeight > 0)) return { down: 1, up: 1 };
+  const at = Math.max(0, Math.min(count - 1, currentOrdinal));
+  const extents = table.extents ?? null;
+  const topOf = (ord: number) => (extents ? extentTop(extents, rowHeight, ord) : ord * rowHeight);
+  const reach = topOf(at) + viewportHeight;
+  let loDown = at;
+  let hiDown = count - 1;
+  while (loDown < hiDown) {
+    const mid = (loDown + hiDown + 1) >>> 1;
+    if (topOf(mid + 1) <= reach) loDown = mid;
+    else hiDown = mid - 1;
+  }
+  const floor = topOf(at + 1) - viewportHeight;
+  let loUp = 0;
+  let hiUp = at;
+  while (loUp < hiUp) {
+    const mid = (loUp + hiUp) >>> 1;
+    if (topOf(mid) < floor) loUp = mid + 1;
+    else hiUp = mid;
+  }
+  return { down: Math.max(1, loDown - at), up: Math.max(1, at - loUp) };
+}
+
+export function resolveInstalledOrdinal(
+  nav: readonly FamilyNavTuple[],
+  ordinal: number,
+  table: TableOrdinalMetrics,
+  requested: FamilyRowWindow | null,
+  mirror: MirrorModel | undefined,
+  actionKeys: ReadonlyMap<string, unknown>,
+): FamilyNavTuple | null {
+  const exact = nav.find(item => item[2] === ordinal);
+  if (exact) return exact;
+  if (
+    requested
+    && requested.first + requested.count >= table.count
+    && nav.length > 0
+    && nav[0]![2] >= requested.first
+    && ordinal > nav[nav.length - 1]![2]
+    && mirror
+    && !mirror.rows.some(row => !row.groupHeader && row.name === 'Loading' && !actionKeys.has(row.key))
+  ) {
+    return nav[nav.length - 1]!;
+  }
+  return null;
 }
 
 export interface FamilyKeyboardOptions {

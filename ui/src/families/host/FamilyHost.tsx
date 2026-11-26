@@ -59,7 +59,9 @@ import {
   handleFamilyPointsKeyDown,
   navPageSteps,
   nearestDataOrdinal,
+  resolveInstalledOrdinal,
   tableOrdinalBounds,
+  tablePageSteps,
   usableRowHeight,
   type FamilyNavTuple,
   type TableOrdinalMetrics,
@@ -796,19 +798,26 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [revealRow]);
 
   const focusRowByOrdinal = useCallback((ordinal: number, direction: 1 | -1 = 1) => {
-    const fields = fieldsNow();
+    const record = recordRef.current;
+    const fields = record?.fields ?? EMPTY_FIELDS;
     const table = fields.table as TableOrdinalMetrics | undefined;
-    if (!table || fields.panes) return;
+    if (!record || !table || fields.panes) return;
     const target = nearestDataOrdinal(ordinal, table.count, table.gapBefore, direction);
     if (target === null) return;
-    const nav = navNow();
-    const entry = nav.find(item => item[2] === target);
+    const entry = resolveInstalledOrdinal(
+      record.nav,
+      target,
+      table,
+      requestedWindowRef.current,
+      fields.mirror as MirrorModel | undefined,
+      record.picture.actionKeys,
+    );
     if (entry) {
       pendingOrdinalRef.current = null;
       focusRowByKey(entry[0]);
       return;
     }
-    const bounds = tableOrdinalBounds(table, nav, target);
+    const bounds = tableOrdinalBounds(table, record.nav, target);
     if (!bounds) return;
     pendingOrdinalRef.current = target;
     const node = bodyRef.current;
@@ -1071,7 +1080,14 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         if (!table || fields.panes || table.count <= 0 || pendingOrdinal >= table.count) {
           pendingOrdinalRef.current = null;
         } else {
-          const entry = record.nav.find(item => item[2] === pendingOrdinal);
+          const entry = resolveInstalledOrdinal(
+            record.nav,
+            pendingOrdinal,
+            table,
+            requestedWindowRef.current,
+            fields.mirror as MirrorModel | undefined,
+            record.picture.actionKeys,
+          );
           if (entry) {
             pendingOrdinalRef.current = null;
             focusedKeyRef.current = entry[0];
@@ -1367,6 +1383,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [onDiagnostics, extraWarnings, meta.warnings, meta.notes]);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent) => {
+    const priorPending = pendingOrdinalRef.current;
     if (event.key !== 'Shift' && event.key !== 'Control' && event.key !== 'Alt' && event.key !== 'Meta') {
       pendingOrdinalRef.current = null;
     }
@@ -1436,12 +1453,25 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     const table = fields.table as TableOrdinalMetrics | undefined;
     const pagedTable = !!table && !fields.panes && requestedWindowRef.current !== null;
+    const focusedKey = priorPending !== null ? null : focusedKeyRef.current;
+    const rowViewportHeight = usableRowHeight(fields, viewportRef.current.height);
+    const currentOrdinal = priorPending !== null
+      ? priorPending
+      : (focusedKey !== null ? keyNav.find(item => item[0] === focusedKey)?.[2] : undefined) ?? 0;
 
     handleFamilyKeyDown(event, {
       nav: keyNav,
-      ...(pagedTable ? { totalCount: table.count, onFocusOrdinal: focusRowByOrdinal } : {}),
-      focusedKey: focusedKeyRef.current,
-      pageStep: navPageSteps(keyNav, focusedKeyRef.current, usableRowHeight(fields, viewportRef.current.height)),
+      ...(pagedTable
+        ? {
+            totalCount: table.count,
+            ...(priorPending !== null ? { focusedIndex: priorPending } : {}),
+            onFocusOrdinal: focusRowByOrdinal,
+          }
+        : {}),
+      focusedKey,
+      pageStep: pagedTable
+        ? tablePageSteps(table, keyNav, currentOrdinal, rowViewportHeight)
+        : navPageSteps(keyNav, focusedKey, rowViewportHeight),
       blocked,
       typeaheadRef,
       isPinnedTooltip: () => tooltips.isPinned(),
