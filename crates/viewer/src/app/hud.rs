@@ -1014,13 +1014,14 @@ mod tests {
                 captured: true,
                 device: Device::Keyboard,
             };
-            let _ = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(rect),
                     ..Default::default()
                 },
                 |ui| hud.paint(ui, rect, 1.0, &state, now),
             );
+            output.textures_delta.clear();
         };
         paint_at(&mut hud, 10.0);
         let pill = hud
