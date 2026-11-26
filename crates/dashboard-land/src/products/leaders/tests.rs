@@ -320,15 +320,15 @@ fn skill_icons_are_the_installed_leader_windows_buttons_and_a_missing_one_is_nam
 
 #[test]
 fn leaders_order_by_skill_then_battles_won_and_fought() {
-    let mut rows = vec![
-        (2u64, Some("Hisaichi Terauchi"), Some(7), 831u64, 1643u64, [10, 6, 8, 2]),
-        (3u64, Some("Toshizo Nishio"), Some(6), 0u64, 0u64, [7, 4, 9, 5]),
-        (1u64, Some("Tomoyuki Yamashita"), Some(7), 1071u64, 1876u64, [9, 5, 7, 6]),
+    let mut rows = [
+        (2u64, Some("Alder Voss"), Some(7), 831u64, 1643u64, [10, 6, 8, 2]),
+        (3u64, Some("Bram Keel"), Some(6), 0u64, 0u64, [7, 4, 9, 5]),
+        (1u64, Some("Corin Dale"), Some(7), 1071u64, 1876u64, [9, 5, 7, 6]),
     ];
     rows.sort_by(|a, b| super::leader_rank_cmp(a.2, a.3, a.4, a.5, a.1, a.0, b.2, b.3, b.4, b.5, b.1, b.0));
     assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 3]);
 
-    let mut tied = vec![
+    let mut tied = [
         (10u64, Some("Same Name"), Some(5), 0u64, 0u64, [2, 2, 2, 2]),
         (2u64, Some("Same Name"), Some(5), 0u64, 0u64, [2, 2, 2, 2]),
     ];

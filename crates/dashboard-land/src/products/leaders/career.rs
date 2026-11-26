@@ -333,7 +333,7 @@ fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, members: Opti
     leader_fields.sort_unstable();
     character_fields.sort_unstable();
     country_fields.sort_unstable();
-    let inputs = vec![
+    let inputs = [
         (leaders, leader_fields),
         (TableId::LeaderBattleTotals, (0..TableId::LeaderBattleTotals.field_count()).collect()),
         (characters, character_fields),
