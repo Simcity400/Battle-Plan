@@ -1,6 +1,6 @@
 import type { GatedHour } from '../../dashboard/regionTime';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { Sort } from '../../charts/table/logic';
+import type { Sort } from '../../charts/table/options';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { contentKey, contentSet } from '../../dashboard/options.ts';

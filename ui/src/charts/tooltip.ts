@@ -269,14 +269,6 @@ export function measureTooltipScroll(owner: string, height: number): void {
   }
 }
 
-export function refreshTooltip(owner: string, build: () => TooltipContent | null, contentKey?: string): void {
-  if (state?.owner !== owner) return;
-  const { x, y } = state;
-  const content = build();
-  if (content) showTooltip(owner, content, x, y, contentKey);
-  else hideTooltip(owner);
-}
-
 export function hideTooltip(owner: string): void {
   if (state?.owner !== owner) return;
   state = null;

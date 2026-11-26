@@ -1,6 +1,6 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
-import type { SortValue } from '../../charts/table/logic';
+type SortValue = string | number | bigint | null | undefined;
 import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
 import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';

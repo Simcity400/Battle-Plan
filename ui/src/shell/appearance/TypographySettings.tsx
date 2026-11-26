@@ -1,7 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import Table from '../../charts/table/Table';
-import type { TableColumn } from '../../charts/table/Table';
 import { Icon } from '../../components/Icons';
 import { FailureLine } from '../../components/FailureLine';
 import { Popover, usePopover } from '../../components/Popover';
@@ -197,11 +195,19 @@ const previewRows = [
   { key: 'production', label: 'Equipment production across all active lines', value: '12,345.67' },
   { key: 'coverage', label: 'Coverage', value: '98.5%' },
 ];
-const previewColumns: TableColumn<(typeof previewRows)[number]>[] = [
-  { key: 'label', label: 'Category', header: 'Category', value: row => row.label, width: 'minmax(0, 1fr)' },
-  { key: 'value', label: 'Value', header: 'Value', value: row => row.value, numeric: true, width: 'max-content' },
-];
-const previewKey = (row: (typeof previewRows)[number]) => row.key;
 function TypographyTablePreview() {
-  return <Table rowRevision={row => [row, previewColumns]} label="Typography table preview" rows={previewRows} columns={previewColumns} rowKey={previewKey} sort={{ column: 'label', direction: 'ascending' }} />;
+  return <table className="font-preview-table" aria-label="Typography table preview">
+    <thead>
+      <tr>
+        <th scope="col">Category</th>
+        <th scope="col" className="is-numeric">Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {previewRows.map(row => <tr key={row.key}>
+        <td>{row.label}</td>
+        <td className="is-numeric">{row.value}</td>
+      </tr>)}
+    </tbody>
+  </table>;
 }

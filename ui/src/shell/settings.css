@@ -281,5 +281,11 @@ button.theme-card-mode:hover { transform: scale(1.08); }
 .font-preview-diagnostics { margin: 0; overflow: auto; }
 .font-preview-diagnostics:not(:first-child) { border-top: 1px solid var(--line); padding-top: 8px; }
 :root[data-word-wrap='false'] :is(.font-preview-diagnostics, .diagnostics-list) { white-space: pre; overflow-wrap: normal; overflow: auto; }
-.font-preview .chart-table { height: auto; max-height: 112px; padding: 0; }
-.font-preview .chart-table thead { background: var(--canvas); }
+.font-preview-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: var(--font-tables); font-size: var(--type-sm); }
+.font-preview-table th, .font-preview-table td { padding: 5px 8px; text-align: start; vertical-align: middle; }
+.font-preview-table th { color: var(--muted); font-size: var(--type-xs); font-weight: 600; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); white-space: nowrap; }
+.font-preview-table td { color: var(--text); font-weight: 500; line-height: 1.46; border-bottom: 1px solid color-mix(in srgb, var(--border) 35%, transparent); overflow-wrap: anywhere; }
+.font-preview-table tbody tr:last-child td { border-bottom: 0; }
+.font-preview-table .is-numeric { width: min(40%, calc(12ch + 16px)); text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.font-preview-table td.is-numeric { font-weight: 600; }
+:root[data-word-wrap='false'] .font-preview-table td:not(.is-numeric) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }

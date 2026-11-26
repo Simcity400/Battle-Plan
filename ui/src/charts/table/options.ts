@@ -1,10 +1,11 @@
 import type { OptionField } from '../../dashboard/options';
 import { contentKey, setToken } from '../../dashboard/options.ts';
-import type { Sort, SortDirection } from './logic';
 
-export const NARROW_TABLE_OPTION: OptionField = { key: 'narrowTable', section: 'options', label: 'When narrow', kind: 'choice', default: 'hide',
+type SortDirection = 'ascending' | 'descending';
+export interface Sort { column: string; direction: SortDirection }
+
+const NARROW_TABLE_OPTION: OptionField = { key: 'narrowTable', section: 'options', label: 'When narrow', kind: 'choice', default: 'hide',
   choices: [{ value: 'hide', label: 'Hide less important columns' }, { value: 'scroll', label: 'Scroll sideways' }] };
-export type NarrowTable = 'hide' | 'scroll';
 
 export const TABLE_OPTIONS: readonly OptionField[] = [
   { key: 'cellBars', section: 'options', label: 'Cell bars', kind: 'toggle', default: true },
@@ -14,7 +15,7 @@ export const TABLE_OPTIONS: readonly OptionField[] = [
   NARROW_TABLE_OPTION,
 ];
 
-export const sortKey = (sort: Sort): string => JSON.stringify([sort.column, sort.direction]);
+const sortKey = (sort: Sort): string => JSON.stringify([sort.column, sort.direction]);
 export function tableSortOf(value: unknown, fallback: Sort): Sort {
   if (typeof value !== 'string') return fallback;
   try {
