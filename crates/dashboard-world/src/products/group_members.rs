@@ -551,6 +551,7 @@ mod tests {
                     hour: 120,
                     from: None,
                     to: None,
+                    gap_end: None,
                     selection: Some(&selection),
                     subject: None,
                     kinds: None,

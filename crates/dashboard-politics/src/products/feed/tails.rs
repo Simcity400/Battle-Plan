@@ -375,7 +375,7 @@ fn answer(index: &Index<Item>, query: &Query<'_>, window: &Window<'_>, hour: i32
     let (offset, limit) = occurrences::window(window.offset, window.limit)?;
     index.ask(
         &query.holders,
-        &Ask { hour, from: window.from, to: window.to, selection: window.selection, subject: None, kinds, states, search: window.search, order, live_first: live_first && newest, offset, limit, chips },
+        &Ask { hour, from: window.from, to: window.to, gap_end: None, selection: window.selection, subject: None, kinds, states, search: window.search, order, live_first: live_first && newest, offset, limit, chips },
     )
 }
 
@@ -832,6 +832,7 @@ impl Product for EventFeedActivity {
                 hour,
                 from: None,
                 to: None,
+                gap_end: None,
                 selection: prepared.selection.as_ref(),
                 subject: None,
                 kinds: Some(&kinds),

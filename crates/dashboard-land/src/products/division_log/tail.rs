@@ -509,6 +509,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
         hour,
         from: params.from,
         to: params.to,
+        gap_end: None,
         selection: prepared.selection.as_ref(),
         subject: None,
         kinds: None,
@@ -522,12 +523,14 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
     };
     let answer = prepared.index.ask(holders, &ask)?;
     let mut warnings = tail.warnings.clone();
+    let mut next_change = answer.next_change.into_iter().chain(tail.first_read.filter(|&at| at > hour)).min();
     let counts = if params.totals == Some(true) || tail.has_vanished {
         let chips = [DivisionEventRow::CREATED, DivisionEventRow::LOST, DivisionEventRow::TRANSFER, DivisionEventRow::VANISHED]
             .map(|kind| Chip { kinds: Some(vec![u16::from(kind)]), states: None });
         let counted = prepared
             .index
             .ask(holders, &Ask { offset: 0, limit: 1, states: Some(&[SINGLE, CHILD, HIDDEN_CHILD, VANISHED]), chips: &chips, ..ask })?;
+        next_change = next_change.into_iter().chain(counted.next_change).min();
         let vanished = counted.chips[3];
         if vanished > 0 {
             warnings.push(format!("{vanished} divisions left the census without a recorded removal."));
@@ -563,7 +566,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
         })
         .collect();
     let end = tail.chips.partition_point(|chip| chip.first_hour <= hour);
-    let next_change = answer.next_change.into_iter().chain(tail.chips.get(end).map(|chip| chip.first_hour)).min();
+    let next_change = next_change.into_iter().chain(tail.chips.get(end).map(|chip| chip.first_hour)).min();
     if answer.unattributed > 0 {
         warnings.push("Some divisions have no recorded owner for the country filter.".into());
     }
@@ -573,7 +576,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &DivisionLogTailParams,
         unavailable: (!available).then(|| "Division census and removals were not recorded through this hour.".into()),
         branch_id: params.branch_id.clone(),
         total: answer.total.to_string(),
-        offset: offset.to_string(),
+        offset: answer.offset.to_string(),
         counts,
         census_incomplete: answer.gaps.iter().any(|gap| gap.reason != REMOVAL_GAP),
         templates: tail.chips[..end].to_vec(),

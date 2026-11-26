@@ -625,6 +625,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
             hour,
             from: params.from,
             to: params.to,
+            gap_end: None,
             selection: prepared.selection.as_ref(),
             subject: None,
             kinds: None,

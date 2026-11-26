@@ -17,7 +17,7 @@ fn occurrence(id: u128, date: i32, observed: i32) -> Occurrence<()> {
 }
 
 fn ask<'a>(hour: i32) -> Ask<'a> {
-    Ask { hour, from: None, to: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Date(Direction::Descending), live_first: false, offset: 0, limit: 64, chips: &[] }
+    Ask { hour, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Date(Direction::Descending), live_first: false, offset: 0, limit: 64, chips: &[] }
 }
 
 fn ids(index: &Index<()>, answer: &Answer) -> Vec<u128> {
@@ -38,6 +38,9 @@ fn an_occurrence_exists_from_its_observation_and_is_ranged_ordered_and_dated_by_
     assert_eq!(all.next_change, None);
     let oldest = index.ask(&holders(), &Ask { order: Order::Date(Direction::Ascending), ..ask(150) }).unwrap();
     assert_eq!(ids(&index, &oldest), [3, 1, 2]);
+    let past = index.ask(&holders(), &Ask { offset: u64::MAX, ..ask(150) }).unwrap();
+    assert!(past.rows.is_empty());
+    assert_eq!(past.offset, past.total);
 }
 
 #[test]
@@ -60,6 +63,22 @@ fn predicates_apply_before_the_count_and_the_slice_and_chips_count_the_matching_
     assert_eq!(live.chips, [20, 20], "the running chip counts the population, not the rows shown");
     assert_eq!(ids(&index, &live), [1, 0, 99, 98], "live rows first, newest first, then history newest first");
     assert_eq!(live.rows.iter().map(|shown| (shown.ordinal, shown.live)).collect::<Vec<_>>(), [(18, true), (19, true), (20, false), (21, false)]);
+    let counts = Ask { limit: 1, states: Some(&[RUNNING]), ..ask(200) };
+    assert_eq!(index.ask(&holders(), &counts).unwrap().total, 20);
+    STATE_READS.set(0);
+    let deep = index.ask(&holders(), &Ask { live_first: true, offset: 95, limit: 3, chips: &chips, ..ask(200) }).unwrap();
+    assert_eq!(ids(&index, &deep), [24, 23, 22]);
+    assert!(STATE_READS.get() <= 3, "a deep page checked {} row states for three rows", STATE_READS.get());
+    STATE_READS.set(0);
+    assert_eq!(index.ask(&holders(), &counts).unwrap().total, 20);
+    assert_eq!(STATE_READS.get(), 1, "a second view of the same index keeps its counted population");
+    let custom = Index::new((1..=3).map(|hour| Occurrence {
+        id: hour as u128, date: hour, observed: hour, kind: 0, roles: Box::new([]), subjects: Box::new([]), states: Box::new([]), sort_keys: Box::new([]), text: "".into(), payload: hour,
+    }).collect(), Vec::new(), &[]).unwrap();
+    let visible = custom.ask_visible(&holders(), &ask(1), |&id| id != 2).unwrap();
+    assert_eq!((visible.total, visible.next_change), (1, Some(3)));
+    assert_eq!(custom.ask_visible(&holders(), &ask(2), |&id| id == 2).unwrap().total, 1);
+    assert_eq!(custom.ask(&holders(), &ask(2)).unwrap().total, 2);
 }
 
 #[test]
@@ -78,7 +97,11 @@ fn a_state_belongs_to_the_hour_asked_and_its_change_is_the_next_change() {
     assert_eq!(at_30.total, 0, "it ended at 30");
     assert!(Index::new(vec![Occurrence { states: Box::new([(11, RUNNING)]), ..occurrence(1, 10, 10) }], Vec::new(), &[]).is_err(), "a first state is the observation");
     assert!(Index::new(vec![occurrence(1, 11, 10)], Vec::new(), &[]).is_err(), "nothing is dated after it was seen");
-    assert!(Index::new(vec![occurrence(1, 10, 10), occurrence(1, 11, 11)], Vec::new(), &[]).is_err(), "ids are unique");
+    assert!(Index::new(vec![occurrence(1, 10, 10), occurrence(2, 11, 11), occurrence(1, 12, 12)], Vec::new(), &[]).is_err(), "ids are unique across dates");
+    let excluded = Occurrence { states: Box::new([(12, DONE), (24, DONE), (60, RUNNING)]), ..occurrence(3, 12, 12) };
+    let index = Index::new(vec![excluded], Vec::new(), &[RUNNING]).unwrap();
+    let answer = index.ask(&holders(), &Ask { states: Some(&running), ..ask(10) }).unwrap();
+    assert_eq!(answer.next_change, Some(60), "the first admission is when the row enters the selected state");
 }
 
 #[test]
@@ -86,13 +109,18 @@ fn gaps_are_cut_at_the_hour_asked_and_placed_by_ordinal_in_the_replys_order() {
     let gap = |first_hour: i32, last_hour: i32| MissingSpan { first_hour, last_hour, reason: format!("unread {first_hour}") };
     let index = Index::new(vec![occurrence(1, 10, 10), occurrence(2, 50, 50), occurrence(3, 90, 90)], vec![gap(20, 30), gap(60, 80)], &[]).unwrap();
     let at_70 = index.ask(&holders(), &ask(70)).unwrap();
-    assert_eq!(at_70.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.before.as_str())).collect::<Vec<_>>(), [(60, 70, "0"), (20, 30, "1")], "nothing after 70 in a gap; each before the first row older than it");
-    assert_eq!(at_70.next_change, Some(71), "inside a gap the gap grows every hour");
+    assert_eq!(at_70.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.before.as_str())).collect::<Vec<_>>(), [(60, 80, "0"), (20, 30, "1")], "an open gap carries its evidence end for the view to clip");
+    assert_eq!(at_70.next_change, Some(90), "the next observed row changes this page");
     let at_40 = index.ask(&holders(), &ask(40)).unwrap();
     assert_eq!(at_40.next_change, Some(50));
     let at_130 = index.ask(&holders(), &ask(130)).unwrap();
     assert_eq!(at_130.gaps.iter().map(|gap| gap.before.as_str()).collect::<Vec<_>>(), ["1", "2"], "the gap of 60 to 80 sits below the row of 90 and above 50");
     assert_eq!(index.ask(&holders(), &Ask { from: Some(40), ..ask(130) }).unwrap().gaps.len(), 1, "a gap before the range is not the range's");
+    let range = index.ask(&holders(), &Ask { from: Some(25), to: Some(65), ..ask(130) }).unwrap();
+    assert_eq!(range.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>(), [(60, 65), (25, 30)]);
+    let complete = index.ask(&holders(), &Ask { from: Some(35), to: Some(55), ..ask(50) }).unwrap();
+    assert!(complete.gaps.is_empty());
+    assert_eq!(complete.next_change, None);
 }
 
 #[test]
@@ -214,15 +242,15 @@ fn unresolved_explicit_tag_holders_carry_unknown_spans_reasons_and_validity_boun
     let at_110 = index.ask(&holders, &Ask { selection: Some(&selection), ..ask(110) }).unwrap();
     assert_eq!(ids(&index, &at_110), [1]);
     assert_eq!(at_110.gaps.len(), 1, "unresolved holder run must surface as a coverage gap");
-    assert_eq!((at_110.gaps[0].first_hour, at_110.gaps[0].last_hour), (101, 110));
+    assert_eq!((at_110.gaps[0].first_hour, at_110.gaps[0].last_hour), (101, 120));
     assert!(at_110.gaps[0].reason.contains(crate::identity::TAG_UNLINKED), "reason must name unlinked tag: {}", at_110.gaps[0].reason);
-    assert_eq!(at_110.next_change, Some(111), "growing unresolved holder gap advances validity");
+    assert_eq!(at_110.next_change, Some(150), "the next coverage gap changes the view");
 
     let at_160 = index.ask(&holders, &Ask { selection: Some(&selection), ..ask(160) }).unwrap();
     assert_eq!(at_160.gaps.len(), 2, "both unresolved run and holders.unknown span must surface");
     assert!(at_160.gaps.iter().any(|g| (g.first_hour, g.last_hour) == (101, 120) && g.reason.contains(crate::identity::TAG_UNLINKED)));
-    assert!(at_160.gaps.iter().any(|g| (g.first_hour, g.last_hour) == (150, 160) && g.reason.contains("Countries table unread")));
-    assert_eq!(at_160.next_change, Some(161));
+    assert!(at_160.gaps.iter().any(|g| (g.first_hour, g.last_hour) == (150, 170) && g.reason.contains("Countries table unread")));
+    assert_eq!(at_160.next_change, None);
 }
 
 #[test]
