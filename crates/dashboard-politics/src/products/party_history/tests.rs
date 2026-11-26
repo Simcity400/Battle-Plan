@@ -85,8 +85,10 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert!(parties.ruling.namings.iter().all(|(naming, _)| naming.key.is_none() && naming.tag.as_deref() == Some("GER")));
     let politics = super::politics_content(&source, load.content().unwrap()).unwrap();
     let params = dashboard_base::products::CountryParams { branch_id: "1".into(), country: "GER".into() };
-    let narrow = super::present_ruling(Ok(&politics), "GER", &ruling_only);
-    let reply = super::present(Ok(&politics), &params, "GER", &parties, &AtomicBool::new(false)).unwrap();
+    let reply = dashboard_text::catalogue::own_refusals(&mut Default::default(), || {
+        super::present(Ok(&politics), &params, "GER", &parties, &AtomicBool::new(false))
+    }).unwrap();
+    let narrow = dashboard_text::catalogue::own_refusals(&mut Default::default(), || super::present_ruling(Ok(&politics), "GER", &ruling_only));
     let leader_warning = "1 texts are not shown: localisation TEST_LEADER_NAME holds the control byte 0x14 (an authored `\u{a4}`), which plain text cannot show; TEST_LEADER_NAME";
     let (leader, marker): (Vec<_>, Vec<_>) = reply.warnings.iter().map(String::as_str).partition(|warning| *warning == leader_warning);
     assert_eq!(leader, [leader_warning]);
@@ -96,10 +98,9 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert_eq!(narrow.ideologies, reply.ideologies);
     assert!(narrow.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
     let marker_params = crate::products::stability_markers::StabilityMarkersParams { branch_id: "1".into(), country: "GER".into(), hour: LAST, focus: false, government: true, wars: false, factions: false };
-    let markers = {
-        let mut own = dashboard_text::catalogue::OwnRefusals::default();
-        dashboard_text::catalogue::own_refusals(&mut own, || crate::products::stability_markers::StabilityMarkers::load(&source, &marker_params, &load, &AtomicBool::new(false))).unwrap()
-    };
+    let markers = dashboard_text::catalogue::own_refusals(&mut Default::default(), || {
+        crate::products::stability_markers::StabilityMarkers::load(&source, &marker_params, &load, &AtomicBool::new(false))
+    }).unwrap();
     assert!(markers.markers.iter().any(|marker| marker.id.starts_with("party:")));
     assert!(markers.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
     assert!(!markers.warnings.iter().any(|warning| warning == leader_warning));
