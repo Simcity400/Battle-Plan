@@ -535,7 +535,7 @@ impl Viewer {
     pub(crate) fn apply_host_options(&mut self, options: &dashboard_core::protocol::MapOptions) {
         self.picker.hidden = options.picker_hidden;
         if self.picker.hidden {
-            self.picker.find.field.focused = false;
+            self.picker.find.close();
         }
         self.picker.country_pinned = options.country_pinned;
         let echoed = self
@@ -824,11 +824,14 @@ mod tests {
         );
         assert_eq!(host_choice(&options(true, None)).0, MapMode::default());
         let mut view = viewer();
-        view.picker.find.field.focused = true;
+        view.picker.find.toggle(0.0);
+        assert!(view.picker.find.open);
+        assert!(view.picker.find.typing());
         let mut hidden = options(false, None);
         hidden.picker_hidden = true;
         view.apply_host_options(&hidden);
         assert!(view.picker.hidden);
+        assert!(!view.picker.find.open);
         assert!(!view.picker.find.typing());
     }
 

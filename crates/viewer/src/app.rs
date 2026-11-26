@@ -4307,7 +4307,8 @@ impl Viewer {
             .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
         let takes_keys = takes_map_keys(self.dashboard_map, owner, response.id, response.hovered());
         let escape = takes_keys && ui.input(|input| input.key_pressed(egui::Key::Escape));
-        if escape && !held_pointer && !self.start_pick.choosing() && !self.picker.find.open {
+        let find_visible = interface && !self.picker.hidden && self.picker.find.open;
+        if escape && !held_pointer && !self.start_pick.choosing() && !find_visible {
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
             } else {
