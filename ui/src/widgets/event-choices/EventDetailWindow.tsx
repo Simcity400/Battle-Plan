@@ -6,6 +6,7 @@ import type { EventFeedItem } from '../../generated/dashboard';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import type { RefObject } from 'react';
 import { optionLetter } from './eventChoicesData.ts';
+import type { EventDetail } from './eventDetail.ts';
 import { plainScripted, reasonsOf, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import './eventDetailWindow.css';
 
@@ -28,6 +29,7 @@ export interface EventDetailSubject {
 
 export interface EventDetailWindowProps {
   readonly subject: EventDetailSubject | null;
+  readonly detail?: EventDetail | null;
   readonly anchor: RefObject<HTMLElement | null>;
   readonly onClose: () => void;
 }
@@ -43,8 +45,8 @@ function ScriptedSpan({ text, reason }: { readonly text: string; readonly reason
   );
 }
 
-export default function EventDetailWindow({ subject, anchor, onClose }: EventDetailWindowProps) {
-  const item = subject?.item ?? null;
+export default function EventDetailWindow({ subject, detail, anchor, onClose }: EventDetailWindowProps) {
+  const item = detail?.item ?? subject?.item ?? null;
   const reasons = reasonsOf(item);
   const titleText = subject?.title ? plainScripted(subject.title) : 'Event presentation was not recorded';
   const options = item?.options ?? [];
@@ -90,7 +92,11 @@ export default function EventDetailWindow({ subject, anchor, onClose }: EventDet
             </div>
 
             <div className="evd-desc">
-              {item?.description ? (
+              {detail?.pending ? (
+                <p className="evd-missing">Reading the event's text…</p>
+              ) : detail?.missing ? (
+                <p className="evd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
+              ) : item?.description ? (
                 <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
               ) : (
                 <p className="evd-missing" title={reasons.nameMissing ?? 'Event presentation was not recorded'}>

@@ -7,6 +7,7 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import type { EventFeedKindInfo } from '../../generated/dashboard';
 import EventDetailWindow, { type EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
+import { useEventDetail } from '../event-choices/eventDetail.ts';
 import { CATEGORIES } from './definition.ts';
 import EventFeedActivityStrip from './EventFeedActivityStrip.tsx';
 import { feedKindLabel, kindsRequest, validateKinds } from './eventFeedData.ts';
@@ -20,6 +21,7 @@ function EventFeedView(props: FamilyViewProps) {
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
+  const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
 
   useEffect(() => {
     if (!track || !props.active) return;
@@ -99,7 +101,7 @@ function EventFeedView(props: FamilyViewProps) {
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as EventDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
-    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: action.hour } });
+    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
   }, [scope]);
 
   const showStrip = options.activityStrip !== false;
@@ -139,7 +141,7 @@ function EventFeedView(props: FamilyViewProps) {
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
       /> : null}
-      <EventDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
+      <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }

@@ -510,7 +510,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
           status: rawRow.status,
           live: rawRow.live === true,
         };
-        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, hour, boundary);
+        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, source.at ?? hour, boundary);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },

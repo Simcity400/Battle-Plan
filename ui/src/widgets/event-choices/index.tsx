@@ -5,6 +5,7 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import { EVENT_KINDS } from './definition.ts';
 import EventDetailWindow, { type EventDetailSubject } from './EventDetailWindow.tsx';
+import { useEventDetail } from './eventDetail.ts';
 
 function EventChoicesView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
@@ -12,6 +13,7 @@ function EventChoicesView(props: FamilyViewProps) {
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
+  const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-choices-tail', shown, shown !== null);
 
   const filterItems = useMemo<LogKindFilterItem[]>(() => EVENT_KINDS.map(kind => ({
     value: kind.value,
@@ -33,7 +35,7 @@ function EventChoicesView(props: FamilyViewProps) {
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as EventDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
-    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: action.hour } });
+    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
   }, [scope]);
 
   return (
@@ -52,7 +54,7 @@ function EventChoicesView(props: FamilyViewProps) {
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
       /> : null}
-      <EventDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
+      <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
