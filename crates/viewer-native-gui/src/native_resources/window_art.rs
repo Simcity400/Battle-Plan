@@ -1,9 +1,16 @@
 use super::*;
 use crate::lazy_icons::PendingLoad;
-use std::sync::{Mutex, Once, OnceLock, Weak, atomic::{AtomicUsize, AtomicU64, Ordering}};
+use std::sync::{
+    Mutex, Once, OnceLock, Weak,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 #[derive(Clone, Copy)]
-enum Kind { Sprite, Font, Texture }
+enum Kind {
+    Sprite,
+    Font,
+    Texture,
+}
 
 struct Slot {
     requested: Once,
@@ -27,33 +34,66 @@ pub(super) struct WindowArt {
 }
 
 impl WindowArt {
-    pub(super) fn new(reader: GuiResources, layers: ResolvedLayers, assets: &Assets, textures: &Arc<LazyTextures>) -> Arc<Self> {
+    pub(super) fn new(
+        reader: GuiResources,
+        layers: ResolvedLayers,
+        assets: &Assets,
+        textures: &Arc<LazyTextures>,
+    ) -> Arc<Self> {
         let items = [&assets.sprites, &assets.fonts, &assets.textures].map(|names| {
-            names.iter().map(|name| (name.clone(), Slot { requested: Once::new(), ready: OnceLock::new() })).collect()
+            names
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        Slot {
+                            requested: Once::new(),
+                            ready: OnceLock::new(),
+                        },
+                    )
+                })
+                .collect()
         });
         let art = Arc::new(Self {
-            items, queue: Mutex::default(), loading: AtomicUsize::new(0), missed: AtomicU64::new(0), reader: Mutex::new(reader), layers, textures: Arc::clone(textures),
+            items,
+            queue: Mutex::default(),
+            loading: AtomicUsize::new(0),
+            missed: AtomicU64::new(0),
+            reader: Mutex::new(reader),
+            layers,
+            textures: Arc::clone(textures),
         });
         textures.register(Arc::downgrade(&art) as Weak<dyn PendingLoad>);
         art
     }
 
-    pub(super) fn loading(&self) -> bool { self.loading.load(Ordering::Acquire) != 0 }
+    pub(super) fn loading(&self) -> bool {
+        self.loading.load(Ordering::Acquire) != 0
+    }
 
     pub(super) fn resolve<T>(&self, mut read: impl FnMut() -> T) -> T {
         loop {
             let before = self.missed.load(Ordering::Relaxed);
             let value = read();
-            if before == self.missed.load(Ordering::Relaxed) { return value; }
+            if before == self.missed.load(Ordering::Relaxed) {
+                return value;
+            }
             self.load_pending();
         }
+    }
+
+    pub(super) fn misses(&self) -> u64 {
+        self.missed.load(Ordering::Relaxed)
     }
 
     fn get(&self, kind: Kind, name: &[u8]) -> Option<&Item> {
         let slot = self.items[kind as usize].get(name)?;
         slot.requested.call_once(|| {
             self.loading.fetch_add(1, Ordering::Release);
-            self.queue.lock().unwrap_or_else(|err| err.into_inner()).push((kind, name.to_vec()));
+            self.queue
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push((kind, name.to_vec()));
             LazyTextures::schedule(&self.textures);
         });
         let Some(ready) = slot.ready.get() else {
@@ -88,7 +128,12 @@ impl WindowArt {
 }
 
 impl Kind {
-    fn load(self, reader: &mut GuiResources, layers: &ResolvedLayers, name: &[u8]) -> io::Result<Option<Item>> {
+    fn load(
+        self,
+        reader: &mut GuiResources,
+        layers: &ResolvedLayers,
+        name: &[u8],
+    ) -> io::Result<Option<Item>> {
         let mut images = Vec::new();
         Ok(match self {
             Self::Sprite => {
@@ -111,15 +156,23 @@ impl Kind {
 }
 
 impl PendingLoad for WindowArt {
-    fn has_pending(&self) -> bool { self.loading() }
+    fn has_pending(&self) -> bool {
+        self.loading()
+    }
 
     fn load_pending(&self) -> bool {
-        if !self.loading() { return false; }
+        if !self.loading() {
+            return false;
+        }
         let mut reader = self.reader.lock().unwrap_or_else(|err| err.into_inner());
         let batch = std::mem::take(&mut *self.queue.lock().unwrap_or_else(|err| err.into_inner()));
         let changed = !batch.is_empty();
         for (kind, name) in batch {
-            let (result, notes) = diagnostics::capture(|| self.layers.artwork("map window art", |layers| kind.load(&mut reader, layers, &name)));
+            let (result, notes) = diagnostics::capture(|| {
+                self.layers.artwork("map window art", |layers| {
+                    kind.load(&mut reader, layers, &name)
+                })
+            });
             let item = match result {
                 Ok(item) => item,
                 Err(error) => {
@@ -127,7 +180,9 @@ impl PendingLoad for WindowArt {
                     None
                 }
             };
-            let _ = self.items[kind as usize][&name].ready.set(item.map(|item| (Box::new(item), notes)));
+            let _ = self.items[kind as usize][&name]
+                .ready
+                .set(item.map(|item| (Box::new(item), notes)));
             self.textures.bump();
             self.loading.fetch_sub(1, Ordering::Release);
         }

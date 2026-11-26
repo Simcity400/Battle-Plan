@@ -2132,6 +2132,7 @@ impl Viewer {
             return Ok(false);
         }
         let named = self.options.combat.is_some();
+        if self.combat.loading_art() { return Ok(false); }
         if self.combat.selection.is_some() && self.combat.is_loading() {
             return match live_of(&self.playhead_map).and_then(|side| side.products().combat_whole.clone()) {
                 Some(Err(why)) => Err(format!("its read was not made: {why}")),
@@ -5793,7 +5794,7 @@ impl Viewer {
                         if !pending.is_empty() {
                             viewer_runtime::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
                         }
-                        if !self.saves_a_frame() && document.icons.counters.gui.loading_window_art() {
+                        if self.capture.as_ref().is_none_or(|capture| capture.paced) && (document.icons.counters.gui.loading_window_art() || document.icons.combat.gui.loading_window_art()) {
                             break;
                         }
                         document.icons.lazy.settle();
@@ -6074,7 +6075,6 @@ impl Viewer {
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
-            let drawn = drawn.filter(|_| !document.icons.combat.gui.loading_window_art());
             self.combat_painted = drawn.as_ref().map(combat::Drawn::footprint).unwrap_or_default();
             if let Some(drawn) = &drawn {
                 self.interface_sounds.extend(
@@ -6962,10 +6962,10 @@ impl Viewer {
         if let Some((drag, stroke)) = box_stroke {
             ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
         }
-        let loading_art = if document.icons.combat.gui.loading_window_art() {
-            Some("Loading combat window art?")
+        let loading_art = if self.combat.loading_art() || (self.combat.is_open() && document.icons.combat.gui.loading_window_art()) {
+            Some("Loading combat window art...")
         } else if document.icons.counters.gui.loading_window_art() {
-            Some("Loading map counter art?")
+            Some("Loading map counter art...")
         } else {
             None
         };

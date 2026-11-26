@@ -217,6 +217,7 @@ pub struct Window {
     opened: u64,
     asked: Option<Family>,
     loading: bool,
+    loading_art: bool,
     pending: std::collections::VecDeque<Product>,
     closed: Option<String>,
     retired: Vec<Box<dyn Send>>,
@@ -394,6 +395,10 @@ impl Window {
 
     pub fn is_open(&self) -> bool {
         self.selection.is_some()
+    }
+
+    pub fn loading_art(&self) -> bool {
+        self.selection.is_some() && self.loading_art
     }
 
     pub fn is_loading(&self) -> bool {
@@ -834,6 +839,7 @@ impl Window {
         let Some(selection) = self.selection else {
             return Ok(None);
         };
+        self.loading_art = false;
         if !self.take_in(document, prepared) || self.loading {
             return Ok(None);
         }
@@ -867,6 +873,7 @@ impl Window {
         if advance {
             self.gui_time = Some(time);
         }
+        let art_misses = assets.gui.window_art_misses();
         let drawn = self.gui.draw(
             &windows,
             &resources,
@@ -883,6 +890,10 @@ impl Window {
             self.settled,
             input,
         )?;
+        if art_misses != assets.gui.window_art_misses() {
+            self.loading_art = true;
+            return Ok(None);
+        }
         self.refused.clone_from(&drawn.refused);
         Ok(Some(drawn))
     }

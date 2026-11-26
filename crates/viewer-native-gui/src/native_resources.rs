@@ -190,6 +190,10 @@ impl GuiResources {
         }
     }
 
+    pub fn window_art_misses(&self) -> u64 {
+        self.window.as_ref().map_or(0, |art| art.misses())
+    }
+
     pub fn loading_window_art(&self) -> bool {
         self.window.as_ref().is_some_and(|art| art.loading())
     }

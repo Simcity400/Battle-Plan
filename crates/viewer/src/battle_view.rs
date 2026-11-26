@@ -473,6 +473,8 @@ impl Held {
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
                     crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
                 }
+            } else if self.window.loading_art() {
+                self.refused = None;
             } else if let Some(at) = self.at {
                 let why = match missing {
                     Some(why) => format!("The battle window drew nothing: {why}"),
@@ -488,6 +490,9 @@ impl Held {
             pool.dropper().drop_later(retired);
         }
         self.settle_art(ctx, pool);
+        if self.window.loading_art() {
+            return Ok(Some("Loading battle window art...".into()));
+        }
         if let Some((_, why)) = &self.refused {
             return Ok(Some(why.clone()));
         }
