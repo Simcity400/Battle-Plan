@@ -48,11 +48,6 @@ pub struct ClockAt {
 
 const REACH: i32 = 2 * 744;
 
-struct Held<'r> {
-    value: Option<&'r Runs>,
-    reason: Option<&'r Runs>,
-}
-
 fn at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
     let runs = runs?;
     let index = runs.partition_point(|run| run.1 < hour);
@@ -77,18 +72,41 @@ pub const TOTALS_VALUE_UNKNOWN: &str = "A country's amount is not known at this 
 
 pub type RankedCells<'a> = &'a dyn Fn(u128) -> Option<Option<i64>>;
 
+fn sum_parts<P: Copy, E>(
+    keys: impl Iterator<Item = (P, u128)>, rest: Option<u128>, cell: impl Fn(P, u128) -> Option<Result<i64, E>>,
+) -> Result<Option<i128>, E> {
+    let mut total = 0_i128;
+    for (part, key) in keys {
+        let Some(value) = cell(part, key).or_else(|| rest.and_then(|key| cell(part, key))) else { return Ok(None) };
+        total += i128::from(value?);
+    }
+    Ok(Some(total))
+}
+
+struct TotalWindow {
+    read: i32,
+    start: Option<i32>,
+    opening_read: Option<i32>,
+    since: Option<i32>,
+}
+
+impl TotalWindow {
+    fn value(&self, first: i32, sum: impl Fn(i32) -> Result<i128, Gap>) -> Result<i64, Gap> {
+        let start = self.start.filter(|&at| self.read >= first && at >= first && self.opening_read == Some(at)).ok_or(Gap::WindowIncomplete)?;
+        if self.since.is_some_and(|since| since > start) { return Err(Gap::Restarted); }
+        i64::try_from(sum(self.read)? - sum(start)?).map_err(|_| Gap::OutOfRange)
+    }
+}
+
+fn after_restart(value: Result<i64, Gap>, start: Option<i32>, since: Option<i32>) -> Result<i64, Gap> {
+    value.and_then(|value| if start.zip(since).is_some_and(|(start, since)| since > start) { Err(Gap::Restarted) } else { Ok(value) })
+}
+
 pub fn ranked_total(
     keys: impl Clone + Iterator<Item = u128>, rest: Option<u128>, now: RankedCells<'_>,
     before: Option<RankedCells<'_>>, keep: &dyn Fn(i64) -> bool,
 ) -> Result<Option<i64>, &'static str> {
-    let sum = |cell: RankedCells<'_>| {
-        let mut total = 0_i128;
-        for key in keys.clone() {
-            let Some(value) = cell(key).or_else(|| rest.and_then(cell)) else { return Ok(None) };
-            total += i128::from(value.ok_or(TOTALS_VALUE_UNKNOWN)?);
-        }
-        Ok(Some(total))
-    };
+    let sum = |cell: RankedCells<'_>| sum_parts(keys.clone().map(|key| ((), key)), rest, |(), key| cell(key).map(|value| value.ok_or(TOTALS_VALUE_UNKNOWN)));
     let Some(at) = sum(now)? else { return Ok(None) };
     let value = match before {
         None => at,
@@ -158,24 +176,67 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    fn set_at(runs: &HashMap<usize, HashMap<u128, Runs>>, columns: &Columns, keys: &[(u128, u128)], rest: Option<u128>, hour: i32) -> Result<i128, Gap> {
-        let held = |key: u128| Held { value: runs.get(&columns.value).and_then(|by| by.get(&key)), reason: runs.get(&columns.reason).and_then(|by| by.get(&key)) };
-        let mut sum: i128 = 0;
-        for &(part, key) in keys {
-            let mut cell = held(key);
-            if at(cell.reason, hour).is_none() && at(cell.value, hour).is_none() {
-                match rest {
-                    Some(rest) => cell = held(rest),
-                    None => return Err(Gap::NotRecorded),
-                }
-            }
-            match (at(cell.value, hour), at(cell.reason, hour)) {
-                (Some(value), _) => sum += i128::from(value),
-                (None, Some(reason)) => return Err(Gap::Cell { part, reason: reason as u8 }),
-                (None, None) => return Err(Gap::NotRecorded),
-            }
+    pub fn totals_at(&self, countries: &[Country], parts: Parts<'_>, back: Back<'_>, hour: i32) -> io::Result<Vec<Result<i64, Gap>>> {
+        if self.series.key.unowned() {
+            return Err(invalid(format!("{} is rows no country owns", self.series.kind)));
         }
-        Ok(sum)
+        let running = self.running()?;
+        let columns = self.total_columns(running)?;
+        let Some(stretch) = self.query.timeline.at(hour) else { return Ok(vec![Err(Gap::NotRecorded); countries.len()]) };
+        let parts = parts(stretch.run);
+        let mut wanted = BTreeSet::new();
+        let mut owners = Vec::with_capacity(countries.len());
+        for country in countries {
+            let owner = match self.query.holders.at(country, hour) {
+                Some(held) if let Holder::Found { slot, id } = held.holder => {
+                    let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &parts)?;
+                    wanted.extend(keys.iter().map(|&(_, key)| key).chain(rest));
+                    Some((held.first.max(stretch.first), keys, rest))
+                }
+                _ => None,
+            };
+            owners.push(owner);
+        }
+        let Some(first) = owners.iter().flatten().map(|(first, _, _)| *first).min() else {
+            return Ok(vec![Err(Gap::NotRecorded); countries.len()]);
+        };
+        let wanted: Vec<_> = wanted.into_iter().collect();
+        let amounts = |at| [columns.value, columns.reason].into_iter()
+            .map(|col| Ok((col, self.column_runs(stretch.run, col, &wanted, at, at)?))).collect::<io::Result<HashMap<_, _>>>();
+        let clock = |at| {
+            let runs = self.set_runs(stretch.run, &[columns.as_of, columns.since], &[(0, running.clock)], None, at, at)?;
+            Ok::<_, io::Error>((clock_at(&runs[&columns.as_of], running.clock, at), clock_at(&runs[&columns.since], running.clock, at)))
+        };
+        if let Some(back) = back {
+            let (read, since_hour) = clock(hour)?;
+            let dates = read.filter(|&r| first <= r && r <= hour)
+                .and_then(|r| back(r).filter(|&s| first <= s && s <= hour).map(|s| (r, s)));
+            let Some((read, start)) = dates else {
+                return Ok(owners.iter().map(|owner| Err(if owner.is_some() { Gap::WindowIncomplete } else { Gap::NotRecorded })).collect());
+            };
+            let window = TotalWindow {
+                read, start: Some(start), opening_read: clock(start)?.0, since: if read == hour { since_hour } else { clock(read)?.1 },
+            };
+            let now = amounts(read)?;
+            let before = amounts(start)?;
+            return Ok(owners.into_iter().map(|owner| {
+                let (first, keys, rest) = owner.ok_or(Gap::NotRecorded)?;
+                let value = window.value(first, |at| Self::set_at(if at == read { &now } else { &before }, &columns, &keys, rest, at));
+                after_restart(value, Some(start), since_hour)
+            }).collect());
+        }
+        let now = amounts(hour)?;
+        Ok(owners.into_iter().map(|owner| {
+            let (_, keys, rest) = owner.ok_or(Gap::NotRecorded)?;
+            i64::try_from(Self::set_at(&now, &columns, &keys, rest, hour)?).map_err(|_| Gap::OutOfRange)
+        }).collect())
+    }
+
+    fn set_at(runs: &HashMap<usize, HashMap<u128, Runs>>, columns: &Columns, keys: &[(u128, u128)], rest: Option<u128>, hour: i32) -> Result<i128, Gap> {
+        let cell = |col, key| at(runs.get(&col).and_then(|by| by.get(&key)), hour);
+        sum_parts(keys.iter().copied(), rest, |part, key| {
+            cell(columns.value, key).map(Ok).or_else(|| cell(columns.reason, key).map(|why| Err(Gap::Cell { part, reason: why as u8 })))
+        })?.ok_or(Gap::NotRecorded)
     }
 
     fn set_runs(&self, run: u32, columns: &[usize], keys: &[(u128, u128)], rest: Option<u128>, first: i32, last: i32) -> io::Result<HashMap<usize, HashMap<u128, Runs>>> {
@@ -219,16 +280,9 @@ impl<'q, 'a> Line<'q, 'a> {
         let as_of = &clock[&columns.as_of];
         let runs = self.set_runs(part.run, &[columns.value, columns.reason], keys, rest, from, last)?;
         let window = |read: i32| -> Result<i64, Gap> {
-            if read < part.first {
-                return Err(Gap::WindowIncomplete);
-            }
-            let start = back(read).filter(|&start| start >= part.first && clock_at(as_of, running.clock, start) == Some(start)).ok_or(Gap::WindowIncomplete)?;
-            if clock_at(since, running.clock, read).is_some_and(|since| since > start) {
-                return Err(Gap::Restarted);
-            }
-            let now = Self::set_at(&runs, columns, keys, rest, read)?;
-            let before = Self::set_at(&runs, columns, keys, rest, start)?;
-            i64::try_from(now - before).map_err(|_| Gap::OutOfRange)
+            let start = back(read);
+            TotalWindow { read, start, opening_read: start.and_then(|at| clock_at(as_of, running.clock, at)), since: clock_at(since, running.clock, read) }
+                .value(part.first, |at| Self::set_at(&runs, columns, keys, rest, at))
         };
         let mut out: Vec<(i32, i32, Result<i64, Gap>)> = Vec::new();
         let reads: &Runs = as_of.get(&running.clock).map_or(&EMPTY, |runs| runs);
@@ -244,8 +298,7 @@ impl<'q, 'a> Line<'q, 'a> {
             cuts.insert(0, lo);
             for (index, &from) in cuts.iter().enumerate() {
                 let to = cuts.get(index + 1).map_or(hi, |next| next - 1);
-                let restarted = read.and_then(back).is_some_and(|start| clock_at(since, running.clock, from).is_some_and(|since| since > start));
-                push(&mut out, from, to, if restarted && value.is_ok() { Err(Gap::Restarted) } else { value });
+                push(&mut out, from, to, after_restart(value, read.and_then(back), clock_at(since, running.clock, from)));
             }
             hour = hi + 1;
         }
@@ -390,6 +443,63 @@ fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_hour_batch_matches_the_selected_totals_and_their_gaps() {
+        use crate::identity::{HolderRun, Holders};
+        use crate::timeline::{Join, Stretch, Timeline};
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+
+        let (first, last) = (100, 110);
+        let replay = crate::fixture::bare(first, last, |frame, hour| {
+            let mut rows = vec![ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(if hour >= 109 { 108 } else { first }),
+                as_of: Some(if hour == 107 { 106 } else { hour }), ..Default::default() }];
+            for country in [7, 9] {
+                if hour == first { continue; }
+                let units = match hour { 103 => Recorded::NotRecorded, 104 => Recorded::Value(i64::MAX), _ => Recorded::Value(i64::from(country) + i64::from(hour)) };
+                rows.push(ProducedValueRow { country, archetype: 1, units, units_reason: ProducedValueRow::LOST_OUTPUT, ..Default::default() });
+                rows.push(ProducedValueRow { country, archetype: ProducedValueRow::REST, units: Recorded::Value(2), ..Default::default() });
+            }
+            frame.table(TableId::ProducedValues, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+        }).unwrap();
+        let holder = |first, last, slot| HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true };
+        let holders = Holders::new([
+            ("AAA".into(), vec![holder(first, last, 7)]),
+            ("BBB".into(), vec![holder(first, 105, 7), holder(106, last, 9)]),
+            ("CCC".into(), vec![HolderRun { first, last, holder: Holder::Unresolved, starts_segment: true }]),
+        ].into(), Vec::new());
+        let timeline = Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() };
+        let query = crate::Query { replay: &replay, timeline: timeline.into(), holders: holders.into() };
+        let series = dashboard_declare::series("produced-values").unwrap();
+        let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+        let tags = ["AAA", "BBB", "CCC", "DDD"].map(|tag| Country::Tag(tag.into()));
+        let parts = |_| vec![1, 2];
+        for (hour, start, first_value) in [
+            (99, None, Err(Gap::NotRecorded)), (100, None, Err(Gap::NotRecorded)), (101, None, Ok(110)),
+            (103, None, Err(Gap::Cell { part: 1, reason: ProducedValueRow::LOST_OUTPUT })), (104, None, Err(Gap::OutOfRange)),
+            (105, Some(100), Err(Gap::NotRecorded)), (107, Some(101), Ok(5)),
+            (108, Some(107), Err(Gap::WindowIncomplete)), (109, Some(106), Err(Gap::Restarted)),
+        ] {
+            let opening = |_| start;
+            let back = start.map(|_| &opening as &dyn Fn(i32) -> Option<i32>);
+            let single = line.totals_at(&tags, &parts, back, hour).unwrap();
+            let history = line.totals(&tags, &parts, back, hour, hour).unwrap();
+            assert_eq!(single, history.iter().map(|runs| runs.first().map_or(Err(Gap::NotRecorded), |r| r.value)).collect::<Vec<_>>(), "hour {hour}, opening {start:?}");
+            assert_eq!(single[0], first_value);
+            assert_eq!(single[2..], [Err(Gap::NotRecorded); 2]);
+            if hour == 107 { assert_eq!(single[1], Err(Gap::WindowIncomplete), "a different holder at the opening"); }
+        }
+        let reads = |countries: &[Country]| {
+            crate::cost::take_calls();
+            line.totals_at(countries, &parts, Some(&|_| Some(106)), 108).unwrap();
+            crate::cost::take_calls()
+        };
+        assert_eq!(reads(&tags[..1]), reads(&tags), "additional lines share the same dated storage reads");
+        let series = dashboard_declare::series("country-measure").unwrap();
+        let other = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
+        assert_eq!(other.totals_at(&tags, &parts, None, last).unwrap_err().to_string(), other.totals(&tags, &parts, None, last, last).unwrap_err().to_string());
+    }
 
     #[test]
     fn ranked_total_uses_the_races_fallback_window_and_refusal_order() {

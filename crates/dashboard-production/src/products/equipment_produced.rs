@@ -561,10 +561,10 @@ impl DatedDesigns {
 
 fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, context: &LoadContext) -> io::Result<ProducedAtReply> {
     let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
-    Ok(details_at(source, query, window, std::slice::from_ref(&params.country), context)?.pop().expect("one asked country"))
+    Ok(details_at(source, query, window, std::slice::from_ref(&params.country), context, &AtomicBool::new(false))?.pop().expect("one asked country"))
 }
 
-fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, countries: &[Country], context: &LoadContext) -> io::Result<Vec<ProducedAtReply>> {
+fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, countries: &[Country], context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Vec<ProducedAtReply>> {
     let hour = params.hour;
     let mut replies: Vec<_> = countries.iter().map(|country| ProducedAtReply {
         branch_id: params.branch_id.to_owned(), tag: query.holders.name(country, hour), asked: country.clone(), hour, measure: params.measure,
@@ -604,6 +604,7 @@ fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, coun
         windows.entry(read).or_insert_with(Vec::new).push((index, id, before));
     }
     let snapshots = needed.into_iter().map(|(hour, ids)| {
+        dashboard_text::metadata::check_cancel(cancelled)?;
         Ok((hour, model_snapshot(source, query, stretch.run, hour, &ids)?))
     }).collect::<io::Result<BTreeMap<_, _>>>()?;
     let mut warnings = Vec::new();
@@ -617,6 +618,7 @@ fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, coun
             }
         }
         let span = Span { run: stretch.run, first: read, last: read, id: 0, breaks: false };
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let found = DatedDesigns::read(source, query, &span, named, &content)?;
         for (index, id, before) in rows {
             let reply = &mut replies[index];
@@ -757,7 +759,7 @@ pub struct EquipmentProducedRaceParams {
     pub from_hour: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub models: Option<bool>,
+    pub models: Option<Vec<Country>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1010,9 +1012,17 @@ fn race_reply(
             }
         }
     };
-    let runs = if tags.is_empty() { Vec::new() } else { line.totals(&tags, &parts_of, back, hour, hour)? };
+    let amounts = if tags.is_empty() {
+        Vec::new()
+    } else if params.models.is_some() {
+        line.totals_at(&tags, &parts_of, back, hour)?
+    } else {
+        line.totals(&tags, &parts_of, back, hour, hour)?.into_iter().map(|runs| {
+            runs.into_iter().find(|run| run.first <= hour && hour <= run.last).map_or(Err(Gap::NotRecorded), |run| run.value)
+        }).collect()
+    };
     let mut rows = Vec::with_capacity(tags.len());
-    for (asked, country_runs) in tags.into_iter().zip(runs) {
+    for (asked, amount) in tags.into_iter().zip(amounts) {
         let counted = asked.clone();
         let tag = query.holders.name(&asked, hour);
         let country = match query.holders.at(&asked, hour) {
@@ -1026,11 +1036,7 @@ fn race_reply(
             }
             None => asked,
         };
-        let amount = country_runs
-            .into_iter()
-            .find(|run| run.first <= hour && hour <= run.last)
-            .map_or(Amount::Unknown(ProducedUnknown::NotRecorded), |run| amount_of_total(run.value));
-        let (value, unknown) = match amount {
+        let (value, unknown) = match amount_of_total(amount) {
             Amount::Known(val) if val.abs() <= MAX_EXACT => (Some(val as i64), None),
             Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
             Amount::Unknown(reason) => (None, Some(reason)),
@@ -1040,7 +1046,7 @@ fn race_reply(
     if is_population {
         (first_hour, last_hour) = population_bounds(query, hour, first_hour, last_hour);
     }
-    if !is_population {
+    if !is_population && params.models.is_none() {
         rows.sort_unstable_by(|a, b| match (a.value, b.value) {
             (Some(av), Some(bv)) => bv.cmp(&av).then_with(|| a.tag.cmp(&b.tag)).then_with(|| a.country.cmp(&b.country)),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -1075,7 +1081,7 @@ impl Product for EquipmentProducedRace {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = EquipmentProducedRaceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, fromHour: Start, "countries[]", models];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, fromHour: Start, "countries[]", "models[]"];
     type Reply = EquipmentProducedRaceReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1090,8 +1096,11 @@ impl Product for EquipmentProducedRace {
         if params.top == Some(0) {
             return Err("top must be at least 1");
         }
-        if params.models == Some(true) && params.countries.is_empty() {
+        if params.models.is_some() && params.countries.is_empty() {
             return Err("Model breakdowns require the displayed countries");
+        }
+        if let Some(countries) = &params.models {
+            for country in countries { validate_country(country)?; }
         }
         Ok(())
     }
@@ -1114,13 +1123,15 @@ impl Product for EquipmentProducedRace {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let mut reply = race_reply(source, &query, params, context, cancelled)?;
-        if params.models == Some(true) {
-            let countries: Vec<_> = reply.rows.iter().filter(|row| row.value.is_some()).map(|row| row.counted.clone()).collect();
+        if let Some(named) = &params.models {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            let rows: Vec<_> = reply.rows.iter_mut().filter(|row| named.contains(&row.counted))
+                .filter_map(|row| row.value.map(|total| (row, total))).collect();
+            let countries: Vec<_> = rows.iter().map(|(row, _)| row.counted.clone()).collect();
             if !countries.is_empty() {
                 let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
-                let rows = reply.rows.iter_mut().filter_map(|row| row.value.map(|total| (row, total)));
-                match details_at(source, &query, window, &countries, context) {
-                    Ok(details) => for ((row, total), detail) in rows.zip(details) {
+                match details_at(source, &query, window, &countries, context, cancelled) {
+                    Ok(details) => for ((row, total), detail) in rows.into_iter().zip(details) {
                         row.breakdown = Some(ProducedBreakdown::from_detail(detail, params.count, &params.types, total));
                     },
                     Err(error) if replay_recording::columnar_frames::Damage::of(&error).is_some() => for (row, _) in rows {
@@ -1147,19 +1158,19 @@ pub(super) mod tests {
     #[test]
     fn hover_counts_the_same_country_and_window_as_the_line() {
         let src = two_producers_read_from("produced-hover", 1000, 1300, 1000, true, Some(1200), None);
-        let ask = |hour: i32, models: bool| {
+        let ask = |hour: i32, models: Option<Vec<Country>>| {
             let params = serde_json::from_value(serde_json::json!({
-                "branchId": "1", "countries": [7, "DEU"], "hour": hour, "count": "units",
+                "branchId": "1", "countries": [7, 8, "DEU"], "hour": hour, "count": "units",
                 "measure": "total", "fromHour": 1120, "types": [], "refits": false, "models": models,
             })).unwrap();
             EquipmentProducedRace::load(&src, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
         };
-        let head = ask(1300, false);
+        let head = ask(1300, None);
         assert!(head.rows.iter().all(|row| !serde_json::to_value(row).unwrap().as_object().unwrap().contains_key("breakdown")));
-        ask(1250, true);
+        ask(1250, Some(vec![Country::Slot(7)]));
         let snapshots = src.state::<ModelSnapshots>();
         let opening = snapshots.lock().unwrap().0.iter().min_by_key(|s| s.hour).unwrap().clone();
-        let hover = ask(1300, true);
+        let hover = ask(1300, Some(vec![Country::Slot(7)]));
         let slot = hover.rows.iter().find(|row| row.counted == Country::Slot(7)).unwrap();
         assert_eq!(slot.value, Some(8));
         let Some(ProducedBreakdown::Models { models, more: 0, remainder: 0 }) = &slot.breakdown else { panic!("missing models: {slot:?}") };
@@ -1167,8 +1178,12 @@ pub(super) mod tests {
         let tag = hover.rows.iter().find(|row| row.counted == Country::Tag("DEU".into())).unwrap();
         assert_eq!(tag.unknown, Some(ProducedUnknown::WindowIncomplete));
         assert!(tag.breakdown.is_none());
+        let tail = hover.rows.iter().find(|row| row.counted == Country::Slot(8)).unwrap();
+        assert!(tail.value.unwrap() > slot.value.unwrap() && tail.breakdown.is_none(), "a higher total at the hovered hour does not promote a tail");
         let names = src.state::<Option<Arc<DatedDesigns>>>();
         assert!(snapshots.lock().unwrap().0.iter().any(|s| Arc::ptr_eq(s, &opening)), "a Range keeps its opening snapshot when the inspected hour advances");
+        let named = ask(1300, Some(vec![Country::Slot(8)]));
+        assert_eq!(named.rows.iter().filter(|row| row.breakdown.is_some()).map(|row| &row.counted).collect::<Vec<_>>(), [&Country::Slot(8)]);
         assert!(names.lock().unwrap().is_some());
         crate::forget(&src);
         assert!(snapshots.lock().unwrap().0.is_empty());

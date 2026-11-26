@@ -736,6 +736,7 @@ mod tests {
             let mut params = EquipmentProducedRaceParams {
                 branch_id: "1".into(), hour: first + 50, countries: vec![], group: None, top: Some(2),
                 count: ProducedCount::Units, measure, types: vec![], refits: false, from_hour,
+                models: None,
             };
             let mut until = i32::MIN;
             let mut expected = (Vec::new(), None);
@@ -756,6 +757,7 @@ mod tests {
         let mut params = EquipmentProducedRaceParams {
             branch_id: "1".into(), hour: first + 190, countries: vec![], group: None, top: Some(1),
             count: ProducedCount::Units, measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+            models: None,
         };
         let held = super::super::race_reply(&src, &query, &params, &load, &cancelled).unwrap();
         assert_eq!(held.rows[0].country, Country::Slot(7));
@@ -825,6 +827,7 @@ mod tests {
                 let params = EquipmentProducedRaceParams {
                     branch_id: "1".into(), hour, countries: vec![], group: None, top: Some(1), count: ProducedCount::Units,
                     measure: ProducedMeasure::Total, types: vec![], refits: false, from_hour: None,
+                    models: None,
                 };
                 previous_until = super::super::race_reply(&source, &query, &params, &LoadContext { content: None }, &false.into()).unwrap().last_hour;
                 previous_count += 1;

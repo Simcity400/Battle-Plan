@@ -96,6 +96,7 @@ function formatExactAmount(raw: number, count: ProducedCount): string {
 function buildHoverDetail(
   readView: BoundedReadView,
   orderedKeys: readonly string[],
+  named: readonly string[],
   options: EquipmentProducedLinesOptions,
   looks: ReadonlyMap<string, ReturnType<typeof countrySeriesLooks> extends ReadonlyMap<string, infer T> ? T : never>,
 ): ChartHoverDetail | null {
@@ -141,7 +142,7 @@ function buildHoverDetail(
       }),
     };
     items.push({ ...total, divider: items.length > 0 });
-    const detail = row?.breakdown;
+    const detail = row?.breakdown && named.includes(key) ? row.breakdown : undefined;
     const line = [total];
     if (detail && 'models' in detail) {
       for (const model of detail.models) line.push({ label: model.name, value: formatExactAmount(model.value, options.count) });
@@ -322,7 +323,8 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       ? `${options.count === 'ic' ? `IC · ${options.equipmentLabel}` : options.equipmentLabel} · since ${formatDateOnly(options.fromHour)}`
       : captionFor(options.count, options.measure, options.equipmentLabel, headPanel.observationHour);
 
-    const hoverDetail = buildHoverDetail(readView, orderedKeys, options, looks);
+    const named = orderedKeys.slice(0, COLOURED);
+    const hoverDetail = buildHoverDetail(readView, orderedKeys, named, options, looks);
     const empty = seriesList.length === 0
       ? {
           kind: (headPanel.readHour !== null ? 'empty' : 'unavailable') as 'empty' | 'unavailable',
@@ -343,6 +345,7 @@ export const equipmentProducedLinesProjection: TimeChartProjection<EquipmentProd
       ...(view ? { view } : {}),
       yAxis,
       series: seriesList,
+      drawnKeys: { main: orderedKeys, named },
       empty,
       summaryText,
       warnings: headPanel.warnings.length > 0 ? headPanel.warnings : undefined,
@@ -413,7 +416,6 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
     };
     const hoverParams: Record<string, unknown> = {
       branchId: ctx.branch.id,
-      models: true,
       count,
       measure,
       types: [...shownTypes],
@@ -460,6 +462,7 @@ export const equipmentProducedLinesDeclaration: TimeChartWidgetDeclaration<Equip
         shape: 'exact-hover',
         product: 'equipment-produced-race',
         params: hoverParams,
+        countryParamsOf: { models: 'named' },
         ...(top !== null ? { countriesOf: 'main' } : {}),
         ...(top === null && ctx.countries.membership ? { membership: ctx.countries.membership } : {}),
         validate: validateEquipmentProducedRace,

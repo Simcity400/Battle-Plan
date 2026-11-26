@@ -3378,7 +3378,7 @@ name: string | null, units: ProducedAmount, ic: ProducedAmount, };
 export type ProducedCount = "units" | "ic";
 export type ProducedMeasure = "total" | "day" | "week" | "month";
 export type ProducedUnknown = "notRecorded" | "unitsInexact" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "typeNotRecorded" | "windowIncomplete" | "observationRestarted" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "outOfRange";
-export type EquipmentProducedRaceParams = { branchId: string, hour: number, countries: Array<CountryRef>, group?: GroupSelection, top?: number, count: ProducedCount, measure: ProducedMeasure, types: Array<string>, refits: boolean, fromHour?: number, models?: boolean, };
+export type EquipmentProducedRaceParams = { branchId: string, hour: number, countries: Array<CountryRef>, group?: GroupSelection, top?: number, count: ProducedCount, measure: ProducedMeasure, types: Array<string>, refits: boolean, fromHour?: number, models?: Array<CountryRef>, };
 export type ProducedModelAmount = { name: string, value: number, };
 export type ProducedBreakdown = { models: Array<ProducedModelAmount>, more: number, remainder: number, } | { reason: ProducedUnknown, } | { unavailable: string, };
 export type EquipmentProducedRaceRow = { country: CountryRef,
@@ -6579,7 +6579,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "equipment-designs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "landSource": "leaf" },
   "equipment-produced-at": { "branchId": "leaf", "country": "any", "fromHour": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
-  "equipment-produced-race": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "models": "leaf", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf" },
+  "equipment-produced-race": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "models": "node", "models[]": "any", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf" },
   "equipment-produced-types": { "branchId": "leaf", "refits": "leaf" },
   "equipment-stockpile-lines": { "branchId": "leaf", "family": "node", "family.country": "any", "family.included": "node", "family.included[]": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "hour": "leaf", "top": "leaf" },
   "equipment-stockpile-types": { "branchId": "leaf", "country": "any", "hour": "leaf" },
