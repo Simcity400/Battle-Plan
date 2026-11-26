@@ -3359,7 +3359,11 @@ export type ProducedCount = "units" | "ic";
 export type ProducedMeasure = "total" | "day" | "week" | "month";
 export type ProducedUnknown = "notRecorded" | "unitsInexact" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "typeNotRecorded" | "windowIncomplete" | "observationRestarted" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "outOfRange";
 export type EquipmentProducedRaceParams = { branchId: string, hour: number, countries: Array<CountryRef>, group?: GroupSelection, top?: number, count: ProducedCount, measure: ProducedMeasure, types: Array<string>, refits: boolean, fromHour?: number, };
-export type EquipmentProducedRaceRow = { country: CountryRef, tag: string, value: number | null, unknown: ProducedUnknown | null, };
+export type EquipmentProducedRaceRow = { country: CountryRef,
+/**
+ * The country the total was read for: the slot a ranking counted, or the country a selection asked for. A detail of the row asks for the same.
+ */
+counted: CountryRef, tag: string, value: number | null, unknown: ProducedUnknown | null, };
 export type EquipmentProducedRaceReply = { branchId: string, hour: number, firstHour: number, lastHour: number, count: ProducedCount, measure: ProducedMeasure, decimals: number, types: Array<string>, rows: Array<EquipmentProducedRaceRow>, readHour: number | null, observationHour: number | null, missing: string | null, warnings: Array<string>, };
 export type PowerSpendingBreakdownParams = { branchId: string, country: CountryRef, currency: SpendCurrency,
 /**

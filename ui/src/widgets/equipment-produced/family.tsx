@@ -81,14 +81,14 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
     ? options.measure : 'day';
   const refits = options.refits === true;
   const anchorRef = useRef<HTMLDivElement>(null);
-  const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
+  const [detail, setDetail] = useState<EquipmentProducedRowMeta & { readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const meta = action.meta as EquipmentProducedRowMeta | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
+    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, counted: meta?.counted ?? meta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
   if (!manifestDeclaration) return null;

@@ -25,16 +25,17 @@ import type {
 export interface EquipmentProducedRowMeta {
   readonly tag: string;
   readonly key: string;
+  readonly counted: string;
 }
 
 export function detailCountry(meta: EquipmentProducedRowMeta): CountryRef {
-  return countryFromKey(meta.key);
+  return countryFromKey(meta.counted);
 }
 
 export function detailEmptyText(reply: Pick<ProducedAtReply, 'models' | 'icTotal'>, hour: number): string | null {
   if (reply.models.length) return null;
   const reason = reply.icTotal.reason;
-  return reason === 'windowIncomplete' || reason === 'observationRestarted' ? UNKNOWN_WORDS[reason] : `Nothing delivered at ${formatDateOnly(hour)}.`;
+  return reason !== null ? UNKNOWN_WORDS[reason] : `Nothing delivered at ${formatDateOnly(hour)}.`;
 }
 
 export interface EquipmentProducedRaceOptions {
@@ -208,7 +209,7 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
       const key = countryKey(item.country);
       const pres = countryRowPresentation(readView, key);
       const subjectTag = item.tag;
-      const meta: EquipmentProducedRowMeta = { tag: subjectTag, key };
+      const meta: EquipmentProducedRowMeta = { tag: subjectTag, key, counted: countryKey(item.counted) };
       const value = item.value === null
         ? notRecorded(item.unknown ? UNKNOWN_WORDS[item.unknown] : 'Not recorded at this hour')
         : reply.decimals === 0

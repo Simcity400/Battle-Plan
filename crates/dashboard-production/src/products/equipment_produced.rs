@@ -676,6 +676,8 @@ pub struct EquipmentProducedRaceParams {
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentProducedRaceRow {
     pub country: Country,
+    #[doc = " The country the total was read for: the slot a ranking counted, or the country a selection asked for. A detail of the row asks for the same."]
+    pub counted: Country,
     pub tag: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub value: Option<i64>,
@@ -854,6 +856,7 @@ fn race_reply(
     let runs = if tags.is_empty() { Vec::new() } else { line.totals(&tags, &parts_of, back, hour, hour)? };
     let mut rows = Vec::with_capacity(tags.len());
     for (asked, country_runs) in tags.into_iter().zip(runs) {
+        let counted = asked.clone();
         let tag = query.holders.name(&asked, hour);
         let country = match query.holders.at(&asked, hour) {
             Some(holder_run) => {
@@ -875,7 +878,7 @@ fn race_reply(
             Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
             Amount::Unknown(reason) => (None, Some(reason)),
         };
-        rows.push(EquipmentProducedRaceRow { country, tag, value, unknown });
+        rows.push(EquipmentProducedRaceRow { country, counted, tag, value, unknown });
     }
     if is_population {
         (first_hour, last_hour) = population_bounds(query, hour, first_hour, last_hour);
