@@ -1608,7 +1608,7 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
     struct World<'a> {
         bytes: &'a [u8],
         lexer: Option<[u8; 64]>,
-        moves: bool,
+        moves: Option<(usize, std::ops::Range<usize>)>,
         headers: Cell<usize>,
     }
     impl Memory for World<'_> {
@@ -1619,12 +1619,18 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
             {
                 if output.len() == header.len() {
                     self.headers.set(self.headers.get() + 1);
-                    if self.moves && self.headers.get() > 1 {
-                        header[engine_native_memory::cpdx_lexer::witness_offset(engine_native_memory::cpdx_lexer::TOKEN_ALLOCATION_RVA)] += 1;
-                    }
+                }
+                if let Some((table, _)) = self.moves.clone().filter(|_| self.headers.get() > 1) {
+                    let at = engine_native_memory::cpdx_lexer::witness_offset(engine_native_memory::cpdx_lexer::TOKEN_NAMES_RVA);
+                    header[at..at + 8].copy_from_slice(&(table as u64).to_le_bytes());
                 }
                 output.copy_from_slice(&header[at..at + output.len()]);
                 return true;
+            }
+            if let Some((_, old)) = self.moves.clone().filter(|_| self.headers.get() > 0)
+                && old.contains(&address)
+            {
+                return false;
             }
             let Some(slice) = address
                 .checked_sub(self.bytes.as_ptr() as usize)
@@ -1648,7 +1654,7 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
 
     let mut bytes = vec![0_u8; 0x2000];
     let base_ptr = bytes.as_ptr() as usize;
-    let (variant, def_off, bonuses_off, names_off) = (0x0, 0xc00, 0x1200, 0x1400);
+    let (variant, def_off, bonuses_off, names_off, moved_names_off) = (0x0, 0xc00, 0x1200, 0x1400, 0x1900);
     let base_values = [0_i64, 100_000, 0, 100_000, 400_000, 80_000, 0, 0, 0, 2_400_000];
     bytes[def_off..def_off + 8].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
     bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
@@ -1681,8 +1687,8 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
         bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
     }
     let names = ["", "", "", "build_cost_ic", "reliability", "soft_attack", "maximum_speed"];
-    for (token, name) in names.into_iter().enumerate() {
-        let at = names_off + token * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE;
+    for (token, name) in names.into_iter().enumerate().flat_map(|entry| [(names_off, entry), (moved_names_off, entry)]).map(|(table, (token, name))| (table + token * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE, name)) {
+        let at = token;
         bytes[at..at + name.len()].copy_from_slice(name.as_bytes());
         bytes[at + 16..at + 24].copy_from_slice(&(name.len() as u64).to_le_bytes());
         bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
@@ -1703,14 +1709,15 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
         id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
         address: base_ptr + variant,
     };
-    let walk_moving = |bytes: &[u8], lexer: Option<[u8; 64]>, moves: bool| {
+    let moved = Some((base_ptr + moved_names_off, base_ptr + names_off..base_ptr + names_off + names.len() * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE));
+    let walk_moving = |bytes: &[u8], lexer: Option<[u8; 64]>, moves: Option<(usize, std::ops::Range<usize>)>| {
         let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
         let world = World { bytes, lexer, moves, headers: Cell::new(0) };
         let outcome = walk_stats_carried(&world, 0, &[row], &mut rows, &mut (), &mut witness);
         assert_eq!(outcome, Outcome::Rows { len: 1 });
         (rows[0].values, witness.0)
     };
-    let walk = |bytes: &[u8], lexer: Option<[u8; 64]>| walk_moving(bytes, lexer, false);
+    let walk = |bytes: &[u8], lexer: Option<[u8; 64]>| walk_moving(bytes, lexer, None);
 
     let (values, withheld) = walk(&bytes, Some(lexer));
     assert_eq!(values, cached.map(Some), "every lane is published once its bonuses are applied: {withheld:?}");
@@ -1727,15 +1734,16 @@ fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
     assert_eq!(withheld.len(), STAT_LANE_COUNT);
     assert!(withheld.iter().all(|(_, reason)| *reason == "variant stat organisation bonus names unreadable"));
 
-    let (values, withheld) = walk_moving(&bytes, Some(lexer), true);
+    let (values, withheld) = walk_moving(&bytes, Some(lexer), moved.clone());
     assert_eq!(values, [None; STAT_LANE_COUNT], "a name read while the lexer moves is never trusted");
     assert!(withheld.iter().all(|(_, reason)| *reason == "lexer changed during lookup"));
 
     let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
-    let world = World { bytes: &bytes, lexer: Some(lexer), moves: true, headers: Cell::new(0) };
+    let world = World { bytes: &bytes, lexer: Some(lexer), moves: moved, headers: Cell::new(0) };
     assert_eq!(walk_stats_carried(&world, 0, &[row, row], &mut rows, &mut (), &mut witness), Outcome::Rows { len: 2 });
     assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
-    assert_eq!(rows[1].values, cached.map(Some), "the next design reads the moved table afresh");
+    assert!(witness.0[..STAT_LANE_COUNT].iter().all(|(_, reason)| *reason == "lexer changed during lookup"), "{:?}", witness.0);
+    assert_eq!(rows[1].values, cached.map(Some), "the next design reads the moved table afresh: {:?}", witness.0);
 
     let (entries_off, module_off, module_stats_off) = (0x1600, 0x1700, 0x1800);
     let module_add = engine_native_parts::cequipment_module::ADD_STATS;
