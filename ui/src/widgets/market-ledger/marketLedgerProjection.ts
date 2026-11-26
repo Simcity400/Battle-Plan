@@ -295,12 +295,12 @@ function buildContractRow(
     if (contract.termsMissing !== null) out.push({ label: 'Terms', value: notRecorded(contract.termsMissing) });
     for (const item of contract.items) {
       const itemLabel = item.name ?? `Design ${item.variant}`;
-      const progress = item.deliveryUnavailable
-        ? item.deliveredRaw !== null ? `At least ${formatUnits(item.deliveredRaw)} units (${item.deliveryUnavailable})` : `Not recorded (${item.deliveryUnavailable})`
-        : item.contractedRaw !== null
+      const progress = item.deliveryUnavailable !== null
+        ? item.deliveredRaw !== null ? partialValue(`${formatUnits(item.deliveredRaw)} units`, item.deliveryUnavailable, { atLeast: true }) : notRecorded(item.deliveryUnavailable)
+        : knownValue(item.contractedRaw !== null
           ? `${formatUnits(item.deliveredRaw ?? '0')} / ${formatUnits(item.contractedRaw)} units`
-          : `${formatUnits(item.deliveredRaw ?? '0')} units`;
-      out.push({ label: itemLabel, value: knownValue(progress) });
+          : `${formatUnits(item.deliveredRaw ?? '0')} units`);
+      out.push({ label: itemLabel, value: progress });
     }
     return out;
   };
