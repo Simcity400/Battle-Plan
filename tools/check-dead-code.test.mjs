@@ -542,6 +542,9 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
     'ui/src/nestedNs.ts': 'export const usedNs = () => 5; export const deadNs = () => 6;',
     'ui/src/typeOnlyNs.ts': 'export const draw = () => 7; export const spare = () => 8;',
     'ui/src/typeOnlyDyn.ts': 'export const sideEffectValue = 9;',
+    'ui/src/typeThenRuntimeHelper.ts': "import './typeThenRuntimeSideEffect.ts'; export const compute = () => 10;",
+    'ui/src/typeThenRuntimeSideEffect.ts': 'console.log("side-effect");',
+    'ui/src/shorthandTypeOnly.ts': 'export const draw = () => 11;',
     'ui/src/main.tsx': `
       import './styles.css';
       import type { SharedType } from './types.ts';
@@ -550,6 +553,8 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       import { deadFromArrow } from './nestedArrowDead.ts';
       import { liveFromNested } from './nestedLive.ts';
       import { deadChildHelper } from './nestedKeepDeadChild.ts';
+      import { compute } from './typeThenRuntimeHelper.ts';
+      import { draw as shorthandDraw } from './shorthandTypeOnly.ts';
       import * as nestedNs from './nestedNs.ts';
       import * as typeOnlyNs from './typeOnlyNs.ts';
       function start() {
@@ -569,6 +574,18 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
         }
         type KeepType = typeof keep;
         const keepRef: KeepType = keep;
+        function runBoth() {
+          function inner() {
+            return compute();
+          }
+          return inner();
+        }
+        type RunBothReturn = ReturnType<typeof runBoth>;
+        const runBothVal: RunBothReturn = runBoth();
+        function describeDirectShorthand() {
+          return { shorthandDraw };
+        }
+        type DescC = ReturnType<typeof describeDirectShorthand>;
         function loadTypeOnly() {
           return typeOnlyNs.draw();
         }
@@ -577,8 +594,8 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
         }
         type LoadedDraw = ReturnType<typeof loadTypeOnly>;
         type LoadedDyn = ReturnType<typeof dynTypeOnly>;
-        const typed: [LoadedDraw | null, LoadedDyn | null] = [null, null];
-        return result + keepRef() + typed.length;
+        const typed: [LoadedDraw | null, LoadedDyn | null, DescC | null] = [null, null, null];
+        return result + keepRef() + runBothVal + typed.length;
       }
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
@@ -595,6 +612,7 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       'ui/src/nestedDead.ts',
       'ui/src/nestedKeepDeadChild.ts',
     ]);
+    assert.equal(result.ui.runtimeLive.has('ui/src/typeThenRuntimeSideEffect.ts'), true);
     assert.equal(result.ui.runtimeLive.has('ui/src/typeOnlyDyn.ts'), false);
     assert.deepEqual(result.exports.unusedExports.map(e => e.key), [
       'ui/src/nestedNs.ts:deadNs',
@@ -616,6 +634,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     'ui/src/nsSameOffset.ts': 'export const draw = () => 15; export const spare = () => 16;',
     'ui/src/nsParenEscape.ts': 'export const a = () => 17; export const b = () => 18;',
     'ui/src/nsDocComment.ts': 'export const draw = () => 19; export const spare = () => 20;',
+    'ui/src/nsPatternDefault.ts': 'export const draw = () => 21; export const spare = () => 22;',
+    'ui/src/nsArgsShorthand.ts': 'export const draw = () => 23; export const spare = () => 24;',
+    'ui/src/nsInnerOwnArgs.ts': 'export const draw = () => 25; export const spare = () => 26;',
     'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
     'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
     'ui/src/aliasedMod.ts': `
@@ -637,6 +658,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsSameOffset from './nsSameOffset.ts';
       import * as nsParenEscape from './nsParenEscape.ts';
       import * as nsDocComment from './nsDocComment.ts';
+      import * as nsPatternDefault from './nsPatternDefault.ts';
+      import * as nsArgsShorthand from './nsArgsShorthand.ts';
+      import * as nsInnerOwnArgs from './nsInnerOwnArgs.ts';
       import { read as readA } from './helperA.ts';
       import { read as readB } from './helperB.ts';
       import { run } from './aliasedMod.ts';
@@ -660,11 +684,24 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function readDefault(m: { draw(): number }, value = m.draw()) {
         return value;
       }
+      function readPatternDefault(m: { draw(): number }, [v = m.draw()]: number[] = []) {
+        return v;
+      }
       function readWithThis(this: unknown, m: { draw(): number }) {
         return m.draw();
       }
       function readArguments(_m: { draw(): number }) {
         return (arguments[0] as { draw(): number }).draw();
+      }
+      function readArgsShorthand(_m: { draw(): number }) {
+        const saved = { arguments };
+        return (saved.arguments[0] as { draw(): number }).draw();
+      }
+      function readWithInnerOwnArgs(m: { draw(): number }) {
+        function inner(_x: number) {
+          return arguments[0] as number;
+        }
+        return inner(m.draw());
       }
       function forwardBoth(m: typeof nsSameOffset) {
         return readA(m) + readB(m);
@@ -679,8 +716,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       console.log(
         loadLazy, worker, used, ref, REQUEST_PATHS,
         forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
-        api.read(nsMethod), readDefault(nsDefaultInit),
-        readWithThis(nsThisParam), readArguments(nsArgsObj), forwardBoth(nsSameOffset),
+        api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
+        readWithThis(nsThisParam), readArguments(nsArgsObj), readArgsShorthand(nsArgsShorthand),
+        readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
         (nsParenEscape), readDoc(nsDocComment), run(),
       );
     `,
@@ -695,6 +733,8 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         'ui/src/nsDefaultInit.ts:spare',
         'ui/src/nsDestructured.ts:spare',
         'ui/src/nsDocComment.ts:spare',
+        'ui/src/nsInnerOwnArgs.ts:spare',
+        'ui/src/nsPatternDefault.ts:spare',
         'ui/src/nsTarget.ts:spare',
         'ui/src/nsThisParam.ts:spare',
       ],

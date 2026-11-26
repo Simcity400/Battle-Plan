@@ -441,13 +441,18 @@ class FamilyKitPatterns(unittest.TestCase):
                 "const c = `${n}%`;\n"
                 "const d = `${\n  Math.round(share * 100)\n}%`;\n"
                 "const e = `hsl(${h} ${s}% ${l}%) (${pct}%)`;\n"
+                "const f = `${Math.round(n)}\n%`;\n"
+                "const g = ok ? left : `${Math.round(n)}%`;\n"
             ),
-            "ui/src/widgets/foo/FooBad.tsx": "export const x = (n: number) => <b>{n}%</b>;\n",
+            "ui/src/widgets/foo/FooBad.tsx": (
+                "export const x = (n: number) => <b>{n}%</b>;\n"
+                "export const y = (label: string, n: number) => <span>{label}: {n}%</span>;\n"
+            ),
         })
         self.assertEqual(code, 1)
         self.assertIn("family-hand-percent", out)
-        self.assertIn("ui/src/widgets/foo/fooProjection.ts: family-hand-percent: 0 at the base, 5 now", out)
-        self.assertIn("ui/src/widgets/foo/FooBad.tsx: family-hand-percent: 0 at the base, 1 now; new at line 1", out)
+        self.assertIn("ui/src/widgets/foo/fooProjection.ts: family-hand-percent: 0 at the base, 7 now", out)
+        self.assertIn("ui/src/widgets/foo/FooBad.tsx: family-hand-percent: 0 at the base, 2 now; new at line 1, 2", out)
         self.assertIn("formatShare", out)
         self.assertIn("formatProgress", out)
         self.assertIn("formatRecordedPercent", out)
@@ -459,7 +464,7 @@ class FamilyKitPatterns(unittest.TestCase):
                 "const width = (value: bigint) => `${Number(value * 100_000n / axis) / 1000}%`;\n"
                 "const color = `hsl(${h} ${s}% ${l}%)`;\n"
                 "const sample = \"n + '%'\";\n"
-                "export const x = (w: number) => <div style={{ width: `${w}%`, left: `${w}%` }}>{width(1n)}{color}{sample}</div>;\n"
+                "export const x = (w: number) => <div style={{ width: (w * 100) + '%', left: `${w}%` }}>{width(1n)}{color}{sample}</div>;\n"
             ),
         })[0], 0)
 
@@ -469,12 +474,16 @@ class FamilyKitPatterns(unittest.TestCase):
                 "const a = `${/}/.test(tag) ? n.toFixed(1) : n}`;\n"
                 "const b = `${/[}]/.test(tag) ? n.toLocaleString('en-US') : n}`;\n"
                 "const c = a! / n.toFixed(1).length / b;\n"
+                "const d = counts.default / n.toFixed(1).length / scale;\n"
             ),
-            "ui/src/widgets/foo/JsxSlash.tsx": "export const x = (n: number) => <b> / {n.toFixed(1)}</b>;\n",
+            "ui/src/widgets/foo/JsxSlash.tsx": (
+                "export const x = (n: number) => <b> / {n.toFixed(1)}</b>;\n"
+                "export const y = (label: string, n: number) => <span>{label} / {n.toFixed(1)} / day</span>;\n"
+            ),
         })
         self.assertEqual(code, 1)
-        self.assertIn("ui/src/widgets/foo/regexTemplate.ts: family-locale-string: 0 at the base, 3 now; new at line 1, 2, 3", out)
-        self.assertIn("ui/src/widgets/foo/JsxSlash.tsx: family-locale-string: 0 at the base, 1 now; new at line 1", out)
+        self.assertIn("ui/src/widgets/foo/regexTemplate.ts: family-locale-string: 0 at the base, 4 now; new at line 1, 2, 3, 4", out)
+        self.assertIn("ui/src/widgets/foo/JsxSlash.tsx: family-locale-string: 0 at the base, 2 now; new at line 1, 2", out)
         self.assertEqual(check({}, {
             "ui/src/widgets/foo/divTemplate.ts": "const s = `${a / b} plain .toFixed(1) ${c / d}`;\n",
         })[0], 0)

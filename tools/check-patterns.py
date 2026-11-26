@@ -73,7 +73,7 @@ TS_REGEX_PRECEDING_KEYWORDS = frozenset({
     "extends", "as", "satisfies",
 })
 CSS_PERCENT_PROP = re.compile(
-    r"""\b(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*:\s*$"""
+    r"""[{,]\s*(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*:\s*$"""
 )
 CSS_PERCENT_BINDING = re.compile(
     r"""\b(?:const|let)\s+(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*=\s*(?:(?:async\s+)?(?:\([^)]*\)\s*(?::[^=]+)?=>|[A-Za-z_$]\w*\s*=>)\s*)?$"""
@@ -84,7 +84,7 @@ CSS_PERCENT_FN_OPEN = re.compile(
 HAND_PERCENT_CONCAT = re.compile(
     r"""[A-Za-z0-9_$)\]]\s*\+\s*['"`]"""
 )
-TEMPLATE_PERCENT_SUFFIX = re.compile(r"""[ \t]*%""")
+TEMPLATE_PERCENT_SUFFIX = re.compile(r"""\s*%""")
 JSX_PERCENT = re.compile(r"""\}[ \t]*%""")
 FAMILY_PRIVATE_ART_CACHE = re.compile(
     rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
@@ -633,6 +633,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
     brace_depth = 0
     plain_start = start
     expect_expr = True
+    after_dot = False
 
     def flush_plain(upto):
         nonlocal plain_start
@@ -649,6 +650,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
             if ch == "{":
                 brace_depth += 1
                 expect_expr = True
+                after_dot = False
                 at += 1
                 continue
             if ch == "}":
@@ -656,7 +658,8 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
                     flush_plain(at)
                     return "".join(out), at
                 brace_depth -= 1
-                expect_expr = True
+                expect_expr = False
+                after_dot = False
                 at += 1
                 continue
         if ch == "/" and at + 1 < end and text[at + 1] == "/":
@@ -808,32 +811,45 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
             cursor = at + 1
             while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", "$")):
                 cursor += 1
-            expect_expr = text[at:cursor] in TS_REGEX_PRECEDING_KEYWORDS
+            expect_expr = (not after_dot) and (text[at:cursor] in TS_REGEX_PRECEDING_KEYWORDS)
+            after_dot = False
             at = cursor
         elif ch.isdigit():
             cursor = at + 1
             while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", ".")):
                 cursor += 1
             expect_expr = False
+            after_dot = False
             at = cursor
-        elif ch in (")", "]", "."):
+        elif ch == ".":
             expect_expr = False
+            after_dot = True
+            at += 1
+        elif ch in (")", "]", "}"):
+            expect_expr = False
+            after_dot = False
             at += 1
         elif ch == "=" and at + 1 < end and text[at + 1] == ">":
             expect_expr = True
+            after_dot = False
             at += 2
         elif ch == ">" and at + 1 < end and text[at + 1] == "=":
             expect_expr = True
+            after_dot = False
             at += 2
         elif ch == ">":
             expect_expr = False
+            after_dot = False
             at += 1
         elif ch == "!" and not (at + 1 < end and text[at + 1] == "="):
+            after_dot = False
             at += 1
         elif ch in ("+", "-") and at + 1 < end and text[at + 1] == ch:
+            after_dot = False
             at += 2
         else:
             expect_expr = True
+            after_dot = False
             at += 1
     flush_plain(end)
     return "".join(out), end
@@ -880,6 +896,24 @@ def _inside_open_css_fn(prefix):
     return False
 
 
+def _expr_prefix(code, pos):
+    depth = 0
+    cursor = pos
+    while cursor >= 0:
+        ch = code[cursor]
+        if ch in (")", "]", "}"):
+            depth += 1
+        elif ch in ("(", "[", "{"):
+            if depth == 0:
+                return code[max(0, cursor - 96):cursor + 1]
+            depth -= 1
+        elif depth == 0 and ch in (":", "=", "?", ",", ";"):
+            end_idx = cursor + 2 if ch == "=" and cursor + 1 < len(code) and code[cursor + 1] == ">" else cursor + 1
+            return code[max(0, cursor - 96):end_idx]
+        cursor -= 1
+    return code[:pos + 1]
+
+
 def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
     lines = []
 
@@ -897,10 +931,8 @@ def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
     for hit in HAND_PERCENT_CONCAT.finditer(code):
         if hit.end() >= len(text) or text[hit.end()] != "%":
             continue
-        line_start = code.rfind("\n", 0, hit.start()) + 1
-        before_expr = code[line_start:hit.start()]
-        stripped = re.sub(r"[A-Za-z0-9_$.()[\]]+\s*$", "", before_expr)
-        if CSS_PERCENT_PROP.search(stripped) or CSS_PERCENT_BINDING.search(stripped):
+        prefix = _expr_prefix(code, hit.start())
+        if CSS_PERCENT_PROP.search(prefix) or CSS_PERCENT_BINDING.search(prefix):
             continue
         lines.append(line_of(text, hit.start()))
     if is_tsx:
@@ -917,7 +949,20 @@ def hand_percent_lines(text, code_with_strings, code, *, is_tsx=False):
                 continue
             open_brace = cursor + 1
             probe = open_brace - 1
-            while probe >= 0 and code[probe] not in "<>;={}":
+            while probe >= 0:
+                ch = code[probe]
+                if ch == "}":
+                    skip = 1
+                    probe -= 1
+                    while probe >= 0 and skip > 0:
+                        if code[probe] == "}":
+                            skip += 1
+                        elif code[probe] == "{":
+                            skip -= 1
+                        probe -= 1
+                    continue
+                if ch in "<>;={":
+                    break
                 probe -= 1
             if probe >= 0 and code[probe] == ">" and not (probe > 0 and code[probe - 1] == "="):
                 lines.append(line_of(text, open_brace))

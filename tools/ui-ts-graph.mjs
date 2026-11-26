@@ -118,6 +118,17 @@ function isDeferredNestedDecl(node, rootNode) {
   return false;
 }
 
+function collectPatternInitializers(pattern, out) {
+  if (!pattern) return;
+  if (pattern.kind === SyntaxKind.ObjectBindingPattern || pattern.kind === SyntaxKind.ArrayBindingPattern) {
+    for (const el of pattern.elements ?? []) {
+      if (!el) continue;
+      if (el.initializer) out.push(el.initializer);
+      collectPatternInitializers(el.name, out);
+    }
+  }
+}
+
 function extractObjectBindingMembers(pattern, checker) {
   const members = new Set();
   for (const el of pattern.elements ?? []) {
@@ -1125,26 +1136,130 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       return parentOfLocal;
     };
 
+    const isOwnArgumentsScope = node => node.kind === SyntaxKind.FunctionDeclaration
+      || node.kind === SyntaxKind.FunctionExpression
+      || node.kind === SyntaxKind.MethodDeclaration
+      || node.kind === SyntaxKind.GetAccessor
+      || node.kind === SyntaxKind.SetAccessor
+      || node.kind === SyntaxKind.Constructor;
+
     const functionUsesArguments = (fn, rootNodes) => {
       if (fn.kind === SyntaxKind.ArrowFunction) return false;
-      const hits = [];
-      collectReachableValueSubtree(rootNodes, (node, parent) => {
-        if (node.kind === SyntaxKind.Identifier && node.text === 'arguments' && !isSkippedIdent(node, parent)) {
-          hits.push(node);
+      const identHits = [];
+      const shorthandHits = [];
+      const parentOfLocal = new Map();
+      const deferredNodes = new Set();
+      const liveDeferred = new Set();
+      const deferredBySymId = new Map();
+      const deferredNames = new Set();
+      const allIdents = [];
+      const allShorthands = [];
+      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null }));
+
+      const walkArgs = (node, parent, rootNode, newlyDeferred) => {
+        if (!node) return;
+        parentOfLocal.set(node, parent);
+        if (TYPE_NODE_KINDS.has(node.kind)) return;
+        if (node !== fn && isOwnArgumentsScope(node)) return;
+        if (isDeferredNestedDecl(node, rootNode)) {
+          if (!deferredNodes.has(node)) {
+            deferredNodes.add(node);
+            deferredNames.add(node.name.text);
+            newlyDeferred.push({ node, parent });
+          }
+          return;
         }
-      });
-      if (hits.length === 0) return false;
-      const syms = checker.getSymbolAtLocation(hits);
-      for (let i = 0; i < hits.length; i += 1) {
-        const sym = syms[i];
-        if (!sym || checker.isUnknownSymbol(sym)) return true;
-        const decls = sym.declarations ?? [];
-        if (decls.length === 0) return true;
-        const isLocalShadow = decls.every(handle => {
-          const d = handle.resolve(project);
-          return d && d.pos >= fn.pos && d.end <= fn.end;
+        if (node.kind === SyntaxKind.ShorthandPropertyAssignment) {
+          allShorthands.push(node);
+          if (node.name?.text === 'arguments') shorthandHits.push(node);
+        } else if (node.kind === SyntaxKind.Identifier && !isSkippedIdent(node, parent)) {
+          allIdents.push(node);
+          if (node.text === 'arguments') identHits.push(node);
+        }
+        node.forEachChild(child => {
+          const childInType = (node.type === child)
+            || (Array.isArray(node.typeArguments) && node.typeArguments.includes(child))
+            || (Array.isArray(node.typeParameters) && node.typeParameters.includes(child));
+          if (!childInType) walkArgs(child, node, rootNode, newlyDeferred);
         });
-        if (!isLocalShadow) return true;
+      };
+
+      let identCursor = 0;
+      let shorthandCursor = 0;
+      const activate = sym => {
+        const targets = deferredBySymId.get(sym.id);
+        if (!targets) return;
+        for (const target of targets) {
+          if (!liveDeferred.has(target.node)) {
+            liveDeferred.add(target.node);
+            pending.push(target);
+          }
+        }
+      };
+
+      while (pending.length > 0) {
+        const newlyDeferred = [];
+        const batch = pending.splice(0, pending.length);
+        for (const item of batch) {
+          walkArgs(item.node, item.parent, item.node, newlyDeferred);
+        }
+        if (newlyDeferred.length > 0) {
+          const declSyms = checker.getSymbolAtLocation(newlyDeferred.map(item => item.node.name));
+          for (let i = 0; i < newlyDeferred.length; i += 1) {
+            const sym = declSyms[i];
+            if (!sym) continue;
+            let list = deferredBySymId.get(sym.id);
+            if (!list) deferredBySymId.set(sym.id, list = []);
+            list.push(newlyDeferred[i]);
+          }
+          identCursor = 0;
+          shorthandCursor = 0;
+        }
+        if (deferredBySymId.size > 0) {
+          const matching = [];
+          for (let i = identCursor; i < allIdents.length; i += 1) {
+            if (deferredNames.has(allIdents[i].text)) matching.push(allIdents[i]);
+          }
+          identCursor = allIdents.length;
+          if (matching.length > 0) {
+            const syms = checker.getSymbolAtLocation(matching);
+            for (const sym of syms) {
+              if (sym) activate(sym);
+            }
+          }
+          for (let i = shorthandCursor; i < allShorthands.length; i += 1) {
+            const sh = allShorthands[i];
+            if (!deferredNames.has(sh.name?.text)) continue;
+            const sym = checker.getShorthandAssignmentValueSymbol(sh);
+            if (sym) activate(sym);
+          }
+          shorthandCursor = allShorthands.length;
+        }
+      }
+
+      const isShadowedArguments = sym => {
+        if (!sym || checker.isUnknownSymbol(sym)) return false;
+        const decls = sym.declarations ?? [];
+        if (decls.length === 0) return false;
+        return decls.every(handle => {
+          const d = handle.resolve(project);
+          if (!d || d.pos < fn.pos || d.end > fn.end) return false;
+          return d.kind === SyntaxKind.Parameter
+            || d.kind === SyntaxKind.VariableDeclaration
+            || d.kind === SyntaxKind.BindingElement
+            || d.kind === SyntaxKind.FunctionDeclaration;
+        });
+      };
+
+      if (identHits.length > 0) {
+        const syms = checker.getSymbolAtLocation(identHits);
+        for (const sym of syms) {
+          if (!isShadowedArguments(sym)) return true;
+        }
+      }
+      for (const sh of shorthandHits) {
+        const sym = checker.getShorthandAssignmentValueSymbol(sh);
+        if (!isShadowedArguments(sym)) return true;
       }
       return false;
     };
@@ -1232,7 +1347,11 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       for (const { declRel, fn } of fns) {
         const rawParams = fn.parameters ?? [];
         const params = rawParams.filter((p, i) => !(i === 0 && p.name?.kind === SyntaxKind.Identifier && p.name.text === 'this'));
-        const rootNodes = [fn.body, ...params.map(p => p.initializer).filter(Boolean)];
+        const rootNodes = [fn.body];
+        for (const p of params) {
+          if (p.initializer) rootNodes.push(p.initializer);
+          collectPatternInitializers(p.name, rootNodes);
+        }
         if (functionUsesArguments(fn, rootNodes)) return null;
         for (let i = 0; i <= argIdx && i < params.length; i += 1) {
           if (params[i]?.dotDotDotToken) return null;
@@ -1295,10 +1414,10 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           return;
         }
 
-        if (node.kind === SyntaxKind.ShorthandPropertyAssignment && !nextInType) {
+        if (node.kind === SyntaxKind.ShorthandPropertyAssignment) {
           allLocalShorthands.push({ node, inType: nextInType });
           if (info.fileScopeNames.has(node.name?.text)) {
-            shorthandCandidates.push(node);
+            shorthandCandidates.push({ node, inType: nextInType });
           }
         }
 
@@ -1363,8 +1482,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const activateDeferred = (sym, refInType) => {
         const targets = deferredBySymId.get(sym.id);
         if (!targets) return;
+        const walkInType = unitIsType || unit.isTypeOnly || refInType;
         for (const target of targets) {
-          const walkInType = target.inType || refInType;
           const liveSet = walkInType ? liveDeferredType : liveDeferredRuntime;
           if (!liveSet.has(target.node)) {
             liveSet.add(target.node);
@@ -1429,10 +1548,10 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         }
       }
 
-      for (const shNode of shorthandCandidates) {
-        const sym = checker.getShorthandAssignmentValueSymbol(shNode);
+      for (const shItem of shorthandCandidates) {
+        const sym = checker.getShorthandAssignmentValueSymbol(shItem.node);
         if (!sym) continue;
-        if (followSymbolReference(rel, sym, unitIsType)) {
+        if (followSymbolReference(rel, sym, unitIsType || shItem.inType)) {
           touchesModule = true;
         }
       }
