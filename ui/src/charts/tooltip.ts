@@ -13,7 +13,7 @@ export interface TooltipRow {
   icon?: string;
   countryFlag?: { nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
   indent?: boolean;
-  tone?: 'positive' | 'negative' | 'neutral' | 'muted';
+  tone?: 'positive' | 'negative' | 'neutral' | 'muted' | 'error';
   divider?: boolean;
   strong?: boolean;
   short?: boolean;

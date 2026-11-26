@@ -214,7 +214,7 @@ export interface TooltipExtraRow {
   readonly divider?: boolean;
   readonly strong?: boolean;
   readonly lookupKey?: string;
-  readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted';
+  readonly tone?: 'positive' | 'negative' | 'neutral' | 'muted' | 'error';
 }
 
 export interface TableRow {
