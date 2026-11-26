@@ -531,9 +531,53 @@ fn sprites_the_state_view_names_from_its_content_load_with_the_windows() {
         )
         .unwrap();
     });
+    assert!(assets.lazy_sprites.contains_key("GFX_bound_law"));
+    assert!(assets.lazy_sprites.contains_key("GFX_bound_modifier"));
+    assert_eq!(assets.portraits.peek("gfx/bound/one.tga"), Lookup::Pending);
     assert!(assets.has_sprite("GFX_bound_law"));
     assert!(assets.has_sprite("GFX_bound_modifier"));
     assert!(!assets.has_sprite("GFX_unbound"));
     assert!(assets.warnings.iter().any(|warning| warning.contains("building special icons")), "{:?}", assets.warnings);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn combat_dynamic_sprites_defer_until_drawn_or_queried_and_keep_alpha_hit_eager() {
+    let (root, assets, _) = synthetic_assets("dynamic_lazy", "", |root| {
+        std::fs::create_dir_all(root.join("gfx/combat")).unwrap();
+        std::fs::write(root.join("gfx/combat/ship.tga"), tga(12, 8)).unwrap();
+        std::fs::write(root.join("gfx/combat/alpha.tga"), tga(6, 6)).unwrap();
+        std::fs::write(
+            root.join("interface/dynamic.gfx"),
+            br#"spriteTypes = {
+                spriteType = { name = "GFX_navalcombat_ship_icon_destroyer" textureFile = "gfx/combat/ship.tga" noOfFrames = 2 }
+                spriteType = { name = "GFX_navalcombat_ship_icon_missing" textureFile = "gfx/combat/missing.tga" noOfFrames = 2 }
+                spriteType = { name = "GFX_terrain_alpha" textureFile = "gfx/combat/alpha.tga" transparencecheck = yes }
+                spriteType = { name = "GFX_mapmode_buttons_default" textureFile = "gfx/combat/ship.tga" }
+            }"#,
+        )
+        .unwrap();
+    });
+    assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_destroyer"));
+    assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_missing"));
+    assert!(!assets.lazy_sprites.contains_key("GFX_terrain_alpha"));
+    assert!(!assets.lazy_sprites.contains_key("GFX_mapmode_buttons_default"));
+    assert_eq!(assets.portraits.peek("gfx/combat/ship.tga"), Lookup::Pending);
+    assert_eq!(assets.portraits.peek("gfx/combat/missing.tga"), Lookup::Pending);
+
+    assert_eq!(assets.sprite_size("GFX_navalcombat_ship_icon_destroyer"), Some([6.0, 8.0]));
+    assert_eq!(assets.sprite_size("GFX_navalcombat_ship_icon_missing"), None);
+    assert!(assets.has_sprite("GFX_navalcombat_ship_icon_destroyer"));
+    assert!(!assets.has_sprite("GFX_navalcombat_ship_icon_missing"));
+    assert_eq!(
+        assets.drawable_sprite(b"GFX_navalcombat_ship_icon_destroyer").map(|info| info.texture),
+        Some([12, 8])
+    );
+    assert!(assets.drawable_sprite(b"GFX_navalcombat_ship_icon_missing").is_none());
+    let sheets = assets.portrait_sheets([b"GFX_navalcombat_ship_icon_destroyer".as_slice()]);
+    assert_eq!(
+        sheets.get(b"GFX_navalcombat_ship_icon_destroyer".as_slice()).map(|sheet| (sheet.size, sheet.frames)),
+        Some(([12, 8], 2))
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

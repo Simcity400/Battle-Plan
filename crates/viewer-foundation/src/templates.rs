@@ -224,11 +224,64 @@ impl TypeAtlas {
             .collect();
         let mut index = BTreeMap::new();
         let mut source_dimensions = BTreeMap::new();
-        let mut decoded: BTreeMap<String, Result<dds::Texture, (&'static str, String)>> =
-            BTreeMap::new();
         let mut rejected: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let recorded = layers.without_overlays();
         let (declared, refused) = Self::declared(sprites);
+        let mut unique_paths = Vec::new();
+        let mut seen_paths = BTreeSet::new();
+        for sprite in &wanted {
+            if matches!(sprite.facts.kind, SpriteKind::Plain(_))
+                && let Some(path) = sprite.texture.as_deref()
+                && seen_paths.insert(path)
+            {
+                unique_paths.push(path);
+            }
+        }
+        let strict = content_reader_layers::content::is_strict();
+        let decoded_list = content_reader_layers::parallel::map(&unique_paths, |&path| {
+            content_reader_layers::content::observe_overlay_refusals_isolated(|| {
+                let load = || {
+                    resources::stack_texture_or_recorded(
+                        layers,
+                        recorded.as_ref(),
+                        path.as_bytes(),
+                        decode,
+                    )
+                    .map_err(|why| ("texture read failed", why.to_string()))
+                    .and_then(|found| {
+                        found.map_err(|why| {
+                            let reason = match why {
+                                resources::NoTexture::Empty => "names no texture",
+                                resources::NoTexture::NoExtension(_) => "texture has no extension",
+                                resources::NoTexture::Missing(_) => "texture is missing",
+                                resources::NoTexture::TooLarge { .. } => "texture is too large",
+                                resources::NoTexture::Undecodable { .. } => "texture is undecodable",
+                                resources::NoTexture::Unsupported { .. } => "texture format is unsupported",
+                                resources::NoTexture::Undefined { .. } => "texture result is undefined",
+                                resources::NoTexture::Device { .. } => "texture needs device state",
+                                resources::NoTexture::OverBudget { .. } => "texture exceeds budget",
+                            };
+                            (reason, why.to_string())
+                        })
+                    })
+                    .and_then(|found| {
+                        rgba8(&found.image)
+                            .map_err(|why| ("texture has no CPU expansion", why.to_string()))
+                    })
+                };
+                if strict {
+                    content_reader_layers::content::strict(load)
+                } else {
+                    load()
+                }
+            })
+        });
+        let mut decoded: BTreeMap<String, Result<dds::Texture, (&'static str, String)>> =
+            BTreeMap::new();
+        for (path, (result, refusals)) in unique_paths.into_iter().zip(decoded_list) {
+            content_reader_layers::content::credit_overlay_refusals(&refusals);
+            decoded.insert(path.to_owned(), result);
+        }
         for sprite in &wanted {
             let SpriteKind::Plain(plain) = &sprite.facts.kind else {
                 rejected
@@ -247,36 +300,7 @@ impl TypeAtlas {
                     .push(sprite.name.clone());
                 continue;
             };
-            let texture = decoded.entry(path.to_owned()).or_insert_with(|| {
-                resources::stack_texture_or_recorded(
-                    layers,
-                    recorded.as_ref(),
-                    path.as_bytes(),
-                    decode,
-                )
-                .map_err(|why| ("texture read failed", why.to_string()))
-                .and_then(|found| {
-                    found.map_err(|why| {
-                        let reason = match why {
-                            resources::NoTexture::Empty => "names no texture",
-                            resources::NoTexture::NoExtension(_) => "texture has no extension",
-                            resources::NoTexture::Missing(_) => "texture is missing",
-                            resources::NoTexture::TooLarge { .. } => "texture is too large",
-                            resources::NoTexture::Undecodable { .. } => "texture is undecodable",
-                            resources::NoTexture::Unsupported { .. } => "texture format is unsupported",
-                            resources::NoTexture::Undefined { .. } => "texture result is undefined",
-                            resources::NoTexture::Device { .. } => "texture needs device state",
-                            resources::NoTexture::OverBudget { .. } => "texture exceeds budget",
-                        };
-                        (reason, why.to_string())
-                    })
-                })
-                .and_then(|found| {
-                    rgba8(&found.image)
-                        .map_err(|why| ("texture has no CPU expansion", why.to_string()))
-                })
-            });
-            let texture = match texture {
+            let texture = match &decoded[path] {
                 Ok(texture) => texture,
                 Err((reason, why)) => {
                     rejected
@@ -790,5 +814,59 @@ mod tests {
         assert!(TypeAtlas::wanted("GFX_div_templ_32767_small"));
         assert!(!TypeAtlas::wanted("GFX_div_templ_0001_small"));
         assert!(!TypeAtlas::wanted("GFX_div_templ_32768_small"));
+    }
+
+    #[test]
+    fn parallel_type_atlas_load_packs_shared_and_distinct_textures_deterministically() {
+        content_reader_script::test_game::enter();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_type_atlas_parallel_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        let mut declarations = Vec::new();
+        for i in 0..16u8 {
+            let mut bytes = test_tga_rgba8(8, 4);
+            for pixel in bytes[18..].chunks_exact_mut(4) {
+                pixel.copy_from_slice(&[i * 15, 255 - i * 15, i * 7, 255]);
+            }
+            std::fs::write(root.join(format!("gfx/icon_{i}.tga")), bytes).unwrap();
+            declarations.push(format!(
+                "spriteType={{name=GFX_div_templ_{i}_small texturefile=gfx/icon_{i}.tga}}"
+            ));
+        }
+        declarations.push(
+            "spriteType={name=GFX_div_templ_16_small texturefile=gfx/icon_0.tga}".to_owned(),
+        );
+        declarations.push(
+            "spriteType={name=GFX_div_templ_17_small texturefile=gfx/missing.tga}".to_owned(),
+        );
+        let sprites = SpriteSet::new(&[(
+            "interface/test.gfx".into(),
+            content_reader_gui::gui::native::sprites::read_sprites(
+                format!("spriteTypes={{{}}}", declarations.join("\n")).as_bytes(),
+            ),
+        )]);
+        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let mut images_a = Vec::new();
+        let (atlas_a, warnings_a) =
+            TypeAtlas::load(&layers, &sprites, Decode::default(), &mut images_a).unwrap();
+        let mut images_b = Vec::new();
+        let (atlas_b, warnings_b) =
+            TypeAtlas::load(&layers, &sprites, Decode::default(), &mut images_b).unwrap();
+        assert_eq!(atlas_a.size, atlas_b.size);
+        assert_eq!(atlas_a.cells, atlas_b.cells);
+        assert_eq!(atlas_a.index, atlas_b.index);
+        assert_eq!(
+            images_a[atlas_a.texture].base().data,
+            images_b[atlas_b.texture].base().data
+        );
+        assert_eq!(warnings_a, warnings_b);
+        assert_eq!(warnings_a.len(), 1, "{warnings_a:?}");
+        assert!(warnings_a[0].contains("GFX_div_templ_17_small"), "{warnings_a:?}");
+        assert_eq!(atlas_a.len(), 17);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

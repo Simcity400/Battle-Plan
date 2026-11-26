@@ -185,7 +185,8 @@ impl GuiResources {
         let Declared::Plain(plain) = &facts.kind else {
             return Err(format!("lazy sprite {} is not plain", lossy(name)));
         };
-        if !plain.masking_texture.is_empty()
+        if plain.transparence_check
+            || !plain.masking_texture.is_empty()
             || (!plain.legacy_lazy_load && !plain.animations.is_empty())
             || !facts.refusals.is_empty()
         {

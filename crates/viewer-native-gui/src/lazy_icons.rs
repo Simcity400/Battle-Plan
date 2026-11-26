@@ -582,6 +582,28 @@ impl LazyImages {
         }
     }
 
+    pub fn acquire(&self, path: &str) -> Lookup {
+        let frame = self.textures.frame();
+        {
+            let mut state = lock(&self.state);
+            match state.slots.get_mut(path) {
+                Some(ImageSlot::Loaded { id, size, used }) => {
+                    *used = frame;
+                    return Lookup::Loaded {
+                        texture: *id,
+                        size: *size,
+                    };
+                }
+                Some(ImageSlot::Failed) => return Lookup::Failed,
+                None => {
+                    state.pending.insert(path.to_owned());
+                }
+            }
+        }
+        self.load_pending();
+        self.peek(path)
+    }
+
     pub fn path_of(&self, texture: usize) -> Option<String> {
         lock(&self.state)
             .slots
@@ -1067,6 +1089,31 @@ mod tests {
         let second = loaded(&images, "b");
         assert_ne!(first, second);
         assert!(textures.snapshot().iter().all(|(id, _)| *id != first));
+    }
+
+    #[test]
+    fn acquire_decodes_immediately_and_caches_loaded_and_failed_images() {
+        let textures = foreground();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::clone(&reads);
+        let read: ImageReader = Arc::new(move |path: &str| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            if path.ends_with("broken.dds") {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "broken"));
+            }
+            Ok(dds::Texture::from_rgba8(Rgba8Image {
+                width: 6,
+                height: 4,
+                pixels: vec![1; 6 * 4 * 4],
+            }))
+        });
+        let images = LazyImages::new("test sprite", read, &textures);
+        let first = images.acquire("gfx/good.dds");
+        assert!(matches!(first, Lookup::Loaded { size: [6, 4], .. }));
+        assert_eq!(images.acquire("gfx/good.dds"), first);
+        assert_eq!(images.acquire("gfx/broken.dds"), Lookup::Failed);
+        assert_eq!(images.acquire("gfx/broken.dds"), Lookup::Failed);
+        assert_eq!(reads.load(Ordering::Relaxed), 2);
     }
 
     fn tga(cell: [u32; 2], shade: u8) -> Vec<u8> {
