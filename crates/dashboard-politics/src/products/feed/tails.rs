@@ -574,7 +574,7 @@ fn chosen_names(item: &mut super::EventFeedItem, chosen: Option<i32>) {
     }
 }
 
-fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
+pub(super) fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
     for row in rows.iter_mut().flatten() {
         if let Some(cause) = row.cause.as_mut() {
             cause.notes.clear();
@@ -584,8 +584,11 @@ fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
         }) {
             row.cause = None;
         }
-        if !description && let Some(item) = row.item.as_mut() {
-            item.description = None;
+        if let Some(item) = row.item.as_mut() {
+            item.gaps = None;
+            if !description {
+                item.description = None;
+            }
         }
         if !window {
             row.window = None;

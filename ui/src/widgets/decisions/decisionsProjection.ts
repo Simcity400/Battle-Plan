@@ -23,7 +23,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
-import { descriptionRows, hoverTextOf, type HoverText } from '../event-feed/hoverText.ts';
+import { descriptionRows, gapRows, hoverTextOf, type HoverText } from '../event-feed/hoverText.ts';
 import { plainScripted, reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import type { DecisionDetailSubject } from './DecisionDetailWindow.tsx';
@@ -244,7 +244,7 @@ function buildDecisionRow(
     if (at.failureMissing) out.push({ label: 'Mission failure state', value: notRecorded(at.failureMissing) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
-    if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
+    out.push(...gapRows(hover, card.occurrence.id));
     out.push(...descriptionRows(hover, card.occurrence.id, card.item?.description));
     return out;
   };

@@ -5,7 +5,8 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import LogKindFilter, { type LogKindFilterItem } from '../../families/table/LogKindFilter.tsx';
 import { EVENT_KINDS } from './definition.ts';
 import EventDetailWindow, { type EventDetailSubject } from './EventDetailWindow.tsx';
-import { useEventDetail } from './eventDetail.ts';
+import { useEventDetail, useHoverText } from './eventDetail.ts';
+import { withHoverText } from '../event-feed/hoverText.ts';
 
 function EventChoicesView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
@@ -14,6 +15,8 @@ function EventChoicesView(props: FamilyViewProps) {
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-choices-tail', shown, shown !== null);
+  const hover = useHoverText(props.runtime, props.widget.trackIds[0], 'event-choices-tail', props.widget.time.mode === 'follow', props.active);
+  const options = useMemo(() => withHoverText(props.options, hover.text), [props.options, hover.text]);
 
   const filterItems = useMemo<LogKindFilterItem[]>(() => EVENT_KINDS.map(kind => ({
     value: kind.value,
@@ -50,6 +53,8 @@ function EventChoicesView(props: FamilyViewProps) {
       />
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
+        options={options}
+        onHoverRow={hover.onHoverRow}
         family={props.manifestDeclaration.family} declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}

@@ -46,6 +46,7 @@ export interface DecisionDetailWindowProps {
 
 export default function DecisionDetailWindow({ subject, detail, anchor, onClose }: DecisionDetailWindowProps) {
   const description = detail?.item?.description ?? subject?.description ?? null;
+  const gaps = detail?.item?.gaps ?? subject?.gaps ?? null;
   const titleText = subject?.name ? plainScripted(subject.name) : 'Decision name not recorded';
 
   return (
@@ -139,10 +140,10 @@ export default function DecisionDetailWindow({ subject, detail, anchor, onClose 
                 <dd className="dcd-missing">{subject.nameMissing}</dd>
               </>
             ) : null}
-            {subject.gaps ? (
+            {gaps ? (
               <>
                 <dt>Text not recorded</dt>
-                <dd className="dcd-missing">{subject.gaps}</dd>
+                <dd className="dcd-missing">{gaps}</dd>
               </>
             ) : null}
           </dl>

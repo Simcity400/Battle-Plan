@@ -7,6 +7,7 @@ import { plainScripted } from './scriptedGaps.ts';
 export interface HoverText {
   readonly key: string;
   readonly description: string | null;
+  readonly gaps: string | null;
   readonly missing: string | null;
   readonly effectsMissing: readonly string[];
 }
@@ -19,6 +20,7 @@ export function withHoverText(options: ResolvedViewOptions, text: HoverText | nu
     ...options,
     hoverRow: text.key,
     hoverDescription: text.description,
+    hoverGaps: text.gaps,
     hoverMissing: text.missing,
     hoverEffectsMissing: text.effectsMissing.length ? text.effectsMissing.join(SEPARATOR) : null,
   };
@@ -29,7 +31,7 @@ export function hoverTextOf(options: Readonly<Record<string, OptionValue>>): Hov
   const key = text(options.hoverRow);
   if (key === null) return null;
   const effects = text(options.hoverEffectsMissing);
-  return { key, description: text(options.hoverDescription), missing: text(options.hoverMissing), effectsMissing: effects ? effects.split(SEPARATOR) : [] };
+  return { key, description: text(options.hoverDescription), gaps: text(options.hoverGaps), missing: text(options.hoverMissing), effectsMissing: effects ? effects.split(SEPARATOR) : [] };
 }
 
 export function descriptionRows(hover: HoverText | null, key: string, listed: string | null | undefined): TooltipExtraRow[] {
@@ -40,4 +42,9 @@ export function descriptionRows(hover: HoverText | null, key: string, listed: st
   if (read?.missing) out.push({ label: description ? 'Full description' : 'Description', value: notRecorded(read.missing), ...(description ? {} : { divider: true }) });
   for (const reason of read?.effectsMissing ?? []) out.push({ label: 'Authored effects', value: notRecorded(reason) });
   return out;
+}
+
+export function gapRows(hover: HoverText | null, key: string): TooltipExtraRow[] {
+  const gaps = hover?.key === key ? hover.gaps : null;
+  return gaps ? [{ label: 'Text not recorded', value: notRecorded(gaps) }] : [];
 }

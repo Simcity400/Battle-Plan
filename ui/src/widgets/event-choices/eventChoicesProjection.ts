@@ -21,6 +21,7 @@ import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
+import { gapRows, hoverTextOf, type HoverText } from '../event-feed/hoverText.ts';
 import { reasonsOf } from '../event-feed/scriptedGaps.ts';
 import { daysBetween, recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
 import {
@@ -42,6 +43,7 @@ export interface EventChoicesProjectionOptions {
   readonly awaiting: boolean;
   readonly artwork: boolean;
   readonly breaks: readonly RecordingBreak[];
+  readonly hover?: HoverText | null;
 }
 
 const HEAD_LIMIT = 256;
@@ -59,6 +61,7 @@ function buildChoiceRow(
   page: ChoicePageInfo,
   artwork: boolean,
   boundary: ReturnType<typeof newIdentityBoundary>,
+  hover: HoverText | null,
 ): TableRow {
   const { card } = at;
   const firstRow = card.first.row;
@@ -130,7 +133,7 @@ function buildChoiceRow(
     if (at.choice) out.push({ label: 'Chosen', value: knownValue(formatDateTime(at.choice.row.hour)) });
     if (card.item?.token) out.push({ label: 'Content identity', value: knownValue(card.item.token) });
     if (reasons.nameMissing) out.push({ label: 'Title not recorded', value: notRecorded(reasons.nameMissing) });
-    if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
+    out.push(...gapRows(hover, card.occurrence.id));
     return out;
   };
 
@@ -222,7 +225,7 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
           const nextDay = startHour + (elapsed + 1) * 24;
           if (nextDay > readAt && nextDay < nextAwaitingChange) nextAwaitingChange = nextDay;
         }
-        return buildChoiceRow(readView, resolved, page, options.artwork, boundary);
+        return buildChoiceRow(readView, resolved, page, options.artwork, boundary, options.hover ?? null);
       },
     );
 
@@ -305,6 +308,6 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
   projection: eventChoicesProjection,
   projectionOptions(ctx): EventChoicesProjectionOptions {
     const events = EVENT_KINDS.filter(kind => ctx.options[kind.value] !== false).map(kind => kind.event);
-    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch) };
+    return { events, awaiting: ctx.options[AWAITING.value] === true, artwork: ctx.options.artwork !== false, breaks: recordingBreaks(ctx.branch), hover: hoverTextOf(ctx.options) };
   },
 };

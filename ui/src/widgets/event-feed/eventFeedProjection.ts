@@ -25,7 +25,7 @@ import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
 import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
-import { descriptionRows, hoverTextOf, type HoverText } from './hoverText.ts';
+import { descriptionRows, gapRows, hoverTextOf, type HoverText } from './hoverText.ts';
 import { plainScripted, reasonsOf } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
@@ -422,7 +422,7 @@ function buildFeedTableRow(
     }
     if (item?.token) out.push({ label: 'Content identity', value: knownValue(item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
-    if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
+    out.push(...gapRows(hover, key));
     out.push(...descriptionRows(hover, key, item?.description));
     if (item?.options?.length) {
       item.options.forEach((opt, i) => {

@@ -333,16 +333,19 @@ test('a decision tooltip shows its listed description until the hovered row is r
     const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [], hover: hoverTextOf(withHoverText({}, hover)) });
     const extra = model.rows.find(row => row.key === occ.id)?.tooltipExtra;
     const shown = (typeof extra === 'function' ? extra() : extra) ?? [];
-    return shown.filter(row => ['Description', 'Full description', 'Authored effects'].includes(row.label))
+    return shown.filter(row => ['Description', 'Full description', 'Authored effects', 'Text not recorded'].includes(row.label))
       .map(row => [row.label, row.value.kind === 'known' ? row.value.value : row.value.kind === 'notRecorded' ? `not recorded: ${row.value.reason}` : row.value.kind]);
   };
-  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', missing: null, effectsMissing: [] };
+  const read = { key: occ.id, description: 'Raise war bonds. Effects: +5% war support', gaps: null, missing: null, effectsMissing: [] };
   assert.deepEqual(tip(null), [['Description', 'Raise war bonds.']], 'before the read answers, the listed description');
   assert.deepEqual(tip(read), [['Description', 'Raise war bonds. Effects: +5% war support']], 'the read row brings the full text');
   assert.deepEqual(tip({ ...read, key: other.id }), [['Description', 'Raise war bonds.']], 'a read of another row changes nothing here');
   assert.deepEqual(tip({ ...read, description: null, missing: 'This event is not in the log at the hour it was read' }), [
     ['Description', 'Raise war bonds.'], ['Full description', 'not recorded: This event is not in the log at the hour it was read'],
   ]);
+  assert.deepEqual(tip({ ...read, gaps: 'GER_war_bonds.d shows its scripted text elided' }), [
+    ['Text not recorded', 'not recorded: GER_war_bonds.d shows its scripted text elided'], ['Description', 'Raise war bonds. Effects: +5% war support'],
+  ], 'the text the read row could not expand is named once its row is read');
   assert.deepEqual(tip({ ...read, effectsMissing: ['GER_war_bonds complete_effect: inputs not recorded'] }), [
     ['Description', 'Raise war bonds. Effects: +5% war support'], ['Authored effects', 'not recorded: GER_war_bonds complete_effect: inputs not recorded'],
   ]);

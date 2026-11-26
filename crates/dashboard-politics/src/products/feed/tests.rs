@@ -1109,3 +1109,33 @@ fn notices_kept_with_each_presented_event_add_up_to_the_notices_said_at_once() {
     }
     assert_eq!(kept.into_list(), direct.into_list(), "a reply built from kept rows says what presenting them again would");
 }
+
+#[test]
+fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_row() {
+    let row = super::EventFeedRow {
+        id: "native:1:9".into(),
+        hour: 100,
+        read_hour: 100,
+        name_hour: 100,
+        exact: true,
+        category: super::EventFeedCategory::Politics,
+        kind: EventFeedKind::DecisionActivated,
+        tags: Vec::new(),
+        participants: None,
+        item: Some(super::EventFeedItem { name: Some("Raise war bonds".into()), description: Some("Bonds.".into()), gaps: Some("GER_war_bonds.d shows its scripted text elided".into()), ..Default::default() }),
+        amount: None,
+        cause: None,
+        strike: None,
+        decision_state: Some(super::decision_state::DecisionLifecycleState::NotApplicable { reason: super::decision_state::DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        window: None,
+    };
+    let mut decisions = vec![Some(row.clone())];
+    super::tails::listed(&mut decisions, true, true);
+    let listed = decisions[0].as_ref().unwrap();
+    let item = listed.item.as_ref().unwrap();
+    assert_eq!((item.gaps.as_deref(), item.description.as_deref(), item.name.as_deref()), (None, Some("Bonds."), Some("Raise war bonds")), "the list keeps what it shows and leaves the elision reasons to the opened row");
+    assert_eq!(listed.decision_state, None, "a state no list shows is left to the opened row");
+    let mut feed = vec![Some(row)];
+    super::tails::listed(&mut feed, false, false);
+    assert_eq!(feed[0].as_ref().unwrap().item.as_ref().unwrap().description, None);
+}
