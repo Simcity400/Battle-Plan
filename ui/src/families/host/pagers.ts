@@ -1,13 +1,12 @@
-import type { SourceEntry } from '../contract.ts';
+import type { SourceEntry, SourcePlan } from '../contract.ts';
 import type { FamilyRowWindow } from './adapter.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagerStep, type SnapshotPages } from '../table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagerStep } from '../table/rowSource.ts';
 
 export type PagedEntry = SourceEntry & { readonly read: Extract<SourceEntry['read'], { shape: 'paged-rows' }> };
 
 interface Frozen {
   readonly identity: string;
   readonly hour: number;
-  readonly pager: SnapshotPager;
 }
 
 export interface PagerSet {
@@ -15,26 +14,29 @@ export interface PagerSet {
   readonly pagers: Map<string, SnapshotPager>;
   readonly identities: Map<string, string>;
   readonly frozen: Map<string, Frozen>;
-  readonly shown: Map<string, SnapshotPager>;
 }
 
 export function emptyPagers(sig: string): PagerSet {
-  return { sig, pagers: new Map(), identities: new Map(), frozen: new Map(), shown: new Map() };
+  return { sig, pagers: new Map(), identities: new Map(), frozen: new Map() };
 }
 
-function identityOf(entry: PagedEntry): string {
+export function pagedEntries(plan: SourcePlan | null): PagedEntry[] {
+  return (plan?.entries ?? []).filter((entry): entry is PagedEntry => entry.read.shape === 'paged-rows');
+}
+
+function identityOf(entry: PagedEntry, sig: string): string {
   const query = entry.read.tailQuery;
-  return JSON.stringify([entry.name, entry.source.id, entry.source.revision, entry.branch, query.product, query.log ?? null, query.from, query.limit]);
+  const range = sig.includes('|range:') ? sig.slice(sig.lastIndexOf('|range:')) : '';
+  return JSON.stringify([entry.name, entry.source.id, entry.source.revision, entry.branch, query.product, query.log ?? null, query.from, query.limit, range]);
 }
 
-export function replacePagers(previous: PagerSet, sig: string): PagerSet {
+export function replacePagers(previous: PagerSet, sig: string, entries: readonly PagedEntry[]): PagerSet {
   const next = emptyPagers(sig);
-  for (const [name, frozen] of previous.frozen) {
-    if (!previous.pagers.has(name)) next.frozen.set(name, frozen);
-  }
-  for (const [name, pager] of previous.pagers) {
-    const identity = previous.identities.get(name);
-    if (identity !== undefined && pager.hour !== null) next.frozen.set(name, { identity, hour: pager.hour, pager });
+  for (const entry of entries) {
+    const pager = previous.pagers.get(entry.name);
+    const identity = previous.identities.get(entry.name);
+    const carried = pager && pager.hour !== null && identity !== undefined ? { identity, hour: pager.hour } : previous.frozen.get(entry.name);
+    if (carried && carried.identity === identityOf(entry, sig)) next.frozen.set(entry.name, carried);
   }
   return next;
 }
@@ -46,30 +48,15 @@ function atHead(window: FamilyRowWindow, limit: number): boolean {
 }
 
 export function pagerWindow(held: PagerSet, entry: PagedEntry, window: FamilyRowWindow, installedHour: number | null): { readonly pager: SnapshotPager; readonly step: PagerStep } {
-  const identity = identityOf(entry);
   let pager = held.pagers.get(entry.name);
   if (!pager) {
     pager = new SnapshotPager(entry.read.tailQuery.limit, entry.read.pageSize ?? DEFAULT_TAIL_PAGE_SIZE);
     held.pagers.set(entry.name, pager);
-    held.identities.set(entry.name, identity);
+    held.identities.set(entry.name, identityOf(entry, held.sig));
   }
   const frozen = held.frozen.get(entry.name);
-  const inherited = frozen && frozen.identity === identity ? frozen : null;
-  const hour = inherited && installedHour !== null && Number.isFinite(installedHour) ? Math.min(inherited.hour, installedHour) : installedHour;
+  const hour = frozen && installedHour !== null && Number.isFinite(installedHour) ? Math.min(frozen.hour, installedHour) : installedHour;
   const step = pager.window(window, hour);
-  if (frozen && (!inherited || pager.hour !== null || atHead(window, entry.read.tailQuery.limit))) held.frozen.delete(entry.name);
-  if (inherited && pager.hour === inherited.hour) held.shown.set(entry.name, inherited.pager);
+  if (frozen && (pager.hour !== null || atHead(window, entry.read.tailQuery.limit))) held.frozen.delete(entry.name);
   return { pager, step };
-}
-
-export function pagesOf(held: PagerSet, name: string): SnapshotPages | undefined {
-  const pager = held.pagers.get(name);
-  if (!pager) return undefined;
-  const shown = held.shown.get(name);
-  if (!shown) return pager.pages();
-  if (pager.shownHour !== null || pager.hour === null) {
-    held.shown.delete(name);
-    return pager.pages();
-  }
-  return shown.pages();
 }

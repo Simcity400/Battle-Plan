@@ -1,4 +1,4 @@
-import { emptyPagers, pagerWindow, pagesOf, replacePagers, type PagerSet } from './pagers.ts';
+import { emptyPagers, pagedEntries, pagerWindow, replacePagers, type PagerSet } from './pagers.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
 import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
@@ -746,8 +746,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     setPagedRowsState(prev => {
       const map: Record<string, PagedRows[string]> = {};
       let changed = prev.sig !== forSig;
-      for (const name of held.pagers.keys()) {
-        map[name] = pagesOf(held, name)!;
+      for (const [name, pager] of held.pagers) {
+        map[name] = pager.pages();
         if (prev.map[name] !== map[name]) changed = true;
       }
       return changed ? { sig: forSig, map } : prev;
@@ -758,7 +758,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (pagersRef.current.sig === sig) return;
     pageBrokerRef.current?.dispose();
     pageBrokerRef.current = null;
-    pagersRef.current = replacePagers(pagersRef.current, sig);
+    pagersRef.current = replacePagers(pagersRef.current, sig, pagedEntries(pagedPlanRef.current.plan));
     setPagedRowsState({ sig, map: {} });
   }, [sig]);
 
@@ -777,7 +777,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     if (pagersRef.current.sig !== curSig) {
       pageBrokerRef.current?.dispose();
       pageBrokerRef.current = null;
-      pagersRef.current = replacePagers(pagersRef.current, curSig);
+      pagersRef.current = replacePagers(pagersRef.current, curSig, pagedEntries);
     }
     if (!pageBrokerRef.current) pageBrokerRef.current = new FamilySourceBroker();
     const pageBroker = pageBrokerRef.current;

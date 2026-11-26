@@ -42,7 +42,7 @@ import {
 } from './keyboard.ts';
 import { keepEqual } from './stableValue.ts';
 import { rowHoverPublisher } from './hoverRow.ts';
-import { emptyPagers, pagerWindow, pagesOf, replacePagers, type PagedEntry } from './pagers.ts';
+import { emptyPagers, pagerWindow, replacePagers, type PagedEntry } from './pagers.ts';
 import { mirrorToSync, optionElementId, reconcileFocusedKey, syncListboxMirror, syncTableMirror } from './mirror.ts';
 import { bindFamilyPointer, CLICK_CANCEL_PX, parseDefaultRowHit } from './pointer.ts';
 import { computeScrollGeometry, logicalToPhysicalTop, physicalToLogicalTop } from './scroll.ts';
@@ -2023,36 +2023,31 @@ test('a focused row is the subject the installed picture holds for it, a grid ce
 
 test('a scrolled log keeps its frozen hour when its plan changes, as expanding a row in peace deals, the division log or the market ledger does', () => {
   const source = { id: 'log-src', revision: 'r1', path: 'p', metadata: { branches: [{ id: '1', firstHour: 0, lastHour: 5000 }] } } as unknown as DashboardSource;
-  const paged = (branch = '1', from: number | null = null) => pagedTailEntry('main', source, branch, 0, { product: 'market-ledger-tail', branchId: branch, facets: [], from: from as never, limit: 64 }, true) as PagedEntry;
+  const paged = (branch = '1', from: number | null = null, ask: Record<string, unknown> = {}) => pagedTailEntry('main', source, branch, 0, { product: 'market-ledger-tail', branchId: branch, facets: [], from: from as never, limit: 64, ask }, true) as PagedEntry;
   const scrolled = { first: 200, count: 20, dataFirst: 200, dataCount: 20 };
   const head = { first: 0, count: 20, dataFirst: 0, dataCount: 20 };
+  const gaps = { first: 200, count: 1, dataFirst: 200, dataCount: 0 };
   const hours = (step: { readonly fetch: readonly { readonly hour: number }[] }) => [...new Set(step.fetch.map(ask => ask.hour))];
-  const frozenAt100 = () => {
-    const held = emptyPagers('closed');
+  const frozenAt100 = (sig = 'closed') => {
+    const held = emptyPagers(sig);
     assert.deepEqual(hours(pagerWindow(held, paged(), scrolled, 100).step), [100]);
     return held;
   };
-  const opened = replacePagers(frozenAt100(), 'opened');
-  assert.deepEqual(hours(pagerWindow(opened, paged(), scrolled, 124).step), [100], 'the new plan asks the frozen hour, not the displayed 124');
-  const answered = emptyPagers('closed');
-  const before = pagerWindow(answered, paged(), scrolled, 100);
-  for (const ask of before.step.fetch) before.pager.answer(ask, { rows: [], total: 0 } as never, {});
-  const snapshot = pagesOf(answered, 'main');
-  const reopening = replacePagers(answered, 'opened');
-  const after = pagerWindow(reopening, paged(), scrolled, 124);
-  assert.equal(pagesOf(reopening, 'main'), snapshot, 'until the new plan answers, the frozen snapshot stays shown, never the live head');
-  for (const ask of after.step.fetch) after.pager.answer(ask, { rows: [], total: 0 } as never, {});
-  assert.equal(pagesOf(reopening, 'main'), after.pager.pages(), 'its answer then replaces the snapshot');
-  assert.deepEqual(hours(pagerWindow(replacePagers(frozenAt100(), 'back'), paged(), scrolled, 90).step), [90], 'a seek back before the frozen hour reads the displayed hour');
-  assert.deepEqual(hours(pagerWindow(replacePagers(frozenAt100(), 'range'), paged('1', 110), scrolled, 124).step), [124], 'a new time range starts fresh');
-  const elsewhere = replacePagers(frozenAt100(), 'branch b');
-  pagerWindow(elsewhere, paged('2'), head, 130);
-  pagerWindow(elsewhere, paged('2'), scrolled, 140);
-  assert.deepEqual(hours(pagerWindow(replacePagers(replacePagers(elsewhere, 'branch b2'), 'branch a'), paged(), scrolled, 160).step), [160], 'an abandoned snapshot of another branch is not revived');
-  const gapFirst = replacePagers(frozenAt100(), 'gap');
-  assert.deepEqual(pagerWindow(gapFirst, paged(), { first: 200, count: 1, dataFirst: 200, dataCount: 0 }, 124).step.fetch, []);
-  assert.deepEqual(hours(pagerWindow(gapFirst, paged(), scrolled, 124).step), [100], 'a window of gaps only keeps the frozen hour for the next window with data');
-  const homed = replacePagers(frozenAt100(), 'home');
-  pagerWindow(homed, paged(), head, 124);
-  assert.deepEqual(hours(pagerWindow(homed, paged(), scrolled, 130).step), [130], 'returning to the head drops the frozen hour');
+  const expanded = paged('1', null, { expanded: ['group:7'] });
+  assert.deepEqual(hours(pagerWindow(replacePagers(frozenAt100(), 'opened', [expanded]), expanded, scrolled, 124).step), [100], 'the new plan asks the frozen hour, not the displayed 124');
+  assert.deepEqual(hours(pagerWindow(replacePagers(frozenAt100(), 'back', [expanded]), expanded, scrolled, 90).step), [90], 'a seek back before the frozen hour reads the displayed hour');
+  assert.deepEqual(hours(pagerWindow(replacePagers(frozenAt100(), 'range', [paged('1', 110)]), paged('1', 110), scrolled, 124).step), [124], 'a new range start starts fresh');
+  const ranged = frozenAt100('plan|range:0:100');
+  assert.deepEqual(hours(pagerWindow(replacePagers(ranged, 'plan|range:0:124', [expanded]), expanded, scrolled, 124).step), [124], 'a new range end starts fresh');
+  const twice = replacePagers(replacePagers(frozenAt100(), 'opened', [expanded]), 'closed again', [paged()]);
+  assert.deepEqual(hours(pagerWindow(twice, paged(), scrolled, 124).step), [100], 'a second plan change before the first answers keeps the frozen hour');
+  const gapFirst = replacePagers(frozenAt100(), 'gap', [expanded]);
+  assert.deepEqual(pagerWindow(gapFirst, expanded, gaps, 124).step.fetch, []);
+  const gapThenChange = replacePagers(gapFirst, 'gap closed', [paged()]);
+  assert.deepEqual(hours(pagerWindow(gapThenChange, paged(), scrolled, 124).step), [100], 'a window of gaps only, then another plan change, keeps the frozen hour');
+  const unseen = replacePagers(replacePagers(frozenAt100(), 'branch b', [paged('2')]), 'branch a', [paged()]);
+  assert.deepEqual(hours(pagerWindow(unseen, paged(), scrolled, 124).step), [124], 'a branch switch drops the frozen hour even when the other branch never reported a window');
+  const homed = replacePagers(frozenAt100(), 'home', [expanded]);
+  pagerWindow(homed, expanded, head, 124);
+  assert.deepEqual(hours(pagerWindow(homed, expanded, scrolled, 130).step), [130], 'returning to the head drops the frozen hour');
 });
