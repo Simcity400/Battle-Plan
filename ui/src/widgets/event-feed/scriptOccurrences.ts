@@ -6,8 +6,8 @@ import type { EventFeedItem, EventFeedKind, ScriptEdge, ScriptOccurrence } from 
 
 const CURRENCIES = new Set(['politicalPower', 'commandPower']);
 const RAW = /^-?\d+$/;
-const optional = (value: unknown): value is number | null => value === null || int(value);
-const costs = (value: unknown): boolean => value === null || (Array.isArray(value)
+const optional = (value: unknown): value is number | null | undefined => value == null || int(value);
+const costs = (value: unknown): boolean => value == null || (Array.isArray(value)
   && value.every(cost => object(cost) && typeof cost.currency === 'string' && CURRENCIES.has(cost.currency) && typeof cost.amount === 'string' && RAW.test(cost.amount)));
 
 export function validateOccurrence(value: unknown): ScriptOccurrence {

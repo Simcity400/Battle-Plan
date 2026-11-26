@@ -62,12 +62,20 @@ pub struct ScriptCost {
 pub struct ScriptEdge {
     pub row: EventFeedRow,
     #[doc = " The executed option's signed native ordinal."]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub option: Option<i32>,
     #[doc = " The writer's lifecycle result, where its boundary supplies one."]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub lifecycle: Option<i32>,
     #[doc = " The writer's duration result in days."]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub days: Option<i32>,
-    #[doc = " The power the execution was proven to charge; null when not proven."]
+    #[doc = " The power the execution was proven to charge; absent when not proven."]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub costs: Option<Vec<ScriptCost>>,
 }
 

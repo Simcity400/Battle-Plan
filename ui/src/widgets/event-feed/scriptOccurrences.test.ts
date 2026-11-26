@@ -14,6 +14,10 @@ test('an occurrence validates every edge as a checked feed row with its operands
   assert.throws(() => validateOccurrence({ ...occurrence, edges: [] }), /malformed/);
   assert.throws(() => validateOccurrence({ ...occurrence,
     edges: [edge('decisionSelected', 5, { costs: [{ currency: 'gold' as never, amount: '1' }] })] }), /malformed/, 'a currency the game has not');
+  const { option: _option, lifecycle: _lifecycle, days: _days, costs: _costs, ...bare } = edge('decisionCompleted', 9);
+  const { amount: _amount, ...row } = bare.row;
+  const sparse = { id: 'native:1:9', opened: true, edges: [{ ...bare, row: { ...row, item: { token: 'd', name: 'D', icon: null } } }] };
+  assert.deepEqual(validateOccurrence(sparse), sparse, 'a reply leaves out what it does not hold: an edge with no option, lifecycle, days or costs, a row with no amount, an item with no description');
 });
 
 test('recording breaks merge gaps and event losses sorted ascending', () => {

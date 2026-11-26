@@ -475,7 +475,6 @@ struct Unread {
     statuses: HashMap<u32, Vec<StatusCache>>,
     status_reasons: HashMap<u32, Vec<ReasonCache>>,
     unwitnessed: HashMap<(u32, u128), Vec<SpanCache>>,
-    lives: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
 }
 
 impl<'q, 'a> Line<'q, 'a> {
@@ -2294,12 +2293,7 @@ impl<'q, 'a> Line<'q, 'a> {
         if (self.series.parts.is_some() && dashboard_declare::absent_is_zero(table)) || crate::cost::declared(table).is_err() {
             return Ok(None);
         }
-        if let Some(held) = self.unread.lock().unwrap_or_else(PoisonError::into_inner).lives.get(&run) {
-            return Ok(Some(held.clone()));
-        }
-        let read = Arc::new(crate::cost::lifetimes(self.query.replay.recording(), run, table)?);
-        self.unread.lock().unwrap_or_else(PoisonError::into_inner).lives.insert(run, read.clone());
-        Ok(Some(read))
+        crate::cost::recorded_lifetimes(self.query.replay, run, table).map(Some)
     }
 
     fn name_edges(&self, country: &Country) -> Vec<i64> {

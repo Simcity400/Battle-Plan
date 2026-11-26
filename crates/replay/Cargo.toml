@@ -23,6 +23,7 @@ replay-columnar.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 replay-journal = { workspace = true, optional = true }
+replay-lanes.workspace = true
 replay-recording.workspace = true
 replay-settings.workspace = true
 

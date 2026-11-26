@@ -24,12 +24,14 @@ import type { EventFeedItem, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptS
 import { optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
-import { validateFeedRow } from './eventFeedData.ts';
+import { effectiveEventItem, validateFeedRow } from './eventFeedData.ts';
+import { descriptionRows, gapRows, hoverTextOf, optionLines, optionRows, type TooltipTexts } from './hoverText.ts';
 import { plainScripted, reasonsOf } from './scriptedGaps.ts';
 
 export interface EventFeedProjectionOptions {
   readonly categories: readonly string[];
   readonly artwork: boolean;
+  readonly hover?: TooltipTexts;
 }
 
 const HEAD_LIMIT = 256;
@@ -67,26 +69,11 @@ interface FeedPageInfo {
 
 function parsedOptionOrdinal(event: EventFeedRow, choice: ScriptEdge | null): number | null {
   if (choice && typeof choice.option === 'number' && Number.isInteger(choice.option)) return choice.option;
-  if (event.kind === 'eventOptionSelected' && event.cause?.notes.length) {
-    for (const note of event.cause.notes) {
-      const match = /Selected native option ordinal:\s*(-?\d+)/.exec(note);
-      if (match) return Number(match[1]);
-    }
-  }
+  if (event.kind === 'eventOptionSelected' && typeof event.cause?.selectedOption === 'number') return event.cause.selectedOption;
   return null;
 }
 
 const nonBlank = (value: string | null | undefined): string | null => (value && value.trim().length > 0 ? value : null);
-
-function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | null): EventFeedItem | null {
-  const base = event.item;
-  const fallback = choice?.row.item ?? null;
-  if (!base) return fallback;
-  if ((!base.options || base.options.length === 0) && fallback?.options?.length) {
-    return { ...base, options: fallback.options };
-  }
-  return base;
-}
 
 function optionCellOf(item: EventFeedItem | null, ordinal: number): TableCell {
   const options = item?.options ?? [];
@@ -348,6 +335,7 @@ function buildFeedTableRow(
   artwork: boolean,
   displayedHour: number,
   boundary: ReturnType<typeof newIdentityBoundary>,
+  hover: TooltipTexts,
 ): { readonly row: TableRow; readonly fold: FoldMeta } {
   const item = effectiveEventItem(event, page.choice);
   const { primary, secondary, detail, missingReason } = eventItemAndSubtext(event, page, readView);
@@ -434,16 +422,10 @@ function buildFeedTableRow(
     }
     if (item?.token) out.push({ label: 'Content identity', value: knownValue(item.token) });
     if (reasons.nameMissing) out.push({ label: 'Name not recorded', value: notRecorded(reasons.nameMissing) });
-    if (reasons.gaps) out.push({ label: 'Text not recorded', value: notRecorded(reasons.gaps) });
-    if (item?.description) out.push({ label: 'Description', value: knownValue(plainScripted(item.description)), divider: true });
-    if (item?.options?.length) {
-      item.options.forEach((opt, i) => {
-        out.push({
-          label: `Option ${optionLetter(i)}`,
-          value: opt.name !== null ? knownValue(plainScripted(opt.name)) : notRecorded('Option text not recorded'),
-        });
-      });
-    }
+    out.push(...gapRows(hover, key));
+    out.push(...descriptionRows(hover, key, item?.description));
+    const choiceOptions = !event.item?.options?.length ? page.choice?.row.item?.options : undefined;
+    out.push(...(choiceOptions?.length ? optionLines(choiceOptions.map(option => option.name), optionLetter) : optionRows(hover, key, optionLetter)));
     return out;
   };
 
@@ -515,7 +497,7 @@ export const eventFeedProjection: TableProjection<EventFeedProjectionOptions> = 
           status: rawRow.status,
           live: rawRow.live === true,
         };
-        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, hour, boundary);
+        const built = buildFeedTableRow(readView, valid, page, rawRow.key, options.artwork, source.at ?? hour, boundary, options.hover ?? []);
         foldByKey.set(built.row.key, built.fold);
         return built.row;
       },
@@ -587,6 +569,6 @@ export const eventFeedDeclaration: TableWidgetDeclaration<EventFeedProjectionOpt
   projection: eventFeedProjection,
   projectionOptions(ctx): EventFeedProjectionOptions {
     const categories = CATEGORIES.filter(c => ctx.options[c.value] === true).map(c => c.value);
-    return { categories, artwork: ctx.options.artwork !== false };
+    return { categories, artwork: ctx.options.artwork !== false, hover: hoverTextOf(ctx.options) };
   },
 };
