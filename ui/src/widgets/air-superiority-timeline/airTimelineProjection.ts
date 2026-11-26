@@ -1,4 +1,4 @@
-import { extendLastRun, joinLanePieces, laneRun, missingCell, noRuns, LaneRunBuilder, solidCell, type LanePieces, type LaneRuns } from '../../families/heat/laneRuns.ts';
+import { joinLanePieces, laneRun, missingCell, noRuns, LaneRunBuilder, solidCell, type LanePieces, type LaneRuns } from '../../families/heat/laneRuns.ts';
 import { authoredHex, measureColour, surfaceGrey } from '../../charts/palette.ts';
 import { airChoiceKey } from '../../dashboard/airOptions.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -211,42 +211,13 @@ const indexes = new WeakMap<AirTimelineReply, ReadonlyMap<number, AirTimelineRow
 const heldTiles = new WeakMap<AirTimelineReply, { sig: string; runs: Map<AirTimelineRow['cells'], LaneRuns> }>();
 const windows = new WeakMap<AirTimelineProjectionOptions, Map<number, LanePieces>>();
 
-interface AirEdge {
-  readonly firstHour: number;
-  readonly dayHours: number;
-  readonly days: AirTimelineReply['days'];
-  readonly lastHour: number;
-  readonly colours: readonly (string | null)[];
-  readonly sig: string;
-  readonly runs: LaneRuns;
-}
-
-const edges = new WeakMap<AirTimelineRow['cells'], AirEdge>();
-
-function currentLane(cells: AirTimelineRow['cells'], reply: AirTimelineReply, look: Look, surface: string, sig: string, previous: LaneRuns): LaneRuns {
-  const old = edges.get(cells);
-  const colours = sidePalette(reply, surface);
-  const day = Math.floor((reply.lastHour - reply.firstHour) / reply.dayHours);
-  let runs: LaneRuns;
-  if (!look.viewer && old && old.sig === sig && old.firstHour === reply.firstHour && old.dayHours === reply.dayHours
-    && Math.floor((old.lastHour - reply.firstHour) / reply.dayHours) === day && old.runs.at(-1)?.lastHour === old.lastHour
-    && reply.days.length === day + 1 && old.days.length === reply.days.length && (old.days === reply.days || reply.days.every((read, i) => i === day || read === old.days[i]))
-    && old.colours.length === colours.length && (old.colours === colours || colours.every((colour, i) => colour === old.colours[i]))) {
-    runs = extendLastRun(old.runs, reply.lastHour, reply.days[day] ?? null);
-  } else {
-    runs = lane(cells, reply, look, surface, previous);
-  }
-  edges.set(cells, { firstHour: reply.firstHour, dayHours: reply.dayHours, days: reply.days, lastHour: reply.lastHour, colours, sig, runs });
-  return runs;
-}
-
 function tileLanes(reply: AirTimelineReply, look: Look, surface: string) {
   let cells = indexes.get(reply);
   if (!cells) indexes.set(reply, cells = new Map(reply.rows.map(row => [row.region, row.cells])));
   const sig = `${surface}|${look.contested}|${datedSignature(look, reply.firstHour, reply.lastHour)}`;
   let tile = heldTiles.get(reply);
   if (tile?.sig !== sig) heldTiles.set(reply, tile = { sig, runs: new Map() });
-  return { reply, cells, sig, runs: tile.runs };
+  return { reply, cells, runs: tile.runs };
 }
 
 function inspectDay(reply: AirTimelineReply, cells: AirTimelineRow['cells'], runs: LaneRuns, label: string, hour: number, look: Look, surface: string): FamilyTooltipPayload | null {
@@ -318,8 +289,7 @@ export function projectAirTimeline(readView: BoundedReadView, options: AirTimeli
       const cells = piece.cells.get(row.region) ?? piece.reply.absent ?? emptyCells;
       let runs = piece.runs.get(cells);
       if (!runs) {
-        const prior = old?.pieces[i] ?? noRuns;
-        runs = piece.reply === now ? currentLane(cells, now, look, surface, piece.sig, prior) : lane(cells, piece.reply, look, surface, prior);
+        runs = lane(cells, piece.reply, look, surface, old?.pieces[i] ?? noRuns);
         piece.runs.set(cells, runs);
       }
       return runs;

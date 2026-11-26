@@ -198,6 +198,38 @@ function columnCell(
     : valueCell(reply, region, c, options.show, modifier, colours, inspect);
 }
 
+function sameColumnWindow(a: RegionalWeatherReply, b: RegionalWeatherReply): boolean {
+  const before = a.columns.columns;
+  const after = b.columns.columns;
+  if (a.dayHours !== b.dayHours || before.length !== after.length || !after.length) return false;
+  return before === after || after.every((col, i) => {
+    const prev = before[i]!;
+    if (col.firstHour !== prev.firstHour || (col.recorded === 0) !== (prev.recorded === 0)) return false;
+    if (i !== after.length - 1) return col.lastHour === prev.lastHour && col.readHour === prev.readHour;
+    return (col.readHour === prev.readHour || col.readHour !== null)
+      && Math.floor((col.lastHour - col.firstHour) / b.dayHours) === Math.floor((prev.lastHour - prev.firstHour) / a.dayHours);
+  });
+}
+
+function sameCounts(x: readonly number[] | undefined, y: readonly number[] | undefined): boolean {
+  return x === y || (!!x && !!y && x.length === y.length && x.every((n, i) => n === y[i]));
+}
+
+function sameWeatherFacts(a: RegionalWeatherColumnRegion, b: RegionalWeatherColumnRegion, show: WeatherShow, modifier: string | null): boolean {
+  if (a === b) return true;
+  if (show === 'conditions' && (!sameCounts(a.observed, b.observed) || !sameCounts(a.clear, b.clear))) return false;
+  if (a.measures === b.measures) return true;
+  if (show === 'conditions') return a.measures.length === b.measures.length && a.measures.every((m, i) => {
+    const next = b.measures[i]!;
+    return m.id === next.id && sameCounts(m.days, next.days);
+  });
+  const id = show === 'temperature' ? 'temp' : `mod:${modifier ?? ''}`;
+  const x = measureOf(a, id);
+  const y = measureOf(b, id);
+  return x === y || (!!x && !!y && sameCounts(x.days, y.days) && (x.values === y.values ||
+    (!!x.values && !!y.values && x.values.length === y.values.length && x.values.every((v, i) => v?.[1] === y.values![i]?.[1]))));
+}
+
 function lane(
   reply: RegionalWeatherReply,
   region: RegionalWeatherColumnRegion,
@@ -260,36 +292,6 @@ interface WeatherLanes {
 const heldLanes = new WeakMap<RegionalWeatherReply, WeatherLanes>();
 
 const windows = new WeakMap<WeatherProjectionOptions, WeatherLanes>();
-
-function sameColumnWindow(a: RegionalWeatherReply, b: RegionalWeatherReply): boolean {
-  const before = a.columns.columns;
-  const after = b.columns.columns;
-  if (a.dayHours !== b.dayHours || before.length !== after.length || !after.length) return false;
-  return before === after || after.every((col, i) => {
-    const prev = before[i]!;
-    if (col.firstHour !== prev.firstHour || (col.recorded === 0) !== (prev.recorded === 0)) return false;
-    if (i !== after.length - 1) return col.lastHour === prev.lastHour && col.readHour === prev.readHour;
-    return (col.readHour === prev.readHour || col.readHour !== null)
-      && Math.floor((col.lastHour - col.firstHour) / b.dayHours) === Math.floor((prev.lastHour - prev.firstHour) / a.dayHours);
-  });
-}
-
-function sameWeatherFacts(a: RegionalWeatherColumnRegion, b: RegionalWeatherColumnRegion, show: WeatherShow, modifier: string | null): boolean {
-  if (a === b) return true;
-  const equal = (x: readonly number[] | undefined, y: readonly number[] | undefined) => x === y
-    || (!!x && !!y && x.length === y.length && x.every((n, i) => n === y[i]));
-  if (show === 'conditions' && (!equal(a.observed, b.observed) || !equal(a.clear, b.clear))) return false;
-  if (a.measures === b.measures) return true;
-  if (show === 'conditions') return a.measures.length === b.measures.length && a.measures.every((m, i) => {
-    const next = b.measures[i]!;
-    return m.id === next.id && equal(m.days, next.days);
-  });
-  const id = show === 'temperature' ? 'temp' : `mod:${modifier ?? ''}`;
-  const x = measureOf(a, id);
-  const y = measureOf(b, id);
-  return x === y || (!!x && !!y && equal(x.days, y.days) && (x.values === y.values ||
-    (!!x.values && !!y.values && x.values.length === y.values.length && x.values.every((v, i) => v?.[1] === y.values![i]?.[1]))));
-}
 
 export function projectWeather(readView: BoundedReadView, options: WeatherProjectionOptions): HeatLanesModel {
   const hour: number = readView.hour;

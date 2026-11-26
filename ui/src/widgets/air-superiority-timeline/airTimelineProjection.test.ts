@@ -230,7 +230,7 @@ test('an empty timeline says why: the chart left its active regions out, the hou
 
 test('a hundred played hours share the air history and grow only the last run', () => {
   const data = reply(240, { dayHours: 120, days: [119, null, 240] });
-  const at = (hour: number) => projectAirTimeline(view(hour, { ...data, lastHour: hour, days: [119, null, hour] }), OPTIONS);
+  const at = (hour: number) => projectAirTimeline(view(hour, { ...structuredClone(data), lastHour: hour, days: [119, null, hour] }), OPTIONS);
   assertRunCounts(240, hour => at(hour).rows[0]!.runs);
   const prior = at(275);
   const corrected = reply(275, { dayHours: 120, days: [119, null, 275], rows: [{ ...data.rows[0]!, cells: [[3, null]] }] });

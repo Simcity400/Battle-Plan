@@ -188,7 +188,7 @@ const indexes = new WeakMap<NavalSupremacyReply, ReadonlyMap<string, SupremacyRe
 interface TileLanes {
   readonly through: number;
   readonly sig: string;
-  readonly unknown: LaneRuns;
+  unknown?: LaneRuns;
   readonly rows: Map<string, LaneRuns>;
 }
 
@@ -202,8 +202,7 @@ function tileLanes(reply: NavalSupremacyReply, through: number, look: Look, surf
   let tile = heldTiles.get(reply);
   const old = tile;
   if (!tile || tile.through !== through || tile.sig !== sig) {
-    const unknown = unknownRunsOf(reply, through);
-    heldTiles.set(reply, tile = { sig, through, unknown, rows: new Map() });
+    heldTiles.set(reply, tile = { sig, through, rows: new Map() });
   }
   const extend = old && old.sig === sig && old.through < through
     && Math.floor((old.through - reply.firstDayHour) / reply.dayHours) === Math.floor((through - reply.firstDayHour) / reply.dayHours);
@@ -260,15 +259,16 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
     const old = previous?.get(region.id);
     const parts = lanes.map(({ reply, regions, tile, extend }, i) => {
       const source = regions.get(region.id);
-      if (!source) return tile.unknown;
+      if (!source) return tile.unknown ??= unknownRunsOf(reply, tile.through);
       let runs = tile.rows.get(region.id);
       if (runs) return runs;
       const prior = extend?.rows.get(region.id);
       const last = prior?.at(-1);
-      if (prior && last && extend && last.firstHour <= extend.through && last.lastHour === extend.through && (prior.at(-2)?.lastHour ?? -Infinity) < extend.through) {
+      if (prior && last && extend && last.lastHour === extend.through) {
         runs = extendLastRun(prior, tile.through, tile.through);
       } else {
-        runs = regionRuns(reply, source, look, tile.through, tile.unknown, old?.pieces[i] ?? noRuns);
+        const unknown = tile.unknown ??= unknownRunsOf(reply, tile.through);
+        runs = regionRuns(reply, source, look, tile.through, unknown, old?.pieces[i] ?? noRuns);
       }
       tile.rows.set(region.id, runs);
       return runs;
