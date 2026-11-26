@@ -297,48 +297,59 @@ fn ranking_steps(history: &History, after: i32, next: &mut NextHour) {
     }
 }
 
-fn name_tokens(query: &Query<'_>, run: u32, hour: i32) -> io::Result<Vec<u128>> {
+fn ranking_tokens(query: &Query<'_>, run: u32, hour: i32, group: bool) -> io::Result<Vec<u128>> {
     let characters = TableId::Characters;
-    let column = field(characters, "name_token_id")?;
-    let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at(query.replay.recording(), run, characters, hour, Some(&[column])))?;
+    let mut columns = vec![field(characters, "name_token_id")?];
+    if group { columns.push(field(characters, "template_tag")?); }
+    let held = dashboard_query::cost::storage(|| replay_lanes::lanes::at(query.replay.recording(), run, characters, hour, Some(&columns)))?;
     let view = held.view();
-    let mut tokens: Vec<u128> = view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).map(u128::from).collect();
+    let mut tokens = Vec::new();
+    for &column in &columns {
+        tokens.extend(view.rows().filter_map(|slot| u32::try_from(view.number(column, slot)?).ok()).map(u128::from));
+    }
     tokens.sort_unstable();
     tokens.dedup();
     Ok(tokens)
 }
 
-fn next_ranking_change(query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
+fn next_ranking_change(query: &Query<'_>, hour: i32, through: i32, group: bool) -> io::Result<Option<i32>> {
     let recording = query.replay.recording();
     let leaders = TableId::UnitLeaders;
     let components = field(leaders, "skill_category")? + 1;
     let characters = TableId::Characters;
     let lexical = TableId::LexicalTokens;
-    let inputs = [
-        (leaders, vec![field(leaders, "owner")?, field(leaders, "kind")?, field(leaders, "character_id")?, field(leaders, "skill_valid")?, field(leaders, "skill_level")?, components, components + 1, components + 2, components + 3]),
+    let mut leader_fields = dashboard_base::products::at_hour::field_columns(leaders, &["owner", "kind", "character_id", "skill_valid", "skill_level"]);
+    leader_fields.extend(components..components + 4);
+    let mut character_fields = dashboard_base::products::at_hour::field_columns(characters, &["name_token_id", "name", "token"]);
+    if group {
+        leader_fields.extend(dashboard_base::products::at_hour::field_columns(leaders, &["category", "captured", "visibility_choice", "template_visibility", "visible_state", "visible_origin"]));
+        character_fields.extend(dashboard_base::products::at_hour::field_columns(characters, &["template_present", "template_tag", "template_file", "template_line", "template_generated"]));
+    }
+    leader_fields.sort_unstable();
+    character_fields.sort_unstable();
+    let mut inputs = vec![
+        (leaders, leader_fields),
         (TableId::LeaderBattleTotals, (0..TableId::LeaderBattleTotals.field_count()).collect()),
-        (characters, vec![field(characters, "name_token_id")?, field(characters, "name")?, field(characters, "token")?]),
-    ]
-    .map(|(table, mut columns)| {
-        columns.sort_unstable();
-        (table, columns)
-    });
+        (characters, character_fields),
+    ];
+    if group {
+        inputs.push((TableId::CountryLinks, vec![field(TableId::CountryLinks, "canonical_slot")?]));
+    }
     let literal = [field(lexical, "literal")?];
     let held = |table: TableId| recording.predates(table.index()).is_none() && recording.withheld_reason(table.index()).is_none();
     let block = replay_columnar::envelope::UNIT_ORDINALS as i32;
     let mut next = NextHour(None, hour);
-    for stretch in &query.timeline.stretches {
-        if stretch.last <= hour {
-            continue;
-        }
+    for stretch in query.timeline.within(hour, through) {
+        let last = stretch.last;
+        if last <= hour { continue; }
         let origin = recording.run(stretch.run)?.first_hour;
         let start = hour.max(stretch.first);
-        let tokens = if held(characters) && held(lexical) { name_tokens(query, stretch.run, start)? } else { Vec::new() };
+        let tokens = if held(characters) && held(lexical) { ranking_tokens(query, stretch.run, start, group)? } else { Vec::new() };
         let mut from = start;
-        while from <= stretch.last {
+        while from <= last {
             let after = if from == start { hour.max(from - 1) } else { from - 1 };
             let read_from = if from == start { from } else { from - 1 };
-            let to = stretch.last.min(origin + ((from - origin) / block + 1) * block - 1);
+            let to = last.min(origin + ((from - origin) / block + 1) * block - 1);
             for (table, columns) in inputs.iter().filter(|(table, _)| held(*table)) {
                 let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, stretch.run, *table, columns, LaneKeys::All, read_from, to))?;
                 ranking_steps(&history, after, &mut next);
@@ -466,14 +477,20 @@ fn resolve_selection_at(
     source: &Source,
     branch_id: &str,
     selection: &LeaderSelection,
-    hour: i32,
+    next: &mut NextHour,
     load: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<(Option<u64>, Option<String>, Vec<String>)> {
     let asked = top_asked(branch_id, selection);
-    let context = LeadersContext::load(source, load)?;
+    let hour = next.1;
+    let context = LeadersContext::for_selection(source, load, branch_id, Some(selection), cancelled)?;
     let branch = parse_branch(branch_id).map_err(dashboard_core::invalid)?;
     let query = context.query(branch)?;
+    let through = context.roster.as_ref().map_or(i32::MAX, |roster| roster.through(hour));
+    if let Some(change) = through.checked_add(1) { next.see(change); }
+    if let Some(reason) = context.roster.as_ref().and_then(|roster| roster.missing(hour)) {
+        return Ok((None, Some(reason.to_owned()), Vec::new()));
+    }
     let Some(stretch) = query.timeline.at(hour) else {
         return Ok((None, Some("This hour is not recorded on this branch".into()), Vec::new()));
     };
@@ -486,7 +503,8 @@ fn resolve_selection_at(
     let live = dashboard_follow::live::Cells::default();
     let reads_at = ReadsAt { holders: &query.holders, context: &context, run: stretch.run, hour, since: None };
     for step in 0..8 {
-        let reads = UnitLeaders::reads_in(&asked, None, step, &frame, &reads_at);
+        let reads = UnitLeaders::reads_at(&asked, step, &frame, &reads_at, context.roster.is_none());
+        if context.roster.is_some() && step == 2 && !reads.is_empty() { next.see(hour.saturating_add(1)); }
         if reads.is_empty() {
             break;
         }
@@ -496,6 +514,8 @@ fn resolve_selection_at(
             frame.tables[idx] = step_frame.tables[idx].clone();
         }
     }
+    let until = next.0.map_or(through, |at| through.min(at - 1));
+    if let Some(change) = next_ranking_change(&query, hour, until, context.roster.is_some())? { next.see(change); }
     let at = At { owner: None, holders: &query.holders, hour, context: &context, cancelled, live: &live };
     let shown = UnitLeaders::reply(&frame, &asked, &at)?;
     let top = shown
@@ -545,10 +565,7 @@ impl Product for LeaderCareer {
         let (leader, selection_warnings) = match (&params.reference, &params.selection) {
             (Some(text), None) => (reference(text).map_err(dashboard_core::invalid)?, Vec::new()),
             (None, Some(selection)) => {
-                if let Some(roster_at) = next_ranking_change(&query, hour)? {
-                    next.see(roster_at);
-                }
-                let (picked, missing, warnings) = resolve_selection_at(source, &params.branch_id, selection, hour, load, cancelled)?;
+                let (picked, missing, warnings) = resolve_selection_at(source, &params.branch_id, selection, &mut next, load, cancelled)?;
                 let Some(leader) = picked else {
                     for stretch in &query.timeline.stretches {
                         next.span(stretch.first, stretch.last);
@@ -807,7 +824,7 @@ impl AtHour for LeaderHour {
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let Some(selection) = &params.selection else { return Self::reads(params, owner, step, held) };
         let mut reads = UnitLeaders::reads_in(&top_asked(&params.branch_id, selection), owner, step, held, at);
-        if step == 0 {
+        if step == 0 && !reads.is_empty() {
             reads.push(Read::all(TableId::UnitLeaderTraitExperience));
         }
         reads
@@ -837,6 +854,48 @@ impl AtHour for LeaderHour {
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         LeadersContext::load(source, load)
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        LeadersContext::for_selection(source, load, &params.branch_id, params.selection.as_ref(), &AtomicBool::new(false))
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let (Some(roster), Some(selection)) = (&at.context.roster, &params.selection) else {
+            return (Self::reads_in(params, owner, stage, held, at), i32::MAX);
+        };
+        let mut reads = if stage == 2 {
+            UnitLeaders::reads_at(&top_asked(&params.branch_id, selection), stage, held, at, false)
+        } else {
+            Self::reads_in(params, owner, stage, held, at)
+        };
+        if stage == 0 && !reads.is_empty() {
+            reads.extend([TableId::LeaderBattleTotals, TableId::LeaderTraitDates].map(Read::all));
+        }
+        (reads, roster.through(at.hour))
+    }
+
+    fn clock_dependent(plan: &[(Vec<Read>, i32)], context: &Self::Context) -> bool {
+        context.roster.is_none() || plan.get(2).is_some_and(|(reads, _)| reads.iter().any(|read| read.table == TableId::Clock))
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], context: &Self::Context) -> Option<Vec<usize>> {
+        if Self::clock_dependent(plan, context) { return None; }
+        match table {
+            TableId::Countries => Some(dashboard_base::products::at_hour::field_columns(table, &["tag", "canonical_slot"])),
+            TableId::UnitLeaders => {
+                let experience = field(table, "experience").expect("leader experience column");
+                Some((0..table.field_count()).filter(|&column| column != experience).collect())
+            }
+            _ => None,
+        }
+    }
+
+    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let Some(roster) = &at.context.roster else { return i32::MAX };
+        let mut through = roster.through(at.hour);
+        if let Some(partial) = roster.partial_from.filter(|&hour| hour > at.hour) { through = through.min(partial - 1); }
+        through
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -938,7 +997,7 @@ fn one_leader(frame: &DecodedFrame, branch_id: &str, leader: u64, at: &At<'_, Le
     reply.trait_catalogue = traits.traits;
     reply.trait_dates = dates;
     (reply.fought, reply.won, reply.lost) = (battles.fought, battles.won, battles.lost);
-    reply.battles_partial_from = super::battles_partial_from(&query, query.timeline.first, at.hour)?;
+    reply.battles_partial_from = context.battles_partial(&query, at.hour)?;
     let spelled = |token: i32| -> Option<String> {
         let token = u32::try_from(token).ok()?;
         let rows = lexical?;
@@ -1008,7 +1067,11 @@ impl Product for LeaderChoices {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        parse_branch(&params.branch_id).map(|_| ())
+        parse_branch(&params.branch_id)?;
+        match params.selection {
+            LeaderSelection::Group { .. } => Err("Branch-wide leader choices need countries or all leaders"),
+            _ => Ok(()),
+        }
     }
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {

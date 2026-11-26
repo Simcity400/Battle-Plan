@@ -41,3 +41,4 @@ pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doc
 pub const EXACT_AIRFORCEAT: ExactPanel = exact_panel::<crate::products::forces::AirForceAt>;
 pub const EXACT_NAVYAT: ExactPanel = exact_panel::<crate::products::forces::NavyAt>;
 pub const EXACT_ARMYAT: ExactPanel = exact_panel::<crate::products::army::ArmyAt>;
+pub const EXACT_LEADERHOUR: ExactPanel = exact_panel::<crate::products::leaders::career::LeaderHour>;

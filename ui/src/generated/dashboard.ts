@@ -5147,7 +5147,7 @@ costRead: number | null, censusComplete: boolean,
  */
 missing: string | null, warnings: Array<string>, };
 export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, };
-export type LeaderSelection = { "kind": "all" } | { "kind": "countries", countries: Array<CountryRef>, };
+export type LeaderSelection = { "kind": "all" } | { "kind": "countries", countries: Array<CountryRef>, } | { "kind": "group", group: GroupSelection, };
 export type LeaderKinds = "land" | "navy";
 export type LeaderTrait = { token: string, name: string | null, icon: string | null,
 /**
@@ -6681,11 +6681,11 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "territory-transfers": { "branchId": "leaf", "through": "leaf" },
   "trade-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "resource": "leaf", "subject": "any", "table": "leaf", "top": "leaf" },
   "training-queue": { "branchId": "leaf", "country": "any", "hour": "leaf" },
-  "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
-  "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
-  "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
+  "unit-leader-career": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
+  "unit-leader-choices": { "branchId": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
+  "unit-leader-hour": { "branchId": "leaf", "hour": "leaf", "reference": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "unit-leader-portraits": { "branchId": "leaf", "edge": "leaf", "hour": "leaf", "references": "node", "references[]": "leaf" },
-  "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.kind": "leaf" },
+  "unit-leaders": { "branchId": "leaf", "hour": "leaf", "leaders": "leaf", "selection": "node", "selection.countries": "node", "selection.countries[]": "any", "selection.group": "node", "selection.group.id": "leaf", "selection.group.membership": "leaf", "selection.group.tag": "leaf", "selection.group.type": "leaf", "selection.kind": "leaf" },
   "volunteer-flow": { "between": "leaf", "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "subject": "any", "top": "leaf" },
   "war-contributions": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
   "war-timeline": { "branchId": "leaf", "hour": "leaf", "viewpoint": "any" },
