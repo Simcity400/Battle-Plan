@@ -13,7 +13,7 @@ export const PEACE_DEALS_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const definition = {
-  kind: 'peace-deals', version: 2, title: 'Peace deals', icon: 'olive-branch', category: 'Diplomacy',
+  kind: 'peace-deals', version: 2, title: 'Peace deals', icon: 'dove', category: 'Diplomacy',
   description: 'Peace conferences, winners and outcomes.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countrySelection: 'settings', countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'all' },

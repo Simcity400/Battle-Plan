@@ -4,7 +4,7 @@ export const ICON_NAMES = [
   'chevron-left', 'chevron-right', 'chevron-down', 'chevron-up', 'chevrons-left', 'chevrons-right', 'sidebar', 'search', 'star', 'star-filled',
   'copy', 'download', 'upload', 'image', 'palette', 'type', 'sun', 'moon', 'cloud', 'monitor', 'gamepad', 'sliders', 'grip', 'more', 'eject', 'pin',
   'target', 'flask', 'sparkle', 'play', 'volume', 'volume-off', 'pause', 'layers', 'history', 'medal', 'helmet', 'ship', 'anchor', 'droplet', 'hammer',
-  'sunburst', 'factory', 'flows', 'shield', 'hierarchy', 'swords', 'flag-torn', 'flag-plus', 'flag-x', 'olive-branch', 'users-plus',
+  'sunburst', 'factory', 'flows', 'shield', 'hierarchy', 'swords', 'flag-torn', 'flag-plus', 'flag-x', 'dove', 'users-plus',
   'users-minus', 'shield-check', 'ballot', 'lock', 'person', 'cube', 'filter',
 ] as const;
 
