@@ -637,14 +637,18 @@ pub(crate) fn damage_armed() -> bool {
     DAMAGE_ARMED.load(Ordering::Acquire)
 }
 
-pub fn damage_withheld() -> Option<String> {
+pub fn with_damage_withheld<T>(f: impl FnOnce(Option<&str>) -> T) -> T {
     if damage_armed() {
-        return None;
+        return f(None);
     }
     let guard = DAMAGE_WITHHELD
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Some(guard.as_deref().unwrap_or(DAMAGE_UNARMED).to_owned())
+    f(Some(guard.as_deref().unwrap_or(DAMAGE_UNARMED)))
+}
+
+pub fn damage_withheld() -> Option<String> {
+    with_damage_withheld(|reason| reason.map(str::to_owned))
 }
 #[derive(Clone, Copy)]
 struct Border {

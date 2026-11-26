@@ -719,7 +719,7 @@ fn decode(words: &[u64], first: u64, to_hour: i32) -> Result<Decoded, &'static s
                     pending_strength_raw: (withheld & edges::POOL_UNREADABLE == 0).then_some(pool),
                 });
             }
-            edges::HIT => {}
+            edges::HIT => reader.at = reader.words.len(),
             _ => return Err("land event kind unsupported"),
         }
         if reader.at != reader.words.len() {
@@ -1048,6 +1048,27 @@ mod tests {
         let [_, destroyed, _, edges, _, _] = drained(&words).tables_with(None, None);
         assert!(matches!(destroyed, TableView::Complete(TableRows::DestroyedDivisions(ref rows)) if rows.len() == 1), "{destroyed:?}");
         assert_eq!(edges, TableView::Unavailable { reason: EDGE_OUTSIDE_INTERVAL.into() });
+    }
+    #[test]
+    fn a_division_damage_hit_is_folded_at_the_boundary_and_the_hour_still_decodes_whole() {
+        let fixture = test_support::Fixture::new(1024);
+        let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
+        captured.drain_from(&fixture.observer, 10, true);
+        let some = |value: i32| edges::optional(Some(value));
+        let mut hit = Vec::new();
+        edges::Hit { combat: 90, attacker: 5, target: 6, army: 0, strength: 700, withheld: 0 }.copy(&mut |word| hit.push(word));
+        fixture.append_record(&hit);
+        fixture.append_record(&[edges::EXITED, 90, some(10), 0, 1, 6, some(0), some(12), some(4000), 900]);
+        captured.reset();
+        captured.drain_from(&fixture.observer, 11, false);
+        let tables = captured.tables_with(None, None);
+        assert!(complete_coverage(&tables).complete);
+        assert!(matches!(&tables[0], TableView::Complete(TableRows::LandCombatResults(_))), "{:?}", tables[0]);
+        let TableView::Complete(TableRows::LandCombatEdges(exits)) = &tables[3] else { panic!("{:?}", tables[3]) };
+        assert_eq!(exits[0].pending_strength_raw, Some(900));
+        let TableView::Complete(TableRows::LandDivisionDamage(rows)) = &tables[5] else { panic!("{:?}", tables[5]) };
+        assert_eq!((rows[0].combat, rows[0].target, rows[0].attacker, rows[0].army, rows[0].strength_raw), (90, 6, 5, None, 700));
+        fixture.stop();
     }
     #[test]
     fn combat_edges_decode_each_opening_member_and_exit_and_never_guess_a_missing_value() {

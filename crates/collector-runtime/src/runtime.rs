@@ -2960,6 +2960,14 @@ impl<T: collector_status::status::Fields, U: collector_status::status::Fields> s
 
 struct EdgesWithheldStatus;
 
+struct DamageWithheldStatus;
+
+impl serde::Serialize for DamageWithheldStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        collector_land_events::land_events::with_damage_withheld(|reason| reason.serialize(serializer))
+    }
+}
+
 impl serde::Serialize for EdgesWithheldStatus {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         collector_land_events::land_events::with_edges_withheld(|reason| {
@@ -2992,6 +3000,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "raid_completion": collector_projects::projects::raid_completion_data(),
         "event_windows": collector_observers::event_window_observer::status(),
         "land_combat_edges_withheld": EdgesWithheldStatus,
+        "division_damage_withheld": DamageWithheldStatus,
         "certificate_registries": collector_certificates::watch_registry::status(collector_division_parts::army_stat_changes::registries()),
     });
     #[cfg(feature = "order_membership_oracle")]
