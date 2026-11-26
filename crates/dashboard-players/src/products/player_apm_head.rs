@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, compare_apm_desc, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, Rate, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -13,7 +13,7 @@ use replay_data::Hour;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -74,13 +74,74 @@ struct HourSlice {
     name_missing: Option<String>,
 }
 
-#[derive(Clone, Default)]
-struct Played {
-    amount: Amount,
-    shown: Option<(u64, u64)>,
-    tag: String,
-    name: Option<String>,
-    name_missing: Option<String>,
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Ranked {
+    rate: std::cmp::Reverse<Option<Rate>>,
+    series: usize,
+}
+
+#[derive(Default)]
+struct WindowSeries {
+    hours: VecDeque<(i32, HourSlice)>,
+    offset: usize,
+    newest: VecDeque<usize>,
+    total: Amount,
+    incomplete: usize,
+    paused_incomplete: usize,
+    cached: Option<(Ranked, ApmValue)>,
+    dirty: bool,
+}
+
+const MINUTES_OVERFLOW: &str = "The exact unpaused time for this window exceeds the supported range.";
+
+impl WindowSeries {
+    fn enter(&mut self, hour: i32, slice: HourSlice) -> Result<(), String> {
+        self.total.minutes = self.total.minutes.combine(slice.minutes, u128::checked_add).ok_or(MINUTES_OVERFLOW)?;
+        self.total.counts.add(slice.counts);
+        self.incomplete += usize::from(slice.incomplete);
+        self.paused_incomplete += usize::from(slice.paused_incomplete);
+        while self.newest.back().is_some_and(|&at| self.hours[at - self.offset].1.shown <= slice.shown) {
+            self.newest.pop_back();
+        }
+        self.newest.push_back(self.offset + self.hours.len());
+        self.hours.push_back((hour, slice));
+        Ok(())
+    }
+
+    fn expire(&mut self) -> Result<(), String> {
+        let (_, slice) = self.hours.pop_front().expect("a recorded boundary hour");
+        self.total.minutes = self.total.minutes.combine(slice.minutes, u128::checked_sub).ok_or(MINUTES_OVERFLOW)?;
+        let counts = &mut self.total.counts;
+        counts.orders -= slice.counts.orders;
+        counts.paused_orders -= slice.counts.paused_orders;
+        counts.unresolved -= slice.counts.unresolved;
+        counts.unclassified -= slice.counts.unclassified;
+        counts.paused_unresolved -= slice.counts.paused_unresolved;
+        self.incomplete -= usize::from(slice.incomplete);
+        self.paused_incomplete -= usize::from(slice.paused_incomplete);
+        if self.newest.front() == Some(&self.offset) { self.newest.pop_front(); }
+        self.offset += 1;
+        Ok(())
+    }
+
+    fn mark(&mut self, series: usize, changed: &mut Vec<usize>) {
+        if !self.dirty {
+            self.dirty = true;
+            changed.push(series);
+        }
+    }
+
+    fn summary(&mut self) -> ApmValue {
+        self.total.first_hour = self.hours.front().map(|(hour, _)| *hour);
+        self.total.last_hour = self.hours.back().map(|(hour, _)| *hour);
+        self.total.incomplete = self.incomplete != 0;
+        self.total.paused_incomplete = self.paused_incomplete != 0;
+        self.total.value()
+    }
+
+    fn identity(&self) -> &HourSlice {
+        &self.hours[self.newest[0] - self.offset].1
+    }
 }
 
 type Laid = BTreeMap<(String, String), Part>;
@@ -114,9 +175,14 @@ pub struct ApmHead {
     window: i32,
     visits: u64,
     cached_window: Option<(i32, i32)>,
+    #[cfg(test)]
+    slices_summed: usize,
+    #[cfg(test)]
+    participants_ranked: usize,
     cached_whole: bool,
-    window_hours: BTreeMap<usize, VecDeque<(i32, HourSlice)>>,
-    cached_entries: Vec<(usize, Played, ApmValue)>,
+    participants: HashMap<usize, WindowSeries>,
+    boundaries: VecDeque<(i32, Vec<usize>)>,
+    ranking: BTreeSet<Ranked>,
 }
 
 impl ApmHead {
@@ -195,92 +261,19 @@ impl ApmHead {
             window: params.window_hours,
             visits: 0,
             cached_window: None,
+            #[cfg(test)]
+            slices_summed: 0,
+            #[cfg(test)]
+            participants_ranked: 0,
             cached_whole: true,
-            window_hours: BTreeMap::new(),
-            cached_entries: Vec::new(),
+            participants: HashMap::new(),
+            boundaries: VecDeque::new(),
+            ranking: BTreeSet::new(),
         })
     }
 
     pub fn visits(&self) -> u64 {
         self.visits
-    }
-
-    #[cfg(test)]
-    fn amounts(&mut self, first: i32, last: i32) -> BTreeMap<usize, Played> {
-        let mut out: BTreeMap<usize, Played> = BTreeMap::new();
-        let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
-        let lower = self.reach.partition_point(|&reach| reach < first);
-        let mut visits = 0;
-        for piece in &self.pieces[lower.min(upper)..upper] {
-            let timeline = &self.index.timelines[piece.timeline];
-            let (lo, hi) = (first.max(piece.hours.0), last.min(piece.hours.1));
-            if lo > hi {
-                continue;
-            }
-            visits += 1;
-            if timeline.bounds(lo, hi).is_none() {
-                continue;
-            }
-            for part in &piece.parts {
-                let spans: Vec<(i32, i32)> = match &self.memberships {
-                    None => vec![(lo, hi)],
-                    Some(members) => members.get(&part.tag).into_iter().flatten().map(|&(from, to)| (from.max(lo), to.min(hi))).filter(|(from, to)| from <= to).collect(),
-                };
-                let mut present = Vec::new();
-                for version in &part.versions {
-                    visits += 1;
-                    let seen = match &self.memberships {
-                        None => timeline.measure(first, last, version.from, version.to).is_some(),
-                        Some(members) => members.get(&part.tag).is_some_and(|runs| runs.iter().any(|&(member_first, member_last)| {
-                            let (from, to) = (first.max(member_first), last.min(member_last));
-                            from <= to && timeline.measure(from, to, version.from, version.to).is_some()
-                        })),
-                    };
-                    if seen {
-                        present.push(version);
-                    }
-                }
-                if present.is_empty() {
-                    continue;
-                }
-                let latest = present.iter().max_by_key(|version| version.from).expect("present is non-empty");
-                let display_at = (timeline.session, latest.from);
-                let entry = out.entry(part.series).or_default();
-                if entry.shown.is_none_or(|shown| shown <= display_at) {
-                    entry.shown = Some(display_at);
-                    entry.tag.clone_from(&part.tag);
-                    entry.name.clone_from(&latest.name);
-                    entry.name_missing.clone_from(&latest.name_missing);
-                }
-                for &(from_hour, to_hour) in &spans {
-                    for &(from, to) in &part.ranges {
-                        visits += 1;
-                        if let Some(measured) = timeline.measure(from_hour, to_hour, from, to) {
-                            entry.amount.observe(&measured);
-                            visits += 1;
-                            entry.amount.paused_incomplete |= timeline.paused_unknown_hours.range(measured.first_hour..=measured.last_hour).next().is_some();
-                        }
-                    }
-                }
-                for version in present {
-                    let Some(counts) = timeline.counts.get(&(version.actor, version.version)) else { continue };
-                    for &(from, to) in &spans {
-                        visits += 1;
-                        let (count, incomplete) = counts.range(from, to);
-                        entry.amount.counts.add(count);
-                        entry.amount.incomplete |= incomplete;
-                    }
-                }
-            }
-        }
-        visits += 1;
-        let whole = self.coverage.observed(first, last);
-        for played in out.values_mut() {
-            played.amount.gaps |= !whole;
-        }
-        self.visits += visits;
-        out.retain(|_, played| played.amount.first_hour.is_some());
-        out
     }
 
     fn window_at(&self, hour: Hour) -> Option<(i32, i32)> {
@@ -357,41 +350,62 @@ impl ApmHead {
         out
     }
 
-    fn rebuild_cached_from_window(&mut self) {
-        let gaps = !self.cached_whole;
-        let mut entries: Vec<(usize, Played, ApmValue)> = Vec::with_capacity(self.window_hours.len());
-        for (&series, deque) in &self.window_hours {
-            let mut played = Played::default();
-            for &(h, ref slice) in deque {
-                played.amount.counts.add(slice.counts);
-                played.amount.minutes.add_rational(slice.minutes.num, slice.minutes.den);
-                played.amount.incomplete |= slice.incomplete;
-                played.amount.paused_incomplete |= slice.paused_incomplete;
-                played.amount.first_hour = Some(played.amount.first_hour.map_or(h, |f| f.min(h)));
-                played.amount.last_hour = Some(played.amount.last_hour.map_or(h, |l| l.max(h)));
-                if let Some(at) = slice.shown
-                    && played.shown.is_none_or(|shown| shown <= at)
-                {
-                    played.shown = Some(at);
-                    played.tag.clone_from(&slice.tag);
-                    played.name.clone_from(&slice.name);
-                    played.name_missing.clone_from(&slice.name_missing);
-                }
-            }
-            if played.amount.first_hour.is_some() {
-                played.amount.gaps = gaps;
-                let value = played.amount.value();
-                entries.push((series, played, value));
-            }
+    fn add_hour(&mut self, hour: i32, changed: &mut Vec<usize>) -> Result<(), String> {
+        let slices = self.hour_slices(hour);
+        if slices.is_empty() { return Ok(()); }
+        let mut ids = Vec::with_capacity(slices.len());
+        for (id, slice) in slices {
+            let participant = self.participants.entry(id).or_default();
+            participant.enter(hour, slice)?;
+            participant.mark(id, changed);
+            ids.push(id);
         }
-        entries.sort_by(|(a_series, _, a), (b_series, _, b)| {
-            compare_apm_desc(a, b).then_with(|| self.ids[*a_series].cmp(&self.ids[*b_series]))
-        });
-        self.cached_entries = entries;
+        #[cfg(test)]
+        { self.slices_summed += ids.len(); }
+        self.boundaries.push_back((hour, ids));
+        Ok(())
     }
 
-    fn seed_window(&mut self, first: i32, last: i32) {
-        self.window_hours.clear();
+    fn expire_before(&mut self, first: i32, changed: &mut Vec<usize>) -> Result<(), String> {
+        while self.boundaries.front().is_some_and(|(hour, _)| *hour < first) {
+            let (_, ids) = self.boundaries.pop_front().unwrap();
+            #[cfg(test)]
+            { self.slices_summed += ids.len(); }
+            for id in ids {
+                let participant = self.participants.get_mut(&id).expect("a retained participant");
+                participant.expire()?;
+                participant.mark(id, changed);
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh(&mut self, changed: Vec<usize>) {
+        for series in changed {
+            let participant = self.participants.get_mut(&series).expect("a changed participant");
+            let old = participant.cached.take().map(|(rank, _)| rank);
+            if participant.hours.is_empty() {
+                if let Some(old) = old { self.ranking.remove(&old); }
+                self.participants.remove(&series);
+                continue;
+            }
+            let value = participant.summary();
+            let rank = Ranked { series, rate: std::cmp::Reverse(participant.total.rate()) };
+            if old != Some(rank) {
+                if let Some(old) = old { self.ranking.remove(&old); }
+                self.ranking.insert(rank);
+                #[cfg(test)]
+                { self.participants_ranked += 1; }
+            }
+            participant.cached = Some((rank, value));
+            participant.dirty = false;
+        }
+    }
+
+    fn seed_window(&mut self, first: i32, last: i32, changed: &mut Vec<usize>) -> Result<(), String> {
+        self.participants.clear();
+        self.boundaries.clear();
+        self.ranking.clear();
         let upper = self.pieces.partition_point(|piece| piece.hours.0 <= last);
         let lower = self.reach.partition_point(|&reach| reach < first);
         let mut hours_to_visit: Vec<i32> = Vec::new();
@@ -407,83 +421,61 @@ impl ApmHead {
         }
         hours_to_visit.sort_unstable();
         hours_to_visit.dedup();
-        for h in hours_to_visit {
-            let slices = self.hour_slices(h);
-            for (series, slice) in slices {
-                self.window_hours.entry(series).or_default().push_back((h, slice));
-            }
+        for hour in hours_to_visit {
+            self.add_hour(hour, changed)?;
         }
-        self.cached_window = Some((first, last));
-        self.cached_whole = self.coverage.observed(first, last);
-        self.visits += 1;
-        self.rebuild_cached_from_window();
-    }
-}
-
-impl HeadValue for ApmHead {
-    fn columns(&self) -> usize {
-        APM_COLUMNS.len()
+        Ok(())
     }
 
-    fn answer(&mut self, hour: Hour, reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+    fn update_window(&mut self, hour: Hour, reset: bool) -> Result<(), String> {
         if !self.index.analysis.recorded {
             return Err("Player orders were not recorded in this campaign.".into());
         }
         let (first, last) = self.window_at(hour).ok_or("This time is outside the recording.")?;
-        if !reset && self.cached_window == Some((first, last)) {
-        } else if !reset
-            && let Some((p_first, p_last)) = self.cached_window
-            && first >= p_first
-            && last >= p_last
-            && i64::from(first - p_first) + i64::from(last - p_last) <= 8
+        if !reset && self.cached_window == Some((first, last)) { return Ok(()); }
+        let previous = self.cached_window.take();
+        let mut changed = Vec::new();
+        if !reset && let Some((old_first, old_last)) = previous
+            && first >= old_first && last >= old_last
+            && (i64::from(first) - i64::from(old_first)) + (i64::from(last) - i64::from(old_last)) <= 8
         {
-            let mut dirty = false;
-            self.window_hours.retain(|_, deque| {
-                while deque.front().is_some_and(|&(h, _)| h < first) {
-                    deque.pop_front();
-                    dirty = true;
-                }
-                !deque.is_empty()
-            });
-            for h in (p_last + 1)..=last {
-                let slices = self.hour_slices(h);
-                if !slices.is_empty() {
-                    dirty = true;
-                    for (series, slice) in slices {
-                        self.window_hours.entry(series).or_default().push_back((h, slice));
-                    }
-                }
-            }
-            let whole = self.coverage.observed(first, last);
-            self.visits += 1;
-            let gaps_changed = whole != self.cached_whole;
-            self.cached_window = Some((first, last));
-            self.cached_whole = whole;
-            if dirty {
-                self.rebuild_cached_from_window();
-            } else if gaps_changed {
-                let gaps = !whole;
-                for (_, played, value) in &mut self.cached_entries {
-                    played.amount.gaps = gaps;
-                    value.gaps = gaps;
-                }
+            self.expire_before(first, &mut changed)?;
+            let entering = (i64::from(old_last) + 1).max(i64::from(first));
+            for h in entering..=i64::from(last) {
+                self.add_hour(h as i32, &mut changed)?;
             }
         } else {
-            self.seed_window(first, last);
+            self.seed_window(first, last, &mut changed)?;
         }
-        for (series, Played { amount, tag, name, name_missing, .. }, value) in &self.cached_entries {
-            rows.row(*series as u128, &self.ids[*series]);
+        self.refresh(changed);
+        self.cached_whole = self.coverage.observed(first, last);
+        self.cached_window = Some((first, last));
+        self.visits += 1;
+        Ok(())
+    }
+}
+
+impl HeadValue for ApmHead {
+    fn columns(&self) -> usize { APM_COLUMNS.len() }
+
+    fn answer(&mut self, hour: Hour, reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+        self.update_window(hour, reset)?;
+        for rank in &self.ranking {
+            let participant = &self.participants[&rank.series];
+            let (_, value) = participant.cached.as_ref().expect("a ranked participant");
+            let look = participant.identity();
+            rows.row(rank.series as u128, &self.ids[rank.series]);
             rows.float(value.apm);
             rows.float(value.confirmed_apm);
             rows.number(value.orders.as_deref().and_then(|orders| orders.parse().ok()));
             rows.number(value.paused_orders.as_deref().and_then(|orders| orders.parse().ok()));
             rows.float(value.unpaused_minutes);
             rows.flag(value.complete);
-            rows.flag(value.gaps);
-            rows.text(Some(tag));
-            rows.number(amount.last_hour.map(i64::from));
-            rows.text(name.as_deref());
-            rows.text(name_missing.as_deref());
+            rows.flag(!self.cached_whole);
+            rows.text(Some(&look.tag));
+            rows.number(participant.total.last_hour.map(i64::from));
+            rows.text(look.name.as_deref());
+            rows.text(look.name_missing.as_deref());
             rows.text(value.confirmed_orders.as_deref());
             rows.text(value.unpaused_minutes_num.as_deref());
             rows.text(value.unpaused_minutes_den.as_deref());

@@ -7,7 +7,7 @@ const HOURS: i32 = 400;
 
 fn recording(per_hour: impl Fn(i32) -> u64) -> Arc<Index> {
     let mut session = dashboard_base::test_fixtures::session(7);
-    session.qpc_frequency = 1;
+    session.qpc_frequency = 7;
     let actor = |id: u64, tag: &[u8]| Actor { id, player: id as i32, country: id as u32, since_qpc: 0, at_qpc: 0, user: Vec::new(), name: b"player".to_vec(), tag: tag.to_vec() };
     let mut events = Vec::new();
     let mut spans = Vec::new();
@@ -47,16 +47,16 @@ fn a_followed_eapm_is_the_request_paths_summary_of_the_trailing_window_at_every_
     let mut head = followed(&index);
     for hour in [0, 9, 10, 100, 167, 168, 169, 250, 333, HOURS - 1] {
         let (first, last) = head.window_at(hour).unwrap();
-        let amounts = head.amounts(first, last);
+        head.update_window(hour, false).unwrap();
         let reply = query(&index, &ApmParams { branch_id: "4".into(), group: ApmGroup::Country, registry: false, hour: None, first_hour: Some(first), last_hour: Some(last),
             tags: None, membership: None, players: Vec::new(), buckets: 1 }, &AtomicBool::new(false)).unwrap();
-        assert_eq!(amounts.len(), reply.series.len(), "the series at hour {hour}");
-        for series in &reply.series {
-            let at = head.ids.binary_search(&series.id).expect("a laid series");
-            let played = &amounts[&at];
-            assert_eq!(serde_json::to_value(played.amount.value()).unwrap(), serde_json::to_value(&series.summary).unwrap(), "{} at hour {hour}", series.id);
-            assert_eq!(played.tag, series.tag.clone().unwrap());
-            assert_eq!(played.amount.last_hour, Some(series.hour));
+        assert_eq!(head.ranking.len(), reply.series.len(), "the series at hour {hour}");
+        for (rank, series) in head.ranking.iter().zip(reply.series) {
+            assert_eq!(head.ids[rank.series], series.id);
+            let participant = &head.participants[&rank.series];
+            assert_eq!(&participant.cached.as_ref().unwrap().1, &series.summary, "{} at hour {hour}", series.id);
+            assert_eq!(participant.identity().tag, series.tag.unwrap());
+            assert_eq!(participant.total.last_hour, Some(series.hour));
         }
     }
 }
@@ -102,7 +102,7 @@ fn player_display_tag_uses_only_versions_present_in_the_window() {
         window_hours: 30,
     })
     .unwrap();
-    let amounts = head.amounts(0, 25);
+    head.update_window(25, true).unwrap();
     let reply = query(&index, &ApmParams {
         branch_id: "4".into(),
         group: ApmGroup::Player,
@@ -118,7 +118,11 @@ fn player_display_tag_uses_only_versions_present_in_the_window() {
     .unwrap();
     assert_eq!(reply.series.len(), 1);
     assert_eq!(reply.series[0].tag.as_deref(), Some("ITA"));
-    assert_eq!(amounts.values().next().unwrap().tag, "ITA");
+    assert_eq!(head.participants[&0].identity().tag, "ITA");
+    for hour in 26..=41 {
+        head.update_window(hour, false).unwrap();
+        assert_eq!(head.participants[&0].identity().tag, if hour < 40 { "ITA" } else { "GER" });
+    }
 }
 
 #[test]
@@ -169,7 +173,7 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
         window_hours: 15,
     })
     .unwrap();
-    let amounts_early = query_head.amounts(0, 14);
+    query_head.update_window(14, true).unwrap();
     let reply_early = query(&index, &ApmParams {
         branch_id: "4".into(),
         group: ApmGroup::Player,
@@ -195,13 +199,13 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
 
     let p1_idx = query_head.ids.binary_search(&"user:7531".to_owned()).unwrap();
     let p2_idx = query_head.ids.binary_search(&"user:7532".to_owned()).unwrap();
-    assert_eq!(amounts_early[&p1_idx].name.as_deref(), Some("EarlyName"));
-    assert_eq!(amounts_early[&p1_idx].tag, "CUSTOM_MOD_TAG_12345");
-    assert_eq!(amounts_early[&p2_idx].name, None);
-    assert_eq!(amounts_early[&p2_idx].name_missing.as_deref(), Some("Player name is not valid UTF-8."));
+    assert_eq!(query_head.participants[&p1_idx].identity().name.as_deref(), Some("EarlyName"));
+    assert_eq!(query_head.participants[&p1_idx].identity().tag, "CUSTOM_MOD_TAG_12345");
+    assert_eq!(query_head.participants[&p2_idx].identity().name, None);
+    assert_eq!(query_head.participants[&p2_idx].identity().name_missing.as_deref(), Some("Player name is not valid UTF-8."));
 
-    let amounts_late = query_head.amounts(25, 39);
-    assert_eq!(amounts_late[&p1_idx].name.as_deref(), Some("LateName"));
+    query_head.update_window(39, false).unwrap();
+    assert_eq!(query_head.participants[&p1_idx].identity().name.as_deref(), Some("LateName"));
 }
 
 #[test]
@@ -334,57 +338,71 @@ fn multi_hour_apm_tile_preserves_hourly_min_max_endpoints_and_gap_breaks() {
 }
 
 #[test]
-fn apm_head_advances_incrementally_across_sliding_window_and_skips_unchanged_hours() {
+fn apm_played_hours_update_only_entering_and_expiring_slices_and_ranks() {
+    use dashboard_base::test_fixtures::{played, replay, source};
+    use dashboard_follow::panel::{AtHour, ProductRead};
+    use std::sync::Mutex;
+
     let index = recording(|hour| (hour % 5) as u64);
-    let mut incremental = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
-        branch_id: "4".into(),
-        group: ApmGroup::Country,
-        tags: None,
-        membership: None,
-        players: Vec::new(),
-        first_hour: 0,
-        last_hour: HOURS - 1,
-        window_hours: 168,
-    })
-    .unwrap();
-    let mut fresh = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
-        branch_id: "4".into(),
-        group: ApmGroup::Country,
-        tags: None,
-        membership: None,
-        players: Vec::new(),
-        first_hour: 0,
-        last_hour: HOURS - 1,
-        window_hours: 168,
-    })
-    .unwrap();
-    let (f0, l0) = incremental.window_at(170).unwrap();
-    incremental.seed_window(f0, l0);
-    let after_seed = incremental.visits();
-    let (f1, l1) = incremental.window_at(171).unwrap();
-    incremental.window_hours.retain(|_, deque| {
-        while deque.front().is_some_and(|&(h, _)| h < f1) {
-            deque.pop_front();
-        }
-        !deque.is_empty()
-    });
-    let slices = incremental.hour_slices(l1);
-    for (series, slice) in slices {
-        incremental.window_hours.entry(series).or_default().push_back((l1, slice));
+    let membership = vec![
+        ApmMembership { tag: "GER".into(), first_hour: 0, last_hour: HOURS - 1 },
+        ApmMembership { tag: "ITA".into(), first_hour: 50, last_hour: 120 },
+    ];
+    let params = ApmHeadParams {
+        branch_id: "4".into(), group: ApmGroup::Country, tags: None, membership: Some(membership.clone()), players: vec![],
+        first_hour: 0, last_hour: HOURS - 1, window_hours: 168,
+    };
+    let head = Mutex::new(ApmHead::new(Arc::clone(&index), &params).unwrap());
+    let panel = AtHour {
+        cold: Arc::new(|_, _| unreachable!()), read: Arc::new(|_, _| unreachable!()),
+        advance: Arc::new(move |hour, reset, _, _| {
+            let mut head = head.lock().unwrap();
+            let before = (head.slices_summed, head.participants_ranked);
+            head.update_window(hour, reset).unwrap();
+            let rows: Vec<_> = head.ranking.iter().map(|rank| {
+                let mut value = head.participants[&rank.series].cached.as_ref().unwrap().1.clone();
+                value.gaps = !head.cached_whole;
+                (&head.ids[rank.series], value)
+            }).collect();
+            let value = serde_json::json!({ "slices": head.slices_summed - before.0, "ranked": head.participants_ranked - before.1, "rows": rows });
+            ProductRead { value: Arc::new(Ok(value)), rows: rows.len() as u64, fresh: true, pending: false, live: None, lanes: vec![] }
+        }),
+    };
+    let replay = replay((170..=176).map(|hour| source(1, hour, None)).collect()).into_timelines(&Default::default()).unwrap();
+    let reads = played(&replay, &panel, 170, 176);
+    let mut costs = Vec::new();
+    for read in reads.iter().filter(|read| read.hour > 170) {
+        let actual = read.value.as_ref().as_ref().unwrap();
+        let exact = query(&index, &ApmParams {
+            branch_id: "4".into(), group: ApmGroup::Country, registry: false, hour: None, first_hour: Some(read.hour - 167), last_hour: Some(read.hour),
+            tags: None, membership: Some(membership.clone()), players: vec![], buckets: 1,
+        }, &AtomicBool::new(false)).unwrap();
+        let expected: Vec<_> = exact.series.iter().map(|row| (&row.id, &row.summary)).collect();
+        assert_eq!(actual["rows"], serde_json::to_value(expected).unwrap(), "rank and exact operands at {}", read.hour);
+        costs.push((read.hour, actual["slices"].as_u64().unwrap(), actual["ranked"].as_u64().unwrap()));
     }
-    incremental.cached_window = Some((f1, l1));
-    incremental.cached_whole = incremental.coverage.observed(f1, l1);
-    incremental.rebuild_cached_from_window();
-    let step_visits = incremental.visits() - after_seed;
-    let fresh_map = fresh.amounts(f1, l1);
-    assert_eq!(incremental.cached_entries.len(), fresh_map.len());
-    for (series, _, val) in &incremental.cached_entries {
-        assert_eq!(
-            serde_json::to_value(val).unwrap(),
-            serde_json::to_value(fresh_map[series].amount.value()).unwrap(),
-        );
+    eprintln!("(hour, participant slices summed, participants ranked): {costs:?}");
+    assert_eq!(costs.len(), 6);
+    assert!(costs.iter().all(|&(_, slices, ranked)| slices == 2 && ranked <= 1), "(hour, participant slices summed, participants ranked): {costs:?}");
+}
+
+#[test]
+fn expiring_a_slice_restores_the_remaining_clock_quality_and_latest_observation() {
+    let mut player = WindowSeries::default();
+    for (hour, session, minutes, incomplete) in [
+        (5, 2, Minutes { num: 1, den: 3 }, true),
+        (6, 1, Minutes { num: 1, den: 5 }, false),
+    ] {
+        player.enter(hour, HourSlice { shown: Some((session, 0)), minutes, incomplete, paused_incomplete: incomplete, ..Default::default() }).unwrap();
     }
-    assert!(step_visits < 20, "single-hour incremental slide should visit O(participants), got {step_visits}");
+    assert_eq!(player.identity().shown, Some((2, 0)));
+    assert!(!player.summary().complete);
+    player.expire().unwrap();
+    let value = player.summary();
+    assert_eq!(player.identity().shown, Some((1, 0)));
+    assert_eq!(value.unpaused_minutes_num.as_deref(), Some("1"));
+    assert_eq!(value.unpaused_minutes_den.as_deref(), Some("5"));
+    assert_eq!(value.paused_orders.as_deref(), Some("0"));
 }
 
 fn coverage_fixture() -> Index {
