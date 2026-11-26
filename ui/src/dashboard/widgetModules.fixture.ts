@@ -5,7 +5,7 @@ import { widgetDefinitions } from './definitions';
 
 export async function loadEveryWidgetModule(): Promise<number> {
   const definitions = widgetDefinitions();
-  await Promise.all([
+  await Promise.allSettled([
     ...definitions.map(definition => loadWidgetRenderer(definition.kind)),
     ...FAMILY_VIEWS.map(entry => loadWidgetRenderer(entry.kind, entry.view)),
     ...FAMILY_VIEWS.map(entry => new Promise<void>(resolve => {
