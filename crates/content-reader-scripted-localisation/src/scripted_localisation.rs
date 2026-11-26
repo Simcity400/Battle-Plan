@@ -244,6 +244,7 @@ fn entry(item: &Item, bodies: &Bodies<'_>) -> Entry {
             trigger_present,
         });
     }
+    texts.shrink_to_fit();
     Entry { texts }
 }
 
