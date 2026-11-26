@@ -15,3 +15,11 @@ test('whole-branch group requests reuse recorded membership union while pending 
   assert.equal(worldRequestTags({ kind: 'selected' }, [], groups, 20).ready, false);
   assert.deepEqual(worldRequestTags({ kind: 'all' }, [], groups, 20), { tags: [], ready: true, reason: null });
 });
+
+test('a later roster gap leaves the whole-branch request ready for members known before it, in either membership', () => {
+  const gapped = { ...groups, factions: groups.factions.map(faction => ({ ...faction, incomplete: [{ firstHour: 18, lastHour: 19 }] })) } as CountryGroupReply;
+  for (const membership of ['hour', 'ever'] as const) {
+    const choice = { kind: 'group', group: { type: 'faction', id: 'synthetic-faction' }, membership, aggregate: false } as const;
+    assert.equal(worldRequestTags(choice, [], gapped, 20).ready, true, membership);
+  }
+});

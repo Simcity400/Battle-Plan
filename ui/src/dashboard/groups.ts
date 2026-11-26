@@ -159,6 +159,7 @@ function readWorldFilter(selection: CountrySelection, fallback: readonly string[
 
 const CHOOSE = 'Choose a country in the widget settings.';
 const INCOMPLETE = 'Group membership is incomplete for this campaign.';
+const MEMBERS_UNAVAILABLE = 'Group members are unavailable at this time.';
 const UNAVAILABLE = 'This group is unavailable in this campaign.';
 
 type FilterQueries = Map<string, PlaybackIntervals<WorldFilter>>;
@@ -246,7 +247,7 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
     ? identities.keysDuring(runs.filter(run => run.firstHour <= hour).map(run => ({ ...run, lastHour: Math.min(run.lastHour, hour) })))
     : identities.keysDuring(members.map(tag => ({ tag, firstHour: hour, lastHour: hour })));
   return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
-    ? countryIds.size ? null : 'Group members are unavailable at this time.'
+    ? countryIds.size ? null : MEMBERS_UNAVAILABLE
     : selection.membership === 'ever' ? NO_MEMBERS.yet : NO_MEMBERS.hour };
 }
 
@@ -280,7 +281,7 @@ function readCountryMatch(selection: CountrySelection, fallback: readonly string
     const runs = groupRuns(groups!, selection.group);
     if (!runs) return { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE };
     const unobserved = groupUnobserved(groups!, selection.group);
-    if (!runs.length) return { ready: true, matches: () => false, known: ALWAYS, reason: unobserved.length ? unrecorded('ever') : NO_MEMBERS.ever };
+    if (!runs.length) return { ready: true, matches: () => false, known: ALWAYS, reason: unobserved.length ? INCOMPLETE : NO_MEMBERS.ever };
     const byTag = new Map<string, MembershipRun[]>();
     for (const run of runs) {
       const history = byTag.get(run.tag);
@@ -345,10 +346,16 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   const unobserved = groupUnobserved(groups, selection.group);
   if (selection.membership === 'ever') {
     const soFar = soFarMembership(groups, runs, Math.min(lastHour, everKnownBefore(unobserved) - 1));
-    const all = [...soFar.keys()];
-    if (!all.length && !unobserved.length) return { ...none, reason: NO_MEMBERS.ever, known };
-    const tags = all.slice(0, max);
-    return { tags, membership: new Map(tags.map(tag => [tag, soFar.get(tag)!])), unobserved, dropped: Math.max(0, all.length - max), known, reason: null };
+    if (!soFar.size && !unobserved.length) return { ...none, reason: NO_MEMBERS.ever, known };
+    const index = validCountryIdentityHistories(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null;
+    const countries = new Map<string, string[]>();
+    for (const [tag, spans] of soFar) {
+      const id = index?.keyAt(tag, spans[0].firstHour) ?? tag;
+      const held = countries.get(id);
+      if (held) held.push(tag); else countries.set(id, [tag]);
+    }
+    const tags = [...countries.values()].slice(0, max).flat();
+    return { tags, membership: new Map(tags.map(tag => [tag, soFar.get(tag)!])), unobserved, dropped: Math.max(0, countries.size - max), known, reason: null };
   }
   const members = [...new Set([...runs].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag)).map(run => run.tag))];
   if (!members.length && unobserved.length) return { ...none, unobserved, reason: INCOMPLETE, known };
@@ -373,7 +380,8 @@ export function worldRequestTags(selection: CountrySelection, fallback: string[]
   const identities = identitiesFor(groups, index);
   if (!identities || selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
-  const counted = selection.kind === 'group' && selection.membership === 'hour' ? { ...selection, membership: 'ever' as const } : selection;
-  const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, identities).reason;
+  const reason = resolved.reason ?? (selection.kind !== 'group' ? worldFilter(selection, fallback, groups, lastHour, identities).reason
+    : !resolved.tags.length ? groupUnobserved(groups!, selection.group).length ? INCOMPLETE : NO_MEMBERS.ever
+    : identities.keysDuring(groupRuns(groups!, selection.group) ?? []).size ? null : MEMBERS_UNAVAILABLE);
   return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }

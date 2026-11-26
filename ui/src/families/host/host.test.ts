@@ -1605,6 +1605,8 @@ test('every member so far is dated for filters: a later member never passes befo
   assert.deepEqual([match.matches('GER', 899), match.matches('ITA', 899)], [true, true]);
   assert.deepEqual([match.matches('GER', 900), match.matches('ITA', 960)], [false, false], 'from the first unknown roster hour nothing passes, even after the gap ends');
   assert.deepEqual([membershipUnrecordedAt(selection, groups, 899), membershipUnrecordedAt(selection, groups, 900), membershipUnrecordedAt(selection, groups, 960)], [null, EVER_UNRECORDED, EVER_UNRECORDED]);
+  const noEnemies = { ...everFaction([]), wars: [], unobserved: { humans: [], factions: [], wars: [{ firstHour: 20, lastHour: 30 }], unattributed: [] } } as unknown as CountryGroupReply;
+  assert.equal(countryMatch({ ...everOf({ type: 'war', tag: 'GER' }), membership: 'hour' }, [], noEnemies, 1000).reason, 'Group membership is incomplete for this campaign.', 'membership at the hour keeps its campaign-wide reason, never a date-specific one');
 });
 
 test('every member so far is dated for multi-country views: each mask ends before the first unknown roster hour, and the hours from it are unobserved (#1016)', () => {
@@ -1614,6 +1616,10 @@ test('every member so far is dated for multi-country views: each mask ends befor
   assert.equal(resolved.reason, null);
   assert.deepEqual([...resolved.membership!.entries()], [['GER', [{ tag: 'GER', firstHour: 0, lastHour: 299 }]]], 'Germany is a member so far up to 299; Italy, joining after the gap, is never presented');
   assert.deepEqual(effectiveCountryUnobserved(selection, resolved.unobserved), [[300, Number.MAX_SAFE_INTEGER]], 'members so far are unknown from 300 on, never the roster of 299 presented as current');
+  const renamed = { ...everFaction([], [{ tag: 'OLD', firstHour: 0, lastHour: 9 }, { tag: 'NEW', firstHour: 10, lastHour: 1000 }]),
+    countryIdentities: [{ tag: 'OLD', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 101 }] }, { tag: 'NEW', identities: [{ firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  const one = resolveCountries(selection, [], renamed, 1000, 1);
+  assert.deepEqual([one.tags, one.dropped], [['OLD', 'NEW'], 0], 'a limit counts countries, never a renamed country twice');
   assert.deepEqual([everStateAt(everBounds(selection, groups)!, 299).kind, everStateAt(everBounds(selection, groups)!, 300).kind], [null, 'unrecorded']);
 });
 
