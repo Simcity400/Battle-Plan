@@ -16,6 +16,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
 }
 
 pub struct Sky {
+    clock: viewer_scene_base::shader_constants::SurfaceClock,
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
 }
@@ -91,7 +92,11 @@ impl Sky {
             contents: bytemuck::cast_slice(&[[3_i16, -1], [-1, -1], [-1, 3]]),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Ok(Self { pipeline, vertices })
+        Ok(Self {
+            clock: viewer_scene_base::shader_constants::SurfaceClock::scene(&compiled),
+            pipeline,
+            vertices,
+        })
     }
 
     pub fn draw(
@@ -111,7 +116,12 @@ impl Sky {
             .pipeline
             .bindings(arena, &buffers, &textures)
             .map_err(refuse)?;
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled sky");
+        let mut pass = viewer_scene_base::shader_scene::surface_pass(
+            encoder,
+            targets,
+            "compiled sky",
+            self.clock.for_frames(&[frame]),
+        );
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);

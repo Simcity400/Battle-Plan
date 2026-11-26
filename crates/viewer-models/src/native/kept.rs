@@ -2325,6 +2325,7 @@ fn bind_group(
         None => program.bind_buffer(arena, buffer, &blocks),
     };
     Ok(Some(RecordedDraw {
+        reads_clock: viewer_scene_base::shader_constants::reads_time(program.constant_reads(), None),
         id: draw_id(),
         shown: true,
         bindings: bindings.map_err(invalid)?,

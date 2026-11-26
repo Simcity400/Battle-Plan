@@ -23,6 +23,7 @@ fn constants(fade: f32) -> Vec<u8> {
 pub const SHADOW_SLOT: u32 = 8;
 
 pub struct Lit {
+    pub clock: viewer_scene_base::shader_constants::RegionClock,
     retained: viewer_scene_base::shader_scene::Program,
     pub pipeline: Arc<gpu::Pipeline>,
     pub texel_reads: Option<String>,
@@ -84,6 +85,7 @@ impl Lit {
         );
         Ok(Self {
             retained,
+            clock: viewer_scene_base::shader_constants::RegionClock::new(&compiled, 13),
             pipeline,
             texel_reads,
         })
@@ -144,4 +146,3 @@ impl Lit {
             .map_err(refuse)
     }
 }
-

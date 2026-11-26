@@ -2,12 +2,22 @@ use eframe::wgpu;
 use std::cell::Cell;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+#[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Debug)]
+pub enum Motion {
+    #[default]
+    Still,
+    Shading,
+    Coverage,
+}
+
 #[derive(Default)]
 pub struct Coverage {
     resources: Option<Queries>,
     pending: Option<Receiver<Result<(), wgpu::BufferAsyncError>>>,
     used: Cell<u32>,
     sampling: bool,
+    tracking: bool,
+    changing_coverage: Cell<bool>,
     known: Option<bool>,
     obsolete: bool,
 }
@@ -49,6 +59,8 @@ impl Queries {
 impl Coverage {
     pub fn begin(&mut self, device: &wgpu::Device, changed: bool, views: usize, tracking: bool) {
         self.sampling = false;
+        self.tracking = tracking;
+        self.changing_coverage.set(false);
         if changed || !tracking {
             self.known = (!tracking).then_some(false);
             self.obsolete = self.pending.is_some();
@@ -101,8 +113,11 @@ impl Coverage {
         self.sampling = true;
     }
 
-    pub fn query(&self) -> Option<(&wgpu::QuerySet, u32)> {
-        if !self.sampling {
+    pub fn query(&self, motion: Motion) -> Option<(&wgpu::QuerySet, u32)> {
+        if motion == Motion::Coverage && self.tracking {
+            self.changing_coverage.set(true);
+        }
+        if !self.sampling || motion != Motion::Shading {
             return None;
         }
         let index = self.used.get();
@@ -155,7 +170,9 @@ impl Coverage {
     }
 
     pub fn live(&self) -> bool {
-        self.known
-            .unwrap_or(self.pending.is_some() || self.used.get() > 0)
+        self.changing_coverage.get()
+            || self
+                .known
+                .unwrap_or(self.pending.is_some() || self.used.get() > 0)
     }
 }

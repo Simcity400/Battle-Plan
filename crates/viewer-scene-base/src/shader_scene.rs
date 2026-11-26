@@ -391,17 +391,54 @@ pub fn surface_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     targets: &Targets,
     label: &str,
-    animated: bool,
-) -> (wgpu::RenderPass<'a>, bool) {
-    let query = animated.then(|| targets.surface_motion.query()).flatten();
-    let mut pass = world_pass_with_query(encoder, targets, label, query.map(|(set, _)| set));
-    if let Some((_, index)) = query {
-        pass.begin_occlusion_query(index);
-    }
-    (pass, query.is_some())
+    motion: viewer_gpu::surface_motion::Motion,
+) -> SurfacePass<'a> {
+    let query = targets.surface_motion.query(motion);
+    SurfacePass::new(
+        world_pass_with_query(encoder, targets, label, query.map(|(set, _)| set)),
+        query.map(|(_, index)| index),
+    )
 }
 
-fn world_pass_with_query<'a>(
+pub struct SurfacePass<'a> {
+    pass: wgpu::RenderPass<'a>,
+    sampled: bool,
+}
+
+impl<'a> SurfacePass<'a> {
+    pub fn new(mut pass: wgpu::RenderPass<'a>, index: Option<u32>) -> Self {
+        if let Some(index) = index {
+            pass.begin_occlusion_query(index);
+        }
+        Self {
+            pass,
+            sampled: index.is_some(),
+        }
+    }
+}
+
+impl<'a> std::ops::Deref for SurfacePass<'a> {
+    type Target = wgpu::RenderPass<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.pass
+    }
+}
+
+impl std::ops::DerefMut for SurfacePass<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pass
+    }
+}
+
+impl Drop for SurfacePass<'_> {
+    fn drop(&mut self) {
+        if self.sampled {
+            self.pass.end_occlusion_query();
+        }
+    }
+}
+
+pub fn world_pass_with_query<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     targets: &Targets,
     label: &str,

@@ -188,7 +188,7 @@ impl Arrow {
         );
         Ok(Self {
             retained,
-            reads_time: viewer_scene_base::shader_constants::reads_time(&pipeline, block, if symbol { 32 } else { 48 }),
+            reads_time: viewer_scene_base::shader_constants::reads_time(pipeline.constant_reads(), Some((block, if symbol { 32 } else { 48 }))),
             pipeline,
             reference,
             block,

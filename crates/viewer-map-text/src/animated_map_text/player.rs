@@ -418,12 +418,21 @@ impl Player {
         let camera_view = camera;
         let size = targets.world_size();
         let on_screen = |object: &Object| {
-            camera_view.project(object.origin, size).is_some_and(|[x, y]| {
-                x >= 0.0 && y >= 0.0 && x < size[0] as f32 && y < size[1] as f32
-            })
+            camera_view
+                .project(object.origin, size)
+                .is_some_and(|[x, y]| {
+                    x >= 0.0 && y >= 0.0 && x < size[0] as f32 && y < size[1] as f32
+                })
         };
-        if self.provinces.values().flat_map(|province| &province.queue)
-            .any(|object| shown(object.event.family) && camera_view.icon_distance(object.origin) < cutoff && on_screen(object))
+        if self
+            .provinces
+            .values()
+            .flat_map(|province| &province.queue)
+            .any(|object| {
+                shown(object.event.family)
+                    && camera_view.icon_distance(object.origin) < cutoff
+                    && on_screen(object)
+            })
         {
             arena.request_frame();
         }

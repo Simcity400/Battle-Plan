@@ -541,6 +541,8 @@ pub struct ReceiverInputs<'a> {
 }
 
 pub struct LitInputs<'a> {
+    pub fog: bool,
+    pub pulses: bool,
     pub retained: Option<&'a RefCell<viewer_scene_base::shader_scene::State>>,
     pub view: usize,
     pub frames: &'a [&'a [u8]],
@@ -801,7 +803,12 @@ impl TreePass {
         ] {
             textures.insert(binding(slot, Stage::Pixel), view.clone());
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "trees");
+        let clock = compiled.clock.for_styles(inputs.pulses);
+        let animated = clock
+            .live(inputs.fog)
+            .max(clock.pixel_motion(inputs.retained_pixel_b2.time_read_by(&compiled.pipeline)));
+        let mut pass =
+            viewer_scene_base::shader_scene::surface_pass(encoder, targets, "trees", animated);
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);
@@ -907,6 +914,10 @@ impl TreePass {
             }
         }
         Ok(())
+    }
+
+    pub fn receiver_motion(&self, fog: bool) -> viewer_gpu::surface_motion::Motion {
+        self.compiled_receiver.clock.live(fog)
     }
 
     pub fn draw_unlit(

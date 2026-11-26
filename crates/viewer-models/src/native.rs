@@ -283,6 +283,7 @@ type Constants<'a> = [Option<&'a [u8]>; CONSTANT_BINDINGS];
 type Textures<'a> = [Option<&'a wgpu::TextureView>; TEXTURE_BINDINGS];
 
 struct Resident {
+    reads_clock: bool,
     pipeline: mesh_shader::Pass,
     required_constants: Vec<u32>,
     required_textures: Vec<u32>,
@@ -831,6 +832,7 @@ fn draw_id() -> u64 {
 }
 
 struct RecordedDraw {
+    reads_clock: bool,
     id: u64,
     shown: bool,
     bindings: shader_pipeline::gpu::Bindings,
@@ -858,6 +860,10 @@ impl RecordedDraw {
 }
 
 impl DrawList {
+    fn check_motion(&self, arena: &shader_pipeline::gpu::Arena) {
+        arena.check_motion(|| self.draws.iter().any(|draw| draw.shown && draw.reads_clock));
+    }
+
     pub(crate) fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
         self.record_slice(pass, &self.draws);
     }
@@ -1328,7 +1334,10 @@ impl ModelPass {
         let cast = self.cast.replace(false);
         self.prepare_list(arena, frame, inputs, &walk, None)?;
         self.cast.set(true);
-        Ok(cast && self.native.borrow().as_ref().is_some_and(|native| native.casters.repeated()))
+        let native = self.native.borrow();
+        let list = &native.as_ref().expect("prepared above").casters;
+        list.draws.check_motion(arena);
+        Ok(cast && list.repeated())
     }
 
     pub fn prepare_kept(
@@ -1383,7 +1392,9 @@ impl ModelPass {
         let mut renderer = self.native.borrow_mut();
         let native = renderer.as_mut().expect("made by the list");
         native.lent = Some((queue_at, ordinal));
-        Ok(std::mem::take(&mut native.list(walk.id).draws))
+        let draws = std::mem::take(&mut native.list(walk.id).draws);
+        draws.check_motion(arena);
+        Ok(draws)
     }
 
     fn instanced(&self, caster: bool) -> u32 {
@@ -2263,7 +2274,9 @@ impl ModelPass {
             "native_lit_prepare"
         });
         let _pass = viewer_runtime::profiling::span(prepare_span(self.label, queue));
-        self.walk_native(arena, frame, inputs, queue, object, None)
+        let draws = self.walk_native(arena, frame, inputs, queue, object, None)?;
+        draws.check_motion(arena);
+        Ok(draws)
     }
 
     fn walk_native(
@@ -2734,6 +2747,7 @@ impl ModelPass {
                                             .fold(0, |mask, slot| mask | (1 << slot));
                                         let key = native.residents.len();
                                         native.residents.push(Resident {
+                                            reads_clock: viewer_scene_base::shader_constants::reads_time(pipeline.pipeline.constant_reads(), None),
                                             retained,
                                             geometry,
                                             pipeline,
@@ -2968,6 +2982,7 @@ impl ModelPass {
                                 }
                                 match (bindings, recording.as_deref_mut(), blocks) {
                                     (Some(bindings), _, _) => commands.draws.push(RecordedDraw {
+                                        reads_clock: gpu.reads_clock,
                                         id: 0,
                                         shown: true,
                                         bindings,
@@ -3285,6 +3300,7 @@ mod tests {
                 lists[usize::from(index >= 11) * 2]
                     .draws
                     .push(RecordedDraw {
+                        reads_clock: false,
                         id: draw_id(),
                         shown: index != 8 && index != 5,
                         bindings,

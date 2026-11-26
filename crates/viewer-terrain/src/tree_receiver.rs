@@ -16,6 +16,7 @@ fn constants(matrix: [[f32; 4]; 4], fade: f32) -> Vec<u8> {
     bytes
 }
 pub struct Receiver {
+    pub clock: viewer_scene_base::shader_constants::SurfaceClock,
     pub pipeline: Arc<gpu::Pipeline>,
 }
 impl Receiver {
@@ -59,7 +60,10 @@ impl Receiver {
         viewer_scene_base::shader_constants::scene(&pipeline).map_err(refuse)?;
         viewer_scene_base::shader_constants::both(&pipeline, 1, 80, std::slice::from_ref(&(0..76)))
             .map_err(refuse)?;
-        Ok(Self { pipeline })
+        Ok(Self {
+            pipeline,
+            clock: viewer_scene_base::shader_constants::SurfaceClock::scene(&compiled),
+        })
     }
     pub fn bindings(
         &self,

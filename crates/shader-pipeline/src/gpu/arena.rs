@@ -6,6 +6,7 @@ const RECENT: usize = 8;
 const BELT_CHUNK: u64 = 1 << 20;
 
 pub struct Arena {
+    watch_motion: std::cell::Cell<bool>,
     device: wgpu::Device,
     alignment: u64,
     storage_limit: u64,
@@ -58,6 +59,16 @@ impl Slice {
 }
 
 impl Arena {
+    pub fn track_motion(&self, track: bool) {
+        self.watch_motion.set(track);
+    }
+
+    pub fn check_motion(&self, live: impl FnOnce() -> bool) {
+        if self.watch_motion.get() && !self.needs_frame() && live() {
+            self.request_frame();
+        }
+    }
+
     pub fn request_frame(&self) {
         self.inner.borrow_mut().needs_frame = true;
     }
@@ -83,6 +94,7 @@ impl Arena {
 
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
+            watch_motion: Default::default(),
             device: device.clone(),
             alignment: u64::from(device.limits().min_uniform_buffer_offset_alignment),
             storage_limit: u64::from(device.limits().max_storage_buffer_binding_size),

@@ -3000,6 +3000,26 @@ fn aircraft_report_ties_use_effective_assets_not_mesh_bindings() {
 fn missile_explosions_in_two_provinces_keep_their_own_players() {
     use viewer_models::strike_effects::{Effect, test_support::presentation};
 
+    let bounds = [3., 7., 5., 9.];
+    let launch = launches::Launch {
+        mesh: 0,
+        wing: 1,
+        position: [80.; 3],
+        spawn: 0.25,
+        length: 1.,
+        seed: 19,
+        explosions: Some(Arc::new(vec![(4, Some(([4., 0., 8.], bounds)))])),
+    };
+    let period = launch.period();
+    let plan = AircraftPlan {
+        launches: vec![launch],
+        ..AircraftPlan::default()
+    };
+    assert_eq!(plan.next_launch_impact(0.5, |at| at == bounds), 0.75);
+    assert_eq!(plan.next_launch_impact(1.25, |_| true), period);
+    assert_eq!(plan.next_launch_impact(period + 0.25, |_| true), 1.);
+    assert!(plan.next_launch_impact(0.5, |_| false).is_infinite());
+
     let explosions = crate::aircraft::AircraftPlan::rocket_explosions_for_tests(
         &[(7, [7.0, 1.0, 1.0]), (9, [9.0, 1.0, 1.0])],
         &[1.0, 2.5],

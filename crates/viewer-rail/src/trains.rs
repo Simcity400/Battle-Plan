@@ -526,6 +526,10 @@ thread_local! {
     static ROUTE_SAMPLES: Cell<usize> = const { Cell::new(0) };
 }
 
+fn train_arrival(now: f32, enter: f32, leave: f32, tail: f32) -> Option<f32> {
+    (now <= leave + tail).then(|| (enter - now).max(0.))
+}
+
 impl TrainPlan {
     pub fn route_count(&self) -> usize {
         self.routes.len()
@@ -867,68 +871,61 @@ impl TrainPlan {
         if self.fleet_cap <= 0 || speed <= 0.0 {
             return f32::INFINITY;
         }
+        use viewer_models::motion_view::Reach;
+        let reach = |car: &Wagon| {
+            let slot = assets.library.slot(&car.entity)?;
+            Some(Reach::of(
+                &assets.library.meshes[slot],
+                car.scale,
+                car.shift,
+            ))
+        };
         let mut next = f32::INFINITY;
-        let mut passage = |route: &Route, car: &Wagon, departure: f32, tail: f32| {
-            let Some(slot) = assets.library.slot(&car.entity) else {
-                return;
-            };
+        let mut passage = |route: &Route, reach, departure: f32, tail: f32| {
             let path = route
                 .distance()
                 .iter()
                 .zip(route.points())
-                .map(|(&distance, position)| {
-                    (
-                        departure + distance / speed,
-                        std::array::from_fn(|axis| position[axis] + car.shift[axis]),
-                    )
-                });
-            view.times(
-                path,
-                &assets.library.meshes[slot],
-                car.scale.abs(),
-                |start, end| {
-                    if end + tail >= seconds {
-                        next = next.min((start - seconds).max(0.0));
-                    }
-                },
-            );
+                .map(|(&distance, &position)| (departure + distance / speed, position));
+            view.times(path, reach, |start, end| {
+                if let Some(delay) = train_arrival(seconds, start, end, tail) {
+                    next = next.min(delay);
+                }
+            });
         };
         for service in &self.services {
-            let mut tail = 0.0;
+            let mut tail = 0.;
             for &index in &service.cars {
                 let car = assets.wagon(index);
                 tail += car.length / speed;
-                passage(
-                    &self.routes[service.route],
-                    car,
-                    service.departed as f32,
-                    tail,
-                );
+                if let Some(reach) = reach(car) {
+                    passage(
+                        &self.routes[service.route],
+                        reach,
+                        service.departed as f32,
+                        tail,
+                    );
+                }
             }
         }
-        let cars: BTreeSet<_> = self
-            .consists
-            .values()
-            .flatten()
-            .flat_map(|consist| {
-                consist
-                    .fixed()
-                    .chain(consist.wagon_last)
-                    .chain(consist.wagons.iter().copied())
-            })
-            .collect();
-        for (&weight, routes) in self.weights.iter().zip(&self.departures) {
-            if weight <= 0 {
-                continue;
+        let mut future = None;
+        for consist in self.consists.values().flatten() {
+            for index in consist
+                .fixed()
+                .chain(consist.wagon_last)
+                .chain(consist.wagons.iter().copied())
+            {
+                if let Some(car) = reach(assets.wagon(index)) {
+                    future.get_or_insert_with(Reach::default).enclose(car);
+                }
             }
-            for &route in routes {
-                for &car in &cars {
-                    passage(
-                        &self.routes[route],
-                        assets.wagon(car),
-                        self.next_departure as f32,
-                        0.0,
-                    );
+        }
+        if let Some(reach) = future {
+            for (weight, routes) in self.weights.iter().zip(&self.departures) {
+                if *weight > 0 {
+                    for &route in routes {
+                        passage(&self.routes[route], reach, self.next_departure as f32, 0.);
+                    }
                 }
             }
         }
@@ -2540,6 +2537,9 @@ mod tests {
 
     #[test]
     fn playback_skips_keep_the_same_timetable_consists_and_positions() {
+        assert_eq!(train_arrival(8., 10., 12., 3.), Some(2.));
+        assert_eq!(train_arrival(14., 10., 12., 3.), Some(0.));
+        assert_eq!(train_arrival(16., 10., 12., 3.), None);
         let assets = assets();
         for skip in [0, 1, 20, 1000] {
             let mut previous = plan();
@@ -2680,5 +2680,4 @@ mod tests {
         assert!((route.at(603.0).0[0] - 603.0).abs() < 0.001);
         assert_eq!(route.at(9.0).0, [9.0, 10.0, 0.0]);
     }
-
 }

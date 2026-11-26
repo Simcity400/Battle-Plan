@@ -2525,7 +2525,10 @@ impl Pass {
         self.simulations = advance.simulations;
         self.fades = advance.fades;
         self.drawn = advance.drawn;
-        Packets { draws: advance.packets, moving: advance.moving }
+        Packets {
+            draws: advance.packets,
+            moving: advance.moving,
+        }
     }
 
     pub fn join_frame(&mut self) {
@@ -2534,12 +2537,17 @@ impl Pass {
 
     pub fn finish_frame(&mut self, camera: Camera) -> Packets {
         let _profile = viewer_runtime::profiling::thread_span("weather_packets");
-        let Packets { draws: mut packets, mut moving } = self.settle();
+        let Packets {
+            draws: mut packets,
+            mut moving,
+        } = self.settle();
         let entity_span = viewer_runtime::profiling::span("weather_entity_packets");
         let before = packets.len();
         self.entity_simulations.sort(sort::Eye::of(camera));
         self.entity_simulations.packets(&self.assets.entities, &self.events, &mut packets);
-        moving |= packets[before..].iter().any(|packet| !packet.instances.is_empty());
+        moving |= packets[before..]
+            .iter()
+            .any(|packet| !packet.instances.is_empty());
         drop(entity_span);
         if viewer_runtime::view_record::on() {
             use viewer_runtime::view_record::add;
@@ -2562,7 +2570,10 @@ impl Pass {
         }
         let _order_span = viewer_runtime::profiling::span("weather_order");
         native::order(&mut packets);
-        Packets { draws: packets, moving }
+        Packets {
+            draws: packets,
+            moving,
+        }
     }
 
     pub fn warm(&mut self, device: &wgpu::Device) {

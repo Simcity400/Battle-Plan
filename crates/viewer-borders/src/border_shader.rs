@@ -23,6 +23,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
 }
 
 pub struct Inputs<'a> {
+    pub fog: bool,
     pub retained: Option<&'a RefCell<viewer_scene_base::shader_scene::State>>,
     pub frames: &'a [&'a [u8]],
     pub snow_mud: &'a wgpu::TextureView,
@@ -48,7 +49,8 @@ pub const SHADOW_SLOT: u32 = 3;
 
 pub struct Border {
     retained: viewer_scene_base::shader_scene::Program,
-    animated: bool,
+    default_clock: viewer_scene_base::shader_constants::SurfaceClock,
+    selected_clock: viewer_scene_base::shader_constants::SurfaceClock,
     pipeline: Arc<gpu::Pipeline>,
     pub texel_reads: Option<String>,
 }
@@ -141,9 +143,12 @@ impl Border {
             &raster,
             &depth_state,
         );
+        use viewer_scene_base::shader_constants::SurfaceClock;
+        let selection_color = [0, 4, 8, 12].map(|byte| (binding(2, Stage::Pixel), byte));
         Ok(Self {
             retained,
-            animated: viewer_scene_base::shader_constants::reads_time(&pipeline, 2, 16),
+            default_clock: SurfaceClock::new(&compiled, 2, 16, &selection_color),
+            selected_clock: SurfaceClock::new(&compiled, 2, 16, &[]),
             pipeline,
             texel_reads,
         })
@@ -208,22 +213,38 @@ impl Border {
                     self.pipeline
                         .bindings(arena, &buffers, &textures)
                         .map_err(refuse)?,
+                    targets.surface_motion.query(if batch.selection == [0.; 4] {
+                        self.default_clock.live(inputs.fog)
+                    } else {
+                        self.selected_clock.live(inputs.fog)
+                    }),
                 ));
             }
         }
         if bound.is_empty() {
             return Ok(retained);
         }
-        let (mut pass, sampled) = viewer_scene_base::shader_scene::surface_pass(encoder, targets, "compiled borders", self.animated);
+        let query_set = bound
+            .iter()
+            .find_map(|(_, _, query)| query.map(|(set, _)| set));
+        let mut pass = viewer_scene_base::shader_scene::world_pass_with_query(
+            encoder,
+            targets,
+            "compiled borders",
+            query_set,
+        );
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         let mut previous = None;
-        for (batch, binding) in &bound {
+        for (batch, binding, query) in &bound {
             binding.bind_after(pass, previous);
             previous = Some(binding);
+            if let Some((_, index)) = query {
+                pass.begin_occlusion_query(*index);
+            }
             for run in &batch.runs {
                 shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(0, run.vertices.slice(..));
@@ -232,9 +253,9 @@ impl Border {
                 shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(run.range.clone(), 0, 0..1);
             }
-        }
-        if sampled {
-            pass.end_occlusion_query();
+            if query.is_some() {
+                pass.end_occlusion_query();
+            }
         }
         Ok(retained)
     }

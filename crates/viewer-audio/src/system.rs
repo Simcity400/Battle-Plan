@@ -673,7 +673,10 @@ impl Control {
         self.request_loads();
         self.keep_device(now);
         self.mix(now);
-        if self.wake.is_some() && self.engine.needs_frame() && let Some(wake) = self.wake.take() {
+        if self.wake.is_some()
+            && self.engine.needs_frame()
+            && let Some(wake) = self.wake.take()
+        {
             wake();
         }
         self.write_log(now);

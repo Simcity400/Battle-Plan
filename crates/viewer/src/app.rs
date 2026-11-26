@@ -5302,21 +5302,13 @@ impl Viewer {
                 .and_then(|capture| capture.time)
                 .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
             self.convoy_refused.clear();
-            let convoys = prepared.convoy_units(
+            units.extend(prepared.convoy_units(
                 &document.unit_models,
                 time,
                 &|x, z| heights.surface_height(x, z),
                 convoys_shown,
                 &mut self.convoy_refused,
-            );
-            if !self.playing && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
-                && convoys.iter().any(|(_, convoy)| camera.project_wrapped(convoy.position, pixels).is_some_and(|[x, y]| {
-                    x >= 0.0 && y >= 0.0 && x < pixels[0] as f32 && y < pixels[1] as f32
-                }))
-            {
-                request_animation_frame(ui.ctx(), map_timer.elapsed());
-            }
-            units.extend(convoys);
+            ));
             scene
                 .apply(&state.device, &state.queue, SceneInput::SetRaidUnits(units))
                 .map_err(|error| error.to_string())?;
@@ -6717,12 +6709,17 @@ impl Viewer {
             request_animation_frame(ui.ctx(), map_timer.elapsed());
         } else if !self.playing && self.capture.is_none() {
             let view = viewer_models::motion_view::MotionView::new(&camera, pixels);
-            let mut delay = scene.next_arrival(&camera, &view, animation_time);
-            if sailing && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+            let mut delay = scene.next_arrival(&camera, pixels, &view, animation_time);
+            if sailing
+                && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
                 && let Some(prepared) = &posed
             {
                 let heights = document.content.heights();
-                delay = delay.min(prepared.next_convoy_arrival(&document.unit_models, &view, &|x, z| heights.surface_height(x, z)));
+                delay = delay.min(prepared.next_convoy_arrival(
+                    &document.unit_models,
+                    &view,
+                    &|x, z| heights.surface_height(x, z),
+                ));
             }
             if let Ok(delay) = Duration::try_from_secs_f32(delay) {
                 request_frame_after(ui.ctx(), delay, map_timer.elapsed());
@@ -7270,7 +7267,8 @@ fn request_animation_frame(ctx: &egui::Context, elapsed: Duration) {
 
 fn request_frame_after(ctx: &egui::Context, delay: Duration, elapsed: Duration) {
     let interval = Duration::from_secs_f64(1.0 / viewer_runtime::display_refresh::rate());
-    let prediction = ctx.input(|input| Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
+    let prediction =
+        ctx.input(|input| Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
     ctx.request_repaint_after(delay.max(interval).saturating_sub(elapsed) + prediction);
 }
 

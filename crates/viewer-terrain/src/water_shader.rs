@@ -63,6 +63,8 @@ fn quad(map: [u32; 2]) -> [[i16; 2]; 4] {
 }
 
 pub struct Inputs<'a> {
+    pub fog: bool,
+    pub animated_sea_bed: bool,
     pub retained: Option<&'a RefCell<viewer_scene_base::shader_scene::State>>,
     pub frames: &'a [&'a [u8]],
     pub time: f32,
@@ -77,7 +79,7 @@ pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Water {
     retained: viewer_scene_base::shader_scene::Program,
-    animated: bool,
+    clock: viewer_scene_base::shader_constants::SurfaceClock,
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
     pub reads_snow_mud: bool,
@@ -173,7 +175,7 @@ impl Water {
         );
         Ok(Self {
             retained,
-            animated: viewer_scene_base::shader_constants::reads_time(&pipeline, 3, 0),
+            clock: viewer_scene_base::shader_constants::SurfaceClock::new(&compiled, 3, 0, &[]),
             pipeline,
             vertices,
             reads_snow_mud,
@@ -237,7 +239,22 @@ impl Water {
         if bound.is_empty() {
             return Ok(());
         }
-        let (mut pass, sampled) = viewer_scene_base::shader_scene::surface_pass(encoder, targets, "compiled water", self.animated);
+        let animated = self.clock.live(inputs.fog).max(
+            self.clock.pixel_motion(
+                inputs.retained_pixel_b2.time_read_by(&self.pipeline)
+                    || (inputs.animated_sea_bed
+                        && self
+                            .pipeline
+                            .sampled_slots()
+                            .any(|key| key == binding(REFRACTION_SLOT, Stage::Pixel))),
+            ),
+        );
+        let mut pass = viewer_scene_base::shader_scene::surface_pass(
+            encoder,
+            targets,
+            "compiled water",
+            animated,
+        );
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
@@ -251,9 +268,6 @@ impl Water {
             previous = Some(bindings);
             shader_pipeline::gpu::stats::draw();
             pass.draw(0..4, 0..1);
-        }
-        if sampled {
-            pass.end_occlusion_query();
         }
         Ok(())
     }

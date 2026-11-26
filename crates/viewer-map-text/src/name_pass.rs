@@ -1255,7 +1255,12 @@ impl NamePass {
                 compiled.bindings(arena, frame, draw.alpha_offset, page)
             })
             .collect::<io::Result<_>>()?;
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled map names");
+        let mut pass = viewer_scene_base::shader_scene::surface_pass(
+            encoder,
+            targets,
+            "compiled map names",
+            compiled.clock.for_frames(frames),
+        );
         let pass = &mut pass;
         compiled.begin(pass);
         let buffers = draws

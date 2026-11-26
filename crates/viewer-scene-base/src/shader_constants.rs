@@ -40,20 +40,157 @@ pub fn both(
     Ok(())
 }
 
-pub fn reads_time(pipeline: &gpu::Pipeline, slot: u32, byte: u32) -> bool {
-    use std::mem::offset_of;
-    use viewer_gpu::frame::FrameConstants;
-    let scene_times = [
-        offset_of!(FrameConstants, cam_look_at_dir_global_time) + 3 * size_of::<f32>(),
-        offset_of!(FrameConstants, fow_opacity_time_snow_mud_day_night) + size_of::<f32>(),
-    ];
-    pipeline.constant_reads().iter().any(|buffer| {
+use std::mem::offset_of;
+use viewer_gpu::frame::FrameConstants;
+use viewer_gpu::surface_motion::Motion;
+
+const FOG: u32 = offset_of!(FrameConstants, fow_opacity_time_snow_mud_day_night) as u32;
+const SCENE_TIMES: [u32; 2] = [
+    offset_of!(FrameConstants, cam_look_at_dir_global_time) as u32 + 12,
+    FOG + 4,
+];
+
+pub fn reads_time(buffers: &[shader_pipeline::Buffer], own: Option<(u32, u32)>) -> bool {
+    buffers.iter().any(|buffer| {
         let reads = |at| buffer.reads.iter().any(|read| read.contains(&at));
         match buffer.binding / 2 {
-            0 => scene_times.iter().any(|&at| reads(at as u32)),
-            bound => bound == slot && reads(byte),
+            0 => SCENE_TIMES.iter().any(|&at| reads(at)),
+            bound => own.is_some_and(|(slot, byte)| bound == slot && reads(byte)),
         }
     })
+}
+
+pub struct SurfaceClock {
+    fog_on: Motion,
+    fog_off: Motion,
+    pixel: Motion,
+}
+
+pub struct RegionClock {
+    idle: SurfaceClock,
+    pulsing: SurfaceClock,
+}
+
+impl RegionClock {
+    pub fn new(program: &shader_pipeline::Compiled, style_slot: u32) -> Self {
+        Self {
+            idle: SurfaceClock::classify(program, None, &[], Some(style_slot)),
+            pulsing: SurfaceClock::classify(program, None, &[], None),
+        }
+    }
+
+    pub fn for_styles(&self, pulses: bool) -> &SurfaceClock {
+        if pulses { &self.pulsing } else { &self.idle }
+    }
+}
+
+impl SurfaceClock {
+    pub fn scene(program: &shader_pipeline::Compiled) -> Self {
+        Self::classify(program, None, &[], None)
+    }
+
+    pub fn new(
+        program: &shader_pipeline::Compiled,
+        slot: u32,
+        byte: u32,
+        zeros: &[shader_pipeline::clock::Slot],
+    ) -> Self {
+        Self::classify(program, Some((slot, byte)), zeros, None)
+    }
+
+    fn classify(
+        program: &shader_pipeline::Compiled,
+        own: Option<(u32, u32)>,
+        zeros: &[shader_pipeline::clock::Slot],
+        style_slot: Option<u32>,
+    ) -> Self {
+        let pixel = if ["discard", "frag_depth", "sample_mask"]
+            .iter()
+            .any(|term| program.pixel.wgsl.contains(term))
+        {
+            Motion::Coverage
+        } else {
+            Motion::Shading
+        };
+        let depends = |fog: bool| {
+            [
+                (Stage::Vertex, &program.vertex),
+                (Stage::Pixel, &program.pixel),
+            ]
+            .into_iter()
+            .map(|(stage, shader)| {
+                let scene = binding(0, stage);
+                let read = |&(register, byte): &(u32, u32)| {
+                    shader.buffers.iter().any(|b| {
+                        b.binding == register && b.reads.iter().any(|range| range.contains(&byte))
+                    })
+                };
+                let mut times = vec![(scene, SCENE_TIMES[0]), (scene, SCENE_TIMES[1])];
+                times.extend(own.map(|(slot, byte)| (binding(slot, stage), byte)));
+                if !times.iter().any(read) {
+                    return Motion::Still;
+                }
+                let mut zeros = zeros.iter().copied().filter(read).collect::<Vec<_>>();
+                if !fog {
+                    let fade = offset_of!(FrameConstants, ambient_neg_x_fow_fade) as u32 + 12;
+                    zeros.extend([(scene, FOG), (scene, fade)].into_iter().filter(read));
+                }
+                let channel = style_slot
+                    .map(|slot| binding(slot, Stage::Pixel))
+                    .filter(|slot| shader.textures.iter().any(|(binding, _)| binding == slot))
+                    .map(|slot| (slot, 2));
+                let live = (zeros.is_empty() && channel.is_none())
+                    || shader_pipeline::clock::reads_with_zeros(
+                        &shader.wgsl,
+                        &times,
+                        &zeros,
+                        channel,
+                    )
+                    .unwrap_or(true);
+                match (live, stage) {
+                    (false, _) => Motion::Still,
+                    (true, Stage::Pixel) => pixel,
+                    (true, _) => Motion::Coverage,
+                }
+            })
+            .max()
+            .unwrap_or_default()
+        };
+        Self {
+            fog_on: depends(true),
+            fog_off: depends(false),
+            pixel,
+        }
+    }
+
+    pub fn live(&self, fog: bool) -> Motion {
+        if fog { self.fog_on } else { self.fog_off }
+    }
+
+    pub fn pixel_motion(&self, changing_input: bool) -> Motion {
+        if changing_input {
+            self.pixel
+        } else {
+            Motion::Still
+        }
+    }
+
+    pub fn for_frames(&self, frames: &[&[u8]]) -> Motion {
+        if self.fog_on == self.fog_off {
+            return self.fog_on;
+        }
+        let fade = offset_of!(FrameConstants, ambient_neg_x_fow_fade) + 12;
+        frames
+            .iter()
+            .map(|frame| {
+                let fog = [FOG as usize, fade]
+                    .iter()
+                    .any(|&at| frame.get(at..at + 4) != Some(&[0; 4]));
+                self.live(fog)
+            })
+            .max()
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -63,6 +200,14 @@ pub enum WorldPixelConstants {
 }
 
 impl WorldPixelConstants {
+    pub fn time_read_by(&self, pipeline: &gpu::Pipeline) -> bool {
+        matches!(self, Self::Border(_))
+            && pipeline.constant_reads().iter().any(|buffer| {
+                buffer.binding == binding(2, Stage::Pixel)
+                    && buffer.reads.iter().any(|range| range.contains(&16))
+            })
+    }
+
     pub fn border(time: f32, selection: [f32; 4], alpha: f32) -> Self {
         Self::Border([
             selection[0],

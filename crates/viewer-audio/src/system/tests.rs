@@ -130,7 +130,12 @@ fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
     let wake: Wake = Arc::new(move || send.send(()).unwrap());
     let mut repeating = frame("shot", 1);
     repeating.emitters[0].restart = true;
-    control.apply(Command::Frame(1, Arc::clone(&source), repeating, Some(wake)));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        repeating,
+        Some(wake),
+    ));
     assert!(control.engine.active());
     receive_load(&mut control, &relay);
     for _ in 0..4 * RATE as usize / STEP {
@@ -148,14 +153,28 @@ fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
     assert!(control.engine.active(), "one block of elapsed time plays one block, however often it is stepped");
     play_until(&mut control, |control| !control.engine.active());
     hold(&mut control);
-    assert_eq!(wakes.try_iter().count(), 1, "the finished voice wakes its owner once");
+    assert_eq!(
+        wakes.try_iter().count(),
+        1,
+        "the finished voice wakes its owner once"
+    );
     assert!(control.output.is_none());
     assert_eq!(status.lock().unwrap().device, None);
-    control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 2), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        frame("shot", 2),
+        None,
+    ));
     assert!(control.engine.active());
     control.apply(Command::Release(1));
     assert!(!control.engine.active());
-    control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 3), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        frame("shot", 3),
+        None,
+    ));
     assert!(!control.engine.active());
 }
 
@@ -196,7 +215,12 @@ fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
     let mut control = Control::new(Arc::new(Mutex::new(Status::default())), None, true);
     let relay = relay(&mut control);
     control.apply(Command::Claim(1));
-    control.apply(Command::Frame(1, Arc::clone(&source), frame("crackle", 1), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        frame("crackle", 1),
+        None,
+    ));
     receive_load(&mut control, &relay);
     assert!(!control.engine.active());
     assert!(
@@ -209,7 +233,12 @@ fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
         "{:?}",
         control.engine.notes.lines()
     );
-    control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 2), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        frame("shot", 2),
+        None,
+    ));
     receive_load(&mut control, &relay);
     assert!(control.engine.loaded(0));
 }
@@ -227,8 +256,18 @@ fn another_content_stack_drops_the_old_ones_notes() {
         control.step_at(now);
     };
     control.apply(Command::Claim(1));
-    control.apply(Command::Frame(1, Arc::clone(&old), frame("absent", 1), None));
-    control.apply(Command::Frame(1, Arc::clone(&old), frame("crackle", 2), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&old),
+        frame("absent", 1),
+        None,
+    ));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&old),
+        frame("crackle", 2),
+        None,
+    ));
     receive_load(&mut control, &relay);
     assert_eq!(control.engine.notes.lines().len(), 2);
     publish(&mut control);
@@ -254,7 +293,12 @@ fn a_request_to_a_stopped_loader_is_refused_by_name() {
     drop(requests);
     control.sounds = sounds;
     control.apply(Command::Claim(1));
-    control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 1), None));
+    control.apply(Command::Frame(
+        1,
+        Arc::clone(&source),
+        frame("shot", 1),
+        None,
+    ));
     assert!(control.engine.active());
     control.step();
     assert!(!control.engine.active());

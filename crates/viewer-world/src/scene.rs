@@ -218,6 +218,8 @@ impl Drop for ShaderFrame<'_> {
 #[derive(Clone, Copy, PartialEq)]
 struct SurfaceView {
     camera: Camera,
+    fog: bool,
+    pulses: bool,
     hour: Option<i32>,
     graphics: dashboard_core::protocol::MapGraphics,
     visibility: viewer_foundation::mode_visibility::Visibility,
@@ -2713,7 +2715,9 @@ impl Scene {
         let rail_alpha = self.rail_fade.update(&camera, animation_time);
         let rail_target = f32::from(u8::from(camera.height < camera.defines.railway_cutoff));
         if self.snow_presentation.changing()
-            || (self.railways.is_some() && rail_alpha != rail_target && camera.defines.railway_cutoff_speed > 0.0)
+            || (self.railways.is_some()
+                && rail_alpha != rail_target
+                && camera.defines.railway_cutoff_speed > 0.0)
         {
             arena.request_frame();
         }
@@ -2950,8 +2954,16 @@ impl Scene {
         self.poses.give(animation_time, &mut self.pose_jobs);
         self.detail_laps.lap("poses");
         let offsets = viewer_terrain::terrain::wrap_copies(camera, size);
+        let fog = self.fog && self.visibility.fog_of_war;
+        let pulses = self.interaction_hour.is_some()
+            && self
+                .political
+                .as_ref()
+                .is_some_and(|view| view.style_pulses());
         let view = SurfaceView {
             camera,
+            fog,
+            pulses,
             hour: self.interaction_hour,
             graphics: self.graphics,
             visibility: self.visibility,
@@ -2959,7 +2971,16 @@ impl Scene {
             interface: overlay.interface,
         };
         let changed = self.surface_view.replace(view) != Some(view);
-        self.targets.as_mut().expect("created above").surface_motion.begin(device, changed, offsets.len(), self.interaction_hour.is_some());
+        self.targets
+            .as_mut()
+            .expect("created above")
+            .surface_motion
+            .begin(
+                device,
+                changed,
+                offsets.len(),
+                self.interaction_hour.is_some(),
+            );
         let targets = self.targets.as_ref().expect("created above");
         let events_copy_span = viewer_runtime::profiling::span("frame_events");
         let events = step::frame_events(
@@ -3500,11 +3521,12 @@ impl Scene {
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
                 if shadow_receivers {
+                    let trees = self.trees.as_ref().filter(|_| !no_trees);
+                    let tree_query = trees.and_then(|trees| targets.surface_motion.query(trees.receiver_motion(fog)));
                     if let Some(mut pass) = self
                         .shadow
-                        .prepass_pass(&mut encoder, wgpu::LoadOp::Clear(1.0))
-                        && let Some(trees) = &self.trees
-                        && !no_trees
+                        .prepass_pass(&mut encoder, wgpu::LoadOp::Clear(1.0), tree_query)
+                        && let Some(trees) = trees
                     {
                         trees.draw_unlit(
                             arena,
@@ -3572,8 +3594,9 @@ impl Scene {
                             ],
                         },
                     )?;
+                    let receiver_query = targets.surface_motion.query(self.compiled_terrain.motion(viewer_terrain::terrain_shader::Mode::Receiver, fog, true));
                     if let Some(mut pass) =
-                        self.shadow.prepass_pass(&mut encoder, wgpu::LoadOp::Load)
+                        self.shadow.prepass_pass(&mut encoder, wgpu::LoadOp::Load, receiver_query)
                     {
                         self.compiled_terrain.draw(&mut pass, &terrain_receiver);
                     }
@@ -3701,7 +3724,8 @@ impl Scene {
                     },
             ));
             if let Some(prepared) = prepared {
-                let mut pass = viewer_scene_base::shader_scene::world_pass(&mut encoder, targets, "map world");
+                let animated = self.compiled_terrain.motion(mode, fog, pulses);
+                let mut pass = viewer_scene_base::shader_scene::surface_pass(&mut encoder, targets, "map world", animated);
                 self.compiled_terrain.draw(&mut pass, &prepared);
             }
             mark(&mut encoder, "terrain");
@@ -3718,6 +3742,7 @@ impl Scene {
                 });
             }
             let border_inputs = || viewer_borders::border_shader::Inputs {
+                fog,
                 retained: Some(retained_scene),
                 frames: view_frames,
                 snow_mud: &self.snow_mud.view,
@@ -3755,6 +3780,7 @@ impl Scene {
                     &mut encoder,
                     targets,
                     viewer_terrain::river_shader::Inputs {
+                        fog,
                         retained: Some(retained_scene),
                         frames: view_frames,
                         shadow_matrix: &globals.shadow_matrix,
@@ -3835,6 +3861,8 @@ impl Scene {
                         planes: side_planes(camera, size),
                     },
                     viewer_terrain::trees::LitInputs {
+                        fog,
+                        pulses,
                         retained: Some(retained_scene),
                         view,
                         frames: &native_frame_bytes,
@@ -3863,6 +3891,8 @@ impl Scene {
                     &mut encoder,
                     targets,
                     viewer_terrain::water_shader::Inputs {
+                        fog,
+                        animated_sea_bed: self.compiled_terrain.motion(viewer_terrain::terrain_shader::Mode::Underwater, fog, true) != viewer_gpu::surface_motion::Motion::Still,
                         retained: Some(retained_scene),
                         frames: view_frames,
                         time: map_time,
@@ -4390,20 +4420,30 @@ impl Scene {
         faults.draw_sentinel(device, &mut encoder, targets);
         targets.surface_motion.finish(&mut encoder);
         mark(&mut encoder, "overlay_sprites");
-        if self.interaction_hour.is_some() && !targets.surface_motion.live() && (
-            particle_packets.as_ref().is_some_and(|packets| packets.moving)
-            || self.strikes.visible_effect(camera, size, |effect| shows_impact(&self.graphics, effect))
-            || player.is_some_and(|player| player.pass.shows_animation(&actor_camera, None, &actor_offsets))
-            || mesh_layers.iter().any(|(pass, enabled, _, layer)| {
-                *enabled && pass.is_some_and(|pass| {
-                    if matches!(*layer, "trains" | "aircraft") {
-                        pass.drawn() != 0
-                    } else {
-                        pass.shows_animation(&actor_camera, seen_ground, &pose_offsets)
-                    }
+        if self.interaction_hour.is_some()
+            && !targets.surface_motion.live()
+            && (particle_packets
+                .as_ref()
+                .is_some_and(|packets| packets.moving)
+                || self
+                    .strikes
+                    .visible_effect(camera, size, |effect| shows_impact(&self.graphics, effect))
+                || player.is_some_and(|player| {
+                    player
+                        .pass
+                        .shows_animation(&actor_camera, None, &actor_offsets)
                 })
-            })
-        ) {
+                || mesh_layers.iter().any(|(pass, enabled, _, layer)| {
+                    *enabled
+                        && pass.is_some_and(|pass| {
+                            if matches!(*layer, "trains" | "aircraft") {
+                                pass.drawn() != 0
+                            } else {
+                                pass.shows_animation(&actor_camera, seen_ground, &pose_offsets)
+                            }
+                        })
+                }))
+        {
             arena.request_frame();
         }
         if let Some(timer) = timed.borrow_mut().as_mut() {
@@ -4437,7 +4477,11 @@ impl Scene {
         if let Some(frame_timer) = &mut self.frame_timer {
             frame_timer.submitted();
         }
-        self.targets.as_mut().expect("rendered above").surface_motion.submitted();
+        self.targets
+            .as_mut()
+            .expect("rendered above")
+            .surface_motion
+            .submitted();
         cpu_mark("queue_submit");
         self.compiled_terrain.submitted();
         if let Some(political) = political {
@@ -4683,6 +4727,7 @@ impl Scene {
 
     pub fn track_paused_motion(&mut self, hour: Option<i32>) {
         self.interaction_hour = hour;
+        self.arena.track_motion(hour.is_some());
     }
 
     pub fn needs_frame(&self) -> bool {
@@ -4697,6 +4742,7 @@ impl Scene {
     pub fn next_arrival(
         &self,
         camera: &Camera,
+        size: [u32; 2],
         view: &viewer_models::motion_view::MotionView,
         seconds: f32,
     ) -> f32 {
@@ -4713,6 +4759,19 @@ impl Scene {
         {
             next = next.min(plan.next_arrival(assets, view, seconds, |mission| {
                 self.graphics.air_mission(mission)
+            }));
+        }
+        if self.graphics.missile_explosions
+            && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+            && let Some((_, _, plan)) = &self.aircraft
+        {
+            let mut admission = None;
+            next = next.min(plan.next_launch_impact(seconds, |bounds| {
+                admission
+                    .get_or_insert_with(|| {
+                        viewer_gpu::province_admission::Admission::new(*camera, size)
+                    })
+                    .admits(bounds)
             }));
         }
         next
@@ -4881,11 +4940,16 @@ fn hidden_map_frame_actors(
     >,
 ) -> BTreeSet<(usize, u32, u32)> {
     let table = table.into_iter().filter(|_| !graphics.map_table);
-    let impacts = impacts.into_iter().filter_map(|(key, effect)| (!shows_impact(graphics, effect?)).then_some(key));
+    let impacts = impacts
+        .into_iter()
+        .filter_map(|(key, effect)| (!shows_impact(graphics, effect?)).then_some(key));
     table.chain(impacts).collect()
 }
 
-fn shows_impact(graphics: &dashboard_core::protocol::MapGraphics, effect: viewer_models::strike_effects::Effect) -> bool {
+fn shows_impact(
+    graphics: &dashboard_core::protocol::MapGraphics,
+    effect: viewer_models::strike_effects::Effect,
+) -> bool {
     use viewer_models::strike_effects::Effect;
     match effect {
         Effect::CriticalBombardment => graphics.bombardment_explosions,

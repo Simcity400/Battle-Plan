@@ -135,9 +135,49 @@ impl Clock {
 }
 
 pub fn analyse(module: &Module, info: &ModuleInfo) -> Clock {
+    analyse_with_zeros(module, info, &[], None)
+}
+
+pub fn reads_with_zeros(
+    wgsl: &str,
+    inputs: &[Slot],
+    zeros: &[Slot],
+    zero_channel: Option<Slot>,
+) -> Option<bool> {
+    let module = naga::front::wgsl::parse_str(wgsl).ok()?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .ok()?;
+    let clock = analyse_with_zeros(&module, &info, zeros, zero_channel);
+    Some(inputs.iter().any(|&(binding, byte)| {
+        clock
+            .direct
+            .iter()
+            .any(|&(b, start, end)| b == binding && start <= byte && byte < end)
+            || clock.bounded.iter().any(|bound| {
+                bound
+                    .terms
+                    .iter()
+                    .chain(&bound.per)
+                    .any(|&(slot, _)| slot == (binding, byte))
+            })
+    }))
+}
+
+fn analyse_with_zeros(
+    module: &Module,
+    info: &ModuleInfo,
+    zeros: &[Slot],
+    zero_channel: Option<Slot>,
+) -> Clock {
     let mut analysis = Analysis {
         module,
         info,
+        zeros,
+        zero_channel,
         vars: HashMap::new(),
         args: HashMap::new(),
         results: HashMap::new(),
@@ -640,6 +680,8 @@ enum Place<'m> {
 struct Analysis<'m> {
     module: &'m Module,
     info: &'m ModuleInfo,
+    zeros: &'m [Slot],
+    zero_channel: Option<Slot>,
     vars: HashMap<Var, Vec<Option<Val>>>,
     args: HashMap<Handle<Function>, Vec<Vec<Option<Val>>>>,
     results: HashMap<Handle<Function>, Vec<Option<Val>>>,
@@ -1094,6 +1136,64 @@ impl<'m> Analysis<'m> {
         comps(self.module, self.shape(frame, expression))
     }
 
+    fn nonnegative_bounded(&self, frame: &Frame<'m>, expr: Handle<Expression>) -> bool {
+        let expressions = &frame.function.expressions;
+        let nonnegative = |v| matches!(expressions[v], Expression::Literal(Literal::F32(n)) if n.is_finite() && n >= 0.0);
+        match expressions[expr] {
+            Expression::Math {
+                fun: MathFunction::Saturate,
+                ..
+            } => true,
+            Expression::Math {
+                fun: MathFunction::Clamp,
+                arg1: Some(lo),
+                arg2: Some(hi),
+                ..
+            } => nonnegative(lo) && nonnegative(hi),
+            Expression::Math {
+                fun: MathFunction::Min,
+                arg,
+                arg1: Some(hi),
+                ..
+            } if nonnegative(hi) => {
+                matches!(expressions[arg], Expression::Math { fun: MathFunction::Max, arg, arg1: Some(lo), .. }
+                    if nonnegative(arg) || nonnegative(lo))
+            }
+            _ => false,
+        }
+    }
+
+    fn unit_wave(frame: &Frame<'m>, expr: Handle<Expression>) -> bool {
+        let expressions = &frame.function.expressions;
+        let constant =
+            |expr, n| matches!(expressions[expr], Expression::Literal(Literal::F32(v)) if v == n);
+        let scaled = |a, b| {
+            if !constant(b, 0.5) {
+                return false;
+            }
+            let Expression::Binary {
+                op: BinaryOperator::Add,
+                left,
+                right,
+            } = expressions[a]
+            else {
+                return false;
+            };
+            let wave = |e| {
+                matches!(
+                    expressions[e],
+                    Expression::Math {
+                        fun: MathFunction::Sin | MathFunction::Cos,
+                        ..
+                    }
+                )
+            };
+            (wave(left) && constant(right, 1.0)) || (wave(right) && constant(left, 1.0))
+        };
+        matches!(expressions[expr], Expression::Binary { op: BinaryOperator::Multiply, left, right }
+            if scaled(left, right) || scaled(right, left))
+    }
+
     fn joined(
         &mut self,
         frame: &mut Frame<'m>,
@@ -1175,6 +1275,15 @@ impl<'m> Analysis<'m> {
                     } => {
                         let mut out = Vec::new();
                         buffer_values(module, binding, offset, shape, &mut out);
+                        if !self.zeros.is_empty() {
+                            for value in &mut out {
+                                if let Val::Affine(affine) = value
+                                    && affine.terms.keys().any(|slot| self.zeros.contains(slot))
+                                {
+                                    *value = Val::literal(0.0);
+                                }
+                            }
+                        }
                         out
                     }
                     Place::Buffer {
@@ -1231,7 +1340,16 @@ impl<'m> Analysis<'m> {
                         let y = &b[index % b.len().max(1)];
                         match op {
                             BinaryOperator::Add => add(x, y, 1.0),
+                            BinaryOperator::Subtract if self.zero_channel.is_some()
+                                && x.constant() == Some((1.0, 0.0)) && y.constant() == Some((0.0, 0.0)) => Val::literal(1.0),
                             BinaryOperator::Subtract => add(x, y, -1.0),
+                            BinaryOperator::Multiply
+                                if !self.zeros.is_empty()
+                                    && ((x.constant() == Some((0.0, 0.0)) && self.nonnegative_bounded(frame, *right))
+                                        || (y.constant() == Some((0.0, 0.0)) && self.nonnegative_bounded(frame, *left))) =>
+                            {
+                                Val::literal(0.0)
+                            }
                             BinaryOperator::Multiply => product(x, y),
                             BinaryOperator::Divide => quotient(x, y),
                             _ => opaque([x, y]),
@@ -1262,6 +1380,17 @@ impl<'m> Analysis<'m> {
                 let each = |f: &dyn Fn(usize) -> Val| (0..count).map(f).collect::<Vec<_>>();
                 let (zero, one) = (Val::literal(0.0), Val::literal(1.0));
                 match fun {
+                    MathFunction::Mix if self.zero_channel.is_some() => each(&|i| {
+                        let (a, b, t) = (at(0, i), at(1, i), at(2, i));
+                        if b.constant() == Some((1.0, 0.0)) && a.constant().is_some_and(|(v, e)| e == 0.0 && (0.0..=1.0).contains(&v))
+                            && (t.constant() == Some((1.0, 0.0))
+                                || (a.constant() == b.constant() && arg2.is_some_and(|e| Self::unit_wave(frame, e))))
+                        {
+                            b
+                        } else {
+                            opaque([&a, &b, &t])
+                        }
+                    }),
                     MathFunction::Saturate => {
                         each(&|i| bounded(&at(0, i), Some(&zero), Some(&one), false))
                     }
@@ -1323,6 +1452,8 @@ impl<'m> Analysis<'m> {
                 }
             }
             Expression::ImageSample {
+                image,
+                gather,
                 coordinate,
                 array_index,
                 offset,
@@ -1339,7 +1470,16 @@ impl<'m> Analysis<'m> {
                     naga::SampleLevel::Gradient { x, y } => operands.extend([*x, *y]),
                     naga::SampleLevel::Auto | naga::SampleLevel::Zero => {}
                 }
-                self.joined(frame, expression, &operands)
+                let mut values = self.joined(frame, expression, &operands);
+                if let Some((binding, component)) = self.zero_channel
+                    && gather.is_none() && depth_ref.is_none()
+                    && let Expression::GlobalVariable(global) = frame.function.expressions[*image]
+                    && module.global_variables[global].binding.as_ref().is_some_and(|r| r.group == 1 && r.binding == binding)
+                    && let Some(value) = values.get_mut(component as usize)
+                {
+                    *value = Val::literal(0.0);
+                }
+                values
             }
             Expression::ImageLoad {
                 coordinate,
@@ -1482,6 +1622,42 @@ mod tests {
         assert_eq!(clock(vec![], vec![moment]).settles(TIME, SINCE), None);
         let past = saturating(1.0, 2.0, Some(0.0), Some(1.0));
         assert_eq!(clock(vec![], vec![past]).settles(TIME, SINCE), after(0.0));
+    }
+
+    #[test]
+    fn a_zero_weight_suppresses_only_the_clock_it_multiplies() {
+        let reads = |output, zeros: &[Slot]| {
+            let wgsl = format!(
+                "@group(0) @binding(3) var<uniform> inputs: vec4<f32>;
+                 @fragment fn main() -> @location(0) f32 {{
+                     let pulse = min(max(sin(inputs.x), 0.0), 1.0) * inputs.y;
+                     return {output};
+                 }}"
+            );
+            reads_with_zeros(&wgsl, &[(3, 0)], zeros, None)
+        };
+        assert_eq!(reads("pulse", &[]), Some(true));
+        assert_eq!(reads("pulse", &[(3, 4)]), Some(false));
+        assert_eq!(reads("pulse + inputs.x", &[(3, 4)]), Some(true));
+        assert_eq!(reads("pulse", &[(3, 8)]), Some(true));
+        let region = |output, zero_channel| {
+            let wgsl = format!(
+                "@group(0) @binding(3) var<uniform> inputs: vec4<f32>;
+                 @group(1) @binding(7) var styles: texture_2d<f32>;
+                 @group(2) @binding(7) var linear: sampler;
+                 @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) f32 {{
+                     let strength = textureSample(styles, linear, uv).b;
+                     let wave = (sin(inputs.x) + 1.0) * 0.5;
+                     let pulse = mix(mix(0.27, 1.0, 1.0 - strength), 1.0, wave);
+                     return {output};
+                 }}"
+            );
+            reads_with_zeros(&wgsl, &[(3, 0)], &[], zero_channel)
+        };
+        assert_eq!(region("pulse", None), Some(true));
+        assert_eq!(region("pulse", Some((7, 2))), Some(false));
+        assert_eq!(region("pulse", Some((7, 1))), Some(true));
+        assert_eq!(region("pulse + inputs.x", Some((7, 2))), Some(true));
     }
 
     #[test]

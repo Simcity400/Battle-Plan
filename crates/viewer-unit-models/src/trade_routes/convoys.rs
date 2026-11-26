@@ -195,6 +195,27 @@ fn collides(convoys: &[SailingConvoy], index: usize) -> bool {
     })
 }
 
+impl SailingConvoy {
+    fn arrival(&self, along: &[f32], start: f32, end: f32, speed: f32) -> f32 {
+        if !self.active {
+            return self.sleep.max(0.);
+        }
+        let at = along[self.segment] + self.distance;
+        if speed > 0. {
+            let towards = if at > end {
+                along[along.len() - 1] - at
+            } else {
+                start - at
+            };
+            (towards / speed).max(0.)
+        } else if speed < 0. && at >= start {
+            ((end - at) / speed).max(0.)
+        } else {
+            f32::INFINITY
+        }
+    }
+}
+
 impl ConvoyFleet {
     pub fn next_arrival(
         &self,
@@ -205,7 +226,9 @@ impl ConvoyFleet {
         height: &dyn Fn(f32, f32) -> f32,
     ) -> f32 {
         let mut next = f32::INFINITY;
-        for (index, route) in self.lines.iter().enumerate() {
+        for convoys in self.convoys.chunk_by(|a, b| a.line == b.line) {
+            let index = convoys[0].line;
+            let route = &self.lines[index];
             let Some(slot) = assets.bake_slot(&lines[index].entity) else {
                 continue;
             };
@@ -221,26 +244,15 @@ impl ConvoyFleet {
                 .iter()
                 .zip(&route.points)
                 .map(|(&at, &[x, z])| (at, [x, height(x.rem_euclid(route.width), z), z]));
-            view.times(path, mesh, 1.0, |start, end| {
-                for convoy in self.convoys.iter().filter(|convoy| convoy.line == index) {
-                    let at = times[convoy.segment] + convoy.distance;
-                    let speed = defines.speed;
-                    let delay = if !convoy.active && speed > 0.0 {
-                        convoy.sleep.max(0.0) + start / speed
-                    } else if !convoy.active || speed == 0.0 {
-                        continue;
-                    } else if speed > 0.0 && at > end {
-                        (times.last().unwrap() - at + start) / speed
-                    } else if speed < 0.0 && at < start {
-                        continue;
-                    } else if speed < 0.0 {
-                        ((end - at) / speed).max(0.0)
-                    } else {
-                        ((start - at) / speed).max(0.0)
-                    };
-                    next = next.min(delay);
-                }
-            });
+            view.times(
+                path,
+                viewer_models::motion_view::Reach::of(mesh, 1., [0.; 3]),
+                |start, end| {
+                    for convoy in convoys {
+                        next = next.min(convoy.arrival(&times, start, end, defines.speed));
+                    }
+                },
+            );
         }
         next
     }
@@ -447,6 +459,19 @@ mod tests {
             &|_| Some(1000.),
             &height,
         );
+        let mut moving = SailingConvoy {
+            segment: 0,
+            distance: 3.,
+            ..fleet.convoys[0]
+        };
+        let along = [0., 10., 110.];
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 1.);
+        moving.distance = 9.;
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 50.5);
+        assert_eq!(moving.arrival(&along, 5., 8., -2.), 0.5);
+        moving.active = false;
+        moving.sleep = 2.5;
+        assert_eq!(moving.arrival(&along, 5., 8., 2.), 2.5);
         assert!(fleet.convoys[0].active);
         assert!(!fleet.convoys[1].active);
         assert!(fleet.convoys[0].distance > 0.);

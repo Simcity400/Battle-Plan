@@ -479,6 +479,7 @@ pub struct Terrain {
     pipelines: BTreeMap<Mode, Result<Arc<gpu::Pipeline>, String>>,
     programs: BTreeMap<Mode, viewer_scene_base::shader_scene::Program>,
     texel_reads: BTreeMap<Mode, String>,
+    clocks: BTreeMap<Mode, viewer_scene_base::shader_constants::RegionClock>,
     positions: wgpu::Buffer,
     bytes: content_reader_image::Bytes,
     map: [u32; 2],
@@ -689,6 +690,7 @@ impl Terrain {
             pipelines: BTreeMap::new(),
             programs: BTreeMap::new(),
             texel_reads: BTreeMap::new(),
+            clocks: BTreeMap::new(),
             positions,
             bytes: bytes.clone(),
             map,
@@ -732,6 +734,7 @@ impl Terrain {
                 self.pipelines.clear();
                 self.programs.clear();
                 self.texel_reads.clear();
+                self.clocks.clear();
                 self.kept.clear();
                 built = self.build_pipeline(device, mode);
             }
@@ -827,6 +830,10 @@ impl Terrain {
             ));
         }
         viewer_scene_base::shader_constants::scene(&pipeline).map_err(refuse)?;
+        self.clocks.insert(
+            mode,
+            viewer_scene_base::shader_constants::RegionClock::new(&compiled, 15),
+        );
         self.programs.insert(
             mode,
             viewer_scene_base::shader_scene::Program::new(
@@ -846,6 +853,18 @@ impl Terrain {
             .then(|| self.texel_reads.get(&mode))
             .flatten()
             .map(String::as_str)
+    }
+
+    pub fn motion(
+        &self,
+        mode: Mode,
+        fog: bool,
+        pulses: bool,
+    ) -> viewer_gpu::surface_motion::Motion {
+        self.clocks
+            .get(&mode)
+            .map(|clock| clock.for_styles(pulses).live(fog))
+            .unwrap_or_default()
     }
 
     pub fn map(&self) -> [u32; 2] {

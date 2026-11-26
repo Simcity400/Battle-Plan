@@ -43,7 +43,11 @@ impl DayNight {
         const LIGHT_TOLERANCE: f32 = 0.00001;
         self.hour_fraction != target.hour_fraction
             || (self.strength - target.strength).abs() > LIGHT_TOLERANCE
-            || self.sun_direction.iter().zip(target.sun_direction).any(|(a, b)| (a - b).abs() > LIGHT_TOLERANCE)
+            || self
+                .sun_direction
+                .iter()
+                .zip(target.sun_direction)
+                .any(|(a, b)| (a - b).abs() > LIGHT_TOLERANCE)
     }
 
     pub fn at_hour(hour: i32) -> Self {

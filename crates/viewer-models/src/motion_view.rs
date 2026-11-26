@@ -1,6 +1,32 @@
 use super::{GameCull, ModelMesh};
 use viewer_gpu::camera::Camera;
 
+#[derive(Clone, Copy, Default)]
+pub struct Reach {
+    center: [f32; 3],
+    radius: f32,
+    distance: f32,
+}
+
+impl Reach {
+    pub fn of(mesh: &ModelMesh, scale: f32, shift: [f32; 3]) -> Self {
+        let height = mesh.height * scale.abs() * 0.5;
+        Self {
+            center: [shift[0], shift[1] + height, shift[2]],
+            radius: mesh.bound * scale.abs() + height,
+            distance: mesh.cull_distance_squared.sqrt(),
+        }
+    }
+
+    pub fn enclose(&mut self, other: Self) {
+        let offset = other.center[0]
+            .hypot(other.center[1])
+            .hypot(other.center[2]);
+        self.radius = self.radius.max(other.radius + offset);
+        self.distance = self.distance.max(other.distance + offset);
+    }
+}
+
 pub struct MotionView {
     cull: GameCull,
     width: f32,
@@ -17,8 +43,7 @@ impl MotionView {
     pub fn times(
         &self,
         path: impl IntoIterator<Item = (f32, [f32; 3])>,
-        mesh: &ModelMesh,
-        scale: f32,
+        reach: Reach,
         mut visit: impl FnMut(f32, f32),
     ) {
         let mut points = path.into_iter();
@@ -26,7 +51,7 @@ impl MotionView {
             return;
         };
         for point in points {
-            if let Some([enter, leave]) = self.passage(previous.1, point.1, mesh, scale) {
+            if let Some([enter, leave]) = self.passage(previous.1, point.1, reach) {
                 let span = point.0 - previous.0;
                 visit(previous.0 + span * enter, previous.0 + span * leave);
             }
@@ -34,20 +59,13 @@ impl MotionView {
         }
     }
 
-    pub fn passage(
-        &self,
-        a: [f32; 3],
-        b: [f32; 3],
-        mesh: &ModelMesh,
-        scale: f32,
-    ) -> Option<[f32; 2]> {
-        let height = mesh.height * scale * 0.5;
-        let raised = |[x, y, z]: [f32; 3]| [x, y + height, z];
+    pub fn passage(&self, a: [f32; 3], b: [f32; 3], reach: Reach) -> Option<[f32; 2]> {
+        let center = |point: [f32; 3]| std::array::from_fn(|axis| point[axis] + reach.center[axis]);
         self.interval(
-            raised(a),
-            raised(b),
-            mesh.bound * scale + height,
-            mesh.cull_distance_squared,
+            center(a),
+            center(b),
+            reach.radius,
+            reach.distance * reach.distance,
         )
     }
 

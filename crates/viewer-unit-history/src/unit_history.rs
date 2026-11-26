@@ -2265,7 +2265,10 @@ pub mod tests {
         }
         assert_eq!(made.len(), whole.len(), "every figure is made");
         assert_eq!(made.iter().copied().collect::<BTreeSet<_>>(), whole);
-        assert!(!h.carrying_figures(), "and nothing is left pending at the bound");
+        assert!(
+            !h.carrying_figures(),
+            "and nothing is left pending at the bound"
+        );
         let mut budget = Budget::new(i32::MAX, false);
         let paused = h.step_held(0.4, gates, [true; 2], &mut budget);
         assert_eq!(paused.len(), whole.len(), "a paused frame shows every figure");

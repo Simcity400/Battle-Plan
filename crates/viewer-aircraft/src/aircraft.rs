@@ -4129,6 +4129,32 @@ impl AircraftPlan {
             .collect()
     }
 
+    pub fn next_launch_impact(
+        &self,
+        seconds: f32,
+        mut visible: impl FnMut([f32; 4]) -> bool,
+    ) -> f32 {
+        self.launches
+            .iter()
+            .filter_map(|launch| {
+                let places = launch.explosions.as_ref()?;
+                places
+                    .iter()
+                    .any(|(_, place)| place.is_some_and(|(_, bounds)| visible(bounds)))
+                    .then(|| {
+                        let period = launch.period();
+                        let end = launch.spawn + launch.length;
+                        let elapsed = seconds.rem_euclid(period);
+                        if elapsed < end {
+                            end - elapsed
+                        } else {
+                            period - elapsed + end
+                        }
+                    })
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
     pub fn next_arrival(
         &self,
         assets: &AircraftAssets,
@@ -4136,6 +4162,7 @@ impl AircraftPlan {
         seconds: f32,
         shown: impl Fn(AirMission) -> bool,
     ) -> f32 {
+        use viewer_models::motion_view::Reach;
         let until = |now: f32, start: f32, end: f32, period: f32| {
             if now > end {
                 start + period - now
@@ -4151,8 +4178,7 @@ impl AircraftPlan {
                     .passage(
                         launch.position,
                         launch.position,
-                        &library.meshes[launch.mesh],
-                        1.0,
+                        Reach::of(&library.meshes[launch.mesh], 1., [0.; 3]),
                     )
                     .is_some()
                 {
@@ -4200,8 +4226,7 @@ impl AircraftPlan {
                             .map(|(&arc, &position)| {
                                 (start + flight.travel * (arc / route.length()), position)
                             }),
-                        mesh,
-                        defines.scale_min.max(1.0),
+                        Reach::of(mesh, defines.scale_min.max(1.0), [0.; 3]),
                         &mut visit,
                     );
                 }
@@ -4222,8 +4247,7 @@ impl AircraftPlan {
                                 add(flight.origin, rotate(pose.translation, flight.yaw)),
                             )
                         })),
-                    mesh,
-                    1.0,
+                    Reach::of(mesh, 1., [0.; 3]),
                     visit,
                 );
             }
