@@ -96,7 +96,7 @@ impl AtHour for TemplateRoster {
     const KEY: &'static str = "template-roster";
     const TITLE: &'static str = "Template roster";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TemplateRosterParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TemplateRosterReply;
@@ -131,14 +131,31 @@ impl AtHour for TemplateRoster {
             2 => {
                 let mut wanted = owned(held, owner.slot).0;
                 wanted.extend(named(held));
-                let icons: BTreeSet<u64> = held.complete::<tables::DivisionTemplateIcons>().map(|rows| rows.iter().map(|row| row.template).collect()).unwrap_or_default();
-                if wanted.is_subset(&icons) {
+                let primary = held.tables[TableId::DivisionTemplateIcons.index()].keys();
+                if wanted.iter().all(|handle| primary.contains(u128::from(*handle))) {
                     return Vec::new();
                 }
                 vec![Read::these(TableId::DivisionTemplateIcons, wanted.into_iter().map(u128::from))]
             }
             _ => Vec::new(),
         }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::DivisionTemplates => &["owner", "name", "name_key"],
+            TableId::OrdersGroups => &["country"],
+            TableId::OrdersGroupCounterInputs => &["hq_nearest_front", "template_context"],
+            TableId::DivisionTemplateIcons => &["country", "display_name", "settings", "model_unreadable", "excluded_variants", "model_entity", "model_category", "foreign_country", "layout"],
+            _ => return crate::products::divisions::naming_columns(table),
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        let icons = frame.complete::<tables::DivisionTemplateIcons>().unwrap_or(&[]);
+        crate::products::divisions::template_names_through(frame, icons.iter().map(|icon| icon.template))
+            .min(crate::products::warnings_through(frame.hour, reply.warnings.iter().map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

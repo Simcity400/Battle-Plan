@@ -14,6 +14,7 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
         }
     }
     let change = i32::from(hour >= 107);
+    if [100, 107, 115].contains(&hour) { frame.metrics.table_ns[TableId::DeploymentLines.index()] = 1; }
     let amount = hour + branch as i32 * 100;
     let mut set = |table: TableId, rows| {
         *frame.tables[table.index()] = if (113..115).contains(&hour) {
@@ -30,10 +31,31 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
         id: 1, owner: 9001, kind: crate::products::leaders::KIND_ARMY, skill_valid: 1,
         skill_level: 3 + change, experience: i64::from(amount), ..Default::default()
     }]));
-    set(TableId::DivisionTemplates, TableRows::DivisionTemplates(vec![DivisionTemplateRow { template: 1, owner: 9001, ..Default::default() }]));
+    set(TableId::DivisionTemplates, TableRows::DivisionTemplates(vec![
+        DivisionTemplateRow { template: 1, owner: 9001, ..Default::default() },
+        DivisionTemplateRow { template: 2, owner: 44, ..Default::default() },
+    ]));
     set(TableId::DivisionTemplateIcons, TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
-        template: 1, base_width: Recorded::Value(Some(10 + i64::from(change))), ..Default::default()
-    }]));
+        template: 1, settings: Recorded::Value(Some(Arc::new(TemplateSettings { parent: 2, priority: change, ..Default::default() }))),
+        base_width: Recorded::Value(Some(10 + i64::from(change))), ..Default::default()
+    }, DivisionTemplateIconRow { template: 2, ..Default::default() }]));
+    set(TableId::DeploymentConveyors, TableRows::DeploymentConveyors(vec![
+        DeploymentConveyorRow { handle: 1, country: 9001, template: 1, amount: 1 + change, ..Default::default() },
+        DeploymentConveyorRow { handle: 2, country: 44, ..Default::default() },
+    ]));
+    set(TableId::DeploymentLines, TableRows::DeploymentLines(vec![
+        DeploymentLineRow { handle: 7, conveyor: 1, ..Default::default() },
+        DeploymentLineRow { handle: 8, conveyor: 2, ..Default::default() },
+    ]));
+    set(TableId::DeploymentManpower, TableRows::DeploymentManpower(vec![
+        DeploymentManpowerRow { line: 7, source_country: 9001, amount: 50 + change, ..Default::default() },
+        DeploymentManpowerRow { line: 8, source_country: 44, amount: hour, ..Default::default() },
+    ]));
+    set(TableId::DoctrineTracks, TableRows::DoctrineTracks(vec![
+        DoctrineTrackRow { slot: 7, sub_doctrine: (change != 0).then_some(120), mastery: i64::from(hour), ..Default::default() },
+        DoctrineTrackRow { slot: 8, mastery: i64::from(hour), ..Default::default() },
+    ]));
+    set(TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 120, literal: b"mod_sub".to_vec() }]));
     frame
 }
 
@@ -85,8 +107,12 @@ fn follows<P: AtHour>(registration: Registered, mut request: Value, live: bool) 
     }
     let source = recording(&[1]);
     request["branchId"] = "1".into();
-    let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
-    let mut original = frame_panel::<P>(&source, &load, &request).unwrap();
+    played_replies::<P>(registration, &source, &load, &request);
+}
+
+fn played_replies<P: AtHour>(registration: Registered, source: &Arc<Source>, load: &LoadContext, request: &Value) {
+    let panel = (registration.panel.unwrap().open)(source, load, request).unwrap();
+    let mut original = frame_panel::<P>(source, load, request).unwrap();
     let mut previous = None;
     for read in played(source.replay_ref(), panel.exact().unwrap(), 100, 120) {
         let expected = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
@@ -101,7 +127,7 @@ fn follows<P: AtHour>(registration: Registered, mut request: Value, live: bool) 
         }
         let structure = played_structure(P::KEY, &expected, false);
         if read.hour > 100 && let Some(previous) = &previous {
-            assert_eq!(read.product_calls, u64::from(previous != &structure), "{} calls at {}", P::KEY, read.hour);
+            assert_eq!(read.product_calls, u64::from(previous != &structure), "{} calls at {}: previous {previous:?}, current {structure:?}", P::KEY, read.hour);
         }
         previous = Some(structure);
     }
@@ -120,4 +146,30 @@ fn leader_experience_seeds_the_selected_hour_and_branch() {
 #[test]
 fn division_templates_follows_the_selected_countrys_template_fields() {
     follows::<crate::products::divisions::templates::DivisionTemplates>(DIVISIONS_TEMPLATES_DIVISIONTEMPLATES, json!({"country":"GER", "countFor":"owner"}), false);
+}
+
+#[test]
+fn training_queue_tracks_owned_orders_lines_and_manpower() {
+    follows::<crate::products::training_queue::TrainingQueue>(TRAINING_QUEUE_TRAININGQUEUE, json!({"country":"GER"}), false);
+}
+
+#[test]
+fn division_equipment_tracks_the_selected_countrys_equipment() {
+    for view in ["types", "templates"] {
+        follows::<crate::products::divisions::equipment::DivisionEquipment>(DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT,
+            json!({"country":"GER", "countFor":"owner", "view":view}), false);
+    }
+}
+
+#[test]
+fn roster_and_rewards_follow_the_selected_template_settings_and_doctrine_track() {
+    use dashboard_base::test_fixtures::{source_with_content, visual_mods::Machine};
+    let machine = Machine::new("land_panel_inputs");
+    machine.write("common/defines/test.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("common/doctrines/subdoctrines/test.txt", b"mod_sub={rewards={tier={mastery=2}}}");
+    let (source, load) = source_with_content((100..=120).map(|hour| frame(1, hour)).collect(), &machine.root);
+    let source = Arc::new(source);
+    played_replies::<crate::products::army::TemplateRoster>(ARMY_TEMPLATEROSTER, &source, &load, &json!({"branchId":"1", "country":"GER"}));
+    played_replies::<crate::products::doctrine_mastery::rewards::DoctrineRewards>(DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS, &source, &load,
+        &json!({"branchId":"1", "country":"GER", "folder":0, "track":0}));
 }

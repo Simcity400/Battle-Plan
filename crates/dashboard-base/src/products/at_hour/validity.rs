@@ -1,8 +1,9 @@
 use dashboard_text::{metadata::check_cancel, triggers::inputs::{Resolution, TableRead}};
-use replay::campaign::Replay;
+use replay::campaign::{Replay, SeekResult};
+use replay_frame::frame::DecodedFrame;
 use replay_data::rows::TableId;
 use replay_lanes::lanes::{Cell, Keys};
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, io, sync::{Arc, Mutex, atomic::AtomicBool}};
 
 #[derive(Default, PartialEq)]
 struct Selection {
@@ -93,4 +94,32 @@ impl ReadDates {
 
 pub fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
     ReadDates::default().through(replay, run, reads, hour, hour, through, cancelled)
+}
+
+pub struct ScriptedInputs {
+    replay: Arc<Replay>,
+    dates: Mutex<ReadDates>,
+}
+
+impl ScriptedInputs {
+    pub fn new(replay: Arc<Replay>) -> Self {
+        Self { replay, dates: Mutex::default() }
+    }
+
+    pub fn evaluate<T>(&self, frame: &DecodedFrame, tables: &[TableId], cancelled: &AtomicBool, evaluate: impl FnOnce(&DecodedFrame) -> T) -> io::Result<(T, i32)> {
+        let Some(block) = self.replay.block_at(frame.branch, frame.hour) else {
+            return Err(io::Error::other("Scripted text hour is not recorded"));
+        };
+        let SeekResult::Frame(recorded) = self.replay.seek_selected_with(frame.branch, frame.hour, Some(tables), || check_cancel(cancelled))? else {
+            return Err(io::Error::other("Scripted text hour is not recorded"));
+        };
+        let (value, inputs) = dashboard_text::triggers::inputs::capture(&recorded, || evaluate(&recorded));
+        let through = match inputs.footprint() {
+            None => frame.hour,
+            Some([]) => i32::MAX,
+            Some(reads) => self.dates.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .through(&self.replay, block.run, reads, block.first_hour, frame.hour, block.last_hour, cancelled)?,
+        };
+        Ok((value, through))
+    }
 }

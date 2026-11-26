@@ -498,5 +498,3 @@ fn template_steps(
     }
     Ok(())
 }
-
-

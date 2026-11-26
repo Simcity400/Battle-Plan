@@ -14,10 +14,10 @@ dashboard_base::register_products! {
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
 
     @hourly
-    ARMY_TEMPLATEROSTER => whole_frame<crate::products::army::TemplateRoster>,
-    TRAINING_QUEUE_TRAININGQUEUE => whole_frame<crate::products::training_queue::TrainingQueue>,
+    ARMY_TEMPLATEROSTER => exact<crate::products::army::TemplateRoster>,
+    TRAINING_QUEUE_TRAININGQUEUE => exact<crate::products::training_queue::TrainingQueue>,
     DOCTRINE_MASTERY_DOCTRINEMASTERY => exact<crate::products::doctrine_mastery::DoctrineMastery>,
-    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => whole_frame<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
+    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => exact<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
     LEADERS_UNITLEADERS => exact<crate::products::leaders::UnitLeaders>,
     LEADERS_CAREER_LEADERHOUR => exact<crate::products::leaders::career::LeaderHour>,
     DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => exact<crate::products::divisions::templates::DivisionTemplates>,

@@ -116,10 +116,14 @@ pub struct WitnessedRows<'a, R> {
 }
 
 pub fn witnessed_rows<T: TableSchema>(frame: &DecodedFrame) -> WitnessedRows<'_, T::Row> {
+    witnessed_selection::<T>(frame, &Keys::All)
+}
+
+pub fn witnessed_selection<'f, T: TableSchema>(frame: &'f DecodedFrame, asked: &Keys) -> WitnessedRows<'f, T::Row> {
     let shared = &frame.tables[T::ID.index()];
     let view: &TableView = shared;
     let (rows, complete) = match view {
-        TableView::Complete(rows) => (rows, shared.keys() == &Keys::All),
+        TableView::Complete(rows) => (rows, shared.keys() == asked),
         TableView::Truncated { rows, .. } => (rows, false),
         TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return WitnessedRows { rows: &[], missing: Some(refusal(T::ID, view)) },
     };

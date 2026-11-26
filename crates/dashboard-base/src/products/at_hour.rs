@@ -28,7 +28,7 @@ use ts_rs::TS;
 mod incremental;
 mod placed;
 mod validity;
-pub use validity::{ReadDates, reads_through};
+pub use validity::{ReadDates, ScriptedInputs, reads_through};
 pub use incremental::{Edits, Held};
 
 pub use replay_frame::frame::Keys;

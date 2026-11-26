@@ -51,6 +51,9 @@ fn each_division_equipment_view_reads_only_its_own_operands_and_a_type_is_keyed_
         TableRows::DivisionEquipmentByTemplate(vec![DivisionEquipmentTemplateRow { slot: 7, side: 0, template: 42, ..Default::default() }]),
     )
     .into();
+    held.tables[TableId::DivisionEquipmentCounts.index()] = TableView::Complete(
+        TableRows::DivisionEquipmentCounts(vec![replay_data::rows::DivisionEquipmentCountRow { slot: 7, side: 0, ..Default::default() }]),
+    ).into();
     let owner = Some(Owner { slot: 7, id: 9001 });
     let reads = DivisionEquipment::reads(&params(DivisionEquipmentView::Templates), owner, 1, &held);
     let template_read = reads.iter().find(|read| read.table == TableId::DivisionTemplates).expect("the template view names its templates");
@@ -90,7 +93,7 @@ fn decorated_divisions_answer_the_first_in_order_with_unread_measures_last_and_t
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::Medals, false, 3)), [4, 1, 6], "ascending keeps the unread last too");
     assert_eq!(ids(first_in_order(world.clone(), DecoratedRank::CasualtiesTaken, true, 2)), [2, 5]);
     let named = |at: usize, name: Option<&str>| Measures { name: name.map(super::careers::name_key), ..world[at].clone() };
-    let by_name = vec![named(0, Some("bravo")), named(1, None), named(2, Some("Alpha")), named(3, Some("Bravo")), named(4, Some("Échelon"))];
+    let by_name = vec![named(0, Some("bravo")), named(1, None), named(2, Some("Alpha")), named(3, Some("Bravo")), named(4, Some("Ã‰chelon"))];
     assert_eq!(ids(first_in_order(by_name.clone(), DecoratedRank::DivisionName, false, 10)), [3, 4, 1, 5, 2], "names fold case first; a division without a name follows the named ones");
     assert_eq!(ids(first_in_order(by_name, DecoratedRank::CountryName, true, 10)), [5, 1, 4, 3, 2], "descending keeps the unnamed last too");
 }

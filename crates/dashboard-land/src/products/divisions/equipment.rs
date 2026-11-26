@@ -191,8 +191,7 @@ impl AtHour for DivisionEquipment {
                 let (template_lo, template_hi) = slot_side_range(owner.slot, side);
                 let types = slot << 41 | side128 << 33;
                 let designs = slot << 74 | side128 << 66;
-                let mut reads: Vec<Read> = NAMING.into_iter().map(Read::all).collect();
-                reads.push(Read::these(TableId::DivisionEquipmentCounts, [slot << 8 | side128]));
+                let mut reads = vec![Read::these(TableId::DivisionEquipmentCounts, [slot << 8 | side128])];
                 match params.view {
                     DivisionEquipmentView::Types => reads.extend([
                         Read { table: TableId::DivisionEquipmentByType, keys: Keys::Range(types, types | ((1 << 33) - 1)) },
@@ -202,16 +201,28 @@ impl AtHour for DivisionEquipment {
                 }
                 reads
             }
-            1 => match params.view {
+            1 if held.complete::<tables::DivisionEquipmentCounts>().is_ok_and(|rows| !rows.is_empty()) => match params.view {
                 DivisionEquipmentView::Templates => {
-                    let templates = held.complete::<tables::DivisionEquipmentByTemplate>().map(|rows| rows.iter().map(|row| u128::from(row.template)).collect::<Vec<_>>()).unwrap_or_default();
-                    vec![Read::these(TableId::DivisionTemplates, templates.clone()), Read::these(TableId::DivisionTemplateIcons, templates)]
+                    let templates: Vec<_> = held.complete::<tables::DivisionEquipmentByTemplate>().unwrap_or(&[]).iter().map(|row| u128::from(row.template)).collect();
+                    if templates.is_empty() { return Vec::new(); }
+                    vec![Read::all(TableId::Countries), Read::all(TableId::CountryLinks), Read::these(TableId::DivisionTemplates, templates.clone()), Read::these(TableId::DivisionTemplateIcons, templates)]
                 }
                 DivisionEquipmentView::Types => {
-                    let designs = held.complete::<tables::DivisionEquipmentByDesign>().map(|rows| rows.iter().filter_map(|row| row.variant).map(|id| u128::from(design_handle(id))).collect::<Vec<_>>()).unwrap_or_default();
+                    let types = held.complete::<tables::DivisionEquipmentByType>().unwrap_or(&[]);
+                    if types.is_empty() { return Vec::new(); }
+                    let shown: std::collections::BTreeSet<_> = types.iter().map(|row| row.archetype).collect();
+                    let designs = held.complete::<tables::DivisionEquipmentByDesign>().unwrap_or(&[]).iter().filter(|row| shown.contains(&row.archetype))
+                        .filter_map(|row| row.variant).map(|id| u128::from(design_handle(id)));
                     vec![Read::these(TableId::VariantDefinitions, designs)]
                 }
             },
+            2 if params.view == DivisionEquipmentView::Types => {
+                let types = held.complete::<tables::DivisionEquipmentByType>().unwrap_or(&[]);
+                let designs = held.complete::<tables::VariantDefinitions>().unwrap_or(&[]);
+                let mut reads = vec![Read::these(TableId::LexicalTokens, types.iter().filter_map(|row| row.archetype).chain(designs.iter().map(|row| row.equipment_token)).map(u128::from))];
+                if !designs.is_empty() { reads.extend([TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].map(Read::all)); }
+                reads
+            }
             _ => Vec::new(),
         }
     }

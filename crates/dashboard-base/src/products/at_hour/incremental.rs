@@ -329,8 +329,15 @@ impl Supplemental {
     }
 }
 
+#[derive(Default)]
+struct RepeatedReads {
+    first: HashMap<TableId, SharedView>,
+    stages: HashMap<usize, (Projections, HashMap<TableId, SharedView>)>,
+}
+
 struct Stream {
     tables: Projections,
+    repeated: RepeatedReads,
     extra: Supplemental,
     plans: Vec<(Vec<Read>, i32)>,
     frame: Box<DecodedFrame>,
@@ -433,7 +440,7 @@ where P::Context: Sync, P::Params: Sync {
             let owner = holder::<P>(&holders, &params, hour)?;
             let seed = held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
-                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
+                *held = Some(Stream { tables: HashMap::new(), repeated: RepeatedReads::default(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
             }
             let state = held.as_mut().expect("seeded");
             let previous_hour = state.frame.hour;
@@ -461,11 +468,25 @@ where P::Context: Sync, P::Params: Sync {
                     if asks.is_empty() { state.plans.truncate(stage + 1); break; }
                     for read in asks {
                         let table = read.table;
-                        selected.insert(table);
+                        let first = selected.insert(table);
                         let view = &mut state.frame.tables[table.index()];
                         if !seed && P::compares_previous(table) { edits.previous.entry(table).or_insert_with(|| view.clone()); }
                         let sample = state.sampled.as_ref().is_none_or(|sampled| sampled.contains(&table));
-                        input.read(&mut state.tables, read, view, || (P::projection(&params, table, &state.plans, &context), P::columns(table)), sample, &mut edits)?;
+                        let columns = || (P::projection(&params, table, &state.plans, &context), P::columns(table));
+                        if first {
+                            if let Some(prior) = state.repeated.first.get_mut(&table) {
+                                input.read(&mut state.tables, read, prior, columns, sample, &mut edits)?;
+                                *view = prior.clone();
+                            } else {
+                                input.read(&mut state.tables, read, view, columns, sample, &mut edits)?;
+                            }
+                        } else {
+                            state.repeated.first.entry(table).or_insert_with(|| view.clone());
+                            let (projections, views) = state.repeated.stages.entry(stage).or_default();
+                            let repeated = views.entry(table).or_insert_with(not_selected);
+                            input.read(projections, read, repeated, columns, sample, &mut edits)?;
+                            *view = repeated.clone();
+                        }
                     }
                 }
                 let projected = |table: TableId| field_mask(table, P::projection(&params, table, &state.plans, &context).as_deref());
@@ -479,6 +500,13 @@ where P::Context: Sync, P::Params: Sync {
                     if masks.contains(&asked) { return Err(io::Error::other(format!("{} reads {table:?} under projections that do not settle", P::TITLE))); }
                 }
             }
+            state.repeated.first.retain(|table, _| selected.contains(table));
+            state.repeated.stages.retain(|stage, (projections, views)| {
+                let asked = |table: &TableId| state.plans.get(*stage).is_some_and(|(reads, _)| reads.iter().any(|read| read.table == *table));
+                projections.retain(|table, _| asked(table));
+                views.retain(|table, _| asked(table));
+                !views.is_empty()
+            });
             state.tables.retain(|table, _| {
                 if selected.contains(table) { true } else {
                     state.frame.tables[table.index()] = not_selected();
@@ -499,7 +527,7 @@ where P::Context: Sync, P::Params: Sync {
                     let kept = state.data.clone();
                     if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data))? {
                         state.reply = None;
-                        state.reply_through = P::valid_through(&state.frame, &params, &at);
+                        state.reply_through = state.reply_through.min(P::valid_through(&state.frame, &params, &at));
                         return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                     }
                     state.data = kept;
