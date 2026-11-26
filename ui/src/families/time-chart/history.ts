@@ -19,10 +19,10 @@ export class LineTrace {
   ended = false;
   prevLastHour = -Infinity;
 
-  private readonly step: boolean;
-  private readonly scale: number;
-  private readonly binHours: number;
-  private readonly sink: LineSink;
+  private step: boolean;
+  private scale: number;
+  private binHours: number;
+  private sink: LineSink;
 
   constructor(step: boolean, scale: number, binHours: number, sink: LineSink) {
     this.step = step;
@@ -31,14 +31,28 @@ export class LineTrace {
     this.sink = sink;
   }
 
-  continueInto(sink: LineSink): LineTrace {
-    const next = new LineTrace(this.step, this.scale, this.binHours, sink);
-    next.open = this.open;
-    next.lastHour = this.lastHour;
-    next.lastValue = this.lastValue;
-    next.ended = this.ended;
-    next.prevLastHour = this.prevLastHour;
-    return next;
+  configure(step: boolean, scale: number, binHours: number, sink: LineSink): void {
+    this.step = step;
+    this.scale = scale;
+    this.binHours = binHours;
+    this.sink = sink;
+    this.open = false;
+    this.lastHour = 0;
+    this.lastValue = 0;
+    this.ended = false;
+    this.prevLastHour = -Infinity;
+  }
+
+  copyFrom(other: LineTrace, sink: LineSink): void {
+    this.step = other.step;
+    this.scale = other.scale;
+    this.binHours = other.binHours;
+    this.sink = sink;
+    this.open = other.open;
+    this.lastHour = other.lastHour;
+    this.lastValue = other.lastValue;
+    this.ended = other.ended;
+    this.prevLastHour = other.prevLastHour;
   }
 
   private start(hour: number, value: number): void {
@@ -141,11 +155,7 @@ export class LineTrace {
 }
 
 export interface HistorySubpath {
-  readonly path: Path2D;
-  readonly firstHour: number;
-  readonly firstValue: number;
-  lastHour: number;
-  lastValue: number;
+  coords: Float64Array;
   count: number;
 }
 
@@ -156,7 +166,6 @@ export interface ClosedSpan {
 }
 
 export interface LineHistory extends ClosedSpan {
-  readonly origin: readonly [hour: number, value: number] | null;
   readonly subpaths: readonly HistorySubpath[];
   readonly trace: LineTrace;
 }
@@ -167,7 +176,6 @@ export interface ClosedExtent extends ClosedSpan {
 }
 
 interface Building {
-  origin: [number, number] | null;
   subpaths: HistorySubpath[];
   trace: LineTrace;
   from: number;
@@ -185,20 +193,26 @@ interface Extent {
 
 const WHOLE: LineWindow = { from: -Infinity, to: Infinity };
 const histories = new WeakMap<object, Map<string, Building>>();
+const INITIAL_SUBPATH_FLOATS = 64;
 
-function pathSink(state: Building): LineSink {
+function coordSink(state: Building): LineSink {
   return {
     move(hour, value) {
-      state.origin ??= [hour, value];
-      const path = new Path2D();
-      path.moveTo(hour - state.origin[0], value - state.origin[1]);
-      state.subpaths.push({ path, firstHour: hour, firstValue: value, lastHour: hour, lastValue: value, count: 1 });
+      const coords = new Float64Array(INITIAL_SUBPATH_FLOATS);
+      coords[0] = hour;
+      coords[1] = value;
+      state.subpaths.push({ coords, count: 1 });
     },
     line(hour, value) {
       const sub = state.subpaths[state.subpaths.length - 1]!;
-      sub.path.lineTo(hour - state.origin![0], value - state.origin![1]);
-      sub.lastHour = hour;
-      sub.lastValue = value;
+      const offset = sub.count * 2;
+      if (offset + 2 > sub.coords.length) {
+        const grown = new Float64Array(sub.coords.length * 2);
+        grown.set(sub.coords);
+        sub.coords = grown;
+      }
+      sub.coords[offset] = hour;
+      sub.coords[offset + 1] = value;
       sub.count++;
     },
   };
@@ -249,8 +263,8 @@ export function lineHistory(bounded: BoundedSeries, step: boolean, scale: number
   const key = `${useRuns ? 'r' : 'b'}${step ? 's' : 'l'}${scale}:${bounded.binHours}`;
   let state = variants.get(key);
   if (!state || state.items > slice.closedLength) {
-    state = { origin: null, subpaths: [], trace: null!, from: Infinity, to: -Infinity, items: 0 };
-    state.trace = new LineTrace(step, scale, bounded.binHours, pathSink(state));
+    state = { subpaths: [], trace: null!, from: Infinity, to: -Infinity, items: 0 };
+    state.trace = new LineTrace(step, scale, bounded.binHours, coordSink(state));
     variants.set(key, state);
   }
   for (let i = state.items; i < slice.closedLength; i++) {

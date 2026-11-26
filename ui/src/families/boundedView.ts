@@ -60,28 +60,43 @@ function sliceSourceOf(source: readonly unknown[]): object {
   return token;
 }
 
+class ArrayBoundedSlice<T> implements BoundedSlice<T> {
+  readonly source: object;
+  readonly closedLength: number;
+  readonly length: number;
+  declare readonly tail?: T;
+  readonly #raw: readonly T[];
+  readonly #hasTail: boolean;
+
+  constructor(raw: readonly T[], closedLength: number, tail: T | undefined, hasTail: boolean) {
+    this.#raw = raw;
+    this.source = sliceSourceOf(raw);
+    this.closedLength = closedLength;
+    this.#hasTail = hasTail;
+    this.length = closedLength + (hasTail ? 1 : 0);
+    if (hasTail) this.tail = tail;
+  }
+
+  at(index: number): T | undefined {
+    if (index < 0 || index >= this.length) return undefined;
+    if (index < this.closedLength) return this.#raw[index];
+    return this.tail;
+  }
+
+  *[Symbol.iterator](): Iterator<T> {
+    const raw = this.#raw;
+    const closed = this.closedLength;
+    for (let i = 0; i < closed; i++) yield raw[i]!;
+    if (this.#hasTail) yield this.tail!;
+  }
+}
+
 export function createBoundedSlice<T>(
   source: readonly T[],
   closedLength: number,
   tail?: T,
 ): BoundedSlice<T> {
-  const hasTail = tail !== undefined;
-  const length = closedLength + (hasTail ? 1 : 0);
-  return {
-    source: sliceSourceOf(source),
-    closedLength,
-    length,
-    ...(hasTail ? { tail } : {}),
-    at(index: number): T | undefined {
-      if (index < 0 || index >= length) return undefined;
-      if (index < closedLength) return source[index];
-      return tail;
-    },
-    *[Symbol.iterator](): Iterator<T> {
-      for (let i = 0; i < closedLength; i++) yield source[i]!;
-      if (hasTail) yield tail!;
-    },
-  };
+  return new ArrayBoundedSlice(source, closedLength, tail, tail !== undefined);
 }
 
 const EMPTY_SLICE_CACHE = createBoundedSlice<never>([], 0);
@@ -603,9 +618,22 @@ export class BoundedSeriesCursor {
   private lastPrefixPoints: readonly WitnessedPoint[] | null | undefined = undefined;
   private readonly straddle: StraddleResume = { state: null };
   private readonly runHint = { index: 0 };
+  private readonly boundOptions: {
+    prefixRuns?: readonly Run[] | null;
+    prefixPoints?: readonly WitnessedPoint[] | null;
+    headPoint?: WitnessedPoint | null;
+    headValue?: Value;
+    counter?: BoundedWorkCounter;
+    straddle: StraddleResume;
+    runHint: { index: number };
+  };
   private lastHeadPoint: WitnessedPoint | null | undefined = undefined;
   private lastHeadValue: Value | undefined = undefined;
   private cached: BoundedSeries | null = null;
+
+  constructor() {
+    this.boundOptions = { straddle: this.straddle, runHint: this.runHint };
+  }
 
   advance(line: TiledLine, hour: number, options?: BoundSeriesOptions): BoundedSeries {
     const h = displayedHour(hour);
@@ -625,7 +653,13 @@ export class BoundedSeriesCursor {
       this.straddle.state = null;
       this.runHint.index = 0;
     }
-    const next = boundTiledSeries(line, h, { ...options, straddle: this.straddle, runHint: this.runHint });
+    const opts = this.boundOptions;
+    opts.prefixRuns = options?.prefixRuns;
+    opts.prefixPoints = options?.prefixPoints;
+    opts.headPoint = options?.headPoint;
+    opts.headValue = options?.headValue;
+    opts.counter = options?.counter;
+    const next = boundTiledSeries(line, h, opts);
     this.lastLine = line;
     this.lastPrefixRuns = options?.prefixRuns;
     this.lastPrefixPoints = options?.prefixPoints;
