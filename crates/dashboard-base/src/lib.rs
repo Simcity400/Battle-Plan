@@ -15,6 +15,7 @@ pub mod research_dto;
 pub mod map_tables;
 pub mod source;
 pub mod span;
+pub mod tile_runs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 

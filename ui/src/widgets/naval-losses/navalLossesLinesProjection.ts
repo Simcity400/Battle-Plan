@@ -27,6 +27,7 @@ import {
   countrySeriesLooks,
   memberAt,
   missingSpansOf,
+  partialSpansOf,
   withinMapOf,
   chartTopOf,
   rowsBySelectedKey,
@@ -147,24 +148,26 @@ function buildHoverDetail(
         ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
         divider: items.length > 0,
       });
-      continue;
+    } else {
+      items.push({
+        label,
+        value: formatExactCount(row.total),
+        ...(row.partial ? { partialReason: row.partial } : {}),
+        strong: true,
+        ...(atHour ? { swatch: atHour.color } : {}),
+        ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
+        divider: items.length > 0,
+      });
     }
-    items.push({
-      label,
-      value: formatExactCount(row.total),
-      strong: true,
-      ...(atHour ? { swatch: atHour.color } : {}),
-      ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
-      divider: items.length > 0,
-    });
-    if (reply.parts.length > 1) {
+    if (reply.parts.length > 1 && (row.total !== null || row.values.some(value => value !== null))) {
       reply.parts.forEach((part, index) => {
         const value = row.values[index] ?? null;
+        const partialReason = row.partsPartial?.[index];
         items.push({
           label: part.name ?? part.key,
           ...(value === null
             ? { missingReason: row.partsMissing ?? notRecordedLabel(), tone: 'muted' as const }
-            : { value: formatExactCount(value) }),
+            : { value: formatExactCount(value), ...(partialReason ? { partialReason } : {}) }),
           indent: true,
         });
       });
@@ -265,6 +268,11 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
       const present = memberAt(options.membership, key, hour);
       const bounded = tiles?.get(key) ?? null;
       const headValue = present && row && row.total !== null ? row.total : null;
+      const partial = partialSpansOf(bounded);
+      const headPartial = present && row?.partial;
+      const partialSpans = headPartial && !partial?.some(span => span.firstHour <= hour && span.lastHour >= hour)
+        ? [...(partial ?? []), { firstHour: hour, lastHour: hour, reason: headPartial }]
+        : partial;
       const absentReason = present && row && row.total === null
         ? (row.missing ?? notRecordedLabel())
         : present && head && !row
@@ -272,7 +280,8 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
           : null;
 
       if (present && row) {
-        auditRows.push(auditRow(key, row.total === null ? (row.missing ?? notRecordedLabel()) : formatCompactCount(row.total)));
+        const count = row.total === null ? (row.missing ?? notRecordedLabel()) : formatCompactCount(row.total);
+        auditRows.push(auditRow(key, row.partial ? `${count}, partial: ${row.partial}` : count));
       } else if (present && head) {
         auditRows.push(auditRow(key, 'This country is not present at this date.'));
       }
@@ -291,8 +300,9 @@ export const navalLossesLinesProjection: TimeChartProjection<NavalLossesLinesOpt
         flag: look.flag,
         identities: look.identities,
         missingSpans: missingSpansOf(bounded),
+        partialSpans,
         endLabel: !isTail && options.endLabels && headValue !== null
-          ? { flag: look.flag, name: look.name, fullName: look.name, value: formatCompactCount(headValue) }
+          ? { flag: look.flag, name: look.name, fullName: look.name, value: `${formatCompactCount(headValue)}${row?.partial ? ' (partial)' : ''}` }
           : null,
       };
     });

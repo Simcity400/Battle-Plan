@@ -1,9 +1,9 @@
 import type { BoundedReadView } from '../contract.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
+import { notRecorded, type Value } from '../value.ts';
 import { formatShare, formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForcePart } from '../../generated/dashboard';
-import { forcePartLabel, forceRowIdentity, GROUP_EMPTY, witnessedPartItems } from './forceAtRace.ts';
+import { forcePartLabel, forceReading, forceRowIdentity, formatScaled, GROUP_EMPTY, witnessedPartItems } from './forceAtRace.ts';
 import { type BarsLegendItem, type BarsModel, type BarsSegment } from './model.ts';
 import { partColours } from './partColour.ts';
 import { buildShareRowsModel, type ShareRowEntry } from './shareRows.ts';
@@ -24,19 +24,6 @@ export interface ForceAtMixConfig {
   readonly emptyMessage: string;
   readonly referenceLabel?: string;
   readonly note?: string;
-}
-
-function scaleRaw(raw: number | null, decimals: number, missingReason: string | null): { readonly value: Value<bigint | number>; readonly numeric: number | null } {
-  if (raw === null) return { value: notRecorded(missingReason ?? 'Not recorded at this hour'), numeric: null };
-  if (decimals === 0) return { value: raw === 0 ? zeroValue() : knownValue(raw), numeric: raw };
-  const num = raw / (10 ** decimals);
-  return { value: num === 0 ? zeroValue() : knownValue(num), numeric: num };
-}
-
-function formatScaled(value: Value<bigint | number>, format: ValueFormat): string {
-  const fmt = formatValueState(value, format);
-  if (fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial') return fmt.exact ?? fmt.text;
-  return fmt.label;
 }
 
 function sharePct(share: number): string {
@@ -67,18 +54,19 @@ export function projectForceAtMix(
 
   for (const item of reply.rows) {
     const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
-    const { value, numeric } = scaleRaw(item.total, config.decimals, item.missing);
-    const countText = value.kind === 'notRecorded' ? undefined : formatScaled(value, config.valueFormat);
+    const { value, numeric } = forceReading(item.total, config.decimals, item.missing, item.partial);
+    const formatted = formatValueState(value, config.valueFormat);
+    const countText = formatted.kind === 'partial' ? { primary: `${formatted.text} (partial)`, spoken: formatted.spoken } : formatted.audit;
     const totalItem: TooltipListItem = value.kind === 'notRecorded'
       ? { label: config.valueLabel, missingReason: value.reason }
-      : { label: config.valueLabel, value: countText! };
+      : { label: config.valueLabel, value: formatScaled(value, config.valueFormat), ...(item.partial ? { partialReason: item.partial } : {}) };
     const tooltipItems: TooltipListItem[] = [totalItem];
 
     if (config.referenceLabel && item.referenceTotal !== undefined) {
       if (item.referenceTotal === null) {
         tooltipItems.push({ label: config.referenceLabel, missingReason: 'Not recorded at this hour' });
       } else {
-        const refScaled = scaleRaw(item.referenceTotal, config.decimals, null);
+        const refScaled = forceReading(item.referenceTotal, config.decimals, null);
         tooltipItems.push({ label: config.referenceLabel, value: formatScaled(refScaled.value, config.valueFormat) });
       }
     }
@@ -107,6 +95,7 @@ export function projectForceAtMix(
     }
 
     if (numeric === 0) {
+      if (item.partsPartial) tooltipItems.push(...witnessedPartItems(reply, item, config.decimals, config.valueFormat));
       rows.push({
         key,
         subject: displayTag,
@@ -160,8 +149,9 @@ export function projectForceAtMix(
           anyMissing = true;
           break;
         }
-        if (rawPart <= 0) continue;
-        rawParts.push({ index: i, part: reply.parts[i]!, scaled: scaleRaw(rawPart, config.decimals, null) });
+        const reason = item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined);
+        if (rawPart <= 0 && !reason) continue;
+        rawParts.push({ index: i, part: reply.parts[i]!, scaled: forceReading(rawPart, config.decimals, null, reason) });
       }
     }
 
@@ -197,20 +187,23 @@ export function projectForceAtMix(
         const share = partNum / denom;
         const label = forcePartLabel(partItem.part);
         const color = colours[partItem.index]!;
-        usedParts.add(partItem.index);
-        segments.push({
-          key: partItem.part.key,
-          label,
-          share,
-          value: partItem.scaled.value,
-          format: config.valueFormat,
-          color,
-          inlineLabel: `${label} ${sharePct(share)}`,
-        });
+        if (share > 0) {
+          usedParts.add(partItem.index);
+          segments.push({
+            key: partItem.part.key,
+            label,
+            share,
+            value: partItem.scaled.value,
+            format: config.valueFormat,
+            color,
+            inlineLabel: `${label} ${sharePct(share)}`,
+          });
+        }
         tooltipItems.push({
           label,
           swatch: color,
           value: `${formatScaled(partItem.scaled.value, config.valueFormat)} (${sharePct(share)})`,
+          ...(partItem.scaled.value.kind === 'partial' ? { partialReason: partItem.scaled.value.reason } : {}),
         });
       }
     }

@@ -155,10 +155,14 @@ test('naval losses lines projects slot-keyed series, whole-number axis, and end 
     [k1]: { name: 'German Reich', colour: '#4c566a' },
     [k2]: { name: 'United Kingdom', colour: '#bf616a' },
   });
+  const reason = 'One ship sinking could not be counted.';
+  const reply = navalReply();
+  reply.rows[0] = { ...reply.rows[0]!, partial: reason, partsPartial: [reason, null] };
   const readView = createBoundedReadView({
     hour: displayedHour(150),
     identity,
-    panels: new Map([['head', navalReply()]]),
+    panels: new Map([['head', reply]]),
+    hovers: new Map([['hover', { hour: 150, data: reply }]]),
   });
   const model = navalLossesLinesProjection.project(readView, makeOptions());
   assert.equal(model.yAxis.decimals, 0);
@@ -166,9 +170,21 @@ test('naval losses lines projects slot-keyed series, whole-number axis, and end 
   assert.equal(model.series[0]!.id, k1);
   assert.equal(model.series[0]!.headValue, 42);
   assert.equal(model.series[0]!.endLabel?.name, 'German Reich');
-  assert.equal(model.series[0]!.endLabel?.value, '42');
+  assert.equal(model.series[0]!.endLabel?.value, '42 (partial)');
+  assert.deepEqual(model.series[0]!.partialSpans, [{ firstHour: 150, lastHour: 150, reason }]);
+  assert.equal(model.auditRows?.[0]?.value, `42, partial: ${reason}`);
+  assert.deepEqual(model.hoverDetail?.items.slice(0, 3).map(item => [item.value, item.partialReason]), [
+    ['42', reason], ['12', reason], ['30', undefined],
+  ]);
   assert.equal(model.series[1]!.id, k2);
   assert.equal(model.series[1]!.endLabel?.value, '18');
+  const unavailable = navalReply();
+  unavailable.rows[0] = { ...unavailable.rows[0]!, total: null, values: [null, null], missing: 'Holder unknown' };
+  const missing = navalLossesLinesProjection.project(createBoundedReadView({
+    hour: displayedHour(150), panels: new Map([['head', unavailable]]),
+    hovers: new Map([['hover', { hour: 150, data: unavailable }]]),
+  }), makeOptions());
+  assert.deepEqual(missing.hoverDetail?.items.map(item => item.missingReason ?? item.value), ['Holder unknown', '18', '5', '13']);
 });
 
 test('unrecorded naval losses stay not recorded with their reason, never zero or blank', () => {

@@ -82,6 +82,12 @@ pub struct ForceAtRow {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number | null"))]
     pub reference_total: Option<Option<i64>>,
     pub missing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub partial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub parts_partial: Option<Vec<Option<String>>>,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
     pub values: Vec<Option<i64>>,
     pub parts_missing: Option<String>,
@@ -556,6 +562,8 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
                 total: row.total,
                 reference_total: row.reference_total,
                 missing: row.missing,
+                partial: None,
+                parts_partial: None,
                 values,
                 parts_missing: parts_missing.map(str::to_owned),
             }

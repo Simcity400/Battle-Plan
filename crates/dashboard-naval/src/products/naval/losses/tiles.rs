@@ -1,18 +1,18 @@
 use super::{
-    Counts, MISSING_BASELINE, NavalAttribution, NavalKind, NavalLossesAtParams, NavalPeriod,
+    Counts, LossHistory, MISSING_BASELINE, NavalAttribution, NavalKind, NavalLossesAtParams, NavalPeriod,
     missing_holder, month_start, part_runs, reply_at, unlinked_tag_at,
 };
 use dashboard_base::{
     Source,
     products::{Country, LoadContext, validate_country},
     span::HourSpan,
+    tile_runs::{self, clip_runs, clip_spans, push_span},
 };
-use dashboard_land::products::forces::ForceRun;
 use dashboard_query::{
     Query,
-    chart::{ChartBucket, ChartRun, merge},
-    series::{Line, MissingSpan, Part},
-    tile::{self, BINS, SeriesTileReply, TileLine, TileRanking},
+    chart::ChartRun,
+    series::{Line, Part},
+    tile::{self, SeriesTileReply, TileLine, TileRanking},
 };
 use dashboard_text::metadata::check_cancel;
 use dashboard_world::products::group_members::GroupsAt;
@@ -63,127 +63,6 @@ struct TileAsk {
     within: Option<Vec<(Country, Vec<HourSpan>)>>,
     top: Option<u32>,
     hour: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct DrawnPiece {
-    first: i32,
-    last: i32,
-    value: f64,
-    break_before: bool,
-}
-
-fn push_missing(out: &mut Vec<MissingSpan>, first_hour: i32, last_hour: i32, reason: &str) {
-    if first_hour > last_hour {
-        return;
-    }
-    if let Some(prev) = out.last_mut()
-        && prev.reason == reason
-        && prev.last_hour.saturating_add(1) >= first_hour
-    {
-        prev.last_hour = prev.last_hour.max(last_hour);
-        return;
-    }
-    out.push(MissingSpan { first_hour, last_hour, reason: reason.to_owned() });
-}
-
-fn clip_pieces(pieces: Vec<DrawnPiece>, within: Option<&[HourSpan]>) -> Vec<DrawnPiece> {
-    let Some(spans) = within else { return pieces };
-    let mut out = Vec::new();
-    for piece in pieces {
-        for span in spans {
-            let first = piece.first.max(span.first_hour);
-            let last = piece.last.min(span.last_hour);
-            if first <= last {
-                out.push(DrawnPiece {
-                    first,
-                    last,
-                    value: piece.value,
-                    break_before: piece.break_before || first > piece.first,
-                });
-            }
-        }
-    }
-    out
-}
-
-fn clip_missing(spans: &[MissingSpan], within: Option<&[HourSpan]>) -> Vec<MissingSpan> {
-    let Some(within) = within else {
-        return spans.to_vec();
-    };
-    let mut out = Vec::new();
-    for span in spans {
-        for bound in within {
-            let first = span.first_hour.max(bound.first_hour);
-            let last = span.last_hour.min(bound.last_hour);
-            if first <= last {
-                push_missing(&mut out, first, last, &span.reason);
-            }
-        }
-    }
-    out
-}
-
-fn bucketed(lines: &[DrawnPiece], start: i32, clip: i32, bin_hours: i64) -> Vec<Option<ChartBucket>> {
-    let mut buckets: Vec<Option<ChartBucket>> = vec![None; BINS];
-    if clip < start {
-        return buckets;
-    }
-    let start_bin = i64::from(start);
-    let end_bin = start_bin + BINS as i64 * bin_hours - 1;
-    for line in lines {
-        let lo = i64::from(line.first).max(start_bin);
-        let hi = i64::from(line.last).min(i64::from(clip)).min(end_bin);
-        if lo > hi {
-            continue;
-        }
-        let mut at = lo;
-        while at <= hi {
-            let slot = ((at - start_bin) / bin_hours) as usize;
-            let bin_end = (start_bin + (slot as i64 + 1) * bin_hours - 1).min(hi);
-            let from = at as i32;
-            let to = bin_end as i32;
-            let piece = ChartBucket {
-                absolute_total: (line.value.max(0.0) as u128) * (bin_end - at + 1) as u128,
-                first_hour: from,
-                last_hour: to,
-                first_value: line.value,
-                last_value: line.value,
-                last_value_hour: from,
-                min_hour: from,
-                min_value: line.value,
-                max_hour: from,
-                max_value: line.value,
-                first_break: line.break_before && from == line.first,
-                has_break: false,
-            };
-            buckets[slot] = match buckets[slot].take() {
-                None => Some(piece),
-                Some(held) => merge(Some(held), Some(piece)),
-            };
-            at = bin_end + 1;
-        }
-    }
-    for (slot, bucket) in buckets.iter_mut().enumerate() {
-        if let Some(bucket) = bucket {
-            let (bin_first, bin_last) = (start_bin + slot as i64 * bin_hours, start_bin + (slot as i64 + 1) * bin_hours - 1);
-            bucket.has_break |= i64::from(bucket.first_hour) > bin_first || i64::from(bucket.last_hour) < bin_last.min(i64::from(clip));
-        }
-    }
-    buckets
-}
-
-fn runs(lines: &[DrawnPiece], first: i32, clip: i32) -> Vec<ChartRun> {
-    lines
-        .iter()
-        .filter(|line| line.last >= first && line.first <= clip)
-        .map(|line| ChartRun {
-            first_hour: line.first.max(first),
-            last_hour: line.last.min(clip),
-            value: line.value,
-            break_before: line.break_before && line.first >= first,
-        })
-        .collect()
 }
 
 pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SeriesTileReply> {
@@ -242,7 +121,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
     let scan_first = first.max(query.timeline.first);
     let clip = last.min(query.timeline.last);
 
-    let mut drawn_lines: Vec<Vec<DrawnPiece>> = Vec::with_capacity(keys.len());
+    let mut drawn_lines: Vec<Vec<ChartRun>> = Vec::with_capacity(keys.len());
     let mut tile_lines: Vec<TileLine> = Vec::with_capacity(keys.len());
 
     if scan_first <= clip && !keys.is_empty() {
@@ -257,7 +136,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
         let kinds = family.count_kind.kinds();
         let attribution = family.attribution.code();
         let recording = query.replay.recording();
-        let mut runs_by_index: Vec<Vec<ForceRun>> = vec![Vec::new(); held.len()];
+        let mut histories = vec![LossHistory::default(); held.len()];
         for stretch in &stretches {
             check_cancel(cancelled)?;
             let mut holder_keys: Vec<u128> = held
@@ -277,7 +156,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 NavalPeriod::Month => (month_start(stretch.first) - 1).clamp(full_first, stretch.first),
             };
             let counts = Counts::read(recording, stretch.run, kinds, &holder_keys, from, stretch.last)?;
-            for ((_, parts), out) in held.iter().zip(runs_by_index.iter_mut()) {
+            for ((_, parts), out) in held.iter().zip(histories.iter_mut()) {
                 check_cancel(cancelled)?;
                 for part in parts.iter().filter(|part| part.run == stretch.run) {
                     let (lo, hi) = (stretch.first.max(part.first), stretch.last.min(part.last));
@@ -288,19 +167,19 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
             }
         }
         let mut unlinked_by_hour = BTreeMap::new();
-        for ((country, _), force_runs) in held.into_iter().zip(runs_by_index) {
+        for ((country, _), history) in held.into_iter().zip(histories) {
             let within = within_by_country.get(&country).map(Vec::as_slice);
             let mut pieces = Vec::new();
             let mut missing = Vec::new();
-            for run in force_runs {
+            for run in history.runs {
                 match run.total {
-                    Some(total) => pieces.push(DrawnPiece {
-                        first: run.first_hour,
-                        last: run.last_hour,
+                    Some(total) => pieces.push(ChartRun {
+                        first_hour: run.first_hour,
+                        last_hour: run.last_hour,
                         value: total as f64,
                         break_before: run.starts_segment,
                     }),
-                    None => push_missing(&mut missing, run.first_hour, run.last_hour, MISSING_BASELINE),
+                    None => push_span(&mut missing, run.first_hour, run.last_hour, MISSING_BASELINE),
                 }
             }
             let mut holder_gaps = Vec::new();
@@ -311,7 +190,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 if let Some(reason) = missing_holder(&query.holders, &country, hour, held.map(|run| run.holder), || {
                     *unlinked_by_hour.entry(hour).or_insert_with(|| unlinked_tag_at(&query.holders, hour))
                 }) {
-                    push_missing(&mut holder_gaps, hour, end, &format!("Who holds {country} is not known: {reason}"));
+                    push_span(&mut holder_gaps, hour, end, &format!("Who holds {country} is not known: {reason}"));
                 }
                 if end == clip {
                     break;
@@ -322,11 +201,11 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
                 missing.extend(holder_gaps);
                 missing.sort_unstable_by_key(|gap| gap.first_hour);
             }
-            let mut pieces = clip_pieces(pieces, within);
-            pieces.sort_by_key(|piece| piece.first);
-            let missing = clip_missing(&missing, within);
+            let mut pieces = clip_runs(pieces, within);
+            pieces.sort_by_key(|piece| piece.first_hour);
+            let missing = clip_spans(&missing, within);
             drawn_lines.push(pieces);
-            tile_lines.push(TileLine { country, part: None, missing, partial: Vec::new(), parts: Vec::new(), marks: None });
+            tile_lines.push(TileLine { country, part: None, missing, partial: clip_spans(&history.partial, within), parts: Vec::new(), marks: None });
         }
     } else {
         for country in keys {
@@ -335,17 +214,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
         }
     }
 
-    let (bins, raw_values, hour_bytes) = match ask.bin_hours {
-        1 => {
-            let run_lines: Vec<Vec<ChartRun>> = drawn_lines.iter().map(|lines| runs(lines, first, clip)).collect();
-            let (bytes, raw) = tile::encode_runs(&run_lines, first, SCALE);
-            (bytes, raw, 0)
-        }
-        bin_hours => {
-            let buckets: Vec<Option<ChartBucket>> = drawn_lines.iter().flat_map(|lines| bucketed(lines, first, clip, bin_hours)).collect();
-            tile::encode(&buckets, first, bin_hours, SCALE)
-        }
-    };
+    let (bins, raw_values, hour_bytes) = tile_runs::encode(drawn_lines, first, clip, ask.bin_hours, SCALE);
     let (immutable, filled) = tile::closure(first, last, query.timeline.last);
     Ok(SeriesTileReply {
         branch_id,
@@ -367,6 +236,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_query::tile::BINS;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
     use replay_data::rows::{CountryLinkRow, CountryRow, SunkConvoyRow, SunkShipEntry, SunkShipsRow, TableId, TableRows};
@@ -546,13 +416,52 @@ mod tests {
 
     #[test]
     fn the_head_ends_where_a_refused_sinking_changes_its_evidence() {
-        let src = losses_source(false, Some((1_033, 9001)), None);
+        let src = losses_with(true, Some((1_033, 9001)), |frame| {
+            if frame.hour == 1_038 {
+                *frame.tables[TableId::SunkShips.index()] = TableView::Unavailable { reason: "not read".into() };
+            }
+        });
         let before = head(&src, 1_031, vec![Country::Slot(7)], None);
         assert_eq!((before.rows[0].total, before.last_hour), (Some(3), 1_032));
         assert!(before.warnings.is_empty());
         let after = head(&src, 1_035, vec![Country::Slot(7)], None);
         assert_eq!((after.rows[0].total, after.first_hour), (Some(3), 1_033));
         assert!(after.warnings.iter().any(|warning| warning.starts_with("1 sinkings")), "{:?}", after.warnings);
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let retention_date = dashboard_text::division_history::date(1_039);
+        for period in ["running", "month"] {
+            for bin_hours in [1, replay_columnar::summary::BASE_HOURS] {
+                let tile = tile(&src, &query, &serde_json::json!({
+                    "branchId": "1", "family": { "kind": SERIES, "attribution": "lost", "countKind": "ships", "period": period },
+                    "binHours": bin_hours, "index": 1_035 / (BINS as i64 * bin_hours), "countries": [7, 8],
+                    "within": [[7, [{ "firstHour": 1_031, "lastHour": 1_037 }]]],
+                }), &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+                assert_eq!(tile.lines[0].partial.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(1_033, 1_037)]);
+                let reason = &tile.lines[0].partial[0].reason;
+                assert!(reason.contains("could not be counted"));
+                assert_eq!(after.rows[0].partial.as_deref(), Some(reason.as_str()));
+                let retained = &tile.lines[1].partial;
+                assert_eq!(retained.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(1_039, 1_040)]);
+                assert!(retained[0].reason.contains(&retention_date));
+            }
+        }
+        assert_eq!(before.rows[0].partial, None);
+        let load = LoadContext { content: None };
+        let groups = GroupsAt::load(&src, &load, "1", None).unwrap();
+        let both = |hour| reply_at(&query, &NavalLossesAtParams {
+            branch_id: "1".into(), hour, countries: vec![Country::Slot(8), Country::Slot(7)], top: None,
+            group: None, attribution: NavalAttribution::Lost, kind: NavalKind::Both, period: NavalPeriod::Running,
+        }, &groups, &AtomicBool::new(false)).unwrap();
+        let reply = both(1_035);
+        let row = reply.rows.iter().find(|row| row.slot == Some(7)).unwrap();
+        assert_eq!(row.parts_partial.as_deref(), Some([row.partial.clone(), None].as_slice()));
+        assert_eq!(reply.rows.iter().find(|row| row.slot == Some(8)).unwrap().partial, None);
+        let unread = both(1_038);
+        assert!(unread.rows.iter().all(|row| row.total.is_none() && row.partial.is_none()));
+        let recovered = both(1_039);
+        let zero = recovered.rows.iter().find(|row| row.slot == Some(8)).unwrap();
+        assert_eq!(zero.total, Some(0));
+        assert!(zero.partial.as_deref().unwrap().contains(&retention_date));
     }
 
     #[test]
