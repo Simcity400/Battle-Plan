@@ -53,4 +53,6 @@ test('an agreement whose terms list nothing still has its row and its delivery d
   assert.equal(model.rows.length, 1);
   assert.deepEqual(model.rows[0]!.cells.last!.value, { kind: 'known', value: 115 });
   assert.equal(model.empty, undefined);
+  const unread = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]), live: new Map([['main', { get: () => undefined, missing: () => 'Not read yet' }]]) }), { direction: 'sent' });
+  assert.deepEqual(unread.rows.map(row => row.key), ['1:terms'], 'an unread fuel counter alone is not a fuel line');
 });

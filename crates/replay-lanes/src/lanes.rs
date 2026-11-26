@@ -1266,12 +1266,13 @@ const fn ceil_multiple(hour: i64, size: i64) -> i64 {
     (hour + size - 1).div_euclid(size) * size
 }
 
-fn folded_from(recording: &Recording, run: u32, from: i32, size: i64, (first_bin_hour, min_bucket_hour): (i64, i64)) -> io::Result<i32> {
-    let mut start = (i64::from(from).div_euclid(size) * size).max(first_bin_hour);
-    if min_bucket_hour > i64::MIN {
-        start = start.max(ceil_multiple(min_bucket_hour, size).min(i64::from(from)));
-    }
-    Ok(start.max(i64::from(recording.run(run)?.first_hour)) as i32)
+fn folded_span(directory: &summary::Directory, from: i64, to: i64, min_bucket_hour: i64) -> Option<(i64, i64)> {
+    let size = summary::bucket_hours(directory.level);
+    let (first, end) = (directory.first_hour, directory.first_hour + i64::from(directory.hours));
+    let floor = from.max(min_bucket_hour);
+    let lo = if first >= floor { first } else { ceil_multiple(floor, size) };
+    let hi = if end <= to + 1 { end } else { (to + 1).div_euclid(size) * size };
+    (lo < hi).then_some((lo, hi))
 }
 
 pub fn chart_at(
@@ -1285,6 +1286,9 @@ pub fn chart_at(
     level: u8,
     bin_hours: i64,
 ) -> io::Result<Chart> {
+    if bin_hours <= 0 || level != WALKED && bin_hours % summary::bucket_hours(level) != 0 {
+        return Err(invalid("A chart's bins are whole summary buckets of its level"));
+    }
     let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let first_bin_hour = i64::from(from).div_euclid(bin_hours) * bin_hours;
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
@@ -1311,11 +1315,7 @@ pub fn chart_at(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
-    let folded = match level {
-        WALKED => read_from,
-        _ => folded_from(recording, run, read_from, summary::bucket_hours(level), (first_bin_hour, min_bucket_hour))?,
-    };
-    let (first, last) = (ordinal_of(recording, run, folded)?, ordinal_of(recording, run, to)?);
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = match level {
         WALKED => Vec::new(),
@@ -1358,17 +1358,7 @@ pub fn chart_at(
         .collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
-        .filter_map(|(piece, _)| {
-            let size = summary::bucket_hours(piece.directory.level);
-            let floor = if min_bucket_hour > i64::MIN {
-                ceil_multiple(min_bucket_hour, size)
-            } else {
-                i64::MIN
-            };
-            let lo = piece.directory.first_hour.max(floor);
-            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
-            (lo < hi).then_some((lo, hi))
-        })
+        .filter_map(|(piece, _)| folded_span(&piece.directory, i64::from(read_from), i64::from(to), min_bucket_hour))
         .collect();
     let mut asked: Vec<u128> = match keys {
         Some(keys) => keys.iter().copied().filter(|&key| decoded.iter().any(|(piece, _)| piece.key_at(key).is_some())).collect(),
@@ -1938,7 +1928,8 @@ impl Grid {
     fn bin(&self, directory: &summary::Directory, bucket: u32) -> Option<usize> {
         let size = summary::bucket_hours(directory.level);
         let start = (directory.first_bucket + i64::from(bucket)) * size;
-        if start < self.min_bucket_hour || start + size <= self.from || start > self.to {
+        let (lo, hi) = folded_span(directory, self.from, self.to, self.min_bucket_hour)?;
+        if start.max(directory.first_hour) < lo || (start + size).min(directory.first_hour + i64::from(directory.hours)) > hi {
             return None;
         }
         usize::try_from((start - self.first_bin_hour).div_euclid(self.bin_hours))
@@ -2118,8 +2109,7 @@ fn top_with(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
-    let folded = folded_from(recording, run, read_from, summary::bucket_hours(level), (first_bin_hour, min_bucket_hour))?;
-    let (first, last) = (ordinal_of(recording, run, folded)?, ordinal_of(recording, run, to)?);
+    let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = pieces(recording, run, table.index(), blocks.clone(), level)?;
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
@@ -2139,17 +2129,7 @@ fn top_with(
     let decoded = decoded.into_iter().filter_map(|(_, decoded)| decoded).collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
-        .filter_map(|(piece, _, _)| {
-            let size = summary::bucket_hours(piece.directory.level);
-            let floor = if min_bucket_hour > i64::MIN {
-                ceil_multiple(min_bucket_hour, size)
-            } else {
-                i64::MIN
-            };
-            let lo = piece.directory.first_hour.max(floor);
-            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
-            (lo < hi).then_some((lo, hi))
-        })
+        .filter_map(|(piece, _, _)| folded_span(&piece.directory, i64::from(read_from), i64::from(to), min_bucket_hour))
         .collect();
     let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
     let run_first = i64::from(recording.run(run)?.first_hour);

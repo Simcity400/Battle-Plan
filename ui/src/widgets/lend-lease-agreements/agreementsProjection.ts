@@ -143,7 +143,7 @@ function agreementRows(
   }
   const daily = BigInt(terms.fuelDailyRaw);
   const share = BigInt(terms.fuelPercentageRaw);
-  if (daily !== 0n || share !== 0n || fuelDelivered(terms, sent, fuelLost) || (rows.length === 0 && sent.kind === 'notRecorded')) {
+  if (daily !== 0n || share !== 0n || fuelDelivered(terms, sent, fuelLost)) {
     const schedule = [daily !== 0n ? `Daily ${fixedText(daily, FUEL_QUANTITY)}` : '', share !== 0n ? `Production share ${fixedText(share, SHARE)}%` : ''].filter(Boolean).join(' · ') || 'No fuel schedule';
     const meta: AgreementMeta = { terms, variant: null };
     rows.push({
