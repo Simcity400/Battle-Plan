@@ -4,7 +4,7 @@ use replay_columnar::{manifest::Status, store::Store, unit::Discard};
 use replay_data::{
     event_feed_rows::{
         EventFeedCause, EventFeedCountry, EventFeedCounts, EventFeedEventIdentity, EventFeedRoute, EventFeedScope, EventFeedScript, EventFeedScriptChange, EventPresentation, EventWindows,
-        OfferedOption, ScriptFamily, VerdictEntry, WindowKind, WindowVerdict,
+        OfferedOption, VerdictEntry, WindowKind, WindowVerdict,
     },
     format::FormatVersion,
     rows::{CountryCounterInputRow, CountryLinkRow, CountryPowerChangeRow, CountryRow, PoliticsCaptureCoverageRow, PowerAction, PowerCause, PowerCurrency, PowerIdentity, RelationTupleRow},
@@ -393,41 +393,20 @@ fn a_decision_charge_is_proven_only_for_one_execution_of_a_country_whose_power_w
         ],
         "GER's power was captured over the hour; POL's political power was and its command power was not, so each currency says so; a war declaration is charged nothing"
     );
-}
-
-#[test]
-fn a_read_refusing_only_what_hides_no_decision_edge_keeps_a_decisions_card_linked() {
-    let (mut store, mut writers) = (testing::store(), writers());
-    let ger = country(1);
-    let refusing = |refusals: u8, read: i32, sequence: u64, source: Source| EventFeedHistoryRow {
-        script_refusals: refusals,
-        ..pack(9, read, EventFeedCoverage::Complete, vec![decision(occurrence(9, sequence, read, source, ger, country(0)))], b"dec_a", Vec::new())
-    };
-    let reads = [
-        refusing(0, 0, 1, Source::DecisionSelected),
-        refusing(ScriptFamily::DecisionRandomCount as u8 | ScriptFamily::DecisionRoster as u8, 1, 2, Source::DecisionCompleted),
-        refusing(0, 2, 3, Source::DecisionSelected),
-        refusing(ScriptFamily::DecisionLifecycle as u8, 3, 4, Source::DecisionCompleted),
-    ];
-    let mut openers = Vec::new();
-    for (hour, read) in reads.into_iter().enumerate() {
-        let hour = hour as i32;
-        run(&mut store, &mut writers, hour, |store| {
-            if hour == 0 {
-                for (id, slot, tag) in [(1, 10, b"GER"), (2, 20, b"POL")] {
-                    testing::put(store, TableId::Countries, &CountryRow { id, canonical_slot: slot, tag: tag.to_vec(), ..CountryRow::default() }, TEXTS).unwrap();
-                    testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
-                }
-            }
-            testing::put(store, TableId::EventFeedHistory, &read, TEXTS).unwrap();
-        });
-        openers.extend(feed(&store).into_iter().filter(|row| row.generation == 9).map(|row| (row.sequence, row.opener)));
-    }
-    assert_eq!(
-        openers,
-        [(1, None), (2, Some(1)), (3, None), (4, None)],
-        "a read refusing description and roster state keeps the decision's card; one refusing its lifecycle may have lost an edge, so the next one opens none"
-    );
+    run(&mut store, &mut writers, 2, |store| {
+        for table in [TableId::CountryPowerChanges, TableId::PoliticsCaptureCoverage] {
+            store.status(table.index(), Status::Complete, true, Some(2), true).unwrap();
+        }
+        for row in [CountryPowerChangeRow { hour: 2, ..charge(1, 5, PowerCurrency::Political, -10) }, CountryPowerChangeRow { hour: 2, ..charge(1, 6, PowerCurrency::Political, -10) }] {
+            testing::put(store, TableId::CountryPowerChanges, &row, TEXTS).unwrap();
+        }
+        let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
+        testing::put(store, TableId::PoliticsCaptureCoverage, &PoliticsCaptureCoverageRow { country: 1, since_hour: 0, through_hour: 10, streams, ..PoliticsCaptureCoverageRow::default() }, TEXTS).unwrap();
+        let selected = decision(occurrence(9, 4, 2, Source::DecisionSelected, ger, country(0)));
+        testing::put(store, TableId::EventFeedHistory, &pack(9, 2, EventFeedCoverage::Partial, vec![selected], b"dec_a", Vec::new()), TEXTS).unwrap();
+    });
+    let partial: Vec<_> = feed(&store).into_iter().filter(|row| row.generation == 9).map(|row| (row.sequence, row.political_power, row.command_power)).collect();
+    assert_eq!(partial, [(4, Recorded::NotRecorded, Recorded::NotRecorded)], "a read that may have lost a second execution proves no charge for the one it kept");
 }
 
 #[test]

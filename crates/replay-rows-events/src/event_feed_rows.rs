@@ -797,7 +797,6 @@ pub enum ScriptFamily {
     DecisionRoster = 8,
     DecisionRandomCount = 16,
 }
-pub const DECISION_EDGE_REFUSALS: u8 = ScriptFamily::DecisionMembership as u8 | ScriptFamily::DecisionTimers as u8 | ScriptFamily::DecisionLifecycle as u8;
 pub const SCRIPT_FAMILY_NAMES: [(ScriptFamily, &str); 5] = [
     (
         ScriptFamily::DecisionMembership,

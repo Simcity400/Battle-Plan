@@ -88,7 +88,9 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
           : notRecorded(shown.kind === 'notRecorded' ? shown.reason : 'Recipient not recorded');
     const note = summary(d.terms.map(quantity));
     name = [text.kind === 'known' || text.kind === 'partial' ? String(text.value) : 'Recipient not recorded', note].filter(Boolean).join(' \u00b7 ');
-    cell = { value: knownValue([name, ...list].join(', ')), heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
+    const joined = [name, ...list].join(', ');
+    const value = text.kind === 'known' ? knownValue(joined) : partialValue(joined, text.kind === 'partial' || text.kind === 'notRecorded' ? text.reason : 'Recipient not recorded');
+    cell = { value, heading: { flag: recipient.flags![0]!, text, ...(note ? { note } : {}) }, ...(flags.length ? { flags } : {}) };
   } else {
     name = list.length > 1 ? `${list[0]} \u2013 ${list[list.length - 1]}` : (list[0] ?? 'Terms');
     cell = { value: knownValue(list.join(', ')), flags };

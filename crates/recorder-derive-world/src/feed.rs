@@ -2,7 +2,7 @@
 use recorder_derive_framework::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer};
 use replay_columnar::leaf::{Reader, Writer as Bytes};
 use replay_data::{
-    event_feed_rows::{DECISION_EDGE_REFUSALS, EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedSource as Source},
+    event_feed_rows::{EventFeedCoverage, EventFeedEvent, EventFeedHistoryRow, EventFeedSource as Source},
     rows::{Field, FeedEventRow, Opaque, Recorded, RowCodec, TableId, TagHolderRow},
 };
 use std::{
@@ -142,8 +142,7 @@ impl Feed {
         let names = Names::new(hour);
         let names = names.as_ref();
         let complete = pack.coverage == EventFeedCoverage::Complete && pack.script_refusals == 0;
-        let linked = pack.coverage == EventFeedCoverage::Complete && pack.script_refusals & DECISION_EDGE_REFUSALS == 0;
-        open.observe_read(out, &mut self.links, pack.read_hour, linked)?;
+        open.observe_read(out, &mut self.links, pack.read_hour, complete)?;
         if !complete {
             self.derived(out, hour.hour, ordinal, FeedEventRow::READ_INCOMPLETE, |row| {
                 row.read_hour = pack.read_hour;
@@ -180,7 +179,7 @@ impl Feed {
             let opener = open.link(out, &mut self.links, event, token, pack.read_hour)?;
             let charge = charge_key(event, token);
             let charged = matches!(event.source, Source::DecisionSelected | Source::DecisionTimeoutEffect);
-            let proven = charge.as_ref().filter(|key| executions.get(*key) == Some(&1)).and_then(|key| charges.as_ref()?.get(key));
+            let proven = charge.as_ref().filter(|key| pack.coverage == EventFeedCoverage::Complete && executions.get(*key) == Some(&1)).and_then(|key| charges.as_ref()?.get(key));
             let [political_power, command_power] = match proven {
                 Some(sums) => (*sums).map(|sum| sum.and_then(|sum| i64::try_from(sum).ok()).map_or(Recorded::NotRecorded, |sum| Recorded::Value(Some(sum)))),
                 None if charged => [Recorded::NotRecorded, Recorded::NotRecorded],

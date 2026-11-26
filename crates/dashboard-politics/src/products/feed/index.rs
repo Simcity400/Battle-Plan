@@ -12,10 +12,7 @@ use dashboard_query::{
     log::{Reader, occurrence::{Index, Occurrence, Role}},
     series::MissingSpan,
 };
-use replay_data::{
-    event_feed_rows::{DECISION_EDGE_REFUSALS, EventFeedCoverage},
-    rows::FeedEventRow,
-};
+use replay_data::{event_feed_rows::EventFeedCoverage, rows::FeedEventRow};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -379,13 +376,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     held.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
     held.extend(gaps.iter().map(|gap| (gap.first_hour, gap.last_hour)));
     let complete = EventFeedCoverage::Complete as u32;
-    let hides = u32::from(DECISION_EDGE_REFUSALS);
-    let lost = |decisions: bool| {
-        incomplete
-            .iter()
-            .filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals.is_none_or(|refused| refused & hides != 0)))
-            .map(|&(hour, ..)| (hour, hour))
-    };
+    let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
     let breaks = spans(held.iter().copied().chain(lost(false)).collect());
     let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
     Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, gaps })
@@ -740,8 +731,8 @@ fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, c
     }
     let made = Arc::new(match scan(source, query, branch, cancelled) {
         Ok(made) => made,
-        Err(error) if cancelled.load(std::sync::atomic::Ordering::Relaxed) => return Err(error),
-        Err(error) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData && !cancelled.load(std::sync::atomic::Ordering::Relaxed) => Scanned::refused(query.timeline.first, query.timeline.last, &error.to_string()),
+        Err(error) => return Err(error),
     });
     held.scanned = Some(Arc::clone(&made));
     Ok(made)

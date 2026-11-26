@@ -221,6 +221,9 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
     selected.costs = [Some(Some(-5_000_000)), None];
     let partly = edge(&selected, row(&selected));
     assert_eq!((partly.costs.map(|costs| costs.len()), partly.costs_unread), (Some(1), vec![ScriptCurrency::CommandPower]), "an unread command-power cell keeps the political power that was read, and says which currency it lacks");
+    selected.costs = [Some(Some(0)), None];
+    let zero = edge(&selected, row(&selected));
+    assert_eq!((zero.costs.map(|costs| costs.iter().map(|cost| cost.amount.clone()).collect::<Vec<_>>()), zero.costs_unread), (Some(vec!["0".to_owned()]), vec![ScriptCurrency::CommandPower]), "a proven zero stays beside the currency not read");
     selected.costs = [None, Some(Some(-30))];
     assert_eq!(edge(&selected, row(&selected)).costs_unread, [ScriptCurrency::PoliticalPower], "and the other way round");
 }
@@ -1038,9 +1041,9 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     let decided = |hour: i32, status: ScriptStatus| DecisionsTail::load(&replay_source, &cards(hour, Some(vec![status]), None), &context, &cancel).unwrap().total;
     let chose = |hour: i32, status: ScriptStatus| EventChoicesTail::load(&replay_source, &cards(hour, Some(vec![status]), None), &context, &cancel).unwrap().total;
     assert_eq!(
-        [107, 108, 109].map(|hour| (decided(hour, ScriptStatus::Active), decided(hour, ScriptStatus::NotRecorded))),
-        [("1".into(), "0".into()), ("1".into(), "0".into()), ("0".into(), "1".into())],
-        "a read refusing only description state hides no edge; one refusing the lifecycle may have lost the end of a running decision"
+        [107, 108].map(|hour| (decided(hour, ScriptStatus::Active), decided(hour, ScriptStatus::NotRecorded))),
+        [("1".into(), "0".into()), ("0".into(), "1".into())],
+        "a read refusing a decision family breaks the decision's link, so its running state is not recorded from then"
     );
     assert_eq!((chose(109, ScriptStatus::Awaiting).as_str(), chose(110, ScriptStatus::Awaiting).as_str(), chose(110, ScriptStatus::NotRecorded).as_str()), ("3", "0", "3"), "a decision family refused loses no choice, a partial read may have");
 
@@ -1115,7 +1118,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         (vec![101, 107], vec![]),
         "no departure at 104 or 105 with membership unread at 104; none at 108 nor a join at 109 around a roster that named an unknown country; none at the tag change of 110"
     );
-    assert_eq!(groups.unrecorded.iter().map(|family| (family.kind, family.spans.clone())).collect::<Vec<_>>(), [("factionMembership", vec![(104, 104), (108, 108)])], "the hours membership was not fully read are the family's own dated coverage");
+    assert_eq!(groups.unrecorded.iter().map(|family| (family.kind, family.spans.clone())).collect::<Vec<_>>(), [("factionMembership", vec![(104, 105), (108, 109)])], "the dates whose joins and departures lack evidence on one side are the family's own coverage");
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
     assert_eq!(joined.hour, 101);
     let item = joined.item.as_ref().expect("faction item");
@@ -1147,7 +1150,9 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
-    assert!(at(105).unavailable.iter().any(|notice| notice.kind == "factionMembership" && notice.reason.starts_with("Faction membership was not fully observed for 1 hours")), "and the feed says so beside its rows");
+    assert!(at(105).unavailable.iter().any(|notice| notice.kind == "factionMembership" && notice.reason.starts_with("A join or departure dated in 2 hours of this span is not listed")), "and the feed says so beside its rows");
+    let alone = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(105), to: Some(105), ..ask(112) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert!(alone.unavailable.iter().any(|notice| notice.kind == "factionMembership"), "a span of 105 alone cannot tell a departure at 105 either");
     let ranged = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(100), to: Some(103), ..ask(112) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     assert!(!ranged.unavailable.iter().any(|notice| notice.kind == "factionMembership"), "an unread hour after the dates asked is no part of their coverage");
 }

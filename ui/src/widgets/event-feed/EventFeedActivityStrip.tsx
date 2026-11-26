@@ -79,7 +79,7 @@ export default function EventFeedActivityStrip({
     if (!bound) return null;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
     const exKey = excludedKinds?.length ? [...excludedKinds].sort().join(',') : '';
-    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries]);
+    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries, selectedCountryKeys(widget.countries, track)]);
   }, [track, active, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
   useEffect(() => {
@@ -142,11 +142,22 @@ export default function EventFeedActivityStrip({
     for (let i = 0; i < strip.binCount; i++) totals[i]! += s.counts[i] ?? 0;
   }
   const maxTotal = Math.max(1, ...totals);
-  const gapBins = new Set<number>();
+  const missingHours = new Array<number>(strip.binCount).fill(0);
+  const binStart = (idx: number) => Math.max(strip.firstHour + idx * strip.binHours, track?.branch.firstHour ?? strip.firstHour);
+  const binEnd = (idx: number) => Math.min(strip.firstHour + (idx + 1) * strip.binHours - 1, strip.lastHour);
   for (const span of strip.missing) {
     const firstIdx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
     const lastIdx = Math.max(firstIdx, Math.min(strip.binCount - 1, Math.floor((span.lastHour - strip.firstHour) / strip.binHours)));
-    for (let idx = firstIdx; idx <= lastIdx; idx++) gapBins.add(idx);
+    for (let idx = firstIdx; idx <= lastIdx; idx++) {
+      missingHours[idx]! += Math.max(0, Math.min(span.lastHour, binEnd(idx)) - Math.max(span.firstHour, binStart(idx)) + 1);
+    }
+  }
+  const gapBins = new Set<number>();
+  const partBins = new Set<number>();
+  for (let idx = 0; idx < strip.binCount; idx++) {
+    if (missingHours[idx]! <= 0) continue;
+    if (missingHours[idx]! >= binEnd(idx) - binStart(idx) + 1) gapBins.add(idx);
+    else partBins.add(idx);
   }
 
   const tickCount = Math.min(5, Math.max(2, Math.floor(strip.binCount / 10) + 1));
@@ -168,7 +179,7 @@ export default function EventFeedActivityStrip({
           }
           const barTotal = totals[idx]!;
           const maxPx = 22;
-          const partly = gapBins.has(idx);
+          const partly = gapBins.has(idx) || partBins.has(idx);
           return (
             <span key={idx} className={partly ? 'efs-bar is-partial' : 'efs-bar'} {...(partly ? { title: 'Partly not recorded' } : {})}>
               {barTotal > 0 ? strip.series.map(s => {

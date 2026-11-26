@@ -406,7 +406,8 @@ fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (
         .filter(|family| categories.contains(&family.category))
         .flat_map(|family| &family.spans)
         .filter(|&&(first, last)| first <= to && last >= from)
-        .filter_map(|&(first, last)| if first <= hour && hour < last.min(to) { Some(hour + 1) } else { (first > hour).then_some(first) })
+        .map(|&(first, last)| (first.max(from), last.min(to)))
+        .filter_map(|(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) })
         .min();
     [warning, left_out, unrecorded].into_iter().flatten().min()
 }
@@ -507,7 +508,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         }
     }
     if params.categories.contains(&EventFeedCategory::WarsPeace) {
-        let left_out = feed.unattributed.partition_point(|&at| at <= hour) - feed.unattributed.partition_point(|&at| at < from);
+        let left_out = feed.unattributed.partition_point(|&at| at <= hour).saturating_sub(feed.unattributed.partition_point(|&at| at < from));
         if left_out > 0 {
             notices.unavailable(
                 "warUnattributed",
@@ -521,7 +522,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     for family in feed.unrecorded.iter().filter(|family| params.categories.contains(&family.category)) {
         let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(to)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
-            notices.unavailable(family.kind, family.label, format!("{} for {hours} hours of this span; {}.", family.what, family.lost), None);
+            notices.unavailable(family.kind, family.label, format!("{} {hours} hours of this span {}.", family.listed, family.why), None);
         }
     }
     let reply = EventFeedTailReply {

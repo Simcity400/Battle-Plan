@@ -97,12 +97,11 @@ pub struct ScriptOccurrence {
 pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow) -> ScriptEdge {
     let charged = [ScriptCurrency::PoliticalPower, ScriptCurrency::CommandPower].into_iter().zip(event.costs);
     let valued = event.costs.iter().any(|cost| matches!(cost, Some(Some(_))));
+    let costs_unread: Vec<ScriptCurrency> = if valued { charged.clone().filter(|(_, amount)| amount.is_none()).map(|(currency, _)| currency).collect() } else { Vec::new() };
     let costs = valued.then(|| {
         charged
-            .clone()
-            .filter_map(|(currency, amount)| amount.flatten().filter(|amount| *amount != 0).map(|amount| ScriptCost { currency, amount: amount.to_string() }))
+            .filter_map(|(currency, amount)| amount.flatten().filter(|amount| *amount != 0 || !costs_unread.is_empty()).map(|amount| ScriptCost { currency, amount: amount.to_string() }))
             .collect()
     });
-    let costs_unread = if valued { charged.filter(|(_, amount)| amount.is_none()).map(|(currency, _)| currency).collect() } else { Vec::new() };
     ScriptEdge { row, option: event.option, lifecycle: event.lifecycle, days: event.days, costs, costs_unread }
 }
