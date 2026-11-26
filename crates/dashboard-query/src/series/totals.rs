@@ -145,7 +145,10 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     fn column_runs(&self, run: u32, column: usize, keys: &[u128], first: i32, last: i32) -> io::Result<HashMap<u128, Runs>> {
-        read::runs(self.query.replay.recording(), run, self.series.table, Source::Cell(column), Some(keys), first, last)
+        let rows = read::runs(self.query.replay.recording(), run, self.series.table, Source::Cell(column), Some(keys), first, last)?;
+        #[cfg(test)]
+        tests::HISTORY_ROWS.set(tests::HISTORY_ROWS.get() + rows.values().map(Vec::len).sum::<usize>());
+        Ok(rows)
     }
 
     pub fn totals<C: Clone + Into<Country>>(&self, tags: &[C], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
@@ -359,8 +362,8 @@ impl<'q, 'a> Line<'q, 'a> {
         let before_value = |key| start.as_ref()?.1.get(&key).map(|cells| cells[0]);
         let before = start.as_ref().map(|_| &before_value as RankedCells<'_>);
         let mut scored: Vec<(i128, &str)> = Vec::new();
-        for (tag, runs) in &self.query.holders.tags {
-            let Some(run) = runs.iter().find(|run| run.first <= hour && hour <= run.last) else { continue };
+        for tag in self.query.holders.tags.keys() {
+            let Some(run) = self.query.holders.at(tag, hour) else { continue };
             let Holder::Found { slot, id } = run.holder else { continue };
             let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &set)?;
             match ranked_total(keys.iter().map(|&(_, key)| key), rest, &now_value, before, keep) {
@@ -444,6 +447,10 @@ fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, valu
 mod tests {
     use super::*;
 
+    thread_local! {
+        pub(super) static HISTORY_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     #[test]
     fn single_hour_batch_matches_the_selected_totals_and_their_gaps() {
         use crate::identity::{HolderRun, Holders};
@@ -483,12 +490,19 @@ mod tests {
         ] {
             let opening = |_| start;
             let back = start.map(|_| &opening as &dyn Fn(i32) -> Option<i32>);
+            HISTORY_ROWS.set(0);
             let single = line.totals_at(&tags, &parts, back, hour).unwrap();
+            let batch_rows = HISTORY_ROWS.replace(0);
             let history = line.totals(&tags, &parts, back, hour, hour).unwrap();
+            let history_rows = HISTORY_ROWS.replace(0);
             assert_eq!(single, history.iter().map(|runs| runs.first().map_or(Err(Gap::NotRecorded), |r| r.value)).collect::<Vec<_>>(), "hour {hour}, opening {start:?}");
             assert_eq!(single[0], first_value);
             assert_eq!(single[2..], [Err(Gap::NotRecorded); 2]);
-            if hour == 107 { assert_eq!(single[1], Err(Gap::WindowIncomplete), "a different holder at the opening"); }
+            if hour == 107 {
+                assert_eq!(single[1], Err(Gap::WindowIncomplete), "a different holder at the opening");
+                eprintln!("window history rows: {history_rows} per-country, {batch_rows} batched");
+                assert!(batch_rows < history_rows);
+            }
         }
         let reads = |countries: &[Country]| {
             crate::cost::take_calls();
