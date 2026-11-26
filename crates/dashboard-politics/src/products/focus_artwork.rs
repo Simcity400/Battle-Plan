@@ -5,7 +5,7 @@ use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
 use dashboard_text::triggers::inputs::{Resolution, TableRead};
-use replay_data::rows::{TableId, tables};
+use replay_data::rows::TableId;
 use replay_lanes::lanes::Cell;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
@@ -308,7 +308,7 @@ pub(crate) fn load(
             Some(vec![campaign])
         };
         if let Some(reads) = reads {
-            reply.valid_through = reads_through(&replay, block.run, &reads, &decoded, params.hour, through, cancelled)?;
+            reply.valid_through = reads_through(&replay, block.run, &reads, params.hour, through, cancelled)?;
         }
     }
     Ok(reply)
@@ -316,7 +316,7 @@ pub(crate) fn load(
 
 const LOOKAHEAD: i32 = 24;
 
-fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], decoded: &DecodedFrame, hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
+fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
     let mut tables: BTreeMap<TableId, (u64, Option<Vec<(u128, u128)>>)> = BTreeMap::new();
     let mut ending: BTreeSet<TableId> = BTreeSet::new();
     let mut merge = |read: &TableRead| {
@@ -360,16 +360,6 @@ fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], decoded: &Decod
         let keys = match &ranges {
             Some(ranges) => replay_lanes::lanes::Keys::Ranges(ranges),
             None => replay_lanes::lanes::Keys::All,
-        };
-        let appended = if table == TableId::LexicalTokens {
-            let known = decoded.complete::<tables::LexicalTokens>().ok().and_then(|rows| rows.last()).map_or(0, |row| u128::from(row.token).saturating_add(1));
-            Some(known)
-        } else {
-            None
-        };
-        let keys = match appended {
-            Some(above) => replay_lanes::lanes::Keys::Range(above, u128::MAX),
-            None => keys,
         };
         let Ok(history) = replay_lanes::lanes::history(replay.recording(), run, table, &columns, keys, hour, next.saturating_sub(1)) else {
             return Ok(hour);
@@ -477,6 +467,31 @@ mod tests {
     use super::*;
     use dashboard_text::metadata::validate_campaign;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source, source_with_content};
+
+    #[test]
+    fn a_spelling_read_holds_until_that_token_is_rewritten_and_a_dictionary_lookup_until_any_entry_changes() {
+        use replay_data::rows::LexicalTokenRow;
+        let frames: Vec<_> = (100..106)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let seven = if hour < 102 { b"first".to_vec() } else { b"second".to_vec() };
+                let mut rows = vec![LexicalTokenRow { token: 7, literal: seven }, LexicalTokenRow { token: 20, literal: b"stable".to_vec() }];
+                if hour >= 104 {
+                    rows.push(LexicalTokenRow { token: 21, literal: b"stable".to_vec() });
+                }
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(rows));
+                frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let run = replay.block_at(1, 100).unwrap().run;
+        let cancelled = AtomicBool::new(false);
+        let token = |key: u128| TableRead::fields(TableId::LexicalTokens, &["literal"]).row(key);
+        assert_eq!(reads_through(&replay, run, &[token(7)], 100, 105, &cancelled).unwrap(), 101, "a token rewritten in place ends the answer, though no higher id appeared");
+        assert_eq!(reads_through(&replay, run, &[token(20)], 100, 105, &cancelled).unwrap(), 105, "an unrelated token's rewrite or a new token leaves a lookup by id standing");
+        assert_eq!(reads_through(&replay, run, &[TableRead::fields(TableId::LexicalTokens, &["literal"])], 102, 105, &cancelled).unwrap(), 103, "a whole-dictionary lookup ends where any entry appears");
+    }
     use replay_data::{rows::TableRows, rows::tables};
     use replay_frame::{frame::SharedView, frame::TableView};
     use std::cell::Cell;

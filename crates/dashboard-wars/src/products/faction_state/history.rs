@@ -945,8 +945,9 @@ mod witnessed_tests {
         coverage_edges(&[run(100, 110, Status::NotRecorded)], true, &mut before, &mut edges);
         coverage_edges(&[run(111, 120, Status::Complete)], false, &mut before, &mut edges);
         assert_eq!(edges, [(100, false), (111, true)], "coverage carried across a continuous load: the recovery hour starts a segment");
-        coverage_edges(&[run(121, 130, Status::Complete)], true, &mut before, &mut edges);
-        assert_eq!(edges.last(), Some(&(121, false)), "a break starts afresh");
+        coverage_edges(&[run(121, 125, Status::NotRecorded)], false, &mut before, &mut edges);
+        coverage_edges(&[run(126, 130, Status::Complete)], true, &mut before, &mut edges);
+        assert_eq!(edges.last(), Some(&(126, false)), "after a break the first complete hour is a fresh start, not a recovery");
     }
 
     #[test]
