@@ -52,10 +52,16 @@ pub(crate) fn identity_keys(slot: u32, id: u32) -> (u128, u128) {
 
 pub(crate) type Delta = (i32, Option<i128>);
 
-pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32, opens_run: bool, complete: &[(i32, i32)]) -> Vec<Delta> {
+fn read_within(complete: &[(i32, i32)], first: i32, last: i32) -> bool {
+    let at = complete.partition_point(|&(_, end)| end < first);
+    complete.get(at).is_some_and(|&(start, _)| start <= last)
+}
+
+pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], read_from: i32, from: i32, opens_run: bool, complete: &[(i32, i32)]) -> Vec<Delta> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
-    let mut unread = !opens_run;
+    let first_step = steps.first().map_or(i32::MAX, |step| step.0);
+    let mut unread = !opens_run && !read_within(complete, read_from, first_step.saturating_sub(1));
     let mut lost = false;
     for (at, &(hour, cell)) in steps.iter().enumerate() {
         match cell {
@@ -85,13 +91,7 @@ pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32, opens_run: bool, 
                 held = None;
                 unread = true;
             }
-            None if held.is_none() => {
-                let until = steps.get(at + 1).map_or(i32::MAX, |next| next.0 - 1);
-                let at = complete.partition_point(|&(_, last)| last < hour);
-                if complete.get(at).is_some_and(|&(first, _)| first <= until) {
-                    unread = false;
-                }
-            }
+            None if held.is_none() && read_within(complete, hour, steps.get(at + 1).map_or(i32::MAX, |next| next.0 - 1)) => unread = false,
             _ => {}
         }
     }
@@ -133,7 +133,7 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
                 history.statuses.iter().filter(|held| replay_recording::columnar_frames::complete(held.status)).map(|held| (held.first, held.last)).collect();
             for (key, steps) in &history.keys {
                 let cells: Vec<(i32, Option<Cell>)> = steps.iter().map(|step| (step.hour, step.cells.as_ref().map(|cells| cells[0]))).collect();
-                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, stretch.first, read_from == stretch.first, &complete));
+                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, read_from, stretch.first, read_from == stretch.first, &complete));
             }
         }
     }
@@ -281,6 +281,9 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             if !attributed {
                 let owner_gap = gaps.iter().find(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
                 let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+                if line.country.is_none() && owner_gap.is_none() && first_output.is_none() {
+                    seen.remove(&line.id);
+                }
                 out.unattributed.extend(owner_gap.or(if line.country.is_none() { first_output } else { Some(line.first) }));
                 continue;
             }

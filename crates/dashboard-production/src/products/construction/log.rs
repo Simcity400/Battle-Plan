@@ -127,6 +127,7 @@ pub(crate) struct ConstructionProject {
     pub first_repair_tick: Option<i32>,
     pub outputs: Vec<ConstructionOutputRun>,
     pub counters_read: u8,
+    pub opening: [Option<(i32, u32)>; 2],
 }
 
 const COUNTERS: [usize; 7] = [col::BUILT, col::REPAIRED, col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::POSSIBLE, col::ADDED_NEW, col::ADDED_REPAIR];
@@ -150,13 +151,31 @@ fn join_runs<T>(
     a
 }
 
-fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>, read: [bool; 2]) -> Vec<LevelsBuilt> {
+fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>, read: [bool; 2], opening: [Option<(i32, u32)>; 2]) -> Vec<LevelsBuilt> {
     let mut prior = [0u32; 2];
     for levels in &x {
         prior[usize::from(levels.repair)] = prior[usize::from(levels.repair)].saturating_add(levels.count);
     }
-    for mut levels in y {
+    let mut reconciled = [false; 2];
+    for (at, mut levels) in y.iter().cloned().enumerate() {
         let side = usize::from(levels.repair);
+        if let (true, Some((hour, total))) = (read[side], opening[side])
+            && levels.known_at == hour
+        {
+            if !reconciled[side] {
+                reconciled[side] = true;
+                let delta = total.saturating_sub(prior[side]);
+                let observed: Vec<&LevelsBuilt> = y[at..].iter().filter(|held| usize::from(held.repair) == side && held.known_at == hour).collect();
+                let dated: u32 = observed.iter().filter(|held| !held.carried).map(|held| held.count).sum();
+                prior[side] = prior[side].saturating_add(delta);
+                if delta > 0 && dated == delta {
+                    x.extend(observed.into_iter().filter(|held| !held.carried).cloned());
+                } else if delta > 0 {
+                    x.push(LevelsBuilt { hour: None, known_at: hour, count: delta, repair: side == 1, carried: false });
+                }
+            }
+            continue;
+        }
         if !levels.carried {
             prior[side] = prior[side].saturating_add(levels.count);
             x.push(levels);
@@ -216,10 +235,11 @@ pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> Co
         repaired_unread: join_unread(a.repaired_unread, b.repaired_unread),
         runs,
         outputs,
-        built: join_levels(a.built, b.built, read[0]),
-        unaccounted: join_levels(a.unaccounted, b.unaccounted, read[1]),
-        possible: join_levels(a.possible, b.possible, read[2]),
-        added: join_levels(a.added, b.added, read[3]),
+        built: join_levels(a.built, b.built, read[0], b.opening),
+        unaccounted: join_levels(a.unaccounted, b.unaccounted, read[1], [None; 2]),
+        possible: join_levels(a.possible, b.possible, read[2], [None; 2]),
+        added: join_levels(a.added, b.added, read[3], [None; 2]),
+        opening: a.opening,
         counters_read: a.counters_read | b.counters_read,
         end: b.end.or(a.end),
         ..b
@@ -591,6 +611,9 @@ fn assemble_inner<'r>(
         end: end_of(last, last_at),
         first_repair_tick: hour(last, col::FIRST_REPAIR_TICK),
         outputs,
+        opening: [col::BUILT, col::REPAIRED].map(|column| {
+            shown.iter().find_map(|&(at, _, cells)| number(cells, column).map(|count| (at, u32::try_from(count).unwrap_or(u32::MAX))))
+        }),
         counters_read: COUNTERS
             .iter()
             .enumerate()

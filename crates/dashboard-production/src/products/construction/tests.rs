@@ -227,19 +227,21 @@ fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulte
 
 #[test]
 fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_unknown() {
-    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50, true, &[]);
+    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 49, 50, true, &[]);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);
-    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50, true, &[]), [(55, Some(30))]);
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, true, &[]), [(55, Some(30))]);
     assert_eq!(
-        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 50, true, &[]),
+        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 49, 50, true, &[]),
         [(60, None)],
         "an unread total before the holding starts leaves its first total unknown, never credited from zero"
     );
-    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 50, true, &[]), [(60, Some(50))]);
-    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 50, false, &[]), [(55, None)], "absence before the window is a zero only where a complete read proves it");
-    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 50, false, &[(50, 54)]), [(55, Some(30))], "a complete read inside the window proves the absence");
-    assert_eq!(deltas(&[(49, Some(Cell::Number(10))), (55, Some(Cell::Number(30)))], 50, false, &[]), [(55, Some(20))], "a total read before the window is its baseline");
-    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90, true, &[]);
+    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 49, 50, true, &[]), [(60, Some(50))]);
+    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 49, 50, false, &[]), [(55, None)], "absence before the window is a zero only where a complete read proves it");
+    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 49, 50, false, &[(50, 54)]), [(55, Some(30))], "a complete read inside the window proves the absence");
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, false, &[(49, 54)]), [(55, Some(30))], "a key first emitted at its first total is absent through the complete reads before it");
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, false, &[(56, 60)]), [(55, None)]);
+    assert_eq!(deltas(&[(49, Some(Cell::Number(10))), (55, Some(Cell::Number(30)))], 49, 50, false, &[]), [(55, Some(20))], "a total read before the window is its baseline");
+    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 89, 90, true, &[]);
     assert_eq!(second, [(90, Some(20)), (95, None)]);
     let steps = totals([first, second].concat());
     let shown: Vec<(i32, Option<&str>)> = steps.iter().map(|step| (step.known_at, step.total_raw.as_deref())).collect();
@@ -399,4 +401,16 @@ fn a_project_split_at_an_unread_tail_joins_to_the_levels_of_one_window() {
     let whole: Vec<Step> = first.iter().chain(&second).cloned().collect();
     assert_eq!(shown(&joined), [(None, 100, 1, true), (Some(148), 150, 2, false)], "the recorded rise keeps its own hour across the split");
     assert_eq!(shown(&joined), shown(&with_rises(&whole, 199)));
+    let kept = Rises { built: vec![ConstructionRise { hour: 118, count: 2 }], repaired: Vec::new() };
+    let held_rises = |hour: i32| (hour == 120 || hour == 150).then_some(&kept);
+    let held = |steps: &[Step], to: i32| match assemble(5, steps, to, &[], &held_rises, &tag) {
+        Assembled::Project(project) => *project,
+        _ => panic!("named"),
+    };
+    let risen = vec![step(100, &census(2, 3, 1, 0, &[])), step(120, &census(2, 1, 3, 0, &[]))];
+    let unchanged = vec![step(150, &census(2, 1, 3, 0, &[]))];
+    let joined = super::log::join_project(held(&risen, 149), held(&unchanged, 199));
+    let whole: Vec<Step> = risen.iter().chain(&unchanged).cloned().collect();
+    assert_eq!(shown(&joined), [(None, 100, 1, true), (Some(118), 120, 2, false)], "a rise list still held when the next window opens is not counted twice");
+    assert_eq!(shown(&joined), shown(&held(&whole, 199)));
 }
