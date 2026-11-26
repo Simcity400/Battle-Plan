@@ -11,8 +11,3 @@ export function keyTarget(key: string, index: number, count: number, page: numbe
     default: return null;
   }
 }
-
-export function shownSlot(from: number, step: 1 | -1, count: number, shown: (slot: number) => boolean): number | null {
-  for (let slot = Math.max(0, Math.min(count - 1, from)); slot >= 0 && slot < count; slot += step) if (shown(slot)) return slot;
-  return null;
-}

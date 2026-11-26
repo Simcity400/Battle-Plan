@@ -3,7 +3,7 @@ import type { StructureRead } from '../shell/perf';
 import type { PlaybackController } from './playback';
 import type { Live } from '../charts/live';
 import { perfLog, type WidgetWork } from '../shell/perf.ts';
-import { noteCause, widgetZones } from '../shell/commitCount.ts';
+import { widgetZones } from '../shell/commitCount.ts';
 
 export const MeasuredWidget = createContext<string | null>(null);
 export const DrillScope = createContext<false | 'owns' | 'quiet'>(false);
@@ -27,17 +27,6 @@ export function countWork(widget: string | null, work: WidgetWork): void {
 
 export function countRead(widget: string | null, request: { params: unknown; asksFrom?: number }): void {
   if (widget !== null && perfLog) perfLog.count(widget, perfLog.ahead(request) ? 'ahead' : 'read');
-}
-
-export function useWhyCommit(component: string, values: Readonly<Record<string, unknown>>): void {
-  const before = useRef<Readonly<Record<string, unknown>> | null>(null);
-  if (!perfLog) return;
-  const widget = measuredWidget();
-  const prior = before.current;
-  before.current = values;
-  if (widget === null) return;
-  const changed = prior ? Object.keys(values).filter(key => !Object.is(values[key], prior[key])) : ['mounted'];
-  noteCause(`widget:${widget}`, `${component}: ${changed.join(', ') || 'nothing named'}`);
 }
 
 const drilled = new Map<string, number>();

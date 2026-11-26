@@ -110,11 +110,6 @@
 .moving-row.is-entering::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
   background: var(--row-flash, color-mix(in srgb, var(--accent) 16%, transparent)); opacity: 0; animation: moving-row-flash 700ms cubic-bezier(.2, .8, .2, 1); }
 .moving-row.is-leaving { opacity: 0; pointer-events: none; }
-.moving-row[data-reveal='ahead'] { visibility: hidden; }
-.moving-row[data-reveal='gone'] { opacity: 0; pointer-events: none; }
-.moving-row[data-reveal='in'] { isolation: isolate; animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
-.moving-row[data-reveal='in']::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
-  background: var(--row-flash, color-mix(in srgb, var(--accent) 16%, transparent)); opacity: 0; animation: moving-row-flash 700ms cubic-bezier(.2, .8, .2, 1); }
 .windowed-rows { min-height: 0; flex: 1; overflow: auto; }
 .windowed-rows-body { position: relative; }
 .windowed-rows .moving-row { position: absolute; top: 0; left: 0; right: 0; }
@@ -123,8 +118,6 @@
 :root[data-motion='reduced'] .moving-row { transition: none; }
 :root[data-motion='reduced'] .moving-row.is-entering { animation: none; }
 :root[data-motion='reduced'] .moving-row.is-entering::after { content: none; }
-:root[data-motion='reduced'] .moving-row[data-reveal='in'] { animation: none; }
-:root[data-motion='reduced'] .moving-row[data-reveal='in']::after { content: none; }
 .blueprint-tile { width:72px; height:48px; border-radius:6px; background:var(--blueprint); display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--blueprint-border); color:var(--blueprint-text); }
 .blueprint-tile img { width:64px; height:39px; object-fit:contain; }
 
