@@ -689,7 +689,7 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
     let selection = ["GER", "ITA"].into_iter().collect();
     let named = compute_stack(&partial, 10, 30, 1, TensionValueMode::Recorded, Some(&selection), None, None, 200, tag_of, |_, _| None);
     assert_eq!(named.bands[0].slot, 1, "the selected leader at the last complete read keeps its band");
-    for (countries, group) in [(Some(&selection), None), (None, Some(&gf))] {
+    for (countries, group) in [(Some(&selection), None), (None, Some(&gf)), (None, None)] {
         let full = compute_stack(&partial, 10, 30, 5, TensionValueMode::Recorded, countries, group, None, 200, tag_of, |_, _| None);
         assert_eq!(full.bands.iter().map(|band| band.slot).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(full.bands[1].end_value, Some(9.0));

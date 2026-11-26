@@ -835,10 +835,8 @@ pub(super) fn compute_stack(
         {
             continue;
         }
-        let show_later = top_limit.is_none() && (filter.is_some() || group_filter.is_some());
-        let through = if show_later { last } else { rank_hour };
-        let unrestricted = [(first, through)];
-        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, through));
+        let unrestricted = [(first, last)];
+        let spans = group_filter.map_or(unrestricted.as_slice(), |gf| gf.spans(slot, first, last));
         let member_at_rank = is_complete(spans, rank_hour);
         if spans.is_empty() || (top_limit.is_some() && !member_at_rank) {
             continue;
@@ -849,7 +847,7 @@ pub(super) fn compute_stack(
         let mut witnessed_nonzero = false;
         for &(lo, hi) in spans {
             let lo = lo.max(first);
-            let hi = hi.min(through);
+            let hi = hi.min(last);
             let start = runs.partition_point(|run| run.1 < lo);
             for &(since, _, val) in runs[start..].iter().take_while(|run| run.0 <= hi) {
                 if let Some(val) = val {
