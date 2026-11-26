@@ -1,5 +1,5 @@
 
-use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, Rate, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
+use super::{Amount, ApmGroup, ApmMembership, ApmValue, Coverage, Minutes, MINUTES_OVERFLOW, Rate, hourly_amounts, index, merge_intervals, player_id, player_name, tag};
 use dashboard_base::Source;
 use crate::products::campaign_clock;
 use dashboard_follow::head::{Head, HeadRows, HeadValue};
@@ -92,8 +92,6 @@ struct WindowSeries {
     dirty: bool,
 }
 
-const MINUTES_OVERFLOW: &str = "The exact unpaused time for this window exceeds the supported range.";
-
 impl WindowSeries {
     fn enter(&mut self, hour: i32, slice: HourSlice) -> Result<(), String> {
         self.total.minutes = self.total.minutes.combine(slice.minutes, u128::checked_add).ok_or(MINUTES_OVERFLOW)?;
@@ -111,12 +109,13 @@ impl WindowSeries {
     fn expire(&mut self) -> Result<(), String> {
         let (_, slice) = self.hours.pop_front().expect("a recorded boundary hour");
         self.total.minutes = self.total.minutes.combine(slice.minutes, u128::checked_sub).ok_or(MINUTES_OVERFLOW)?;
+        let Counts { orders, paused_orders, unresolved, unclassified, paused_unresolved } = slice.counts;
         let counts = &mut self.total.counts;
-        counts.orders -= slice.counts.orders;
-        counts.paused_orders -= slice.counts.paused_orders;
-        counts.unresolved -= slice.counts.unresolved;
-        counts.unclassified -= slice.counts.unclassified;
-        counts.paused_unresolved -= slice.counts.paused_unresolved;
+        counts.orders -= orders;
+        counts.paused_orders -= paused_orders;
+        counts.unresolved -= unresolved;
+        counts.unclassified -= unclassified;
+        counts.paused_unresolved -= paused_unresolved;
         self.incomplete -= usize::from(slice.incomplete);
         self.paused_incomplete -= usize::from(slice.paused_incomplete);
         if self.newest.front() == Some(&self.offset) { self.newest.pop_front(); }
@@ -173,10 +172,7 @@ pub struct ApmHead {
     first: i32,
     last: i32,
     window: i32,
-    visits: u64,
     cached_window: Option<(i32, i32)>,
-    #[cfg(test)]
-    slices_summed: usize,
     #[cfg(test)]
     participants_ranked: usize,
     cached_whole: bool,
@@ -259,10 +255,7 @@ impl ApmHead {
             first: params.first_hour,
             last: params.last_hour,
             window: params.window_hours,
-            visits: 0,
             cached_window: None,
-            #[cfg(test)]
-            slices_summed: 0,
             #[cfg(test)]
             participants_ranked: 0,
             cached_whole: true,
@@ -270,10 +263,6 @@ impl ApmHead {
             boundaries: VecDeque::new(),
             ranking: BTreeSet::new(),
         })
-    }
-
-    pub fn visits(&self) -> u64 {
-        self.visits
     }
 
     fn window_at(&self, hour: Hour) -> Option<(i32, i32)> {
@@ -292,17 +281,15 @@ impl ApmHead {
         }
     }
 
-    fn hour_slices(&mut self, hour: i32) -> BTreeMap<usize, HourSlice> {
+    fn hour_slices(&self, hour: i32) -> Result<BTreeMap<usize, HourSlice>, String> {
         let mut out: BTreeMap<usize, HourSlice> = BTreeMap::new();
         let upper = self.pieces.partition_point(|piece| piece.hours.0 <= hour);
         let lower = self.reach.partition_point(|&reach| reach < hour);
-        let mut visits = 0;
         for piece in &self.pieces[lower.min(upper)..upper] {
             if hour < piece.hours.0 || hour > piece.hours.1 {
                 continue;
             }
             let timeline = &self.index.timelines[piece.timeline];
-            visits += 1;
             if timeline.bounds(hour, hour).is_none() {
                 continue;
             }
@@ -312,7 +299,6 @@ impl ApmHead {
                 }
                 let mut present = Vec::new();
                 for version in &part.versions {
-                    visits += 1;
                     if timeline.measure(hour, hour, version.from, version.to).is_some() {
                         present.push(version);
                     }
@@ -330,28 +316,25 @@ impl ApmHead {
                     slice.name_missing.clone_from(&latest.name_missing);
                 }
                 for &(from, to) in &part.ranges {
-                    visits += 1;
                     if let Some(measured) = timeline.measure(hour, hour, from, to) {
-                        slice.minutes.add_ticks(measured.ticks, measured.frequency);
+                        slice.minutes.add_ticks(measured.ticks, measured.frequency)?;
                         slice.incomplete |= !measured.complete;
                         slice.paused_incomplete |= timeline.paused_unknown_hours.range(hour..=hour).next().is_some();
                     }
                 }
                 for version in present {
                     let Some(counts) = timeline.counts.get(&(version.actor, version.version)) else { continue };
-                    visits += 1;
                     let (count, incomplete) = counts.range(hour, hour);
                     slice.counts.add(count);
                     slice.incomplete |= incomplete;
                 }
             }
         }
-        self.visits += visits;
-        out
+        Ok(out)
     }
 
     fn add_hour(&mut self, hour: i32, changed: &mut Vec<usize>) -> Result<(), String> {
-        let slices = self.hour_slices(hour);
+        let slices = self.hour_slices(hour)?;
         if slices.is_empty() { return Ok(()); }
         let mut ids = Vec::with_capacity(slices.len());
         for (id, slice) in slices {
@@ -361,7 +344,7 @@ impl ApmHead {
             ids.push(id);
         }
         #[cfg(test)]
-        { self.slices_summed += ids.len(); }
+        dashboard_base::products::at_hour::count_rows(|| ids.len() as u64);
         self.boundaries.push_back((hour, ids));
         Ok(())
     }
@@ -370,7 +353,7 @@ impl ApmHead {
         while self.boundaries.front().is_some_and(|(hour, _)| *hour < first) {
             let (_, ids) = self.boundaries.pop_front().unwrap();
             #[cfg(test)]
-            { self.slices_summed += ids.len(); }
+            dashboard_base::products::at_hour::count_rows(|| ids.len() as u64);
             for id in ids {
                 let participant = self.participants.get_mut(&id).expect("a retained participant");
                 participant.expire()?;
@@ -450,7 +433,6 @@ impl ApmHead {
         self.refresh(changed);
         self.cached_whole = self.coverage.observed(first, last);
         self.cached_window = Some((first, last));
-        self.visits += 1;
         Ok(())
     }
 }

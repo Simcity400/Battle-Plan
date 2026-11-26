@@ -249,23 +249,18 @@ impl Default for Minutes {
     }
 }
 
-impl Minutes {
-    pub(super) fn add_ticks(&mut self, ticks: u128, frequency: u64) {
-        if ticks == 0 || frequency == 0 {
-            return;
-        }
-        self.add_rational(ticks, u128::from(frequency) * 60);
-    }
+const MINUTES_OVERFLOW: &str = "The exact unpaused time for this window exceeds the supported range.";
 
-    pub(super) fn add_rational(&mut self, num: u128, den: u128) {
-        if num == 0 || den == 0 {
-            return;
+impl Minutes {
+    fn add_ticks(&mut self, ticks: u128, frequency: u64) -> Result<(), &'static str> {
+        if ticks == 0 || frequency == 0 {
+            return Ok(());
         }
-        let divisor = gcd(num, den);
-        let other = Self { num: num / divisor, den: den / divisor };
-        if let Some(sum) = self.combine(other, u128::checked_add) {
-            *self = sum;
-        }
+        let den = u128::from(frequency) * 60;
+        let divisor = gcd(ticks, den);
+        let other = Self { num: ticks / divisor, den: den / divisor };
+        *self = self.combine(other, u128::checked_add).ok_or(MINUTES_OVERFLOW)?;
+        Ok(())
     }
 
     fn combine(self, other: Self, operation: fn(u128, u128) -> Option<u128>) -> Option<Self> {
@@ -335,8 +330,8 @@ pub(super) struct Amount {
 }
 
 impl Amount {
-    fn observe(&mut self, measured: &commands::Measurement) {
-        self.minutes.add_ticks(measured.ticks, measured.frequency);
+    fn observe(&mut self, measured: &commands::Measurement) -> io::Result<()> {
+        self.minutes.add_ticks(measured.ticks, measured.frequency).map_err(io::Error::other)?;
         self.incomplete |= !measured.complete;
         self.first_hour = Some(
             self.first_hour
@@ -346,6 +341,7 @@ impl Amount {
             self.last_hour
                 .map_or(measured.last_hour, |last| last.max(measured.last_hour)),
         );
+        Ok(())
     }
 
     fn complete(&self) -> bool {
@@ -575,7 +571,7 @@ pub(super) fn hourly_amounts(
                 for &(from, to) in &ranges {
                     if let Some(measured) = timeline.measure(h, h, from, to) {
                         let slot = entry.entry(h).or_default();
-                        slot.observe(&measured);
+                        slot.observe(&measured)?;
                         slot.paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(h..=h)
@@ -876,7 +872,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                 }
                 for &(from, to) in &ranges {
                     if let Some(measured) = timeline.measure(from_hour, to_hour, from, to) {
-                        item.total.observe(&measured);
+                        item.total.observe(&measured)?;
                         item.total.paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(measured.first_hour..=measured.last_hour)
@@ -899,7 +895,7 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
                         let Some(measured) = timeline.measure(from_hour, to_hour, from, to) else {
                             continue;
                         };
-                        item.buckets.entry(position).or_default().observe(&measured);
+                        item.buckets.entry(position).or_default().observe(&measured)?;
                         item.buckets.entry(position).or_default().paused_incomplete |= timeline
                             .paused_unknown_hours
                             .range(measured.first_hour..=measured.last_hour)

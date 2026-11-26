@@ -357,15 +357,15 @@ fn apm_played_hours_update_only_entering_and_expiring_slices_and_ranks() {
         cold: Arc::new(|_, _| unreachable!()), read: Arc::new(|_, _| unreachable!()),
         advance: Arc::new(move |hour, reset, _, _| {
             let mut head = head.lock().unwrap();
-            let before = (head.slices_summed, head.participants_ranked);
+            let before = head.participants_ranked;
             head.update_window(hour, reset).unwrap();
             let rows: Vec<_> = head.ranking.iter().map(|rank| {
                 let mut value = head.participants[&rank.series].cached.as_ref().unwrap().1.clone();
                 value.gaps = !head.cached_whole;
                 (&head.ids[rank.series], value)
             }).collect();
-            let value = serde_json::json!({ "slices": head.slices_summed - before.0, "ranked": head.participants_ranked - before.1, "rows": rows });
-            ProductRead { value: Arc::new(Ok(value)), rows: rows.len() as u64, fresh: true, pending: false, live: None, lanes: vec![] }
+            let value = serde_json::to_value(rows).unwrap();
+            ProductRead { value: Arc::new(Ok(value)), rows: (head.participants_ranked - before) as u64, fresh: true, pending: false, live: None, lanes: vec![] }
         }),
     };
     let replay = replay((170..=176).map(|hour| source(1, hour, None)).collect()).into_timelines(&Default::default()).unwrap();
@@ -378,10 +378,9 @@ fn apm_played_hours_update_only_entering_and_expiring_slices_and_ranks() {
             tags: None, membership: Some(membership.clone()), players: vec![], buckets: 1,
         }, &AtomicBool::new(false)).unwrap();
         let expected: Vec<_> = exact.series.iter().map(|row| (&row.id, &row.summary)).collect();
-        assert_eq!(actual["rows"], serde_json::to_value(expected).unwrap(), "rank and exact operands at {}", read.hour);
-        costs.push((read.hour, actual["slices"].as_u64().unwrap(), actual["ranked"].as_u64().unwrap()));
+        assert_eq!(actual, &serde_json::to_value(expected).unwrap(), "rank and exact operands at {}", read.hour);
+        costs.push((read.hour, read.visited, read.rows));
     }
-    eprintln!("(hour, participant slices summed, participants ranked): {costs:?}");
     assert_eq!(costs.len(), 6);
     assert!(costs.iter().all(|&(_, slices, ranked)| slices == 2 && ranked <= 1), "(hour, participant slices summed, participants ranked): {costs:?}");
 }
@@ -455,4 +454,30 @@ fn apm_tile_coverage_marks_the_same_reattachment_hour_as_the_exact_product() {
         assert_eq!(reply.series[0].summary.gaps, hour == 3);
         assert_eq!(tile.lines[0].missing.iter().any(|m| m.first_hour <= hour && hour <= m.last_hour && m.reason == GAP_REASON), reply.series[0].summary.gaps, "hour {hour}");
     }
+}
+
+#[test]
+fn an_unrepresentable_clock_sum_is_reported_by_the_exact_tile_and_followed_reads() {
+    let frequencies = [1_000_000_007, 1_000_000_009, 998_244_353, 1_004_535_809, 469_762_049];
+    let mut sessions = Vec::new();
+    let mut packets = Vec::new();
+    let batch = Batch {
+        actors: vec![Actor { id: 1, player: 1, country: 1, at_qpc: 0, since_qpc: 0, user: vec![], name: b"Sender".to_vec(), tag: b"AAA".to_vec() }],
+        kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }],
+        spans: vec![Span { hour: 0, from_qpc: 0, to_qpc: 60, complete: true, paused: false }],
+        ..Default::default()
+    };
+    for (id, frequency) in frequencies.into_iter().enumerate() {
+        let mut session = dashboard_base::test_fixtures::session(id as u64 + 1);
+        session.qpc_frequency = frequency;
+        packets.push(ControlRecord::PlayerCommands { session: session.id, packet: Packet::pack(4, 1, 2, 0, 0, 60, 0, &batch).unwrap() });
+        sessions.push(session);
+    }
+    let index = Arc::new(commands::index(&sessions, &packets, 4).unwrap());
+    let params = ApmParams { branch_id: "4".into(), group: ApmGroup::Country, registry: false, hour: Some(0),
+        first_hour: None, last_hour: None, tags: None, membership: None, players: vec![], buckets: 1 };
+    assert_eq!(query(&index, &params, &false.into()).unwrap_err().to_string(), MINUTES_OVERFLOW);
+    let tile = hourly_amounts(&index, ApmGroup::Country, 0, 0, None, None, &[], &BTreeSet::from(["AAA"]));
+    assert_eq!(tile.err().unwrap().to_string(), MINUTES_OVERFLOW);
+    assert_eq!(followed(&index).update_window(0, true).unwrap_err(), MINUTES_OVERFLOW);
 }
