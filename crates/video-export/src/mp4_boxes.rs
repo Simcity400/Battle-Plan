@@ -85,6 +85,17 @@ pub fn inspect_mp4(path: &Path) -> io::Result<Mp4Summary> {
 }
 
 pub fn relocate_moov_before_mdat(path: &Path) -> io::Result<()> {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    relocate_moov_before_mdat_cancellable(path, &never)
+}
+
+pub fn relocate_moov_before_mdat_cancellable(
+    path: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> io::Result<()> {
+    if cancel.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+    }
     let summary = inspect_mp4(path)?;
     if summary.moov_before_mdat {
         return Ok(());
@@ -117,12 +128,12 @@ pub fn relocate_moov_before_mdat(path: &Path) -> io::Result<()> {
     let write_res = (|| -> io::Result<()> {
         let mut src = File::open(path)?;
         let mut dst = File::create(&tmp_path)?;
-        copy_range(&mut src, &mut dst, 0, first_mdat.offset)?;
+        copy_range(&mut src, &mut dst, 0, first_mdat.offset, cancel)?;
         dst.write_all(&moov_bytes)?;
-        copy_range(&mut src, &mut dst, first_mdat.offset, moov.offset - first_mdat.offset)?;
+        copy_range(&mut src, &mut dst, first_mdat.offset, moov.offset - first_mdat.offset, cancel)?;
         let moov_end = moov.offset + moov.size;
         if file_len > moov_end {
-            copy_range(&mut src, &mut dst, moov_end, file_len - moov_end)?;
+            copy_range(&mut src, &mut dst, moov_end, file_len - moov_end, cancel)?;
         }
         dst.flush()?;
         Ok(())
@@ -130,6 +141,10 @@ pub fn relocate_moov_before_mdat(path: &Path) -> io::Result<()> {
     if let Err(error) = write_res {
         let _ = fs::remove_file(&tmp_path);
         return Err(error);
+    }
+    if cancel.load(std::sync::atomic::Ordering::Acquire) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
     }
     let _ = fs::remove_file(path);
     if let Err(error) = fs::rename(&tmp_path, path) {
@@ -139,10 +154,19 @@ pub fn relocate_moov_before_mdat(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn copy_range(src: &mut File, dst: &mut File, start: u64, mut remaining: u64) -> io::Result<()> {
+fn copy_range(
+    src: &mut File,
+    dst: &mut File,
+    start: u64,
+    mut remaining: u64,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> io::Result<()> {
     src.seek(SeekFrom::Start(start))?;
     let mut buf = vec![0u8; 64 * 1024];
     while remaining > 0 {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         let take = usize::try_from(remaining.min(buf.len() as u64)).unwrap_or(buf.len());
         src.read_exact(&mut buf[..take])?;
         dst.write_all(&buf[..take])?;

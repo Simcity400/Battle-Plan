@@ -820,6 +820,7 @@ impl VideoSession {
                     gap_first,
                     gap_last,
                     reason,
+                    crossed_gap,
                 } => {
                     let dates = format!(
                         "{}  (gap: {} to {})",
@@ -827,13 +828,22 @@ impl VideoSession {
                         format_campaign_date(gap_first),
                         format_campaign_date(gap_last),
                     );
-                    let key = format!("gap:{dates}:{reason}");
+                    let detail = match crossed_gap {
+                        Some(cut) => format!(
+                            "{reason} · earlier gap skipped: {} -> {} ({} h omitted)",
+                            format_campaign_date(cut.from_hour),
+                            format_campaign_date(cut.to_hour),
+                            cut.omitted_hours,
+                        ),
+                        None => reason,
+                    };
+                    let key = format!("gap:{dates}:{detail}");
                     let rgba = if self.cached_card.as_ref().is_some_and(|(k, _)| k == &key) {
                         self.cached_card.as_ref().expect("checked").1.clone()
                     } else {
                         let burner = self.burner.get_or_insert_with(|| OverlayBurner::new(device));
                         let rendered = burner
-                            .render_card_rgba(device, queue, self.size, "Unrecorded stretch", &dates, &reason)
+                            .render_card_rgba(device, queue, self.size, "Unrecorded stretch", &dates, &detail)
                             .map_err(|e| e.to_string())?;
                         self.cached_card = Some((key, rendered.clone()));
                         rendered
@@ -1077,7 +1087,7 @@ impl VideoSession {
                 let partial = if let Some(sink) = sink.take() {
                     let frames = sink.frames_written();
                     if frames > 0 {
-                        match sink.finish() {
+                        match sink.finish_cancellable(&self.cancel) {
                             Ok(finished) => {
                                 let playable = video_export::mp4_boxes::inspect_mp4(&finished.path)
                                     .is_ok_and(|summary| summary.has_avc1);
@@ -1388,8 +1398,16 @@ fn run_map_video_on_thread(
             ));
         }
         let _generation = content_reader_layers::content::Generation::enter();
-        let mut viewer = Viewer::new(ctx, Some(state), config, options, None, reported, None);
-        viewer.configure_video_source(Arc::clone(&replay), initial_revision.clone(), map_settings.clone());
+        let mut viewer = Viewer::new_for_video_export(
+            ctx,
+            Some(state),
+            config,
+            options,
+            reported,
+            Arc::clone(&replay),
+            initial_revision.clone(),
+            map_settings.clone(),
+        );
         viewer.configure_video_export(session, speed, source_viewport, crop);
         Ok(viewer)
     });
@@ -1541,7 +1559,8 @@ fn run_cli(args: &[std::ffi::OsString]) -> io::Result<()> {
 
     let replay_path = replay.ok_or_else(|| invalid("--export-video requires a replay path"))?;
     let out_path = out.ok_or_else(|| invalid("--export-video requires --out <video.mp4>"))?;
-    ensure_distinct_export_path(&replay_path, &out_path).map_err(invalid)?;
+    ensure_distinct_export_path(&replay_path, &out_path)
+        .map_err(|msg| io::Error::new(io::ErrorKind::InvalidInput, msg))?;
     let canonical_in = std::fs::canonicalize(&replay_path)?;
     let mut config = Config::load().unwrap_or_default();
     if let Some(dir) = game_dir {

@@ -74,6 +74,12 @@ test('estimateScheduleFrames matches encoder single-hour and multi-stretch cut r
   const solvedSpeed = computeSpeedFromDuration(leadingCoverage, 2.0, true, 1.0, 60, leadingGapStretches, 5, 20);
   const solvedDuration = computeDurationSeconds(leadingCoverage, solvedSpeed, true, 1.0, 60, leadingGapStretches, 5, 20);
   assert.ok(Math.abs(solvedDuration - 2.0) < 0.05, `expected ~2.0s, got ${solvedDuration}s at ${solvedSpeed} h/s`);
+
+  const continuousStretches = [{ first: 0, last: 10, join: 'start' as const }];
+  const continuousCoverage = summarizeRange(continuousStretches, [], 0, 10);
+  const preciseSpeed = computeSpeedFromDuration(continuousCoverage, 95.0, false, 0, 60, continuousStretches, 0, 10);
+  const preciseFrames = estimateScheduleFrames(continuousStretches, 0, 10, 60, preciseSpeed, false, 0);
+  assert.equal(preciseFrames, 5700);
 });
 
 test('fitAspectCrop and normalizeCrop keep crop rects valid and centered', () => {

@@ -1081,6 +1081,47 @@ impl Viewer {
         failure: Arc<Mutex<Option<String>>>,
         embedded: Option<crate::embedded::Controller>,
     ) -> Self {
+        Self::new_with_video_source(ctx, render_state, config, options, error, failure, embedded, None)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "extends Viewer::new with verified video export replay and settings before initial load")]
+    pub(crate) fn new_for_video_export(
+        ctx: &egui::Context,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+        config: Config,
+        options: Options,
+        failure: Arc<Mutex<Option<String>>>,
+        replay: Arc<replay::campaign::Replay>,
+        revision: String,
+        settings: Option<dashboard_core::protocol::ResolvedMapSettings>,
+    ) -> Self {
+        Self::new_with_video_source(
+            ctx,
+            render_state,
+            config,
+            options,
+            None,
+            failure,
+            None,
+            Some((replay, revision, settings)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "shared Viewer constructor installing optional video preload prior to initial open")]
+    fn new_with_video_source(
+        ctx: &egui::Context,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+        config: Config,
+        options: Options,
+        error: Option<String>,
+        failure: Arc<Mutex<Option<String>>>,
+        embedded: Option<crate::embedded::Controller>,
+        video_source: Option<(
+            Arc<replay::campaign::Replay>,
+            String,
+            Option<dashboard_core::protocol::ResolvedMapSettings>,
+        )>,
+    ) -> Self {
         ctx.set_theme(egui::Theme::Dark);
         let mut viewer = Self::create(
             config,
@@ -1090,6 +1131,9 @@ impl Viewer {
             embedded,
             render_state.map(|state| (state.device.clone(), state.queue.clone())),
         );
+        if let Some((replay, revision, settings)) = video_source {
+            viewer.configure_video_source(replay, revision, settings);
+        }
         if viewer.embedded.is_some() {
             match crate::worker_pool::WorkerPool::new() {
                 Ok(pool) => {

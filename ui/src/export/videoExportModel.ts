@@ -175,7 +175,7 @@ export function computeSpeedFromDuration(
     const framesLo = estimateScheduleFrames(stretches, fromHour, toHour, safeFps, lo, skipGaps, cutCardSeconds);
     const framesHi = estimateScheduleFrames(stretches, fromHour, toHour, safeFps, hi, skipGaps, cutCardSeconds);
     const chosen = Math.abs(framesLo - targetFrames) <= Math.abs(framesHi - targetFrames) ? lo : hi;
-    return Math.max(0.01, Math.round(chosen * 100) / 100);
+    return Math.max(0.01, chosen);
   }
   const cuts = skipGaps ? coverage.gapCount * Math.max(0, cutCardSeconds) : 0;
   const videoSeconds = Math.max(0.25, durationSeconds - cuts);

@@ -132,44 +132,55 @@ mod tests {
 
     #[test]
     fn offline_mixer_advances_effect_elapsed_time_for_fading_sounds() {
-        use crate::{Emitter, Group, Mix, engine::Samples};
-        use content_reader_sound::sound::{Choice, Effect, Sound};
-        let mut catalog = Catalog::default();
-        let mut effect = Effect::new("test_fade".into(), "test.asset".into());
-        effect.fade_in = 0.25;
-        effect.looping = true;
-        effect.max_audible = 4;
-        effect.choices.push(Choice { sound: 0, weight: 1 });
-        catalog.effects.push(effect);
-        catalog.sounds.push(Sound {
-            name: "tone".into(),
-            path: "sound/tone.wav".into(),
-            volume: 1.0,
-            priority: 1.0,
-            source: "test.asset".into(),
-        });
+        use crate::{Emitter, Group, Listener, Mix};
+        use content_reader_layers::test_support::Stack;
+        use content_reader_sound::wav::encode_pcm16;
+
+        let stack = Stack::new("offline_mixer_fade");
+        let base = stack.base();
+        stack.write(
+            &base,
+            "sound/test.asset",
+            r#"
+                sound = { name = tone file = "tone.wav" volume = 0.5 }
+                soundeffect = { name = rise sounds = { sound = tone } fade_in = 0.5 loop = yes }
+            "#,
+        );
+        std::fs::write(
+            base.join("sound/tone.wav"),
+            encode_pcm16(crate::engine::RATE, 2, &vec![16_384; crate::engine::RATE as usize * 2]),
+        )
+        .unwrap();
+        let layers = stack.layers(&[]);
+        let catalog = Catalog::read(&layers).unwrap();
         let source = Arc::new(Source {
             content: Arc::new(Content::new(catalog, None)),
-            layers: ResolvedLayers::default(),
+            layers,
         });
         let mut mixer = OfflineMixer::new(source);
-        mixer.engine.provide(
-            0,
-            Some(Arc::new(Samples {
-                data: vec![12_000i16; 8_192],
-            })),
-        );
         let mut frame = Frame {
+            listener: Listener {
+                position: [0.0; 3],
+                right: [1.0, 0.0, 0.0],
+                altitude: 100.0,
+            },
             mix: Mix {
+                master: 1.0,
                 dev_master: 1.0,
-                ..Mix::default()
+                ambient: 1.0,
+                units: 1.0,
+                combat: 1.0,
+                interface: 1.0,
+                voice: 1.0,
+                music: 1.0,
+                muted: false,
             },
             emitters: vec![Emitter {
                 key: 1,
-                effect: Arc::from("test_fade"),
+                effect: Arc::from("rise"),
                 position: [0.0; 3],
                 age: 0.0,
-                group: Group::Interface,
+                group: Group::Units,
                 restart: false,
             }],
             ..Frame::default()
@@ -177,22 +188,20 @@ mod tests {
         let mut first = Vec::new();
         let mut later = Vec::new();
         mixer.step_frame(&frame, 735, &mut first);
-        for _ in 0..20 {
+        for _ in 0..25 {
             frame.emitters[0].age += 735.0 / crate::engine::RATE as f32;
             mixer.step_frame(&frame, 735, &mut later);
         }
         let peak_first = first.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
         let peak_later = later.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
         assert!(
-            peak_later > peak_first,
+            peak_later > peak_first && peak_later > 0,
             "expected fading-in sound to grow over offline frames (first={peak_first}, later={peak_later})"
         );
 
         let reset_frame = Frame {
-            mix: Mix {
-                dev_master: 1.0,
-                ..Mix::default()
-            },
+            listener: frame.listener,
+            mix: frame.mix,
             reset: true,
             ..Frame::default()
         };

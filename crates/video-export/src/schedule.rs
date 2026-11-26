@@ -59,6 +59,7 @@ pub enum FrameKind {
         gap_first: i32,
         gap_last: i32,
         reason: String,
+        crossed_gap: Option<CutNotice>,
     },
     SkipCutCard(CutNotice),
 }
@@ -311,6 +312,17 @@ fn emit_linear_sample(
             schedule.summary.from_hour,
             schedule.summary.to_hour,
         );
+        let crossed_gap = prev_recorded_hour
+            .and_then(|prev| traversed_gap_notice(&schedule.gaps, prev, gap_first, disclosed_gaps));
+        if crossed_gap.is_some()
+            && let Some(prev) = *prev_recorded_hour
+        {
+            for gap in &schedule.gaps {
+                if gap.first > prev && gap.last < gap_first && !disclosed_gaps.contains(&gap.first) {
+                    disclosed_gaps.push(gap.first);
+                }
+            }
+        }
         if !disclosed_gaps.contains(&gap_first) {
             disclosed_gaps.push(gap_first);
         }
@@ -319,6 +331,7 @@ fn emit_linear_sample(
             gap_first,
             gap_last,
             reason,
+            crossed_gap,
         }
     }
 }
@@ -957,10 +970,34 @@ mod tests {
         let frames = schedule.collect_frames();
         assert_eq!(frames.len(), 3);
         assert!(matches!(frames[0].kind, FrameKind::Recorded { hour: 100, .. }));
-        assert!(matches!(frames[1].kind, FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 111, .. }));
+        assert!(matches!(
+            &frames[1].kind,
+            FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 111, crossed_gap: Some(cut), .. }
+            if cut.omitted_hours == 2 && cut.from_hour == 101 && cut.to_hour == 104
+        ));
         assert!(matches!(
             &frames[2].kind,
-            FrameKind::Recorded { hour: 120, reset_continuity: true, cut_banner: Some(cut), .. }
+            FrameKind::Recorded { hour: 120, reset_continuity: true, cut_banner: None, .. }
+        ));
+
+        let terminal_gap = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 110,
+                fps: 1,
+                hours_per_second: 10.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let terminal_frames = terminal_gap.collect_frames();
+        assert_eq!(terminal_frames.len(), 2);
+        assert!(matches!(
+            &terminal_frames[1].kind,
+            FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 111, crossed_gap: Some(cut), .. }
             if cut.omitted_hours == 2 && cut.from_hour == 101 && cut.to_hour == 104
         ));
     }

@@ -129,13 +129,27 @@ impl ExportJobs {
             (join, staged, partial_stage)
         };
         if let Some(handle) = join {
-            let _ = handle.join();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while !handle.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            if handle.is_finished() {
+                let _ = handle.join();
+            }
         }
-        if let Some(path) = staged {
+        let remove_with_sidecars = |path: &std::path::Path| {
             let _ = std::fs::remove_file(path);
+            for suffix in [".faststart", ".video.mp4", ".audio.pcm"] {
+                let mut sidecar = path.as_os_str().to_owned();
+                sidecar.push(suffix);
+                let _ = std::fs::remove_file(PathBuf::from(sidecar));
+            }
+        };
+        if let Some(path) = staged {
+            remove_with_sidecars(&path);
         }
         if let Some(path) = partial_stage {
-            let _ = std::fs::remove_file(path);
+            remove_with_sidecars(&path);
         }
     }
 }

@@ -529,7 +529,11 @@ impl MfWorker {
         Ok(())
     }
 
-    fn finish(mut self) -> io::Result<Finished> {
+    fn finish(mut self, cancel: &std::sync::atomic::AtomicBool) -> io::Result<Finished> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            self.abort();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         let writer = self
             .writer
             .take()
@@ -542,7 +546,13 @@ impl MfWorker {
             let _ = fs::remove_file(&self.staged_path);
             return Err(error);
         }
-        if let Err(error) = crate::mp4_boxes::relocate_moov_before_mdat(&self.staged_path) {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = fs::remove_file(&self.staged_path);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        if let Err(error) =
+            crate::mp4_boxes::relocate_moov_before_mdat_cancellable(&self.staged_path, cancel)
+        {
             let _ = fs::remove_file(&self.staged_path);
             return Err(error);
         }
@@ -570,6 +580,7 @@ enum MfCommand {
         reply: std::sync::mpsc::SyncSender<io::Result<()>>,
     },
     Finish {
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         reply: std::sync::mpsc::SyncSender<io::Result<Finished>>,
     },
     Abort,
@@ -618,8 +629,8 @@ impl MfSink {
                         MfCommand::PushAudio { pcm, reply } => {
                             let _ = reply.send(worker.push_audio(&pcm));
                         }
-                        MfCommand::Finish { reply } => {
-                            let _ = reply.send(worker.finish());
+                        MfCommand::Finish { cancel, reply } => {
+                            let _ = reply.send(worker.finish(&cancel));
                             return;
                         }
                         MfCommand::Abort => {
@@ -744,18 +755,43 @@ impl VideoSink for MfSink {
         &self.backend_label
     }
 
-    fn finish(mut self: Box<Self>) -> io::Result<Finished> {
+    fn finish(self: Box<Self>) -> io::Result<Finished> {
+        let never = std::sync::atomic::AtomicBool::new(false);
+        self.finish_cancellable(&never)
+    }
+
+    fn finish_cancellable(
+        mut self: Box<Self>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<Finished> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            self.abort();
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
         self.finished = true;
         let tx = self
             .tx
             .take()
             .ok_or_else(|| io::Error::other("Media Foundation writer was already finalized"))?;
+        let shared_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        tx.send(MfCommand::Finish { reply: reply_tx })
-            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
-        let result = reply_rx
-            .recv()
-            .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        tx.send(MfCommand::Finish {
+            cancel: std::sync::Arc::clone(&shared_cancel),
+            reply: reply_tx,
+        })
+        .map_err(|_| io::Error::other("Media Foundation thread stopped unexpectedly"))?;
+        let result = loop {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                shared_cancel.store(true, std::sync::atomic::Ordering::Release);
+            }
+            match reply_rx.recv_timeout(std::time::Duration::from_millis(25)) {
+                Ok(res) => break res,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(io::Error::other("Media Foundation thread stopped unexpectedly"));
+                }
+            }
+        };
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
