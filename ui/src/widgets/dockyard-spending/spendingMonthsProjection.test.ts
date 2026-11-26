@@ -199,3 +199,41 @@ test('military factory spending by month handles unrecorded and known-zero campa
   assert.equal(zeroModel.empty?.kind, 'empty');
   assert.equal(zeroModel.empty?.message, 'No military factory IC spent at this date.');
 });
+
+test('spending months assign distinct colours across nine or more categories without wrapping at eight', () => {
+  const bands = [
+    ...Array.from({ length: 9 }, (_, i) => ({ id: `cat-${i}`, label: `Category ${i}`, remainder: false, denominator: 24 })),
+    { id: 'other-purpose', label: 'Other purposes', remainder: true, denominator: 24 },
+  ];
+  const many: ProductionSpendingMonthsReply = {
+    branchId: '1',
+    tag: 'GER',
+    domain: 'naval',
+    decimals: 5,
+    recorded: true,
+    bands,
+    months: [{
+      year: 1936,
+      month: 1,
+      firstHour: jan1,
+      lastHour: feb1 - 1,
+      monthFirstHour: jan1,
+      monthLastHour: feb1 - 1,
+      incomplete: false,
+      parts: bands.map(() => ({ raw: '2400000', value: 1, reason: null, uncertain: false })),
+      totalRaw: '24000000',
+      totalDenominator: 24,
+      totalValue: 10,
+      totalReason: null,
+      note: null,
+    }],
+    nextChangeHour: null,
+    warnings: [],
+  };
+  const model = dockyardMonthsProjection.project(
+    createBoundedReadView({ hour: feb1, panels: new Map([['main', many]]) }),
+    { domain: 'naval', measureTitle: 'Dockyard IC per month', digits: 1, surface: '#111111', extent: [jan1, feb1] },
+  );
+  const colors = model.legend!.filter(e => e.id !== '__unrecorded__').map(e => e.color);
+  assert.equal(new Set(colors).size, 10, 'all ten spending categories including other-purpose get distinct colours');
+});

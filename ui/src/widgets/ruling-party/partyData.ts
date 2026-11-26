@@ -1,5 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { GREY_CHROMA } from '../../charts/palette.ts';
+import { colour, GREY_CHROMA } from '../../charts/palette.ts';
 import { oklchToRgb, parseColor, rgbToOklch, toHex } from '../../shell/appearance/color.ts';
 import type { GovernmentCauseKind, HourSpan, LeaderRun, PartOwnership, PartyHistoryReply } from '../../generated/dashboard';
 import type { SeriesKey } from '../../dashboard/keyedSeriesData';
@@ -51,12 +51,46 @@ export function validatePartyHistoryReply(data: unknown): PartyHistoryReply {
   return reply;
 }
 
-export function bands(reply: PartyHistoryReply, palette: readonly string[]): Band[] {
+function stableTokenOffset(token: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < token.length; i++) {
+    hash ^= token.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 256;
+}
+
+export function bands(reply: PartyHistoryReply, palette: readonly string[], surface?: string): Band[] {
   const tone = paletteTone(palette);
+  const catalogIndex = new Map(reply.ideologies.map((item, idx) => [item.token, idx]));
+  const uncatalogued = new Map<string, number>();
+  if (surface) {
+    const used = new Set<number>(catalogIndex.values());
+    const extraTokens = [...new Set(reply.parties.map(p => p.token).filter(token => !catalogIndex.has(token)))].sort((a, b) => a.localeCompare(b));
+    for (const token of extraTokens) {
+      let slot = (reply.ideologies.length + stableTokenOffset(token)) % 2048;
+      if (used.size >= 2048) {
+        slot = used.size;
+      } else {
+        let probes = 0;
+        while (used.has(slot) && probes < 2048) {
+          slot = (slot + 1) % 2048;
+          probes++;
+        }
+      }
+      uncatalogued.set(token, slot);
+      used.add(slot);
+    }
+  }
   let fallback = 0;
   return reply.parties.map(series => {
     const ideology = reply.ideologies.find(item => item.token === series.token);
-    const color = ideology?.color ? ideologyColour(ideology.color, tone) : palette[fallback++ % Math.max(1, palette.length)]!;
+    const ordinal = catalogIndex.get(series.token) ?? uncatalogued.get(series.token) ?? 0;
+    const color = ideology?.color
+      ? ideologyColour(ideology.color, tone)
+      : surface
+        ? colour(surface, ordinal)
+        : palette[fallback++ % Math.max(1, palette.length)]!;
     return {
       token: series.token,
       name: contentTitle(ideology?.name, series.token, 'Ideology name unavailable'),

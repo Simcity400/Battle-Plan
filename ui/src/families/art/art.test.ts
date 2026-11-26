@@ -664,3 +664,177 @@ test('drawn flag resolution looks up by key without reparsing the choice and ret
   assert.equal(asks.size, 0);
   assert.equal(objectLookups, 0, 'flag handles look up by serialized choice key without reparsing');
 });
+
+test('missing artwork in equipment designs and spirit history preserves asset identity and reason', async () => {
+  const { artworkArt } = await import('./provider.ts');
+  const { toArtSlotState } = await import('./adapters.ts');
+  const { drawArtSlot } = await import('../../draw/kit.ts');
+  const { designsProjection } = await import('../../widgets/equipment-designs/designsProjection.ts');
+  const { spiritHistoryProjection } = await import('../../widgets/spirit-history/spiritHistoryProjection.ts');
+
+  const view = createBoundedReadView({ hour: 100 });
+  const missingItemArt = artworkArt(view, { token: 'custom_spirit_alpha', name: 'Alpha Spirit', icon: null }, 'Sprite missing in current install');
+  assert.equal(missingItemArt.status, 'unavailable');
+  assert.match(missingItemArt.reason, /custom_spirit_alpha/);
+  assert.match(missingItemArt.reason, /Sprite missing in current install/);
+
+  const designsModel = designsProjection.project(
+    createBoundedReadView({
+      hour: 100,
+      panels: new Map<string, unknown>([['main', {
+        tag: 'GER',
+        missing: null,
+        warnings: [],
+        icons: [],
+        designs: [{
+          obsolete: false,
+          name: {
+            id: '42',
+            token: 'custom_tank_chassis',
+            name: null,
+            typeName: 'Tank',
+            nameUnknown: 'Localisation missing',
+            icon: 'GFX_custom_tank_missing',
+            iconUnknown: 'Sprite GFX_custom_tank_missing not found in current install',
+          },
+        }],
+      }]]),
+    }),
+    { canOpen: false },
+  );
+  const kindCell = designsModel.rows[0]!.cells.kind!;
+  assert.equal(kindCell.art?.status, 'unavailable');
+  assert.equal(kindCell.artName, 'GFX_custom_tank_missing');
+  assert.match((kindCell.art as { readonly reason: string }).reason, /GFX_custom_tank_missing/);
+  assert.match((kindCell.art as { readonly reason: string }).reason, /not found in current install/);
+  const slotTexts: string[] = [];
+  const fakeSlotCtx = {
+    font: '12px sans-serif',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    measureText: (t: string) => ({ width: t.length * 6 }),
+    save() {},
+    restore() {},
+    beginPath() {},
+    roundRect() {},
+    rect() {},
+    clip() {},
+    moveTo() {},
+    lineTo() {},
+    stroke() {},
+    fill() {},
+    fillText(t: string) { slotTexts.push(t); },
+  };
+  const slotTheme = {
+    surface: '#111111', raised: '#1b1b1b', text: '#f0f0f0', muted: '#999999', line: '#333333',
+    accent: '#3987e5', green: '#199e70', grey: '#666666', dark: true, font: 'sans-serif',
+    fontSize: { small: 11, body: 12 },
+  };
+  const slotResult = drawArtSlot(fakeSlotCtx as never, 0, 0, 28, 28, toArtSlotState(kindCell.art!, kindCell.artName), slotTheme as never);
+  assert.equal(slotResult.drawn, 'unrecorded');
+  assert.ok(slotResult.label && slotTexts.includes(slotResult.label), `design placeholder paints visible identifier (drawn=${slotResult.drawn}, label=${slotResult.label}, texts=${slotTexts.join(',')})`);
+
+  const spiritReply = {
+    hour: 100,
+    nextChange: null,
+    unrecorded: null,
+    unobserved: [],
+    warnings: ['mod_spirit_missing_icon: artwork is unknown because the holder has no recorded script token; a placeholder is shown'],
+    categories: [{ token: 'country', kind: 'national_spirit', slots: [] }],
+    looks: [
+      {
+        info: {
+          token: 'mod_spirit_missing_icon',
+          category: 'country',
+          slot: null,
+          law: false,
+          designer: false,
+          effectsKnown: true,
+          unknown: null,
+          nameMissing: null,
+          effects: [],
+          research: [],
+          targeted: [],
+          equipment: [],
+          traits: [],
+          tooltips: [],
+        },
+        artwork: { token: 'mod_spirit_missing_icon', name: 'Mod Spirit', description: null, icon: null, sprite: 'GFX_stale_withheld' },
+      },
+      {
+        info: {
+          token: 'mod_spirit_sprite_missing',
+          category: 'country',
+          slot: null,
+          law: false,
+          designer: false,
+          effectsKnown: true,
+          unknown: null,
+          nameMissing: null,
+          effects: [],
+          research: [],
+          targeted: [],
+          equipment: [],
+          traits: [],
+          tooltips: [],
+        },
+        artwork: { token: 'mod_spirit_sprite_missing', name: 'Missing Sprite Spirit', description: null, icon: null, sprite: 'GFX_mod_missing' },
+      },
+      {
+        info: {
+          token: 'mod_spirit_sprite_refused',
+          category: 'country',
+          slot: null,
+          law: false,
+          designer: false,
+          effectsKnown: true,
+          unknown: null,
+          nameMissing: null,
+          effects: [],
+          research: [],
+          targeted: [],
+          equipment: [],
+          traits: [],
+          tooltips: [],
+        },
+        artwork: { token: 'mod_spirit_sprite_refused', name: 'Refused Sprite Spirit', description: null, icon: null, sprite: 'GFX_mod_refused' },
+      },
+    ],
+    holdings: [
+      { token: 'mod_spirit_missing_icon', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 0, slot: null, character: null },
+      { token: 'mod_spirit_sprite_missing', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 1, slot: null, character: null },
+      { token: 'mod_spirit_sprite_refused', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 2, slot: null, character: null },
+    ],
+    held: [0, 1, 2],
+    modifiers: [],
+    texts: [],
+  };
+  const spiritView = createBoundedReadView({
+    hour: 100,
+    panels: new Map<string, unknown>([['main', spiritReply]]),
+    art: {
+      demandOwner: 'view',
+      resolve: handle => {
+        if (handle.kind === 'sprite' && handle.key === 'GFX_stale_withheld') return readyArt('art://wrong-sprite');
+        if (handle.kind === 'sprite' && handle.key === 'GFX_mod_missing') return missingArt('GFX_mod_missing absent in install');
+        if (handle.kind === 'sprite' && handle.key === 'GFX_mod_refused') return refusedArt('Unsupported shader sprite', 'sprite');
+        return PENDING_ART;
+      },
+    },
+  });
+  const spiritOpts = { showEnded: true, iconsOnBars: true, firstHour: 0, surface: '#111111' };
+  const spiritModel = spiritHistoryProjection.project(spiritView, spiritOpts);
+  const [warnLane, missingLane, refusedLane] = spiritModel.lanes;
+  assert.equal(warnLane!.icon?.status, 'unavailable');
+  assert.match((warnLane!.icon as { readonly reason: string }).reason, /holder has no recorded script token/);
+  const warnTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: warnLane!.key, spanId: warnLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
+  assert.ok(warnTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('holder has no recorded script token')));
+  const missingTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: missingLane!.key, spanId: missingLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
+  assert.ok(missingTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('GFX_mod_missing absent in install')));
+  const refusedTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: refusedLane!.key, spanId: refusedLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
+  assert.ok(refusedTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('Unsupported shader sprite')));
+});

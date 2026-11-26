@@ -4,6 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import { measureOf, ruleOf, territoryMeasureLabel, territoryNote, territorySeriesMeasure, type TerritoryMeasure, type TerritoryRule } from '../../dashboard/territoryMeasure.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import {
+  branchFactionIds,
   factionSelectionTop,
   factionTotalsSources,
   groupTitleForSelection,
@@ -186,6 +187,7 @@ export const territoryRaceDeclaration: BarsWidgetDeclaration<TerritoryRaceOption
         aggregated,
         groupLabel: groupTitleForSelection(ctx.widget.countries),
         top: factionSelectionTop(ctx.widget.countries),
+        factionIds: branchFactionIds(ctx.countries.factions),
         surface: extra.surface,
       },
     };

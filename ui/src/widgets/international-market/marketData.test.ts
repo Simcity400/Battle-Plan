@@ -122,3 +122,34 @@ test('fixedText and market formatters preserve positive, negative, zero, and mix
   assert.equal(fixedText(1n, 7n), '0.1');
   assert.equal(fixedText(-1n, 999n), '-0.001');
 });
+
+test('unattributed market sellers and missing equipment icons carry explicit unavailable placeholders and reasons', () => {
+  const missingReply = {
+    ...raw,
+    variants: [{
+      id: '9',
+      token: 'mod_rifle',
+      name: 'Mod Rifle',
+      typeName: 'Infantry Equipment',
+      nameUnknown: null,
+      icon: 'GFX_mod_rifle',
+      iconUnknown: 'Equipment sprite GFX_mod_rifle absent from install',
+    }],
+    offers: [{
+      country: 99,
+      tag: null,
+      autoSendMarketAccess: false,
+      subsidyTotalRaw: '0',
+      subsidies: [],
+      prices: [],
+      inventory: [{ variant: '9', name: 'Mod Rifle', amountRaw: '100000' }],
+    }],
+  };
+  const view = createBoundedReadView({ hour: 7, panels: new Map([['main', missingReply]]) });
+  const inv = internationalMarketProjection.project(view, { view: 'inventory' });
+  const row = inv.rows[0]!;
+  assert.equal(row.cells.seller!.art?.status, 'unavailable');
+  assert.equal(row.cells.seller!.artKey, 'flag:unavailable:unknown');
+  assert.equal(row.cells.equipment!.art?.status, 'unavailable');
+  assert.equal((row.cells.equipment!.art as { readonly reason: string }).reason, 'Equipment sprite GFX_mod_rifle absent from install');
+});

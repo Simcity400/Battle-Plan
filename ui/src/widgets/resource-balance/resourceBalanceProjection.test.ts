@@ -109,3 +109,18 @@ test('a malformed reply is refused', () => {
   assert.throws(() => validateResourceBalance({ ...reply(), pools: [9] }), /malformed/);
   assert.throws(() => validateResourceBalance({ ...reply(), resources: [...reply().resources].reverse() }), /malformed/);
 });
+
+test('resource colours follow recorded catalogue ids rather than filtered array positions', async () => {
+  const full = (await project(reply())).rows as BarsDataRow[];
+  const steelFull = full.find(r => r.key === '2')!.color;
+  const chromiumFull = full.find(r => r.key === '4')!.color;
+  const filtered = (await project(reply({
+    resources: reply().resources.filter(info => info.id === 2 || info.id === 4),
+    pools: [2],
+    rows: reply().rows.filter(r => r.resource === 2 || r.resource === 4),
+    short: 0,
+    unrecorded: 1,
+  }))).rows as BarsDataRow[];
+  assert.equal(filtered.find(r => r.key === '2')!.color, steelFull);
+  assert.equal(filtered.find(r => r.key === '4')!.color, chromiumFull);
+});

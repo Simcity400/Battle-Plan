@@ -1,4 +1,4 @@
-import { CATEGORY_LIMIT, colour } from '../../charts/palette.ts';
+import { colour } from '../../charts/palette.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
@@ -21,6 +21,7 @@ export interface FactionTotalsRaceOptions {
   readonly aggregated: boolean;
   readonly groupLabel: string;
   readonly top: number | null;
+  readonly factionIds?: readonly string[];
   readonly surface: string;
 }
 
@@ -73,13 +74,46 @@ export function groupTitleForSelection(countries: CountrySelection): string {
   return `Top ${group.count}`;
 }
 
-function stableColourIndex(key: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+const FACTION_HASH_SLOTS = 256;
+
+export function branchFactionIds(factions: readonly { readonly id: string }[] | null | undefined): readonly string[] | undefined {
+  if (!factions?.length) return undefined;
+  return [...new Set(factions.map(item => item.id))].sort((a, b) => a.localeCompare(b));
+}
+
+export function factionColourOrdinals(
+  ids: readonly string[],
+  knownIds?: readonly string[],
+): ReadonlyMap<string, number> {
+  const out = new Map<string, number>();
+  const used = new Set<number>();
+  if (knownIds?.length) {
+    for (let i = 0; i < knownIds.length; i++) {
+      out.set(knownIds[i]!, i);
+      used.add(i);
+    }
   }
-  return (hash >>> 0) % CATEGORY_LIMIT;
+  const missing = [...new Set(ids.filter(id => !out.has(id)))].sort((a, b) => a.localeCompare(b));
+  for (const id of missing) {
+    let hash = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      hash ^= id.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    let slot = (hash >>> 0) % FACTION_HASH_SLOTS;
+    if (used.size >= 2048) {
+      slot = used.size;
+    } else {
+      let probes = 0;
+      while (used.has(slot) && probes < 2048) {
+        slot = (slot + 1) % 2048;
+        probes++;
+      }
+    }
+    out.set(id, slot);
+    used.add(slot);
+  }
+  return out;
 }
 
 export function factionTotalsSources(
@@ -134,7 +168,7 @@ export function factionTotalsSources(
   };
 }
 
-function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string, surface: string): {
+function factionPresentation(readView: BoundedReadView, id: string, aggregated: boolean, groupLabel: string, surface: string, ordinal: number): {
   readonly label: string;
   readonly labelMissing: boolean;
   readonly labelLoading: boolean;
@@ -146,7 +180,7 @@ function factionPresentation(readView: BoundedReadView, id: string, aggregated: 
   const { value, name, loading: labelLoading, who: identity } = resolveName(readView, 'faction', id);
   const labelMissing = value.kind !== 'known' && !labelLoading;
   const label = value.kind === 'known' || labelLoading ? name : `Faction ${id}`;
-  const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, stableColourIndex(id));
+  const color = identity.colour?.status === 'ready' ? identity.colour.value : colour(surface, ordinal);
   return { label, labelMissing, labelLoading, color };
 }
 
@@ -187,9 +221,10 @@ export function projectFactionTotalsRace(
     return { ...baseModel, rows: [], empty: reply.missing, emptyKind: 'unavailable', warnings: reply.warnings };
   }
 
+  const ordinals = factionColourOrdinals(reply.rows.map(r => r.id), options.factionIds);
   const rows: BarsDataRow[] = [];
   for (const row of reply.rows as readonly FactionTotalRow[]) {
-    const pres = factionPresentation(readView, row.id, options.aggregated, options.groupLabel, options.surface);
+    const pres = factionPresentation(readView, row.id, options.aggregated, options.groupLabel, options.surface, ordinals.get(row.id) ?? 0);
     const value = row.total === null
       ? notRecorded(row.missing ?? 'Not recorded at this hour')
       : row.total === 0

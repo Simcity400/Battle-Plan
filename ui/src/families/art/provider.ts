@@ -48,10 +48,16 @@ export function productIconArt(
   return url ? readView.art({ kind: 'url', url }) : unavailableArt(missing ?? 'The product drew no icon');
 }
 
-export function artworkArt(readView: { art(handle: ArtHandle): ArtResult }, artwork: Pick<Artwork, 'icon' | 'sprite'>): ArtResult {
+export function artworkArt(
+  readView: { art(handle: ArtHandle): ArtResult },
+  artwork: Pick<Artwork, 'icon' | 'sprite'> & { readonly token?: string; readonly name?: string | null },
+  missing?: string | null,
+): ArtResult {
   if (artwork.icon) return readView.art({ kind: 'url', url: artwork.icon });
   if (artwork.sprite) return readView.art({ kind: 'sprite', key: artwork.sprite, frame: 0 });
-  return unavailableArt('The recording names no icon for this item');
+  const identity = artwork.token || artwork.name || null;
+  const reason = missing ?? 'The recording names no icon for this item';
+  return unavailableArt(identity && !reason.includes(identity) ? `${identity}: ${reason}` : reason);
 }
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {

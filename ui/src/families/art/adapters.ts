@@ -115,7 +115,7 @@ export function toArtSlotState<TBitmap extends CanvasImageSource>(
     case 'confirmedMissing':
       return { kind: 'missing', reason: state.reason, ...(label ? { label } : {}) };
     case 'unavailable':
-      return { kind: 'unrecorded', reason: state.reason };
+      return { kind: 'unrecorded', reason: state.reason, ...(label ? { label } : {}) };
     case 'refused':
       return { kind: 'refused', reason: state.reason };
     case 'failed':

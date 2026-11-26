@@ -40,14 +40,14 @@ export const resourceTimeProjection: TimeChartProjection<ResourceTimeOptions> = 
   measureTitle: 'Resource balance',
   project(readView: BoundedReadView, options: ResourceTimeOptions) {
     const reply = readView.panel<ResourceMonthsReply>('months');
-    const rows: ChartRowModel[] = (reply?.resources ?? []).map((item, index) => {
+    const rows: ChartRowModel[] = (reply?.resources ?? []).map(item => {
       const name = item.resource.name ?? item.resource.token;
       const handle = urlArtHandle(item.resource.icon);
       return {
         id: String(item.resource.id),
         name,
         ...(handle ? { icon: { art: readView.art(handle), label: name } } : {}),
-        color: colour(options.surface, index),
+        color: colour(options.surface, item.resource.id),
         valueText: item.net === null ? '' : formatNet(item.net),
         valueMissing: item.missing,
         months: item.months.map(month => ({

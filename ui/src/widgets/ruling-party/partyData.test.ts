@@ -89,3 +89,27 @@ test('the ruling party is named as the game names it; unrecorded and unknown dif
   assert.equal(partyNameAt(REPLY, 103), undefined);
   assert.throws(() => validatePartyHistoryReply({ ...REPLY, partyNameRuns: [{ name: 2, firstHour: 100, lastHour: 100 }] }));
 });
+
+test('nine or more uncoloured ideologies receive distinct generated colours when a surface is provided and keep stable colours across countries', async () => {
+  const { categoricalPalette } = await import('../../charts/palette.ts');
+  const ideologies = Array.from({ length: 10 }, (_, i) => ({ token: `mod_ideo_${i}`, name: `Ideology ${i}`, color: null }));
+  const parties = ideologies.map((item, i) => ({ token: item.token, parts: [{ part: i, firstHour: 100, lastHour: 110 }] }));
+  const full = bands({ ...REPLY, ideologies, parties }, categoricalPalette('#111111'), '#111111');
+  assert.equal(new Set(full.map(band => band.color)).size, 10);
+  const withoutFirst = bands({ ...REPLY, ideologies, parties: parties.slice(1) }, categoricalPalette('#111111'), '#111111');
+  assert.equal(withoutFirst[0]!.color, full[1]!.color, 'second ideology keeps the same fallback colour when the first party is absent');
+
+  const uncatalogued = bands(
+    {
+      ...REPLY,
+      ideologies: [],
+      parties: [
+        { token: 'mod_35', parts: [{ part: 0, firstHour: 100, lastHour: 110 }] },
+        { token: 'mod_40', parts: [{ part: 1, firstHour: 100, lastHour: 110 }] },
+      ],
+    },
+    categoricalPalette('#111111'),
+    '#111111',
+  );
+  assert.notEqual(uncatalogued[0]!.color, uncatalogued[1]!.color, 'uncatalogued ideology tokens mod_35 and mod_40 do not collide');
+});

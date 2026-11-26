@@ -1,9 +1,10 @@
-import { CATEGORY_LIMIT, colour, tailColour } from '../../charts/palette.ts';
+import { colour, tailColour } from '../../charts/palette.ts';
 import { factionIdentity, type FactionStyle } from '../../dashboard/campaignSettings.ts';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { CELL, cellState, cellValue, rowReason } from '../../dashboard/follow/message.ts';
 import { auditRow, type FamilyAuditRow } from '../auditRow.ts';
 import {
+  factionColourOrdinals,
   factionSelectionTop,
   groupTitleForSelection,
   isAggregatedSelection,
@@ -63,15 +64,6 @@ export interface FactionTotalsLinesOptions {
   readonly styles?: Readonly<Record<string, FactionStyle>>;
   readonly shared?: Readonly<Record<string, { readonly colour: string }>>;
   readonly identities?: ReadonlyMap<string, string | null>;
-}
-
-function stableColourIndex(key: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    hash ^= key.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % CATEGORY_LIMIT;
 }
 
 function membershipOf(ctx: FamilyPlanContext): 'hour' | 'ever' {
@@ -169,6 +161,7 @@ function factionPresentation(
   options: Pick<FactionTotalsLinesOptions, 'aggregated' | 'groupLabel' | 'surface' | 'styles' | 'shared' | 'factions' | 'identities'>,
   atHour: number,
   founder?: string | null,
+  ordinals?: ReadonlyMap<string, number>,
 ): { readonly name: string; readonly color: string; readonly customColour: boolean } {
   if (options.aggregated) {
     return { name: options.groupLabel, color: colour(options.surface, 0), customColour: false };
@@ -179,10 +172,11 @@ function factionPresentation(
   const name = style?.name ?? (resolved.value.kind === 'known' || resolved.loading ? resolved.name : `Faction ${id}`);
   const founderTag = founder ?? options.factions.find(item => item.id === id)?.founder ?? null;
   const ownColour = style?.colour ?? sharedFactionColour(options.shared, options.identities?.get(id), recordedName, founderTag);
+  const fallbackOrdinal = ordinals?.get(id) ?? factionColourOrdinals([id], options.factions.map(item => item.id)).get(id) ?? 0;
   const color = ownColour
     ?? (resolved.who.colour?.status === 'ready'
       ? resolved.who.colour.value
-      : colour(options.surface, stableColourIndex(id)));
+      : colour(options.surface, fallbackOrdinal));
   return { name, color, customColour: ownColour !== undefined };
 }
 
@@ -200,6 +194,7 @@ function buildHoverDetail(
   readView: BoundedReadView,
   options: FactionTotalsLinesOptions,
   plotted: readonly string[],
+  ordinals?: ReadonlyMap<string, number>,
 ): ChartHoverDetail | null {
   let hover;
   try {
@@ -227,8 +222,9 @@ function buildHoverDetail(
     };
   }
   const items: TooltipListItem[] = [];
+  const resolvedOrdinals = ordinals ?? factionColourOrdinals(rows.map(row => row.id), options.factions.map(f => f.id));
   for (const row of rows) {
-    const pres = factionPresentation(readView, row.id, options, hover.hour);
+    const pres = factionPresentation(readView, row.id, options, hover.hour, undefined, resolvedOrdinals);
     items.push(
       row.total === null
         ? { label: pres.name, swatch: pres.color, missingReason: row.missing ?? 'Not recorded at this hour', tone: 'muted', divider: items.length > 0 }
@@ -484,11 +480,13 @@ function projectDirectTiles(
   });
 
   const shown = options.top !== null ? candidates.slice(0, options.top) : candidates;
-  const hoverDetail = buildHoverDetail(readView, options, shown.map(item => item.faction.id));
+  const knownIds = options.factions.map(f => f.id);
+  const ordinals = factionColourOrdinals(candidates.map(item => item.faction.id), knownIds);
+  const hoverDetail = buildHoverDetail(readView, options, shown.map(item => item.faction.id), ordinals);
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((item, rank) => {
     const isTail = rank >= COLOURED;
-    const pres = factionPresentation(readView, item.faction.id, options, hour, item.faction.founder);
+    const pres = factionPresentation(readView, item.faction.id, options, hour, item.faction.founder, ordinals);
     const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
     const headValue = item.active ? item.known : null;
     const absentReason = item.active ? item.missing : null;
@@ -607,7 +605,9 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
 
   const tiles = readView.series('main');
   if (headPanel.missing !== null) {
-    const hoverDetail = buildHoverDetail(readView, options, options.aggregated ? ['group'] : [...(tiles?.keys() ?? [])]);
+    const ids = options.aggregated ? ['group'] : [...(tiles?.keys() ?? [])];
+    const ordinals = factionColourOrdinals(ids, options.factions.map(f => f.id));
+    const hoverDetail = buildHoverDetail(readView, options, ids, ordinals);
     if (options.top !== null || !tiles || tiles.size === 0) {
       return {
         kind: options.kind,
@@ -626,11 +626,10 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
         auditRows: [],
       };
     }
-    const ids = options.aggregated ? ['group'] : [...tiles.keys()];
     const auditRows: FamilyAuditRow[] = [];
     const series: TimeChartSeriesModel[] = ids.map((id, rank) => {
       const isTail = rank >= COLOURED;
-      const pres = factionPresentation(readView, id, options, hour);
+      const pres = factionPresentation(readView, id, options, hour, undefined, ordinals);
       const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
       const bounded = tiles.get(id) ?? null;
       auditRows.push(auditRow(id, headPanel.missing!));
@@ -667,11 +666,12 @@ export function projectFactionTotalsLines(readView: BoundedReadView, options: Fa
   }
 
   const shown = options.top !== null ? headPanel.rows.slice(0, options.top) : headPanel.rows;
-  const hoverDetail = buildHoverDetail(readView, options, shown.map(row => row.id));
+  const ordinals = factionColourOrdinals(headPanel.rows.map(row => row.id), options.factions.map(f => f.id));
+  const hoverDetail = buildHoverDetail(readView, options, shown.map(row => row.id), ordinals);
   const auditRows: FamilyAuditRow[] = [];
   const series: TimeChartSeriesModel[] = shown.map((row, rank) => {
     const isTail = rank >= COLOURED;
-    const pres = factionPresentation(readView, row.id, options, hour);
+    const pres = factionPresentation(readView, row.id, options, hour, undefined, ordinals);
     const color = isTail && !pres.customColour ? tailColour(options.surface) : pres.color;
     const bounded = tiles?.get(row.id) ?? null;
     const headValue = row.total;

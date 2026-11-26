@@ -6,7 +6,7 @@ import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
 import { projectForceAtMix } from './forceAtMix.ts';
 import { projectForceAtReply, validateNavalLossesAtReply } from './forceAtRace.ts';
-import { CATEGORY_LIMIT, categoricalPalette, colour, reservedGrey } from '../../charts/palette.ts';
+import { categoricalPalette, colour, reservedGrey } from '../../charts/palette.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
   return {
@@ -112,7 +112,7 @@ test('a part takes the palette colour at its content ordinal, so a new part move
   assert.deepEqual([naval([ships, convoys]), naval([convoys])], [[0, 1], [1]], 'convoys alone keep the place they hold beside ships');
   const unordered = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1]));
   assert.equal(unordered.get('mystery'), reservedGrey(DARK), 'a part without an ordinal is drawn in the neutral colour, never guessed');
-  const past = colours(project([ships], [CATEGORY_LIMIT], [1]));
+  const past = colours(project([ships], [categoricalPalette(DARK).length], [1]));
   assert.ok(!categoricalPalette(DARK).includes(past.get('ships')!), 'a part past the palette takes its generated extension');
   const light = colours(project([ships, { key: 'mystery', name: 'Mystery', unresolved: true }], [0, null], [1, 1], LIGHT));
   assert.deepEqual([light.get('ships'), light.get('mystery')], [colour(LIGHT, 0), reservedGrey(LIGHT)], 'the colours are solved against the theme the widget is drawn on');

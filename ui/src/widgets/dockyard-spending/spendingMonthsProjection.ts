@@ -1,5 +1,5 @@
 import { auditRow } from '../../families/auditRow.ts';
-import { categoricalPalette, reservedGrey } from '../../charts/palette.ts';
+import { colour, reservedGrey } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { icDecimals } from '../../dashboard/icDecimals.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -81,9 +81,8 @@ export function formatExactIcText(raw: string, denominator: number, decimals: nu
 
 function bandColour(band: SpendingMonthBandSpec, index: number, surface: string): string {
   if (band.id === 'purpose-unrecorded') return reservedGrey(surface);
-  const palette = categoricalPalette(surface);
-  if (band.id === 'other-purpose') return palette[4 % palette.length]!;
-  return palette[index % palette.length]!;
+  if (band.id === 'other-purpose') return colour(surface, Math.max(4, index));
+  return colour(surface, index);
 }
 
 export function createSpendingMonthsView(spec: SpendingMonthsSpec): {

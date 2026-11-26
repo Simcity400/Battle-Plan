@@ -170,7 +170,7 @@ export const rulingPartyProjection: TimeChartProjection<RulingPartyOptions> = re
     const base = { kind: 'ruling-party', measureTitle: 'Ruling party', mode: 'stack', hour, extent: options.extent, yAxis: Y_AXIS, series: [] } as const;
     if (!history || !subject) return { ...base, empty: null };
 
-    const list = bands(history, categoricalPalette(options.surface));
+    const list = bands(history, categoricalPalette(options.surface), options.surface);
     const ruling = rulingAt(history, hour);
     const leader = leaderShown(history, leaderAt(history, hour));
     const partyName = partyNameAt(history, hour);

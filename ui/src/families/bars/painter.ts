@@ -1,6 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { readableColour } from '../../charts/palette.ts';
-import { ellipsise } from '../../charts/labels.ts';
+import { disambiguateLabels, ellipsise, labelFitsTwoLines, labelLineHeight } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks } from '../../charts/valueAxis.ts';
 import {
@@ -327,6 +327,52 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
   const truncatedKeys: string[] = [];
   let paintedRows = 0;
 
+  const disambiguatedNames = new Map<string, string>();
+  const disambiguatedRightNames = new Map<string, string>();
+  const nameFontSize = theme.fontSize.body;
+  const nameLineH = labelLineHeight(nameFontSize);
+  if (layout.nameWidth > 0) {
+    const singleKeys: string[] = [];
+    const singleLabels: string[] = [];
+    const singleWidths: number[] = [];
+    for (let i = first; i < last; i++) {
+      const item = model.rows[i]!;
+      if (item.kind !== 'data' || item.labelMissing) continue;
+      if (labelFitsTwoLines(layout.rowHeights[i]!, nameLineH)) continue;
+      const isHovered = inspectedKey === item.key || (item.rightSide && inspectedKey === item.rightSide.key);
+      const isFocused = focusedKey === item.key || (item.rightSide && focusedKey === item.rightSide.key);
+      const reserveRemove = item.region !== undefined && (isHovered || isFocused) ? ROW_REMOVE_SIZE + 4 : 0;
+      singleKeys.push(item.key);
+      singleLabels.push(item.label);
+      singleWidths.push(Math.max(12, layout.nameWidth - reserveRemove));
+    }
+    if (singleLabels.length > 1) {
+      ctx.save();
+      ctx.font = `${model.form === 'net' ? 500 : 400} ${nameFontSize}px ${theme.font}`;
+      const fitted = disambiguateLabels(singleLabels, singleWidths, s => textWidth(ctx, s));
+      ctx.restore();
+      for (let i = 0; i < singleKeys.length; i++) disambiguatedNames.set(singleKeys[i]!, fitted[i]!);
+    }
+  }
+  if (model.form === 'two-sided' && layout.twoSidedLayout === 'split-sides' && layout.rightNameWidth > 0) {
+    const rightKeys: string[] = [];
+    const rightLabels: string[] = [];
+    for (let i = first; i < last; i++) {
+      const item = model.rows[i]!;
+      if (item.kind !== 'data' || !item.rightSide || item.rightSide.labelMissing) continue;
+      if (labelFitsTwoLines(layout.rowHeights[i]!, nameLineH)) continue;
+      rightKeys.push(item.rightSide.key);
+      rightLabels.push(item.rightSide.label);
+    }
+    if (rightLabels.length > 1) {
+      ctx.save();
+      ctx.font = `${LABEL_WEIGHT} ${nameFontSize}px ${theme.font}`;
+      const fitted = disambiguateLabels(rightLabels, layout.rightNameWidth, s => textWidth(ctx, s));
+      ctx.restore();
+      for (let i = 0; i < rightKeys.length; i++) disambiguatedRightNames.set(rightKeys[i]!, fitted[i]!);
+    }
+  }
+
   ctx.save();
   ctx.beginPath();
   ctx.rect(layout.bodyLeft, layout.bodyTop, layout.width - layout.bodyLeft, layout.bodyHeight);
@@ -383,9 +429,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       const regionTools = row.region !== undefined && (isHovered || isFocused);
       const reserveRemove = regionTools ? ROW_REMOVE_SIZE + 4 : 0;
       const nameColor = row.labelMissing || row.labelLoading || row.muted ? theme.muted : row.group === 'auto' ? tokens.autoName : theme.text;
+      const rawLabel = row.labelMissing ? notRecordedLabel('Name') : row.label;
+      const shownLabel = row.labelMissing ? rawLabel : (disambiguatedNames.get(row.key) ?? rawLabel);
       const fitted = drawNameSlot(
         ctx,
-        row.labelMissing ? notRecordedLabel('Name') : row.label,
+        shownLabel,
         layout.nameX,
         y,
         Math.max(12, layout.nameWidth - reserveRemove),
@@ -393,7 +441,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         theme,
         { color: nameColor, weight: model.form === 'net' ? 500 : 400 },
       );
-      if (fitted.truncated) truncatedKeys.push(row.key);
+      if (fitted.truncated || shownLabel !== rawLabel) truncatedKeys.push(row.key);
       if (regionTools) {
         drawRowGrip(ctx, layout.nameX, middleY, theme);
         drawRowRemoveButton(ctx, layout.nameX + layout.nameWidth, middleY, theme);
@@ -582,9 +630,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             drawBar(ctx, layout.rightPlotLeft, barY, w, layout.barHeight, rightColor, 'right');
           }
         }
+        const rawRightLabel = right.labelMissing ? notRecordedLabel('Name') : right.label;
+        const shownRightLabel = right.labelMissing ? rawRightLabel : (disambiguatedRightNames.get(right.key) ?? rawRightLabel);
         const rightName = drawNameSlot(
           ctx,
-          right.labelMissing ? notRecordedLabel('Name') : right.label,
+          shownRightLabel,
           layout.rightNameX + layout.rightNameWidth,
           y,
           layout.rightNameWidth,
@@ -592,7 +642,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           theme,
           { align: 'right', color: right.labelMissing || right.labelLoading ? theme.muted : theme.text },
         );
-        if (rightName.truncated) truncatedKeys.push(right.key);
+        if (rightName.truncated || shownRightLabel !== rawRightLabel) truncatedKeys.push(right.key);
         drawMediaSlot(ctx, layout.width - BARS_PAD_X - layout.mediaWidth, middleY, layout.mediaWidth, layout.mediaHeight, right.media, theme, { artCache, radius: 2 });
       }
       continue;

@@ -917,3 +917,79 @@ test('hover and audit read the recorded amount, not the label\'s rounding', () =
   assert.equal(breakdownTotal(tiny, words).exact, '0.0001');
   assert.ok(read.parts.length === 1);
 });
+
+test('breakdown arc labels keep joined graphemes intact and parts view disambiguates shared-prefix siblings', async () => {
+  const { drawBreakdown } = await import('./painter.ts');
+  const arcCluster = '👨‍👩‍👧‍👦';
+  const arcData: Breakdown = {
+    total: { amount: exact('100'), state: 'known', reason: null },
+    unrecordedHours: 0,
+    parts: [
+      wire('Group', 0, '100', {
+        share: 1,
+        children: [wire(`${arcCluster}A`, 0, '100', { parentShare: 1 })],
+      }),
+    ],
+  };
+  const ringLayout = layoutBreakdown({ ...at(900, 420), level: breakdownLevel(model(arcData)), view: 'ring', userExpanded: {} }) as RingViewLayout;
+  const arcCalls: string[] = [];
+  const fakeCtx = {
+    font: '12px sans-serif',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    textAlign: 'left',
+    textBaseline: 'alphabetic',
+    measureText: (t: string) => ({ width: Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(t)).length * 7 }),
+    save() {},
+    restore() {},
+    translate() {},
+    rotate() {},
+    beginPath() {},
+    arc() {},
+    closePath() {},
+    rect() {},
+    clip() {},
+    fill() {},
+    stroke() {},
+    moveTo() {},
+    lineTo() {},
+    roundRect() {},
+    fillRect() {},
+    clearRect() {},
+    fillText(t: string) { arcCalls.push(t); },
+  };
+  drawBreakdown(fakeCtx as never, {
+    layout: ringLayout,
+    theme: THEME,
+    hour: 100,
+    scrollTop: 0,
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+  });
+  assert.ok(arcCalls.includes(arcCluster), `arc text draws joined grapheme intact (got: ${arcCalls.join(', ')})`);
+
+  const siblings: Breakdown = {
+    total: { amount: exact('200'), state: 'known', reason: null },
+    unrecordedHours: 0,
+    parts: [
+      wire('Confederation of Northern Republics Alpha', 0, '100', { share: 0.5 }),
+      wire('Confederation of Northern Republics Beta', 1, '100', { share: 0.5 }),
+    ],
+  };
+  const partsLayout = layoutBreakdown({ ...at(340, 260), level: breakdownLevel(model(siblings)), view: 'parts', userExpanded: {} }) as PartsViewLayout;
+  const partTexts: string[] = [];
+  drawBreakdown({ ...fakeCtx, fillText(t: string) { partTexts.push(t); } } as never, {
+    layout: partsLayout,
+    theme: THEME,
+    hour: 100,
+    scrollTop: 0,
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+  });
+  assert.ok(partTexts.some(t => t.includes('Alpha')), `parts view preserves Alpha suffix (${partTexts.join(', ')})`);
+  assert.ok(partTexts.some(t => t.includes('Beta')), `parts view preserves Beta suffix (${partTexts.join(', ')})`);
+});

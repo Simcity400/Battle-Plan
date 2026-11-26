@@ -304,6 +304,7 @@ export function artNameCell(
   handle: ArtHandle | null,
   missing: string,
   shape: TableCell['artShape'] = 'square',
+  artMissing?: string,
 ): TableCell {
   const cell: {
     value: Value<string>;
@@ -316,7 +317,7 @@ export function artNameCell(
     value: name ? knownValue(name) : notRecorded(missing),
     iconSlot: true,
     artShape: shape,
-    art: handle ? readView.art(handle) : unavailableArt(missing),
+    art: handle ? readView.art(handle) : unavailableArt(artMissing ?? missing),
   };
   if (name) cell.artName = name;
   if (handle) cell.artKey = artHandleKey(handle);
