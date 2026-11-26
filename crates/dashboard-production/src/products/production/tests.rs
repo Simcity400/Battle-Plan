@@ -253,8 +253,8 @@ fn load() -> LoadContext {
     LoadContext { content: None }
 }
 
-fn asked(source: &Source, entry: dashboard_base::products::at_hour::Entry, request: Value) -> Value {
-    let text = (entry.registered.load)(source, "lease", request, &load(), &AtomicBool::new(false)).unwrap();
+fn asked(source: &Source, entry: dashboard_base::products::Registered, request: Value) -> Value {
+    let text = (entry.load)(source, "lease", request, &load(), &AtomicBool::new(false)).unwrap();
     let mut reply: Value = serde_json::from_str(&text).unwrap();
     reply["data"].take()
 }
@@ -311,33 +311,27 @@ fn the_live_table_lists_the_countrys_lines_in_queue_order_and_says_when_they_are
     assert!(unread["missing"].as_str().is_some_and(|why| why.contains("not recorded")), "unread lines are missing, never none");
 }
 
-fn followed(source: &Source, entry: dashboard_base::products::at_hour::Entry, params: &Value, hour: i32) -> dashboard_follow::panel::PanelData {
-    let mut panel = (entry.panel)(source, &load(), params).unwrap();
-    let tables = panel.tables().to_vec();
-    let replay::campaign::SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is recorded") };
-    panel.data(&frame)
+fn compare_panel<P: dashboard_base::products::at_hour::AtHour>(source: &Source, params: Value) {
+    let mut as_panel = params.clone();
+    as_panel["panel"] = json!(P::KEY);
+    let mut panel = dashboard_base::products::at_hour::frame_panel::<P>(source, &load(), &as_panel).unwrap();
+    for hour in (FIRST..=LAST).step_by(7).chain([1_049, 1_050, 1_199, 1_200, UNREAD.0, UNREAD.1 + 1]) {
+        let mut request = params.clone();
+        request["hour"] = json!(hour);
+        let mut reply = asked(source, entry::<P>(), request);
+        reply.as_object_mut().unwrap().remove("live");
+        let replay::campaign::SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(panel.tables())).unwrap() else { panic!("hour {hour} is recorded") };
+        assert_eq!(panel.data(&frame), Ok(reply), "{} at hour {hour}", P::KEY);
+    }
 }
 
 #[test]
 fn a_request_reading_the_owners_rows_and_tokens_by_key_answers_as_the_panel_over_whole_tables() {
     let source = recording();
-    let products = [
-        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER" })),
-        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "order": "factories" })),
-        (entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER" })),
-        (entry::<ProductionLicences>(), json!({ "branchId": "1" })),
-    ];
-    for (product, params) in products {
-        let mut as_panel = params.clone();
-        as_panel["panel"] = json!(product.registered.key);
-        for hour in (FIRST..=LAST).step_by(7).chain([1_049, 1_050, 1_199, 1_200, UNREAD.0, UNREAD.1 + 1]) {
-            let mut request = params.clone();
-            request["hour"] = json!(hour);
-            let mut reply = asked(&source, product, request);
-            reply.as_object_mut().unwrap().remove("live");
-            assert_eq!(followed(&source, product, &as_panel, hour), Ok(reply), "{} at hour {hour}", product.registered.key);
-        }
-    }
+    compare_panel::<ProductionLinesAt>(&source, json!({ "branchId": "1", "country": "GER" }));
+    compare_panel::<ProductionLinesAt>(&source, json!({ "branchId": "1", "country": "GER", "order": "factories" }));
+    compare_panel::<IndustrialOrganisations>(&source, json!({ "branchId": "1", "country": "GER" }));
+    compare_panel::<ProductionLicences>(&source, json!({ "branchId": "1" }));
 }
 
 #[test]

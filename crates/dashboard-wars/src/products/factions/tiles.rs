@@ -799,7 +799,7 @@ mod tests {
     }
 
     fn load_at(source: &Source, params: Value, load: &LoadContext, cancelled: &AtomicBool) -> Value {
-        let text = (crate::registrations::FACTIONS_FACTIONTOTALSAT.registered.load)(source, "test", params, load, cancelled).unwrap();
+        let text = (crate::registrations::FACTIONS_FACTIONTOTALSAT.load)(source, "test", params, load, cancelled).unwrap();
         let envelope: Value = serde_json::from_str(&text).unwrap();
         envelope["data"].clone()
     }

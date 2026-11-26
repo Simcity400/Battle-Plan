@@ -1,34 +1,26 @@
+use dashboard_base::products::at_hour::{at_hour, before};
+
 dashboard_base::register_products! {
     NATIONAL_FOCUS_NATIONALFOCUS => crate::products::national_focus::NationalFocus,
     TECHNOLOGY_ARTWORK_TECHNOLOGYARTWORK => crate::products::technology_artwork::TechnologyArtwork,
-    LOGS_LOGTAIL => crate::products::logs::LogTail,
+    LOGS_LOGTAIL => crate::products::logs::LogTail; LogTail(crate::products::logs::dated_panel),
     POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
     POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,
-    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard,
-    IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory,
+    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard; interval(at_hour, |r| r.valid_through),
+    IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory; interval(at_hour, |r| before(r.next_change)),
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
-    STABILITY_MARKERS_STABILITYMARKERS => crate::products::stability_markers::StabilityMarkers,
-    FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail,
-    FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail,
-    FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail,
+    STABILITY_MARKERS_STABILITYMARKERS => crate::products::stability_markers::StabilityMarkers; interval(at_hour, |r| before(r.next_change)),
+    FEED_EVENTFEEDTAIL => crate::products::feed::EventFeedTail; LogTail(crate::products::feed::event_feed_dated_panel),
+    FEED_EVENTCHOICESTAIL => crate::products::feed::EventChoicesTail; LogTail(crate::products::feed::event_choices_dated_panel),
+    FEED_DECISIONSTAIL => crate::products::feed::DecisionsTail; LogTail(crate::products::feed::decisions_dated_panel),
     FEED_EVENTFEEDACTIVITY => crate::products::feed::EventFeedActivity,
     FEED_EVENTFEEDKINDS => crate::products::feed::EventFeedKinds,
-    POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown,
-    POWER_LEDGER_MARKERS_POWERSPENDMARKERS => crate::products::power_ledger::markers::PowerSpendMarkers,
+    POWER_LEDGER_BREAKDOWN_POWERSPENDINGBREAKDOWN => crate::products::power_ledger::breakdown::PowerSpendingBreakdown; interval(at_hour, |r| r.through),
+    POWER_LEDGER_MARKERS_POWERSPENDMARKERS => crate::products::power_ledger::markers::PowerSpendMarkers; interval(at_hour, |r| before(r.next_change)),
+
+    @hourly
+    POLITICS_STATE_POLITICSSTATE => exact<crate::products::politics::state::PoliticsState>,
+    POLITICS_ELECTIONS_NEXTELECTIONS => whole_frame<crate::products::politics::elections::NextElections>,
+    STABILITY_COUNTRYSTABILITYBREAKDOWN => whole_frame<crate::products::stability::CountryStabilityBreakdown>,
+    STABILITY_STABILITYPARTNAMES => whole_frame<crate::products::stability::StabilityPartNames>,
 }
-
-dashboard_base::register_hourly_products! {
-    POLITICS_STATE_POLITICSSTATE => crate::products::politics::state::PoliticsState,
-    POLITICS_ELECTIONS_NEXTELECTIONS => crate::products::politics::elections::NextElections,
-    STABILITY_COUNTRYSTABILITYBREAKDOWN => crate::products::stability::CountryStabilityBreakdown,
-    STABILITY_STABILITYPARTNAMES => crate::products::stability::StabilityPartNames,
-}
-
-use dashboard_base::{Source, products::at_hour::exact_panel};
-use dashboard_core::config::LoadContext;
-use dashboard_follow::panel::Panel;
-use serde_json::Value;
-
-type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
-
-pub const EXACT_POLITICSSTATE: ExactPanel = exact_panel::<crate::products::politics::state::PoliticsState>;

@@ -21,7 +21,7 @@ pub(super) fn load() -> LoadContext {
 
 pub(super) fn asked<P: AtHour>(source: &Source, mut params: Value, hour: i32) -> Result<Value, String> {
     params["hour"] = json!(hour);
-    let text = (entry::<P>().registered.load)(source, "lease", params, &load(), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+    let text = (entry::<P>().load)(source, "lease", params, &load(), &AtomicBool::new(false)).map_err(|error| error.to_string())?;
     let mut reply: Value = serde_json::from_str(&text).unwrap();
     Ok(reply["data"].take())
 }
@@ -35,7 +35,7 @@ pub(super) fn followed(source: &Source, panel: &mut dyn Panel, hour: i32) -> Pan
 pub(super) fn same_on_both_paths<P: AtHour>(source: &Source, params: Value) {
     let mut asked_panel = params.clone();
     asked_panel["panel"] = json!(P::KEY);
-    let mut panel = (entry::<P>().panel)(source, &load(), &asked_panel).unwrap();
+    let mut panel = dashboard_base::products::at_hour::frame_panel::<P>(source, &load(), &asked_panel).unwrap();
     for hour in FIRST..=LAST {
         let mut asked = asked::<P>(source, params.clone(), hour).unwrap();
         asked.as_object_mut().unwrap().remove("live");
@@ -413,7 +413,7 @@ mod market {
     fn panel(source: &Source, params: &Value) -> Box<dyn Panel> {
         let mut asked = params.clone();
         asked["panel"] = json!(MarketLendLease::KEY);
-        (entry::<MarketLendLease>().panel)(source, &load(), &asked).unwrap()
+        dashboard_base::products::at_hour::frame_panel::<MarketLendLease>(source, &load(), &asked).unwrap()
     }
 
     #[test]

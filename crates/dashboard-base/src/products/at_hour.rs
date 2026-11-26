@@ -1,5 +1,5 @@
 
-use super::{LoadContext, Registered, ReplyWarnings};
+use super::{LoadContext, PanelKind, PanelReader, Registered, ReplyWarnings};
 use crate::{
     Source,
     catalogue::{OwnRefusals, own_refusals},
@@ -437,6 +437,49 @@ pub fn interval_panel(
     product_panel(advance, cold)
 }
 
+pub fn at_hour(params: &mut Value, hour: i32) {
+    params["hour"] = hour.into();
+}
+
+pub fn before(next: Option<i32>) -> i32 {
+    next.map_or(i32::MAX, |n| n.saturating_sub(1))
+}
+
+pub fn day_panel<P: super::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value,
+    start: &'static str, end: &'static str, through: fn(&P::Reply) -> i32,
+) -> Result<Box<dyn Panel>, String> {
+    let first = dashboard_query::branch(asked).and_then(|branch| crate::queries::query(source, branch))
+        .map_err(|e| e.to_string())?.timeline.first;
+    let day_start = |hour: i32| hour.div_euclid(24).saturating_mul(24);
+    let Some(tile_first) = asked[start].as_i64() else {
+        return product_interval_panel::<P>(source, load, asked, move |request, hour| {
+            request[start] = first.max(day_start(hour)).into();
+            request[end] = hour.into();
+        }, through);
+    };
+    let tile_first = i32::try_from(tile_first).map_err(|_| "Invalid history start")?;
+    let tile_last = asked[end].as_i64().and_then(|n| i32::try_from(n).ok()).ok_or("Invalid history end")?;
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Expected history parameters")?.remove("panel");
+    let source = Arc::clone(source);
+    let load = LoadContext { content: load.content.clone() };
+    Ok(interval_panel(source.tables(), move |hour, cancelled| {
+        let today = day_start(hour);
+        if today <= tile_first {
+            return Ok((Value::Null, day_start(tile_first).saturating_add(23), 0));
+        }
+        let mut request = params.clone();
+        let last = tile_last.min(today.saturating_sub(1));
+        request[end] = last.into();
+        let (reply, rows) = counted(|| {
+            crate::metadata::check_cancel(cancelled)?;
+            super::register::<P>().answer(&source, request, &load, cancelled)
+        });
+        Ok((reply?, if last == tile_last { i32::MAX } else { today.saturating_add(23) }, rows))
+    }))
+}
+
 pub fn product_interval_panel<P: super::Product>(
     source: &Arc<Source>, load: &LoadContext, asked: &Value,
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
@@ -506,8 +549,7 @@ impl<P: AtHour> Panel for Followed<P> {
 
     fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
         let Some((owner, views)) = &self.answered else { return false };
-        P::REPLY_NAMES_NO_HOUR
-            && matches!(P::CLOCK, Clock::InputsOnly)
+        skips_unchanged::<P>()
             && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
             && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
     }
@@ -529,7 +571,7 @@ impl<P: AtHour> Panel for Followed<P> {
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
         let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
-        if P::REPLY_NAMES_NO_HOUR && matches!(P::CLOCK, Clock::InputsOnly) && let Some(owner) = held {
+        if skips_unchanged::<P>() && let Some(owner) = held {
             self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
         }
         Ok(data)
@@ -540,7 +582,7 @@ impl<P: AtHour> Panel for Followed<P> {
     }
 }
 
-fn panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
+pub fn frame_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String> {
     let mut asked = asked.clone();
     if let Some(fields) = asked.as_object_mut() {
         fields.remove("panel");
@@ -564,74 +606,45 @@ where
     out
 }
 
-#[derive(Clone, Copy)]
-pub struct Entry {
-    pub registered: Registered,
-    pub panel: fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>,
+const fn skips_unchanged<P: AtHour>() -> bool {
+    P::REPLY_NAMES_NO_HOUR && matches!(P::CLOCK, Clock::InputsOnly)
 }
 
-pub const fn entry<P: AtHour>() -> Entry {
-    Entry {
-        registered: Registered {
-            key: P::KEY,
-            content_dependent: P::CONTENT_DEPENDENT,
-            interactive: P::INTERACTIVE,
-            replays: false,
-            load: load::<P>,
-            fields: P::FIELDS,
-            read_hour: true,
-            #[cfg(any(test, feature = "export-types"))]
-            types: None,
-            #[cfg(any(test, feature = "export-types"))]
-            params: dashboard_query::fields::walk::<P::Params>,
-        },
-        panel: panel::<P>,
+pub const fn whole_frame<P: AtHour>() -> PanelReader {
+    PanelReader {
+        kind: PanelKind::WholeFrame { every_frame: !skips_unchanged::<P>() },
+        open: |source, load, asked| frame_panel::<P>(source, load, asked),
+    }
+}
+
+pub const fn exact<P: AtHour>() -> PanelReader
+where P::Params: Sync, P::Context: Sync {
+    let kind = if matches!(P::CLOCK, Clock::EveryHour(_)) { PanelKind::ExactHourly } else { PanelKind::Exact };
+    PanelReader { kind, open: |source, load, asked| exact_panel::<P>(source, load, asked) }
+}
+
+pub const fn entry<P: AtHour>() -> Registered {
+    Registered {
+        panel: None,
+        key: P::KEY,
+        content_dependent: P::CONTENT_DEPENDENT,
+        interactive: P::INTERACTIVE,
+        replays: false,
+        load: load::<P>,
+        fields: P::FIELDS,
+        read_hour: true,
+        #[cfg(any(test, feature = "export-types"))]
+        types: None,
+        #[cfg(any(test, feature = "export-types"))]
+        params: dashboard_query::fields::walk::<P::Params>,
     }
 }
 
 #[cfg(any(test, feature = "export-types"))]
-pub const fn entry_for_export<P: AtHour>() -> Entry
-where
-    P::Params: TS,
-    P::Reply: TS,
-{
-    let mut entry = entry::<P>();
-    entry.registered.types = Some(types::<P>);
-    entry
+pub const fn entry_for_export<P: AtHour>() -> Registered
+where P::Params: TS, P::Reply: TS {
+    Registered { types: Some(types::<P>), ..entry::<P>() }
 }
-
-pub const fn joined<const N: usize>(own: &[Registered], at_hour: &[Entry]) -> [Registered; N] {
-    assert!(own.len() + at_hour.len() == N);
-    let mut out = [own[0]; N];
-    let mut at = 1;
-    while at < own.len() {
-        out[at] = own[at];
-        at += 1;
-    }
-    let mut at = 0;
-    while at < at_hour.len() {
-        out[own.len() + at] = at_hour[at].registered;
-        at += 1;
-    }
-    out
-}
-
-pub const fn keys<const N: usize>(own: &[&'static str], at_hour: &[Entry]) -> [&'static str; N] {
-    assert!(own.len() + at_hour.len() == N);
-    let mut out = [""; N];
-    let mut at = 0;
-    while at < own.len() {
-        out[at] = own[at];
-        at += 1;
-    }
-    let mut at = 0;
-    while at < at_hour.len() {
-        out[own.len() + at] = at_hour[at].registered.key;
-        at += 1;
-    }
-    out
-}
-
 
 #[cfg(test)]
 mod tests;

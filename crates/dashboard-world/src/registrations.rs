@@ -1,3 +1,5 @@
+use dashboard_base::products::at_hour::{at_hour, before};
+
 dashboard_base::register_products! {
     ARTWORK_SPRITEARTWORK => dashboard_base::products::artwork::sprites::SpriteArtwork,
     COUNTRY_FLAGS_COUNTRYFLAGS => crate::products::country_flags::CountryFlags,
@@ -5,35 +7,22 @@ dashboard_base::register_products! {
     STYLES_COUNTRYFACTS => crate::products::styles::CountryFacts,
     STYLES_COUNTRYSTYLES => crate::products::styles::CountryStyles,
     GROUPS_COUNTRYGROUPS => crate::products::groups::CountryGroups,
-    GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts,
-    HISTORY_AT_COUNTRYGROUPSAT => crate::products::history_at::CountryGroupsAt,
-    HISTORY_AT_SUBJECTSAT => crate::products::history_at::SubjectsAt,
+    GROUP_COUNTS_GROUPCOUNTS => crate::products::group_counts::GroupCounts; interval(at_hour, |r| before(r.next_change)),
+    HISTORY_AT_COUNTRYGROUPSAT => crate::products::history_at::CountryGroupsAt; interval(at_hour, |r| before(r.next_change)),
+    HISTORY_AT_SUBJECTSAT => crate::products::history_at::SubjectsAt; interval(at_hour, |r| before(r.next_change)),
     LAND_OWNERS_LANDOWNERSPRODUCT => crate::products::land_owners::LandOwnersProduct,
     SCALARS_WORLDTENSIONSTACK => crate::products::scalars::WorldTensionStack,
     SCALARS_FACTORYGROUPS => crate::products::scalars::FactoryGroups,
     PLACE_NAME_RUNS_PLACENAMERUNS => crate::products::place_name_runs::PlaceNameRuns,
     SEA_REGIONS_STRATEGICREGIONS => crate::products::sea_regions::StrategicRegions,
+
+    @hourly
+    TERRITORY_TERRITORYSHARE => exact<crate::products::territory::TerritoryShare>,
+    TERRITORY_TERRITORYBREAKDOWN => whole_frame<crate::products::territory::TerritoryBreakdown>,
+    SCALARS_GAMESCORE => exact<crate::products::scalars::GameScore>,
+    SCALARS_NUCLEARARSENAL => exact<crate::products::scalars::NuclearArsenal>,
+    SCALARS_WORLDTENSION => whole_frame<crate::products::scalars::WorldTension>,
+    SCALARS_FACTORYPARTS => whole_frame<crate::products::scalars::FactoryParts>,
+    SCALARS_FACTORYMIX => exact<crate::products::scalars::FactoryMix>,
+    AUTONOMY_LEVELS_AUTONOMYLEVELS => whole_frame<crate::products::autonomy_levels::AutonomyLevels>,
 }
-
-dashboard_base::register_hourly_products! {
-    TERRITORY_TERRITORYSHARE => crate::products::territory::TerritoryShare,
-    TERRITORY_TERRITORYBREAKDOWN => crate::products::territory::TerritoryBreakdown,
-    SCALARS_GAMESCORE => crate::products::scalars::GameScore,
-    SCALARS_NUCLEARARSENAL => crate::products::scalars::NuclearArsenal,
-    SCALARS_WORLDTENSION => crate::products::scalars::WorldTension,
-    SCALARS_FACTORYPARTS => crate::products::scalars::FactoryParts,
-    SCALARS_FACTORYMIX => crate::products::scalars::FactoryMix,
-    AUTONOMY_LEVELS_AUTONOMYLEVELS => crate::products::autonomy_levels::AutonomyLevels,
-}
-
-use dashboard_base::{Source, products::at_hour::exact_panel};
-use dashboard_core::config::LoadContext;
-use dashboard_follow::panel::Panel;
-use serde_json::Value;
-
-type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
-
-pub const EXACT_NUCLEARARSENAL: ExactPanel = exact_panel::<crate::products::scalars::NuclearArsenal>;
-pub const EXACT_GAMESCORE: ExactPanel = exact_panel::<crate::products::scalars::GameScore>;
-pub const EXACT_TERRITORYSHARE: ExactPanel = exact_panel::<crate::products::territory::TerritoryShare>;
-pub const EXACT_FACTORYMIX: ExactPanel = exact_panel::<crate::products::scalars::FactoryMix>;

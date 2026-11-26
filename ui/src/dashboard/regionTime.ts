@@ -1,7 +1,7 @@
 import { lastRecordedBranchHour, resolveWindow, type BoundTrack, type HourWindow, type WidgetBase, type WidgetSpec } from './model.ts';
 import { formatDateTime, gameDate } from './calendar.ts';
 
-import type { AnyRequestParams, HourRole, RecordingGap, RequestParams } from '../generated/dashboard';
+import type { AnyRequestParams, HourRole, PanelKey, RecordingGap, RequestParams } from '../generated/dashboard';
 import { REQUEST_HOURS, REQUEST_PATHS } from '../generated/dashboard.ts';
 
 declare const TRACK: unique symbol;
@@ -51,7 +51,8 @@ export type PinnedSpec = Omit<WidgetSpec, 'time'> & { readonly time: GatedTime }
 export const persistedSpec = (pinned: PinnedSpec): WidgetSpec => ({ ...pinned, time: pinned.time.value });
 
 declare const FOLLOWED: unique symbol;
-export type FollowQuery = Readonly<Record<string, unknown>> & { readonly [FOLLOWED]: 'gated' };
+export type FollowRequest = Readonly<Record<string, unknown>> & { readonly panel?: PanelKey };
+export type FollowQuery = FollowRequest & { readonly [FOLLOWED]: 'gated' };
 type Unchecked = { readonly [key: string]: unknown };
 export type ParamsFor<K extends string> = Unchecked & AnyRequestParams<GatedHour, BoundHour>
   & (K extends keyof RequestParams<GatedHour, BoundHour> ? RequestParams<GatedHour, BoundHour>[K] : unknown);

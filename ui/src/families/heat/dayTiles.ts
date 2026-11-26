@@ -1,3 +1,4 @@
+import type { PanelKey } from '../../generated/dashboard';
 import type { BoundedReadView, FamilyPlanContext, PointSourceRead, SourceCoverage, SourceEntry } from '../plan.ts';
 
 export const DAY_TILE_HOURS = 64 * 24;
@@ -37,7 +38,7 @@ interface DaySource {
 }
 
 interface DayTilesSpec {
-  readonly product: PointSourceRead['product'];
+  readonly product: PanelKey;
   readonly span: (base: Params, first: number, last: number) => Params;
   readonly now: DaySource;
   readonly tile: DaySource;

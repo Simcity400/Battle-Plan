@@ -5,7 +5,7 @@ import type { Channel } from '../dashboard/follow/facts';
 import { repliedCells } from '../dashboard/follow/liveCells.ts';
 import { TRAILING_HOURS, type WidgetTime } from '../dashboard/model.ts';
 import type { FollowRefusal } from '../dashboard/regionGate';
-import type { BoundWindow, GatedHour } from '../dashboard/regionTime';
+import type { BoundWindow, FollowRequest, GatedHour } from '../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../dashboard/request.ts';
 import { createBoundedReadView, displayedHour } from './boundedView.ts';
 import type { DrawnKeys } from './host/installed.ts';
@@ -134,7 +134,7 @@ export interface CompiledFollowPlan {
 
 export function compileFollowPlan(
   plan: SourcePlan,
-  checkFollow: (query: Readonly<Record<string, unknown>> | null) => FollowRefusal,
+  checkFollow: (query: FollowRequest | null) => FollowRefusal,
 ): CompiledFollowPlan {
   if (plan.refused) {
     return {
@@ -149,7 +149,7 @@ export function compileFollowPlan(
 
   for (const entry of plan.entries) {
     const read = entry.read;
-    let rawQuery: Readonly<Record<string, unknown>> | null = null;
+    let rawQuery: FollowRequest | null = null;
     let channel: Channel = 'followed';
     let product: string | undefined;
 

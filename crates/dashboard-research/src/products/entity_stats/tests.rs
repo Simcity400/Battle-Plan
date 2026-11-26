@@ -213,7 +213,7 @@ fn recording() -> Source {
 #[test]
 fn stats_without_the_recorded_content_are_withheld_by_name() {
     let request = json!({ "branchId": "1", "kind": "equipment", "token": "infantry_equipment_1", "hour": 25 });
-    let text = (entry::<EntityStatsAt>().registered.load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let text = (entry::<EntityStatsAt>().load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let reply: Value = serde_json::from_str::<Value>(&text).unwrap()["data"].take();
     assert_eq!(reply["stats"], json!([]));
     assert_eq!(reply["kind"], "equipment");

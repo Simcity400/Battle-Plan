@@ -5,8 +5,25 @@ use std::sync::atomic::AtomicBool;
 
 #[macro_export]
 macro_rules! register_products {
-    ($($name:ident => $product:ty),+ $(,)?) => {
-        $(pub const $name: $crate::products::Registered = {
+    (
+        $($name:ident => $product:ty $(; $kind:ident($($args:tt)*))?,)*
+        @hourly
+        $($hour_name:ident => $reader:ident<$hour_product:ty> $(($custom:expr))?,)*
+    ) => {
+        $($crate::register_products!(@declare $name, $product, $crate::products::register, $crate::products::register_for_export
+            $(, $crate::register_products!(@ $kind $product, $($args)*))?);)*
+        $($crate::register_products!(@declare $hour_name, $hour_product, $crate::products::at_hour::entry, $crate::products::at_hour::entry_for_export,
+            $crate::register_products!(@hour $reader $hour_product $(, $custom)?));)*
+        pub const PRODUCTS: &[$crate::products::Registered] = &[$($name,)* $($hour_name,)*];
+    };
+    (@declare $name:ident, $product:ty, $register:path, $export:path $(, $panel:expr)?) => {
+        pub const $name: $crate::products::Registered = {
+            use $register as register;
+            #[cfg(any(test, feature = "export-types"))]
+            use $export as registration;
+            #[cfg(not(any(test, feature = "export-types")))]
+            use $register as registration;
+
             fn load(
                 source: &$crate::Source,
                 lease: &str,
@@ -14,54 +31,50 @@ macro_rules! register_products {
                 context: &$crate::products::LoadContext,
                 cancelled: &std::sync::atomic::AtomicBool,
             ) -> Result<String, dashboard_core::QueryError> {
-                ($crate::products::register::<$product>().load)(source, lease, params, context, cancelled)
+                (register::<$product>().load)(source, lease, params, context, cancelled)
             }
-            #[cfg(any(test, feature = "export-types"))]
-            use $crate::products::register_for_export as registration;
-            #[cfg(not(any(test, feature = "export-types")))]
-            use $crate::products::register as registration;
-            $crate::products::Registered { load, ..registration::<$product>() }
-        };)+
+            $crate::products::Registered { load, $(panel: Some($panel),)? ..registration::<$product>() }
+        };
+    };
+    (@hour custom $product:ty, $panel:expr) => { $panel };
+    (@hour $reader:ident $product:ty) => { $crate::products::at_hour::$reader::<$product>() };
+    (@ interval $product:ty, $date:expr, $through:expr) => {
+        $crate::products::PanelReader {
+            kind: $crate::products::PanelKind::Interval,
+            open: |source, load, asked| $crate::products::at_hour::product_interval_panel::<$product>(source, load, asked, $date, $through),
+        }
+    };
+    (@ day $product:ty, $kind:ident, $start:literal, $end:literal, $through:expr) => {
+        $crate::products::PanelReader {
+            kind: $crate::products::PanelKind::$kind,
+            open: |source, load, asked| $crate::products::at_hour::day_panel::<$product>(source, load, asked, $start, $end, $through),
+        }
+    };
+    (@ $kind:ident $product:ty, $reader:path) => {
+        $crate::products::PanelReader { kind: $crate::products::PanelKind::$kind, open: |source, load, asked| $reader(source, load, asked) }
     };
 }
 
-#[macro_export]
-macro_rules! register_hourly_products {
-    ($($name:ident => $product:ty),+ $(,)?) => {
-        $(pub const $name: $crate::products::at_hour::Entry = {
-            fn load(
-                source: &$crate::Source,
-                lease: &str,
-                params: serde_json::Value,
-                context: &$crate::products::LoadContext,
-                cancelled: &std::sync::atomic::AtomicBool,
-            ) -> Result<String, dashboard_core::QueryError> {
-                ($crate::products::at_hour::entry::<$product>().registered.load)(source, lease, params, context, cancelled)
-            }
-            fn panel(
-                source: &$crate::Source,
-                context: &$crate::products::LoadContext,
-                params: &serde_json::Value,
-            ) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
-                ($crate::products::at_hour::entry::<$product>().panel)(source, context, params)
-            }
-            #[cfg(any(test, feature = "export-types"))]
-            use $crate::products::at_hour::entry_for_export as registration;
-            #[cfg(not(any(test, feature = "export-types")))]
-            use $crate::products::at_hour::entry as registration;
-            $crate::products::at_hour::Entry {
-                registered: $crate::products::Registered {
-                    load,
-                    ..registration::<$product>().registered
-                },
-                panel,
-            }
-        };)+
-    };
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PanelKind {
+    Exact,
+    ExactHourly,
+    ExactHourlyFor(&'static [&'static str]),
+    Interval,
+    DayThroughHour,
+    LogTail,
+    WholeFrame { every_frame: bool },
+}
+
+#[derive(Clone, Copy)]
+pub struct PanelReader {
+    pub kind: PanelKind,
+    pub open: fn(&std::sync::Arc<Source>, &LoadContext, &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String>,
 }
 
 #[derive(Clone, Copy)]
 pub struct Registered {
+    pub panel: Option<PanelReader>,
     pub key: &'static str,
     pub content_dependent: bool,
     pub interactive: bool,
@@ -83,6 +96,7 @@ pub struct Registered {
 
 pub const fn register<P: Product>() -> Registered {
     Registered {
+        panel: None,
         key: P::KEY,
         content_dependent: P::CONTENT_DEPENDENT,
         interactive: P::INTERACTIVE,
@@ -94,6 +108,14 @@ pub const fn register<P: Product>() -> Registered {
         types: None,
         #[cfg(any(test, feature = "export-types"))]
         params: dashboard_query::fields::walk::<P::Params>,
+    }
+}
+
+impl Registered {
+    pub fn answer(&self, source: &Source, params: serde_json::Value, load: &LoadContext, cancelled: &AtomicBool) -> std::io::Result<serde_json::Value> {
+        let text = (self.load)(source, "answer", params, load, cancelled).map_err(std::io::Error::other)?;
+        let mut reply: serde_json::Value = serde_json::from_str(&text)?;
+        Ok(reply.get_mut("data").map(serde_json::Value::take).unwrap_or(serde_json::Value::Null))
     }
 }
 

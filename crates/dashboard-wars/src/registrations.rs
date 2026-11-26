@@ -1,7 +1,9 @@
+use dashboard_base::products::at_hour::at_hour;
+
 dashboard_base::register_products! {
     DIPLOMACY_DIPLOMATICPACTS => crate::products::diplomacy::DiplomaticPacts,
-    CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown,
-    PEACE_DEALS_TAIL => crate::products::peace::tail::PeaceDealsTail,
+    CASUALTIES_CASUALTYBREAKDOWN => crate::products::casualties::CasualtyBreakdown; interval(at_hour, |r| r.through),
+    PEACE_DEALS_TAIL => crate::products::peace::tail::PeaceDealsTail; LogTail(crate::products::peace::tail::dated_panel),
     TERRITORY_TRANSFERS_TERRITORYTRANSFERS => crate::products::territory_transfers::TerritoryTransfers,
     OCCUPATION_RESERVE_RESERVEHISTORY => crate::products::occupation_reserve::ReserveHistory,
     FACTION_STATE_HISTORY_FACTIONSTATE => crate::products::faction_state::history::FactionState,
@@ -9,32 +11,18 @@ dashboard_base::register_products! {
     WARS_WARTIMELINEAT => crate::products::wars::WarTimelineAt,
     SCOREBOARD_SCOREBOARDCOLUMNS => crate::products::scoreboard::ScoreboardColumns,
     SCOREBOARD_SCOREBOARD => crate::products::scoreboard::Scoreboard,
+
+    @hourly
+    FACTIONS_FACTIONTOTALSAT => exact<crate::products::factions::FactionTotalsAt>,
+    DIPLOMACY_DIPLOMATICRELATIONS => exact<crate::products::diplomacy::DiplomaticRelations>,
+    VOLUNTEERS_VOLUNTEERFLOW => whole_frame<crate::products::volunteers::VolunteerFlow>,
+    CASUALTY_MATRIX_CASUALTYMATRIX => whole_frame<crate::products::casualty_matrix::CasualtyMatrix>,
+    WARGOALS_WARGOALS => whole_frame<crate::products::wargoals::Wargoals>,
+    OCCUPATION_RESERVE_OCCUPATIONRESERVE => exact<crate::products::occupation_reserve::OccupationReserve>,
+    OCCUPATION_STATES_OCCUPIEDSTATES => exact<crate::products::occupation::states::OccupiedStates>,
+    OCCUPATION_DETAIL_OCCUPATIONDETAIL => whole_frame<crate::products::occupation::detail::OccupationDetail>,
+    FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => whole_frame<crate::products::faction_state::country_goals::CountryFactionGoals>,
+    FACTION_STATE_DETAILS_FACTIONDETAILS => whole_frame<crate::products::faction_state::details::FactionDetails>,
+    FACTION_STATE_POOLS_FACTIONPOOLS => exact<crate::products::faction_state::pools::FactionPools>,
+    WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => whole_frame<crate::products::wars::contributions::WarContributions>,
 }
-
-dashboard_base::register_hourly_products! {
-    FACTIONS_FACTIONTOTALSAT => crate::products::factions::FactionTotalsAt,
-    DIPLOMACY_DIPLOMATICRELATIONS => crate::products::diplomacy::DiplomaticRelations,
-    VOLUNTEERS_VOLUNTEERFLOW => crate::products::volunteers::VolunteerFlow,
-    CASUALTY_MATRIX_CASUALTYMATRIX => crate::products::casualty_matrix::CasualtyMatrix,
-    WARGOALS_WARGOALS => crate::products::wargoals::Wargoals,
-    OCCUPATION_RESERVE_OCCUPATIONRESERVE => crate::products::occupation_reserve::OccupationReserve,
-    OCCUPATION_STATES_OCCUPIEDSTATES => crate::products::occupation::states::OccupiedStates,
-    OCCUPATION_DETAIL_OCCUPATIONDETAIL => crate::products::occupation::detail::OccupationDetail,
-    FACTION_STATE_COUNTRY_GOALS_COUNTRYFACTIONGOALS => crate::products::faction_state::country_goals::CountryFactionGoals,
-    FACTION_STATE_DETAILS_FACTIONDETAILS => crate::products::faction_state::details::FactionDetails,
-    FACTION_STATE_POOLS_FACTIONPOOLS => crate::products::faction_state::pools::FactionPools,
-    WARS_CONTRIBUTIONS_WARCONTRIBUTIONS => crate::products::wars::contributions::WarContributions,
-}
-
-use dashboard_base::{Source, products::at_hour::exact_panel};
-use dashboard_core::config::LoadContext;
-use dashboard_follow::panel::Panel;
-use serde_json::Value;
-
-type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
-
-pub const EXACT_OCCUPATIONRESERVE: ExactPanel = exact_panel::<crate::products::occupation_reserve::OccupationReserve>;
-pub const EXACT_OCCUPIEDSTATES: ExactPanel = exact_panel::<crate::products::occupation::states::OccupiedStates>;
-pub const EXACT_FACTIONTOTALSAT: ExactPanel = exact_panel::<crate::products::factions::FactionTotalsAt>;
-pub const EXACT_FACTIONPOOLS: ExactPanel = exact_panel::<crate::products::faction_state::pools::FactionPools>;
-pub const EXACT_DIPLOMATICRELATIONS: ExactPanel = exact_panel::<crate::products::diplomacy::DiplomaticRelations>;

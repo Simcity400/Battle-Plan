@@ -52,7 +52,7 @@ fn the_contract_names_the_refusals_a_reader_may_try_again() {
 fn every_product_request_field_declares_its_hour_role_and_the_contract_carries_it() {
     let table = crate::request_fields();
     let mut wrong = Vec::new();
-    for product in crate::products::PRODUCTS {
+    for product in crate::products::PRODUCTS.iter() {
         let walk = (product.params)();
         wrong.extend(walk.problems(product.fields).into_iter().map(|problem| format!("{}: {problem}", product.key)));
         assert!(!(product.read_hour && product.fields.iter().any(|(path, _)| *path == "hour")), "{}: an hourly product's hour is its own", product.key);

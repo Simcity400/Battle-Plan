@@ -1,3 +1,16 @@
+use crate::products::leaders::career::LeaderHour;
+use dashboard_base::products::{PanelKind, PanelReader, at_hour::exact_panel};
+
+const LEADER_HOUR: PanelReader = PanelReader {
+    kind: PanelKind::ExactHourlyFor(&["reference", "all", "countries"]),
+    open: |source, load, asked| {
+        if asked.get("branchId").is_none() {
+            return Err("Invalid unit-leader-hour panel: missing field branchId".into());
+        }
+        exact_panel::<LeaderHour>(source, load, asked)
+    },
+};
+
 dashboard_base::register_products! {
     DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
     ARMY_ARMYSIZE => crate::products::army::ArmySize,
@@ -6,39 +19,25 @@ dashboard_base::register_products! {
     LEADER_NAME_RUNS_LEADERNAMERUNS => crate::products::leader_name_runs::LeaderNameRuns,
     LEADERS_CAREER_LEADERCAREER => crate::products::leaders::career::LeaderCareer,
     LEADERS_CAREER_LEADERCHOICES => crate::products::leaders::career::LeaderChoices,
-    DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail,
-    DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail,
+    DIVISION_LOG_TAIL => crate::products::division_log::DivisionLogTail; LogTail(crate::products::division_log::dated_panel),
+    DIVISION_SERVICE_RECORD_TAIL => crate::products::divisions::careers::service_record::DivisionServiceRecordTail; LogTail(crate::products::divisions::careers::service_record::dated_panel),
     DIVISION_SERVICE_RECORD_CHOICES => crate::products::divisions::careers::service_record::DivisionServiceRecordChoices,
-    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail,
+    LAND_BATTLES_TAIL => crate::products::land_battles::tail::LandBattlesTail; LogTail(crate::products::land_battles::tail::dated_panel),
     LAND_BATTLES_LANDBATTLECOURSES => crate::products::land_battles::LandBattleCourses,
     LAND_TERRAIN_LANDBATTLETERRAINS => crate::products::land_terrain::LandBattleTerrains,
+
+    @hourly
+    ARMY_TEMPLATEROSTER => whole_frame<crate::products::army::TemplateRoster>,
+    TRAINING_QUEUE_TRAININGQUEUE => whole_frame<crate::products::training_queue::TrainingQueue>,
+    DOCTRINE_MASTERY_DOCTRINEMASTERY => exact<crate::products::doctrine_mastery::DoctrineMastery>,
+    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => whole_frame<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
+    LEADERS_UNITLEADERS => whole_frame<crate::products::leaders::UnitLeaders>,
+    LEADERS_CAREER_LEADERHOUR => custom<LeaderHour>(LEADER_HOUR),
+    DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => whole_frame<crate::products::divisions::templates::DivisionTemplates>,
+    DIVISIONS_CAREERS_DECORATEDDIVISIONS => whole_frame<crate::products::divisions::careers::DecoratedDivisions>,
+    DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => whole_frame<crate::products::divisions::equipment::DivisionEquipment>,
+    ARMY_LOSSES_ARMYLOSSES => whole_frame<crate::products::army_losses::ArmyLosses>,
+    FORCES_AIRFORCEAT => exact<crate::products::forces::AirForceAt>,
+    FORCES_NAVYAT => exact<crate::products::forces::NavyAt>,
+    ARMY_ARMYAT => exact<crate::products::army::ArmyAt>,
 }
-
-dashboard_base::register_hourly_products! {
-    ARMY_TEMPLATEROSTER => crate::products::army::TemplateRoster,
-    TRAINING_QUEUE_TRAININGQUEUE => crate::products::training_queue::TrainingQueue,
-    DOCTRINE_MASTERY_DOCTRINEMASTERY => crate::products::doctrine_mastery::DoctrineMastery,
-    DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => crate::products::doctrine_mastery::rewards::DoctrineRewards,
-    LEADERS_UNITLEADERS => crate::products::leaders::UnitLeaders,
-    LEADERS_CAREER_LEADERHOUR => crate::products::leaders::career::LeaderHour,
-    DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => crate::products::divisions::templates::DivisionTemplates,
-    DIVISIONS_CAREERS_DECORATEDDIVISIONS => crate::products::divisions::careers::DecoratedDivisions,
-    DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => crate::products::divisions::equipment::DivisionEquipment,
-    ARMY_LOSSES_ARMYLOSSES => crate::products::army_losses::ArmyLosses,
-    FORCES_AIRFORCEAT => crate::products::forces::AirForceAt,
-    FORCES_NAVYAT => crate::products::forces::NavyAt,
-    ARMY_ARMYAT => crate::products::army::ArmyAt,
-}
-
-use dashboard_base::{Source, products::at_hour::exact_panel};
-use dashboard_core::config::LoadContext;
-use dashboard_follow::panel::Panel;
-use serde_json::Value;
-
-type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
-
-pub const EXACT_DOCTRINEMASTERY: ExactPanel = exact_panel::<crate::products::doctrine_mastery::DoctrineMastery>;
-pub const EXACT_AIRFORCEAT: ExactPanel = exact_panel::<crate::products::forces::AirForceAt>;
-pub const EXACT_NAVYAT: ExactPanel = exact_panel::<crate::products::forces::NavyAt>;
-pub const EXACT_ARMYAT: ExactPanel = exact_panel::<crate::products::army::ArmyAt>;
-pub const EXACT_LEADERHOUR: ExactPanel = exact_panel::<crate::products::leaders::career::LeaderHour>;
