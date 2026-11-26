@@ -70,7 +70,7 @@ test('lane reply strings preserve MessagePack values, binary, extensions and non
 
 test('1,000 decodes build each distinct short string once per lane', t => {
   const reader = new ReplyDecoder();
-  const bytes = encode({ tag: 'ABC', values: ['ABC', '1245', 'counted', 'tag'] });
+  const bytes = encode({ tag: 'ABC', values: ['ABC', '1245', 'counted', 'tag', 'values', '1245', 'counted'] });
   const built = t.mock.method(String, 'fromCharCode');
   const first = reader.decode(bytes);
   for (let i = 1; i < 1000; i++) assert.deepEqual(reader.decode(bytes), first);
@@ -78,7 +78,7 @@ test('1,000 decodes build each distinct short string once per lane', t => {
   assert.deepEqual(new ReplyDecoder().decode(bytes), first);
   assert.equal(built.mock.callCount(), 10);
   for (const [i, tag] of [0xd9, 0xda, 0xdb].entries()) {
-    assert.equal(reader.decode(Uint8Array.of(tag, ...Array((1 << i) - 1).fill(0), 3, 65, 66, 67)), 'ABC');
+    assert.equal(reader.decode(Uint8Array.of(tag, ...Array((1 << i) - 1).fill(0), 3, 65, 66, 67), 1), 'ABC');
   }
   assert.equal(built.mock.callCount(), 10);
   const long = encode('x'.repeat(32));
@@ -93,18 +93,23 @@ test('the lane interns string values only while a current request uses them', t 
   const values = encode(['yrljbjuz', 'jsldzojd', 'jsldzojd']);
   assert.deepEqual(reader.decode(values, 1), ['yrljbjuz', 'jsldzojd', 'jsldzojd']);
   assert.equal(built.mock.callCount(), 2, 'the second occurrence of a value is served by the lane table');
-  reader.decode(encode('jsldzojd'), 2);
+  reader.decode(encode('yrljbjuz'), 2);
+  assert.equal(built.mock.callCount(), 3, 'a word seen only once in a reply leaves no persistent entry');
+  reader.decode(encode(['jsldzojd', 'jsldzojd']), 2);
   reader.decode(encode(0), 1);
-  assert.equal(built.mock.callCount(), 2, 'a second request still uses the colliding value');
+  assert.equal(built.mock.callCount(), 3, 'a second request still uses the colliding value');
   reader.decode(values, 1);
-  assert.equal(built.mock.callCount(), 3, 'only the retired collision entry was rebuilt');
+  assert.equal(built.mock.callCount(), 4, 'only the singleton collision entry was rebuilt');
   reader.forget(1);
   reader.forget(2);
   assert.throws(() => reader.decode(Uint8Array.of(0x92, 0xa1, 65), 1));
   assert.equal(reader.decode(encode('A'), 1), 'A');
-  assert.equal(built.mock.callCount(), 5, 'a partial reply does not keep its strings');
+  assert.equal(built.mock.callCount(), 6, 'a partial reply does not keep its strings');
   reader.decode(values, 2);
-  assert.equal(built.mock.callCount(), 7, 'closing the last request released its strings');
+  assert.equal(built.mock.callCount(), 8, 'closing the last request released its strings');
+  reader.decode(encode('jsldzojd'), 2);
+  reader.decode(encode('jsldzojd'), 3);
+  assert.equal(built.mock.callCount(), 9, 'a replacement containing only one occurrence releases the entry');
 });
 
 test('review 10: an answer\'s shape names its rows and columns, not their order', () => {

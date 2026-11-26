@@ -1,19 +1,35 @@
 import { Decoder } from '@msgpack/msgpack';
 import { utf8Decode } from '@msgpack/msgpack/dist.esm/utils/utf8.mjs';
 
-interface CachedString {
-  hash: number;
-  bytes: Uint8Array;
+interface WireString {
   text: string;
+  bytes?: Uint8Array;
+}
+
+interface CachedString extends WireString {
+  hash: number;
   users: number;
   generation: number;
+  repeated: boolean;
   next?: CachedString;
 }
 
 const MAX_FIXSTR = 0x1f;
 
+function matches(input: Uint8Array, offset: number, length: number, text: string, bytes?: Uint8Array): boolean {
+  if (bytes) {
+    if (length !== bytes.length) return false;
+    for (let i = 0; i < length; i++) if (input[offset + i] !== bytes[i]) return false;
+  } else {
+    if (length !== text.length) return false;
+    for (let i = 0; i < length; i++) if (input[offset + i] !== text.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
 class ShortStrings {
   private readonly strings = new Map<number, CachedString>();
+  private readonly firsts = new Map<number, string | WireString>();
   private readonly requests = new Map<number, CachedString[]>();
   private current: CachedString[] = [];
   private generation = 0;
@@ -25,29 +41,37 @@ class ShortStrings {
     for (let i = 0; i < length; i++) hash = Math.imul(hash ^ input[offset + i]!, 0x01000193);
     const first = this.strings.get(hash);
     for (let entry = first; entry; entry = entry.next) {
-      if (entry.bytes.length !== length) continue;
-      let i = 0;
-      while (i < length && input[offset + i] === entry.bytes[i]) i++;
-      if (i === length) {
-        if (entry.generation !== this.generation) {
-          entry.generation = this.generation;
-          entry.users++;
-          this.current.push(entry);
-        }
-        return entry.text;
+      if (!matches(input, offset, length, entry.text, entry.bytes)) continue;
+      if (entry.generation !== this.generation) {
+        entry.generation = this.generation;
+        entry.repeated = false;
+      } else if (!entry.repeated) {
+        entry.repeated = true;
+        entry.users++;
+        this.current.push(entry);
       }
+      return entry.text;
     }
-    const text = utf8Decode(input, offset, length);
     const end = offset + length;
     if ((length >= 1 && input[end - 1]! >= 0xc0) || (length >= 2 && input[end - 2]! >= 0xe0) ||
-        (length >= 3 && input[end - 3]! >= 0xf0)) return text;
-    const entry = { hash, text, bytes: Uint8Array.prototype.slice.call(input, offset, end), next: first, users: 1, generation: this.generation };
-    this.strings.set(hash, entry);
-    this.current.push(entry);
+        (length >= 3 && input[end - 3]! >= 0xf0)) return utf8Decode(input, offset, length);
+    let slot = hash;
+    for (let seen = this.firsts.get(slot); seen !== undefined; seen = this.firsts.get(++slot)) {
+      const text = typeof seen === 'string' ? seen : seen.text;
+      const bytes = typeof seen === 'string' ? undefined : seen.bytes;
+      if (!matches(input, offset, length, text, bytes)) continue;
+      const entry = { hash, text, bytes: bytes && Uint8Array.prototype.slice.call(bytes), next: first, users: 1, generation: this.generation, repeated: true };
+      this.strings.set(hash, entry);
+      this.current.push(entry);
+      return text;
+    }
+    const text = utf8Decode(input, offset, length);
+    this.firsts.set(slot, matches(input, offset, length, text) ? text : { text, bytes: input.subarray(offset, end) });
     return text;
   }
 
   finish(request?: number) {
+    this.firsts.clear();
     const previous = request === undefined ? this.current : this.requests.get(request);
     if (request !== undefined) {
       if (this.current.length) this.requests.set(request, this.current);
