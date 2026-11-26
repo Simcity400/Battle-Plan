@@ -69,7 +69,12 @@ for (const ratio of RATIOS) {
         const before = placed.find(row => row.id === 'breakdown')!;
         assert.notDeepEqual(resized.find(row => row.id === 'breakdown')!.backing, before.backing, 'the resized widget has a new backing');
 
+        await page.evaluate('window.pixelExact.hold()');
         await page.evaluate('window.pixelExact.zoom({ card: 1.1, bars: 0.9, table: 1.25 })');
+        await page.evaluate('window.pixelExact.frames(4)');
+        const rezooming = await exactOnScreen(page, cdp, 'zoom changed, before the new pictures arrive', false);
+        assert.deepEqual(rezooming.find(row => row.id === 'card')!.backing, resized.find(row => row.id === 'card')!.backing, 'while the zoom changes, the old picture is still the one shown');
+        await page.evaluate('window.pixelExact.release()');
         const zoomed = await exactOnScreen(page, cdp, 'zoomed');
         assert.ok(Math.abs(zoomed.find(row => row.id === 'card')!.dpr - ratio * 1.1) < 1e-6, 'a zoomed widget paints at its own device scale');
 

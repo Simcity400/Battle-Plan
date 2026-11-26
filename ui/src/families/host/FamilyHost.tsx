@@ -143,11 +143,18 @@ interface HostInputAt extends HostInput {
   readonly at?: { readonly x: number; readonly y: number };
 }
 
+const canvasSizes = new WeakMap<HTMLCanvasElement, { readonly width: number; readonly height: number }>();
+
 function sizeCanvas(canvas: HTMLCanvasElement, width: number, height: number) {
-  const widthPx = `${width}px`;
-  const heightPx = `${height}px`;
-  if (canvas.style.width !== widthPx) canvas.style.width = widthPx;
-  if (canvas.style.height !== heightPx) canvas.style.height = heightPx;
+  const sized = canvasSizes.get(canvas);
+  if (sized && sized.width === width && sized.height === height) return;
+  canvasSizes.set(canvas, { width, height });
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+}
+
+function showPicture(canvas: HTMLCanvasElement, picture: { readonly width: number; readonly height: number; readonly dpr: number }, dpr: number) {
+  sizeCanvas(canvas, Math.round(picture.width * picture.dpr) / dpr, Math.round(picture.height * picture.dpr) / dpr);
 }
 
 export interface FamilyChromeTargets {
@@ -313,7 +320,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
   const surfaceRef = useRef<MountedFamilyCanvas | null>(null);
-  const canvasSizedRef = useRef(false);
   const descriptionRef = useRef<HTMLDivElement>(null);
   const lastDescriptionRef = useRef<string | null>(null);
 
@@ -629,7 +635,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     requestedWindowRef.current = rowWindow;
     reportWindow();
 
-    if (!hidden && !canvasSizedRef.current) sizeCanvas(mounted.canvas, w, h);
+    if (!hidden) {
+      const shown = pipeline.view(pipe);
+      if (shown?.mode === 'picture' && shown.viewport) showPicture(mounted.canvas, shown.viewport, dpr);
+      else sizeCanvas(mounted.canvas, w, h);
+    }
     pipeline.present(pipe, curAdapter.family);
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const bound = pipeline.view(pipe)?.binding;
@@ -795,7 +805,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       mounted.extent.style.height = '100%';
     }
     surfaceRef.current = mounted;
-    canvasSizedRef.current = false;
     if (latestRef.current.hasChrome) setTargets({ body: node, bodyWrap: bodyWrapRef.current, extent: mounted.extent, mirrorHead: mirrorHeadRef.current });
 
     const auditWatch = attachAuditWatch(pipeline, pipe, {
@@ -849,10 +858,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       const activeAdapter = cur.adapter;
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
-      if (visible && shown.viewport) {
-        sizeCanvas(mounted.canvas, shown.viewport.width, shown.viewport.height);
-        canvasSizedRef.current = true;
-      }
+      if (visible && shown.viewport) showPicture(mounted.canvas, shown.viewport, viewportRef.current.dpr);
       if (lastVisibleRef.current !== visible) {
         lastVisibleRef.current = visible;
         node.toggleAttribute('data-family-visible', visible);

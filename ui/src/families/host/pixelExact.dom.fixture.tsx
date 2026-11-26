@@ -411,7 +411,7 @@ async function exactness(withCanvases: string, withoutCanvases: string): Promise
     const x0 = Math.ceil(clip.left * dpr) + 1, y0 = Math.ceil(clip.top * dpr) + 1;
     const x1 = Math.floor(clip.right * dpr) - 1, y1 = Math.floor(clip.bottom * dpr) - 1;
     const width = x1 - x0, height = y1 - y0;
-    let best: { differing: number; worst: number; shift: readonly [number, number]; samples: string[] } | null = null;
+    let best: { compared: number; differing: number; worst: number; shift: readonly [number, number]; samples: string[] } | null = null;
     if (width > 0 && height > 0) {
       for (const dy of [0, -1, 1]) for (const dx of [0, -1, 1]) {
         const left = Math.round(rect.left * dpr) + dx, top = Math.round(rect.top * dpr) + dy;
@@ -419,21 +419,22 @@ async function exactness(withCanvases: string, withoutCanvases: string): Promise
         board.putImageData(under, -x0, -y0, x0, y0, width, height);
         board.drawImage(held.bitmap, left - x0, top - y0);
         const want = board.getImageData(0, 0, width, height).data;
-        let differing = 0, worst = 0;
+        let compared = 0, differing = 0, worst = 0;
         const samples: string[] = [];
         for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
           if (rounded(x0 + x, y0 + y)) continue;
+          compared++;
           const s = ((y0 + y) * screen.width + x0 + x) * 4, w = (y * width + x) * 4;
           const d = Math.max(Math.abs(screen.data[s]! - want[w]!), Math.abs(screen.data[s + 1]! - want[w + 1]!), Math.abs(screen.data[s + 2]! - want[w + 2]!));
           if (d > 1 && samples.length < 4) samples.push(`(${x0 + x - left},${y0 + y - top}) screen ${[...screen.data.subarray(s, s + 3)].join(',')} painted ${[...want.subarray(w, w + 3)].join(',')}`);
           if (d > 1) differing++;
           if (d > worst) worst = d;
         }
-        if (!best || differing < best.differing) best = { differing, worst, shift: [dx, dy], samples };
+        if (!best || differing < best.differing) best = { compared, differing, worst, shift: [dx, dy], samples };
         if (differing === 0) break;
       }
     }
-    return { ...placed[at]!, compared: Math.max(0, width) * Math.max(0, height), differing: best?.differing ?? 0, worst: best?.worst ?? 0, shift: best?.shift ?? null, samples: best?.samples ?? [] };
+    return { ...placed[at]!, compared: best?.compared ?? 0, differing: best?.differing ?? 0, worst: best?.worst ?? 0, shift: best?.shift ?? null, samples: best?.samples ?? [] };
   }));
 }
 
