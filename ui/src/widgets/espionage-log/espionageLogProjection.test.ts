@@ -67,7 +67,6 @@ function makeIdentity(): IdentityProvider {
       return {
         kind,
         key,
-        atHour,
         holder: { status: 'absent', reason: 'not set' },
         name: { status: 'ready', value: `${kind}:${key}` },
         validInterval: [atHour, atHour],

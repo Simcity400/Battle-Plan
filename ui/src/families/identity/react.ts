@@ -3,7 +3,7 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import type { Failure } from '../../dashboard/queryError.ts';
 import type { PlaybackController } from '../../dashboard/playback';
-import type { CountryFlagChoice, CountryFlagSize } from '../../generated/dashboard';
+import type { CountryFlagSize } from '../../generated/dashboard';
 import { flagEntryToArt } from '../art/adapters.ts';
 import type { ArtResolution } from '../art/types.ts';
 import { NO_ART, PENDING_ART, unavailableArt } from '../art/types.ts';
@@ -19,6 +19,7 @@ import {
   type IdentityAsk,
   type IdentityKey,
   type IdentityResult,
+  type RecordedFlagChoice as CountryFlagChoice,
   type IdentityScope,
 } from './types.ts';
 

@@ -69,7 +69,6 @@ function makeIdentity(resolve: (kind: EntityKind, key: string, hour: number) => 
       return {
         kind,
         key,
-        atHour,
         holder: { status: 'absent', reason: 'not set' },
         name: name !== null ? { status: 'ready', value: name } : { status: 'absent', reason: `${kind} ${key} not recorded` },
         validInterval: [atHour, atHour],

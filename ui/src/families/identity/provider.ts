@@ -11,22 +11,13 @@ import type {
 import type { IdentityBroker } from './broker.ts';
 import type { IdentityIndex } from './index.ts';
 import {
-  countryKeyFromString,
-  designKey,
-  factionKey,
   flagChoiceKey,
   identityKeyString,
-  leaderKey,
-  provinceKey,
-  regionKey,
-  stateKey,
-  type CountryIdentityResult,
-  type EntityIdentityResult,
-  type FactionIdentityResult,
+  parseEntityKey,
   type HourInterval,
+  type IdentityResult,
   type IdentityAsk,
   type IdentityField,
-  type IdentityKey,
   type IdentityScope,
 } from './types.ts';
 
@@ -51,33 +42,18 @@ function toFieldStatus<T, U = T>(field: IdentityField<T>, map?: (value: T) => U)
   }
 }
 
-export function parseEntityKey(kind: EntityKind, key: string): IdentityKey {
-  switch (kind) {
-    case 'country':
-      return countryKeyFromString(key);
-    case 'faction':
-      return factionKey(key);
-    case 'leader': {
-      const sep = key.indexOf(':');
-      return sep >= 0 ? leaderKey(key.slice(0, sep), key.slice(sep + 1)) : leaderKey('', key);
-    }
-    case 'design': {
-      const sep = key.indexOf(':');
-      return sep >= 0 ? designKey(key.slice(0, sep), key.slice(sep + 1)) : designKey('', key);
-    }
-    case 'state': {
-      const num = Number(key);
-      return stateKey(Number.isSafeInteger(num) ? num : key);
-    }
-    case 'province': {
-      const num = Number(key);
-      return provinceKey(Number.isSafeInteger(num) ? num : key);
-    }
-    case 'region': {
-      const num = Number(key);
-      return regionKey(Number.isSafeInteger(num) ? num : key);
-    }
+export { parseEntityKey } from './types.ts';
+
+const presented = new WeakMap<IdentityResult, PlanIdentityResult>();
+const colours = new WeakMap<IdentityField<readonly [number, number, number]>, FieldStatus<string>>();
+
+function colourStatus(field: IdentityField<readonly [number, number, number]>): FieldStatus<string> {
+  let held = colours.get(field);
+  if (!held) {
+    held = toFieldStatus(field, authoredHex);
+    colours.set(field, held);
   }
+  return held;
 }
 
 export function identityResultFromIndex(
@@ -86,167 +62,49 @@ export function identityResultFromIndex(
   key: string,
   atHour: DisplayedHour,
 ): PlanIdentityResult {
-  const parsed = parseEntityKey(kind, key);
-  const raw = index.resolve(parsed, atHour);
-
-  if (parsed.kind === 'country') {
-    const res = raw as CountryIdentityResult;
-    if (res.kind === 'pending') {
-      return {
-        kind,
-        key,
-        atHour,
-        holder: { status: 'pending' },
-        tag: { status: 'pending' },
-        name: { status: 'pending' },
-        colour: { status: 'pending' },
-        flagChoice: { status: 'pending' },
-        validInterval: [atHour, atHour],
-        nextChangeAt: Infinity,
-      };
-    }
-    if (res.kind === 'absent') {
-      const absent: FieldStatus<string> = { status: 'absent', reason: res.reason };
-      return {
-        kind,
-        key,
-        atHour,
-        holder: absent,
-        tag: absent,
-        name: absent,
-        colour: absent,
-        flagChoice: absent,
-        validInterval: res.valid,
-        nextChangeAt: res.nextBoundary,
-      };
-    }
-    if (res.kind === 'failed') {
-      const failed: FieldStatus<string> = failedFieldStatus(res.failure);
-      return {
-        kind,
-        key,
-        atHour,
-        holder: failed,
-        tag: failed,
-        name: failed,
-        colour: failed,
-        flagChoice: failed,
-        validInterval: [atHour, atHour],
-        nextChangeAt: Infinity,
-      };
-    }
-    const holder = toFieldStatus(res.holder, held => held.tag);
-    return {
-      kind,
-      key,
-      atHour,
-      holder,
-      tag: toFieldStatus(res.tag),
-      name: toFieldStatus(res.name),
-      colour: toFieldStatus(res.color, authoredHex),
-      flagChoice: toFieldStatus(res.flagChoice, flagChoiceKey),
-      validInterval: res.valid,
-      nextChangeAt: res.nextBoundary,
-    };
+  const raw = index.resolveText(kind, key, atHour);
+  const prior = presented.get(raw);
+  const point = raw.kind === 'pending' || raw.kind === 'failed';
+  if (prior && prior.key === key && prior.kind === kind && (!point || Object.is(prior.validInterval[0], atHour))) {
+    return prior;
   }
 
-  if (parsed.kind === 'faction') {
-    const res = raw as FactionIdentityResult;
-    if (res.kind === 'pending') {
-      return {
-        kind,
-        key,
-        atHour,
-        holder: { status: 'pending' },
-        name: { status: 'pending' },
-        colour: { status: 'pending' },
-        validInterval: [atHour, atHour],
-        nextChangeAt: Infinity,
-      };
-    }
-    if (res.kind === 'absent') {
-      const absent: FieldStatus<string> = { status: 'absent', reason: res.reason };
-      return {
-        kind,
-        key,
-        atHour,
-        holder: absent,
-        name: absent,
-        colour: absent,
-        validInterval: res.valid,
-        nextChangeAt: res.nextBoundary,
-      };
-    }
-    if (res.kind === 'failed') {
-      const failed: FieldStatus<string> = failedFieldStatus(res.failure);
-      return {
-        kind,
-        key,
-        atHour,
-        holder: failed,
-        name: failed,
-        colour: failed,
-        validInterval: [atHour, atHour],
-        nextChangeAt: Infinity,
-      };
-    }
-    return {
-      kind,
-      key,
-      atHour,
-      holder: toFieldStatus(res.leader),
-      name: toFieldStatus(res.name),
-      colour: toFieldStatus(res.color, authoredHex),
-      validInterval: res.valid,
-      nextChangeAt: res.nextBoundary,
+  const validInterval: HourInterval = point ? [atHour, atHour] : raw.valid;
+  const nextChangeAt = point ? Infinity : raw.nextBoundary;
+  let result: PlanIdentityResult;
+  if (raw.kind !== 'known') {
+    const field: FieldStatus<string> = raw.kind === 'absent' ? { status: 'absent', reason: raw.reason }
+      : raw.kind === 'failed' ? failedFieldStatus(raw.failure) : { status: 'pending' };
+    result = {
+      kind, key, holder: field, name: field, validInterval, nextChangeAt,
+      ...(kind === 'country' ? { tag: field, flagChoice: field } : {}),
+      ...(kind === 'country' || kind === 'faction' ? { colour: field } : {}),
+    };
+  } else if ('tag' in raw) {
+    result = {
+      kind, key, validInterval, nextChangeAt,
+      holder: toFieldStatus(raw.holder, held => held.tag),
+      tag: toFieldStatus(raw.tag),
+      name: toFieldStatus(raw.name),
+      colour: colourStatus(raw.color),
+      flagChoice: toFieldStatus(raw.flagChoice, flagChoiceKey),
+    };
+  } else if ('leader' in raw) {
+    result = {
+      kind, key, validInterval, nextChangeAt,
+      holder: toFieldStatus(raw.leader),
+      name: toFieldStatus(raw.name),
+      colour: colourStatus(raw.color),
+    };
+  } else {
+    result = {
+      kind, key, validInterval, nextChangeAt,
+      holder: toFieldStatus(raw.holder, () => key),
+      name: toFieldStatus(raw.name),
     };
   }
-
-  const res = raw as EntityIdentityResult;
-  if (res.kind === 'pending') {
-    return {
-      kind,
-      key,
-      atHour,
-      holder: { status: 'pending' },
-      name: { status: 'pending' },
-      validInterval: [atHour, atHour],
-      nextChangeAt: Infinity,
-    };
-  }
-  if (res.kind === 'absent') {
-    const absent: FieldStatus<string> = { status: 'absent', reason: res.reason };
-    return {
-      kind,
-      key,
-      atHour,
-      holder: absent,
-      name: absent,
-      validInterval: res.valid,
-      nextChangeAt: res.nextBoundary,
-    };
-  }
-  if (res.kind === 'failed') {
-    const failed: FieldStatus<string> = failedFieldStatus(res.failure);
-    return {
-      kind,
-      key,
-      atHour,
-      holder: failed,
-      name: failed,
-      validInterval: [atHour, atHour],
-      nextChangeAt: Infinity,
-    };
-  }
-  return {
-    kind,
-    key,
-    atHour,
-    holder: toFieldStatus(res.holder, () => key),
-    name: toFieldStatus(res.name),
-    validInterval: res.valid,
-    nextChangeAt: res.nextBoundary,
-  };
+  presented.set(raw, result);
+  return result;
 }
 
 function hasPendingField(result: PlanIdentityResult): boolean {

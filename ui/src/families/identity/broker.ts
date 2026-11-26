@@ -9,7 +9,6 @@ import type { GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import type {
   CountryFactsReply,
-  CountryFlagChoice,
   CountryFlagReply,
   CountryFlagSize,
   CountryGroupReply,
@@ -34,6 +33,7 @@ import {
   type IdentityAsk,
   type IdentityKey,
   type IdentityResult,
+  type RecordedFlagChoice as CountryFlagChoice,
   type IdentityScope,
   type IdentitySnapshot,
 } from './types.ts';
@@ -292,7 +292,6 @@ interface ScopeState {
 
   nextTaskId: number;
   version: number;
-  snapshotCache: { readonly version: number; readonly value: IdentitySnapshot } | null;
 }
 
 export interface BrokerClock {
@@ -355,7 +354,6 @@ export class IdentityBroker {
         entityRetryTimer: null,
         nextTaskId: 1,
         version: 0,
-        snapshotCache: null,
       };
       this.scopes.set(key, state);
     } else {
@@ -374,13 +372,7 @@ export class IdentityBroker {
   }
 
   snapshotOf(scope: IdentityScope, recording?: DashboardSource, branchBounds?: HourInterval): IdentitySnapshot {
-    const state = this.getState(scope, recording, branchBounds);
-    if (state.snapshotCache && state.snapshotCache.version === state.version) {
-      return state.snapshotCache.value;
-    }
-    const value = state.index.exportSnapshot();
-    state.snapshotCache = { version: state.version, value };
-    return value;
+    return this.getState(scope, recording, branchBounds).index.exportSnapshot();
   }
 
   resolve<K extends IdentityKey>(scope: IdentityScope, key: K, hour: number, recording?: DashboardSource, branchBounds?: HourInterval): IdentityResult<K> {
@@ -521,7 +513,6 @@ export class IdentityBroker {
 
   private notify(state: ScopeState): void {
     state.version++;
-    state.snapshotCache = null;
     for (const listener of [...state.watchers]) listener();
   }
 

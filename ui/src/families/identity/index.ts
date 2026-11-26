@@ -1,7 +1,6 @@
 import { classifyFailure, RefusedError, type Failure } from '../../dashboard/queryError.ts';
 import type {
   CountryFactsReply,
-  CountryFlagChoice,
   CountryFlagSize,
   CountryGroupReply,
   CountryIdentitiesReply,
@@ -19,8 +18,10 @@ import {
   countryTagKey,
   flagChoiceKey,
   identityKeyString,
+  parseEntityKey,
   styleEntryFromReply,
   type CountryHolder,
+  type RecordedValue,
   type CountryIdentityKey,
   type CountryIdentityResult,
   type DrawnFlagEntry,
@@ -33,6 +34,7 @@ import {
   type IdentityField,
   type IdentityKey,
   type IdentityResult,
+  type RecordedFlagChoice,
   type IdentityScope,
   type IdentitySnapshot,
   type SnapshotFailure,
@@ -40,6 +42,45 @@ import {
   type SpanFailure,
   type StyleIntervalEntry,
 } from './types.ts';
+
+type Lookup = {
+  readonly key: IdentityKey;
+  readonly id: string;
+  readonly edges: readonly number[];
+  readonly answers: Map<number, IdentityResult>;
+  spelling?: string;
+};
+
+type LookupCache = {
+  readonly byId: Map<string, Lookup>;
+  readonly byKey: WeakMap<IdentityKey, Lookup>;
+  readonly byText: Map<string, Lookup>;
+  readonly coverage: readonly number[];
+  unrecorded?: Lookup;
+};
+
+function spanEdges(edges: Set<number>, spans?: readonly HourSpan[] | null): void {
+  if (!spans) return;
+  for (const span of spans) {
+    edges.add(span.firstHour);
+    edges.add(span.lastHour + 1);
+  }
+}
+
+function sortedEdges(edges: Set<number>): number[] {
+  return [...edges].sort((a, b) => a - b);
+}
+
+function segmentAt(edges: readonly number[], hour: number): number {
+  let lo = 0;
+  let hi = edges.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (edges[mid]! <= hour) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo ? edges[lo - 1]! : -Infinity;
+}
 
 type FactRun = readonly [number, number, number, number, number];
 type EntityFailure = { readonly from: number; readonly to: number; readonly failure: Failure };
@@ -77,7 +118,7 @@ const NO_FLAG = 'flag unavailable';
 const FACTIONS_NOT_RECORDED = 'Factions were not recorded at this hour';
 const FACTION_ABSENT = 'Faction does not exist at this hour';
 
-export function drawnFlagKey(size: CountryFlagSize, choice: CountryFlagChoice): string {
+export function drawnFlagKey(size: CountryFlagSize, choice: RecordedFlagChoice): string {
   return flagArtKey(size, flagChoiceKey(choice));
 }
 
@@ -89,10 +130,12 @@ function keptFailure(sent: SnapshotFailure): Failure {
   return sent.refused ? new RefusedError(sent.message) : new Error(sent.message);
 }
 
-function sentFailures(failures: ReadonlyMap<string, Failure>): Record<string, SnapshotFailure> | undefined {
+function sentFailures(failures: ReadonlyMap<string, ReadonlyMap<number, Failure>>): Record<string, SnapshotFailure> | undefined {
   if (!failures.size) return undefined;
   const out: Record<string, SnapshotFailure> = {};
-  for (const [key, failure] of failures) out[key] = sentFailure(failure);
+  for (const [tag, hours] of failures) {
+    for (const [hour, failure] of hours) out[`${hour}\u0000${tag}`] = sentFailure(failure);
+  }
   return out;
 }
 
@@ -196,13 +239,13 @@ export const BRANCH_READS: readonly BranchRead[] = ['facts', 'identities', 'grou
 export class IdentityIndex {
   readonly scope: IdentityScope;
   private branchBounds: HourInterval;
-  private facts?: CountryFactsReply;
+  private facts?: RecordedValue<CountryFactsReply>;
   private factsFinal = false;
   private factsByTag = new Map<string, readonly FactRun[]>();
   private factsKnown: readonly (readonly [number, number])[] = [];
   private factsFailure?: Failure;
 
-  private identities?: CountryIdentitiesReply;
+  private identities?: RecordedValue<CountryIdentitiesReply>;
   private identitiesKnown: readonly HourSpan[] | null = null;
   private identitiesUnknown: readonly HourSpan[] = [];
   private slotRuns = new Map<number, readonly HolderRun[]>();
@@ -211,20 +254,23 @@ export class IdentityIndex {
   private identitiesFailure?: Failure;
   private slotChanges = 0;
 
-  private groups?: CountryGroupReply;
-  private factionsById = new Map<string, FactionGroup>();
+  private groups?: RecordedValue<CountryGroupReply>;
+  private factionsById = new Map<string, RecordedValue<FactionGroup>>();
   private factionsUnobserved: readonly HourSpan[] = [];
   private factionIncomplete = new Map<string, readonly HourSpan[]>();
   private groupsFailure?: Failure;
 
   private styleRuns = new Map<string, StyleIntervalEntry[]>();
-  private styleFailures = new Map<string, Failure>();
+  private styleFailures = new Map<string, Map<number, Failure>>();
   private entityRuns = new Map<string, EntityRunEntry[]>();
   private entityFailures = new Map<string, readonly EntityFailure[]>();
   private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
   private resolveChanges = 0;
   private countryChanges = 0;
+  private snapshot?: IdentitySnapshot;
+  private readonly caches = new Map<IdentityKey['kind'], LookupCache>();
+  private invalidHours?: Map<number, IdentityResult>;
 
   constructor(scope: IdentityScope, branchBounds?: HourInterval) {
     this.scope = scope;
@@ -258,7 +304,10 @@ export class IdentityIndex {
     if (failures?.facts) index.factsFailure = keptFailure(failures.facts);
     if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
     if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
-    for (const [key, sent] of Object.entries(failures?.styles ?? {})) index.styleFailures.set(key, keptFailure(sent));
+    for (const [id, sent] of Object.entries(failures?.styles ?? {})) {
+      const sep = id.indexOf('\u0000');
+      index.keepStyleFailure(id.slice(sep + 1), Number(id.slice(0, sep)), keptFailure(sent));
+    }
     for (const [key, sent] of Object.entries(failures?.entities ?? {})) {
       index.entityFailures.set(key, sent.map(span => ({ from: span.from, to: span.to, failure: keptFailure(span) })));
     }
@@ -266,6 +315,7 @@ export class IdentityIndex {
   }
 
   exportSnapshot(): IdentitySnapshot {
+    if (this.snapshot) return this.snapshot;
     const styles: Record<string, readonly StyleIntervalEntry[]> = {};
     for (const [tag, entries] of this.styleRuns) styles[tag] = entries;
     const entities: Record<string, readonly EntityRunEntry[]> = {};
@@ -286,7 +336,7 @@ export class IdentityIndex {
       ...(styleFailures ? { styles: styleFailures } : {}),
       ...(entityFailures ? { entities: entityFailures } : {}),
     };
-    return {
+    return this.snapshot = {
       scope: this.scope,
       ...(Number.isFinite(this.branchBounds[0]) && Number.isFinite(this.branchBounds[1]) ? { branchBounds: this.branchBounds } : {}),
       ...(this.facts ? { facts: this.facts, factsFinal: this.factsFinal } : {}),
@@ -303,8 +353,15 @@ export class IdentityIndex {
   setBranchBounds(bounds: HourInterval): void {
     if (this.branchBounds[0] === bounds[0] && this.branchBounds[1] === bounds[1]) return;
     this.branchBounds = bounds;
-    this.resolveChanges++;
+    this.caches.clear();
+    this.changed();
     this.countryChanges++;
+  }
+
+  private changed(...kinds: IdentityKey['kind'][]): void {
+    this.resolveChanges++;
+    this.snapshot = undefined;
+    for (const kind of kinds) this.caches.delete(kind);
   }
 
   resolveRevision(): number {
@@ -319,13 +376,13 @@ export class IdentityIndex {
     return this.branchBounds;
   }
 
-  setFacts(reply: CountryFactsReply, final = true): void {
+  setFacts(reply: RecordedValue<CountryFactsReply>, final = true): void {
     this.facts = reply;
     this.factsFinal = final;
     this.factsFailure = undefined;
     this.factsKnown = reply.known.map(span => [span[0], span[1]] as const);
     this.factsByTag = new Map(reply.countries.map(country => [country.tag, country.runs as readonly FactRun[]]));
-    this.resolveChanges++;
+    this.changed('country', 'faction');
     this.countryChanges++;
   }
 
@@ -342,7 +399,7 @@ export class IdentityIndex {
         this.groupsFailure = failure;
         break;
     }
-    this.resolveChanges++;
+    this.changed('country', 'faction');
     this.countryChanges++;
   }
 
@@ -405,7 +462,7 @@ export class IdentityIndex {
     return this.facts !== undefined;
   }
 
-  setIdentities(reply: CountryIdentitiesReply): void {
+  setIdentities(reply: RecordedValue<CountryIdentitiesReply>): void {
     this.identities = reply;
     this.identitiesFailure = undefined;
     this.identitiesKnown = reply.known?.length ? sortedHourSpans(reply.known) : null;
@@ -432,17 +489,17 @@ export class IdentityIndex {
       this.slotRuns.set(slot, resolveSlotHolderRuns(list));
     }
     this.slotChanges++;
-    this.resolveChanges++;
+    this.changed('country', 'faction');
     this.countryChanges++;
   }
 
-  setGroups(reply: CountryGroupReply): void {
+  setGroups(reply: RecordedValue<CountryGroupReply>): void {
     this.groups = reply;
     this.groupsFailure = undefined;
     this.factionsById = new Map(reply.factions.map(faction => [faction.id, faction]));
     this.factionsUnobserved = sortedHourSpans(reply.unobserved.factions);
     this.factionIncomplete = new Map(reply.factions.map(faction => [faction.id, sortedHourSpans(faction.incomplete)]));
-    this.resolveChanges++;
+    this.changed('faction');
   }
 
   ingestStylesReply(reply: CountryStyleReply): void {
@@ -455,20 +512,25 @@ export class IdentityIndex {
     const entry = styleEntryFromReply(style, Math.floor(hour), warnings);
     const existing = this.styleRuns.get(style.tag) ?? [];
     this.styleRuns.set(style.tag, mergeStyleEntry(existing, entry));
-    this.styleFailures.delete(`${Math.floor(hour)}\u0000${style.tag}`);
-    this.resolveChanges++;
-    this.countryChanges++;
+    this.clearStyleFailure(style.tag, hour);
+  }
+
+  private keepStyleFailure(tag: string, hour: number, failure: Failure): void {
+    let hours = this.styleFailures.get(tag);
+    if (!hours) this.styleFailures.set(tag, hours = new Map());
+    hours.set(hour, failure);
   }
 
   setStyleFailure(tag: string, hour: number, failure: Failure): void {
-    this.styleFailures.set(`${Math.floor(hour)}\u0000${tag}`, failure);
-    this.resolveChanges++;
+    this.keepStyleFailure(tag, Math.floor(hour), failure);
+    this.changed('country', 'faction');
     this.countryChanges++;
   }
 
   clearStyleFailure(tag: string, hour: number): void {
-    this.styleFailures.delete(`${Math.floor(hour)}\u0000${tag}`);
-    this.resolveChanges++;
+    const hours = this.styleFailures.get(tag);
+    if (hours?.delete(Math.floor(hour)) && !hours.size) this.styleFailures.delete(tag);
+    this.changed('country', 'faction');
     this.countryChanges++;
   }
 
@@ -476,7 +538,7 @@ export class IdentityIndex {
     const id = identityKeyString(key);
     this.entityRuns.set(id, [...runs].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
     this.entityFailures.delete(id);
-    this.resolveChanges++;
+    this.changed(key.kind);
   }
 
   replaceEntityRuns(key: EntityIdentityKey, from: number, to: number, runs: readonly EntityRunEntry[]): void {
@@ -485,12 +547,12 @@ export class IdentityIndex {
     const failures = withoutSpan(this.entityFailures.get(id), from, to);
     if (failures.length) this.entityFailures.set(id, failures);
     else this.entityFailures.delete(id);
-    this.resolveChanges++;
+    this.changed(key.kind);
   }
 
   replaceEntityUnknown(kinds: readonly EntityIdentityKey['kind'][], from: number, to: number, spans: readonly RecordingGap[]): void {
     for (const kind of kinds) this.entityUnknown.set(kind, spliceSpan(this.entityUnknown.get(kind) ?? [], from, to, spans));
-    this.resolveChanges++;
+    this.changed(...kinds);
   }
 
   dropEntityRuns(
@@ -501,6 +563,7 @@ export class IdentityIndex {
     retained: readonly (readonly [number, number])[],
   ): void {
     for (const key of keys) {
+      this.caches.delete(key.kind);
       const id = identityKeyString(key);
       const held = this.entityRuns.get(id);
       if (held) {
@@ -524,25 +587,26 @@ export class IdentityIndex {
         else this.entityUnknown.delete(kind);
       }
     }
-    this.resolveChanges++;
+    this.changed(...kinds);
   }
 
   setEntityFailure(key: EntityIdentityKey, from: number, to: number, failure: Failure): void {
     const id = identityKeyString(key);
     this.entityFailures.set(id, [...withoutSpan(this.entityFailures.get(id), from, to), { from, to, failure }]);
-    this.resolveChanges++;
+    this.changed(key.kind);
   }
 
   clearEntityFailures(): void {
     this.entityFailures.clear();
-    this.resolveChanges++;
+    this.changed('state', 'province', 'leader', 'region', 'design');
   }
 
-  setDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice, entry: DrawnFlagEntry): void {
+  setDrawnFlag(size: CountryFlagSize, choice: RecordedFlagChoice, entry: DrawnFlagEntry): void {
     this.drawnFlags.set(drawnFlagKey(size, choice), entry);
+    this.snapshot = undefined;
   }
 
-  getDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): DrawnFlagEntry | undefined {
+  getDrawnFlag(size: CountryFlagSize, choice: RecordedFlagChoice): DrawnFlagEntry | undefined {
     return this.drawnFlags.get(drawnFlagKey(size, choice));
   }
 
@@ -550,8 +614,8 @@ export class IdentityIndex {
     return this.drawnFlags.get(flagArtKey(size, choiceKey));
   }
 
-  forgetDrawnFlag(size: CountryFlagSize, choice: CountryFlagChoice): void {
-    this.drawnFlags.delete(drawnFlagKey(size, choice));
+  forgetDrawnFlag(size: CountryFlagSize, choice: RecordedFlagChoice): void {
+    if (this.drawnFlags.delete(drawnFlagKey(size, choice))) this.snapshot = undefined;
   }
 
   slotHolderAt(slot: number, hour: number): { readonly tag: string; readonly countryId: number; readonly valid: HourInterval } | null {
@@ -571,14 +635,146 @@ export class IdentityIndex {
     return { tag: run.tag, countryId: run.countryId ?? 0, valid };
   }
 
-  resolve<K extends IdentityKey>(key: K, hour: number): IdentityResult<K> {
-    const at = Math.floor(hour);
-    if (!Number.isFinite(at)) {
-      return { kind: 'absent', valid: [at, at], nextBoundary: Infinity, reason: 'Invalid hour' } as unknown as IdentityResult<K>;
+  private cacheFor(kind: IdentityKey['kind']): LookupCache {
+    let held = this.caches.get(kind);
+    if (held) return held;
+    const edges = new Set<number>();
+    if (kind === 'country' || kind === 'faction') {
+      for (const [from, to] of this.factsKnown) {
+        edges.add(from);
+        edges.add(to + 1);
+      }
+      spanEdges(edges, this.identitiesKnown);
+      spanEdges(edges, this.identitiesUnknown);
+      if (kind === 'faction') spanEdges(edges, this.factionsUnobserved);
+    } else {
+      spanEdges(edges, this.entityUnknown.get(kind));
     }
-    if (key.kind === 'country') return this.resolveCountry(key, at) as IdentityResult<K>;
-    if (key.kind === 'faction') return this.resolveFaction(key, at) as IdentityResult<K>;
-    return this.resolveEntity(key, at) as IdentityResult<K>;
+    held = { byId: new Map(), byKey: new WeakMap(), byText: new Map(), coverage: sortedEdges(edges) };
+    this.caches.set(kind, held);
+    return held;
+  }
+
+  private tagEdges(tag: string, edges: Set<number>): boolean {
+    const facts = this.factsByTag.get(tag);
+    const identities = this.tagIdentities.get(tag);
+    const styles = this.styleRuns.get(tag);
+    if (facts) for (const run of facts) edges.add(run[0]);
+    spanEdges(edges, identities);
+    spanEdges(edges, this.tagUnresolved.get(tag));
+    spanEdges(edges, styles);
+    const failures = this.styleFailures.get(tag);
+    if (failures) for (const at of failures.keys()) {
+      edges.add(at);
+      edges.add(at + 1);
+    }
+    return !!(facts || identities || styles || failures);
+  }
+
+  private keyEdges(key: IdentityKey, edges: Set<number>): boolean {
+    if (key.kind === 'country') {
+      if (key.by === 'tag') return this.tagEdges(key.tag, edges);
+      const runs = this.slotRuns.get(key.slot);
+      if (!runs) return false;
+      const tags = new Set<string>();
+      for (const run of runs) {
+        if (key.by === 'holder' && key.countryId !== run.countryId) continue;
+        edges.add(run.firstHour);
+        edges.add(run.lastHour + 1);
+        tags.add(run.tag);
+      }
+      for (const tag of tags) this.tagEdges(tag, edges);
+      return tags.size > 0;
+    }
+    if (key.kind === 'faction') {
+      const group = this.factionsById.get(key.id);
+      if (!group) return false;
+      edges.add(group.firstHour);
+      edges.add(group.lastHour + 1);
+      spanEdges(edges, group.names);
+      spanEdges(edges, group.leaders);
+      spanEdges(edges, group.incomplete);
+      for (const tag of new Set(group.leaders.map(run => run.tag))) this.tagEdges(tag, edges);
+      return true;
+    }
+    const id = identityKeyString(key);
+    const runs = this.entityRuns.get(id);
+    spanEdges(edges, runs);
+    const failures = this.entityFailures.get(id);
+    if (failures) for (const span of failures) {
+      edges.add(span.from);
+      edges.add(span.to + 1);
+    }
+    return !!(runs || failures);
+  }
+
+  private lookup(cache: LookupCache, key: IdentityKey): Lookup {
+    const typed = cache.byKey.get(key);
+    if (typed) return typed;
+    if (cache.unrecorded?.key === key) return cache.unrecorded;
+    const id = identityKeyString(key);
+    const held = cache.byId.get(id);
+    if (held) {
+      cache.byKey.set(key, held);
+      return held;
+    }
+    if (cache.unrecorded?.id === id) return cache.unrecorded;
+    const edges = new Set<number>();
+    const recorded = this.keyEdges(key, edges);
+    const lookup: Lookup = { key, id, edges: sortedEdges(edges), answers: new Map() };
+    if (recorded) {
+      cache.byId.set(id, lookup);
+      cache.byKey.set(key, lookup);
+    } else cache.unrecorded = lookup;
+    return lookup;
+  }
+
+  resolveText(kind: IdentityKey['kind'], key: string, hour: number): IdentityResult {
+    if (!Number.isFinite(hour)) return this.invalidHour(hour);
+    const cache = this.cacheFor(kind);
+    let lookup = cache.byText.get(key);
+    if (!lookup) {
+      if (cache.unrecorded?.spelling === key) {
+        lookup = cache.unrecorded;
+      } else {
+        lookup = this.lookup(cache, parseEntityKey(kind, key));
+        if (lookup !== cache.unrecorded) {
+          if (lookup.spelling !== undefined) cache.byText.delete(lookup.spelling);
+          cache.byText.set(key, lookup);
+        }
+        lookup.spelling = key;
+      }
+    }
+    return this.answer(cache, lookup, hour);
+  }
+
+  resolve<K extends IdentityKey>(key: K, hour: number): IdentityResult<K> {
+    if (!Number.isFinite(hour)) return this.invalidHour(hour) as IdentityResult<K>;
+    const cache = this.cacheFor(key.kind);
+    return this.answer(cache, this.lookup(cache, key), hour) as IdentityResult<K>;
+  }
+
+  private invalidHour(hour: number): IdentityResult {
+    const invalid = this.invalidHours ??= new Map();
+    let result = invalid.get(hour);
+    if (!result) {
+      result = { kind: 'absent', valid: [hour, hour], nextBoundary: Infinity, reason: 'Invalid hour' };
+      invalid.set(hour, result);
+    }
+    return result;
+  }
+
+  private answer(cache: LookupCache, lookup: Lookup, hour: number): IdentityResult {
+    const at = Math.floor(hour);
+    const key = lookup.key;
+    const segment = Math.max(segmentAt(lookup.edges, at), segmentAt(cache.coverage, at));
+    const cached = lookup.answers.get(segment);
+    if (cached) return cached;
+    const result = key.kind === 'country' ? this.resolveCountry(key, at)
+      : key.kind === 'faction' ? this.resolveFaction(key, at)
+      : this.resolveEntity(key, at);
+    lookup.answers.set(segment, result);
+    return result;
   }
 
   nextBoundary(keys: Iterable<IdentityKey>, hour: number): number {
@@ -751,7 +947,7 @@ export class IdentityIndex {
         const color: IdentityField<readonly [number, number, number]> = run[2] >= 0
           ? { kind: 'known', value: unpackRgb(run[2]) }
           : { kind: 'missing', reason: NO_COLOUR };
-        const flagChoice: IdentityField<CountryFlagChoice> = run[4] >= 0
+        const flagChoice: IdentityField<RecordedFlagChoice> = run[4] >= 0
           ? { kind: 'known', value: this.facts.flags[run[4]]! }
           : { kind: 'missing', reason: reason ?? NO_FLAG };
         const warnings = reason === null ? this.facts.warnings : [...this.facts.warnings, `${tag}: ${reason}`];
@@ -807,7 +1003,7 @@ export class IdentityIndex {
       const color: IdentityField<readonly [number, number, number]> = style.color !== null
         ? { kind: 'known', value: style.color }
         : { kind: 'missing', reason: style.reason ?? NO_COLOUR };
-      const flagChoice: IdentityField<CountryFlagChoice> = style.flagChoice === undefined
+      const flagChoice: IdentityField<RecordedFlagChoice> = style.flagChoice === undefined
         ? { kind: 'pending' }
         : style.flagChoice !== null
           ? { kind: 'known', value: style.flagChoice }
@@ -825,7 +1021,7 @@ export class IdentityIndex {
       };
     }
 
-    const styleFailure = this.styleFailures.get(`${at}\u0000${tag}`);
+    const styleFailure = this.styleFailures.get(tag)?.get(at);
     if (styleFailure) return { kind: 'failed', failure: styleFailure };
     if (this.factsFailure) return { kind: 'failed', failure: this.factsFailure };
     return { kind: 'pending' };
@@ -892,7 +1088,7 @@ export class IdentityIndex {
     if (leaderRun && leaderRun.firstHour <= at && at <= leaderRun.lastHour) {
       valid = intersectIntervals(valid, [leaderRun.firstHour, leaderRun.lastHour]);
       leader = { kind: 'known', value: leaderRun.tag };
-      const leaderCountry = this.resolveCountry(countryTagKey(leaderRun.tag), at);
+      const leaderCountry = this.resolve(countryTagKey(leaderRun.tag), at);
       if (leaderCountry.kind === 'known') {
         valid = intersectIntervals(valid, leaderCountry.valid);
         color = leaderCountry.color;
