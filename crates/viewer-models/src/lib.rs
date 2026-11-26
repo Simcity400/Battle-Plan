@@ -228,30 +228,59 @@ pub struct ModelLibrary {
     asset_namespace: Option<Arc<[identity::ContentLayer]>>,
 }
 
-pub struct ModelTexture {
+#[derive(Clone)]
+pub struct ModelTexture(Arc<TextureSource>);
+
+struct TextureSource {
     path: Option<String>,
-    layers: Option<Arc<ResolvedLayers>>,
+    layers: std::sync::OnceLock<Arc<ResolvedLayers>>,
     held: std::sync::Mutex<Option<dds::Texture>>,
 }
 
 impl ModelTexture {
     pub fn held(texture: dds::Texture) -> Self {
-        Self {
-            path: None,
-            layers: None,
-            held: std::sync::Mutex::new(Some(texture)),
-        }
+        Self::with(None, None, texture)
     }
 
     fn read(path: String, texture: dds::Texture) -> Self {
-        Self {
-            path: Some(path),
-            ..Self::held(texture)
+        Self::with(Some(path), None, texture)
+    }
+
+    fn with(path: Option<String>, layers: Option<Arc<ResolvedLayers>>, texture: dds::Texture) -> Self {
+        let source = TextureSource {
+            path,
+            layers: std::sync::OnceLock::new(),
+            held: std::sync::Mutex::new(Some(texture)),
+        };
+        if let Some(layers) = layers {
+            let _ = source.layers.set(layers);
         }
+        Self(Arc::new(source))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn readable(path: String, layers: Arc<ResolvedLayers>, texture: dds::Texture) -> Self {
+        Self::with(Some(path), Some(layers), texture)
     }
 
     pub fn source(&self) -> Option<dds::Texture> {
-        self.held.lock().unwrap_or_else(|error| error.into_inner()).clone()
+        self.0.held.lock().unwrap_or_else(|error| error.into_inner()).clone()
+    }
+
+    fn read_again(&self) -> bool {
+        self.0.path.is_some() && self.0.layers.get().is_some()
+    }
+
+    fn adopt_layers(&self, layers: Option<Arc<ResolvedLayers>>) {
+        if let Some(layers) = layers {
+            let _ = self.0.layers.set(layers);
+        }
+    }
+
+    fn release_source(&self) {
+        if self.read_again() {
+            *self.0.held.lock().unwrap_or_else(|error| error.into_inner()) = None;
+        }
     }
 
     fn upload(
@@ -262,8 +291,8 @@ impl ModelTexture {
         space: ColorSpace,
         decode: Decode,
     ) -> io::Result<Bound> {
-        let mut held = self.held.lock().unwrap_or_else(|error| error.into_inner());
-        let bound = match (held.as_ref(), &self.path, &self.layers) {
+        let mut held = self.0.held.lock().unwrap_or_else(|error| error.into_inner());
+        let bound = match (held.as_ref(), &self.0.path, self.0.layers.get()) {
             (Some(texture), ..) => upload(device, queue, label, texture, space)?,
             (None, Some(path), Some(layers)) => {
                 let texture = load_file(path, &|path| layers.read_uncovered_path(path), decode)
@@ -272,7 +301,7 @@ impl ModelTexture {
             }
             (None, ..) => return Err(invalid(format!("{label} has no source left to upload"))),
         };
-        if self.path.is_some() && self.layers.is_some() {
+        if self.read_again() {
             *held = None;
         }
         Ok(bound)
@@ -280,20 +309,9 @@ impl ModelTexture {
 }
 
 #[cfg(test)]
-impl Clone for ModelTexture {
-    fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            layers: self.layers.clone(),
-            held: std::sync::Mutex::new(self.source()),
-        }
-    }
-}
-
-#[cfg(test)]
 impl PartialEq for ModelTexture {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path && self.source() == other.source()
+        self.0.path == other.0.path && self.source() == other.source()
     }
 }
 
@@ -307,7 +325,7 @@ impl PartialEq<dds::Texture> for ModelTexture {
 impl std::fmt::Debug for ModelTexture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModelTexture")
-            .field("path", &self.path)
+            .field("path", &self.0.path)
             .field("held", &self.source().map(|texture| (texture.width, texture.height, texture.format)))
             .finish()
     }
@@ -315,6 +333,45 @@ impl std::fmt::Debug for ModelTexture {
 
 #[derive(Default)]
 struct Uploads(std::sync::Mutex<Vec<(wgpu::Device, std::sync::Weak<DeviceTextures>)>>);
+
+impl Uploads {
+    fn on(&self, device: &wgpu::Device) -> Arc<DeviceTextures> {
+        let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        entries.retain(|(_, textures)| textures.strong_count() != 0);
+        if let Some(shared) = entries
+            .iter()
+            .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
+        {
+            return shared;
+        }
+        let shared = Arc::new(DeviceTextures::default());
+        entries.push((device.clone(), Arc::downgrade(&shared)));
+        shared
+    }
+}
+
+impl DeviceTextures {
+    fn texture(
+        &self,
+        source: (&ModelTexture, ColorSpace, Decode),
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        slot: usize,
+    ) -> io::Result<Arc<Bound>> {
+        let mut slots = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(Some(bound)) = slots.get(slot) {
+            return Ok(Arc::clone(bound));
+        }
+        let (texture, space, decode) = source;
+        let bound = Arc::new(texture.upload(device, queue, label, space, decode)?);
+        if slots.len() <= slot {
+            slots.resize(slot + 1, None);
+        }
+        slots[slot] = Some(Arc::clone(&bound));
+        Ok(bound)
+    }
+}
 
 #[derive(Default)]
 pub struct DeviceTextures(std::sync::Mutex<Vec<Option<Arc<Bound>>>>);
@@ -777,15 +834,13 @@ impl ModelLibrary {
         }
         let textures = std::mem::take(&mut shard.textures);
         let mut texture_map = Vec::with_capacity(textures.len());
-        for (slot, mut texture) in textures.into_iter().enumerate() {
+        for (slot, texture) in textures.into_iter().enumerate() {
             let key = texture_keys[slot].expect("every texture has its path key");
             texture_map.push(match self.paths.get(key) {
                 Some(&global) => global,
                 None => {
                     let global = self.textures.len();
-                    if texture.layers.is_none() {
-                        texture.layers = self.layers.clone().or_else(|| shard.layers.clone());
-                    }
+                    texture.adopt_layers(self.layers.clone().or_else(|| shard.layers.clone()));
                     self.textures.push(texture);
                     self.spaces.push(shard.spaces[slot]);
                     self.paths.insert(key.clone(), global);
@@ -1468,19 +1523,10 @@ impl ModelLibrary {
     }
 
     pub fn device_textures(&self, device: &wgpu::Device) -> Arc<DeviceTextures> {
-        let mut entries = self.uploads.0.lock().unwrap_or_else(|error| error.into_inner());
-        entries.retain(|(_, textures)| textures.strong_count() != 0);
-        if let Some(shared) = entries
-            .iter()
-            .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
-        {
-            return shared;
-        }
-        let shared = Arc::new(DeviceTextures::default());
-        entries.push((device.clone(), Arc::downgrade(&shared)));
-        shared
+        self.uploads.on(device)
     }
 
+    #[cfg(test)]
     fn gpu_texture(
         &self,
         shared: &DeviceTextures,
@@ -1489,17 +1535,20 @@ impl ModelLibrary {
         label: &str,
         slot: usize,
     ) -> io::Result<Arc<Bound>> {
-        let mut slots = shared.0.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(Some(bound)) = slots.get(slot) {
-            return Ok(Arc::clone(bound));
-        }
-        let bound = Arc::new(self.textures[slot].upload(device, queue, label, self.spaces[slot], self.decode)?);
-        if slots.len() <= slot {
-            slots.resize(slot + 1, None);
-        }
-        slots[slot] = Some(Arc::clone(&bound));
-        Ok(bound)
+        shared.texture((&self.textures[slot], self.spaces[slot], self.decode), device, queue, label, slot)
     }
+}
+
+fn drawn_sources(library: &ModelLibrary) -> Vec<(ModelTexture, ColorSpace)> {
+    library
+        .textures
+        .iter()
+        .zip(&library.spaces)
+        .map(|(texture, space)| {
+            texture.release_source();
+            (texture.clone(), *space)
+        })
+        .collect()
 }
 
 fn entity_locator(locator: &mesh::Transform, mesh_scale: f32) -> mesh::Transform {
@@ -2140,10 +2189,13 @@ pub struct ModelPass {
     layers: Option<Arc<ResolvedLayers>>,
     decode: Decode,
     textures: Vec<Option<Arc<Bound>>>,
+    sources: Vec<(ModelTexture, ColorSpace)>,
+    uploads: Arc<Uploads>,
     shared_textures: Option<Arc<DeviceTextures>>,
     materials: Vec<ModelMaterial>,
     ready: Vec<bool>,
     resident: Vec<bool>,
+    field_resident: bool,
     settled: Cell<bool>,
     warmed: Cell<usize>,
     material_refusals: BTreeMap<usize, String>,
@@ -2784,6 +2836,7 @@ impl ModelPass {
     }
 
     pub fn update_placed(&mut self, mut placed: Vec<(usize, ModelInstance)>, tile: f32) {
+        self.field_resident = false;
         self.alive.clear();
         self.alive.extend(placed.iter().map(|(mesh, instance)| {
             let (seed, identity) = instance.animation_key();
@@ -2831,16 +2884,23 @@ impl ModelPass {
         self.rebuild_native_walk();
     }
 
-    pub fn make_field_resident(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        library: &ModelLibrary,
-    ) -> io::Result<()> {
-        let meshes: BTreeSet<usize> = self.field.groups.iter().map(|group| group.mesh).collect();
-        for mesh in meshes {
-            self.make_resident(device, queue, library, mesh)?;
+    pub fn make_field_resident(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> io::Result<()> {
+        if self.field_resident {
+            return Ok(());
         }
+        let shown = |group: &&ModelGroup| {
+            self.field.instances[group.range.start as usize..group.range.end as usize]
+                .iter()
+                .any(|instance| {
+                    let (seed, identity) = instance.animation_key();
+                    !self.hidden.contains(&(group.mesh, seed, identity))
+                })
+        };
+        let meshes: BTreeSet<usize> = self.field.groups.iter().filter(shown).map(|group| group.mesh).collect();
+        for mesh in meshes {
+            self.make_resident(device, queue, mesh)?;
+        }
+        self.field_resident = true;
         Ok(())
     }
 
@@ -2851,10 +2911,13 @@ impl ModelPass {
             layers: library.layers.clone(),
             decode: library.decode,
             textures: (0..library.textures.len()).map(|_| None).collect(),
+            sources: drawn_sources(library),
+            uploads: Arc::clone(&library.uploads),
             shared_textures: None,
             materials: library.materials.clone(),
             ready: vec![false; library.materials.len()],
             resident: Vec::new(),
+            field_resident: false,
             settled: Cell::new(false),
             warmed: Cell::new(0),
             material_refusals: BTreeMap::new(),
@@ -2949,6 +3012,7 @@ impl ModelPass {
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
         if hidden != self.hidden {
             self.raise();
+            self.field_resident = false;
         }
         self.hidden = hidden;
         self.redirect_field();
@@ -3005,6 +3069,9 @@ impl ModelPass {
             self.alternatives = library.alternatives.clone();
         }
         self.textures.resize_with(library.textures.len(), || None);
+        if !grew || self.sources.len() != library.textures.len() {
+            self.sources = drawn_sources(library);
+        }
         if self.materials.len() < library.materials.len() {
             self.materials
                 .extend_from_slice(&library.materials[self.materials.len()..]);
@@ -3027,6 +3094,7 @@ impl ModelPass {
     }
 
     fn bind_field(&mut self) {
+        self.field_resident = false;
         let mut changed = false;
         for group in &mut self.field.groups {
             let Some(mesh) = self.meshes.get(group.mesh) else {
@@ -3078,20 +3146,14 @@ impl ModelPass {
         self.poses.get_mut().1.clear();
     }
 
-    fn make_resident(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        library: &ModelLibrary,
-        mesh: usize,
-    ) -> io::Result<()> {
+    fn make_resident(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: usize) -> io::Result<()> {
         if self.resident.get(mesh).copied().unwrap_or(false) {
             return Ok(());
         }
         if let Some(&counterpart) = self.alternatives.get(&mesh) {
-            self.make_resident(device, queue, library, counterpart)?;
+            self.make_resident(device, queue, counterpart)?;
         }
-        let materials: BTreeSet<usize> = library.meshes[mesh]
+        let materials: BTreeSet<usize> = self.meshes[mesh]
             .native
             .iter()
             .flat_map(|descriptor| descriptor.lods.iter().flatten())
@@ -3099,7 +3161,7 @@ impl ModelPass {
             .collect();
         for material in materials {
             if !self.material_refusals.contains_key(&material)
-                && let Err(why) = self.make_ready(device, queue, library, material)
+                && let Err(why) = self.make_ready(device, queue, material)
             {
                 if why.kind() != io::ErrorKind::InvalidData {
                     return Err(why);
@@ -3114,13 +3176,7 @@ impl ModelPass {
         Ok(())
     }
 
-    fn make_ready(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        library: &ModelLibrary,
-        material: usize,
-    ) -> io::Result<()> {
+    fn make_ready(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, material: usize) -> io::Result<()> {
         if self.ready[material] {
             return Ok(());
         }
@@ -3130,14 +3186,12 @@ impl ModelPass {
             normal,
             ..
         } = self.materials[material];
-        let shared = Arc::clone(
-            self.shared_textures
-                .get_or_insert_with(|| library.device_textures(device)),
-        );
+        let shared = Arc::clone(self.shared_textures.get_or_insert_with(|| self.uploads.on(device)));
         for slot in [diffuse, specular, normal] {
             if self.textures[slot].is_none() {
-                self.textures[slot] = Some(library.gpu_texture(
-                    &shared,
+                let (texture, space) = &self.sources[slot];
+                self.textures[slot] = Some(shared.texture(
+                    (texture, *space, self.decode),
                     device,
                     queue,
                     &format!("{} texture {slot}", self.label),
@@ -3149,6 +3203,7 @@ impl ModelPass {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn upload_library(
         &mut self,
         device: &wgpu::Device,
@@ -3157,7 +3212,7 @@ impl ModelPass {
     ) -> io::Result<()> {
         self.sync(library);
         for mesh in 0..library.meshes.len() {
-            self.make_resident(device, queue, library, mesh)?;
+            self.make_resident(device, queue, mesh)?;
         }
         Ok(())
     }
@@ -3169,15 +3224,16 @@ impl ModelPass {
         library: &ModelLibrary,
         field: ModelField,
     ) -> io::Result<()> {
+        self.set_field(library, field);
+        self.make_field_resident(device, queue)
+    }
+
+    pub fn set_field(&mut self, library: &ModelLibrary, field: ModelField) {
         self.sync(library);
-        for group in &field.groups {
-            self.make_resident(device, queue, library, group.mesh)?;
-        }
         self.field = field;
         self.bind_field();
         self.redirect_field();
         self.rebuild_native_walk();
-        Ok(())
     }
 
     pub fn set_cull(&self, cull: Option<GameCull>, seen: Option<GameCull>) {

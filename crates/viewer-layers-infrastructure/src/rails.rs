@@ -239,7 +239,7 @@ impl Target for OnGpu<'_, '_> {
 
     fn bridges(&mut self, bridges: &BTreeMap<(u32, u32), Bridge>) -> io::Result<()> {
         let field = self.gpu.content.bridges.field_of(bridges.values());
-        self.gpu.scene.set_bridges(self.gpu.device, self.gpu.queue, &self.gpu.content.bridges, field)
+        self.gpu.scene.set_bridges(&self.gpu.content.bridges, field)
     }
 }
 
