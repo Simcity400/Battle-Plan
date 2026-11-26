@@ -152,19 +152,19 @@ impl Scene {
         let _cost = replay_frame::cpu::scope(input.name(), Some("upload"));
         match input {
             SceneInput::WarmTrains(assets) => {
-                self.warm_trains(device, queue, assets)?;
+                self.warm_trains(assets)?;
             }
             SceneInput::WarmUnitModels(assets) => {
-                self.warm_unit_models(device, queue, assets)?;
+                self.warm_unit_models(assets)?;
             }
             SceneInput::WarmAircraft(assets) => {
-                self.warm_aircraft(device, queue, assets)?;
+                self.warm_aircraft(assets)?;
             }
             SceneInput::WarmMapBuildings(assets) => {
-                self.warm_map_buildings(device, queue, assets)?;
+                self.warm_map_buildings(assets)?;
             }
             SceneInput::WarmBridges(bridges) => {
-                self.warm_bridges(device, queue, bridges)?;
+                self.warm_bridges(bridges)?;
             }
             SceneInput::WarmRailways(assets) => {
                 self.warm_railways(device, queue, assets)?;
@@ -204,10 +204,10 @@ impl Scene {
                 self.set_trees(device, queue, assets, geometry, field)?;
             }
             SceneInput::SetSprawl(sprawl) => {
-                self.set_sprawl(device, queue, sprawl)?;
+                self.set_sprawl(sprawl)?;
             }
             SceneInput::SetMapFrame(assets) => {
-                self.set_map_frame(device, queue, assets)?;
+                self.set_map_frame(assets)?;
             }
             SceneInput::InstallAnimatedText { assets, gui } => {
                 self.install_animated_text(assets, gui);

@@ -1726,11 +1726,7 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
     let decode = Decode::default();
     let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
     let mut library = ModelLibrary::empty(decode);
-    library.textures.push(crate::ModelTexture {
-        path: Some(path),
-        layers: Some(Arc::clone(&layers)),
-        held: std::sync::Mutex::new(Some(source)),
-    });
+    library.textures.push(crate::ModelTexture::readable(path, Arc::clone(&layers), source));
     library.spaces.push(ColorSpace::Srgb);
     let (_serial, device, queue) = tests::device();
     let shared = library.device_textures(&device);
@@ -1744,4 +1740,26 @@ fn a_model_texture_is_uploaded_once_per_device_and_read_again_once_its_upload_is
     let reread = library.gpu_texture(&rebuilt, &device, &queue, "painted", 0).unwrap();
     assert_eq!(reread.texture.size().width, 2);
     assert!(library.textures[0].source().is_none());
+}
+
+#[test]
+fn a_pass_drops_only_the_library_sources_it_can_read_again() {
+    let directory = TestDir::new();
+    let root = &directory.0;
+    std::fs::create_dir_all(root.join("gfx/models")).unwrap();
+    let mut tga = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 32, 0x28];
+    tga.extend([10u8, 20, 30, 255].repeat(4));
+    std::fs::write(root.join("gfx/models/painted.tga"), &tga).unwrap();
+    let layers = Arc::new(ResolvedLayers::from_folders(&[(root, &[])]).unwrap());
+    let path = "gfx/models/painted.tga".to_owned();
+    let decode = Decode::default();
+    let source = viewer_gpu::textures::load_file(&path, &|path| layers.read_uncovered_path(path), decode).unwrap();
+    let mut library = ModelLibrary::empty(decode);
+    library.textures.push(crate::ModelTexture::readable(path, layers, source));
+    library.spaces.push(ColorSpace::Srgb);
+    let blank = library.blank(ColorSpace::Srgb);
+    let pass = ModelPass::new(&library, "warmed");
+    assert!(library.textures[0].source().is_none(), "a texture read from the installation is read again when first drawn");
+    assert!(library.textures[blank].source().is_some(), "a texture made in memory has no file to read again");
+    assert!(pass.sources[0].0.source().is_none(), "the pass shares the library's texture, not a copy of its bytes");
 }

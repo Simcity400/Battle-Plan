@@ -1678,7 +1678,7 @@ impl Layer for Units {
 
     fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         let Some((field, land)) = self.staged.take() else { return Ok(()) };
-        gpu.scene.set_unit_models(gpu.device, gpu.queue, &gpu.content.unit_models, field, false)?;
+        gpu.scene.set_unit_models(gpu.device, &gpu.content.unit_models, field, false)?;
         (self.to_upload, self.models_new, self.uploaded) = (false, false, land);
         Ok(())
     }

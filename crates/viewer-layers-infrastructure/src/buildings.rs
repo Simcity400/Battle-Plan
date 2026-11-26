@@ -1665,7 +1665,7 @@ impl Layer for Buildings {
 
 fn install(gpu: &mut Gpu<'_>, (product, continues): Install) -> io::Result<()> {
     let continued: &[&wire::Buildings] = &[];
-    gpu.scene.set_map_buildings(gpu.device, gpu.queue, &gpu.content.map_buildings, product, continues.then_some(continued))
+    gpu.scene.set_map_buildings(&gpu.content.map_buildings, product, continues.then_some(continued))
 }
 
 pub fn summary(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> serde_json::Value {

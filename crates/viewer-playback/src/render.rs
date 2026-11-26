@@ -345,7 +345,7 @@ pub fn dump_png(
         if !layers.omitted.rivers {
             scene.set_rivers(&device, &queue, layers.river_assets, layers.river_mesh)?;
         }
-        scene.set_map_frame(&device, &queue, layers.frame_assets)?;
+        scene.set_map_frame(layers.frame_assets)?;
         if !layers.omitted.trees {
             scene.set_trees(
                 &device,
@@ -356,13 +356,11 @@ pub fn dump_png(
             )?;
         }
         if !layers.omitted.sprawl {
-            scene.set_sprawl(&device, &queue, layers.sprawl)?;
+            scene.set_sprawl(layers.sprawl)?;
             scene.set_city_damage(layers.map_building_field, true);
         }
         if !layers.omitted.buildings {
             scene.set_map_buildings(
-                &device,
-                &queue,
                 layers.map_buildings,
                 layers.map_building_field.clone(),
                 None,
@@ -377,8 +375,6 @@ pub fn dump_png(
                 Continuity::Reset,
             )?;
             scene.set_bridges(
-                &device,
-                &queue,
                 layers.bridges,
                 layers.bridges.field(layers.rail_mesh),
             )?;
@@ -391,7 +387,6 @@ pub fn dump_png(
             )?;
             scene.set_unit_models(
                 &device,
-                &queue,
                 layers.unit_models,
                 layers.unit_model_field.clone(),
                 true,
