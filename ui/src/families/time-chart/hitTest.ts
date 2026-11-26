@@ -94,7 +94,7 @@ export function sampleSeriesValueAt(
   hour: number,
   until: number,
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean; readonly raw?: bigint; readonly denominator?: bigint } | null {
-  if (hour > until) return null;
+  if (hour > until || series.missingSpans?.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
