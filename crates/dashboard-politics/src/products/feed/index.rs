@@ -107,6 +107,7 @@ pub(crate) struct Scanned {
     resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
     presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
+    decision_breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
 }
 
@@ -224,7 +225,7 @@ pub(crate) struct Feed {
     pub notices: Vec<Notice>,
     pub warnings: families::DatedNotes,
     pub unattributed: Vec<i32>,
-    pub projects_unrecorded: Vec<(i32, i32)>,
+    pub unrecorded: Vec<families::Unrecorded>,
 }
 
 #[derive(Default)]
@@ -354,16 +355,31 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     let refs: Vec<&FeedEvent> = lifecycles.iter().collect();
     let resolved = decision_state::resolve_all(query, &refs)?;
     let states = lifecycles.iter().zip(resolved).filter_map(|(event, state)| state.map(|state| ((u128::from(event.generation) << 64) | u128::from(event.sequence), state))).collect();
-    let mut breaks: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
-    breaks.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
-    breaks.retain(|(first, last)| first <= last);
-    breaks.sort_unstable();
+    let mut held: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|gap| (gap.first, gap.last)).collect();
+    held.extend(source.replay_ref().event_losses(branch).map(|(after, hour)| (after + 1, hour)));
+    let complete = replay_data::event_feed_rows::EventFeedCoverage::Complete as u32;
+    let lost = |decisions: bool| incomplete.iter().filter(move |(_, _, read)| read.coverage != Some(complete) || (decisions && read.refusals != Some(0))).map(|&(hour, ..)| (hour, hour));
+    let breaks = spans(held.iter().copied().chain(lost(false)).collect());
+    let decision_breaks = spans(held.into_iter().chain(lost(true)).collect());
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, decision_breaks, gaps })
 }
 
-fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {
-    breaks.iter().copied().find(|&(first, last)| last > from && first <= hour)
+fn spans(mut breaks: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    breaks.retain(|(first, last)| first <= last);
+    breaks.sort_unstable();
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(breaks.len());
+    for (first, last) in breaks {
+        match out.last_mut() {
+            Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
+}
+
+fn break_after(breaks: &[(i32, i32)], from: i32) -> Option<i32> {
+    breaks.get(breaks.partition_point(|&(_, last)| last <= from)).map(|&(first, _)| first.max(from.saturating_add(1)))
 }
 
 struct Card<'b> {
@@ -442,7 +458,7 @@ fn decision_status(card: &Card<'_>, states: &HashMap<u128, DecisionLifecycleStat
         Some(DecisionLifecycleState::Aborted) if end.is_none() && status == ScriptStatus::Active => status = ScriptStatus::Cancelled,
         _ => {}
     }
-    let unwitnessed = edges.last().is_some_and(|last| break_after(breaks, last.at.hour, hour).is_some())
+    let unwitnessed = edges.last().is_some_and(|last| break_after(breaks, last.at.hour).is_some_and(|at| at <= hour))
         || superseded.is_some_and(|at| at <= hour)
         || ends_at.is_some_and(|at| at <= hour);
     if status == ScriptStatus::Active && unwitnessed {
@@ -481,16 +497,13 @@ fn chosen(edge: &Brief) -> bool {
 fn choice_status(edges: &[&Brief], observed: i32, breaks: &[(i32, i32)], hour: i32) -> ScriptStatus {
     if edges.iter().any(|edge| edge.at.hour <= hour && chosen(edge)) {
         ScriptStatus::Chosen
-    } else if break_after(breaks, observed, hour).is_some() {
+    } else if break_after(breaks, observed).is_some_and(|at| at <= hour) {
         ScriptStatus::NotRecorded
     } else {
         ScriptStatus::Awaiting
     }
 }
 
-fn break_hours(breaks: &[(i32, i32)], from: i32) -> impl Iterator<Item = i32> + '_ {
-    breaks.iter().filter(move |&&(_, last)| last > from).map(move |&(first, _)| first.max(from))
-}
 
 fn card_occurrence(card: &Card<'_>, head: &Brief, names: &Names, states: Box<[(i32, u8)]>) -> Occurrence<Item> {
     let roles: Vec<Role> = card.edges.iter().flat_map(|edge| edge.slots.iter().map(|&slot| Role { slot, at: edge.hour })).filter(|role| role.slot.is_some()).collect();
@@ -519,11 +532,11 @@ fn decisions(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
         .map(|(card, later)| {
             let mut candidates: Vec<i32> = card.edges.iter().map(|edge| edge.at.hour).collect();
             for (at, edge) in card.edges.iter().enumerate() {
-                candidates.extend(break_hours(&scanned.breaks, edge.at.hour));
+                candidates.extend(break_after(&scanned.decision_breaks, edge.at.hour));
                 candidates.extend(timer_end(&card.edges[..=at]));
             }
             candidates.extend(later);
-            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(card, &scanned.states, &scanned.breaks, later, hour)));
+            let states = transitions(card.head.at.hour, candidates, |hour| Some(decision_status(card, &scanned.states, &scanned.decision_breaks, later, hour)));
             card_occurrence(card, card.head, names, states)
         })
         .collect();
@@ -539,7 +552,7 @@ fn choices(scanned: &Scanned, names: &Names) -> io::Result<Index<Item>> {
             first
         };
         let mut candidates: Vec<i32> = card.edges.iter().map(|edge| edge.at.hour).collect();
-        candidates.extend(break_hours(&scanned.breaks, head.at.hour));
+        candidates.extend(break_after(&scanned.breaks, head.at.hour));
         let states = transitions(head.at.hour, candidates, |hour| Some(choice_status(&card.edges, head.at.hour, &scanned.breaks, hour)));
         made.push(card_occurrence(&card, head, names, states));
     }
@@ -611,7 +624,7 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
     for (&at, chosen_edges) in &edges {
         let occurrence = &mut native[at];
         let observed = occurrence.observed;
-        let candidates = chosen_edges.iter().map(|edge| edge.at.hour).chain(break_hours(&scanned.breaks, observed)).collect();
+        let candidates = chosen_edges.iter().map(|edge| edge.at.hour).chain(break_after(&scanned.breaks, observed)).collect();
         occurrence.states = transitions(observed, candidates, |hour| Some(choice_status(chosen_edges, observed, &scanned.breaks, hour)));
         if let Item::Log { edges, .. } = &mut occurrence.payload {
             *edges = chosen_edges.iter().map(|edge| edge.at).collect();
@@ -623,7 +636,7 @@ fn script_feed(scanned: &Scanned) -> Vec<Occurrence<Item>> {
             && EventFeedKind::of_index(occurrence.kind).is_some_and(script_opener)
         {
             let observed = occurrence.observed;
-            occurrence.states = transitions(observed, break_hours(&scanned.breaks, observed).collect(), |hour| Some(choice_status(&[], observed, &scanned.breaks, hour)));
+            occurrence.states = transitions(observed, break_after(&scanned.breaks, observed).into_iter().collect(), |hour| Some(choice_status(&[], observed, &scanned.breaks, hour)));
         }
     }
     native.retain(|occurrence| !merged.contains(&occurrence.id));
@@ -650,19 +663,20 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     let mut rows: Vec<EventFeedRow> = Vec::new();
     let mut warnings: families::DatedNotes = Vec::new();
     let mut unattributed = Vec::new();
-    if let Some((made, notes, left_out)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
+    let mut unrecorded = Vec::new();
+    if let Some((made, notes, left_out, unobserved)) = family(families::group_rows(source, query, context, first, last, &[WarsPeace, Diplomacy], cancelled), &[WarsPeace, Diplomacy], "countryGroups", "Wars and factions", &mut refused, cancelled)? {
         rows.extend(made);
         warnings.extend(notes);
         unattributed = left_out;
+        unrecorded.extend(unobserved);
     }
     if let Some(made) = family(families::subject_rows(source, query, first, last, cancelled), &[Diplomacy], "subjects", "Subjects", &mut refused, cancelled)? {
         rows.extend(made);
     }
-    let mut projects_unrecorded = Vec::new();
-    if let Some((made, notes, unrecorded)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, cancelled)? {
+    if let Some((made, notes, projects)) = family(families::project_completions(source, query, context, first, last, cancelled), &[Milestones], "projectFinished", "Special projects", &mut refused, cancelled)? {
         rows.extend(made);
         warnings.extend(notes.into_iter().map(|note| (first, note)));
-        projects_unrecorded = unrecorded;
+        unrecorded.push(projects);
     }
     let localisation = match context.content.as_ref() {
         Some(content) => dashboard_base::content::localisation(source, content).map_err(|error| format!("Nuclear type names are unavailable: {error}")),
@@ -688,7 +702,7 @@ fn feed(source: &Source, query: &Query<'_>, context: &LoadContext, scanned: &Sca
     warnings.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
     warnings.dedup_by(|later, earlier| later.1 == earlier.1);
     warnings.sort();
-    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, projects_unrecorded })
+    Ok(Feed { index: Arc::new(Index::new(occurrences, scanned.gaps.clone(), &LIVE)?), notices: refused, warnings, unattributed, unrecorded })
 }
 
 fn scanned(source: &Source, query: &Query<'_>, branch: u64, held: &mut Branch, cancelled: &AtomicBool) -> io::Result<Arc<Scanned>> {

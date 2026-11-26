@@ -29,10 +29,14 @@ const optionalText = (value: unknown) => value === undefined || typeof value ===
 const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && (value.description === undefined || text(value.description))
   && optionalText(value.nameMissing) && optionalText(value.gaps)
   && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
+const LISTED_KINDS = new Set(['ceasedToExist', 'guaranteeGranted', 'projectFinished']);
+const listed = (row: Record<string, unknown>): boolean => Array.isArray(row.participants) && row.participants.length === 2
+  && row.participants.every(value => value === null || opaqueTag(value))
+  && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
 const roles = (row: Record<string, unknown>): boolean => {
-  if (!NATIVE_KINDS.has(row.kind as string)) return row.participants === undefined;
-  return row.exact === true && Array.isArray(row.participants) && row.participants.length === 2 && row.participants.every(value => value === null || opaqueTag(value))
-    && JSON.stringify(row.participants.filter(value => value !== null)) === JSON.stringify(row.tags);
+  if (NATIVE_KINDS.has(row.kind as string)) return row.exact === true && listed(row);
+  if (LISTED_KINDS.has(row.kind as string)) return listed(row);
+  return row.participants === undefined;
 };
 const cause = (row: Record<string, unknown>): boolean => {
   const value = row.cause;
@@ -61,7 +65,7 @@ export function validateFeedRow(value: unknown): EventFeedRow {
   if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || !int(value.hour) || !int(value.readHour) || !int(value.nameHour)
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
-    || (!NATIVE_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
+    || (!NATIVE_KINDS.has(value.kind) && !LISTED_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
     || !(value.item === null || item(value.item)) || !(value.amount == null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }

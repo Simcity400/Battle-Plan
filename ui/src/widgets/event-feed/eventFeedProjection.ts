@@ -38,6 +38,7 @@ const HEAD_LIMIT = 256;
 const FOLD_MIN_RUN = 5;
 
 const LOSER_SECOND_KINDS = new Set(['annexed', 'warDeclared', 'warStarted']);
+const ONE_COUNTRY_KINDS = new Set(['ceasedToExist', 'projectFinished']);
 const VIEWABLE_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected']);
 
 const KIND_SPRITES: Readonly<Record<string, string>> = {
@@ -351,8 +352,9 @@ function buildFeedTableRow(
   for (let idx = 0; idx < rawRoles.length; idx++) {
     const tag = rawRoles[idx] ?? null;
     if (tag === null && event.participants === undefined) continue;
+    if (idx > 0 && ONE_COUNTRY_KINDS.has(event.kind)) continue;
     if (idx > 0 && tag !== null && tag === rawRoles[0]) continue;
-    if (tag === null && idx === 1 && rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released'].includes(event.kind)) {
+    if (tag === null && idx === 1 && rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
       continue;
     }
     countryEntries.push({

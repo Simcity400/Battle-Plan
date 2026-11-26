@@ -77,6 +77,10 @@ pub struct ScriptEdge {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub costs: Option<Vec<ScriptCost>>,
+    #[doc = " Currencies whose charge was not read while another's was: `costs` holds only what was read."]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
+    pub costs_unread: Vec<ScriptCurrency>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -91,13 +95,14 @@ pub struct ScriptOccurrence {
 }
 
 pub(crate) fn edge(event: &FeedEvent, row: EventFeedRow) -> ScriptEdge {
-    let costs = event.costs.and_then(|[political, command]| {
-        (political.is_some() || command.is_some()).then(|| {
-            [(ScriptCurrency::PoliticalPower, political), (ScriptCurrency::CommandPower, command)]
-                .into_iter()
-                .filter_map(|(currency, amount)| amount.filter(|amount| *amount != 0).map(|amount| ScriptCost { currency, amount: amount.to_string() }))
-                .collect()
-        })
+    let charged = [ScriptCurrency::PoliticalPower, ScriptCurrency::CommandPower].into_iter().zip(event.costs);
+    let valued = event.costs.iter().any(|cost| matches!(cost, Some(Some(_))));
+    let costs = valued.then(|| {
+        charged
+            .clone()
+            .filter_map(|(currency, amount)| amount.flatten().filter(|amount| *amount != 0).map(|amount| ScriptCost { currency, amount: amount.to_string() }))
+            .collect()
     });
-    ScriptEdge { row, option: event.option, lifecycle: event.lifecycle, days: event.days, costs }
+    let costs_unread = if valued { charged.filter(|(_, amount)| amount.is_none()).map(|(currency, _)| currency).collect() } else { Vec::new() };
+    ScriptEdge { row, option: event.option, lifecycle: event.lifecycle, days: event.days, costs, costs_unread }
 }

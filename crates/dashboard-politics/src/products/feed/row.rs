@@ -54,7 +54,7 @@ pub(crate) struct FeedEvent {
     pub scopes: Option<Vec<EventFeedScope>>,
     pub opener: Option<u64>,
     pub dated: Option<i32>,
-    pub costs: Option<[Option<i64>; 2]>,
+    pub costs: [Option<Option<i64>>; 2],
     pub coverage: Option<u32>,
     pub outstanding: Option<u64>,
     pub refusals: Option<u32>,
@@ -217,10 +217,7 @@ impl Columns {
             Held::Value(Cell::List(bytes)) => Some(scopes(bytes)?),
             _ => None,
         };
-        let costs = match (self.optional(row, 34), self.optional(row, 35)) {
-            (Some(political), Some(command)) => Some([political, command]),
-            _ => None,
-        };
+        let costs = [self.optional(row, 34), self.optional(row, 35)];
         Ok(FeedEvent {
             generation: (row.key >> 64) as u64,
             sequence: row.key as u64,

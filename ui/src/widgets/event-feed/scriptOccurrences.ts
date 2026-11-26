@@ -12,7 +12,8 @@ const costs = (value: unknown): boolean => value == null || (Array.isArray(value
 
 export function validateOccurrence(value: unknown): ScriptOccurrence {
   if (!object(value) || typeof value.id !== 'string' || value.id.length === 0 || typeof value.opened !== 'boolean' || !Array.isArray(value.edges)
-    || value.edges.length === 0 || !value.edges.every(edge => object(edge) && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs))) {
+    || value.edges.length === 0 || !value.edges.every(edge => object(edge) && optional(edge.option) && optional(edge.lifecycle) && optional(edge.days) && costs(edge.costs)
+      && (edge.costsUnread === undefined || (Array.isArray(edge.costsUnread) && edge.costsUnread.every(currency => typeof currency === 'string' && CURRENCIES.has(currency)))))) {
     throw new Error('The occurrence card is malformed.');
   }
   const edges = (value.edges as Record<string, unknown>[]).map(edge => ({ ...(edge as unknown as ScriptEdge), row: validateFeedRow(edge.row) }));

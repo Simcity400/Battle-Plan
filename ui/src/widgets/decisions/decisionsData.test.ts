@@ -350,3 +350,14 @@ test('a decision tooltip shows its listed description until the hovered row is r
     ['Text not recorded', 'not recorded: GER_war_bonds.d shows its scripted text elided'], ['Description', 'Raise war bonds. Effects: +5% war support'],
   ], 'the text the read row could not expand is named once its row is read');
 });
+
+test('a decision cost read in one currency keeps it, partial, when the other currency was not read', () => {
+  const start = day(3, 1);
+  const occ = card([edge('decisionSelected', start, { days: 10, costs: pp('-5000000'), costsUnread: ['commandPower'] })]);
+  const source = buildRowSourceFromHead('test:decisions-partial-cost', {
+    branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
+    rows: [{ hour: start, key: 'k1', ordinal: '0', cells: [], occurrence: occ }], facetTotals: [], missing: [], unavailable: [], warnings: [],
+  }, undefined, start + 1)!;
+  const model = decisionsProjection.project(createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]) }), { artwork: false, breaks: [] });
+  assert.deepEqual(model.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Command power cost was not recorded' });
+});

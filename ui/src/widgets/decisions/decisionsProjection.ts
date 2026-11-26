@@ -20,7 +20,7 @@ import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow 
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
-import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
+import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
 import { descriptionRows, gapRows, hoverTextOf, type TooltipTexts } from '../event-feed/hoverText.ts';
@@ -78,6 +78,11 @@ function decisionCostInfo(
       costMissing: 'Decision cost was not recorded',
     };
   }
+  const unread = new Set(chargeable.flatMap(edge => edge.costsUnread ?? []));
+  const lacking = unread.size
+    ? `${[...unread].sort().map(currency => (currency === 'politicalPower' ? 'Political power' : 'Command power')).join(' and ')} cost was not recorded`
+    : null;
+  const shown = (text: string) => (lacking ? partialValue(text, lacking) : knownValue(text));
   const totals = new Map<ScriptCurrency, bigint>();
   for (const edge of proven) {
     for (const cost of edge.costs!) {
@@ -85,7 +90,9 @@ function decisionCostInfo(
     }
   }
   if (!totals.size) {
-    return { cell: { value: notApplicable('No cost'), blank: true }, costText: null, costMissing: null };
+    return lacking
+      ? { cell: { value: notRecorded(lacking) }, costText: null, costMissing: lacking }
+      : { cell: { value: notApplicable('No cost'), blank: true }, costText: null, costMissing: null };
   }
   const pp = totals.get('politicalPower');
   const cp = totals.get('commandPower');
@@ -95,12 +102,12 @@ function decisionCostInfo(
     const sprite = readView.art({ kind: 'sprite', key: 'GFX_pol_power', frame: 0 });
     return {
       cell: {
-        value: knownValue(text),
+        value: shown(text),
         unitSuffix: 'PP',
         unitArt: sprite,
       },
       costText: `${text} PP`,
-      costMissing: null,
+      costMissing: lacking,
     };
   }
   if (cp !== undefined && pp === undefined) {
@@ -108,19 +115,19 @@ function decisionCostInfo(
     const sprite = readView.art({ kind: 'sprite', key: 'GFX_command_power', frame: 0 });
     return {
       cell: {
-        value: knownValue(text),
+        value: shown(text),
         unitSuffix: 'CP',
         unitArt: sprite,
       },
       costText: `${text} CP`,
-      costMissing: null,
+      costMissing: lacking,
     };
   }
   const parts: string[] = [];
   if (pp !== undefined) parts.push(`${formatCost(pp)} PP`);
   if (cp !== undefined) parts.push(`${formatCost(cp)} CP`);
   const joined = parts.join(', ');
-  return { cell: { value: knownValue(joined) }, costText: joined, costMissing: null };
+  return { cell: { value: shown(joined) }, costText: joined, costMissing: lacking };
 }
 
 function decisionTimerCell(at: DecisionAt): { readonly cell: TableCell; readonly nextChangeAt: number } {

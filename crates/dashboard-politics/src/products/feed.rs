@@ -464,7 +464,7 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
         return window::presented(event, id, names, presenter, notices);
     }
     if event.derived() {
-        return Ok(derived(event, kind, id, names, notices));
+        return Ok(Some(derived(event, kind, id, names, notices)));
     }
     let participants = [event.actor, event.target].map(|party| tag(names, party.slot, event.hour));
     for ((role, named), party) in ["actor", "target"].into_iter().zip(&participants).zip([event.actor, event.target]) {
@@ -526,8 +526,8 @@ pub(crate) fn present(event: &FeedEvent, names: &Names, presenter: &Presenter<'_
     }))
 }
 
-fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, notices: &mut Notices) -> Option<EventFeedRow> {
-    let row = |hour: i32, name_hour: i32, exact: bool, tags: Vec<String>| EventFeedRow {
+fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, notices: &mut Notices) -> EventFeedRow {
+    let row = |hour: i32, name_hour: i32, exact: bool, participants: [Option<String>; 2]| EventFeedRow {
         id: id.clone(),
         hour,
         read_hour: event.read_hour,
@@ -535,8 +535,8 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
         exact,
         category: kind.category(),
         kind,
-        tags,
-        participants: None,
+        tags: participants.iter().flatten().cloned().collect(),
+        participants: Some(participants),
         item: None,
         amount: None,
         cause: None,
@@ -547,24 +547,21 @@ fn derived(event: &FeedEvent, kind: EventFeedKind, id: String, names: &Names, no
     match kind {
         EventFeedKind::CeasedToExist => {
             let named = event.dated.unwrap_or(event.read_hour);
-            match tag(names, event.actor.slot, named) {
-                Some(country) => Some(row(event.read_hour, named, false, vec![country])),
-                None => {
-                    notices.sampled("ceasedToExist", "Country existence", format!("The country that ceased to exist at {} holds no tag at its last read with states.", event.read_hour), 1);
-                    None
-                }
+            let country = tag(names, event.actor.slot, named);
+            if country.is_none() {
+                notices.sampled("ceasedToExist", "Country existence", format!("The country that ceased to exist at {} holds no tag at its last read with states.", event.read_hour), 1);
             }
+            row(event.read_hour, named, false, [country, None])
         }
         _ => {
             let at_read = [event.actor.slot, event.target.slot].map(|slot| tag(names, slot, event.read_hour));
-            let [Some(guarantor), Some(guaranteed)] = at_read else {
+            if at_read.iter().any(Option::is_none) {
                 notices.sampled("guaranteeGranted", "Guarantees", format!("A guarantee read at {} names a country that holds no tag then.", event.read_hour), 1);
-                return None;
-            };
+            }
             let start = event.dated.unwrap_or(event.read_hour);
-            let exact = [event.actor.slot, event.target.slot].map(|slot| tag(names, slot, start)) == [Some(guarantor.clone()), Some(guaranteed.clone())];
+            let exact = at_read.iter().all(Option::is_some) && [event.actor.slot, event.target.slot].map(|slot| tag(names, slot, start)) == at_read;
             let hour = if exact { start } else { event.read_hour };
-            Some(row(hour, hour, exact, vec![guarantor, guaranteed]))
+            row(hour, hour, exact, at_read)
         }
     }
 }

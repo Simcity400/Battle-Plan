@@ -10,7 +10,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { ArtHandle, BoundedReadView, SourceEntry } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { FamilyPlanContext } from '../plan.ts';
-import { identityName, resolveIdentity, type IdentityBoundary } from './identityCell.ts';
+import { resolveIdentity, type IdentityBoundary } from './identityCell.ts';
 
 export function urlArtHandle(url: string | null | undefined): ArtHandle | null {
   return url ? { kind: 'url', url } : null;
@@ -205,11 +205,15 @@ export function logCountryCell(
   const flags: TableCellFlag[] = [];
   const names: string[] = [];
   const roles: TooltipExtraRow[] = [];
+  const missing: string[] = [];
+  let loading = false;
   for (const entry of entries) {
     if (entry.tag === null) {
-      flags.push({ tag: '?', art: unavailableArt(entry.missingLabel ?? 'Country not recorded'), ...(entry.dimmed ? { dimmed: true } : {}) });
-      names.push(entry.missingLabel ?? 'Country not recorded');
-      if (entry.role) roles.push({ label: entry.role, value: notRecorded(entry.missingLabel ?? 'Country not recorded') });
+      const reason = entry.missingLabel ?? 'Country not recorded';
+      flags.push({ tag: '?', art: unavailableArt(reason), ...(entry.dimmed ? { dimmed: true } : {}) });
+      names.push(reason);
+      missing.push(reason);
+      if (entry.role) roles.push({ label: entry.role, value: notRecorded(reason) });
     } else {
       const hour = entry.atHour ?? atHour;
       const who = resolveIdentity(readView, 'country', entry.tag, { atHour: hour, boundary });
@@ -219,12 +223,23 @@ export function logCountryCell(
         ...(who.artKey ? { artKey: who.artKey } : {}),
         ...(entry.dimmed ? { dimmed: true } : {}),
       });
-      names.push(who.name || identityName(readView, 'country', entry.tag, hour));
-      if (entry.role) roles.push({ label: entry.role, value: knownValue(names[names.length - 1]!) });
+      names.push(who.name);
+      if (who.value.kind !== 'known') {
+        missing.push(who.value.kind === 'notRecorded' ? `${entry.tag}: ${who.value.reason}` : `${entry.tag}: Name not recorded`);
+        loading ||= who.loading;
+      }
+      if (entry.role) roles.push({ label: entry.role, value: who.value });
     }
   }
-  const value: Value = names.length ? knownValue(names.join(' · ')) : notApplicable('No country');
-  return roles.length ? { value, flags, tooltipRows: roles } : { value, flags };
+  const joined = names.join(' · ');
+  const value: Value = !names.length
+    ? notApplicable('No country')
+    : !missing.length
+      ? knownValue(joined)
+      : entries.every(entry => entry.tag === null)
+        ? notRecorded(missing.join('; '))
+        : partialValue(joined, missing.join('; '));
+  return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}), ...(loading ? { loading: true } : {}) };
 }
 
 export function tailFollowParams(query: LogTailQuery): FollowRequest {

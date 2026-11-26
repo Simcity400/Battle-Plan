@@ -400,10 +400,14 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
 fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], hour: i32) -> Option<i32> {
     let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
     let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied()).flatten();
-    let projects = categories.contains(&EventFeedCategory::Milestones).then(|| {
-        feed.projects_unrecorded.iter().filter_map(|&(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) }).min()
-    }).flatten();
-    [warning, left_out, projects].into_iter().flatten().min()
+    let unrecorded = feed
+        .unrecorded
+        .iter()
+        .filter(|family| categories.contains(&family.category))
+        .flat_map(|family| &family.spans)
+        .filter_map(|&(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) })
+        .min();
+    [warning, left_out, unrecorded].into_iter().flatten().min()
 }
 
 fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
@@ -512,10 +516,10 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             );
         }
     }
-    if params.categories.contains(&EventFeedCategory::Milestones) {
-        let hours: i64 = feed.projects_unrecorded.iter().map(|&(first, last)| (i64::from(last.min(hour)) - i64::from(first.max(from)) + 1).max(0)).sum();
+    for family in feed.unrecorded.iter().filter(|family| params.categories.contains(&family.category)) {
+        let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(hour)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
-            notices.unavailable("projectFinished", "Special projects", format!("Project histories were not recorded for {hours} hours of this span; a completion dated then is not listed."), None);
+            notices.unavailable(family.kind, family.label, format!("{} for {hours} hours of this span; {}.", family.what, family.lost), None);
         }
     }
     let reply = EventFeedTailReply {
@@ -847,13 +851,22 @@ impl Product for EventFeedActivity {
             let (before, bins) = feed.index.bins(&query.holders, &ask, params.from, hour, params.bin_hours)?;
             lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
         }
-        let missing = feed
-            .index
-            .gaps()
-            .iter()
-            .filter(|gap| gap.first_hour <= hour && gap.last_hour >= params.from)
-            .map(|gap| dashboard_query::series::MissingSpan { first_hour: gap.first_hour.max(params.from), last_hour: gap.last_hour.min(hour), reason: gap.reason.clone() })
-            .collect();
+        let whole = Ask {
+            hour,
+            from: None,
+            to: None,
+            selection: prepared.selection.as_ref(),
+            subject: None,
+            kinds: None,
+            states: None,
+            search: None,
+            order: dashboard_query::log::occurrence::Order::Date(dashboard_query::log::occurrence::Direction::Descending),
+            live_first: false,
+            offset: 0,
+            limit: 1,
+            chips: &[],
+        };
+        let missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
         Ok(EventFeedActivityReply {
             branch_id: params.branch_id.clone(),
             first_hour: (i64::from(params.from).div_euclid(params.bin_hours) * params.bin_hours) as i32,

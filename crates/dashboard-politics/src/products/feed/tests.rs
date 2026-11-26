@@ -54,7 +54,7 @@ fn event(code: u8, hour: i32, actor: Slot, target: Slot) -> FeedEvent {
         scopes: None,
         opener: None,
         dated: None,
-        costs: None,
+        costs: [None, None],
         coverage: None,
         outstanding: None,
         refusals: None,
@@ -126,12 +126,12 @@ fn a_feed_rows_cells_read_back_typed_and_what_was_not_recorded_stays_so() {
     assert_eq!((read.native_event, read.option, read.instance), (Some((50, 9)), Some(-1), None));
     assert_eq!(read.scopes, Some(vec![scope]));
     assert_eq!(read.opener, Some(40));
-    assert_eq!(read.costs, Some([Some(-5_000_000), None]));
+    assert_eq!(read.costs, [Some(Some(-5_000_000)), Some(None)]);
     assert_eq!(read.id(), "native:1:42");
 
     let bare = row(FeedEventRow::DERIVED, 5 << 32 | 3, &[("hour", number(5)), ("read_hour", number(5)), ("kind", number(i64::from(FeedEventRow::CEASED_TO_EXIST))), ("actor_reference", number(11)), ("target_reference", number(0))]);
     let read = columns.read(&bare).unwrap();
-    assert_eq!((&read.cause, &read.scopes, &read.costs, &read.token), (&None, &None, &None, &None));
+    assert_eq!((&read.cause, &read.scopes, &read.costs, &read.token), (&None, &None, &[None, None], &None));
     assert_eq!(read.actor.slot, Slot::NotRecorded);
     assert_eq!(read.id(), "derived:5:3");
     assert!(columns.read(&row(1, 1, &[("hour", number(5))])).is_err());
@@ -211,13 +211,18 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         window: None,
     };
     let mut selected = event(EventFeedSource::DecisionSelected as u8, 10, Slot::Of(7), Slot::None);
-    selected.costs = Some([Some(-5_000_000), Some(0)]);
+    selected.costs = [Some(Some(-5_000_000)), Some(Some(0))];
     let costs = edge(&selected, row(&selected)).costs.unwrap();
     assert_eq!(costs.iter().map(|cost| (cost.currency, cost.amount.as_str())).collect::<Vec<_>>(), [(ScriptCurrency::PoliticalPower, "-5000000")]);
-    selected.costs = Some([None, None]);
+    selected.costs = [Some(None), Some(None)];
     assert!(edge(&selected, row(&selected)).costs.is_none(), "a kind that charges nothing proves nothing");
-    selected.costs = None;
+    selected.costs = [None, None];
     assert!(edge(&selected, row(&selected)).costs.is_none(), "not proven is null, never zero");
+    selected.costs = [Some(Some(-5_000_000)), None];
+    let partly = edge(&selected, row(&selected));
+    assert_eq!((partly.costs.map(|costs| costs.len()), partly.costs_unread), (Some(1), vec![ScriptCurrency::CommandPower]), "an unread command-power cell keeps the political power that was read, and says which currency it lacks");
+    selected.costs = [None, Some(Some(-30))];
+    assert_eq!(edge(&selected, row(&selected)).costs_unread, [ScriptCurrency::PoliticalPower], "and the other way round");
 }
 
 #[test]
@@ -227,18 +232,21 @@ fn a_derived_row_is_dated_by_what_its_countries_held() {
     let mut ceased = event(FeedEventRow::CEASED_TO_EXIST, 150, Slot::Of(7), Slot::None);
     ceased.generation = FeedEventRow::DERIVED;
     ceased.dated = Some(90);
-    let row = derived(&ceased, EventFeedKind::CeasedToExist, ceased.id(), &names, &mut notices).unwrap();
+    let row = derived(&ceased, EventFeedKind::CeasedToExist, ceased.id(), &names, &mut notices);
     assert_eq!((row.hour, row.name_hour, row.exact, row.tags.as_slice()), (150, 90, false, &["GER".to_owned()][..]), "named at its last read with states");
     let mut guarantee = event(FeedEventRow::GUARANTEE_GRANTED, 150, Slot::Of(8), Slot::Of(7));
     guarantee.generation = FeedEventRow::DERIVED;
     guarantee.dated = Some(120);
-    let row = derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices).unwrap();
+    let row = derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices);
     assert_eq!((row.hour, row.exact, row.tags.as_slice()), (120, true, &["POL".to_owned(), "DDR".to_owned()][..]));
     guarantee.dated = Some(80);
-    let row = derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices).unwrap();
+    let row = derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices);
     assert_eq!((row.hour, row.exact), (150, false), "a tag that changed since the start dates it at its read");
     guarantee.target.slot = Slot::NotRecorded;
-    assert!(derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices).is_none());
+    let row = derived(&guarantee, EventFeedKind::GuaranteeGranted, guarantee.id(), &names, &mut notices);
+    assert_eq!((row.hour, row.exact, row.participants), (150, false, Some([Some("POL".to_owned()), None])), "a witnessed guarantee keeps its row, the party no tag names not identified");
+    ceased.actor.slot = Slot::NotRecorded;
+    assert_eq!(derived(&ceased, EventFeedKind::CeasedToExist, ceased.id(), &names, &mut notices).participants, Some([None, None]), "and so does a cessation");
     assert!(notices.into_list().iter().any(|notice| notice.kind == "guaranteeGranted"));
 }
 
@@ -355,10 +363,15 @@ fn incomplete_reads_raise_the_notices_a_walk_of_the_reads_asked_raises() {
 #[test]
 fn two_projects_completing_in_one_hour_are_two_rows() {
     use dashboard_research::products::special_projects::ProjectCompletion;
-    let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
+    let names = Names { slots: HashMap::from([(7, vec![("GER".to_owned(), 0, 100), ("DDR".to_owned(), 101, 200)])]) };
+    let completion = |project, ordinal, slot| ProjectCompletion { slot, date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
     let ids: std::collections::BTreeSet<String> =
-        [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
+        [completion(1, 4, 7), completion(2, 4, 7), completion(1, 7, 7)].into_iter().map(|event| families::completion_row(event, &names)).map(|row| row.id).collect();
     assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
+    let renamed = families::completion_row(completion(1, 4, 7), &names);
+    assert_eq!((renamed.tags.as_slice(), renamed.name_hour), (["GER".to_owned()].as_slice(), 100), "the holder and its name are the completion date's, not the read's");
+    let unheld = families::completion_row(completion(1, 4, 8), &names);
+    assert_eq!((unheld.tags.len(), unheld.participants), (0, Some([None, None])), "a holder no tag names keeps its row, the country not identified");
 }
 
 #[test]
@@ -887,7 +900,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
             windows: Default::default(),
         }
     };
-    let frames: Vec<_> = (100..=106)
+    let frames: Vec<_> = (100..=109)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             let events = match hour {
@@ -899,10 +912,20 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
                 103 => vec![dec_ev(4, 103, EventFeedSource::DecisionTimedOut, Some(DecisionChange::new(Operation::Update, TIMED)), Some(10), Some(2))],
                 104 => vec![ev_choice(5, 101, EventFeedSource::ScriptEvent, None)],
                 105 => vec![ev_choice(6, 105, EventFeedSource::NewsEvent, None)],
+                107 => vec![dec_ev(7, 107, EventFeedSource::DecisionActivated, Some(DecisionChange::new(Operation::Store, TIMED)), Some(11), Some(0))],
                 _ => Vec::new(),
             };
+            let mut read = pack(hour, events);
+            match hour {
+                108 => read.script_refusals = 1,
+                109 => read.coverage = EventFeedCoverage::Partial,
+                _ => {}
+            }
             frame.metrics.table_ns[TableId::EventFeedHistory.index()] = replay_frame::frame::READ_TIME_NOT_RECORDED;
-            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![pack(hour, events)]));
+            *frame.tables[TableId::EventFeedHistory.index()] = TableView::Complete(TableRows::EventFeedHistory(vec![read]));
+            if hour == 106 {
+                *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "unread".into() };
+            }
             frame
         })
         .collect();
@@ -976,6 +999,12 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     )
     .unwrap();
     assert_eq!((activity.first_hour, activity.lines[0].before.as_str(), activity.lines[0].bins.clone()), (100, "2", vec![(1, 2)]), "binned by occurrence date, nothing read after 103, the event of 101 not yet");
+    let activity_at = |countries: Option<Vec<Country>>| {
+        let params = super::tails::EventFeedActivityParams { branch_id: "1".into(), hour: 106, from: 101, bin_hours: 2, categories: vec![EventFeedCategory::Politics], exclude: None, countries, group: None };
+        super::EventFeedActivity::load(&replay_source, &params, &context, &cancel).unwrap().missing.iter().map(|gap| (gap.first_hour, gap.last_hour)).collect::<Vec<_>>()
+    };
+    assert_eq!(activity_at(selection("GER")), [(106, 106)], "the hour no one knows who holds GER is missing from GER's activity, as from its rows");
+    assert!(activity_at(None).is_empty(), "and only from a selection that needs a holder");
 
     let decisions = DecisionsTail::load(&replay_source, &cards(106, None, None), &context, &cancel).unwrap();
     assert_eq!(decisions.total, "1");
@@ -1009,6 +1038,10 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     assert_eq!(choices.counts[0].total, "3");
     let awaiting = EventChoicesTail::load(&replay_source, &cards(106, Some(vec![ScriptStatus::Awaiting]), None), &context, &cancel).unwrap();
     assert_eq!(awaiting.total, "3");
+    let decided = |hour: i32, status: ScriptStatus| DecisionsTail::load(&replay_source, &cards(hour, Some(vec![status]), None), &context, &cancel).unwrap().total;
+    let chose = |hour: i32, status: ScriptStatus| EventChoicesTail::load(&replay_source, &cards(hour, Some(vec![status]), None), &context, &cancel).unwrap().total;
+    assert_eq!((decided(107, ScriptStatus::Active).as_str(), decided(108, ScriptStatus::Active).as_str(), decided(108, ScriptStatus::NotRecorded).as_str()), ("1", "0", "1"), "a read that refused a decision family may have lost the end of a running decision");
+    assert_eq!((chose(108, ScriptStatus::Awaiting).as_str(), chose(109, ScriptStatus::Awaiting).as_str(), chose(109, ScriptStatus::NotRecorded).as_str()), ("3", "0", "3"), "a decision family refused loses no choice, a partial read may have");
 
     let choice_panel = event_choices_dated_panel(&replay_source, &context, &serde_json::json!({ "panel": "event-choices-tail", "branchId": "1", "limit": 64, "countries": ["GER"] })).unwrap();
     let choice_exact = choice_panel.exact().unwrap();
@@ -1036,7 +1069,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    let frames: Vec<_> = (100..=104)
+    let frames: Vec<_> = (100..=106)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             let factions = if hour >= 101 {
@@ -1046,13 +1079,13 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
             } else {
                 Vec::new()
             };
-            let members = if hour >= 101 {
+            let members = if (101..=103).contains(&hour) {
                 vec![FactionMemberRow { faction: 1, country: 9001, ordinal: 0 }]
             } else {
                 Vec::new()
             };
             *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions));
-            *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+            *frame.tables[TableId::FactionMembers.index()] = if hour == 104 { TableView::Unavailable { reason: "unread".into() } } else { TableView::Complete(TableRows::FactionMembers(members)) };
             frame
         })
         .collect();
@@ -1068,7 +1101,10 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     )
     .unwrap();
     let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
-    let (rows, notes, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    let (rows, notes, _, unrecorded) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 106, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
+    assert!(!rows.iter().any(|row| row.kind == EventFeedKind::FactionLeft), "a member last seen at 103 with factions unread at 104 has no departure dated 104");
+    assert!(notes.iter().any(|(hour, note)| *hour == 105 && note.starts_with("GER was last seen in a faction at 103")), "and says so once its absence is seen: {notes:?}");
+    assert_eq!(unrecorded.iter().map(|family| (family.kind, family.spans.clone())).collect::<Vec<_>>(), [("factionMembership", vec![(104, 104)])], "the hour membership went unread is the family's own dated coverage");
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
     assert_eq!(joined.hour, 101);
     let item = joined.item.as_ref().expect("faction item");
@@ -1100,6 +1136,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
+    assert!(at(105).unavailable.iter().any(|notice| notice.kind == "factionMembership" && notice.reason.contains("Faction membership was not observed")), "and the feed says so beside its rows");
 }
 
 #[test]
@@ -1175,6 +1212,7 @@ fn a_listed_choice_card_names_the_option_its_last_choice_took() {
         lifecycle: None,
         days: None,
         costs: None,
+        costs_unread: Vec::new(),
     };
     let select = EventFeedKind::EventOptionSelected;
     assert_eq!(super::tails::listed_choice(&[chosen(Some(-1), select), chosen(Some(1), select)]), Some(1), "immediate effects are not the choice");
