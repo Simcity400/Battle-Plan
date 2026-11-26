@@ -18,6 +18,7 @@ test('a last delivery is a date when recorded, no delivery only when neither equ
   assert.equal(lastDelivery(terms(0, [], '32768'), none, zeroValue(0n)).kind, 'notRecorded', 'a last fuel delivery is a delivery');
   const unread = lastDelivery(terms(0, []), notRecorded('fuel unread'), zeroValue(0n));
   assert.equal(unread.kind, 'notRecorded', 'unread fuel is never no delivery');
+  assert.equal(lastDelivery(terms(0, []), zeroValue(0n), notRecorded('loss unread')).kind, 'notRecorded', 'an unread fuel loss is never no delivery');
   assert.match(unread.kind === 'notRecorded' ? unread.reason : '', /fuel unread/);
 });
 

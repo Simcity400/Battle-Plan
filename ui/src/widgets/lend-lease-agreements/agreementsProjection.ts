@@ -53,7 +53,8 @@ export function lastDelivery(terms: Pick<LeaseTerms, 'lastDelivery' | 'delivered
   if (terms.lastDelivery > 0) return knownValue(terms.lastDelivery);
   const sent = [...terms.delivered, ...terms.sunk].some(item => BigInt(item.amountRaw) !== 0n);
   if (fuelDelivered(terms, fuelSent, fuelLost) || sent) return notRecorded('The last delivery date was not recorded, though deliveries were');
-  if (fuelSent.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${fuelSent.reason}`);
+  const unread = [fuelSent, fuelLost].find(value => value.kind === 'notRecorded');
+  if (unread?.kind === 'notRecorded') return notRecorded(`The last delivery date was not recorded, and whether fuel was sent is not known: ${unread.reason}`);
   return notApplicable('No delivery yet');
 }
 

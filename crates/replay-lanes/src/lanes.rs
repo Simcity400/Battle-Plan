@@ -1216,6 +1216,19 @@ impl Chart {
         for totals in &mut self.totals {
             *totals = Totals { sum: if sum { totals.sum } else { 0 }, abs: if abs { totals.abs } else { 0 }, falls: if falls { totals.falls } else { 0 }, changes: if changes { totals.changes } else { 0 } };
         }
+        let bins = self.bins;
+        let seen: Vec<bool> = (0..self.keys.len()).map(|at| (at * bins..(at + 1) * bins).any(|index| self.values[index].hours > 0 || self.life[index] > 0)).collect();
+        if seen.iter().all(|&seen| seen) {
+            return self;
+        }
+        let kept = |at: &usize| seen[*at];
+        let rows: Vec<usize> = (0..self.keys.len()).filter(kept).collect();
+        self.keys = rows.iter().map(|&at| self.keys[at]).collect();
+        self.values = rows.iter().flat_map(|&at| self.values[at * bins..(at + 1) * bins].to_vec()).collect();
+        self.life = rows.iter().flat_map(|&at| self.life[at * bins..(at + 1) * bins].to_vec()).collect();
+        if !self.totals.is_empty() {
+            self.totals = rows.iter().flat_map(|&at| self.totals[at * bins..(at + 1) * bins].to_vec()).collect();
+        }
         self
     }
 }
@@ -1315,6 +1328,7 @@ pub fn chart_at(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
+    ordinal_of(recording, run, from)?;
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = match level {
@@ -1348,8 +1362,8 @@ pub fn chart_at(
         .par_iter()
         .map(|bytes| -> io::Result<Option<(Piece<'_>, ColumnFrame)>> {
             let piece = Piece::read(bytes)?;
-            let Some(column) = piece.column_of(source) else { return Ok(None) };
-            let frame = piece.column(column)?;
+            let Some(at) = piece.column_of(source).filter(|&at| piece.directory.columns[at].1 & column.aggregates == column.aggregates) else { return Ok(None) };
+            let frame = piece.column(at)?;
             Ok(Some((piece, frame)))
         })
         .collect::<io::Result<Vec<_>>>()?
@@ -2109,6 +2123,7 @@ fn top_with(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
+    ordinal_of(recording, run, from)?;
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = pieces(recording, run, table.index(), blocks.clone(), level)?;
@@ -2124,8 +2139,8 @@ fn top_with(
             Ok((span, Some((piece, frame, column))))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let mut lacking: Vec<(i64, i64, i64)> = decoded.iter().filter(|(_, held)| held.is_none()).map(|(span, _)| *span).collect();
-    lacking.sort_unstable();
+    let mut spans: Vec<(i64, i64, i64)> = decoded.iter().map(|(span, _)| *span).collect();
+    spans.sort_unstable();
     let decoded = decoded.into_iter().filter_map(|(_, decoded)| decoded).collect::<Vec<_>>();
     let covered: Vec<(i64, i64)> = decoded
         .iter()
@@ -2170,17 +2185,14 @@ fn top_with(
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
         false => {
-            let mut starts: Vec<i64> = lacking.iter().map(|&(first, ..)| first).chain(covered.iter().map(|&(lo, _)| lo)).collect();
-            starts.sort_unstable();
-            grid.top_folded(&decoded, &walked, &WalkGrid { lacking: &lacking, starts: &starts, ends: &walked_ends, covered: &covered, bucket_hours: summary::bucket_hours(level) }, n, by)
+            grid.top_folded(&decoded, &walked, &WalkGrid { spans: &spans, ends: &walked_ends, covered: &covered, bucket_hours: summary::bucket_hours(level) }, n, by)
         }
     }
 }
 
 #[derive(Clone, Copy)]
 struct WalkGrid<'a> {
-    lacking: &'a [(i64, i64, i64)],
-    starts: &'a [i64],
+    spans: &'a [(i64, i64, i64)],
     ends: &'a [i64],
     covered: &'a [(i64, i64)],
     bucket_hours: i64,
@@ -2189,15 +2201,13 @@ struct WalkGrid<'a> {
 impl WalkGrid<'_> {
     fn mark(&self, hour: i64) -> u64 {
         let bucket_last = |size: i64| (hour.div_euclid(size) + 1) * size - 1;
-        let last = match self.lacking.get(self.lacking.partition_point(|&(_, last, _)| last < hour)).filter(|&&(first, ..)| first <= hour) {
+        let range_last = self.ends[self.ends.partition_point(|&end| end < hour).min(self.ends.len() - 1)];
+        let at = self.spans.partition_point(|&(_, last, _)| last < hour);
+        let last = match self.spans.get(at).filter(|&&(first, ..)| first <= hour) {
             Some(&(_, last, size)) => bucket_last(size).min(last),
-            None => {
-                let range_last = self.ends[self.ends.partition_point(|&end| end < hour).min(self.ends.len() - 1)];
-                let before_piece = self.starts.get(self.starts.partition_point(|&start| start <= hour)).map_or(i64::MAX, |&start| start - 1);
-                bucket_last(self.bucket_hours).min(range_last).min(before_piece)
-            }
+            None => bucket_last(self.bucket_hours).min(self.spans.get(at).map_or(i64::MAX, |&(first, ..)| first - 1)),
         };
-        hour_mark(last)
+        hour_mark(last.min(range_last))
     }
 }
 
