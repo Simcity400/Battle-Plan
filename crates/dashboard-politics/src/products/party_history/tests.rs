@@ -65,7 +65,7 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert_eq!(parties.parties["communism"].parts, [owned(1, 128, LAST)], "a reused part id belongs to its new token only from its first reading");
     assert_eq!(parties.parties["fascism"].parts, [owned(2, 100, 114), owned(2, 116, 123), owned(2, 126, LAST)]);
     let ruling = |token: &str, first, last, starts_segment| RulingRun { token: token.into(), first_hour: first, last_hour: last, starts_segment };
-    assert_eq!(parties.ruling, [ruling("democratic", 100, 109, true), ruling("fascism", 110, 114, false), ruling("fascism", 116, 123, true), ruling("fascism", 126, LAST, true)], "a run after a gap is no change of government");
+    assert_eq!(parties.ruling.runs, [ruling("democratic", 100, 109, true), ruling("fascism", 110, 114, false), ruling("fascism", 116, 123, true), ruling("fascism", 126, LAST, true)], "a run after a gap is no change of government");
     let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person, first_hour: first, last_hour: last, starts_segment };
     assert_eq!(parties.leaders, [leader(None, 100, 104, true), leader(Some(0), 105, 114, false), leader(Some(0), 116, LAST, true)], "an unread party table does not discard the leader read beside it");
     assert_eq!(parties.people.len(), 1);
@@ -77,8 +77,17 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
         "an election is dated from its recorded date and revealed when read, also while the party table is unread; the first date read is no election"
     );
     assert_eq!(parties.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(115, 115), (124, 125)]);
-    assert_eq!(parties.party_name_runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>(), [(100, 109), (110, 114), (116, 123), (126, LAST)]);
-    assert!(parties.namings.iter().all(|(naming, _)| naming.key.is_none() && naming.tag.as_deref() == Some("GER")));
+    assert_eq!(parties.ruling.name_runs.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>(), [(100, 109), (110, 114), (116, 123), (126, LAST)]);
+    assert!(parties.ruling.namings.iter().all(|(naming, _)| naming.key.is_none() && naming.tag.as_deref() == Some("GER")));
+    let (_stack, recorded, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+        "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        "",
+        &[],
+    );
+    let politics = super::politics_content(&recorded, load.content().unwrap()).unwrap();
+    let params = dashboard_base::products::CountryParams { branch_id: "1".into(), country: "GER".into() };
+    let reply = super::present(Ok(&politics), &params, "GER", &parties, &AtomicBool::new(false)).unwrap();
+    assert!(reply.warnings.iter().any(|warning| warning == "party name: original tag reference of country appearance capture refused"));
 }
 
 #[test]
