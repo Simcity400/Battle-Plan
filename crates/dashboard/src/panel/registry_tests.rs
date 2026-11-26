@@ -154,9 +154,8 @@ fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
         "autonomy-levels", "casualty-matrix",
         "country-faction-goals", "country-fuel",
-        "decryption",
         "faction-details", "factory-parts",
-        "occupation-at", "operative-matrix", "operatives-roster",
+        "occupation-at",
         "resource-balance",
         "territory-breakdown", "trade-flow",
         "volunteer-flow", "war-contributions",
