@@ -27,10 +27,10 @@ function heroRow(readView: BoundedReadView, current: FocusCardCurrent, hour: num
     parts.push(`Day ${Math.min(current.elapsedDays + 1, Math.ceil(current.totalDays))} of ${daysText(current.totalDays)}`);
   }
   if (current.daysLeft !== null) parts.push(`due ${formatDateOnly(hour + current.daysLeft * 24)}`);
-  const figure = current.daysLeft !== null
-    ? { value: knownValue(String(current.daysLeft)), caption: current.daysLeft === 1 ? 'Day left' : 'Days left' }
-    : current.paused && current.progressMissing === null
-      ? { value: notApplicable('The focus is paused'), caption: 'Days left' }
+  const figure = current.paused
+    ? { value: notApplicable('The focus is paused'), caption: 'Days left' }
+    : current.daysLeft !== null
+      ? { value: knownValue(String(current.daysLeft)), caption: current.daysLeft === 1 ? 'Day left' : 'Days left' }
       : { value: notRecorded(current.progressMissing ?? 'Days left were not recorded'), caption: 'Days left' };
   const meter = current.permyriad !== null
     ? { fraction: current.permyriad === 0 ? { kind: 'zero' as const, value: 0 as const } : knownValue(current.permyriad / 10_000) }

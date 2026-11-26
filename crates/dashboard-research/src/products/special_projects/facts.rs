@@ -242,6 +242,12 @@ pub struct Facts {
     pub observed: Vec<(i32, i32)>,
     pub partial: Vec<(i32, i32)>,
     pub reads: BTreeMap<u32, Vec<(i32, i32, i32)>>,
+    pub first_definitions: BTreeMap<u32, i32>,
+    pub first_characters: BTreeMap<u32, i32>,
+}
+
+fn earliest(firsts: &mut BTreeMap<u32, i32>, id: u32, hour: i32) {
+    firsts.entry(id).and_modify(|held| *held = (*held).min(hour)).or_insert(hour);
 }
 
 pub fn extend(spans: &mut Vec<(i32, i32)>, first: i32, last: i32) {
@@ -284,13 +290,17 @@ impl Facts {
             let entries = hour.listed.get(&(owner, local)).map_or(&[][..], Vec::as_slice);
             let held = hour.held;
             let named = hour.reads.iter().find(|read| (read.row.owner, read.row.local) == (owner, local) && read.read <= stamp && completed(read.row)).map(|read| (read.row.definition, read.read));
-            self.evidence.entry((country.0, country.1, owner, local)).or_default().read(
+            let evidence = self.evidence.entry((country.0, country.1, owner, local)).or_default();
+            evidence.read(
                 stamp,
                 entries,
                 |entry| start <= entry.date && entry.date <= stamp && held(owner, entry.date, stamp),
                 |earlier| held(owner, earlier, stamp),
                 named,
             );
+            for definition in evidence.entries.iter().filter(|kept| kept.read == stamp).filter_map(|kept| kept.definition) {
+                earliest(&mut self.first_definitions, definition, stamp);
+            }
         }
     }
 
@@ -320,6 +330,10 @@ impl Facts {
             if !hour.published {
                 continue;
             }
+            let character = match &person {
+                Person::Character(id) => Some(*id),
+                _ => None,
+            };
             let look = self.look(Look { definition: row.definition, person, last: remembered.map(|(id, _)| id) });
             let run = Run {
                 first: at,
@@ -335,7 +349,13 @@ impl Facts {
             let runs = &mut self.projects[index].runs;
             match runs.last_mut() {
                 Some(held) if held.last.checked_add(1) == Some(at) && held.same(&run) => held.last = last,
-                _ => runs.push(run),
+                _ => {
+                    runs.push(run);
+                    earliest(&mut self.first_definitions, row.definition, at);
+                    for id in [character, remembered.map(|(id, _)| id)].into_iter().flatten() {
+                        earliest(&mut self.first_characters, id, at);
+                    }
+                }
             }
         }
         if hour.published {

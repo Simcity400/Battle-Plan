@@ -5,7 +5,7 @@ use dashboard_base::products::{LoadContext, Product, check_reply_budget, validat
 use dashboard_core::dto::FocusDatabase;
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -77,10 +77,18 @@ pub(crate) struct CardShape {
     pub undated: u32,
 }
 
-fn first_seen(fold: &Fold, at: usize, tokens: &[&str]) -> HashMap<String, i32> {
+fn token_counts(segment: &crate::products::focus::Segment) -> HashMap<&str, u32> {
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for entry in &segment.order.completed {
+        *counts.entry(entry.token.as_str()).or_default() += 1;
+    }
+    counts
+}
+
+fn first_seen(fold: &Fold, at: usize, entries: &[(u32, &str)]) -> HashMap<u32, i32> {
     let start = fold.segments[at].first;
-    let mut first: HashMap<String, i32> = tokens.iter().map(|token| ((*token).to_owned(), start)).collect();
-    let mut alive: HashSet<&str> = tokens.iter().copied().collect();
+    let mut first: HashMap<u32, i32> = entries.iter().map(|&(ordinal, _)| (ordinal, start)).collect();
+    let mut alive: Vec<(u32, u32, &str)> = entries.iter().map(|&(ordinal, token)| (ordinal, ordinal, token)).collect();
     for back in (0..at).rev() {
         if alive.is_empty() {
             break;
@@ -89,12 +97,17 @@ fn first_seen(fold: &Fold, at: usize, tokens: &[&str]) -> HashMap<String, i32> {
         if earlier.id != later.id || earlier.slot != later.slot || earlier.last.saturating_add(1) != later.first {
             break;
         }
-        let held: HashSet<&str> = earlier.order.completed.iter().map(|entry| entry.token.as_str()).collect();
-        alive.retain(|token| held.contains(token));
-        for token in &alive {
-            if let Some(hour) = first.get_mut(*token) {
-                *hour = earlier.first;
-            }
+        let (before, after) = (token_counts(earlier), token_counts(later));
+        alive = alive
+            .into_iter()
+            .filter_map(|(shown, ordinal, token)| {
+                let unique = before.get(token) == Some(&1) && after.get(token) == Some(&1);
+                let found = earlier.order.completed.iter().find(|entry| entry.token == token && (unique || entry.ordinal == ordinal))?;
+                Some((shown, found.ordinal, token))
+            })
+            .collect();
+        for &(shown, _, _) in &alive {
+            first.insert(shown, earlier.first);
         }
     }
     first
@@ -110,12 +123,12 @@ pub(crate) fn card_at(fold: &Fold, hour: i32) -> CardShape {
     };
     let mut dated: Vec<(String, Option<i32>, i32)> = Vec::new();
     let mut undated: Vec<(String, Option<i32>, i32)> = Vec::new();
-    let unknown: Vec<&str> = segment.order.completed.iter().filter(|entry| entry.completed_by_hour.is_none()).map(|entry| entry.token.as_str()).collect();
+    let unknown: Vec<(u32, &str)> = segment.order.completed.iter().filter(|entry| entry.completed_by_hour.is_none()).map(|entry| (entry.ordinal, entry.token.as_str())).collect();
     let seen = if unknown.is_empty() { HashMap::new() } else { first_seen(fold, index, &unknown) };
     for entry in segment.order.completed.iter().rev() {
         match entry.completed_by_hour {
             Some(when) => dated.push((entry.token.clone(), Some(when), when)),
-            None => undated.push((entry.token.clone(), None, seen.get(&entry.token).copied().unwrap_or(segment.first))),
+            None => undated.push((entry.token.clone(), None, seen.get(&entry.ordinal).copied().unwrap_or(segment.first))),
         }
     }
     dated.sort_by_key(|(_, when, _)| std::cmp::Reverse(*when));

@@ -579,12 +579,51 @@ fn programme_changes(query: &Query<'_>, lanes: &BTreeMap<u32, Lane>, cancelled: 
     }
     let field = dashboard_declare::field;
     let columns = [field(TableId::ProjectPrograms, "owner")?, field(TableId::ProjectPrograms, "active_project")?];
-    for (_, _, _, _, held, _) in histories(query, TableId::ProjectPrograms, &columns, Keys::These(&ids), cancelled)? {
+    let mut coverage: Vec<i32> = Vec::new();
+    let mut projects: BTreeMap<u128, BTreeSet<u64>> = BTreeMap::new();
+    for (_, _, _, _, held, statuses) in histories(query, TableId::ProjectPrograms, &columns, Keys::These(&ids), cancelled)? {
+        coverage.extend(statuses.iter().map(|run| run.first));
         for (key, steps) in held {
-            out.entry(key as u64).or_default().extend(steps.iter().map(|step| step.0));
+            for (first, _, cells) in &steps {
+                out.entry(key as u64).or_default().push(*first);
+                let cells = cells.as_deref().unwrap_or_default();
+                if let (Some(owner), Some(active)) = (number(cells.first()), number(cells.get(1))) {
+                    projects.entry(u128::from(owner as u32) << 32 | u128::from(active as u32)).or_default().insert(key as u64);
+                }
+            }
         }
     }
+    if !projects.is_empty() {
+        let keys: Vec<u128> = projects.keys().copied().collect();
+        let columns = [field(TableId::Projects, "definition_id")?, field(TableId::Projects, "program_reference")?];
+        for (_, _, _, _, held, statuses) in histories(query, TableId::Projects, &columns, Keys::These(&keys), cancelled)? {
+            coverage.extend(statuses.iter().map(|run| run.first));
+            for (key, steps) in held {
+                for programme in projects.get(&key).into_iter().flatten() {
+                    out.entry(*programme).or_default().extend(steps.iter().map(|step| step.0));
+                }
+            }
+        }
+    }
+    for hours in out.values_mut() {
+        hours.extend(&coverage);
+        hours.sort_unstable();
+        hours.dedup();
+    }
     Ok(out)
+}
+
+fn merge_unchanged(runs: Vec<FactionSelectionRun>) -> Vec<FactionSelectionRun> {
+    let mut out: Vec<FactionSelectionRun> = Vec::with_capacity(runs.len());
+    for run in runs {
+        match out.last_mut() {
+            Some(held) if !run.starts_segment && i64::from(held.last_hour) + 1 == i64::from(run.first_hour) && held.token == run.token && held.name == run.name && held.reason == run.reason => {
+                held.last_hour = run.last_hour;
+            }
+            _ => out.push(run),
+        }
+    }
+    out
 }
 
 fn split_programmes(lanes: BTreeMap<u32, Lane>, changes: &HashMap<u64, Vec<i32>>) -> BTreeMap<u32, Lane> {
@@ -623,8 +662,24 @@ fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewp
     let (lanes, doctrines_unread) = ordinal_lanes(query, TableId::FactionDoctrine, field(TableId::FactionDoctrine, "token")?, faction, cancelled)?;
     let doctrines = slot_lanes(&mut naming, lanes, Named::Plain);
     let (lanes, programmes_unread) = ordinal_lanes(query, TableId::FactionPrograms, field(TableId::FactionPrograms, "reference")?, faction, cancelled)?;
-    let changes = programme_changes(query, &lanes, cancelled)?;
-    let programmes = slot_lanes(&mut naming, split_programmes(lanes, &changes), Named::Programme);
+    let programmes = match programme_changes(query, &lanes, cancelled) {
+        Ok(changes) => slot_lanes(&mut naming, split_programmes(lanes, &changes), Named::Programme)
+            .into_iter()
+            .map(|lane| FactionSelectionLane { runs: merge_unchanged(lane.runs), ..lane })
+            .collect(),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        Err(error) => {
+            let reason = format!("Shared programme history was not read: {error}");
+            lanes
+                .into_iter()
+                .filter(|(_, lane)| !lane.runs.is_empty())
+                .map(|(slot, lane)| FactionSelectionLane {
+                    slot,
+                    runs: lane.runs.into_iter().map(|(first, last, value, starts)| selection(first, last, starts, Some(value.to_string()), Err(reason.clone()))).collect(),
+                })
+                .collect()
+        }
+    };
     let mut groups = BTreeSet::new();
     let mut minimums = Vec::new();
     for (group, lane) in minimum_lanes(query, faction, cancelled)? {
@@ -869,6 +924,13 @@ fn manpower(query: &Query<'_>, faction: u64, cancelled: &AtomicBool) -> io::Resu
 mod witnessed_tests {
     use super::*;
     use replay_columnar::manifest::Status;
+
+    #[test]
+    fn a_programme_named_alike_across_a_boundary_keeps_one_run_and_its_first_date() {
+        let run = |first_hour: i32, last_hour: i32, name: &str, starts_segment: bool| FactionSelectionRun { first_hour, last_hour, token: Some("5".into()), name: Some(name.into()), reason: None, starts_segment };
+        let merged = merge_unchanged(vec![run(100, 149, "A", true), run(150, 199, "A", false), run(200, 250, "B", false), run(251, 300, "B", true)]);
+        assert_eq!(merged.iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>(), [(100, 199), (200, 250), (251, 300)], "an unchanged name keeps its date; a renamed project and a new segment start their own");
+    }
 
     #[test]
     fn a_programme_run_is_named_again_where_its_programme_changes_project() {

@@ -4301,7 +4301,11 @@ export type WargoalsReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
  */
-asked: CountryRef, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, removed: Array<WargoalRemoved>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+asked: CountryRef, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, removed: Array<WargoalRemoved>,
+/**
+ * Why a goal removed by this hour could not be attributed to a country, when one could not; the removed list may then be incomplete.
+ */
+removedUnread: string | null, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
 export type WargoalPair = { actor: string, recipient: string,
 /**
  * What the recorded wars and factions prove about the pair; none when neither applies.

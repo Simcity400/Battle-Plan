@@ -209,12 +209,13 @@ export function cardListText(row: CardListRow): string {
 
 function figureText(figure: CardFigure): string {
   const formatted = formatValueState(figure.value);
-  return formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? notRecordedLabel(figure.figure) : formatted.text;
+  if (formatted.kind === 'notApplicable') return formatted.label;
+  return formatted.kind === 'notRecorded' ? notRecordedLabel(figure.figure) : formatted.text;
 }
 
 function figureSpoken(figure: CardFigure): string {
   const formatted = formatValueState(figure.value);
-  return formatted.kind === 'partial' ? formatted.spoken : figureText(figure);
+  return formatted.kind === 'partial' || formatted.kind === 'notApplicable' ? formatted.spoken : figureText(figure);
 }
 
 function partialItem(value: Value | undefined): TooltipListItem[] {
@@ -284,7 +285,7 @@ function spokenRow(row: CardEntryRow): string[] {
   if (row.kind === 'hero') {
     parts.push(row.state.label);
     if (row.detail) parts.push(row.detail);
-    if (row.figure) parts.push(`${figureSpoken({ value: row.figure.value })} ${row.figure.caption}`);
+    if (row.figure) parts.push(`${row.figure.caption}: ${figureSpoken({ value: row.figure.value })}`);
     return parts;
   }
   if (row.date) parts.push(row.date.hour === null ? notRecordedLabel('Date') : formatDateOnly(row.date.hour));

@@ -498,6 +498,15 @@ fn completions_are_ordered_by_their_dates_and_each_is_presented_at_the_hour_it_w
         ..Default::default()
     };
     assert_eq!(card_at(&reordered, 170).completed, [("other".to_owned(), None, 100), ("early".to_owned(), None, 100)], "a witnessed reorder keeps an undated completion's first-seen hour");
+    let repeated = Fold {
+        segments: vec![
+            Segment { first: 100, last: 104, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "x", None)], current: Some("now".into()), continuous: None, paused: false } },
+            Segment { first: 105, last: 149, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "x", None), entry(1, "x", None)], current: Some("now".into()), continuous: None, paused: false } },
+            Segment { first: 150, last: 200, slot: 7, id: 1, order: FocusOrder { completed: vec![entry(0, "x", None), entry(1, "x", None)], current: Some("next".into()), continuous: None, paused: false } },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(card_at(&repeated, 170).completed, [("x".to_owned(), None, 100), ("x".to_owned(), None, 105)], "a repeated focus keeps each completion's own first-seen hour");
     let hours = observed_hours(&card);
     assert_eq!(hours.get(&110), Some(&vec!["later".to_owned()]));
     assert_eq!(hours.get(&105), Some(&vec!["middle".to_owned()]));

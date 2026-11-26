@@ -225,6 +225,18 @@ fn t2_a_marker_read_late_is_its_own_dated_completion_and_never_dates_the_status(
 }
 
 #[test]
+fn current_carries_the_attempt_the_shown_status_and_only_the_marker_that_dates_it() {
+    let facts = recorded("current-pick", 20, 30, |at| Hour { history: if at >= 26 { vec![(0, M, 24)] } else { Vec::new() }, ..hour(at, if at < 24 { RUNNING } else { COMPLETED }) });
+    let project = &facts.projects[0];
+    let evidence = facts.evidence_of(project).unwrap();
+    let late = super::current_pick(project, evidence, 30).unwrap();
+    assert_eq!((late.runs.iter().map(|run| (run.first, run.state)).collect::<Vec<_>>(), late.block_first), (vec![(20, ProjectState::Running), (24, ProjectState::Completed)], Some(24)));
+    assert_eq!(late.marker.map(|kept| (kept.entry.date, kept.read)), Some((24, 26)), "the marker of its own attempt, once read");
+    assert!(super::current_pick(project, evidence, 25).unwrap().marker.is_none(), "a marker read after the hour does not date it yet");
+    assert_eq!(facts.first_definitions.values().copied().min(), Some(20), "a definition is first seen at its first status, kept as it is read");
+}
+
+#[test]
 fn t3_markers_are_kept_once_each_across_an_unknown_state_and_unavailable_projects() {
     let facts = recorded("t3", 20, 26, |at| Hour {
         history: match at { 20..=21 => vec![(0, M, 20)], _ => vec![(0, M, 20), (1, M, 22)] },

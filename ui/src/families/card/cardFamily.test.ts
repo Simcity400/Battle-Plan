@@ -67,6 +67,10 @@ test('a focus card shows the product’s dated completions, then its undated one
   const paused = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, paused: true, daysLeft: null } }), {});
   const pausedHero = paused.rows[0] as CardHeroRow;
   assert.deepEqual([pausedHero.state.label, pausedHero.figure?.value.kind, pausedHero.detail], ['Paused', 'notApplicable', 'Day 32 of 70'], 'a paused focus keeps its progress and shows no due date');
+  const pausedSpoken = deriveCardMirror(paused).rows[0]!.cells.map(cell => cell.spoken).join(' | ');
+  assert.match(pausedSpoken, /Days left: Not applicable: The focus is paused/, 'the mirror says the countdown does not apply, never that it was not recorded');
+  const pausedUnread = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, paused: true, daysLeft: null, permyriad: null, progressMissing: 'Daily progress was not recorded' } }), {});
+  assert.equal((pausedUnread.rows[0] as CardHeroRow).figure?.value.kind, 'notApplicable', 'a paused countdown does not apply whatever the progress coverage');
 
   const gap = nationalFocusProjection.project(view(hour, { ...reply, current: null, completed: [], undated: 0, missing: { firstHour: hour, lastHour: hour + 5, reason: 'No focus row was recorded for this country' } }), {});
   assert.deepEqual([gap.empty, gap.emptyKind], ['No focus row was recorded for this country', 'unavailable']);
@@ -85,7 +89,7 @@ test('war goals keep the product’s order and states, show a missing expiry by 
       { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
       { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
     warnings: [],
     stateNames: [{ id: 1, name: 'Invented state 1', known: true }, { id: 2, name: 'Invented state 2', known: true }, { id: 3, name: 'Invented state 3', known: true }, { id: 4, name: 'Invented state 4', known: true }, { id: 5, name: 'Invented state 5', known: true }],
   };
@@ -101,6 +105,8 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(rows[1]!.place, 'Invented state 2 · Invented state 3');
   assert.equal(rows[2]!.figure?.value.kind, 'notRecorded', 'an unrecorded expiry is named, never blank');
   const unreadWar = items(warGoalsProjection.project(view(hour, { ...reply, goals: [{ ...reply.goals[1]!, state: 'unknown' }], justifications: [], removed: [] }, live), { targetNames: false }))[0]!;
+  const unattributed = warGoalsProjection.project(view(hour, { ...reply, goals: [], justifications: [], removed: [], removedUnread: 'Who held a removed war goal was not read at its last hour' }, live), { targetNames: false });
+  assert.deepEqual([unattributed.empty, unattributed.emptyKind], ['Who held a removed war goal was not read at its last hour', 'unavailable'], 'unattributed removals never read as "No war goals"');
   assert.equal(unreadWar.state, undefined, 'unread war relations claim no state');
   assert.equal(unreadWar.figure?.value.kind, 'notRecorded');
   assert.equal(rows[3]!.muted, true);
@@ -123,7 +129,7 @@ test('a war goal target whose name is still loading reads as loading on the card
   const reply: WargoalsReply = {
     branchId: '1', tag: 'AAA', asked: 'AAA',
     standings: [], justifications: [], warnings: [],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
     goals: [{ handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
     stateNames: [{ id: 4, name: 'Invented state 4', known: true }],
   };
@@ -309,6 +315,11 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   assert.deepEqual(model.warnings, ['Name refused'], 'a diagnostic is shown at an hour whose row carries it');
   const earlier = factionUpgradesProjection.project(createBoundedReadView({ hour: 105, panels: new Map([['faction:5', reply]]) }), { groups, subject: 'AAA', branchFirst: 0 });
   assert.equal(earlier.warnings, undefined, 'a diagnostic of a later run is not shown before it');
+  const hiddenRules = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', { ...reply, rulesUnread: [{ firstHour: 140, lastHour: 160 }] }]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.equal(hiddenRules.warnings, undefined, 'a rule row not shown gives no diagnostic');
+  const grouped = { ...reply, minimums: [{ group: 4, runs: [run(60, 'Invented minimum')] }], groups: [{ group: 4, name: null, reason: 'Group name refused' }] };
+  const withGroup = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', grouped]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.ok(withGroup.warnings?.includes('Group name refused'), 'a shown row keeps its group\u2019s recorded reason');
   const unreadRules = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', { ...reply, rulesUnread: [{ firstHour: 140, lastHour: 160 }] }]]) }), { groups, subject: 'AAA', branchFirst: 0 });
   assert.deepEqual(unreadRules.rows.slice(0, 2).map(row => row.kind === 'section' ? `${row.label} ${row.count ?? ''}` : row.kind === 'list' ? `missing:${row.missing}` : row.key), ['Rules ', 'missing:The faction’s rules were not read at this date'], 'an unread rules table is never "Rules 0"');
   assert.equal(unreadRules.nextChangeAt, 161);

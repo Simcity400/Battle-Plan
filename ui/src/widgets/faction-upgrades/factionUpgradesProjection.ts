@@ -114,9 +114,14 @@ function nextBoundary(reply: FactionRulesReply, hour: number): number {
   return next;
 }
 
-function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: number, branchFirst: number): CardItemRow[] {
+function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: number, branchFirst: number, reasons: Set<string>): CardItemRow[] {
   const gaps = reply.unobserved;
-  const groupName = (group: number) => reply.groups.find(item => item.group === group)?.name ?? 'Upgrade group not recorded';
+  const groupName = (group: number) => {
+    const found = reply.groups.find(item => item.group === group);
+    if (found?.name) return found.name;
+    reasons.add(found?.reason ?? 'Upgrade group not recorded');
+    return 'Upgrade group not recorded';
+  };
   const out: CardItemRow[] = [];
   for (const lane of reply.programmes) {
     const run = runAtHour(lane.runs, hour);
@@ -156,8 +161,8 @@ export const factionUpgradesProjection: CardProjection<FactionUpgradesOptions> =
       const run = runAtHour(lane.runs, hour);
       return run ? [row(`rule:${lane.slot}`, run, undefined, raw.unobserved, options.branchFirst)] : [];
     });
-    const upgrades = upgradeRows(readView, raw, hour, options.branchFirst);
-    const warnings = [...new Set([...raw.warnings, ...[...rules, ...upgrades].flatMap(item => (item.title.kind === 'notRecorded' ? [item.title.reason] : []))])];
+    const reasons = new Set<string>(raw.warnings);
+    const upgrades = upgradeRows(readView, raw, hour, options.branchFirst, reasons);
     const rulesUnread = raw.rulesUnread.some(span => covers(span, hour));
     const rows: CardRow[] = [
       ...(rulesUnread
@@ -167,6 +172,8 @@ export const factionUpgradesProjection: CardProjection<FactionUpgradesOptions> =
         ? [{ kind: 'section', key: '__upgrades', label: 'Upgrades' } as const, ...upgrades, { kind: 'list', key: '__upgrades-unread', items: [], missing: 'The faction’s upgrades were not read whole at this date', none: '' } as const]
         : [{ kind: 'section', key: '__upgrades', label: 'Upgrades', count: upgrades.length } as const, ...upgrades]),
     ];
+    for (const shown of rows) if (shown.kind === 'item' && shown.title.kind === 'notRecorded') reasons.add(shown.title.reason);
+    const warnings = [...reasons];
     return {
       hour,
       rows,
