@@ -786,7 +786,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
-    const boundCoalition = column.display === 'flag' && cell.flags.length > 2;
+    const boundCoalition = (column.display === 'flag' || column.display === 'flagName') && cell.flags.length > 2;
     for (const fl of cell.flags) {
       if (fl.separator && fx > left) {
         if ((column.narrow === 'flag' || boundCoalition) && fx + 7 + FLAG_SLOT_WIDTH > right) break;

@@ -3907,6 +3907,33 @@ test('flag columns widen for multi-country coalitions past row 40, preserve two-
   assert.ok(resizedTexts.includes('AA') && resizedTexts.includes('CC'), 'leading coalition flags fit inside a resized 68px column');
   assert.equal(resizedTexts.includes('BB') || resizedTexts.includes('DD'), false, 'coalition flags stop at the resized column edge instead of overlapping the next column');
 
+  const namedSettings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'name', direction: 'ascending' } });
+  namedSettings.columns.country = { ...namedSettings.columns.country!, as: 'flagName', showNames: true };
+  const resizedNamedLayout = layoutFamilyTable(buildColumnLayouts(columns, namedSettings, { country: 68, name: 220 }), 300, { rhythm: 'log' });
+  const resizedNamedGrid = gridContext(300, 120);
+  drawFamilyTable(resizedNamedGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: resizedNamedLayout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[0]!] }, namedSettings),
+    settings: namedSettings,
+    hour: 1,
+    width: 300,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const resizedNamedTexts = [...resizedNamedGrid.marks.values()];
+  assert.ok(resizedNamedTexts.includes('AA') && resizedNamedTexts.includes('CC'), 'leading coalition flags fit inside a resized 68px flagName column');
+  assert.equal(resizedNamedTexts.includes('BB') || resizedNamedTexts.includes('DD'), false, 'coalition flags stop at the resized flagName column edge');
+
   const rows45 = Array.from({ length: 45 }, (_, idx) => ({
     key: `r${idx}`,
     name: `Battle ${idx}`,
@@ -3925,7 +3952,7 @@ test('flag columns widen for multi-country coalitions past row 40, preserve two-
     kind: lateKind,
     family: 'table',
     theme: TEST_THEME,
-    project: readView => ({ hour: readView.hour, columns, rows: rows45 }),
+    project: readView => ({ hour: readView.hour, rhythm: 'log', columns, rows: rows45 }),
   });
   const prevOffscreen = globalThis.OffscreenCanvas;
   (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
