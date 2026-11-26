@@ -1,4 +1,4 @@
-import { ellipsise } from '../../charts/labels.ts';
+import { disambiguateLabels, ellipsise, graphemes } from '../../charts/labels.ts';
 import { textWidth, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawBar,
@@ -46,7 +46,15 @@ function fitText(ctx: Canvas2D, text: string, maxWidth: number): string {
   return ellipsise(text, maxWidth, s => textWidth(ctx, s));
 }
 
-function drawPartName(ctx: Canvas2D, part: BreakdownPart, x: number, cy: number, maxWidth: number, theme: FamilyTheme): void {
+function drawPartName(
+  ctx: Canvas2D,
+  part: BreakdownPart,
+  x: number,
+  cy: number,
+  maxWidth: number,
+  theme: FamilyTheme,
+  resolvedText?: string,
+): void {
   let at = x;
   let room = maxWidth;
   if (part.nameMissing) {
@@ -56,7 +64,33 @@ function drawPartName(ctx: Canvas2D, part: BreakdownPart, x: number, cy: number,
     at += mark.width + 5;
     room -= mark.width + 5;
   }
-  ctx.fillText(fitText(ctx, part.name, room), at, cy);
+  ctx.fillText(resolvedText ?? fitText(ctx, part.name, room), at, cy);
+}
+
+function resolveSiblingNames(
+  ctx: Canvas2D,
+  entries: readonly { readonly key: string; readonly group: string; readonly name: string; readonly room: number; readonly font: string }[],
+): Map<string, string> {
+  const result = new Map<string, string>();
+  const byGroup = new Map<string, typeof entries[number][]>();
+  for (const entry of entries) {
+    const list = byGroup.get(entry.group);
+    if (list) list.push(entry);
+    else byGroup.set(entry.group, [entry]);
+  }
+  for (const group of byGroup.values()) {
+    if (group.length < 2) continue;
+    ctx.save();
+    ctx.font = group[0]!.font;
+    const fitted = disambiguateLabels(
+      group.map(item => item.name),
+      group.map(item => item.room),
+      s => textWidth(ctx, s),
+    );
+    ctx.restore();
+    for (let i = 0; i < group.length; i++) result.set(group[i]!.key, fitted[i]!);
+  }
+  return result;
 }
 
 function drawComparison(ctx: Canvas2D, comparison: BreakdownComparison, box: Rect, cy: number, theme: FamilyTheme): void {
@@ -134,6 +168,21 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
   const trackFill = tokens.partsTrack;
   const treeStroke = tokens.hairlineStrong;
 
+  const visibleEntries: { readonly key: string; readonly group: string; readonly name: string; readonly room: number; readonly font: string }[] = [];
+  for (let at = firstRowFrom(layout.rows, scrollTop - 2); at < layout.rows.length; at++) {
+    const row = layout.rows[at]!;
+    const sy = viewTop + row.y - scrollTop;
+    if (sy > layout.height + 2) break;
+    if (row.part.nameMissing) continue;
+    const indent = row.depth === 0
+      ? (row.part.flagArt && !layout.narrow ? FLAG_SLOT_WIDTH + 6 : 18)
+      : (row.depth === 1 && row.part.flagArt && !layout.narrow ? FLAG_SLOT_WIDTH + 6 : 0);
+    const room = Math.max(10, row.nameWidth - indent);
+    const font = row.depth <= 1 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
+    visibleEntries.push({ key: row.key, group: `${row.depth}:${row.parentKey ?? ''}`, name: row.part.name, room, font });
+  }
+  const resolvedNames = resolveSiblingNames(ctx, visibleEntries);
+
   for (let at = firstRowFrom(layout.rows, scrollTop - 2); at < layout.rows.length; at++) {
     const row = layout.rows[at]!;
     const sy = viewTop + row.y - scrollTop;
@@ -175,7 +224,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      drawPartName(ctx, row.part, cursorX, cy, textMaxW, theme);
+      drawPartName(ctx, row.part, cursorX, cy, textMaxW, theme, resolvedNames.get(row.key));
       ctx.restore();
 
       const barH = 12;
@@ -257,7 +306,7 @@ function drawPartsView(ctx: Canvas2D, input: BreakdownPaintInput, layout: PartsV
       ctx.fillStyle = row.depth === 1 ? theme.text : theme.muted;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      drawPartName(ctx, row.part, nameX, cy, Math.max(10, row.nameX + row.nameWidth - nameX), theme);
+      drawPartName(ctx, row.part, nameX, cy, Math.max(10, row.nameX + row.nameWidth - nameX), theme, resolvedNames.get(row.key));
       ctx.restore();
 
       const barH = row.depth === 1 ? 8 : 6;
@@ -320,7 +369,7 @@ function drawArcText(
   ctx.fillStyle = ink;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const chars = [...text];
+  const chars = graphemes(text);
   const widths = chars.map(ch => textWidth(ctx, ch));
   const totalW = widths.reduce((a, b) => a + b, 0);
   const totalAngle = totalW / Math.max(1, r);
@@ -488,6 +537,19 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
     const valRight = list.x + list.width - shareW - 6;
     const shareRight = list.x + list.width;
 
+    const sideEntries: { readonly key: string; readonly group: string; readonly name: string; readonly room: number; readonly font: string }[] = [];
+    for (let at = firstRowFrom(list.rows, scrollTop - 2); at < list.rows.length; at++) {
+      const row = list.rows[at]!;
+      const sy = list.top + row.y - scrollTop;
+      if (sy > list.top + list.height + 2) break;
+      if (row.part.nameMissing) continue;
+      const nameX = row.depth === 0 ? list.x + 30 : list.x + (row.depth === 1 ? 44 : 58);
+      const room = Math.max(20, valRight - valW - 8 - nameX);
+      const font = row.depth === 0 ? `400 12px ${theme.font}` : `400 11.5px ${theme.font}`;
+      sideEntries.push({ key: row.key, group: `${row.depth}:${row.parentKey ?? ''}`, name: row.part.name, room, font });
+    }
+    const sideResolved = resolveSiblingNames(ctx, sideEntries);
+
     for (let at = firstRowFrom(list.rows, scrollTop - 2); at < list.rows.length; at++) {
       const row = list.rows[at]!;
       const sy = list.top + row.y - scrollTop;
@@ -526,7 +588,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         ctx.fillStyle = row.part.notRecorded ? theme.muted : theme.text;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme, sideResolved.get(row.key));
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {
@@ -560,7 +622,7 @@ function drawRingView(ctx: Canvas2D, input: BreakdownPaintInput, layout: RingVie
         ctx.fillStyle = theme.muted;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        drawPartName(ctx, row.part, nameX, cy, nameW, theme);
+        drawPartName(ctx, row.part, nameX, cy, nameW, theme, sideResolved.get(row.key));
 
         ctx.textAlign = 'right';
         if (row.part.notRecorded) {

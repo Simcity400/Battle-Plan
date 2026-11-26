@@ -90,3 +90,72 @@ test('factionStrengthRaceProjection sends group to Rust, keeps missing factions 
   const sentParams = (plan.entries[0]!.read as { params: Record<string, unknown> }).params;
   assert.deepEqual(sentParams.group, { type: 'humans', membership: 'hour' }, 'aggregated group sent to Rust');
 });
+
+test('ten uncoloured factions and sparse faction ids receive distinct colours without collisions across race and lines', async () => {
+  const { factionColourOrdinals } = await import('../../families/bars/factionTotalsRace.ts');
+  const { projectFactionTotalsLines } = await import('../../families/time-chart/factionTotalsLines.ts');
+
+  const fullRoster = Array.from({ length: 2048 }, (_, i) => String(i));
+  const overflow = factionColourOrdinals(['extra'], fullRoster);
+  assert.equal(overflow.get('extra'), 2048, 'extra faction beyond 2,048 known ids terminates without hanging');
+
+  const rows = Array.from({ length: 10 }, (_, i) => ({
+    id: String(i + 1),
+    members: [],
+    memberCountries: [],
+    total: 100 - i,
+    missing: null,
+  }));
+  const reply: FactionTotalsAtReply = { hour: 300, kind: 'territory', measure: 'states', rows, missing: null, warnings: [] };
+  const view = createBoundedReadView({
+    hour: displayedHour(300),
+    panels: new Map([['main', reply]]),
+    identity: fakeIdentity({}),
+  });
+  const model = factionStrengthRaceProjection.project(view, OPTS);
+  const colors = model.rows.filter((r): r is BarsDataRow => r.kind === 'data').map(r => r.color);
+  assert.equal(new Set(colors).size, 10);
+
+  const sparseReply: FactionTotalsAtReply = {
+    hour: 300,
+    kind: 'territory',
+    measure: 'states',
+    rows: [
+      { id: '25', members: [], memberCountries: [], total: 100, missing: null },
+      { id: '50', members: [], memberCountries: [], total: 80, missing: null },
+    ],
+    missing: null,
+    warnings: [],
+  };
+  const sparseRaceModel = factionStrengthRaceProjection.project(
+    createBoundedReadView({ hour: displayedHour(300), panels: new Map([['main', sparseReply]]), identity: fakeIdentity({}) }),
+    OPTS,
+  );
+  const sparseRaceColors = sparseRaceModel.rows.filter((r): r is BarsDataRow => r.kind === 'data').map(r => r.color);
+  assert.notEqual(sparseRaceColors[0], sparseRaceColors[1], 'sparse ids 25 and 50 do not collide in race');
+
+  const sparseLinesModel = projectFactionTotalsLines(
+    createBoundedReadView({ hour: displayedHour(300), panels: new Map([['head', sparseReply]]), identity: fakeIdentity({}) }),
+    {
+      kind: 'faction-strength',
+      seriesKind: 'territory',
+      measure: 'states',
+      measureLabel: 'States',
+      aggregated: false,
+      directTiles: false,
+      top: null,
+      factions: [],
+      groupLabel: 'Group',
+      endLabels: false,
+      settings: { windowHours: null, yMin: null, yMax: null, log: false },
+      extent: [0, 300],
+      gaps: [],
+      surface: OPTS.surface,
+      rosterUnread: [],
+    },
+  );
+  const sparseLinesColors = sparseLinesModel.series.map(s => s.color);
+  assert.equal(sparseLinesColors.length, 2);
+  assert.notEqual(sparseLinesColors[0], sparseLinesColors[1], 'sparse ids 25 and 50 do not collide in lines');
+  assert.deepEqual(sparseLinesColors, sparseRaceColors, 'race and lines assign matching colours for sparse ids even with an empty roster');
+});

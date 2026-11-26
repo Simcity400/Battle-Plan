@@ -1,6 +1,7 @@
 import { measureOf, type TerritoryMeasure } from '../../dashboard/territoryMeasure.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import {
+  branchFactionIds,
   factionSelectionTop,
   factionTotalsSources,
   groupTitleForSelection,
@@ -62,6 +63,7 @@ export const factionStrengthRaceDeclaration: BarsWidgetDeclaration<FactionTotals
       aggregated,
       groupLabel: groupTitleForSelection(ctx.widget.countries),
       top: factionSelectionTop(ctx.widget.countries),
+      factionIds: branchFactionIds(ctx.countries.factions),
       surface: extra.surface,
     };
   },

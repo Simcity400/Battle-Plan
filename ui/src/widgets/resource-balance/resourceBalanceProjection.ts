@@ -67,10 +67,10 @@ function project(readView: BoundedReadView, options: ResourceBalanceOptions): Ba
   if (reply.rows.length === 0 && reply.poolsMissing !== null) {
     return { ...base, rows: [], empty: reply.poolsMissing, emptyKind: 'unavailable', warnings: reply.warnings };
   }
-  const ordinals = new Map(reply.resources.map((info, index) => [info.id, [info, index] as const]));
+  const byId = new Map(reply.resources.map(info => [info.id, info] as const));
   const rows = reply.rows.flatMap(net => {
-    const held = ordinals.get(net.resource);
-    return held ? [row(readView, held[0], held[1], net, reply.decimals, options.surface)] : [];
+    const info = byId.get(net.resource);
+    return info ? [row(readView, info, info.id, net, reply.decimals, options.surface)] : [];
   });
   return {
     ...base,

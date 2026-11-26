@@ -86,3 +86,35 @@ test('a long breakdown lists its largest lines and counts the rest, so it fits t
   assert.equal(rows.filter(row => row.label.startsWith('Spirit')).length, cap);
   assert.deepEqual(rows.find(row => row.label === '3 more lines'), { label: '3 more lines', value: '+0.6%', tone: 'muted' });
 });
+
+test('stability projection merges and deduplicates marker warnings with ranking warnings', async () => {
+  const { stabilityProjection } = await import('./stabilityProjection.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const shared = 'Not in rank order: Countries was not complete at this hour';
+  const markerReason = 'Who holds slot 1 is not known: Countries was not complete at these hours (110–120)';
+  const model = stabilityProjection.project(
+    createBoundedReadView({
+      hour: 200,
+      panels: new Map<string, unknown>([
+        ['rank', { hour: 200, refused: 'Countries was not complete at this hour', rows: [] }],
+        ['markers', {
+          hour: 200,
+          nextChange: null,
+          markers: [],
+          warnings: [shared, markerReason, markerReason],
+        }],
+      ]),
+    }),
+    {
+      tags: ['GER'],
+      extent: [100, 200],
+      showStability: true,
+      showWarSupport: true,
+      zoom: false,
+      windowHours: null,
+      gaps: [],
+      surface: '#111111',
+    },
+  );
+  assert.deepEqual(model.warnings, [shared, markerReason]);
+});

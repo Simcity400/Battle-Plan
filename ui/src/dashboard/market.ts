@@ -61,13 +61,23 @@ export function fixedText(raw: bigint, denominator = FIXED5): string {
 
 export const priceLevel = (level: number | null): string => level === null ? '—' : ['Low', 'Normal', 'High'][level] ?? 'Price level unavailable';
 
-export interface Equipment { name: string | null; icon: string | null; missing: string | null }
+export interface Equipment { name: string | null; icon: string | null; missing: string | null; iconMissing: string | null }
 export function equipmentOf(reply: Pick<MarketLendLeaseReply, 'variants' | 'icons'>): (variant: string) => Equipment {
   const images = new Map(reply.icons.map(icon => [icon.key, icon.image]));
   const variants = new Map(reply.variants.map(variant => [variant.id, variant]));
   return variant => {
     const held = variants.get(variant);
-    return { name: held?.name ?? null, icon: held?.icon ? images.get(held.icon) ?? null : null,
-      missing: held ? held.nameUnknown ?? null : 'The recording does not name this design at this hour.' };
+    const icon = held?.icon ? images.get(held.icon) ?? null : null;
+    const iconMissing = icon !== null
+      ? null
+      : held
+        ? (held.iconUnknown ?? (held.icon ? `${held.icon}: the product drew no icon for this equipment` : 'The recording names no icon for this equipment'))
+        : 'The recording does not name this design at this hour.';
+    return {
+      name: held?.name ?? null,
+      icon,
+      missing: held ? held.nameUnknown ?? null : 'The recording does not name this design at this hour.',
+      iconMissing,
+    };
   };
 }

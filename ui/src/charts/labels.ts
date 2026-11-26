@@ -100,6 +100,242 @@ export function ellipsise(text: string, width: number, measure: (text: string) =
   return fitPrefix(parts, ELLIPSIS, parts.length, width, measure);
 }
 
+function fitDiffWindow(
+  parts: readonly string[],
+  diffStart: number,
+  diffEnd: number,
+  width: number,
+  measure: (text: string) => number,
+): string {
+  if (width <= 0 || measure(ELLIPSIS) > width) return '';
+  const total = parts.length;
+  if (total === 0) return '';
+  if (diffStart >= total) return fitPrefix(parts, ELLIPSIS, total, width, measure);
+  const fullTail = parts.slice(diffStart).join('').trimStart();
+  if (fullTail) {
+    const tailSuffix = `${ELLIPSIS}${fullTail}`;
+    if (measure(tailSuffix) <= width) return fitPrefix(parts, tailSuffix, diffStart, width, measure);
+  }
+  let clampedEnd = Math.max(diffStart + 1, Math.min(total, diffEnd));
+  while (clampedEnd < total && !WHITESPACE.test(parts[clampedEnd]!)) clampedEnd++;
+  const hasTrailing = clampedEnd < total;
+  const rawDiff = parts.slice(diffStart, clampedEnd).join('').trim();
+  const tailMark = hasTrailing ? ELLIPSIS : '';
+  const fullMid = `${ELLIPSIS}${rawDiff}${tailMark}`;
+  if (rawDiff && measure(fullMid) <= width) {
+    const withPrefix = fitPrefix(parts, fullMid, diffStart, width, measure);
+    if (withPrefix !== fullMid) return withPrefix;
+    let end = clampedEnd;
+    while (end < total) {
+      const next = `${ELLIPSIS}${parts.slice(diffStart, end + 1).join('').trim()}${end + 1 < total ? ELLIPSIS : ''}`;
+      if (measure(next) <= width) end++;
+      else break;
+    }
+    return `${ELLIPSIS}${parts.slice(diffStart, end).join('').trim()}${end < total ? ELLIPSIS : ''}`;
+  }
+  let lo = 0;
+  let hi = total - diffStart;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const seg = parts.slice(diffStart, diffStart + mid).join('').trim();
+    const mark = diffStart + mid < total ? ELLIPSIS : '';
+    if (measure(`${ELLIPSIS}${seg}${mark}`) <= width) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo > 0) {
+    const seg = parts.slice(diffStart, diffStart + lo).join('').trim();
+    const mark = diffStart + lo < total ? ELLIPSIS : '';
+    if (seg) return `${ELLIPSIS}${seg}${mark}`;
+  }
+  return fitPrefix(parts, ELLIPSIS, total, width, measure);
+}
+
+type DiffSpan = readonly [number, number];
+
+function mergeDiffSpans(spans: readonly DiffSpan[], next: DiffSpan): DiffSpan[] {
+  const byStart = new Map<number, number>();
+  for (const [start, end] of spans) {
+    const held = byStart.get(start);
+    byStart.set(start, held === undefined ? end : Math.min(held, end));
+  }
+  const held = byStart.get(next[0]);
+  byStart.set(next[0], held === undefined ? next[1] : Math.min(held, next[1]));
+  const sorted = [...byStart.entries()].sort((a, b) => a[0] - b[0]);
+  const out: DiffSpan[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const [start, end] = sorted[i]!;
+    const limit = i + 1 < sorted.length ? Math.min(end, sorted[i + 1]![0]) : end;
+    if (limit > start) out.push([start, limit]);
+  }
+  return out;
+}
+
+function fitAnchorSpans(
+  parts: readonly string[],
+  spans: readonly DiffSpan[],
+  width: number,
+  measure: (text: string) => number,
+): string {
+  if (spans.length === 0) return fitPrefix(parts, ELLIPSIS, parts.length, width, measure);
+  if (spans.length === 1) return fitDiffWindow(parts, spans[0]![0], spans[0]![1], width, measure);
+  const total = parts.length;
+  const firstStart = spans[0]![0];
+  const lastEnd = spans.at(-1)![1];
+  const fullSpan = parts.slice(firstStart, lastEnd).join('').trim();
+  if (fullSpan) {
+    const lead = firstStart > 0 ? ELLIPSIS : '';
+    const trail = lastEnd < total ? ELLIPSIS : '';
+    const joined = `${lead}${fullSpan}${trail}`;
+    if (measure(joined) <= width) {
+      return firstStart > 0 ? fitPrefix(parts, joined, firstStart, width, measure) : joined;
+    }
+  }
+  const segs = spans.map(([start, end]) => {
+    let s = start;
+    let e = end;
+    while (s < e && WHITESPACE.test(parts[s]!)) s++;
+    while (e > s && WHITESPACE.test(parts[e - 1]!)) e--;
+    return parts.slice(s, e);
+  }).filter(seg => seg.length > 0);
+  if (segs.length < 2) {
+    return fitDiffWindow(parts, firstStart, lastEnd, width, measure);
+  }
+  const lead = firstStart > 0 ? ELLIPSIS : '';
+  const trailingGap = lastEnd < total;
+  const compose = (lengths: readonly number[]): string => {
+    let text = lead;
+    for (let k = 0; k < segs.length; k++) {
+      if (k > 0) text += ELLIPSIS;
+      text += segs[k]!.slice(0, lengths[k]!).join('').trimEnd();
+    }
+    const lastIdx = segs.length - 1;
+    if (trailingGap || lengths[lastIdx]! < segs[lastIdx]!.length) text += ELLIPSIS;
+    return text;
+  };
+  const lengths = segs.map(() => 1);
+  let best = compose(lengths);
+  if (measure(best) > width) {
+    return fitDiffWindow(parts, firstStart, spans[0]![1], width, measure);
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (let k = 0; k < segs.length; k++) {
+      if (lengths[k]! >= segs[k]!.length) continue;
+      lengths[k]!++;
+      const candidate = compose(lengths);
+      if (measure(candidate) <= width) {
+        best = candidate;
+        grew = true;
+      } else {
+        lengths[k]!--;
+      }
+    }
+  }
+  return best;
+}
+
+function disambiguateGroup(
+  indices: readonly number[],
+  labels: readonly string[],
+  widthOf: (index: number) => number,
+  measure: (text: string) => number,
+  out: string[],
+  cache: Map<number, string[]>,
+  anchors: Map<number, DiffSpan[]>,
+): boolean {
+  if (indices.length < 2) return false;
+  let firstDistinct = false;
+  const base = labels[indices[0]!]!;
+  for (let k = 1; k < indices.length; k++) {
+    if (labels[indices[k]!] !== base) { firstDistinct = true; break; }
+  }
+  if (!firstDistinct) return false;
+  const segmented = indices.map(index => {
+    let parts = cache.get(index);
+    if (!parts) { parts = graphemes(labels[index]!); cache.set(index, parts); }
+    return parts;
+  });
+  let commonPrefix = segmented[0]!.length;
+  for (let k = 1; k < segmented.length; k++) {
+    const a = segmented[0]!;
+    const b = segmented[k]!;
+    const limit = Math.min(commonPrefix, b.length);
+    let j = 0;
+    while (j < limit && a[j] === b[j]) j++;
+    commonPrefix = j;
+  }
+  let minLen = segmented[0]!.length;
+  for (let k = 1; k < segmented.length; k++) minLen = Math.min(minLen, segmented[k]!.length);
+  let commonSuffix = Math.max(0, minLen - commonPrefix);
+  for (let k = 1; k < segmented.length; k++) {
+    const a = segmented[0]!;
+    const b = segmented[k]!;
+    let j = 0;
+    while (j < commonSuffix && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+    commonSuffix = j;
+  }
+  let changed = false;
+  for (let k = 0; k < indices.length; k++) {
+    const idx = indices[k]!;
+    const parts = segmented[k]!;
+    let diffEnd = Math.max(commonPrefix + 1, Math.min(parts.length, parts.length - commonSuffix));
+    while (diffEnd < parts.length && !WHITESPACE.test(parts[diffEnd]!)) diffEnd++;
+    const nextSpans = mergeDiffSpans(anchors.get(idx) ?? [], [commonPrefix, diffEnd]);
+    anchors.set(idx, nextSpans);
+    const middle = fitAnchorSpans(parts, nextSpans, widthOf(idx), measure);
+    if (middle && middle !== out[idx]) {
+      out[idx] = middle;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function disambiguateLabels(
+  labels: readonly string[],
+  widths: number | readonly number[],
+  measure: (text: string) => number,
+  initial?: readonly string[],
+): string[] {
+  const count = labels.length;
+  const out = initial ? initial.slice() : new Array<string>(count);
+  const widthOf = typeof widths === 'number' ? () => widths : (index: number) => widths[index] ?? 0;
+  if (!initial) {
+    for (let i = 0; i < count; i++) out[i] = ellipsise(labels[i]!, widthOf(i), measure);
+  }
+  const cache = new Map<number, string[]>();
+  const anchors = new Map<number, DiffSpan[]>();
+  const resolved = new Set<string>();
+  const maxPasses = Math.min(count, 16);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const groups = new Map<string, number[]>();
+    let hasCollision = false;
+    for (let i = 0; i < count; i++) {
+      const shown = out[i]!;
+      if (!shown || shown === labels[i]) continue;
+      const held = groups.get(shown);
+      if (held) {
+        held.push(i);
+        if (labels[held[0]!] !== labels[i]) hasCollision = true;
+      } else {
+        groups.set(shown, [i]);
+      }
+    }
+    if (!hasCollision) break;
+    let progressed = false;
+    for (const [shown, indices] of groups) {
+      if (indices.length < 2) continue;
+      const sig = `${indices.join(',')}|${shown}`;
+      if (resolved.has(sig)) continue;
+      resolved.add(sig);
+      if (disambiguateGroup(indices, labels, widthOf, measure, out, cache, anchors)) progressed = true;
+    }
+    if (!progressed) break;
+  }
+  return out;
+}
+
 export function fitLine(text: string, width: number, measure: (text: string) => number): FittedLine {
   if (!text) return { text: '', truncated: false, full: '' };
   if (width <= 0) return { text: '', truncated: true, full: text };

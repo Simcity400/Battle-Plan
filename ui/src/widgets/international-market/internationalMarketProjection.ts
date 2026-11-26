@@ -4,6 +4,7 @@ import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../famil
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import { cellArt, resolveIdentity, type ResolvedIdentity } from '../../families/table/identityCell.ts';
 import {
   type TableCell,
@@ -16,7 +17,13 @@ import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notApplicable, notRecorded, valueFromLive, zeroValue } from '../../families/value.ts';
 import { MARKET_TABS, marketColumns, marketTableBase } from './definition.ts';
 
-const UNKNOWN_COUNTRY: ResolvedIdentity = { value: notRecorded('Unknown country'), name: 'Unknown country', loading: false };
+const UNKNOWN_COUNTRY: ResolvedIdentity = {
+  value: notRecorded('Country not recorded'),
+  name: 'Country not recorded',
+  loading: false,
+  art: unavailableArt('Country not recorded'),
+  artKey: 'flag:unavailable:unknown',
+};
 const countryAt = (readView: BoundedReadView, tag: string | null | undefined, hour: number): ResolvedIdentity =>
   tag ? resolveIdentity(readView, 'country', tag, { atHour: hour }) : UNKNOWN_COUNTRY;
 import { contractRows, levelText, offerRows, PRICE_MISSING, quoteText, type MarketRowMeta, type MarketTab } from './marketData.ts';
@@ -79,7 +86,7 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const rows: TableRow[] = offers.map(row => {
         const seller = countryAt(readView, row.seller, hour);
         const eqName = row.name ?? 'Equipment name unavailable';
-        const art = cellArt(readView, urlArtHandle(row.icon), 'The product drew no icon for this equipment');
+        const art = cellArt(readView, urlArtHandle(row.icon), row.iconMissing ?? row.missing ?? 'The product drew no icon for this equipment');
         return {
           key: row.key,
           name: eqName,
@@ -122,8 +129,13 @@ export const internationalMarketProjection: TableProjection<InternationalMarketP
       const seller = countryAt(readView, row.seller, hour);
       const buyer = countryAt(readView, row.buyer, hour);
       const allEquipment = row.equipment.map(item => item.name ?? 'Equipment name unavailable').join(', ');
-      const firstIcon = row.equipment[0]?.icon ?? null;
-      const art = cellArt(readView, urlArtHandle(firstIcon), 'The product drew no icon for this equipment');
+      const firstItem = row.equipment[0];
+      const firstIcon = firstItem?.icon ?? null;
+      const art = cellArt(
+        readView,
+        urlArtHandle(firstIcon),
+        firstItem?.iconMissing ?? firstItem?.missing ?? (row.equipment.length === 0 ? 'No equipment in the recorded terms' : 'The product drew no icon for this equipment'),
+      );
 
       const priceOf = (variant: string) => row.prices.find(item => item.variant === variant)?.amount ?? null;
       const levelOf = (variant: string) => row.levels.find(item => item.variant === variant)?.level ?? null;

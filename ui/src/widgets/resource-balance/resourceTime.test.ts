@@ -65,4 +65,10 @@ test('the resource Time view reads one month reply at the hour and draws a row o
   const lastTip = deriveTimeChartTooltip(model, layout, hitTestTimeChart(model, layout, [frame.toX(last.firstHour + 1), rubber.zeroY]));
   assert.equal(lastTip?.payload?.note, '+3.54 a day');
   assert.deepEqual(model.auditRows?.map(row => row.value), ['+144', 'Resource balance was not recorded in this month.']);
+
+  const subset = projection.project(
+    createBoundedReadView({ hour: HOUR, panels: new Map([['months', { ...REPLY, resources: [REPLY.resources[1]!] }]]) }),
+    declaration.projectionOptions(context(), { extent: [FIRST, HOUR], surface: '#111111' }),
+  );
+  assert.equal(subset.rows![0]!.color, model.rows![1]!.color, 'filtering earlier resources preserves catalogue-id colour');
 });

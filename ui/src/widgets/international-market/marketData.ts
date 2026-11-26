@@ -4,7 +4,7 @@ import type { MarketGrant, MarketItem, MarketLendLeaseReply, MarketOffer, Market
 
 export type MarketTab = 'contracts' | 'requests' | 'inventory';
 
-export interface MarketItemAt { variant: string; name: string | null; icon: string | null; missing: string | null; amount: bigint }
+export interface MarketItemAt { variant: string; name: string | null; icon: string | null; missing: string | null; iconMissing: string | null; amount: bigint }
 
 export interface ContractRow {
   key: string;
@@ -24,6 +24,7 @@ export interface OfferRow {
   name: string | null;
   icon: string | null;
   missing: string | null;
+  iconMissing: string | null;
   amount: bigint;
   level: number | null;
 }
@@ -51,7 +52,7 @@ export function offerRows(reply: MarketAt): OfferRow[] {
     for (const item of offer.inventory) {
       const drawn = equipment(item.variant);
       rows.push({ key: `${offer.country}:${item.variant}`, offer, seller: offer.tag, variant: item.variant, name: item.name ?? drawn.name, icon: drawn.icon,
-        missing: drawn.missing, amount: BigInt(item.amountRaw), level: levels.get(item.variant) ?? null });
+        missing: drawn.missing, iconMissing: drawn.iconMissing, amount: BigInt(item.amountRaw), level: levels.get(item.variant) ?? null });
     }
   }
   return rows;

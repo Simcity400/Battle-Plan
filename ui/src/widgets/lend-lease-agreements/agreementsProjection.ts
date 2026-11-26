@@ -5,6 +5,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import { occurrenceSelection } from '../../families/table/logHelpers.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import { urlArtHandle } from '../../families/art/provider.ts';
+import { unavailableArt } from '../../families/art/types.ts';
 import { artNameCell, identityFlags, identityName, newIdentityBoundary } from '../../families/table/identityCell.ts';
 import type { TableCell, TableColumnSpec, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -105,7 +106,11 @@ function agreementRows(
   const once = amounts(terms.once);
   const delivered = amounts(terms.delivered);
   const sunk = amounts(terms.sunk);
-  const flags = identityFlags(readView, 'country', [terms.giver, terms.receiver].filter((tag): tag is string => tag !== null), { boundary });
+  const sideFlag = (tag: string | null, missing: string | null) =>
+    tag !== null
+      ? identityFlags(readView, 'country', [tag], { boundary })[0]!
+      : { tag: '?', art: unavailableArt(missing ?? 'Country not recorded') };
+  const flags = [sideFlag(terms.giver, terms.giverMissing), sideFlag(terms.receiver, terms.receiverMissing)];
   const sideName = (tag: string | null) => (tag === null ? 'Country not recorded' : identityName(readView, 'country', tag));
   const pair = `${sideName(terms.giver)} → ${sideName(terms.receiver)}`;
   const country: TableCell = { value: knownValue(pair), flags };
@@ -136,7 +141,16 @@ function agreementRows(
       name: named?.name ?? variant,
       cells: {
         country,
-        equipment: artNameCell(readView, named?.name ?? null, urlArtHandle(image), named?.nameUnknown ?? 'The recording does not name this design at this hour', 'equipment'),
+        equipment: artNameCell(
+          readView,
+          named?.name ?? null,
+          urlArtHandle(image),
+          named?.nameUnknown ?? 'The recording does not name this design at this hour',
+          'equipment',
+          named
+            ? (named.iconUnknown ?? (named.icon ? `${named.icon}: the product drew no icon for this equipment` : 'The recording names no icon for this equipment'))
+            : 'The recording does not name this design at this hour',
+        ),
         monthly: month === undefined ? { value: notApplicable(schedule!) } : { value: whole(month, FIXED5), format: 'integer' },
         delivered: { value: whole(delivered.get(variant) ?? 0n, FIXED5), format: 'integer' },
         last,

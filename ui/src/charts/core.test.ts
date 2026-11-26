@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
+import { disambiguateLabels, drawFittedLabel, ellipsise, fitLabel, fitLabelWidth, fitLine, labelFitsTwoLines, labelLineHeight, layoutEndLabels } from './labels.ts';
 import { FrameScheduler } from './scheduler.ts';
 import type { FrameTask } from './scheduler.ts';
 import { runAt } from './series.ts';
@@ -215,5 +215,200 @@ test('text fitter wraps two balanced lines at word boundaries, cuts with end ell
   assert.equal(rendered.full, 'Long Division Template Name Here');
   assert.equal(drawn.length, 2);
   assert.equal(drawn[1]!.y - drawn[0]!.y, 15);
+});
+
+test('disambiguateLabels distinguishes colliding shared-prefix labels without splitting joined graphemes', async () => {
+  const mono = (text: string) => Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)).length * 8;
+  const siblings = [
+    'Federation of Allied Northern States Alpha',
+    'Federation of Allied Northern States Beta',
+  ];
+  const resolved = disambiguateLabels(siblings, 128, mono);
+  assert.equal(resolved.length, 2);
+  assert.notEqual(resolved[0], resolved[1], 'colliding siblings become distinct');
+  assert.ok(resolved[0]!.endsWith('Alpha') && resolved[1]!.endsWith('Beta'));
+  assert.ok(mono(resolved[0]!) <= 128 && mono(resolved[1]!) <= 128);
+
+  const joined = [
+    '👨‍👩‍👧‍👦🇺🇸 Northern Coalition Division East',
+    '👨‍👩‍👧‍👦🇺🇸 Northern Coalition Division West',
+  ];
+  const resolvedJoined = disambiguateLabels(joined, 112, mono);
+  assert.notEqual(resolvedJoined[0], resolvedJoined[1]);
+  assert.ok(resolvedJoined[0]!.startsWith('👨‍👩‍👧‍👦🇺🇸') && resolvedJoined[0]!.endsWith('East'));
+  assert.ok(resolvedJoined[1]!.endsWith('West'));
+
+  const identical = ['Long Repeated Country Name One', 'Long Repeated Country Name One'];
+  const same = disambiguateLabels(identical, 96, mono);
+  assert.equal(same[0], ellipsise(identical[0]!, 96, mono));
+  assert.equal(same[0], same[1]);
+
+  const middleDiff = disambiguateLabels(
+    ['Federation of Northern Coastal Republics', 'Federation of Southern Coastal Republics'],
+    112,
+    mono,
+  );
+  assert.notEqual(middleDiff[0], middleDiff[1], 'shared prefix and shared suffix still preserve the differing middle word');
+  assert.ok(middleDiff[0]!.includes('Northern') && middleDiff[1]!.includes('Southern'));
+  assert.ok(mono(middleDiff[0]!) <= 112 && mono(middleDiff[1]!) <= 112);
+
+  const crossGroupNames = [
+    'Northern Alliance East',
+    'Northern Alliance West',
+    'Northern Assembly East',
+    'Northern Assembly West',
+  ];
+  const nestedOverlapNames = [
+    'Federation of Northern Alliance East',
+    'Federation of Northern Alliance West',
+    'Federation of Southern Alliance East',
+  ];
+  for (const width of [96, 112]) {
+    const crossGroup = disambiguateLabels(crossGroupNames, width, mono);
+    assert.equal(new Set(crossGroup).size, 4, `cross-group collisions at ${width}px converge to 4 distinct labels (${crossGroup.join(', ')})`);
+    assert.ok(crossGroup.every(label => mono(label) <= width), `all labels fit within ${width}px (${crossGroup.join(', ')})`);
+
+    const nestedOverlap = disambiguateLabels(nestedOverlapNames, width, mono);
+    assert.equal(new Set(nestedOverlap).size, 3, `overlapping spans at ${width}px stay distinct (${nestedOverlap.join(', ')})`);
+    assert.ok(nestedOverlap.every(label => mono(label) <= width), `overlapping labels fit within ${width}px (${nestedOverlap.join(', ')})`);
+  }
+
+  const { layoutFamilyBars } = await import('../families/bars/layout.ts');
+  const { drawFamilyBars } = await import('../families/bars/painter.ts');
+  const { knownValue } = await import('../families/value.ts');
+  const { NO_ART } = await import('../families/art/types.ts');
+  const splitModel = {
+    form: 'two-sided' as const,
+    twoSidedLayout: 'split-sides' as const,
+    hour: 200,
+    rows: [
+      {
+        kind: 'data' as const,
+        key: 'L1',
+        subject: 'L1',
+        label: 'Federation of Allied Northern Coastal Republics',
+        media: { kind: 'none' as const, art: NO_ART },
+        color: '#3987e5',
+        value: { value: knownValue(50), format: 'integer' as const },
+        numeric: 50,
+        rightSide: {
+          key: 'R1',
+          subject: 'R1',
+          label: 'Northern Coastal Coalition 1',
+          media: { kind: 'none' as const, art: NO_ART },
+          color: '#d95926',
+          value: { value: knownValue(60), format: 'integer' as const },
+          numeric: 60,
+        },
+      },
+      {
+        kind: 'data' as const,
+        key: 'L2',
+        subject: 'L2',
+        label: 'Federation of Allied Southern Coastal Republics',
+        media: { kind: 'none' as const, art: NO_ART },
+        color: '#3987e5',
+        value: { value: knownValue(40), format: 'integer' as const },
+        numeric: 40,
+        rightSide: {
+          key: 'R2',
+          subject: 'R2',
+          label: 'Northern Coastal Coalition 2',
+          media: { kind: 'none' as const, art: NO_ART },
+          color: '#d95926',
+          value: { value: knownValue(30), format: 'integer' as const },
+          numeric: 30,
+        },
+      },
+    ],
+  };
+  const barsTheme = {
+    surface: '#111111', raised: '#1b1b1b', text: '#f0f0f0', muted: '#999999', line: '#333333',
+    accent: '#3987e5', green: '#199e70', grey: '#666666', dark: true, font: 'sans-serif',
+    fontSize: { small: 11, body: 12 },
+  };
+  const barsLayout = layoutFamilyBars(splitModel, 720, 120, barsTheme as never, text => text.length * 9);
+  assert.equal(barsLayout.twoSidedLayout, 'split-sides');
+  const barTexts: string[] = [];
+  const barCtx = {
+    font: '12px sans-serif',
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    textAlign: 'left',
+    textBaseline: 'middle',
+    measureText(t: string) { return { width: t.length * (this.font.startsWith('500') ? 9 : 7) }; },
+    save() {},
+    restore() {},
+    clearRect() {},
+    beginPath() {},
+    rect() {},
+    roundRect() {},
+    clip() {},
+    moveTo() {},
+    lineTo() {},
+    stroke() {},
+    fill() {},
+    fillRect() {},
+    fillText(t: string) { barTexts.push(t); },
+  };
+  drawFamilyBars(barCtx as never, {
+    model: splitModel,
+    layout: barsLayout,
+    theme: barsTheme as never,
+    scrollTop: 0,
+    now: 0,
+    glideDuration: 0,
+    glide: new Map(),
+    inspectedKey: null,
+    selectedKey: null,
+    focusedKey: null,
+  });
+  assert.ok(barTexts.some(t => t.startsWith('Federation') && t.includes('Northern')) && barTexts.some(t => t.startsWith('Federation') && t.includes('Southern')), `left split-side bars disambiguate (${barTexts.join(', ')})`);
+  assert.ok(barTexts.some(t => t.endsWith('1')) && barTexts.some(t => t.endsWith('2')), `right split-side bars fit with label weight and disambiguate (${barTexts.join(', ')})`);
+
+  const { layoutTimeChart } = await import('../families/time-chart/layout.ts');
+  const tcLayout = layoutTimeChart(
+    {
+      kind: 'test',
+      measureTitle: 'Test',
+      mode: 'lines',
+      hour: 200,
+      extent: [100, 200],
+      yAxis: { format: 'number' },
+      series: [
+        {
+          id: 'a',
+          key: 'a',
+          name: 'Federation of Allied Northern States Alpha',
+          color: '#3987e5',
+          role: 'primary',
+          headValue: 10,
+          headHour: 200,
+          points: [{ hour: 100, value: 10 }, { hour: 200, value: 10 }],
+          endLabel: { name: 'Federation of Allied Northern States Alpha', fullName: 'Federation of Allied Northern States Alpha', value: '10' },
+        },
+        {
+          id: 'b',
+          key: 'b',
+          name: 'Federation of Allied Northern States Beta',
+          color: '#d95926',
+          role: 'primary',
+          headValue: 20,
+          headHour: 200,
+          points: [{ hour: 100, value: 20 }, { hour: 200, value: 20 }],
+          endLabel: { name: 'Federation of Allied Northern States Beta', fullName: 'Federation of Allied Northern States Beta', value: '20' },
+        },
+      ],
+    },
+    360,
+    200,
+    'sans-serif',
+    mono,
+  );
+  const endNames = tcLayout.endLabels.map(label => label.name).filter((n): n is string => n !== null);
+  assert.equal(endNames.length, 2);
+  assert.notEqual(endNames[0], endNames[1], 'time-chart end labels disambiguate colliding shared-prefix names');
 });
 

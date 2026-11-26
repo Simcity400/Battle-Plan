@@ -100,3 +100,28 @@ test('an agreement whose terms list nothing still has its row and its delivery d
   assert.deepEqual(unread.rows.map(row => row.key), ['1:terms'], 'an unread fuel counter alone is not a fuel line');
   assert.deepEqual(unread.rows[0]!.cells.delivered!.value, { kind: 'notRecorded', reason: 'Not read yet' }, 'what was delivered is not known while the fuel counter is unread');
 });
+
+test('agreements with an unrecorded giver or receiver keep both flag slots with named unavailable art and preserve separate name/icon reasons', () => {
+  const lease = {
+    key: '2', id: '10', giver: 'GER', giverMissing: null, receiver: null, receiverMissing: 'Receiver tag was unlinked at this hour',
+    revision: '1', activeSince: 100, lastDelivery: 115,
+    monthly: [{ variant: '77', name: null, amountRaw: '100000' }], percentage: [], once: [], delivered: [], sunk: [],
+    fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0',
+  };
+  const reply = {
+    branchId: '1', offers: null, contracts: null, agreements: [lease], agreementsMissing: null, purchasesMissing: null, unattributed: 1, refused: null,
+    variants: [{ id: '77', token: 'eq_77', name: null, typeName: null, nameUnknown: 'Localisation missing', icon: 'GFX_eq_77', iconUnknown: 'Sprite missing' }],
+    icons: [], warnings: [],
+  };
+  const model = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]) }), { direction: 'sent' });
+  const flags = model.rows[0]!.cells.country!.flags!;
+  assert.equal(flags.length, 2, 'both giver and receiver flag slots are preserved');
+  assert.equal(flags[0]!.tag, 'GER');
+  assert.equal(flags[1]!.tag, '?');
+  assert.equal(flags[1]!.art.status, 'unavailable');
+  assert.equal((flags[1]!.art as { readonly reason: string }).reason, 'Receiver tag was unlinked at this hour');
+  const eq = model.rows[0]!.cells.equipment!;
+  assert.deepEqual(eq.value, { kind: 'notRecorded', reason: 'Localisation missing' });
+  assert.equal(eq.art?.status, 'unavailable');
+  assert.equal((eq.art as { readonly reason: string }).reason, 'Sprite missing');
+});

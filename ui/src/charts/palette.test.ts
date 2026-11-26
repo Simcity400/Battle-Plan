@@ -8,7 +8,6 @@ import {
   RESERVED_SEPARATION,
   authoredHex as authoredHexForGrey,
   readableColour as readableForGrey,
-  CATEGORY_LIMIT,
   authoredHex,
   categoricalPalette,
   colour,
@@ -70,7 +69,7 @@ test('the categorical palette reads on every built-in theme surface, in both mod
     for (const mode of ['dark', 'light'] as const) {
       const surface = themeColors(theme, mode).surface;
       const palette = categoricalPalette(surface);
-      assert.equal(palette.length, CATEGORY_LIMIT);
+      assert.equal(palette.length, 8);
       assert.equal(categoricalPalette(surface), palette, 'each surface is solved once');
       for (const color of palette) assert.ok(contrast(parseColor(color)!, parseColor(surface)!) >= MARK_CONTRAST - 0.05, `${theme.id}/${mode} ${color} on ${surface}`);
     }

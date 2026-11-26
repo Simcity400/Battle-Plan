@@ -63,11 +63,16 @@ export const designsProjection: TableProjection<DesignsProjectionOptions> = regi
     const rows: TableRow[] = reply.designs.map(({ name: design, obsolete }) => {
       const image = design.icon ? images.get(design.icon) ?? null : null;
       const meta: DesignMeta = { tag: reply.tag, variant: design.id, name: design.name ?? design.id };
+      const assetId = design.icon ?? design.token;
+      const rawIconReason = design.iconUnknown ?? (design.icon ? 'The product drew no icon for this design' : 'The design names no icon');
+      const iconReason = assetId && !rawIconReason.includes(assetId) ? `${assetId}: ${rawIconReason}` : rawIconReason;
+      const baseCell = artKindCell(readView, urlArtHandle(image), 'equipment', design.name, iconReason);
+      const kindCell = baseCell.artName ? baseCell : { ...baseCell, artName: assetId || design.id };
       return {
         key: design.id,
         name: design.name ?? design.id,
         cells: {
-          kind: artKindCell(readView, urlArtHandle(image), 'equipment', design.name, design.icon ? 'The product drew no icon for this design' : 'The design names no icon'),
+          kind: kindCell,
           design: { value: design.name ? knownValue(design.name) : notRecorded(design.nameUnknown ?? 'Design name not recorded') },
           type: { value: design.typeName ? knownValue(design.typeName) : notRecorded(design.nameUnknown ?? 'Equipment type name not recorded') },
           state: { value: knownValue(obsolete ? 'Obsolete' : 'Current'), statusKind: obsolete ? 'ended' : 'running', sortValue: knownValue(obsolete ? 1 : 0) },

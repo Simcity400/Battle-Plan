@@ -6,7 +6,6 @@ const CATEGORICAL = {
   dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#e66767', '#008300'],
   light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#4a3aa7', '#e34948', '#008300'],
 } as const;
-export const CATEGORY_LIMIT = CATEGORICAL.dark.length;
 export const MARK_CONTRAST = 3;
 export const DISTINCT_MARK_DISTANCE = 12;
 

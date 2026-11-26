@@ -1,4 +1,4 @@
-import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
+import { disambiguateLabels, ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { textWidthRevision, type MeasureText } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
@@ -668,7 +668,7 @@ export function layoutTimeChart(
         faded: false,
         flag: s.endLabel.flag,
         icon: s.endLabel.icon,
-        name: nameText,
+        name: showName ? rawName! : null,
         nameWidth: rawNameW,
         fullName: s.endLabel.fullName ?? s.name,
         value: s.endLabel.value,
@@ -730,7 +730,7 @@ export function layoutTimeChart(
           faded: false,
           colorBar: band.color,
           flag: band.endLabel.flag,
-          name: nameText,
+          name: showName ? rawName! : null,
           nameWidth: rawNameW,
           fullName: band.endLabel.fullName ?? band.name,
           value: band.endLabel.value,
@@ -808,22 +808,42 @@ export function layoutTimeChart(
     const lx = playheadX + 10;
     const availWidth = Math.max(0, width - lx - 4);
     const minEllipsis = measure('\u2026', labelNameFont);
-    for (const l of rawEndLabels) {
+    const measureName = (text: string) => measure(text, labelNameFont);
+    const namedIndices: number[] = [];
+    const namedRaw: string[] = [];
+    const namedBudgets: number[] = [];
+    const namedInitial: string[] = [];
+    const namedWidths: number[] = [];
+    for (let i = 0; i < rawEndLabels.length; i++) {
+      const l = rawEndLabels[i]!;
+      if (!l.name) continue;
+      const budget = Math.min(END_LABEL_MAX_NAME_PX, availWidth - l.fixedWidth - 6);
+      if (budget < minEllipsis) continue;
+      const entry = cachedEllipsise(l.name, budget, labelNameFont, measure, cacheBucket);
+      namedIndices.push(i);
+      namedRaw.push(l.name);
+      namedBudgets.push(budget);
+      namedInitial.push(entry.text);
+      namedWidths.push(entry.width);
+    }
+    const fittedNames = new Map<number, string>();
+    const fittedWidths = new Map<number, number>();
+    if (namedRaw.length > 0) {
+      const resolved = disambiguateLabels(namedRaw, namedBudgets, measureName, namedInitial);
+      for (let i = 0; i < namedIndices.length; i++) {
+        const text = resolved[i];
+        if (!text) continue;
+        const idx = namedIndices[i]!;
+        fittedNames.set(idx, text);
+        fittedWidths.set(idx, text === namedInitial[i] ? namedWidths[i]! : measureName(text));
+      }
+    }
+    for (let i = 0; i < rawEndLabels.length; i++) {
+      const l = rawEndLabels[i]!;
       const anchorY = toY(l.anchorVal);
       const ly = placedY.get(l.id) ?? anchorY;
-      let fittedName = l.name;
-      let fittedNameW = l.nameWidth;
-      if (fittedName) {
-        const nameBudget = availWidth - l.fixedWidth - 6;
-        if (nameBudget < minEllipsis) {
-          fittedName = null;
-          fittedNameW = 0;
-        } else if (fittedNameW > nameBudget) {
-          const entry = cachedEllipsise(fittedName, nameBudget, labelNameFont, measure, cacheBucket);
-          fittedName = entry.text;
-          fittedNameW = entry.width;
-        }
-      }
+      const fittedName = fittedNames.get(i) ?? null;
+      const fittedNameW = fittedWidths.get(i) ?? 0;
       const fittedWidth = l.fixedWidth + (fittedName ? fittedNameW + 6 : 0) + 8;
       endLabels.push({
         id: l.id,
