@@ -2,7 +2,6 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import '../styles.css';
 import '../widgets';
-import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { widgetDefinitions } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import { createWidget } from './model';
@@ -12,6 +11,7 @@ import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
 import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
+import { loadEveryWidgetModule } from './widgetModules.fixture.ts';
 import { MeasuredWidget } from './widgetPerf';
 import { measureWith } from '../shell/perf';
 import type { PerfRecorder } from '../shell/perf';
@@ -153,7 +153,7 @@ Object.assign(window, { timeSweep: {
   cases: () => cases(),
   requests: () => requests.splice(0),
   asked: () => asked.splice(0),
-  async preload() { await Promise.all(widgetDefinitions().map(definition => loadWidgetRenderer(definition.kind).catch(() => undefined))); return widgetDefinitions().length; },
+  preload: () => loadEveryWidgetModule(),
   async mount(ids: string[], replies: Replies, axis: number) {
     const runtime = makeRuntime(replies);
     root?.unmount();

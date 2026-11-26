@@ -2,7 +2,7 @@
 import { createRoot } from 'react-dom/client';
 import '../styles.css';
 import '../widgets';
-import { loadWidgetRenderer } from '../widgets/rendererLoaders';
+import { loadEveryWidgetModule } from './widgetModules.fixture.ts';
 import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
 import { widgetDefinitions } from './definitions';
@@ -93,8 +93,8 @@ async function frames(count: number, ms: number) {
 
 Object.assign(window, { outsideFixture: {
   async start(hour: number) {
+    await loadEveryWidgetModule();
     const definitions = widgetDefinitions();
-    await Promise.all(definitions.map(definition => loadWidgetRenderer(definition.kind)));
     clock.seek(hour);
     const built = definitions.map((definition, index) => {
       const track: 'early' | 'late' = index % 2 ? 'late' : 'early';
