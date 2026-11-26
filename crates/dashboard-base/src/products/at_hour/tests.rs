@@ -715,6 +715,45 @@ fn the_exact_host_distinguishes_predated_withheld_and_damaged_tables() {
 }
 
 #[test]
+fn an_older_recordings_law_can_rule_out_a_variable_only_with_a_recorded_store() {
+    use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
+    use replay_data::{rows::ScriptVariablesRow, scope::CaptureMode};
+    crate::catalogue::tests::script_game::enter();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+    )]);
+    let script = catalogue.scripted_content().unwrap();
+    let law = content_reader_politics::occupation_laws::parse(b"candidate={visible={has_variable=mod_law}}", &Default::default()).unwrap().remove(0);
+    let mut frame = frame(FIRST);
+    let absent = TableView::NotRecorded { mode: CaptureMode::Full };
+    for table in [TableId::ScriptVariableNames, TableId::ScriptVariableValues] {
+        *frame.tables[table.index()] = absent.clone();
+    }
+    for table in [TableId::Provinces, TableId::States] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    let empty = ScriptVariablesRow { scope_kind: 1, scope_id: 9001, ..Default::default() };
+    for store in [
+        TableView::Complete(TableRows::ScriptVariables(vec![empty])),
+        absent,
+        TableView::Unavailable { reason: "inline store withheld".into() },
+        TableView::Unavailable { reason: "inline store failed its digest".into() },
+    ] {
+        *frame.tables[TableId::ScriptVariables.index()] = store;
+        let world = script.recorded_world(&frame).unwrap();
+        let inputs = LawInputs { state: None, key_resolved: true, overrides_complete: true, group: GroupLaw::Law(None), default: Some((true, b"candidate")), fallback: Ok(b"fallback") };
+        let choice = law_for(inputs, |_| admitted(&world, &law, 7, 8));
+        match frame.complete::<tables::ScriptVariables>() {
+            Ok(_) => assert_eq!(choice.as_deref(), Ok("fallback")),
+            Err(missing) => {
+                let reason = choice.unwrap_err();
+                assert!(reason.contains(&missing.to_string()), "{reason}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_keyed_read_names_the_rows_it_chose() {
     let (source, _) = recording();
     let pool = placed::Pool::of(&source).unwrap();
