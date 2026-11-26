@@ -101,7 +101,6 @@ pub enum EspionageRunningOrder {
 pub struct EspionageCountry {
     pub tag: Option<String>,
     pub slot: Option<u32>,
-    pub raw_id: Option<u32>,
     pub missing: Option<String>,
 }
 
@@ -224,9 +223,7 @@ impl OccurrenceReply for EspionageLogTailReply {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CensusStep {
     hour: i32,
-    owner_raw: u32,
     owner_slot: Option<u32>,
-    target_raw: u32,
     target_slot: Option<u32>,
     token: Option<String>,
     start_hour: Option<i32>,
@@ -243,9 +240,7 @@ struct CensusStep {
 struct CompletionRecord {
     observed_hour: i32,
     completion_hour: Option<i32>,
-    owner_raw: u32,
     owner_slot: Option<u32>,
-    target_raw: Option<u32>,
     target_slot: Option<u32>,
     token: Option<String>,
     bonus: Option<bool>,
@@ -263,11 +258,11 @@ struct OperationEpisode {
     appear_hour: i32,
     first_seen: Option<i32>,
     first_exact: bool,
-    last_seen: Option<i32>,
     ended_by: Option<i32>,
     ended_exact: bool,
     completions_recorded: bool,
     steps: Vec<CensusStep>,
+    seen: Box<[(i32, i32)]>,
     completion: Option<CompletionRecord>,
     owner_role: Role,
     target_role: Role,
@@ -433,6 +428,11 @@ fn covered(runs: &[(i32, i32)], first: i32, last: i32) -> bool {
     false
 }
 
+fn last_read(runs: &[(i32, i32)], hour: i32) -> Option<i32> {
+    let at = runs.partition_point(|run| run.0 <= hour);
+    at.checked_sub(1).map(|at| runs[at].1.min(hour))
+}
+
 fn has_read_at(runs: &[(i32, i32)], hour: i32) -> bool {
     let at = runs.partition_point(|run| run.1 < hour);
     runs.get(at).is_some_and(|&(a, b)| a <= hour && hour <= b)
@@ -461,21 +461,19 @@ fn point_num(cells: &[points::Cell], at: Option<usize>) -> Option<i64> {
     }
 }
 
-fn resolve_country(holders: &Holders, slot: Option<u32>, raw_id: Option<u32>, hour: i32, role_name: &str) -> EspionageCountry {
+fn resolve_country(holders: &Holders, slot: Option<u32>, hour: i32, role_name: &str) -> EspionageCountry {
     match slot {
         Some(slot) => match holders.slot_tag(slot, hour) {
-            Some(tag) => EspionageCountry { tag: Some(tag.to_owned()), slot: Some(slot), raw_id, missing: None },
+            Some(tag) => EspionageCountry { tag: Some(tag.to_owned()), slot: Some(slot), missing: None },
             None => EspionageCountry {
                 tag: None,
                 slot: Some(slot),
-                raw_id,
                 missing: Some(format!("The operation's {role_name} tag is not recorded at this hour")),
             },
         },
         None => EspionageCountry {
             tag: None,
             slot: None,
-            raw_id,
             missing: Some(format!("The operation's {role_name} is not recorded")),
         },
     }
@@ -507,9 +505,7 @@ fn census_step_from_cells(
     };
     Some(CensusStep {
         hour,
-        owner_raw,
         owner_slot: links.slot_at(owner_raw, hour),
-        target_raw,
         target_slot: links.slot_at(target_raw, hour),
         token: token_names.get(&def_token).cloned(),
         start_hour: (duration_days != 0).then_some(start_hour_raw),
@@ -573,8 +569,10 @@ fn scan(
 
     let mut any_op_reads = false;
     let mut any_comp_reads = false;
+    let mut carried: HashMap<u64, usize> = HashMap::new();
 
     for (stretch_index, stretch) in query.timeline.stretches.iter().enumerate() {
+        let prior = std::mem::take(&mut carried);
         dashboard_text::metadata::check_cancel(cancelled)?;
         let links = dashboard_base::queries::links(source, stretch.run)?;
         let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
@@ -583,6 +581,7 @@ fn scan(
         if !op_reads.is_empty() {
             any_op_reads = true;
         }
+
         if !comp_reads.is_empty() {
             any_comp_reads = true;
         }
@@ -644,9 +643,7 @@ fn scan(
             let rec = CompletionRecord {
                 observed_hour: row.hour,
                 completion_hour,
-                owner_raw,
                 owner_slot: links.slot_at(owner_raw, row.hour),
-                target_raw,
                 target_slot: target_raw.and_then(|raw| links.slot_at(raw, row.hour)),
                 token,
                 bonus,
@@ -685,11 +682,19 @@ fn scan(
                 let op_id = key as u64;
                 let Some(&(first_seen, last_seen)) = life_by_id.get(&op_id) else { continue };
                 let mut steps: Vec<CensusStep> = Vec::new();
+                let mut seen: Vec<(i32, i32)> = Vec::new();
+                let mut since: Option<i32> = None;
                 for point in steps_raw {
-                    let Some(cells) = point.cells.as_deref() else { continue };
                     if point.hour < stretch.first || point.hour > stretch.last {
                         continue;
                     }
+                    let Some(cells) = point.cells.as_deref() else {
+                        if let Some(first) = since.take() {
+                            seen.push((first, point.hour - 1));
+                        }
+                        continue;
+                    };
+                    since.get_or_insert(point.hour);
                     let Some(step) = census_step_from_cells(point.hour, cells, &cols, &links, &token_names) else { continue };
                     let same = steps.last().is_some_and(|prev| {
                         prev.owner_slot == step.owner_slot
@@ -708,6 +713,9 @@ fn scan(
                         steps.push(step);
                     }
                 }
+                if let Some(first) = since {
+                    seen.push((first, last_seen));
+                }
                 if steps.is_empty() {
                     continue;
                 }
@@ -725,9 +733,36 @@ fn scan(
                     let entry = first_seen_tokens.entry(tok.clone()).or_insert(first_seen);
                     *entry = (*entry).min(first_seen);
                 }
+                let reads_whole = covered(&comp_reads, first_seen, last_seen);
+                let open = completion.is_none() && ended_by.is_none() && last_seen == stretch.last;
+                if let Some(&at) = prior.get(&op_id)
+                    && first_seen == stretch.first
+                    && stretch_index.checked_sub(1).is_some_and(|before| query.timeline.stretches[before].last + 1 == stretch.first)
+                    && raw_episodes[at].continues(&steps[0])
+                {
+                    let held = &mut raw_episodes[at];
+                    held.earlier_reads_whole &= reads_whole;
+                    held.steps.extend(steps);
+                    held.seen.extend(seen);
+                    held.last_seen = Some(last_seen);
+                    held.ended_by = ended_by;
+                    held.ended_exact = ended_exact;
+                    held.completions_recorded = completions_recorded && held.earlier_reads_whole;
+                    held.completion = completion;
+                    held.token = held.token.take().or(token);
+                    if open {
+                        carried.insert(op_id, at);
+                    }
+                    continue;
+                }
+                if open {
+                    carried.insert(op_id, raw_episodes.len());
+                }
                 let unique_id = (u128::from(stretch_index as u32) << 96) | (1u128 << 64) | u128::from(op_id);
                 let key_str = if stretch_index == 0 { format!("op:{op_id}") } else { format!("op:{op_id}#{stretch_index}") };
                 raw_episodes.push(RawEpisode {
+                    earlier_reads_whole: reads_whole,
+                    seen,
                     id: unique_id,
                     key: key_str,
                     appear_hour: first_seen,
@@ -740,7 +775,6 @@ fn scan(
                     steps,
                     completion,
                     token,
-                    stretch_last: stretch.last,
                 });
             }
         }
@@ -769,9 +803,10 @@ fn scan(
                 ended_exact: false,
                 completions_recorded: true,
                 steps: Vec::new(),
+                seen: Vec::new(),
                 token: rec.token.clone(),
                 completion: Some(rec),
-                stretch_last: stretch.last,
+                earlier_reads_whole: true,
             });
         }
     }
@@ -811,20 +846,21 @@ fn scan(
 
         let mut changes: Vec<i32> = Vec::new();
         changes.push(raw.appear_hour);
-        for step in &raw.steps {
+        for (at, step) in raw.steps.iter().enumerate() {
             changes.push(step.hour);
+            let through = raw.steps.get(at + 1).map_or(raw.last_seen.unwrap_or(step.hour), |next| next.hour - 1);
+            changes.extend(phase_hours(step, through).filter(|&hour| has_read_at(&raw.seen, hour)));
+        }
+        for &(first, last) in &raw.seen {
+            changes.push(first);
+            if last < query.timeline.last {
+                changes.push(last.saturating_add(1));
+            }
         }
         if let Some(comp) = &raw.completion {
             changes.push(comp.observed_hour);
         }
-        if let Some(by) = raw.ended_by {
-            changes.push(by);
-        } else if raw.completion.is_none()
-            && let Some(last) = raw.last_seen
-            && last < raw.stretch_last
-        {
-            changes.push(last.saturating_add(1));
-        }
+        changes.extend(raw.ended_by);
         changes.sort_unstable();
         changes.dedup();
 
@@ -839,8 +875,8 @@ fn scan(
             } else if let Some(by) = raw.ended_by.filter(|&by| by <= hour) {
                 let code = if raw.completions_recorded { STATE_ENDED } else { STATE_OUTCOME_NOT_RECORDED };
                 (code, Some(i64::from(by)), Some(i64::from(by)))
-            } else if let Some(last) = raw.last_seen.filter(|&last| hour > last) {
-                (STATE_NOT_READ, Some(i64::from(last)), Some(-1))
+            } else if !raw.steps.is_empty() && !has_read_at(&raw.seen, hour) {
+                (STATE_NOT_READ, last_read(&raw.seen, hour).map(i64::from), Some(-1))
             } else {
                 let step = raw.steps.partition_point(|s| s.hour <= hour).checked_sub(1).map(|i| &raw.steps[i]);
                 match step {
@@ -888,11 +924,11 @@ fn scan(
             appear_hour: raw.appear_hour,
             first_seen: raw.first_seen,
             first_exact: raw.first_exact,
-            last_seen: raw.last_seen,
             ended_by: raw.ended_by,
             ended_exact: raw.ended_exact,
             completions_recorded: raw.completions_recorded,
             steps: raw.steps,
+            seen: raw.seen.into_boxed_slice(),
             completion: raw.completion,
             owner_role,
             target_role,
@@ -924,6 +960,19 @@ fn scan(
     })
 }
 
+fn phase_hours(step: &CensusStep, through: i32) -> impl Iterator<Item = i32> + '_ {
+    let running = step.duration_days > 0 && !step.terminal;
+    let start_day = step.start_hour.map(|start| start.div_euclid(24));
+    (1..=step.phase_count.min(i32::MAX as u32) as i32)
+        .filter(move |_| running)
+        .filter_map(move |phase| {
+            let day = (i64::from(phase) * i64::from(step.duration_days) + i64::from(step.phase_count) - 1) / i64::from(step.phase_count);
+            i32::try_from((i64::from(start_day?) + day) * 24).ok()
+        })
+        .chain(start_day.filter(|_| running).and_then(|day| day.checked_add(step.duration_days)?.checked_mul(24)))
+        .filter(move |&hour| hour > step.hour && hour <= through)
+}
+
 struct RawEpisode {
     id: u128,
     key: String,
@@ -937,7 +986,16 @@ struct RawEpisode {
     steps: Vec<CensusStep>,
     completion: Option<CompletionRecord>,
     token: Option<String>,
-    stretch_last: i32,
+    seen: Vec<(i32, i32)>,
+    earlier_reads_whole: bool,
+}
+
+impl RawEpisode {
+    fn continues(&self, next: &CensusStep) -> bool {
+        self.steps.last().is_some_and(|last| {
+            last.owner_slot.is_some() && last.target_slot.is_some() && last.token.is_some() && (last.owner_slot, last.target_slot, &last.token) == (next.owner_slot, next.target_slot, &next.token)
+        })
+    }
 }
 
 fn tail(source: &Source, query: &Query<'_>, branch: u64, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Tail>> {
@@ -983,13 +1041,13 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
     let comp = ep.completion_at(hour);
     let (date, exact) = ep.display_date_at(hour, status);
 
-    let (owner_slot, owner_raw, target_slot, target_raw, identity_hour) = match (comp, step) {
-        (Some(comp), _) => (comp.owner_slot, Some(comp.owner_raw), comp.target_slot, comp.target_raw, comp.observed_hour),
-        (None, Some(step)) => (step.owner_slot, Some(step.owner_raw), step.target_slot, Some(step.target_raw), hour.min(ep.last_seen.unwrap_or(hour))),
-        (None, None) => (ep.owner_role.slot, None, ep.target_role.slot, None, ep.appear_hour),
+    let (owner_slot, target_slot, identity_hour) = match (comp, step) {
+        (Some(comp), _) => (comp.owner_slot, comp.target_slot, comp.observed_hour),
+        (None, Some(step)) => (step.owner_slot, step.target_slot, last_read(&ep.seen, hour).unwrap_or(step.hour)),
+        (None, None) => (ep.owner_role.slot, ep.target_role.slot, ep.appear_hour),
     };
-    let owner = resolve_country(holders, owner_slot, owner_raw, identity_hour, "owner");
-    let target = resolve_country(holders, target_slot, target_raw, identity_hour, "target");
+    let owner = resolve_country(holders, owner_slot, identity_hour, "owner");
+    let target = resolve_country(holders, target_slot, identity_hour, "target");
 
     let token = step.and_then(|s| s.token.clone()).or_else(|| comp.and_then(|c| c.token.clone())).or_else(|| ep.token.clone());
     let (operation_name, operation_missing, icon, icon_missing) = match &token {
@@ -1015,7 +1073,8 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
             terminal: u8::from(s.terminal),
             ..replay_data::rows::OperationRow::default()
         };
-        current_phase(&dummy, hour)
+        let read = last_read(&ep.seen, hour)?;
+        current_phase(&dummy, read)
     });
 
     let ended_hour = match status {
@@ -1063,7 +1122,7 @@ fn build_row(tail: &Tail, holders: &Holders, ep: &OperationEpisode, ordinal: u64
         icon_missing,
         start_hour,
         first_seen: ep.first_seen.filter(|&h| h <= hour),
-        last_seen: ep.last_seen.map(|h| h.min(hour)),
+        last_seen: (!has_read_at(&ep.seen, hour)).then(|| last_read(&ep.seen, hour)).flatten(),
         ended_hour,
         duration_days,
         preparation_ratio: step.and_then(|s| s.preparation_ratio),
@@ -1378,6 +1437,157 @@ mod tests {
         .expect("source")
     }
 
+    fn op_frame(branch: u64, hour: i32, ops: Vec<OperationRow>) -> replay_frame::frame::DecodedFrame {
+        read_frame(branch, hour, Some(ops))
+    }
+
+    fn read_frame(branch: u64, hour: i32, ops: Option<Vec<OperationRow>>) -> replay_frame::frame::DecodedFrame {
+        let mut frame = base_frame(branch, hour, Some(1));
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![make_country(1, 1, b"GER"), make_country(2, 2, b"SOV")]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![make_link(1, 1), make_link(2, 2)]));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 10, literal: b"operation_infiltrate_army".to_vec() }]));
+        *frame.tables[TableId::Operations.index()] = match ops {
+            Some(ops) => {
+                frame.metrics.table_ns[TableId::Operations.index()] = 1;
+                TableView::Complete(TableRows::Operations(ops))
+            }
+            None => TableView::Unavailable { reason: "not read this hour".into() },
+        };
+        frame.metrics.table_ns[TableId::OperationCompletions.index()] = 1;
+        *frame.tables[TableId::OperationCompletions.index()] = TableView::Complete(TableRows::OperationCompletions(Vec::new()));
+        frame
+    }
+
+    #[test]
+    fn a_phase_reached_while_operations_were_not_read_is_shown_from_the_next_read() {
+        let start = HOUR_EPOCH + 24 * 4;
+        let running = OperationRow { id: 100, owner: 1, target: 2, definition_token: 10, preparation_current: 100_000, preparation_required: 100_000, start_hour: start, duration_days: 2, phase_count: 2, assigned_slots: 1, ..OperationRow::default() };
+        let frames = (start..=start + 40).map(|hour| read_frame(1, hour, if (21..=30).contains(&(hour - start)) { None } else { Some(vec![running.clone()]) })).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "espionage-resumed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+        let params = |hour: i32| EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None };
+        let ask = |hour: i32| EspionageLogTail::load(&source, &params(hour), &load, &AtomicBool::new(false)).unwrap();
+        let gap = ask(start + 25);
+        assert_eq!(gap.rows[0].current_phase, Some(0), "the phase last read, not one reached unseen");
+        assert_eq!((gap.rows[0].status, gap.live.as_str(), gap.rows[0].last_seen), (EspionageStatus::NotRead, "0", Some(start + 20)), "a later sighting does not reach the unread hours before it");
+        assert_eq!(gap.next_change, Some(start + 31), "the next read is the next change");
+        assert_eq!(ask(start + 21).rows[0].status, EspionageStatus::NotRead, "not read from the first unread hour");
+        let resumed = ask(start + 31);
+        assert_eq!((resumed.rows[0].status, resumed.rows[0].current_phase, resumed.rows[0].last_seen), (EspionageStatus::Running, Some(1), None));
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
+        let exact = panel.exact().unwrap();
+        for (hour, seed) in [(start + 20, true), (start + 24, false), (start + 25, false), (start + 31, false), (start + 26, true)] {
+            assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
+        }
+    }
+
+    #[test]
+    fn an_operation_no_longer_read_keeps_its_last_phase_and_its_last_sighting_from_the_next_hour() {
+        let start = HOUR_EPOCH + 24 * 4;
+        let running = OperationRow { id: 100, owner: 1, target: 2, definition_token: 10, preparation_current: 100_000, preparation_required: 100_000, start_hour: start, duration_days: 2, phase_count: 2, assigned_slots: 1, ..OperationRow::default() };
+        let frames = (start..=start + 40).map(|hour| read_frame(1, hour, match hour - start { 0..=20 => Some(vec![running.clone()]), 21..=30 => None, _ => Some(vec![]) })).collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "espionage-unread".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let load = LoadContext { content: None };
+        let ask = |hour: i32| {
+            EspionageLogTail::load(
+                &source,
+                &EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None },
+                &load,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let read = ask(start + 20);
+        assert_eq!((read.rows[0].status, read.rows[0].current_phase, read.rows[0].last_seen), (EspionageStatus::Running, Some(0), None));
+        assert_eq!(read.next_change, Some(start + 21), "the last sighting appears the hour after it");
+        let unread = ask(start + 25);
+        assert_eq!((unread.rows[0].status, unread.rows[0].last_seen), (EspionageStatus::NotRead, Some(start + 20)));
+        assert_eq!(unread.rows[0].current_phase, Some(0), "a phase past the last read is not shown as reached");
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
+        let exact = panel.exact().unwrap();
+        for (hour, seed) in [(start + 20, true), (start + 21, false), (start + 25, false), (start + 31, false), (start + 22, true)] {
+            assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
+        }
+    }
+
+    #[test]
+    fn an_operation_across_a_load_is_one_row_and_one_the_save_lacks_is_no_longer_read() {
+        let h10 = HOUR_EPOCH + 100;
+        let op = |id: u64| OperationRow { id, owner: 1, target: 2, definition_token: 10, preparation_current: 50_000, preparation_required: 100_000, phase_count: 2, assigned_slots: 1, ..OperationRow::default() };
+        let before = records(1, (h10..=h10 + 10).map(|hour| op_frame(1, hour, vec![op(100), op(300)])).collect());
+        let mut after = records(2, (h10 + 11..=h10 + 20).map(|hour| op_frame(2, hour, if hour <= h10 + 15 { vec![op(100)] } else { vec![] })).collect());
+        if let replay_capture_spool::spool::Record::BranchStart(start) = &mut after[1] {
+            *start = replay_frame::branches::BranchStart {
+                id: 2,
+                session: 2,
+                loaded_hour: Some(h10 + 10),
+                first_hour: start.first_hour,
+                parent: replay_frame::branches::Parentage::Probable { branch: 1, hour: h10 + 10 },
+                reason: replay_frame::branches::BranchReason::LoadSignal,
+            };
+        }
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[before, after]).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(SourceKey { source_id: "espionage-load".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        assert_eq!(dashboard_base::queries::query(&source, 1).unwrap().timeline.stretches.len(), 2, "the load continues the branch in a second stretch");
+        let load = LoadContext { content: None };
+        let ask = |hour: i32| {
+            EspionageLogTail::load(
+                &source,
+                &EspionageLogTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 50, operation_types: None, country_role: None, running_order: None },
+                &load,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let mid = ask(h10 + 13);
+        let shown: Vec<(&str, EspionageStatus)> = mid.rows.iter().map(|row| (row.key.as_str(), row.status)).collect();
+        assert_eq!(shown, [("op:100", EspionageStatus::Preparing), ("op:300", EspionageStatus::NotRead)], "one row per operation across the load");
+        assert_eq!((mid.live.as_str(), mid.rows[1].last_seen), ("1", Some(h10 + 10)));
+        let late = ask(h10 + 18);
+        assert_eq!(late.rows.iter().map(|row| (row.key.as_str(), row.status)).collect::<Vec<_>>(), [("op:100", EspionageStatus::Ended), ("op:300", EspionageStatus::NotRead)]);
+        assert_eq!(late.rows[0].ended_hour, Some(h10 + 16));
+        let panel = dated_panel(&source, &load, &serde_json::json!({ "panel": "espionage-log-tail", "branchId": "1", "limit": 50 })).unwrap();
+        let exact = panel.exact().unwrap();
+        for (hour, seed) in [(h10 + 5, true), (h10 + 10, false), (h10 + 11, false), (h10 + 16, false), (h10 + 12, true)] {
+            assert_eq!(*(exact.advance)(hour, seed, &AtomicBool::new(false), None).value, (exact.cold)(hour, &AtomicBool::new(false)), "stepped equals cold at {hour}");
+        }
+    }
+
+    #[test]
+    fn a_running_operation_changes_at_each_phase_and_at_its_last_day() {
+        let start = HOUR_EPOCH + 24 * 10 + 5;
+        let step = CensusStep {
+            hour: start,
+            owner_slot: Some(1),
+            target_slot: Some(2),
+            token: None,
+            start_hour: Some(start),
+            duration_days: 30,
+            phase_count: 3,
+            preparation_ratio: None,
+            assigned_slots: 1,
+            auto_repeat: false,
+            auto_commence: false,
+            terminal: false,
+        };
+        let day = |days: i32| HOUR_EPOCH + 24 * (10 + days);
+        let row = |hour: i32| {
+            let held = replay_data::rows::OperationRow { start_hour: start, duration_days: 30, phase_count: 3, ..OperationRow::default() };
+            current_phase(&held, hour)
+        };
+        let mut hours: Vec<i32> = phase_hours(&step, day(40)).collect();
+        hours.sort_unstable();
+        hours.dedup();
+        assert_eq!(hours, [day(10), day(20), day(30)]);
+        for &hour in &hours {
+            assert_ne!(row(hour - 1), row(hour), "the shown phase moves at {hour}");
+        }
+        assert_eq!(phase_hours(&step, day(15)).collect::<Vec<_>>(), [day(10)], "no change is promised past the step's last read");
+        assert_eq!(phase_hours(&CensusStep { terminal: true, ..step }, day(40)).count(), 0);
+    }
+
     #[test]
     fn espionage_tail_tracks_lifecycle_roles_order_and_withholds_future_chips() {
         let h10 = HOUR_EPOCH + 100;
@@ -1430,6 +1640,8 @@ mod tests {
         assert_eq!(at10.next_change, Some(h20));
 
         let at20 = ask(h20, None, None, None);
+        assert_eq!(at20.rows[0].last_seen, None, "a live operation read at the hour asked has no last sighting");
+        assert_eq!(ask(h20 + 1, None, None, None).rows, ask(h20 + 2, None, None, None).rows, "nothing on a row moves between its changes");
         assert_eq!(at20.rows[0].status, EspionageStatus::Running);
         assert_eq!(at20.rows[0].start_hour, Some(h20));
         assert_eq!(at20.rows[0].duration_days, Some(30));
@@ -1465,5 +1677,6 @@ mod tests {
         let ended = at50.rows.iter().find(|r| r.operation_token.as_deref() == Some("operation_capture_cipher")).expect("ended op");
         assert_eq!(ended.status, EspionageStatus::Ended);
         assert_eq!(ended.ended_hour, Some(h50));
+        assert_eq!(ended.last_seen, Some(h50 - 1), "an operation no longer read keeps its last sighting");
     }
 }

@@ -62,6 +62,8 @@ const TYPED: u8 = 16;
 
 const LIVE: [u8; 8] = [0, 1, 2, 3, TYPED, TYPED + 1, TYPED + 2, TYPED + 3];
 
+const IN_PREPARATION: [u8; 6] = [0, 1, 2, TYPED, TYPED + 1, TYPED + 2];
+
 impl RaidStatus {
     fn code(self) -> u8 {
         STATUSES.iter().position(|held| *held == self).unwrap_or(0) as u8
@@ -72,9 +74,10 @@ impl RaidStatus {
     }
 
     fn at(episode: &RaidEpisode, hour: i32) -> Self {
-        let Some(latest) = episode.runs.last() else { return Self::PhaseNotRecorded };
+        let read = &episode.runs[..episode.runs.partition_point(|run| run.first_hour <= hour)];
+        let Some(latest) = read.last() else { return Self::PhaseNotRecorded };
         if latest.phase == native::PHASE_ENDED {
-            return match episode.outcome {
+            return match read.iter().rev().find(|run| run.outcome != native::OUTCOME_NONE).map(|run| run.outcome) {
                 Some(native::OUTCOME_FAILURE) => Self::Failed,
                 Some(native::OUTCOME_LIMITED_SUCCESS) => Self::LimitedSuccess,
                 Some(native::OUTCOME_SUCCESS) => Self::Succeeded,
@@ -83,10 +86,10 @@ impl RaidStatus {
                 _ => Self::OutcomeNotRecorded,
             };
         }
-        if episode.disappeared_hour.is_some() {
+        if episode.disappeared_hour.is_some_and(|gone| gone <= hour) {
             return Self::OutcomeNotRecorded;
         }
-        if episode.last_hour < hour {
+        if latest.last_hour < hour {
             return Self::NotRead;
         }
         match latest.phase {
@@ -100,7 +103,7 @@ impl RaidStatus {
 }
 
 fn state(episode: &RaidEpisode, hour: i32) -> u8 {
-    RaidStatus::at(episode, hour).code() | if episode.raid_type.is_some() { TYPED } else { 0 }
+    RaidStatus::at(episode, hour).code() | if episode.raid_type_hour.is_some_and(|known| known <= hour) { TYPED } else { 0 }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -140,32 +143,17 @@ pub struct RaidPreparationAt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct RaidPhaseAt {
-    pub first_hour: i32,
-    pub first_exact: bool,
-    pub after_hour: Option<i32>,
-    pub phase: i32,
-    pub phase_name: Option<String>,
-    pub outcome: i32,
-    pub outcome_name: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
 pub struct RaidLogRow {
     #[doc = " The raid episode's id: the row key and what a click hands to the detail."]
     pub key: String,
-    #[doc = " The episode's start: its first read, `exact` when the read before it proves it, else after `afterHour`."]
+    #[doc = " The episode's start: its first read."]
     pub hour: i32,
     pub exact: bool,
-    pub after_hour: Option<i32>,
     pub observed: i32,
     pub ordinal: String,
     pub live: bool,
     pub status: RaidStatus,
     pub phase_name: Option<String>,
-    pub outcome_name: Option<String>,
     pub outcome_missing: Option<String>,
     pub raider: RaidRaider,
     #[doc = " The victim as last read by the hour asked, named at that read."]
@@ -179,13 +167,10 @@ pub struct RaidLogRow {
     pub place: Option<RaidPlaceAt>,
     pub place_missing: Option<String>,
     pub preparation: Option<RaidPreparationAt>,
-    pub phases: Vec<RaidPhaseAt>,
     pub launched_hour: Option<i32>,
-    pub launched_exact: bool,
     #[doc = " The end read by the hour asked, naming the raider at that end."]
     pub end: Option<RaidEndAt>,
     pub disappeared_hour: Option<i32>,
-    pub disappeared_exact: bool,
     #[doc = " The raid's last read, once the hour asked is after it with no end or disappearance read."]
     pub last_seen: Option<i32>,
 }
@@ -373,8 +358,7 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content) -> io::Result<Tai
         let changes = changes_of(&episode, last);
         let mut states: Vec<(i32, u8)> = Vec::new();
         for &hour in &changes {
-            let Some(at) = episode_at(&episode, hour) else { continue };
-            let code = state(&at, hour);
+            let code = state(&episode, hour);
             if states.last().is_none_or(|&(_, held)| held != code) {
                 states.push((hour, code));
             }
@@ -460,13 +444,11 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         key: at.id.clone(),
         hour: date,
         exact: at.first_hour_exact,
-        after_hour: at.runs.first().and_then(|run| run.after_hour),
         observed: date,
         ordinal: shown_ordinal.to_string(),
         live,
         status,
         phase_name: at.phase_name.clone(),
-        outcome_name: at.outcome_name.clone(),
         outcome_missing: at.outcome_missing.clone(),
         raider,
         victim,
@@ -477,25 +459,10 @@ fn row(tail: &Tail, holders: &Holders, raid: &Raid, shown_ordinal: u64, live: bo
         icon_missing,
         place_missing: place.is_none().then(|| "The raid's target place is not recorded".to_owned()),
         place,
-        preparation: (status == RaidStatus::Preparing).then(|| preparation_at(&at, hour)).flatten(),
-        phases: at
-            .runs
-            .iter()
-            .map(|run| RaidPhaseAt {
-                first_hour: run.first_hour,
-                first_exact: run.first_exact,
-                after_hour: run.after_hour,
-                phase: run.phase,
-                phase_name: run.phase_name.clone(),
-                outcome: run.outcome,
-                outcome_name: run.outcome_name.clone(),
-            })
-            .collect(),
+        preparation: matches!(status, RaidStatus::Preparing | RaidStatus::Prepared).then(|| preparation_at(&at, hour)).flatten(),
         launched_hour: at.launched_hour,
-        launched_exact: at.launched_exact,
         end: at.ends.last().cloned(),
         disappeared_hour: at.disappeared_hour,
-        disappeared_exact: at.disappeared_exact,
         last_seen: (status == RaidStatus::NotRead).then_some(at.last_hour),
     })
 }
@@ -510,7 +477,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &RaidLogTailPara
     let statuses: Vec<RaidStatus> = params.statuses.clone().unwrap_or_else(|| STATUSES.to_vec());
     let typed: &[u8] = if kinds.is_some() { &[TYPED] } else { &[0, TYPED] };
     let states: Option<Vec<u8>> = (params.statuses.is_some() || kinds.is_some()).then(|| statuses.iter().flat_map(|status| typed.iter().map(move |bit| status.code() | bit)).collect());
-    let chips = [Chip { kinds: None, states: Some(LIVE.to_vec()) }];
+    let chips = [Chip { kinds: None, states: Some(IN_PREPARATION.to_vec()) }];
     let answer = index.ask(
         &query.holders,
         &Ask {
@@ -579,7 +546,6 @@ impl Product for RaidLogTail {
             RaidRaider::decl(),
             RaidPlaceAt::decl(),
             RaidPreparationAt::decl(),
-            RaidPhaseAt::decl(),
             RaidLogRow::decl(),
             RaidTypeChip::decl(),
             RaidLogTailReply::decl(),

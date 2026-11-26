@@ -146,3 +146,67 @@ fn statuses_and_the_range_apply_at_the_hour_before_the_count_and_the_slice() {
     assert!(load(&source, &ask(12)).missing.is_empty(), "the unread hour of 13 is not in a reply at 12");
     stepped_equals_cold(&source, serde_json::json!({ "panel": "raid-log-tail", "branchId": "1", "limit": 2 }), &[10, 11, 12, 13, 14, 11, 14]);
 }
+
+#[test]
+fn a_ready_raid_keeps_the_preparation_last_read_and_only_raids_in_preparation_are_counted() {
+    let mut prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
+    let ready = raid(7, 1, native::PHASE_PREPARED, native::OUTCOME_NONE);
+    let going = raid(8, 1, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE);
+    let source = opened("tail-ready", &recording(&[vec![
+        at(10, whole(vec![prep.clone()]), 30),
+        at(11, whole(vec![{ prep.preparation_hours = 2; prep }]), 30),
+        at(12, whole(vec![ready.clone(), going.clone()]), 30),
+        at(13, whole(vec![ready, going]), 30),
+    ]]));
+    let reply = load(&source, &ask(13));
+    let row = reply.rows.iter().find(|row| row.status == RaidStatus::Prepared).expect("the raid read as ready to launch");
+    let preparation = row.preparation.as_ref().expect("a raid ready to launch shows the preparation it was last read with");
+    assert_eq!((preparation.since, preparation.hours, preparation.per_hour, preparation.through), (10, 1, 1, Some(11)));
+    assert_eq!((reply.live.as_str(), reply.counts[0].total.as_str()), ("2", "1"), "a raid in progress is live but not in preparation");
+    stepped_equals_cold(&source, serde_json::json!({ "panel": "raid-log-tail", "branchId": "1", "limit": 64 }), &[10, 11, 12, 13, 10, 13]);
+}
+
+#[test]
+fn a_tokens_spelling_is_dated_from_its_first_read_and_follows_a_change_of_text() {
+    let prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
+    let frames = (10..=20)
+        .map(|hour| {
+            let mut frame = super::frame_at(1, &At { spelled: hour >= 12, ..at(hour, whole(vec![prep.clone()]), 30) });
+            if hour >= 16
+                && let TableView::Complete(TableRows::LexicalTokens(tokens)) = &mut *frame.tables[replay_data::rows::TableId::LexicalTokens.index()]
+            {
+                tokens.iter_mut().filter(|token| token.token == 40).for_each(|token| token.literal = b"sky_raid".to_vec());
+            }
+            frame
+        })
+        .collect();
+    let source = opened("tail-spellings", &[records(1, frames)]);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let run = query.timeline.stretches[0].run;
+    let spellings = crate::products::raids::dated_spellings(source.replay_ref().recording(), run, &[40u128, 41, 99].into_iter().collect(), 10, 20).unwrap();
+    assert_eq!(spellings[&40], [(12, "air_raid".to_owned()), (16, "sky_raid".to_owned())], "each spelling from the hour it was first read");
+    assert_eq!(spellings[&41], [(10, "dam_raid".to_owned())]);
+    assert!(!spellings.contains_key(&99), "a token never spelled has no spelling");
+}
+
+#[test]
+fn a_spelling_read_before_an_unread_or_truncated_dictionary_keeps_its_first_hour() {
+    let prep = raid(7, 1, native::PHASE_PREPARING, native::OUTCOME_NONE);
+    let frames = (10..=20)
+        .map(|hour| {
+            let mut frame = super::frame_at(1, &at(hour, whole(vec![prep.clone()]), 30));
+            if (13..=17).contains(&hour) {
+                *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "not read this hour".into() };
+            }
+            if hour >= 18 {
+                *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] =
+                    TableView::Truncated { rows: TableRows::LexicalTokens(vec![replay_data::rows::LexicalTokenRow { token: 41, literal: b"dam_raid".to_vec() }]), missing: 1 };
+            }
+            frame
+        })
+        .collect();
+    let source = opened("tail-spelling-gap", &[records(1, frames)]);
+    let run = dashboard_base::queries::query(&source, 1).unwrap().timeline.stretches[0].run;
+    let spellings = crate::products::raids::dated_spellings(source.replay_ref().recording(), run, &[40u128].into_iter().collect(), 10, 20).unwrap();
+    assert_eq!(spellings[&40], [(10, "air_raid".to_owned())]);
+}

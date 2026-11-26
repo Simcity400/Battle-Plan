@@ -1,7 +1,7 @@
 use super::{
     COST_SCALE, Content, ProjectKind, SpendingGap,
     log::{
-        ConstructionOutputRun, ConstructionProject, EndKind, LevelsBuilt, ProjectEnd, ProjectRun, ProjectSource, UnknownEnd,
+        ConstructionOutputRun, ConstructionProject, EndKind, LevelsBuilt, ProjectEnd, ProjectSource, UnknownEnd,
         join_project, window_projects,
     },
     missing,
@@ -18,7 +18,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Ask, Chip, Direction, Index, Occurrence, Order, PlacedGap, Role, Selection, SortKey, SortValue},
+    log::occurrence::{Ask, Direction, Index, Occurrence, Order, PlacedGap, Role, Selection, SortKey, SortValue},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
@@ -49,10 +49,8 @@ pub enum ConstructionStatus {
     LeftQueue,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub enum ConstructionWorkKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstructionWorkKind {
     New,
     Repair,
     RepairThenNew,
@@ -151,8 +149,6 @@ pub struct ConstructionLogRow {
     pub live: bool,
     pub kind: ProjectKind,
     pub source: ProjectSource,
-    pub work_kind: ConstructionWorkKind,
-    pub repairing: bool,
     pub status: ConstructionStatus,
     pub owner: ConstructionOwner,
     pub building_token: Option<String>,
@@ -266,7 +262,7 @@ struct ProjectState {
     province: Option<u32>,
     owner_slot: Option<u32>,
     created_hour: Option<i32>,
-    cost_raw: Option<String>,
+    cost_raw: Option<i64>,
     base_level: Option<i32>,
     target_level: Option<i32>,
     route_provinces: Option<u32>,
@@ -275,7 +271,6 @@ struct ProjectState {
     status: ConstructionStatus,
     live: bool,
     work_kind: ConstructionWorkKind,
-    repairing: bool,
     built: u32,
     unknown: u32,
     possible: u32,
@@ -319,7 +314,7 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
                 project.province,
                 project.country_slot,
                 project.repair,
-                project.cost_raw.clone(),
+                project.cost_raw,
                 project.created_hour,
                 project.route_provinces,
                 project.base_level,
@@ -327,8 +322,8 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
                 project.earlier_unknown,
             )
         };
-    let runs: Vec<&ProjectRun> = project.runs.iter().filter(|run| run.first_hour <= hour).collect();
-    let last = runs.last().copied();
+    let runs = &project.runs[..project.runs.partition_point(|run| run.first_hour <= hour)];
+    let last = runs.last();
     let end = project.end.as_ref().filter(|end| end.known_at <= hour).cloned();
     let run = if end.is_none() { last.filter(|run| run.last_hour >= hour) } else { None };
     let built = sum_levels(&project.built, hour);
@@ -366,7 +361,6 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
         ConstructionWorkKind::New => built_unread,
         ConstructionWorkKind::RepairThenNew | ConstructionWorkKind::Unknown => built_unread || repaired_unread,
     };
-    let repairing = run.is_some_and(|r| r.repair_levels > 0);
 
     let status = match &end {
         None => match run {
@@ -433,7 +427,6 @@ fn project_state_at(project: &ConstructionProject, hour: i32) -> Option<ProjectS
         status,
         live,
         work_kind,
-        repairing,
         built,
         unknown,
         possible,
@@ -481,10 +474,23 @@ fn changes_of(project: &ConstructionProject, last: i32) -> Vec<i32> {
     .chain(project.built.iter().chain(&project.unaccounted).chain(&project.possible).chain(&project.added).map(|levels| levels.known_at))
     .chain(project.built_unread.iter().flatten().flat_map(|&(first, end)| [first, end.saturating_add(1)]))
     .chain(project.repaired_unread.iter().flatten().flat_map(|&(first, end)| [first, end.saturating_add(1)]))
-    .chain(project.outputs.iter().flat_map(|out| [out.from, out.to.saturating_add(1)]))
+    .chain(project.outputs.iter().map(|out| out.from))
     .filter(|&hour| hour >= project.first_read && hour <= last)
     .collect();
     hours.push(project.first_read);
+    hours.sort_unstable();
+    hours.dedup();
+    hours
+}
+
+fn state_hours(project: &ConstructionProject, last: i32) -> Vec<i32> {
+    let mut hours: Vec<i32> = [Some(project.first_read), project.census_read, project.first_repair_tick, project.end.as_ref().map(|end| end.known_at)]
+        .into_iter()
+        .flatten()
+        .chain(project.runs.iter().map(|run| run.first_hour))
+        .chain(project.built.iter().chain(&project.unaccounted).chain(&project.possible).map(|levels| levels.known_at))
+        .filter(|&hour| hour >= project.first_read && hour <= last)
+        .collect();
     hours.sort_unstable();
     hours.dedup();
     hours
@@ -577,6 +583,13 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         .collect();
     let mut first_spelled: BTreeMap<String, (i32, Option<String>, Option<String>)> = BTreeMap::new();
     let mut projects: Vec<ConstructionProject> = by_id.into_values().collect();
+    for project in &mut projects {
+        for list in [&mut project.built, &mut project.unaccounted, &mut project.possible, &mut project.added] {
+            list.shrink_to_fit();
+        }
+        project.runs.shrink_to_fit();
+        project.outputs.shrink_to_fit();
+    }
     projects.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
 
     for project in &projects {
@@ -616,7 +629,7 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         let date = project.created_hour.map_or(observed, |created| created.min(observed));
         let mut states: Vec<(i32, u8)> = Vec::new();
         let mut changed_steps: Vec<(i32, Option<SortValue>)> = Vec::new();
-        for &hour in &changes {
+        for hour in state_hours(&project, last) {
             let Some(state) = project_state_at(&project, hour) else { continue };
             let has_token = state.building.and_then(|b| types.get(&b)).and_then(|info| info.token.as_ref()).is_some();
             let code = state_code(&state, has_token);
@@ -798,8 +811,6 @@ fn build_row(
         live,
         kind: project.kind,
         source: state.source,
-        work_kind: state.work_kind,
-        repairing: state.repairing,
         status: state.status,
         owner,
         building_token,
@@ -815,14 +826,14 @@ fn build_row(
         factories_missing,
         created_hour: state.created_hour,
         first_read: project.first_read,
-        cost_raw: state.cost_raw,
+        cost_raw: state.cost_raw.map(|cost| cost.to_string()),
         base_level: state.base_level,
         target_level: state.target_level,
         route_provinces: state.route_provinces,
         end: state.end.map(|end| ConstructionEndAt { kind: end.kind, hour: end.hour, known_at: end.known_at, unknown: end.unknown }),
         output: state.output.map(|out| ConstructionOutputAt {
-            construction_raw: out.construction_raw,
-            repair_raw: out.repair_raw,
+            construction_raw: out.construction_raw.map(|amount| amount.to_string()),
+            repair_raw: out.repair_raw.map(|amount| amount.to_string()),
             reason: out.reason,
             before_observation: out.before_observation,
         }),
@@ -861,7 +872,6 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
             })
             .collect()
     });
-    let chips = [Chip { kinds: None, states: Some(LIVE_STATES.to_vec()) }];
     let answer = index.ask(
         &query.holders,
         &Ask {
@@ -877,7 +887,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
             live_first,
             offset,
             limit,
-            chips: &chips,
+            chips: &[],
         },
     )?;
     let mut next_change = answer.next_change;
@@ -900,7 +910,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &ConstructionLog
         total: answer.total.to_string(),
         offset: answer.offset.to_string(),
         live: answer.live.to_string(),
-        counts: occurrences::counts(&answer, &["active"]),
+        counts: Vec::new(),
         building_types: tail.chips.iter().filter(|chip| chip.first_hour <= hour).cloned().collect(),
         repair_icon: tail.repair_icon.clone(),
         cost_scale: COST_SCALE,
@@ -951,7 +961,6 @@ impl Product for ConstructionLogTail {
             EndKind::decl(),
             UnknownEnd::decl(),
             ConstructionStatus::decl(),
-            ConstructionWorkKind::decl(),
             ConstructionWorkFilter::decl(),
             ConstructionOrder::decl(),
             ConstructionOwner::decl(),

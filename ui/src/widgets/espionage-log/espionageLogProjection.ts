@@ -1,8 +1,8 @@
 import { drawableIcon } from '../../dashboard/artwork.ts';
-import { formatDateTime } from '../../dashboard/calendar.ts';
+import { formatDateTime, HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
-import { contentKey, contentSet } from '../../dashboard/options.ts';
+import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -29,10 +29,10 @@ import { ESPIONAGE_LOG_COLUMNS } from './definition.ts';
 
 export interface EspionageLogProjectionOptions {
   readonly artwork: boolean;
+  readonly selected: readonly string[];
 }
 
 const HEAD_LIMIT = 256;
-const HOUR_EPOCH = 0;
 
 function gameDay(hour: number): number {
   return Math.floor((hour - HOUR_EPOCH) / 24);
@@ -50,9 +50,9 @@ const STATUS_INFO: Readonly<Record<EspionageStatus, { readonly mark?: StatusMark
 export function espionageTypeFilterItems(
   chips: readonly EspionageTypeChip[],
   selectedTokens: readonly string[],
-  atHour?: number,
+  atHour: number,
 ): LogKindFilterItem[] {
-  const visible = atHour === undefined ? chips : chips.filter(chip => chip.firstHour <= atHour);
+  const visible = chips.filter(chip => chip.firstHour <= atHour);
   const baseLabels = visible.map(chip => contentTitle(chip.name, chip.token, 'Operation name unavailable'));
   const counts = new Map<string, number>();
   for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1);
@@ -64,10 +64,11 @@ export function espionageTypeFilterItems(
     const ordinal = (seen.get(base) ?? 0) + 1;
     seen.set(base, ordinal);
     const label = counts.get(base)! > 1 ? `${base} (${ordinal})` : base;
+    const value = setToken(chip.token);
     return {
-      value: chip.token,
+      value,
       label,
-      checked: allSelected || selected.has(chip.token),
+      checked: allSelected || selected.has(value),
     };
   });
 }
@@ -332,6 +333,7 @@ export const espionageLogProjection: TableProjection<EspionageLogProjectionOptio
     const rawHead = source.rawHead as {
       readonly unavailable?: string | null;
       readonly warnings?: readonly string[];
+      readonly operationTypes?: readonly EspionageTypeChip[];
     } | undefined;
     const warnings = rawHead?.warnings?.length ? [...rawHead.warnings] : undefined;
     const unavailable = typeof rawHead?.unavailable === 'string' && rawHead.unavailable.length > 0
@@ -352,6 +354,7 @@ export const espionageLogProjection: TableProjection<EspionageLogProjectionOptio
       ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt,
       rowTimeBoundaries: false,
+      kindFilter: { key: 'types', noun: 'operations', allLabel: 'All operations', items: espionageTypeFilterItems(rawHead?.operationTypes ?? [], options.selected, Math.min(hour, source.at ?? hour)), selected: options.selected },
       titleSummary,
       ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
       ...(warnings ? { warnings } : {}),
@@ -410,6 +413,6 @@ export const espionageLogDeclaration: TableWidgetDeclaration<EspionageLogProject
   },
   projection: espionageLogProjection,
   projectionOptions(ctx): EspionageLogProjectionOptions {
-    return { artwork: ctx.options.artwork !== false };
+    return { artwork: ctx.options.artwork !== false, selected: contentSet(ctx.options.types ?? '') };
   },
 };

@@ -585,6 +585,125 @@ fn step_hours_in(steps: Option<&Vec<lanes::Step>>, first: i32, last: i32, out: &
     }
 }
 
+fn spelled_at(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<u128, String>> {
+    let mut found = HashMap::new();
+    dashboard_query::cost::storage(|| {
+        lanes::at_each(recording, run, TableId::LexicalTokens, Some(&[0][..]), asks, &mut |_, key, row| {
+            if let Some((view, slot)) = row
+                && let Some(text) = read::text(&view, 0, slot).filter(|text| !text.is_empty())
+            {
+                found.insert(key, String::from_utf8_lossy(text).into_owned());
+            }
+            Ok(())
+        })
+    })?;
+    Ok(found)
+}
+
+struct Readable {
+    spans: Vec<(i32, i32)>,
+    before: Vec<i64>,
+}
+
+impl Readable {
+    fn hours(&self) -> i64 {
+        self.spans.last().map_or(0, |&(first, last)| self.before[self.spans.len() - 1] + i64::from(last - first) + 1)
+    }
+
+    fn hour(&self, at: i64) -> i32 {
+        let span = self.before.partition_point(|&before| before <= at) - 1;
+        self.spans[span].0 + (at - self.before[span]) as i32
+    }
+
+    fn index(&self, hour: i32) -> i64 {
+        let span = self.spans.partition_point(|&(first, _)| first <= hour) - 1;
+        self.before[span] + i64::from(hour - self.spans[span].0)
+    }
+}
+
+fn first_reading(
+    recording: &replay_recording::columnar_frames::Recording,
+    run: u32,
+    readable: &Readable,
+    mut open: Vec<(u128, i64, i64, Option<String>)>,
+    readings: &mut HashMap<(u128, i32), String>,
+) -> io::Result<HashMap<u128, i32>> {
+    let mut found = HashMap::new();
+    while !open.is_empty() {
+        let mut asks: Vec<(i32, u128)> = open.iter().filter(|&&(_, low, high, _)| low < high).map(|&(token, low, high, _)| (readable.hour(low + (high - low) / 2), token)).collect();
+        asks.sort_unstable();
+        let read = if asks.is_empty() { HashMap::new() } else { spelled_at(recording, run, &asks)? };
+        for (token, low, high, wanted) in &mut open {
+            if *low >= *high {
+                continue;
+            }
+            let middle = *low + (*high - *low) / 2;
+            let literal = read.get(token);
+            if let Some(literal) = literal {
+                readings.insert((*token, readable.hour(middle)), literal.clone());
+            }
+            if literal.is_some_and(|literal| wanted.as_ref().is_none_or(|wanted| wanted == literal)) {
+                *high = middle;
+            } else {
+                *low = middle + 1;
+            }
+        }
+        open.retain(|&(token, low, high, _)| {
+            if low < high {
+                return true;
+            }
+            found.insert(token, readable.hour(high));
+            false
+        });
+    }
+    Ok(found)
+}
+
+fn dated_spellings(
+    recording: &replay_recording::columnar_frames::Recording,
+    run: u32,
+    tokens: &BTreeSet<u128>,
+    from: i32,
+    to: i32,
+) -> io::Result<HashMap<u128, Vec<(i32, String)>>> {
+    let statuses = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::LexicalTokens, from, to))?;
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for status in statuses.iter().filter(|status| replay_recording::columnar_frames::complete(status.status)) {
+        match spans.last_mut() {
+            Some(span) if span.1 + 1 >= status.first => span.1 = span.1.max(status.last),
+            _ => spans.push((status.first, status.last)),
+        }
+    }
+    let mut before = Vec::with_capacity(spans.len());
+    let mut total = 0i64;
+    for &(first, last) in &spans {
+        before.push(total);
+        total += i64::from(last - first) + 1;
+    }
+    let readable = Readable { spans, before };
+    let Some(anchor) = readable.spans.last().map(|&(_, last)| last) else { return Ok(HashMap::new()) };
+    let end = readable.hours() - 1;
+    let last: HashMap<u128, String> = spelled_at(recording, run, &tokens.iter().map(|&token| (anchor, token)).collect::<Vec<_>>())?;
+    let mut readings: HashMap<(u128, i32), String> = last.iter().map(|(&token, literal)| ((token, anchor), literal.clone())).collect();
+    let first = first_reading(recording, run, &readable, last.keys().map(|&token| (token, 0, end, None)).collect(), &mut readings)?;
+    let mut later = Vec::new();
+    let mut out: HashMap<u128, Vec<(i32, String)>> = HashMap::new();
+    for (&token, literal) in &last {
+        let Some(&hour) = first.get(&token) else { continue };
+        let earliest = readings.get(&(token, hour)).cloned().unwrap_or_else(|| literal.clone());
+        if earliest != *literal {
+            later.push((token, readable.index(hour) + 1, end, Some(literal.clone())));
+        }
+        out.insert(token, vec![(hour, earliest)]);
+    }
+    for (token, hour) in first_reading(recording, run, &readable, later, &mut readings)? {
+        if let (Some(steps), Some(literal)) = (out.get_mut(&token), last.get(&token)) {
+            steps.push((hour, literal.clone()));
+        }
+    }
+    Ok(out)
+}
+
 fn push_victim(list: &mut Vec<RaidVictimAt>, item: RaidVictimAt) {
     if let Some(prev) = list.last()
         && prev.tag == item.tag
@@ -704,12 +823,11 @@ fn episodes(
         };
         let province_history = places(TableId::Provinces, &province_columns, &provinces)?;
         let state_history = places(TableId::States, &[state_controller], &states)?;
-        let lexical = places(TableId::LexicalTokens, &[0], &tokens)?;
-        let spelled: Vec<i32> = lexical.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).collect();
+        let lexicon = dated_spellings(recording, run, &tokens, start, end)?;
+        let spelled: Vec<i32> = lexicon.values().flatten().map(|&(hour, _)| hour).collect();
         let literal_at = |token: u32, hour: i32| -> Option<String> {
-            let cell = cell_at(&lexical, steps_of(&lexical, u128::from(token)), 0, hour)?;
-            let literal = String::from_utf8_lossy(lexical.text(cell)?).into_owned();
-            (!literal.is_empty()).then_some(literal)
+            let steps = lexicon.get(&u128::from(token))?;
+            steps[..steps.partition_point(|&(first, _)| first <= hour)].last().map(|(_, literal)| literal.clone())
         };
         let place = |history: &lanes::History, column: usize, id: u32, hour: i32| -> Result<u32, ()> {
             match cell_at(history, steps_of(history, u128::from(id)), column, hour) {

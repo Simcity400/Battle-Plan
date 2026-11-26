@@ -9,6 +9,8 @@ use replay_data::{
 use replay_lanes::lanes::{Cell, Keys, Step};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io};
+
+const KEYS_PER_READ: usize = 8192;
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
@@ -65,8 +67,8 @@ pub(crate) struct ProjectRun {
 pub(crate) struct ConstructionOutputRun {
     pub from: i32,
     pub to: i32,
-    pub construction_raw: Option<String>,
-    pub repair_raw: Option<String>,
+    pub construction_raw: Option<i64>,
+    pub repair_raw: Option<i64>,
     pub reason: Option<SpendingGap>,
     pub before_observation: bool,
 }
@@ -110,7 +112,7 @@ pub(crate) struct ConstructionProject {
     pub route_provinces: Option<u32>,
     pub base_level: Option<i32>,
     pub target_level: Option<i32>,
-    pub cost_raw: Option<String>,
+    pub cost_raw: Option<i64>,
     pub created_hour: Option<i32>,
     pub first_read: i32,
     pub earlier_unknown: bool,
@@ -124,7 +126,11 @@ pub(crate) struct ConstructionProject {
     pub end: Option<ProjectEnd>,
     pub first_repair_tick: Option<i32>,
     pub outputs: Vec<ConstructionOutputRun>,
+    pub counters_read: u8,
+    pub opening: [Option<(i32, u32)>; 2],
 }
+
+const COUNTERS: [usize; 7] = [col::BUILT, col::REPAIRED, col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::POSSIBLE, col::ADDED_NEW, col::ADDED_REPAIR];
 
 fn join_runs<T>(
     mut a: Vec<T>,
@@ -145,13 +151,31 @@ fn join_runs<T>(
     a
 }
 
-fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>) -> Vec<LevelsBuilt> {
+fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>, read: [bool; 2], opening: [Option<(i32, u32)>; 2]) -> Vec<LevelsBuilt> {
     let mut prior = [0u32; 2];
     for levels in &x {
         prior[usize::from(levels.repair)] = prior[usize::from(levels.repair)].saturating_add(levels.count);
     }
-    for mut levels in y {
+    let mut reconciled = [false; 2];
+    for (at, mut levels) in y.iter().cloned().enumerate() {
         let side = usize::from(levels.repair);
+        if let (true, Some((hour, total))) = (read[side], opening[side])
+            && levels.known_at == hour
+        {
+            if !reconciled[side] {
+                reconciled[side] = true;
+                let delta = total.saturating_sub(prior[side]);
+                let observed: Vec<&LevelsBuilt> = y[at..].iter().filter(|held| usize::from(held.repair) == side && held.known_at == hour).collect();
+                let dated: u32 = observed.iter().filter(|held| !held.carried).map(|held| held.count).sum();
+                prior[side] = prior[side].saturating_add(delta);
+                if delta > 0 && dated == delta {
+                    x.extend(observed.into_iter().filter(|held| !held.carried).cloned());
+                } else if delta > 0 {
+                    x.push(LevelsBuilt { hour: None, known_at: hour, count: delta, repair: side == 1, carried: false });
+                }
+            }
+            continue;
+        }
         if !levels.carried {
             prior[side] = prior[side].saturating_add(levels.count);
             x.push(levels);
@@ -160,7 +184,7 @@ fn join_levels(mut x: Vec<LevelsBuilt>, y: Vec<LevelsBuilt>) -> Vec<LevelsBuilt>
         let delta = levels.count.saturating_sub(prior[side]);
         if delta > 0 {
             prior[side] = prior[side].saturating_add(delta);
-            if prior[side] != delta {
+            if read[side] {
                 levels.count = delta;
                 levels.carried = false;
             }
@@ -176,6 +200,8 @@ fn join_unread(a: Option<Vec<(i32, i32)>>, b: Option<Vec<(i32, i32)>>) -> Option
 }
 
 pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> ConstructionProject {
+    let read = |new: usize, repair: usize| [a.counters_read & (1 << new) != 0, a.counters_read & (1 << repair) != 0];
+    let read = [read(0, 1), read(2, 3), read(4, 4), read(5, 6)];
     let output_origin = a.output_origin.or_else(|| {
         if a.source == ProjectSource::OutputAlone && b.source == ProjectSource::Census {
             Some(OutputOrigin { tag: a.tag, country_slot: a.country_slot, building: a.building, state: a.state, to_state: a.to_state, province: a.province })
@@ -209,10 +235,12 @@ pub(crate) fn join_project(a: ConstructionProject, b: ConstructionProject) -> Co
         repaired_unread: join_unread(a.repaired_unread, b.repaired_unread),
         runs,
         outputs,
-        built: join_levels(a.built, b.built),
-        unaccounted: join_levels(a.unaccounted, b.unaccounted),
-        possible: join_levels(a.possible, b.possible),
-        added: join_levels(a.added, b.added),
+        built: join_levels(a.built, b.built, read[0], b.opening),
+        unaccounted: join_levels(a.unaccounted, b.unaccounted, read[1], [None; 2]),
+        possible: join_levels(a.possible, b.possible, read[2], [None; 2]),
+        added: join_levels(a.added, b.added, read[3], [None; 2]),
+        opening: a.opening,
+        counters_read: a.counters_read | b.counters_read,
         end: b.end.or(a.end),
         ..b
     }
@@ -233,44 +261,46 @@ pub(crate) fn window_projects(
         return Ok(Vec::new());
     }
     keys.sort_unstable();
-    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(&keys), from, to))?;
     let statuses = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, run, TableId::ConstructionProjects, from, to))?;
     let truncated: Vec<(i32, i32)> = statuses
         .into_iter()
         .filter(|span| matches!(span.status, replay_columnar::manifest::Status::Truncated { .. }))
         .map(|span| (span.first, span.last))
         .collect();
-    let mut asks = Vec::new();
-    for (key, steps) in &history.keys {
-        asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
-    }
-    let mut rises: HashMap<(u128, i32), Rises> = HashMap::new();
-    if !asks.is_empty() {
-        dashboard_query::cost::storage(|| {
-            replay_lanes::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
-                if let Some((view, slot)) = row {
-                    let list = |column: usize| -> io::Result<Vec<ConstructionRise>> {
-                        let Some(bytes) = view.list(column, slot) else { return Ok(Vec::new()) };
-                        let mut input = Decoder::new(bytes);
-                        let rises = <Vec<ConstructionRise> as Value>::decode(&mut input)?;
-                        input.finish()?;
-                        Ok(rises)
-                    };
-                    rises.insert((key, hour), Rises { built: list(col::BUILT_RISES)?, repaired: list(col::REPAIRED_RISES)? });
-                }
-                Ok(())
-            })
-        })?;
-    }
-    let mut out = Vec::new();
-    for (key, steps) in &history.keys {
-        let resolve = |country: u32, at: i32| {
-            let slot = links.slot_at(country, at);
-            let tag = slot.and_then(|s| holders.slot_tag(s, at)).map(str::to_owned);
-            (slot, tag)
-        };
-        if let Some(project) = assemble_inner(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &resolve, false) {
-            out.push(*project);
+    let resolve = |country: u32, at: i32| {
+        let slot = links.slot_at(country, at);
+        let tag = slot.and_then(|s| holders.slot_tag(s, at)).map(str::to_owned);
+        (slot, tag)
+    };
+    let mut out = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(KEYS_PER_READ) {
+        let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::ConstructionProjects, &col::ALL, Keys::These(chunk), from, to))?;
+        let mut asks = Vec::new();
+        for (key, steps) in &history.keys {
+            asks.extend(rise_hours(steps).into_iter().map(|hour| (hour, *key)));
+        }
+        let mut rises: HashMap<(u128, i32), Rises> = HashMap::new();
+        if !asks.is_empty() {
+            dashboard_query::cost::storage(|| {
+                replay_lanes::lanes::at_each(recording, run, TableId::ConstructionProjects, Some(&[col::BUILT_RISES, col::REPAIRED_RISES][..]), &asks, &mut |hour, key, row| {
+                    if let Some((view, slot)) = row {
+                        let list = |column: usize| -> io::Result<Vec<ConstructionRise>> {
+                            let Some(bytes) = view.list(column, slot) else { return Ok(Vec::new()) };
+                            let mut input = Decoder::new(bytes);
+                            let rises = <Vec<ConstructionRise> as Value>::decode(&mut input)?;
+                            input.finish()?;
+                            Ok(rises)
+                        };
+                        rises.insert((key, hour), Rises { built: list(col::BUILT_RISES)?, repaired: list(col::REPAIRED_RISES)? });
+                    }
+                    Ok(())
+                })
+            })?;
+        }
+        for (key, steps) in &history.keys {
+            if let Some(project) = assemble_inner(*key as u64, steps, history.to, &truncated, &|hour| rises.get(&(*key, hour)), &resolve, false) {
+                out.push(*project);
+            }
         }
     }
     out.sort_by(|a, b| (a.first_read, a.kind, a.id.len(), &a.id).cmp(&(b.first_read, b.kind, b.id.len(), &b.id)));
@@ -298,7 +328,8 @@ fn shown<'a>(steps: &'a [Step], to: i32) -> Vec<(i32, i32, &'a [Cell])> {
 pub(crate) fn rise_hours(steps: &[Step]) -> Vec<i32> {
     let mut out = Vec::new();
     let mut held: (Option<i64>, Option<i64>) = (None, None);
-    let mut saw_unread = (false, false);
+    let continued = steps.iter().find_map(|step| step.cells.as_deref().map(|cells| hour(cells, col::FIRST_READ).is_some_and(|first| first < step.hour))).unwrap_or(false);
+    let mut saw_unread = (continued, continued);
     for step in steps {
         let Some(cells) = step.cells.as_deref() else { continue };
         let built = number(cells, col::BUILT);
@@ -380,10 +411,10 @@ fn end_of(cells: &[Cell], at: i32) -> Option<ProjectEnd> {
     Some(ProjectEnd { kind, hour: hour(cells, col::END_HOUR), known_at: hour(cells, col::END_KNOWN_AT).unwrap_or(at), unknown })
 }
 
-fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>) -> Vec<LevelsBuilt> {
+fn rises_of(shown: &[(i32, i32, &[Cell])], column: usize, repair: bool, dated: &dyn Fn(i32) -> Option<Vec<ConstructionRise>>, continued: bool) -> Vec<LevelsBuilt> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
-    let mut saw_unread = false;
+    let mut saw_unread = continued;
     for &(at, _, cells) in shown {
         let Some(now) = number(cells, column) else {
             saw_unread = true;
@@ -495,7 +526,7 @@ fn assemble_inner<'r>(
         if since.is_none() && reason.is_some_and(|reason| reason == SpendingGap::NotRecorded) {
             continue;
         }
-        let raw = |column: usize| if reason.is_none() { number(cells, column).map(|value| value.to_string()) } else { None };
+        let raw = |column: usize| if reason.is_none() { number(cells, column) } else { None };
         let run = ConstructionOutputRun {
             from: at,
             to: through,
@@ -515,6 +546,7 @@ fn assemble_inner<'r>(
             _ => outputs.push(run),
         }
     }
+    let continued = first_read < shown[0].0;
     let built = |at: i32| rises(at).map(|rises| rises.built.clone());
     let repaired = |at: i32| rises(at).map(|rises| rises.repaired.clone());
     let undated = |_: i32| -> Option<Vec<ConstructionRise>> { None };
@@ -565,20 +597,28 @@ fn assemble_inner<'r>(
         route_provinces: id32(last, col::ROUTE_PROVINCES),
         base_level: hour(last, col::BASE_LEVEL),
         target_level: hour(last, col::TARGET_LEVEL),
-        cost_raw: number(last, col::COST).map(|cost| cost.to_string()),
+        cost_raw: number(last, col::COST),
         created_hour: hour(last, col::CREATED_HOUR),
         first_read,
         earlier_unknown: number(last, col::EARLIER_UNKNOWN) == Some(1),
         runs,
-        built: merged(rises_of(&shown, col::BUILT, false, &built), rises_of(&shown, col::REPAIRED, true, &repaired)),
+        built: merged(rises_of(&shown, col::BUILT, false, &built, continued), rises_of(&shown, col::REPAIRED, true, &repaired, continued)),
         built_unread: counter_unread(col::BUILT),
         repaired_unread: counter_unread(col::REPAIRED),
-        unaccounted: merged(rises_of(&shown, col::UNACCOUNTED_NEW, false, &undated), rises_of(&shown, col::UNACCOUNTED_REPAIR, true, &undated)),
-        possible: rises_of(&shown, col::POSSIBLE, false, &undated),
-        added: merged(rises_of(&shown, col::ADDED_NEW, false, &undated), rises_of(&shown, col::ADDED_REPAIR, true, &undated)),
+        unaccounted: merged(rises_of(&shown, col::UNACCOUNTED_NEW, false, &undated, false), rises_of(&shown, col::UNACCOUNTED_REPAIR, true, &undated, false)),
+        possible: rises_of(&shown, col::POSSIBLE, false, &undated, false),
+        added: merged(rises_of(&shown, col::ADDED_NEW, false, &undated, false), rises_of(&shown, col::ADDED_REPAIR, true, &undated, false)),
         end: end_of(last, last_at),
         first_repair_tick: hour(last, col::FIRST_REPAIR_TICK),
         outputs,
+        opening: [col::BUILT, col::REPAIRED].map(|column| {
+            shown.iter().find_map(|&(at, _, cells)| number(cells, column).map(|count| (at, u32::try_from(count).unwrap_or(u32::MAX))))
+        }),
+        counters_read: COUNTERS
+            .iter()
+            .enumerate()
+            .filter(|&(_, &column)| shown.iter().any(|&(_, _, cells)| number(cells, column).is_some()))
+            .fold(0, |bits, (at, _)| bits | 1 << at),
     }))
 }
 

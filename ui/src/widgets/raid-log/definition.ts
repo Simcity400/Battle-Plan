@@ -26,6 +26,7 @@ export const RAID_LOG_COLUMNS: readonly TableColumnSpec[] = [
     offered: OFFERED.text,
     priority: 2,
     sortable: false,
+    numeric: true,
     minWidth: 136,
     widest: ['999 days preparing'],
   },

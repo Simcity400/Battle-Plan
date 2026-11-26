@@ -76,7 +76,7 @@ fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
             ),
         ),
     ];
-    assert_eq!(rise_hours(&steps), [120, 168, 192]);
+    assert_eq!(rise_hours(&steps), [100, 120, 168, 192], "a window opening after the line's first read looks up the rises read with its first count");
     let dated = Rises { built: vec![ConstructionRise { hour: 117, count: 1 }], repaired: Vec::new() };
     let rises = |hour: i32| (hour == 120).then_some(&dated);
     let Assembled::Project(project) = assemble(5, &steps, 199, &[], &rises, &tag) else { panic!("the line is shown and named") };
@@ -100,9 +100,9 @@ fn a_window_carries_counts_reached_before_it_and_dates_rises_by_the_row() {
     let end = project.end.as_ref().unwrap();
     assert_eq!((end.kind, end.hour, end.known_at, end.unknown), (EndKind::Finished, Some(189), 192, None));
     assert_eq!(project.outputs.len(), 3);
-    assert_eq!((project.outputs[0].from, project.outputs[0].to, project.outputs[0].construction_raw.as_deref()), (120, 167, Some("500")));
+    assert_eq!((project.outputs[0].from, project.outputs[0].to, project.outputs[0].construction_raw), (120, 167, Some(500)));
     assert!(project.outputs[0].before_observation);
-    assert_eq!((project.outputs[1].from, project.outputs[1].to, project.outputs[1].reason, project.outputs[1].construction_raw.clone()), (168, 169, Some(SpendingGap::LinkedOutput), None));
+    assert_eq!((project.outputs[1].from, project.outputs[1].to, project.outputs[1].reason, project.outputs[1].construction_raw), (168, 169, Some(SpendingGap::LinkedOutput), None));
     assert_eq!((project.outputs[2].from, project.outputs[2].to), (180, 199));
 }
 
@@ -187,7 +187,7 @@ fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulte
     assert_eq!(disappeared.built_unread, Some(vec![(104, 120)]), "unread final counter stays uncertain through window end after the row disappears");
 
     let resolved_steps = vec![step(100, &started_one), step_with_unrecorded(104, &started_one, &[col::BUILT]), gone.clone(), step(108, &census(2, 0, 2, 0, &[]))];
-    assert_eq!(rise_hours(&resolved_steps), [108]);
+    assert_eq!(rise_hours(&resolved_steps), [100, 108]);
     let rise_108 = Rises { built: vec![ConstructionRise { hour: 107, count: 1 }], repaired: Vec::new() };
     let rises_108 = |hour: i32| (hour == 108).then_some(&rise_108);
     let Assembled::Project(resolved) = assemble(15, &resolved_steps, 120, &[], &rises_108, &tag) else { panic!("named") };
@@ -227,10 +227,21 @@ fn unread_project_counters_and_classification_fields_stay_unknown_never_defaulte
 
 #[test]
 fn a_holding_counts_only_output_after_its_start_and_an_unrecorded_total_stays_unknown() {
-    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 50);
+    let first = deltas(&[(49, Some(Cell::Number(400))), (60, Some(Cell::Number(450))), (70, None), (80, Some(Cell::Number(500)))], 49, 50, true, &[]);
     assert_eq!(first, [(60, Some(50)), (80, Some(50))]);
-    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 50), [(55, Some(30))]);
-    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 90);
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, true, &[]), [(55, Some(30))]);
+    assert_eq!(
+        deltas(&[(49, Some(Cell::Unrecorded)), (60, Some(Cell::Number(450))), (70, Some(Cell::Number(470)))], 49, 50, true, &[]),
+        [(60, None)],
+        "an unread total before the holding starts leaves its first total unknown, never credited from zero"
+    );
+    assert_eq!(deltas(&[(40, Some(Cell::Unrecorded)), (49, Some(Cell::Number(400))), (60, Some(Cell::Number(450)))], 49, 50, true, &[]), [(60, Some(50))]);
+    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 49, 50, false, &[]), [(55, None)], "absence before the window is a zero only where a complete read proves it");
+    assert_eq!(deltas(&[(49, None), (55, Some(Cell::Number(30)))], 49, 50, false, &[(50, 54)]), [(55, Some(30))], "a complete read inside the window proves the absence");
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, false, &[(49, 54)]), [(55, Some(30))], "a key first emitted at its first total is absent through the complete reads before it");
+    assert_eq!(deltas(&[(55, Some(Cell::Number(30)))], 49, 50, false, &[(56, 60)]), [(55, None)]);
+    assert_eq!(deltas(&[(49, Some(Cell::Number(10))), (55, Some(Cell::Number(30)))], 49, 50, false, &[]), [(55, Some(20))], "a total read before the window is its baseline");
+    let second = deltas(&[(90, Some(Cell::Number(20))), (95, Some(Cell::Unrecorded)), (99, Some(Cell::Number(25)))], 89, 90, true, &[]);
     assert_eq!(second, [(90, Some(20)), (95, None)]);
     let steps = totals([first, second].concat());
     let shown: Vec<(i32, Option<&str>)> = steps.iter().map(|step| (step.known_at, step.total_raw.as_deref())).collect();
@@ -255,6 +266,8 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     let values: HashMap<usize, i64> = HashMap::from([(col::KIND, 0), (col::COUNTRY, 7), (col::BUILDING_TYPE, 300), (col::TARGET_STATE, 12), (col::FIRST_READ, 90), (col::REPAIRED, 1), (col::OUTPUT_REASON, i64::from(P::OUTPUT_LINKED)), (col::OUTPUT_SINCE, 90), (col::OBSERVED_SINCE_CREATION, 0)]);
     let line = line_of(5, 90, 140, &|column| values.get(&column).copied());
     assert!(line.repair_work && !line.new_work && line.before_observation && line.had_output);
+    assert_eq!(line.country, Some(7));
+    assert_eq!(line_of(5, 90, 140, &|column| (column != col::COUNTRY).then(|| values.get(&column).copied()).flatten()).country, None, "an unread owner stays unknown, never country 0");
     let none = TagHolderRow::NONE;
     assert_eq!(leaf_keys(&line), [(true, false, 300, 12, none)]);
     let linked = Some(P::OUTPUT_LINKED);
@@ -352,4 +365,52 @@ mod recorded {
         let unheld = recording(false);
         assert!(!super::super::recorded(&dashboard_base::queries::query(&unheld, 1).unwrap()).unwrap(), "queues never available are not recorded");
     }
+}
+
+#[test]
+fn a_project_split_at_an_unread_tail_joins_to_the_levels_of_one_window() {
+    let unread = |hour| step_with_unrecorded(hour, &census(2, 2, 0, 0, &[]), &[col::BUILT]);
+    let first = vec![step(100, &census(2, 3, 1, 0, &[])), unread(140)];
+    let second = vec![step(150, &census(2, 1, 3, 0, &[]))];
+    let whole: Vec<Step> = first.iter().chain(&second).cloned().collect();
+    let project = |steps: &[Step], to: i32| match assemble(5, steps, to, &[], &|_| None, &tag) {
+        Assembled::Project(project) => *project,
+        _ => panic!("named"),
+    };
+    let joined = super::log::join_project(project(&first, 149), project(&second, 199));
+    let alone = project(&whole, 199);
+    let shown = |project: &super::log::ConstructionProject| project.built.iter().map(|levels| (levels.hour, levels.known_at, levels.count, levels.carried)).collect::<Vec<_>>();
+    assert_eq!(shown(&alone), [(None, 100, 1, true), (None, 150, 2, false)], "one window: the rise across the unread span is known at its first read");
+    assert_eq!(shown(&joined), shown(&alone), "two windows split at the unread tail join to the same levels");
+    assert_eq!(joined.built_unread, alone.built_unread);
+
+    let from_zero = vec![step(100, &census(2, 3, 0, 0, &[])), unread(140)];
+    let joined = super::log::join_project(project(&from_zero, 149), project(&second, 199));
+    let whole: Vec<Step> = from_zero.iter().chain(&second).cloned().collect();
+    assert_eq!(shown(&joined), [(None, 150, 3, false)], "a recorded zero before the tail makes the later count a rise, not a carried lump");
+    assert_eq!(shown(&joined), shown(&project(&whole, 199)));
+
+    let dated = Rises { built: vec![ConstructionRise { hour: 148, count: 2 }], repaired: Vec::new() };
+    let rises = |hour: i32| (hour == 150).then_some(&dated);
+    let with_rises = |steps: &[Step], to: i32| match assemble(5, steps, to, &[], &rises, &tag) {
+        Assembled::Project(project) => *project,
+        _ => panic!("named"),
+    };
+    assert_eq!(rise_hours(&second), [150], "the window opening after the line's first read asks for the rises read with its first count");
+    let joined = super::log::join_project(with_rises(&first, 149), with_rises(&second, 199));
+    let whole: Vec<Step> = first.iter().chain(&second).cloned().collect();
+    assert_eq!(shown(&joined), [(None, 100, 1, true), (Some(148), 150, 2, false)], "the recorded rise keeps its own hour across the split");
+    assert_eq!(shown(&joined), shown(&with_rises(&whole, 199)));
+    let kept = Rises { built: vec![ConstructionRise { hour: 118, count: 2 }], repaired: Vec::new() };
+    let held_rises = |hour: i32| (hour == 120 || hour == 150).then_some(&kept);
+    let held = |steps: &[Step], to: i32| match assemble(5, steps, to, &[], &held_rises, &tag) {
+        Assembled::Project(project) => *project,
+        _ => panic!("named"),
+    };
+    let risen = vec![step(100, &census(2, 3, 1, 0, &[])), step(120, &census(2, 1, 3, 0, &[]))];
+    let unchanged = vec![step(150, &census(2, 1, 3, 0, &[]))];
+    let joined = super::log::join_project(held(&risen, 149), held(&unchanged, 199));
+    let whole: Vec<Step> = risen.iter().chain(&unchanged).cloned().collect();
+    assert_eq!(shown(&joined), [(None, 100, 1, true), (Some(118), 120, 2, false)], "a rise list still held when the next window opens is not counted twice");
+    assert_eq!(shown(&joined), shown(&held(&whole, 199)));
 }

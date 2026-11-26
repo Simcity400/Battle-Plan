@@ -3,7 +3,7 @@ import { drawableIcon } from '../../dashboard/artwork.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
-import { contentKey, contentSet } from '../../dashboard/options.ts';
+import { contentKey, contentSet, setToken } from '../../dashboard/options.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -30,6 +30,7 @@ import { CONSTRUCTION_LOG_COLUMNS } from './definition.ts';
 
 export interface ConstructionLogProjectionOptions {
   readonly artwork: boolean;
+  readonly selected: readonly string[];
 }
 
 const HEAD_LIMIT = 256;
@@ -51,9 +52,9 @@ const CONSTRUCTION_STATUS_INFO: Readonly<Record<ConstructionStatus, { readonly m
 export function constructionTypeFilterItems(
   chips: readonly ConstructionTypeChip[],
   selectedTokens: readonly string[],
-  atHour?: number,
+  atHour: number,
 ): LogKindFilterItem[] {
-  const visible = atHour === undefined ? chips : chips.filter(chip => chip.firstHour <= atHour);
+  const visible = chips.filter(chip => chip.firstHour <= atHour);
   const baseLabels = visible.map(chip => contentTitle(chip.name, chip.token, 'Building name unavailable'));
   const counts = new Map<string, number>();
   for (const label of baseLabels) counts.set(label, (counts.get(label) ?? 0) + 1);
@@ -65,10 +66,11 @@ export function constructionTypeFilterItems(
     const ordinal = (seen.get(base) ?? 0) + 1;
     seen.set(base, ordinal);
     const label = counts.get(base)! > 1 ? `${base} (${ordinal})` : base;
+    const value = setToken(chip.token);
     return {
-      value: chip.token,
+      value,
       label,
-      checked: allSelected || selected.has(chip.token),
+      checked: allSelected || selected.has(value),
     };
   });
 }
@@ -341,7 +343,9 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       readonly costScale?: number;
       readonly unavailable?: string | null;
       readonly warnings?: readonly string[];
+      readonly buildingTypes?: readonly ConstructionTypeChip[];
     } | undefined;
+    const items = constructionTypeFilterItems(rawHead?.buildingTypes ?? [], options.selected, Math.min(hour, source.at ?? hour));
     const costScale = typeof rawHead?.costScale === 'number' && rawHead.costScale > 0 ? rawHead.costScale : 100_000;
     const boundary = newIdentityBoundary();
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
@@ -350,10 +354,6 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       readView.rowWindow,
       rawRow => buildConstructionRow(readView, rawRow, options.artwork, costScale, boundary),
     );
-    const activeCount = source.facetTotals?.get('active') ?? null;
-    const titleSummary = activeCount !== null && activeCount > 0
-      ? `${formatScalar(activeCount, 'integer')} building`
-      : null;
     const warnings = rawHead?.warnings?.length ? [...rawHead.warnings] : undefined;
     const unavailable = typeof rawHead?.unavailable === 'string' && rawHead.unavailable.length > 0
       ? rawHead.unavailable
@@ -372,8 +372,7 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
       ...(gapBefore?.length ? { gapBefore } : {}),
       nextChangeAt: boundary.next,
       rowTimeBoundaries: false,
-      titleSummary,
-      ...(source.missing.length > 0 && titleSummary ? { titleSummaryPartial: 'Count from recorded hours' } : {}),
+      kindFilter: { key: 'types', noun: 'buildings', allLabel: 'All buildings', items, selected: options.selected },
       ...(warnings ? { warnings } : {}),
       ...(slots.length === 0
         ? unavailable
@@ -432,6 +431,6 @@ export const constructionLogDeclaration: TableWidgetDeclaration<ConstructionLogP
   },
   projection: constructionLogProjection,
   projectionOptions(ctx): ConstructionLogProjectionOptions {
-    return { artwork: ctx.options.artwork !== false };
+    return { artwork: ctx.options.artwork !== false, selected: contentSet(ctx.options.types ?? '') };
   },
 };

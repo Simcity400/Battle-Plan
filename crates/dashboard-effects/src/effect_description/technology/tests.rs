@@ -56,7 +56,7 @@ fn fixture() -> (Fixture, Folder) {
         ),
         (
             "common/special_projects/projects/synthetic.txt",
-            "mod_project={specialization=mod_science prototype_time=160 complexity={min=3 max=5}}",
+            "mod_project={specialization=mod_science prototype_time=160 complexity={min=3 max=5}} mod_constant_project={specialization=mod_science prototype_time=mod_time.long complexity=mod_complexity.big}",
         ),
         (
             "common/buildings/synthetic.txt",
@@ -90,7 +90,7 @@ fn fixture() -> (Fixture, Folder) {
                 " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n BUILDING_LEVEL:0 \"Level $LEVEL|0$\"\n",
                 " RESEARCH_UNLOCKS_EQUIPMENT_HEADER:0 \"Equipment:$EQUIPMENTS$\"\n RESEARCH_UNLOCKS_EQUIPMENT_MODULES_HEADER:0 \"Modules:$MODULES$\"\n RESEARCH_UNLOCKS_BUILDINGS_HEADER:0 \"Buildings:$BUILDINGS$\"\n RESEARCH_UNLOCKS_SUBUNITS_HEADER:0 \"Subunits:$SUBUNITS$\"\n RESEARCH_UNLOCKS_TACTICS_HEADER:0 \"Tactics:$TACTICS$\"\n",
                 " TECH_COMPLETE:0 \"Complete [Root.GetTag]/[Prev.GetTag]\"\n TECH_MODIFIER:0 \"Modifier [Root.GetTag]\"\n",
-                " mod_project:0 \"Project [Root.GetTag]\"\n AAA_mod_project:0 \"Alpha project [Root.GetTag]\"\n",
+                " mod_project:0 \"Project [Root.GetTag]\"\n AAA_mod_project:0 \"Alpha project [Root.GetTag]\"\n mod_constant_project:0 \"Project [Root.GetTag]\"\n",
                 " EFFECT_ADD_SPECIAL_PROJECT_PROGRESS:0 \"Progress $PROJECT$ $PROGRESS|2$\"\n EFFECT_COMPLETE_SPECIAL_PROJECT:0 \"Complete $PROJECT$\"\n SPECIAL_PROJECT_RESEARCH_OUTPUT:0 \"Output\"\n",
                 " EFFECT_REDUCE_SPECIAL_PROJECT_PROGRESS:0 \"Delay $PROJECT$ $PROGRESS|2$/$DAYS|0$ days\"\n"
             ),
@@ -458,18 +458,21 @@ fn raid_fixture() -> (Fixture, Folder) {
 }
 
 fn render_raid(fixture: &Fixture) -> Description {
+    render_raid_with(fixture, &Default::default())
+}
+
+fn render_raid_with(fixture: &Fixture, constants: &content_reader_politics::script_constants::Constants) -> Description {
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let content = scripted.effects().unwrap().view(None);
     let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1);
     let dlcs = Default::default();
     let triggers = Default::default();
-    let constants = Default::default();
     let aliases = Default::default();
     let provinces = BTreeMap::from([(1, vec![2, 1])]);
     let mut facts = ContentFacts::content_only(&dlcs, &triggers, &aliases);
     facts.state_provinces = &provinces;
     facts.state_content = Ok(());
-    facts.script_constants = Ok(&constants);
+    facts.script_constants = Ok(constants);
     text.set_synthetic_world(World::read(&fixture.frame, facts));
     let context = Context::new(
         &text,
@@ -500,6 +503,27 @@ fn raid_reduce_project_progress_ratio() {
     let (fixture, _folder) = raid_fixture();
     let output = render_raid(&fixture);
     assert_eq!(output.text, "Delay Project BBB 0.03/120 days");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn raid_project_progress_reads_scoped_constants_for_both_operands() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (mut fixture, _folder) = raid_fixture();
+    if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+        &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
+    {
+        rows.iter_mut()
+            .filter(|row| row.token == 33)
+            .for_each(|row| row.literal = b"mod_constant_project".to_vec());
+    }
+    let constants = content_reader_politics::script_constants::parse(&[(
+        "constants",
+        b"mod_time={schema={any_key=yes data=int} long=240} mod_complexity={schema={any_key=yes data={{key=min data=int}{key=max data=int}}} big={min=6 max=10}}",
+    )]);
+    let output = render_raid_with(&fixture, &constants);
+    assert_eq!(output.text, "Delay Project BBB 0.03/90 days");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 

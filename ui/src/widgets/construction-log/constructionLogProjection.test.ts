@@ -17,8 +17,6 @@ function sampleRow(overrides: Partial<ConstructionLogRow> = {}): ConstructionLog
     live: true,
     kind: 'building',
     source: 'census',
-    workKind: 'new',
-    repairing: false,
     status: 'building',
     owner: { tag: 'USA', slot: 2, missing: null },
     buildingToken: 'industrial_complex',
@@ -150,7 +148,11 @@ test('construction projection formats levels, railway routes, live factories, st
       end: { kind: 'finished', hour: null, knownAt: 94, unknown: null },
     }),
   ];
-  const source = buildRowSourceFromHead('test:construction', sampleReply(rows), undefined, 150)!;
+  const chips = [
+    { token: 'industrial_complex', firstHour: 90, name: 'Civilian Factory', icon: null },
+    { token: 'arms_factory', firstHour: 120, name: 'Military Factory', icon: null },
+  ];
+  const source = buildRowSourceFromHead('test:construction', sampleReply(rows, { buildingTypes: chips }), undefined, 150)!;
   const readView = createBoundedReadView({
     hour: 150,
     rows: new Map([['main', source]]),
@@ -162,9 +164,12 @@ test('construction projection formats levels, railway routes, live factories, st
       return null;
     }),
   });
-  const model = constructionLogProjection.project(readView, { artwork: false });
+  const model = constructionLogProjection.project(readView, { artwork: false, selected: [] });
   assert.equal(model.rows.length, 4);
-  assert.equal(model.titleSummary, '2 building');
+  assert.deepEqual(model.kindFilter?.items.map(item => [item.value, item.checked]), [['industrial_complex', true], ['arms_factory', true]], "the head's building types fill the shared filter");
+  const chosen = constructionLogProjection.project(readView, { artwork: false, selected: ['arms_factory'] });
+  assert.deepEqual(chosen.kindFilter?.items.map(item => item.checked), [false, true]);
+  assert.equal(model.titleSummary, undefined, 'the approved construction log has no count beside its title');
 
   const rail = model.rows[0]!;
   assert.equal(rail.cells.place?.value.kind === 'known' ? rail.cells.place.value.value : null, 'Illinois – Indiana');

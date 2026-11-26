@@ -52,17 +52,30 @@ pub(crate) fn identity_keys(slot: u32, id: u32) -> (u128, u128) {
 
 pub(crate) type Delta = (i32, Option<i128>);
 
-pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
+fn read_within(complete: &[(i32, i32)], first: i32, last: i32) -> bool {
+    let at = complete.partition_point(|&(_, end)| end < first);
+    complete.get(at).is_some_and(|&(start, _)| start <= last)
+}
+
+pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], read_from: i32, from: i32, opens_run: bool, complete: &[(i32, i32)]) -> Vec<Delta> {
     let mut out = Vec::new();
     let mut held: Option<i64> = None;
+    let first_step = steps.first().map_or(i32::MAX, |step| step.0);
+    let mut unread = !opens_run && !read_within(complete, read_from, first_step.saturating_sub(1));
     let mut lost = false;
-    for &(hour, cell) in steps {
+    for (at, &(hour, cell)) in steps.iter().enumerate() {
         match cell {
             Some(Cell::Number(value)) => {
                 if lost {
                     continue;
                 }
-                if hour >= from {
+                if hour < from {
+                    unread = false;
+                } else if unread {
+                    lost = true;
+                    out.push((hour.max(from), None));
+                    continue;
+                } else {
                     let by = i128::from(value) - i128::from(held.unwrap_or(0));
                     if by != 0 {
                         out.push((hour.max(from), Some(by)));
@@ -74,6 +87,11 @@ pub(crate) fn deltas(steps: &[(i32, Option<Cell>)], from: i32) -> Vec<Delta> {
                 lost = true;
                 out.push((hour, None));
             }
+            Some(Cell::Unrecorded) if hour < from => {
+                held = None;
+                unread = true;
+            }
+            None if held.is_none() && read_within(complete, hour, steps.get(at + 1).map_or(i32::MAX, |next| next.0 - 1)) => unread = false,
             _ => {}
         }
     }
@@ -111,9 +129,11 @@ pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<Le
             let history = dashboard_query::cost::storage(|| {
                 replay_lanes::lanes::history(recording, stretch.run, TableId::ConstructionSpend, &[total], Keys::Range(low, high), read_from, stretch.last)
             })?;
+            let complete: Vec<(i32, i32)> =
+                history.statuses.iter().filter(|held| replay_recording::columnar_frames::complete(held.status)).map(|held| (held.first, held.last)).collect();
             for (key, steps) in &history.keys {
                 let cells: Vec<(i32, Option<Cell>)> = steps.iter().map(|step| (step.hour, step.cells.as_ref().map(|cells| cells[0]))).collect();
-                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, stretch.first));
+                by_leaf.entry(leaf_of(*key)).or_default().extend(deltas(&cells, read_from, stretch.first, read_from == stretch.first, &complete));
             }
         }
     }
@@ -241,11 +261,13 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             if !seen.insert(line.id) {
                 continue;
             }
-            if line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown) {
+            let Some(owner) = line.country.filter(|_| !(line.output_alone && gap_of(line.output_reason) == Some(SpendingGap::OwnerUnknown))) else {
                 kept.push((line, false));
-            } else if match country {
-                Country::Slot(slot) => links.slot_at(line.country, line.first_read) == Some(*slot),
-                Country::Tag(_) => names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
+                continue;
+            };
+            if match country {
+                Country::Slot(slot) => links.slot_at(owner, line.first_read) == Some(*slot),
+                Country::Tag(_) => names.tag_at(&links, owner, line.first_read).is_some_and(|tag| query.holders.goes_by(country, tag, line.first_read)),
             } {
                 kept.push((line, true));
             }
@@ -257,7 +279,18 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             let (read, repair_tick) = steps.get(&line.id).map(|(read, tick)| (read.as_slice(), *tick)).unwrap_or_default();
             let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
             if !attributed {
-                out.unattributed.push(gaps.iter().find(|gap| gap.1 == SpendingGap::OwnerUnknown).map_or(line.first, |gap| gap.0));
+                let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
+                if line.country.is_some() {
+                    out.unattributed.push(owner_gaps.min().unwrap_or(line.first));
+                    continue;
+                }
+                let first_output = read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);
+                match owner_gaps.chain(first_output).filter(|&hour| stretch.first <= hour && hour <= stretch.last).min() {
+                    Some(hour) => out.unattributed.push(hour),
+                    None => {
+                        seen.remove(&line.id);
+                    }
+                }
                 continue;
             }
             ids.extend(line.building);
