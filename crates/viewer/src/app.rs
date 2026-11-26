@@ -5794,10 +5794,14 @@ impl Viewer {
                         if !pending.is_empty() {
                             viewer_runtime::redraws::note("made.icons_pending", pending.iter().map(|retry| retry.requests as u64).sum());
                         }
-                        if self.capture.as_ref().is_none_or(|capture| capture.paced) && (document.icons.counters.gui.loading_window_art() || document.icons.combat.gui.loading_window_art()) {
-                            break;
+                        if self.capture.as_ref().is_some_and(|capture| !capture.paced) {
+                            document.icons.lazy.settle();
+                        } else {
+                            document.icons.lazy.settle_on_frame();
+                            if document.icons.counters.gui.loading_window_art() || document.icons.combat.gui.loading_window_art() {
+                                break;
+                            }
                         }
-                        document.icons.lazy.settle();
                         if !prepared.is_stale(&held) && !document.icons.lazy.has_pending() {
                             break;
                         }

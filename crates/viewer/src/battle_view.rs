@@ -292,6 +292,7 @@ impl BattleView {
             return state;
         };
         state.close_requests = (held.close_requests > 0).then_some(held.close_requests);
+        if held.window.loading_art() { return state; }
         let hour = match (&held.refused, held.shown) {
             (Some((hour, _)), _) => Some(*hour),
             (None, Some(shown)) => {

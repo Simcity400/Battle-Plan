@@ -86,18 +86,22 @@ impl WindowArt {
         self.missed.load(Ordering::Relaxed)
     }
 
-    fn get(&self, kind: Kind, name: &[u8]) -> Option<&Item> {
+    fn get(&self, kind: Kind, name: &[u8], request: bool) -> Option<&Item> {
         let slot = self.items[kind as usize].get(name)?;
-        slot.requested.call_once(|| {
-            self.loading.fetch_add(1, Ordering::Release);
-            self.queue
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push((kind, name.to_vec()));
-            LazyTextures::schedule(&self.textures);
-        });
+        if request {
+            slot.requested.call_once(|| {
+                self.loading.fetch_add(1, Ordering::Release);
+                self.queue
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push((kind, name.to_vec()));
+                LazyTextures::schedule(&self.textures);
+            });
+        }
         let Some(ready) = slot.ready.get() else {
-            self.missed.fetch_add(1, Ordering::Relaxed);
+            if request {
+                self.missed.fetch_add(1, Ordering::Relaxed);
+            }
             return None;
         };
         let (item, notes) = ready.as_ref()?;
@@ -105,22 +109,26 @@ impl WindowArt {
         Some(item)
     }
 
-    pub(super) fn sprite(&self, name: &[u8]) -> Option<(&Prepared, Option<&AlphaMask>)> {
-        match self.get(Kind::Sprite, name)? {
+    pub(super) fn sprite(
+        &self,
+        name: &[u8],
+        request: bool,
+    ) -> Option<(&Prepared, Option<&AlphaMask>)> {
+        match self.get(Kind::Sprite, name, request)? {
             Item::Sprite(sprite, alpha) => Some((sprite, alpha.as_ref())),
             _ => None,
         }
     }
 
-    pub(super) fn font(&self, name: &[u8]) -> Option<&native_text::Font> {
-        match self.get(Kind::Font, name)? {
+    pub(super) fn font(&self, name: &[u8], request: bool) -> Option<&native_text::Font> {
+        match self.get(Kind::Font, name, request)? {
             Item::Font(font) => Some(font),
             _ => None,
         }
     }
 
     pub(super) fn texture(&self, name: &[u8]) -> Option<&TextureFile> {
-        match self.get(Kind::Texture, name)? {
+        match self.get(Kind::Texture, name, true)? {
             Item::Texture(texture) => Some(texture),
             _ => None,
         }
@@ -156,6 +164,10 @@ impl Kind {
 }
 
 impl PendingLoad for WindowArt {
+    fn background_only(&self) -> bool {
+        true
+    }
+
     fn has_pending(&self) -> bool {
         self.loading()
     }

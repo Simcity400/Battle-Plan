@@ -194,6 +194,16 @@ impl GuiResources {
         self.window.as_ref().map_or(0, |art| art.misses())
     }
 
+    pub fn loaded_sheet(&self, name: &[u8]) -> Option<&SpriteSheet> {
+        self.sprites.get(name).map(|sprite| &sprite.sheet)
+            .or_else(|| self.window.as_ref()?.sprite(name, false).map(|(sprite, _)| &sprite.sheet))
+    }
+
+    pub fn loaded_font(&self, name: &[u8]) -> Option<&native_text::Font> {
+        self.font_names.get(name).and_then(|key| self.fonts.get(key))
+            .or_else(|| self.window.as_ref()?.font(name, false))
+    }
+
     pub fn loading_window_art(&self) -> bool {
         self.window.as_ref().is_some_and(|art| art.loading())
     }
@@ -1046,7 +1056,7 @@ impl GuiResources {
 
     fn prepared(&self, name: &[u8]) -> Option<&Prepared> {
         self.credit_sprite(name);
-        self.sprites.get(name).or_else(|| self.window.as_ref()?.sprite(name).map(|(sprite, _)| sprite))
+        self.sprites.get(name).or_else(|| self.window.as_ref()?.sprite(name, true).map(|(sprite, _)| sprite))
     }
 
     pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
@@ -1058,7 +1068,7 @@ impl GuiResources {
         if let Some(sprite) = self.sprites.get(name) {
             return self.alpha.get(&sprite.sheet.texture).cloned();
         }
-        self.window.as_ref()?.sprite(name)?.1.cloned()
+        self.window.as_ref()?.sprite(name, true)?.1.cloned()
     }
 
     pub fn sprite_animations(&self, name: &[u8]) -> Option<Vec<AnimationRecord>> {
@@ -1097,7 +1107,7 @@ impl GuiResources {
             diagnostics.credit();
         }
         self.font_names.get(name).and_then(|key| self.fonts.get(key))
-            .or_else(|| self.window.as_ref()?.font(name))
+            .or_else(|| self.window.as_ref()?.font(name, true))
     }
 
     pub fn text_colors(&self) -> &TextColors {

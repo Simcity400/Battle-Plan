@@ -24,6 +24,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub trait PendingLoad: Send + Sync {
+    fn background_only(&self) -> bool { false }
+
     fn load_pending(&self) -> bool;
     fn has_pending(&self) -> bool;
 }
@@ -186,6 +188,10 @@ impl LazyTextures {
 
     pub fn busy(&self) -> bool {
         self.has_pending() || self.running.load(Ordering::Acquire)
+    }
+
+    pub fn settle_on_frame(&self) {
+        for loader in self.loaders() { if !loader.background_only() { loader.load_pending(); } }
     }
 
     pub fn settle(&self) -> bool {
