@@ -1,16 +1,18 @@
 
-use super::{EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, Notices, row::FeedEvent};
+use super::{
+    EventFeedCategory, EventFeedItem, EventFeedKind, EventFeedRow, LOG, Names, Notices, invalid,
+    row::{Columns, FeedEvent, Slot},
+};
 use dashboard_base::{Source, products::LoadContext};
 use dashboard_world::products::{groups, subjects};
 use dashboard_research::products::special_projects;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{
     Query,
-    identity::{Country, Holder},
+    log::{FacetFilter, Reader},
 };
-use replay_data::rows::GroupSpanRow;
 use replay_data::event_feed_rows::{EventFeedCoverage, SCRIPT_FAMILY_NAMES};
-use std::{collections::{BTreeSet, HashMap}, io, sync::atomic::AtomicBool};
+use std::{collections::{BTreeMap, BTreeSet}, io, sync::atomic::AtomicBool};
 
 pub(crate) const NOTICES: usize = 1 + SCRIPT_FAMILY_NAMES.len();
 
@@ -115,25 +117,10 @@ fn family_row(kind: EventFeedKind, hour: i32, read_hour: i32, name_hour: i32, ta
     }
 }
 
-fn covers(spans: &[HourSpan], hour: i32) -> bool {
-    spans.get(spans.partition_point(|span| span.last_hour < hour)).is_some_and(|span| span.first_hour <= hour)
-}
-
-fn absent_observed(query: &Query<'_>, unobserved: &[&[HourSpan]], absent: i32, present: i32) -> bool {
-    let run = query.timeline.at(present).map(|stretch| stretch.run);
-    run.is_some() && query.timeline.at(absent).map(|stretch| stretch.run) == run && !unobserved.iter().any(|spans| covers(spans, absent))
-}
-
-fn merged(mut runs: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
-    runs.sort_unstable();
-    let mut out: Vec<(i32, i32)> = Vec::with_capacity(runs.len());
-    for (first, last) in runs {
-        match out.last_mut() {
-            Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
-            _ => out.push((first, last)),
-        }
-    }
-    out
+fn follows_observed(query: &Query<'_>, unobserved: &[dashboard_base::span::HourSpan], hour: i32) -> bool {
+    let before = hour - 1;
+    query.timeline.at(before).is_some_and(|stretch| stretch.first <= before && query.timeline.at(hour).is_some_and(|other| other.run == stretch.run))
+        && !unobserved.iter().any(|span| span.first_hour <= before && before <= span.last_hour)
 }
 
 pub(crate) type DatedNotes = Vec<(i32, String)>;
@@ -162,134 +149,102 @@ impl Unrecorded {
     }
 }
 
-pub(crate) struct Groups {
-    pub rows: Vec<EventFeedRow>,
-    pub peaces: Vec<((i32, u32, u32), EventFeedRow)>,
-    pub notes: DatedNotes,
-    pub unattributed: Vec<i32>,
-    pub unrecorded: Vec<Unrecorded>,
+pub(crate) fn retryable(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock)
 }
 
-pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<Groups> {
+pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, DatedNotes, Vec<i32>)> {
     let wanted = |kind: EventFeedKind| categories.contains(&kind.category());
-    let mut out = Groups { rows: Vec::new(), peaces: Vec::new(), notes: Vec::new(), unattributed: Vec::new(), unrecorded: Vec::new() };
     if !wanted(EventFeedKind::WarStarted) && !wanted(EventFeedKind::FactionJoined) {
-        return Ok(out);
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
+    let mut notes: DatedNotes = Vec::new();
     let reply = groups::shared(source, query, context, cancelled)?;
     let within = |hour: i32| from <= hour && hour <= to;
-    let tag_at = |slot: u32, hour: i32| query.holders.slot_tag(slot, hour).map(str::to_owned);
-    let country_of = |slot: u32, hour: i32| match query.holders.at(&Country::Slot(slot), hour).map(|run| run.holder) {
-        Some(Holder::Found { id, .. }) => Some(id),
-        _ => None,
-    };
+    let mut rows = Vec::new();
     if wanted(EventFeedKind::WarStarted) {
-        let unread = groups::recorded_unobserved(source, query, GroupSpanRow::WARS)?;
-        out.unrecorded.push(Unrecorded::of(
-            EventFeedCategory::WarsPeace,
-            ("peace", "Peace"),
-            ("A peace dated in", "is not listed: war relations were not observed then or the hour before"),
-            1,
-            &unread,
-        ));
-        out.rows.extend(reply.war_starts.iter().filter(|start| within(start.hour)).map(|start| family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, vec![start.attacking.clone(), start.defending.clone()], None, None)));
-        out.rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None, None)));
-        let pairs: Vec<((u32, u32), Vec<(i32, i32)>)> = groups::war_slots(source, query)?.into_iter().map(|(pair, runs)| (pair, merged(runs))).collect();
-        let mut opened: HashMap<i32, Vec<(u32, u32)>> = HashMap::new();
-        for (pair, runs) in &pairs {
-            for &(first, _) in runs {
-                opened.entry(first).or_default().push(*pair);
+        rows.extend(reply.war_starts.iter().filter(|start| within(start.hour)).map(|start| family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, vec![start.attacking.clone(), start.defending.clone()], None, None)));
+        rows.extend(reply.capitulations.iter().filter(|capitulation| within(capitulation.hour)).map(|capitulation| family_row(EventFeedKind::Capitulated, capitulation.hour, capitulation.hour, capitulation.hour, vec![capitulation.tag.clone()], None, None)));
+        let mut ends: Vec<(i32, String, String)> = Vec::new();
+        for war in &reply.wars {
+            let ended = war.last_hour + 1;
+            if within(ended) && follows_observed(query, &reply.unobserved.wars, ended) {
+                ends.push((ended, war.first.clone(), war.second.clone()));
             }
         }
-        let countries = |(one, other): (u32, u32), hour: i32| {
-            let (one, other) = (country_of(one, hour)?, country_of(other, hour)?);
-            Some((one.min(other), one.max(other)))
-        };
-        let mut nameless = Vec::new();
-        for &((one, other), ref runs) in &pairs {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            for &(_, last) in runs {
-                let ended = last.saturating_add(1);
-                if !within(ended) || !absent_observed(query, &[&unread], ended, last) {
-                    continue;
-                }
-                let fighting = countries((one, other), last);
-                if fighting.is_some() && opened.get(&ended).is_some_and(|pairs| pairs.iter().any(|&pair| pair != (one, other) && countries(pair, ended) == fighting)) {
-                    continue;
-                }
-                match (tag_at(one, last), tag_at(other, last)) {
-                    (Some(first_tag), Some(second_tag)) => out.peaces.push(((ended, one, other), family_row(EventFeedKind::Peace, ended, ended, last, vec![first_tag, second_tag], None, None))),
-                    _ => nameless.push(HourSpan { first_hour: ended, last_hour: ended }),
-                }
+        let native = native_war_ends(query, &ends, cancelled)?;
+        for (hour, first, second) in ends {
+            let pair = |at: i32| if first <= second { (at, first.clone(), second.clone()) } else { (at, second.clone(), first.clone()) };
+            if native.contains(&pair(hour)) || native.contains(&pair(hour - 1)) {
+                continue;
             }
+            rows.push(family_row(EventFeedKind::Peace, hour, hour, hour - 1, vec![first, second], None, None));
         }
-        out.unrecorded.push(Unrecorded::of(EventFeedCategory::WarsPeace, ("peaceUnnamed", "Peace"), ("A peace dated in", "is not listed: a country in it has no recorded tag then"), 0, &nameless));
     }
     if wanted(EventFeedKind::FactionJoined) {
-        let unread = groups::recorded_unobserved(source, query, GroupSpanRow::FACTIONS)?;
-        out.unrecorded.push(Unrecorded::of(
-            EventFeedCategory::Diplomacy,
-            ("factionMembership", "Faction joins and departures"),
-            ("A join or departure dated in", "is not listed: faction membership was not fully observed then or the hour before"),
-            1,
-            unread.iter().chain(reply.factions.iter().flat_map(|faction| &faction.incomplete)),
-        ));
-        let mut slots = groups::member_slots(source, query)?;
-        let mut nameless = Vec::new();
         for faction in &reply.factions {
-            out.notes.extend(faction.names.iter().filter_map(|run| run.reason.as_ref().map(|reason| (run.first_hour, format!("Faction names are unavailable: {reason}")))));
+            notes.extend(faction.names.iter().filter_map(|run| run.reason.as_ref().map(|reason| (run.first_hour, format!("Faction names are unavailable: {reason}")))));
             let name = |hour: i32| {
                 let run = faction.names.iter().find(|run| run.first_hour <= hour && hour <= run.last_hour);
                 let named = run.and_then(|run| run.name.as_deref()).filter(|name| !name.is_empty()).map(str::to_owned);
                 let name_missing = named.is_none().then(|| run.and_then(|run| run.reason.clone()).unwrap_or_else(|| "Faction name not recorded at this hour".to_owned()));
                 Some(EventFeedItem { token: run.and_then(|run| run.token.clone()), name: named, icon: None, description: None, name_missing, ..Default::default() })
             };
-            let Some(members) = faction.id.parse::<u64>().ok().and_then(|id| slots.remove(&id)) else { continue };
-            let unknown: [&[HourSpan]; 2] = [&unread, &faction.incomplete];
-            let mut by_slot: HashMap<u32, Vec<(i32, i32)>> = HashMap::new();
-            for (slot, first, last) in members {
-                by_slot.entry(slot).or_default().push((first, last));
-            }
-            let runs: Vec<(u32, Vec<(i32, i32)>)> = by_slot.into_iter().map(|(slot, runs)| (slot, merged(runs))).collect();
-            let mut starts: HashMap<i32, Vec<u32>> = HashMap::new();
-            let mut ends: HashMap<i32, Vec<u32>> = HashMap::new();
-            for (slot, spans) in &runs {
-                for &(first, last) in spans {
-                    starts.entry(first).or_default().push(*slot);
-                    ends.entry(last).or_default().push(*slot);
+            for member in &faction.members {
+                if within(member.first_hour) && follows_observed(query, &reply.unobserved.factions, member.first_hour) {
+                    rows.push(family_row(EventFeedKind::FactionJoined, member.first_hour, member.first_hour, member.first_hour, vec![member.tag.clone()], Some(faction.id.clone()), name(member.first_hour)));
                 }
-            }
-            let carried = |at: &HashMap<i32, Vec<u32>>, hour: i32, slot: u32, country: Option<u32>| {
-                country.is_some() && at.get(&hour).is_some_and(|slots| slots.iter().any(|&other| other != slot && country_of(other, hour) == country))
-            };
-            for (slot, spans) in runs {
-                for (first, last) in spans {
-                    if within(first) && absent_observed(query, &unknown, first - 1, first) && !carried(&ends, first - 1, slot, country_of(slot, first)) {
-                        match tag_at(slot, first) {
-                            Some(tag) => out.rows.push(family_row(EventFeedKind::FactionJoined, first, first, first, vec![tag], Some(faction.id.clone()), name(first))),
-                            None => nameless.push(HourSpan { first_hour: first, last_hour: first }),
-                        }
-                    }
-                    let gone = last.saturating_add(1);
-                    if within(gone) && absent_observed(query, &unknown, gone, last) && !carried(&starts, gone, slot, country_of(slot, last)) {
-                        match tag_at(slot, last) {
-                            Some(tag) => out.rows.push(family_row(EventFeedKind::FactionLeft, gone, gone, last, vec![tag], Some(faction.id.clone()), name(last))),
-                            None => nameless.push(HourSpan { first_hour: gone, last_hour: gone }),
-                        }
-                    }
+                let left = member.last_hour + 1;
+                if within(left) && follows_observed(query, &reply.unobserved.factions, left) {
+                    rows.push(family_row(EventFeedKind::FactionLeft, left, left, member.last_hour, vec![member.tag.clone()], Some(faction.id.clone()), name(member.last_hour)));
                 }
             }
         }
-        out.unrecorded.push(Unrecorded::of(EventFeedCategory::Diplomacy, ("factionUnnamed", "Faction joins and departures"), ("A join or departure dated in", "is not listed: its country has no recorded tag then"), 0, &nameless));
     }
-    if wanted(EventFeedKind::WarStarted) {
-        out.unattributed = reply.unobserved.unattributed.iter().copied().filter(|&hour| within(hour)).collect();
-    }
-    Ok(out)
+    let unattributed = if wanted(EventFeedKind::WarStarted) { reply.unobserved.unattributed.iter().copied().filter(|&hour| within(hour)).collect() } else { Vec::new() };
+    Ok((rows, notes, unattributed))
 }
 
-pub(crate) fn retryable(error: &io::Error) -> bool {
-    matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock)
+fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled: &AtomicBool) -> io::Result<BTreeSet<(i32, String, String)>> {
+    let mut out = BTreeSet::new();
+    let mut ranges: Vec<(i32, i32)> = ends.iter().map(|(hour, ..)| (hour - 1, *hour)).collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in ranges {
+        match merged.last_mut() {
+            Some(held) if held.1 + 1 >= first => held.1 = held.1.max(last),
+            _ => merged.push((first, last)),
+        }
+    }
+    if merged.is_empty() {
+        return Ok(out);
+    }
+    let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
+    let reader = Reader::new(query, declared)?;
+    let ended = EventFeedKind::WarEnded.code().map(i64::from).ok_or_else(|| invalid("A war end has no feed code"))?;
+    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![ended], ..Default::default() }], query.timeline.first, query.timeline.last)?;
+    let columns = Columns::new()?;
+    let names = Names::new(&query.holders);
+    let mut runs: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
+    for &(first, last) in &merged {
+        for stretch in query.timeline.within(first, last) {
+            runs.entry(stretch.run).or_default().push((first.max(stretch.first), last.min(stretch.last)));
+        }
+    }
+    for (run, ranges) in runs {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        for (_, row) in reader.rows(run, &selection.patterns, &ranges)? {
+            let event = columns.read(&row)?;
+            let tag = |slot: Slot| match slot {
+                Slot::Of(slot) => names.slot_tag(slot, event.hour).map(str::to_owned),
+                _ => None,
+            };
+            if let (Some(first), Some(second)) = (tag(event.actor.slot), tag(event.target.slot)) {
+                out.insert(if first <= second { (event.hour, first, second) } else { (event.hour, second, first) });
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Vec<EventFeedRow>> {

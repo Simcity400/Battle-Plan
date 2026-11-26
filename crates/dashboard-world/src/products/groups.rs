@@ -801,35 +801,6 @@ pub fn member_slots(source: &Source, query: &Query<'_>) -> io::Result<HashMap<u6
     Ok(out)
 }
 
-pub fn recorded_unobserved(source: &Source, query: &Query<'_>, group: u32) -> io::Result<Vec<HourSpan>> {
-    let mut out: Vec<HourSpan> = query.timeline.unheld.iter().map(|gap| HourSpan { first_hour: gap.first, last_hour: gap.last }).collect();
-    for stretch in &query.timeline.stretches {
-        let run = cached_groups(source, stretch.run)?;
-        for &(kind, held, _, first, last) in &run.spans {
-            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
-            if kind == Span::UNOBSERVED && held == group && first <= last {
-                out.push(HourSpan { first_hour: first, last_hour: last });
-            }
-        }
-    }
-    settle(&mut out);
-    Ok(out)
-}
-
-pub fn war_slots(source: &Source, query: &Query<'_>) -> io::Result<HashMap<(u32, u32), Vec<(i32, i32)>>> {
-    let mut out: HashMap<(u32, u32), Vec<(i32, i32)>> = HashMap::new();
-    for stretch in &query.timeline.stretches {
-        let run = cached_groups(source, stretch.run)?;
-        for &(kind, one, other, first, last) in &run.spans {
-            let (first, last) = (first.max(stretch.first), last.min(stretch.last));
-            if kind == Span::WAR && first <= last {
-                out.entry((one.min(other), one.max(other))).or_default().push((first, last));
-            }
-        }
-    }
-    Ok(out)
-}
-
 pub fn cached_groups(source: &dashboard_base::Source, run: u32) -> io::Result<std::sync::Arc<RunGroups>> {
     Runs::held(&source.state::<Runs>(), run, || run_groups(source.replay_ref().recording(), run))
 }

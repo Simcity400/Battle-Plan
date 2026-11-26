@@ -1076,33 +1076,9 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    let frames: Vec<_> = (100..=121)
+    let frames: Vec<_> = (100..=104)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
-            if hour >= 110
-                && let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()]
-            {
-                rows[0].tag = b"QQQ".to_vec();
-                if hour >= 120 {
-                    rows[0].canonical_slot = 8;
-                }
-                if hour == 114 || hour == 117 {
-                    let mut lower = rows[0].clone();
-                    (lower.id, lower.canonical_slot) = (9000, 8);
-                    rows.insert(0, lower);
-                }
-            }
-            if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
-                if hour == 114 || hour == 117 {
-                    let at = links.partition_point(|link| link.id < 9000);
-                    links.insert(at, replay_data::rows::CountryLinkRow { id: 9000, canonical_slot: 8 });
-                }
-                if hour >= 120 {
-                    for link in links.iter_mut().filter(|link| link.id == 9001) {
-                        link.canonical_slot = 8;
-                    }
-                }
-            }
             let factions = if hour >= 101 {
                 let axis = FactionRow { id: 1, name: if hour >= 103 { b"Axis".to_vec() } else { Vec::new() }, ..Default::default() };
                 let templated = FactionRow { id: 2, template_token: Some(77), ..Default::default() };
@@ -1110,13 +1086,13 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
             } else {
                 Vec::new()
             };
-            let members = match hour {
-                101..=103 | 107 | 109.. => vec![FactionMemberRow { faction: 1, country: 9001, ordinal: 0 }],
-                108 => vec![FactionMemberRow { faction: 1, country: 4242, ordinal: 0 }],
-                _ => Vec::new(),
+            let members = if hour >= 101 {
+                vec![FactionMemberRow { faction: 1, country: 9001, ordinal: 0 }]
+            } else {
+                Vec::new()
             };
             *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions));
-            *frame.tables[TableId::FactionMembers.index()] = if hour == 104 || hour == 117 { TableView::Unavailable { reason: "unread".into() } } else { TableView::Complete(TableRows::FactionMembers(members)) };
+            *frame.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
             frame
         })
         .collect();
@@ -1132,16 +1108,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     )
     .unwrap();
     let query = dashboard_base::queries::query(&replay_source, 1).unwrap();
-    let groups = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 121, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
-    let (rows, notes) = (&groups.rows, &groups.notes);
-    let dated = |kind: EventFeedKind| rows.iter().filter(|row| row.kind == kind).map(|row| row.hour).collect::<Vec<_>>();
-    assert_eq!(
-        (dated(EventFeedKind::FactionJoined), dated(EventFeedKind::FactionLeft)),
-        (vec![101, 107], vec![]),
-        "no departure at 104 or 105 with membership unread at 104; none at 108 nor a join at 109 around a roster that named an unknown country; none at the tag change of 110, at 114 when a lower country also held the tag, \
-         across 117 when the roster was unread while another slot held the tag, nor at 120 when the country's link moved to another slot"
-    );
-    assert_eq!(groups.unrecorded.iter().map(|family| (family.kind, family.spans.clone())).collect::<Vec<_>>(), [("factionMembership", vec![(104, 105), (108, 109), (117, 118)]), ("factionUnnamed", vec![])], "the dates whose joins and departures lack evidence on one side are the family's own coverage");
+    let (rows, notes, _) = families::group_rows(&replay_source, &query, &LoadContext { content: None }, 100, 104, &[super::EventFeedCategory::Diplomacy], &AtomicBool::new(false)).unwrap();
     let joined = rows.iter().find(|row| row.kind == EventFeedKind::FactionJoined).expect("faction join row at hour 101");
     assert_eq!(joined.hour, 101);
     let item = joined.item.as_ref().expect("faction item");
@@ -1173,11 +1140,6 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     assert!(opened(100).rows.is_empty(), "and is not in the log before it was observed");
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
-    assert!(at(105).unavailable.iter().any(|notice| notice.kind == "factionMembership" && notice.reason.starts_with("A join or departure dated in 2 hours of this span is not listed")), "and the feed says so beside its rows");
-    let alone = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(105), to: Some(105), ..ask(112) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-    assert!(alone.unavailable.iter().any(|notice| notice.kind == "factionMembership"), "a span of 105 alone cannot tell a departure at 105 either");
-    let ranged = EventFeedTail::load(&replay_source, &EventFeedTailParams { from: Some(100), to: Some(103), ..ask(112) }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
-    assert!(!ranged.unavailable.iter().any(|notice| notice.kind == "factionMembership"), "an unread hour after the dates asked is no part of their coverage");
 }
 
 #[test]
