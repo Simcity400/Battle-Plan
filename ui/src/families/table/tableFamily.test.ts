@@ -3526,3 +3526,266 @@ test('a tall row near the window edge keeps its neighbours on screen while scrol
   }
   assert.ok(layout.shape.windowOffset < second && second < layout.shape.windowOffset + layout.shape.flatRows.length, 'the page came back into the window');
 });
+
+test('keepsCanvas skips unchanged paints for bottom-clipped rows, unquantized behind-bar changes, cloned settings, and off-screen art settles while repainting every visible change', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, pinned: true, text: true },
+    { key: 'factories', label: 'Factories', as: 'faint', offered: ['faint'], priority: 1, numeric: true, barEligible: true, format: { decimals: 0 } },
+    { key: 'army', label: 'Army', as: 'faint', offered: ['faint'], priority: 2, numeric: true, barEligible: true, format: { decimals: 0 } },
+  ];
+  const makeSettings = (barsBehind: 'all' | 'sorted' | 'off' = 'all') =>
+    tableSettingsOf(undefined, columns, { density: 'normal', barsBehind, sort: { column: 'factories', direction: 'descending' } });
+  const flag0 = readyArt('art://flag-0');
+  const flag1 = readyArt('art://flag-1');
+  const offscreenUrl = 'art://flag-offscreen';
+  const makeRows = (r0Army: number, r1Factories: number, r1Army: number, r2Army: number): TableRow[] => [
+    {
+      key: 'AAA', name: 'Alpha',
+      cells: {
+        country: { value: knownValue('Alpha'), country: 'AAA', iconSlot: true, art: flag0 },
+        factories: { value: knownValue(300), country: 'AAA' },
+        army: { value: knownValue(r0Army), country: 'AAA' },
+      },
+    },
+    {
+      key: 'BBB', name: 'Beta',
+      cells: {
+        country: { value: knownValue('Beta'), country: 'BBB', iconSlot: true, art: flag1 },
+        factories: { value: knownValue(r1Factories), country: 'BBB' },
+        army: { value: knownValue(r1Army), country: 'BBB' },
+      },
+    },
+    {
+      key: 'CCC', name: 'Gamma',
+      cells: {
+        country: { value: knownValue('Gamma'), country: 'CCC', iconSlot: true, art: readyArt(offscreenUrl) },
+        factories: { value: knownValue(100), country: 'CCC' },
+        army: { value: knownValue(r2Army), country: 'CCC' },
+      },
+    },
+  ];
+
+  const pendingResolvers = new Map<string, (bmp: { width: number; height: number; close(): void }) => void>();
+  const artCache = new LaneArtCache<{ width: number; height: number; close(): void }>({
+    fetchBitmap: url => new Promise(resolve => { pendingResolvers.set(url, resolve); }),
+  });
+  const ctx = { ...instrumentedContext().ctx, canvas: { width: 354, height: 40 } } as unknown as OffscreenCanvasRenderingContext2D;
+  const surface = { width: 354, height: 40, dpr: 1 };
+  const makeFrame = (
+    rows: TableRow[],
+    hour: number,
+    settings: TableSettings,
+    height: number,
+    previous: { layout: ReturnType<typeof tableLane.layout>; model: TableModel } | null,
+    selectedKey: string | null = null,
+  ) => {
+    const model: TableModel = { columns, rows, hour, rowTimeBoundaries: false, rank: true };
+    const binding = {
+      family: 'table' as const,
+      kind: 'scoreboard',
+      settings,
+      width: 354,
+      height,
+      scrollLeft: 0,
+      scrollTop: 0,
+      options: NO_OPTIONS,
+      selectedKey,
+      focusedKey: null,
+      reducedMotion: true,
+    };
+    const surf = { ...surface, height };
+    const layout = tableLane.layout(model, binding as never, surf as never, TEST_THEME, ctx, hour, { previous: previous as never, now: hour * 100, speed: 24 } as never);
+    return { model, layout, binding, frame: { model, layout, binding, surface: surf, theme: TEST_THEME, art: artCache, now: hour * 100, speed: 24, inspect: null, continuity: 1, changedAt: hour * 100, before: previous } };
+  };
+
+  const s1 = makeSettings('all');
+  const f1 = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 10, s1, 40, null);
+  tableLane.paint(ctx, f1.frame as never);
+
+  const f2 = makeFrame(makeRows(1_000_000, 295, 3_059_000, 3_198_000), 11, makeSettings('all'), 40, { layout: f1.layout, model: f1.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, f2.frame as never),
+    true,
+    'bottom-clipped row 1 value changes, sub-pixel behind-bar max shift on row 0, and cloned identical settings keep the canvas',
+  );
+
+  const f3 = makeFrame(makeRows(1_000_000, 295, 3_059_000, 6_400_000), 12, makeSettings('all'), 40, { layout: f1.layout, model: f1.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, f3.frame as never),
+    false,
+    'a column maximum shift that changes row 0 behind-bar width by whole CSS pixels forces a repaint',
+  );
+
+  const f3Off = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 13, makeSettings('off'), 40, null);
+  tableLane.paint(ctx, f3Off.frame as never);
+  const f3OffNext = makeFrame(makeRows(1_000_000, 295, 3_059_000, 6_400_000), 14, makeSettings('off'), 40, { layout: f3Off.layout, model: f3Off.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, f3OffNext.frame as never),
+    true,
+    'with barsBehind off, an off-screen maximum shift cannot change row 0 pixels',
+  );
+
+  const fTall = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 15, s1, 56, null);
+  tableLane.paint(ctx, fTall.frame as never);
+  const fTallNext = makeFrame(makeRows(1_000_000, 295, 3_060_000, 3_200_000), 16, s1, 56, { layout: fTall.layout, model: fTall.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, fTallNext.frame as never),
+    false,
+    'once height exposes row 1 ink, a change on row 1 forces a repaint',
+  );
+
+  const narrowCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, pinned: true, text: true, minWidth: 160, maxWidth: 160 },
+    { key: 'factories', label: 'Factories', as: 'faint', offered: ['faint'], priority: 1, numeric: true, barEligible: true, format: { decimals: 0 }, minWidth: 90, maxWidth: 90 },
+    { key: 'army', label: 'Army', as: 'faint', offered: ['faint'], priority: 2, numeric: true, barEligible: true, format: { decimals: 0 }, minWidth: 150, maxWidth: 150 },
+  ];
+  const narrowSettings = tableSettingsOf(undefined, narrowCols, { density: 'normal', barsBehind: 'all', sort: { column: 'factories', direction: 'descending' } });
+  const makeNarrowFrame = (r0Army: number, hour: number, previous: { layout: ReturnType<typeof tableLane.layout>; model: TableModel } | null) => {
+    const model: TableModel = { columns: narrowCols, rows: makeRows(r0Army, 294, 3_060_000, 3_200_000), hour, rowTimeBoundaries: false, rank: true };
+    const binding = { family: 'table' as const, kind: 'scoreboard', settings: narrowSettings, width: 354, height: 40, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS, selectedKey: null, focusedKey: null, reducedMotion: true };
+    const surf = { width: 354, height: 40, dpr: 1 };
+    const layout = tableLane.layout(model, binding as never, surf as never, TEST_THEME, ctx, hour, { previous: previous as never, now: hour * 100, speed: 24 } as never);
+    return { model, layout, binding, frame: { model, layout, binding, surface: surf, theme: TEST_THEME, art: artCache, now: hour * 100, speed: 24, inspect: null, continuity: 1, changedAt: hour * 100, before: previous } };
+  };
+  const fn1 = makeNarrowFrame(3_094_059, 20, null);
+  tableLane.paint(ctx, fn1.frame as never);
+  const fn2 = makeNarrowFrame(3_094_874, 21, { layout: fn1.layout, model: fn1.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, fn2.frame as never),
+    true,
+    'trailing digits clipped past the right viewport edge keep the canvas when behind-bar width is unchanged',
+  );
+  const fn3 = makeNarrowFrame(3_194_059, 22, { layout: fn1.layout, model: fn1.model });
+  assert.equal(
+    tableLane.keepsCanvas!(ctx, fn3.frame as never),
+    false,
+    'a visible leading digit change in a right-clipped column forces a repaint',
+  );
+
+  const fArt = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 17, s1, 40, null);
+  artCache.requestVisible(['art://flag-0', offscreenUrl], []);
+  tableLane.paint(ctx, fArt.frame as never);
+  pendingResolvers.get(offscreenUrl)?.({ width: 20, height: 13, close() {} });
+  return Promise.resolve().then(() => {
+    const fAfterOffscreen = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 18, s1, 40, { layout: fArt.layout, model: fArt.model });
+    assert.equal(
+      tableLane.keepsCanvas!(ctx, fAfterOffscreen.frame as never),
+      true,
+      'an off-screen art settle leaves a table canvas untouched when visible art states did not change',
+    );
+    pendingResolvers.get('art://flag-0')?.({ width: 20, height: 13, close() {} });
+    return Promise.resolve().then(() => {
+      const fAfterVisible = makeFrame(makeRows(1_000_000, 294, 3_060_000, 3_200_000), 19, s1, 40, { layout: fArt.layout, model: fArt.model });
+      assert.equal(
+        tableLane.keepsCanvas!(ctx, fAfterVisible.frame as never),
+        false,
+        'a visible row art settle forces a repaint',
+      );
+
+      const inlineCols: TableColumnSpec[] = [
+        { key: 'division', label: 'Division', as: 'plain', offered: ['plain'], priority: 0, text: true, pinned: true, narrow: 'primary', minWidth: 160 },
+        { key: 'owner', label: 'Owner', as: 'flagName', offered: ['flagName'], priority: 1, text: true, narrow: 'flag', minWidth: 120 },
+        { key: 'metric', label: 'Metric', as: 'plain', offered: ['plain'], priority: 2, numeric: true, minWidth: 120 },
+      ];
+      const inlineSettings = tableSettingsOf(undefined, inlineCols, { density: 'normal', barsBehind: 'off', sort: { column: 'metric', direction: 'descending' } });
+      const inlineUrl = 'art://inline-flag';
+      const inlineRows: TableRow[] = [{
+        key: 'div-1',
+        name: '1st Infantry',
+        cells: {
+          division: { value: knownValue('1st Infantry') },
+          owner: { value: knownValue('Alpha'), iconSlot: true, country: 'AAA', art: readyArt(inlineUrl) },
+          metric: { value: knownValue(5) },
+        },
+      }];
+      const makeInlineFrame = (hour: number, previous: { layout: ReturnType<typeof tableLane.layout>; model: TableModel } | null) => {
+        const model: TableModel = { columns: inlineCols, rows: inlineRows, hour, rowTimeBoundaries: false };
+        const binding = { family: 'table' as const, kind: 'division-log', settings: inlineSettings, width: 280, height: 40, scrollLeft: 0, scrollTop: 0, options: NO_OPTIONS, selectedKey: null, focusedKey: null, reducedMotion: true };
+        const surf = { width: 280, height: 40, dpr: 1 };
+        const layout = tableLane.layout(model, binding as never, surf as never, TEST_THEME, ctx, hour, { previous: previous as never, now: hour * 100, speed: 24 } as never);
+        return { model, layout, binding, frame: { model, layout, binding, surface: surf, theme: TEST_THEME, art: artCache, now: hour * 100, speed: 24, inspect: null, continuity: 1, changedAt: hour * 100, before: previous } };
+      };
+      const fi1 = makeInlineFrame(30, null);
+      assert.ok(fi1.layout.shape.columns.columns.find(c => c.key === 'division')?.inlineFlags?.includes('owner'));
+      assert.equal(fi1.layout.shape.columns.columns.find(c => c.key === 'owner')?.width, 0);
+      artCache.requestVisible([inlineUrl], []);
+      tableLane.paint(ctx, fi1.frame as never);
+      pendingResolvers.get(inlineUrl)?.({ width: 20, height: 13, close() {} });
+      return Promise.resolve().then(() => {
+        const fi2 = makeInlineFrame(31, { layout: fi1.layout, model: fi1.model });
+        assert.equal(
+          tableLane.keepsCanvas!(ctx, fi2.frame as never),
+          false,
+          'an inlineFlags flag settle from a zero-width column forces a repaint',
+        );
+
+        const makeDeepFrame = (val: number, hour: number, previous: { layout: ReturnType<typeof tableLane.layout>; model: TableModel } | null) => {
+          const rows: TableRow[] = [{ key: 'r10', name: 'Row 10', cells: { country: { value: knownValue('Row 10') }, factories: { value: knownValue(val) }, army: { value: knownValue(100) } } }];
+          const model: TableModel = { columns, rows, hour, rowTimeBoundaries: false, windowOffset: 10, totalRows: 20 };
+          const binding = { family: 'table' as const, kind: 'scoreboard', settings: s1, width: 354, height: 40, scrollLeft: 0, scrollTop: 10 * ROW_HEIGHT.normal, options: NO_OPTIONS, selectedKey: null, focusedKey: null, reducedMotion: true };
+          const surf = { width: 354, height: 40, dpr: 1 };
+          const layout = tableLane.layout(model, binding as never, surf as never, TEST_THEME, ctx, hour, { previous: previous as never, now: hour * 100, speed: 24 } as never);
+          return { model, layout, binding, frame: { model, layout, binding, surface: surf, theme: TEST_THEME, art: artCache, now: hour * 100, speed: 24, inspect: null, continuity: 1, changedAt: hour * 100, before: previous } };
+        };
+        const fd1 = makeDeepFrame(10, 40, null);
+        tableLane.paint(ctx, fd1.frame as never);
+        const fd2 = makeDeepFrame(20, 41, { layout: fd1.layout, model: fd1.model });
+        assert.equal(
+          tableLane.keepsCanvas!(ctx, fd2.frame as never),
+          false,
+          'a visible row in a paged window with nonzero windowOffset repaints on value change',
+        );
+        artCache.dispose();
+      });
+    });
+  });
+});
+
+test('declareTableProjection incremental cache keeps unchanged rows across ticks and invalidates when country identity changes', () => {
+  type LiveRow = { readonly tag: string };
+  const proj = declareTableProjection<{ readonly rows: readonly LiveRow[] }, LiveRow, { readonly live: boolean }>({
+    kind: 'test-decl-identity-snapshot',
+    columns: [
+      { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, countryField: 'tag' },
+      { key: 'score', label: 'Score', as: 'faint', offered: ['faint'], priority: 1, numeric: true, liveField: 'score' },
+    ],
+    rows: reply => ({ rows: reply.rows }),
+    rowKey: r => r.tag,
+    rowName: (r, hour, _o, who) => who(r.tag, hour).name,
+    incrementalLive: () => true,
+  });
+  const reply = { rows: [{ tag: 'AAA' }, { tag: 'BBB' }] };
+  const options = { live: true };
+  let countryName = 'Alpha';
+  const live = new Map<string, number>([['AAA\u0000score', 10], ['BBB\u0000score', 20]]);
+  const makeView = (hour: number) => createBoundedReadView({
+    hour,
+    panels: new Map([['main', reply]]),
+    live: new Map([['main', live as never]]),
+    identity: {
+      resolve(kind, key, atHour) {
+        return {
+          kind, key, atHour,
+          holder: { status: 'ready', value: key },
+          tag: { status: 'ready', value: key },
+          name: { status: 'ready', value: key === 'AAA' ? countryName : 'Beta' },
+          colour: { status: 'ready', value: '#4a4a4a' },
+          flagChoice: { status: 'ready', value: `["${key}",null,null]` },
+          validInterval: [0, 500],
+          nextChangeAt: 501,
+        };
+      },
+    },
+    art: { resolve: handle => readyArt(`art://${handle.kind === 'flag' ? handle.choice : 'x'}`) },
+  });
+
+  const m1 = proj.project(makeView(10), options);
+  const m2 = proj.project(makeView(11), options);
+  assert.equal(m2.rows[0], m1.rows[0], 'unchanged row stays reused on incremental live tick');
+  assert.equal(m2.rows[1], m1.rows[1], 'second unchanged row stays reused on incremental live tick');
+  assert.equal(m2.changedKeys?.size, 0);
+
+  countryName = 'Alpha Renamed';
+  const m3 = proj.project(makeView(12), options);
+  assert.equal(m3.rows[0]!.name, 'Alpha Renamed', 'country identity change invalidates the incremental snapshot');
+});
