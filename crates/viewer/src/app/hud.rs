@@ -90,6 +90,26 @@ impl KeyNames {
     }
 }
 
+#[cfg(any(windows, test))]
+fn decoded_key_label(written: i32, out: &[u16]) -> Option<String> {
+    if written == 0 {
+        return None;
+    }
+    let count = written.unsigned_abs() as usize;
+    if count > out.len() {
+        return None;
+    }
+    let slice = &out[..count];
+    let len = slice.iter().position(|&unit| unit == 0).unwrap_or(slice.len());
+    let text = String::from_utf16_lossy(&slice[..len])
+        .trim()
+        .to_uppercase();
+    if text.is_empty() || text.chars().count() > 4 || text.chars().any(char::is_control) {
+        return None;
+    }
+    Some(if text == "-" { "−".to_owned() } else { text })
+}
+
 #[cfg(windows)]
 fn scan_label(scan: u32, layout: isize, fallback: &str) -> String {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -107,13 +127,8 @@ fn scan_label(scan: u32, layout: isize, fallback: &str) -> String {
             let written = unsafe {
                 ToUnicodeEx(vk, scan, state.as_ptr(), out.as_mut_ptr(), out.len() as i32, 4, hkl)
             };
-            if written > 0 && (written as usize) <= out.len() {
-                let text = String::from_utf16_lossy(&out[..written as usize])
-                    .trim()
-                    .to_uppercase();
-                if !text.is_empty() && text.chars().count() <= 4 && !text.chars().any(char::is_control) {
-                    return if text == "-" { "−".to_owned() } else { text };
-                }
+            if let Some(label) = decoded_key_label(written, &out) {
+                return label;
             }
         }
     }
@@ -1019,5 +1034,14 @@ mod tests {
         assert!(pill_alpha(hud.pill.as_ref().unwrap(), 10.06) > 0.0);
         paint_at(&mut hud, 10.0 + PILL_HOLD + FADE_OUT);
         assert!(hud.pill.is_none());
+    }
+
+    #[test]
+    fn decoded_key_label_handles_ordinary_and_dead_keys() {
+        assert_eq!(decoded_key_label(1, &[b'z' as u16, 0]), Some("Z".to_owned()));
+        assert_eq!(decoded_key_label(1, &[b'-' as u16, 0]), Some("−".to_owned()));
+        assert_eq!(decoded_key_label(-1, &[0x00B4, 0]), Some("´".to_owned()));
+        assert_eq!(decoded_key_label(-1, &[0, 0]), None);
+        assert_eq!(decoded_key_label(0, &[b'a' as u16]), None);
     }
 }

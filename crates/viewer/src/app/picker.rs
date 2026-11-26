@@ -534,6 +534,9 @@ impl Viewer {
 
     pub(crate) fn apply_host_options(&mut self, options: &dashboard_core::protocol::MapOptions) {
         self.picker.hidden = options.picker_hidden;
+        if self.picker.hidden {
+            self.picker.find.field.focused = false;
+        }
         self.picker.country_pinned = options.country_pinned;
         let echoed = self
             .picker
@@ -655,11 +658,11 @@ impl Viewer {
 
     pub(crate) fn picker_click(&mut self, document: &Document, control: &Control, secondary: bool) {
         match control {
-            Control::FindView => self.picker.find.toggle(self.picker_now()),
+            Control::FindView if !self.picker.hidden => self.picker.find.toggle(self.picker_now()),
             Control::Minimap(viewer_combat::minimap::Control::Handle) => self.toggle_minimap(document),
             Control::Minimap(viewer_combat::minimap::Control::OffensivePing) => self.picker.minimap.arm(true),
             Control::Minimap(viewer_combat::minimap::Control::DefensivePing) => self.picker.minimap.arm(false),
-            Control::Find(find) => self.picker.find.click(*find),
+            Control::Find(find) if !self.picker.hidden => self.picker.find.click(*find),
             _ => {}
         }
         let slots = slot_modes(document, &self.picker.slots);
@@ -714,7 +717,9 @@ impl Viewer {
         extent: [f32; 2],
         filter: super::CameraKeyFilter,
     ) {
-        if self.find_view_keys(ui, document, extent, self.picker_now(), filter) {
+        if !self.picker.hidden
+            && self.find_view_keys(ui, document, extent, self.picker_now(), filter)
+        {
             return;
         }
         let minimap = viewer_combat::minimap::handle_shortcut(&document.combat, extent)
@@ -818,6 +823,13 @@ mod tests {
             MapMode::default()
         );
         assert_eq!(host_choice(&options(true, None)).0, MapMode::default());
+        let mut view = viewer();
+        view.picker.find.field.focused = true;
+        let mut hidden = options(false, None);
+        hidden.picker_hidden = true;
+        view.apply_host_options(&hidden);
+        assert!(view.picker.hidden);
+        assert!(!view.picker.find.typing());
     }
 
     #[test]

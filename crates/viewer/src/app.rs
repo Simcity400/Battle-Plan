@@ -4257,7 +4257,7 @@ impl Viewer {
             && (self.camera_mode == CameraMode::Map
                 || self.start_pick.choosing()
                 || self.free_overlays);
-        let find_typing = interface_visible && self.picker.find.typing();
+        let find_typing = interface_visible && !self.picker.hidden && self.picker.find.typing();
         let controls = if pinned.is_some() {
             let time = self.capture.as_ref().and_then(|capture| capture.time);
             self.walk
@@ -4581,7 +4581,7 @@ impl Viewer {
         }
         let owns = ui.ctx().data(|data| data.get_temp::<egui::Id>(owner)) == Some(response.id);
         let window_focused = ui.input(|input| input.focused);
-        let focused = window_focused && (!self.dashboard_map || owns) && !self.picker.find.typing();
+        let focused = window_focused && (!self.dashboard_map || owns) && !find_typing;
         let pointed = response.hovered() && !over_combat;
         let mut started = false;
         if self.start_pick.choosing() {
@@ -4612,6 +4612,7 @@ impl Viewer {
                 }
                 drop::Choice::Start(at) => {
                     self.start_pick = drop::Pick::At(at);
+                    self.picker.find.field.focused = false;
                     self.input.forget_pad_taps();
                     if south {
                         self.input
@@ -4638,6 +4639,7 @@ impl Viewer {
             && !over_combat
             && (response.clicked() || response.drag_started())
         {
+            self.picker.find.field.focused = false;
             self.input.capture();
         }
         if !free_mode
