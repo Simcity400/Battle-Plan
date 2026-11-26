@@ -14,6 +14,7 @@ export function validateWargoalsReply(v: unknown): WargoalsReply {
     || !list(v.removed, r => object(r) && unsigned64(r.handle) && (r.name === null || text(r.name)) && (r.recipient === null || opaqueTag(r.recipient)) && signed32(r.seen) && signed32(r.removed) && (r.seen as number) < (r.removed as number)
       && (r.granted === null || signed32(r.granted)) && (r.grantedMissing === null || text(r.grantedMissing)) && signed32(r.removed)
       && typeof r.removedExact === 'boolean' && text(r.reasonMissing))
+    || !(v.removedUnread === null || text(v.removedUnread))
     || !list(v.justifications, r => object(r) && unsigned64(r.id) && unsigned32(r.ordinal) && text(r.name) && opaqueTag(r.actor) && opaqueTag(r.recipient) && list(r.states, unsigned32)
       && signed64(r.total) && signed64(r.daily) && typeof r.payUpfront === 'boolean' && (r.start === null || signed32(r.start)) && signed32(r.completion)
       && (r.paused === null || typeof r.paused === 'boolean'))) throw new Error('Invalid war-goal inventory reply');

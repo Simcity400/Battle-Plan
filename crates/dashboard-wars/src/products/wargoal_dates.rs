@@ -49,6 +49,7 @@ pub(crate) fn incarnations<'a>(
     handles: impl IntoIterator<Item = (&'a u128, &'a Vec<(i32, i32, CoveredValue)>)>,
     attributes: &[HashMap<u128, Runs>; 4],
     first_read: Option<i32>,
+    branch_start: Option<i32>,
     last: i32,
 ) -> Vec<Incarnation> {
     let mut by_handle: HashMap<u64, Vec<Segment>> = HashMap::new();
@@ -85,12 +86,12 @@ pub(crate) fn incarnations<'a>(
             }
         }
         for segment in merged {
-            let held_at_start = first_read.is_some_and(|read| segment.first <= read);
-            let granted = (first_read.is_some() && !held_at_start && !segment.starts_unseen).then_some(segment.first);
+            let held_at_first_read = first_read.is_some_and(|read| segment.first <= read);
+            let granted = (first_read.is_some() && !held_at_first_read && !segment.starts_unseen).then_some(segment.first);
             let granted_missing = match granted {
                 Some(_) => None,
                 None if first_read.is_none() => Some(GRANT_NOT_READ),
-                None if held_at_start => Some(HELD_AT_BRANCH_START),
+                None if held_at_first_read && first_read == branch_start => Some(HELD_AT_BRANCH_START),
                 None => Some(FIRST_SEEN_AFTER_GAP),
             };
             let removed = if segment.ends_unseen { segment.absent_at } else { (segment.last < last).then(|| segment.last + 1) };
@@ -135,6 +136,10 @@ impl Incarnations {
         self.by_handle.get(&handle).into_iter().flatten().map(|at| &self.all[*at])
     }
 
+    pub fn removed(&self) -> impl Iterator<Item = &Incarnation> {
+        self.all.iter().filter(|incarnation| incarnation.removed.is_some())
+    }
+
     pub fn of_country(&self, country: u32) -> impl Iterator<Item = &Incarnation> {
         self.by_country.get(&country).into_iter().flatten().map(|at| &self.all[*at])
     }
@@ -155,14 +160,14 @@ pub fn follow(source: &Source, branch: u64) -> io::Result<Arc<Incarnations>> {
     let query = dashboard_base::queries::query(source, branch)?;
     let recording = query.replay.recording();
     let mut all = Vec::new();
-    for stretch in &query.timeline.stretches {
+    for (index, stretch) in query.timeline.stretches.iter().enumerate() {
         let (handles, _) = cost::storage(|| lanes::keyed_covered_runs(recording, stretch.run, table, summary::Source::Cell(handle), None, stretch.first, stretch.last))?;
         let read = |at: usize| -> io::Result<HashMap<u128, Runs>> {
             Ok(cost::storage(|| lanes::runs(recording, stretch.run, table, attributes[at], stretch.first, stretch.last))?.into_iter().collect())
         };
         let columns = [read(0)?, read(1)?, read(2)?, read(3)?];
         let first_read = cost::storage(|| lanes::reads(recording, stretch.run, table, stretch.first, stretch.last))?.first().map(|span| span.0);
-        all.extend(incarnations(&handles, &columns, first_read, stretch.last));
+        all.extend(incarnations(&handles, &columns, first_read, (index == 0).then_some(query.timeline.first), stretch.last));
     }
     let held = Arc::new(Incarnations::new(all));
     state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, Arc::clone(&held)));

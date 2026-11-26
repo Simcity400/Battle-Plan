@@ -1,4 +1,4 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { validateCountryGroupReply } from '../../dashboard/groupsReply.ts';
 import type { CardWidgetDeclaration } from '../../families/card/declaration.ts';
@@ -9,7 +9,7 @@ import { wholeBranchProof } from '../../families/timeline/helpers.ts';
 import { knownValue, notRecorded, type Value } from '../../families/value.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { CountryGroupReply, FactionGroup, FactionRulesReply, FactionSelectionRun, HourSpan } from '../../generated/dashboard';
-import { identityName } from '../../families/table/identityCell.ts';
+import { identityNameOr } from '../../families/table/identityCell.ts';
 
 export interface FactionUpgradesOptions {
   readonly groups: CountryGroupReply | null;
@@ -24,22 +24,62 @@ const SINCE_BEFORE = 'Held when the recording began, so when it began is not rec
 
 const covers = (span: { readonly firstHour: number; readonly lastHour: number }, hour: number) => span.firstHour <= hour && hour <= span.lastHour;
 
-function factionAt(groups: CountryGroupReply, subject: string | null, hour: number): { readonly faction: FactionGroup | null; readonly reason: string } {
-  if (groups.unobserved.factions.some(span => covers(span, hour))) return { faction: null, reason: 'Faction membership was not recorded at this date.' };
-  if (!subject) return { faction: null, reason: 'Choose a country to see its faction’s rules.' };
+const NOT_RECORDED = 'Faction membership was not recorded at this date.';
+
+function tagsAt(groups: CountryGroupReply, subject: string): (hour: number) => ReadonlySet<string> {
+  if (typeof countryFromKey(subject) !== 'number') return () => new Set([subject]);
   const index = countryIdentityIndex(groups.countryIdentities);
-  const tags = new Set(typeof countryFromKey(subject) === 'number' ? index.aliasesAt(index.selected([subject]), hour) : [subject]);
+  return hour => new Set(index.aliasesAt(index.selected([subject]), hour));
+}
+
+function factionAt(groups: CountryGroupReply, subject: string | null, hour: number): { readonly faction: FactionGroup | null; readonly reason: string } {
+  if (groups.unobserved.factions.some(span => covers(span, hour))) return { faction: null, reason: NOT_RECORDED };
+  if (!subject) return { faction: null, reason: 'Choose a country to see its faction’s rules.' };
+  const tags = tagsAt(groups, subject)(hour);
   const faction = groups.factions.find(item => item.members.some(run => tags.has(run.tag) && covers(run, hour))) ?? null;
-  return faction ? { faction, reason: '' } : { faction: null, reason: 'This country is in no faction at this date.' };
+  if (faction) return { faction, reason: '' };
+  if (groups.factions.some(item => item.incomplete.some(span => covers(span, hour)))) return { faction: null, reason: NOT_RECORDED };
+  return { faction: null, reason: 'This country is in no faction at this date.' };
+}
+
+type Span = readonly [number, number];
+
+function memberSpans(groups: CountryGroupReply, subject: string): (run: { readonly tag: string; readonly firstHour: number; readonly lastHour: number }) => readonly Span[] {
+  const slot = countryFromKey(subject);
+  if (typeof slot !== 'number') return run => (run.tag === subject ? [[run.firstHour, run.lastHour]] : []);
+  const held = new Map<string, Span[]>();
+  for (const history of groups.countryIdentities) {
+    const spans = history.identities.filter(identity => identity.slot === slot).map(identity => [identity.firstHour, identity.lastHour] as const);
+    if (spans.length) held.set(history.tag, spans);
+  }
+  return run => (held.get(run.tag) ?? []).flatMap(([first, last]) => {
+    const from = Math.max(first, run.firstHour);
+    const to = Math.min(last, run.lastHour);
+    return from <= to ? [[from, to] as const] : [];
+  });
+}
+
+function membershipChange(groups: CountryGroupReply, subject: string | null, hour: number): number {
+  let next = Infinity;
+  const edge = (span: { readonly firstHour: number; readonly lastHour: number }) => {
+    if (span.firstHour > hour && span.firstHour < next) next = span.firstHour;
+    if (span.lastHour + 1 > hour && span.lastHour + 1 < next) next = span.lastHour + 1;
+  };
+  groups.unobserved.factions.forEach(edge);
+  for (const faction of groups.factions) faction.incomplete.forEach(edge);
+  if (subject) {
+    const spansOf = memberSpans(groups, subject);
+    for (const faction of groups.factions) {
+      for (const run of faction.members) for (const [firstHour, lastHour] of spansOf(run)) edge({ firstHour, lastHour });
+    }
+  }
+  return next;
 }
 
 function factionsEver(groups: CountryGroupReply | undefined, subject: string | null): string[] {
   if (!groups || !subject) return [];
-  const index = countryIdentityIndex(groups.countryIdentities);
-  const ever = typeof countryFromKey(subject) === 'number'
-    ? (hour: number) => new Set(index.aliasesAt(index.selected([subject]), hour))
-    : () => new Set([subject]);
-  return groups.factions.filter(item => item.members.some(run => ever(run.firstHour).has(run.tag) || ever(run.lastHour).has(run.tag))).map(item => item.id);
+  const spansOf = memberSpans(groups, subject);
+  return groups.factions.filter(item => item.members.some(run => spansOf(run).length > 0)).map(item => item.id);
 }
 
 function since(run: FactionSelectionRun, gaps: readonly HourSpan[], branchFirst: number): Value<string> {
@@ -65,7 +105,7 @@ function row(key: string, run: FactionSelectionRun, subtitle: string | undefined
 
 function nextBoundary(reply: FactionRulesReply, hour: number): number {
   let next = Infinity;
-  for (const lane of [...reply.rules, ...reply.programmes, ...reply.minimums, ...reply.members, ...reply.doctrines]) {
+  for (const lane of [...reply.rules, ...reply.programmes, ...reply.minimums, ...reply.members, ...reply.doctrines, { runs: reply.rulesUnread }, { runs: reply.upgradesUnread }]) {
     for (const run of lane.runs) {
       if (run.firstHour > hour && run.firstHour < next) next = run.firstHour;
       if (run.lastHour + 1 > hour && run.lastHour + 1 < next) next = run.lastHour + 1;
@@ -74,9 +114,14 @@ function nextBoundary(reply: FactionRulesReply, hour: number): number {
   return next;
 }
 
-function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: number, branchFirst: number): CardItemRow[] {
+function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: number, branchFirst: number, reasons: Set<string>): CardItemRow[] {
   const gaps = reply.unobserved;
-  const groupName = (group: number) => reply.groups.find(item => item.group === group)?.name ?? 'Upgrade group not recorded';
+  const groupName = (group: number) => {
+    const found = reply.groups.find(item => item.group === group);
+    if (found?.name) return found.name;
+    reasons.add(found?.reason ?? 'Upgrade group not recorded');
+    return 'Upgrade group not recorded';
+  };
   const out: CardItemRow[] = [];
   for (const lane of reply.programmes) {
     const run = runAtHour(lane.runs, hour);
@@ -89,7 +134,7 @@ function upgradeRows(readView: BoundedReadView, reply: FactionRulesReply, hour: 
   for (const lane of reply.members) {
     const run = runAtHour(lane.runs, hour);
     if (!run) continue;
-    const name = lane.tag ? identityName(readView, 'country', lane.tag, hour) : 'Member not recorded';
+    const name = identityNameOr(readView, 'country', countryKey(lane.slot), 'Member name not recorded', hour);
     out.push(row(`member:${lane.key}`, run, `${name} · ${groupName(lane.group)}`, gaps, branchFirst));
   }
   for (const lane of reply.doctrines) {
@@ -104,31 +149,38 @@ export const factionUpgradesProjection: CardProjection<FactionUpgradesOptions> =
   kind: 'faction-upgrades',
   project(readView, options): CardModel {
     const hour = readView.hour;
-    const blank = (empty: string, emptyKind: 'empty' | 'unavailable' = 'empty'): CardModel => ({ hour, rows: [], columns: COLUMNS, rowHeight: 36, empty, emptyKind });
     if (!options.groups) return { hour, rows: [], columns: COLUMNS, rowHeight: 36 };
+    const membershipNext = membershipChange(options.groups, options.subject, hour);
+    const blank = (empty: string, emptyKind: 'empty' | 'unavailable' = 'empty'): CardModel => ({ hour, rows: [], columns: COLUMNS, rowHeight: 36, empty, emptyKind, nextChangeAt: membershipNext });
     const pick = factionAt(options.groups, options.subject, hour);
     if (!pick.faction) return blank(pick.reason, pick.reason.includes('not recorded') ? 'unavailable' : 'empty');
     const raw = readView.panel<FactionRulesReply>(entryName(pick.faction.id));
-    if (!raw) return { hour, rows: [], columns: COLUMNS, rowHeight: 36 };
+    if (!raw) return { hour, rows: [], columns: COLUMNS, rowHeight: 36, nextChangeAt: membershipNext };
     if (raw.unobserved.some(span => covers(span, hour))) return blank('This faction’s rules were not recorded at this date.', 'unavailable');
     const rules = raw.rules.flatMap(lane => {
       const run = runAtHour(lane.runs, hour);
       return run ? [row(`rule:${lane.slot}`, run, undefined, raw.unobserved, options.branchFirst)] : [];
     });
-    const upgrades = upgradeRows(readView, raw, hour, options.branchFirst);
+    const reasons = new Set<string>(raw.warnings);
+    const upgrades = upgradeRows(readView, raw, hour, options.branchFirst, reasons);
+    const rulesUnread = raw.rulesUnread.some(span => covers(span, hour));
     const rows: CardRow[] = [
-      { kind: 'section', key: '__rules', label: 'Rules', count: rules.length },
-      ...rules,
-      { kind: 'section', key: '__upgrades', label: 'Upgrades', count: upgrades.length },
-      ...upgrades,
+      ...(rulesUnread
+        ? [{ kind: 'section', key: '__rules', label: 'Rules' } as const, { kind: 'list', key: '__rules-unread', items: [], missing: 'The faction’s rules were not read at this date', none: '' } as const]
+        : [{ kind: 'section', key: '__rules', label: 'Rules', count: rules.length } as const, ...rules]),
+      ...(raw.upgradesUnread.some(span => covers(span, hour))
+        ? [{ kind: 'section', key: '__upgrades', label: 'Upgrades' } as const, ...upgrades, { kind: 'list', key: '__upgrades-unread', items: [], missing: 'The faction’s upgrades were not read whole at this date', none: '' } as const]
+        : [{ kind: 'section', key: '__upgrades', label: 'Upgrades', count: upgrades.length } as const, ...upgrades]),
     ];
+    for (const shown of rows) if (shown.kind === 'item' && shown.title.kind === 'notRecorded') reasons.add(shown.title.reason);
+    const warnings = [...reasons];
     return {
       hour,
       rows,
       columns: COLUMNS,
       rowHeight: 36,
-      nextChangeAt: nextBoundary(raw, hour),
-      ...(raw.warnings.length ? { warnings: raw.warnings } : {}),
+      nextChangeAt: Math.min(nextBoundary(raw, hour), membershipNext),
+      ...(warnings.length ? { warnings } : {}),
     };
   },
 }) as CardProjection<FactionUpgradesOptions>;

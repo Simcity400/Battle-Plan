@@ -160,8 +160,8 @@ export const warGoalsProjection: CardProjection<WarGoalsOptions> = registerFamil
       rows,
       columns,
       rowHeight: 36,
-      ...(rows.length === 0 ? { empty: 'No war goals at this date.' } : {}),
-      ...(reply.warnings.length ? { warnings: reply.warnings } : {}),
+      ...(rows.length === 0 ? (reply.removedUnread !== null ? { empty: reply.removedUnread, emptyKind: 'unavailable' as const } : { empty: 'No war goals at this date.' }) : {}),
+      ...(reply.warnings.length || (rows.length && reply.removedUnread !== null) ? { warnings: [...reply.warnings, ...(rows.length && reply.removedUnread !== null ? [reply.removedUnread] : [])] } : {}),
       nextChangeAt: (Math.floor(hour / 24) + 1) * 24,
     };
   },

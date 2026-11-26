@@ -11,6 +11,7 @@ import '../../widgets/definitions.ts';
 import type { FamilyPlanContext, InstalledPicture } from '../plan.ts';
 import { displayedHour } from '../boundedView.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { createBoundedReadView, FutureDataError } from '../boundedView.ts';
 import { formatDateOnly } from '../valueFormat.ts';
 import { assertFreshPaint, assertQuietFrames, assertTooltipDated, firstRow, LANE_THEME } from '../laneRuntime.fixture.ts';
@@ -63,6 +64,13 @@ test('a focus card shows the product’s dated completions, then its undated one
 
   const unknownRate = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, daysLeft: null, progressMissing: 'Daily progress was not recorded' } }), {});
   assert.deepEqual((unknownRate.rows[0] as CardHeroRow).figure?.value, { kind: 'notRecorded', reason: 'Daily progress was not recorded' }, 'days left are not recorded, never zero');
+  const paused = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, paused: true, daysLeft: null } }), {});
+  const pausedHero = paused.rows[0] as CardHeroRow;
+  assert.deepEqual([pausedHero.state.label, pausedHero.figure?.value.kind, pausedHero.detail], ['Paused', 'notApplicable', 'Day 32 of 70'], 'a paused focus keeps its progress and shows no due date');
+  const pausedSpoken = deriveCardMirror(paused).rows[0]!.cells.map(cell => cell.spoken).join(' | ');
+  assert.match(pausedSpoken, /Days left: Not applicable: The focus is paused/, 'the mirror says the countdown does not apply, never that it was not recorded');
+  const pausedUnread = nationalFocusProjection.project(view(hour, { ...reply, current: { ...reply.current!, paused: true, daysLeft: null, permyriad: null, progressMissing: 'Daily progress was not recorded' } }), {});
+  assert.equal((pausedUnread.rows[0] as CardHeroRow).figure?.value.kind, 'notApplicable', 'a paused countdown does not apply whatever the progress coverage');
 
   const gap = nationalFocusProjection.project(view(hour, { ...reply, current: null, completed: [], undated: 0, missing: { firstHour: hour, lastHour: hour + 5, reason: 'No focus row was recorded for this country' } }), {});
   assert.deepEqual([gap.empty, gap.emptyKind], ['No focus row was recorded for this country', 'unavailable']);
@@ -81,7 +89,7 @@ test('war goals keep the product’s order and states, show a missing expiry by 
       { handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'DDD', available: true, expires: null, states: [4], liberate: [], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null },
       { handle: '3', name: 'Conquer', actor: 'AAA', recipient: 'EEE', available: true, expires: hour - 10 * DAY, states: [5, 6], liberate: [], puppets: [], state: 'expired', granted: hour - 300 * DAY, grantedMissing: null },
     ],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'FFF', seen: hour - 6 * DAY, granted: hour - 90 * DAY, grantedMissing: null, removed: hour - 5 * DAY, removedExact: false, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
     warnings: [],
     stateNames: [{ id: 1, name: 'Invented state 1', known: true }, { id: 2, name: 'Invented state 2', known: true }, { id: 3, name: 'Invented state 3', known: true }, { id: 4, name: 'Invented state 4', known: true }, { id: 5, name: 'Invented state 5', known: true }],
   };
@@ -97,6 +105,8 @@ test('war goals keep the product’s order and states, show a missing expiry by 
   assert.equal(rows[1]!.place, 'Invented state 2 · Invented state 3');
   assert.equal(rows[2]!.figure?.value.kind, 'notRecorded', 'an unrecorded expiry is named, never blank');
   const unreadWar = items(warGoalsProjection.project(view(hour, { ...reply, goals: [{ ...reply.goals[1]!, state: 'unknown' }], justifications: [], removed: [] }, live), { targetNames: false }))[0]!;
+  const unattributed = warGoalsProjection.project(view(hour, { ...reply, goals: [], justifications: [], removed: [], removedUnread: 'Who held a removed war goal was not read at its last hour' }, live), { targetNames: false });
+  assert.deepEqual([unattributed.empty, unattributed.emptyKind], ['Who held a removed war goal was not read at its last hour', 'unavailable'], 'unattributed removals never read as "No war goals"');
   assert.equal(unreadWar.state, undefined, 'unread war relations claim no state');
   assert.equal(unreadWar.figure?.value.kind, 'notRecorded');
   assert.equal(rows[3]!.muted, true);
@@ -119,7 +129,7 @@ test('a war goal target whose name is still loading reads as loading on the card
   const reply: WargoalsReply = {
     branchId: '1', tag: 'AAA', asked: 'AAA',
     standings: [], justifications: [], warnings: [],
-    removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }],
+    removed: [{ handle: '9', name: 'Take state', recipient: 'BBB', seen: hour - 6 * DAY, granted: null, grantedMissing: 'Held when the branch began', removed: hour - 5 * DAY, removedExact: true, reasonMissing: 'War goal removal reason was not recorded' }], removedUnread: null,
     goals: [{ handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
     stateNames: [{ id: 4, name: 'Invented state 4', known: true }],
   };
@@ -291,7 +301,7 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   const reply = {
     rules: [{ slot: 0, runs: [run(100, 'Invented rule A')] }, { slot: 1, runs: [run(0, 'Invented rule B')] }, { slot: 2, runs: [run(120, null)] }],
     programmes: [{ slot: 0, runs: [run(60, 'Invented programme')] }], minimums: [], members: [], doctrines: [], groups: [],
-    unobserved: [{ firstHour: 110, lastHour: 119 }], warnings: [],
+    unobserved: [{ firstHour: 110, lastHour: 119 }], rulesUnread: [], upgradesUnread: [], warnings: [],
   };
   const model = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', reply]]) }), { groups, subject: 'AAA', branchFirst: 0 });
   assert.deepEqual(model.rows.map(row => (row.kind === 'section' ? `${row.label} ${row.count}` : row.key)), ['Rules 3', 'rule:0', 'rule:1', 'rule:2', 'Upgrades 1', 'programme:0']);
@@ -302,6 +312,17 @@ test('faction upgrades list the rules and upgrades in force, each since its own 
   assert.equal((model.rows.find(row => row.key === 'rule:2') as CardItemRow).title.kind, 'notRecorded', 'a name the content refuses is named as missing');
   assert.equal(model.columns.lists, true);
   assert.equal(model.nextChangeAt, 401);
+  assert.deepEqual(model.warnings, ['Name refused'], 'a diagnostic is shown at an hour whose row carries it');
+  const earlier = factionUpgradesProjection.project(createBoundedReadView({ hour: 105, panels: new Map([['faction:5', reply]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.equal(earlier.warnings, undefined, 'a diagnostic of a later run is not shown before it');
+  const hiddenRules = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', { ...reply, rulesUnread: [{ firstHour: 140, lastHour: 160 }] }]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.equal(hiddenRules.warnings, undefined, 'a rule row not shown gives no diagnostic');
+  const grouped = { ...reply, minimums: [{ group: 4, runs: [run(60, 'Invented minimum')] }], groups: [{ group: 4, name: null, reason: 'Group name refused' }] };
+  const withGroup = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', grouped]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.ok(withGroup.warnings?.includes('Group name refused'), 'a shown row keeps its group\u2019s recorded reason');
+  const unreadRules = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', { ...reply, rulesUnread: [{ firstHour: 140, lastHour: 160 }] }]]) }), { groups, subject: 'AAA', branchFirst: 0 });
+  assert.deepEqual(unreadRules.rows.slice(0, 2).map(row => row.kind === 'section' ? `${row.label} ${row.count ?? ''}` : row.kind === 'list' ? `missing:${row.missing}` : row.key), ['Rules ', 'missing:The faction’s rules were not read at this date'], 'an unread rules table is never "Rules 0"');
+  assert.equal(unreadRules.nextChangeAt, 161);
   const noFactionPlan = factionUpgradesDeclaration.sources({
     track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
     branch: { id: 'b', firstHour: 0, lastHour: 500 },
@@ -354,5 +375,66 @@ test('a general’s dossier splits the record won and lost, measures experience 
   const none = dossierProjection.project(view(hour, { ...reply, reference: null, role: null }, live), { reference: null });
   assert.deepEqual([none.empty, none.emptyKind], ['No generals yet.', 'empty']);
   const unread = dossierProjection.project(view(hour, { ...reply, reference: null, role: null, missing: 'Leaders were not recorded' }, live), { reference: null });
+  const partial = dossierProjection.project(view(hour, { ...reply, battlesPartialFrom: hour - 10 }, live), { reference: null });
+  const spoken = deriveCardMirror(partial).rows.find(item => item.key === 'record')!.cells.map(cell => cell.spoken).join(' ');
+  assert.match(spoken, /partial: Battle counts are incomplete/, 'the accessible record says its counts are partial');
+  const hover = deriveCardTooltip(partial, 'record')!;
+  assert.ok(hover.items?.some(item => item.label.startsWith('Battle counts are incomplete')), 'the default hover names the missing coverage');
+  assert.ok(deriveCardMirror(model).rows.find(item => item.key === 'leader')!.cells.some(cell => cell.spoken !== 'Owner not recorded' && cell.spoken.length > 0));
   assert.deepEqual([unread.empty, unread.emptyKind], ['Leaders were not recorded', 'unavailable']);
+});
+
+test('a country outside every faction wakes when it joins one, and an incomplete roster is never "in no faction"', async () => {
+  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = (incomplete: readonly { firstHour: number; lastHour: number }[]) => ({
+    factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 300, lastHour: 500 }], incomplete }], unobserved: { factions: [] }, countryIdentities: [],
+  }) as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const before = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map() }), { groups: groups([]), subject: 'AAA', branchFirst: 0 });
+  assert.equal(before.empty, 'This country is in no faction at this date.');
+  assert.equal(before.nextChangeAt, 300, 'the empty card is asked again when the country joins');
+  const unread = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map() }), { groups: groups([{ firstHour: 100, lastHour: 200 }]), subject: 'AAA', branchFirst: 0 });
+  assert.equal(unread.emptyKind, 'unavailable', 'a roster read in part cannot prove the country is in no faction');
+});
+
+test('a slot that held a member tag only inside its membership run still gets that faction, and wakes at its own edges', async () => {
+  const { factionUpgradesDeclaration, factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = {
+    factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 0, lastHour: 500 }], incomplete: [] }],
+    unobserved: { factions: [] },
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 99, slot: 1, countryId: 10 }, { firstHour: 100, lastHour: 200, slot: 7, countryId: 70 }, { firstHour: 201, lastHour: 500, slot: 1, countryId: 10 }] }],
+  } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const plan = factionUpgradesDeclaration.sources({ track: { source: { id: 's', revision: '1' }, axisOffset: 0 }, branch: { id: 'b', firstHour: 0, lastHour: 500 }, aux: groups, countryTag: countryKey(7), countrySubject: countryKey(7) } as never, { following: true, staticSpan: null });
+  assert.deepEqual(plan.entries.map(entry => entry.name), ['faction:5'], 'slot 7 held AAA only from 100 to 200, inside the run');
+  const empty = factionUpgradesProjection.project(createBoundedReadView({ hour: 50, panels: new Map() }), { groups, subject: countryKey(7), branchFirst: 0 });
+  assert.equal(empty.nextChangeAt, 100);
+});
+
+test('a member upgrade is named by its recorded slot at the hour, never by its last tag', async () => {
+  const { factionUpgradesProjection } = await import('../../widgets/faction-upgrades/factionUpgradesProjection.ts');
+  const groups = { factions: [{ id: '5', members: [{ tag: 'AAA', firstHour: 0, lastHour: 500 }], incomplete: [] }], unobserved: { factions: [] }, countryIdentities: [] } as unknown as import('../../generated/dashboard').CountryGroupReply;
+  const reply = {
+    rules: [], programmes: [], minimums: [], doctrines: [], groups: [{ group: 3, name: 'Invented group', reason: null }],
+    members: [{ key: 'm', tag: 'LATER', slot: 7, countryId: 70, group: 3, runs: [{ firstHour: 100, lastHour: 400, token: null, name: 'Invented upgrade', reason: null, startsSegment: false }] }],
+    unobserved: [], rulesUnread: [], upgradesUnread: [], warnings: [],
+  };
+  const asked: string[] = [];
+  const identity = { resolve(kind: string, key: string, atHour: number) {
+    asked.push(key);
+    return { kind, key, atHour, holder: { status: 'ready', value: key }, tag: { status: 'ready', value: 'EARLY' }, name: { status: 'ready', value: 'Early name' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+  } } as never;
+  const model = factionUpgradesProjection.project(createBoundedReadView({ hour: 150, panels: new Map([['faction:5', reply]]), identity }), { groups, subject: 'AAA', branchFirst: 0 });
+  const row = model.rows.find(item => item.key === 'member:m') as CardItemRow;
+  assert.match(row.subtitle ?? '', /^Early name/);
+  assert.ok(asked.includes(countryKey(7)));
+});
+
+test('a dossier with a partial battle history never says "No battles yet", and the audit tells empty lists apart', () => {
+  const list = (none: string): CardModel => ({ hour: 1, columns: {}, rowHeight: 36, rows: [{ kind: 'list', key: 'record', label: 'Record', items: [], none }] });
+  const value = (model: CardModel) => deriveCardAudit(model).find(row => row.key === 'record:items')?.value;
+  assert.notEqual(value(list('No battles yet')), value(list('5 fought, none with a result yet')));
+  const flagged: CardModel = { hour: 1, columns: {}, rowHeight: 36, rows: [{ kind: 'item', key: 'leader', title: { kind: 'known', value: 'Invented general' }, subtitleFlag: { kind: 'flag', art: { status: 'absent', reason: 'none' } as never, tag: 'AAA' } }] };
+  const flagAudit = (art: unknown) => deriveCardAudit({ ...flagged, rows: [{ ...flagged.rows[0], subtitleFlag: { kind: 'flag', art, tag: 'AAA' } } as never] }).find(row => row.key === 'leader:subtitleFlag')?.value;
+  assert.equal(flagAudit({ status: 'pending' }), 'flag:AAA::pending');
+  assert.notEqual(flagAudit({ status: 'ready', assetId: 'one' }), flagAudit({ status: 'ready', assetId: 'two' }), 'two dated flags of one tag audit apart');
+  assert.notEqual(flagAudit({ status: 'ready', assetId: 'one' }), flagAudit({ status: 'confirmedMissing', reason: 'No flag' }));
 });

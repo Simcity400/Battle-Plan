@@ -14,7 +14,7 @@ fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     frame.metrics.table_ns[table.index()] = 1;
 }
 
-fn frame(hour: i32) -> DecodedFrame {
+fn frame(hour: i32, truncated: Option<i32>) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1_000));
     if hour == 115 {
         set(&mut frame, TableId::Countries, TableRows::Countries(Vec::new()));
@@ -24,7 +24,12 @@ fn frame(hour: i32) -> DecodedFrame {
         ActiveIdeaRow { country: GER, ordinal: 0, token: token("civilian_economy") },
         ActiveIdeaRow { country: GER, ordinal: 1, token: token(if hour < 110 { "export_focus" } else if hour < 115 { "free_trade" } else { "harvest_pact" }) },
     ];
-    set(&mut frame, TableId::ActiveIdeas, TableRows::ActiveIdeas(ideas));
+    if Some(hour) == truncated {
+        *frame.tables[TableId::ActiveIdeas.index()] = TableView::Truncated { rows: TableRows::ActiveIdeas(ideas[..1].to_vec()), missing: 1 };
+        frame.metrics.table_ns[TableId::ActiveIdeas.index()] = 1;
+    } else {
+        set(&mut frame, TableId::ActiveIdeas, TableRows::ActiveIdeas(ideas));
+    }
     let mut advisors = if hour < 105 {
         Vec::new()
     } else {
@@ -44,7 +49,11 @@ fn frame(hour: i32) -> DecodedFrame {
 }
 
 fn recording() -> Source {
-    let frames = (FIRST..=LAST).map(frame).collect();
+    recording_with(None)
+}
+
+fn recording_with(truncated: Option<i32>) -> Source {
+    let frames = (FIRST..=LAST).map(|hour| frame(hour, truncated)).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "ideas".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
@@ -108,6 +117,34 @@ fn the_recorded_definitions_are_read_once_for_every_reply_on_a_source() {
     let other = recording();
     let elsewhere = super::recorded_definitions(&other, &dashboard_base::queries::query(&other, 1).unwrap()).unwrap();
     assert!(!Arc::ptr_eq(&first, &elsewhere), "kept on its source, never shared with another recording's");
+}
+
+#[test]
+fn a_truncated_inventory_is_unread_so_what_it_omits_is_never_ended() {
+    const TRUNCATED: i32 = 128;
+    let source = recording_with(Some(TRUNCATED));
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let ideas = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
+    assert!(ideas.unread_at(TRUNCATED));
+    let held = ideas.at(LAST);
+    let pact: Vec<_> = held.iter().filter(|holding| ideas.spans[holding.span].token == "harvest_pact").map(|holding| (holding.first_hour, holding.last_hour, holding.start, holding.end)).collect();
+    assert_eq!(pact, [(116, LAST, HoldingStart::FirstObserved, HoldingEnd::Held)], "the spirit the truncated hour omitted is held across it, not ended and begun again");
+}
+
+#[test]
+fn a_spirit_held_by_a_new_holder_from_the_next_hour_is_a_new_holding() {
+    let ideas = super::Ideas {
+        spans: vec![span("spirit", 100, 109, None), span("spirit", 110, 120, None)],
+        identity_starts: vec![100, 110],
+        starts: vec![(1, 7, 70), (1, 8, 80)],
+        ..Default::default()
+    };
+    let held = ideas.at(115);
+    assert_eq!(
+        held.iter().map(|holding| (holding.span, holding.first_hour, holding.start)).collect::<Vec<_>>(),
+        [(0, 100, HoldingStart::HeldBefore), (1, 110, HoldingStart::HeldBefore)],
+        "the next holder's spirit never inherits the previous holder's acquisition"
+    );
 }
 
 #[test]

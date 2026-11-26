@@ -412,8 +412,8 @@ impl Ideas {
         let key = u128::from(who.1);
         let range = Keys::Range(key << 32, key << 32 | 0xFFFF_FFFF);
         let observed = cost::storage(|| -> io::Result<_> {
-            let ideas = super::party_history::observed_reads(recording, run, TableId::ActiveIdeas, first, last)?;
-            let advisors = super::party_history::observed_reads(recording, run, TableId::HiredAdvisors, first, last)?;
+            let ideas = super::party_history::complete_reads(recording, run, TableId::ActiveIdeas, first, last)?;
+            let advisors = super::party_history::complete_reads(recording, run, TableId::HiredAdvisors, first, last)?;
             Ok(both(&ideas, &advisors))
         })?;
         let held = cost::storage(|| lanes::history(recording, run, TableId::ActiveIdeas, &[columns.idea], range, first, last))?;
@@ -801,6 +801,11 @@ impl Ideas {
         from > to || self.gap_at(from).is_some_and(|gap| gap.last_hour >= to)
     }
 
+    fn holder_at(&self, hour: i32) -> Option<(u32, u32)> {
+        let at = self.identity_starts.partition_point(|start| *start <= hour).checked_sub(1)?;
+        self.starts.get(at).map(|start| (start.1, start.2))
+    }
+
     pub(crate) fn unread_at(&self, hour: i32) -> bool {
         self.gap_at(hour).is_some()
     }
@@ -816,7 +821,11 @@ impl Ideas {
         let mut latest: BTreeMap<HoldingKey<'_>, usize> = BTreeMap::new();
         for (index, span) in self.spans[..begun].iter().enumerate() {
             let key = holding_key(span);
-            match latest.get(&key).copied().filter(|&at| self.unread(holdings[at].last_hour.saturating_add(1), span.first_hour - 1)) {
+            match latest
+                .get(&key)
+                .copied()
+                .filter(|&at| self.unread(holdings[at].last_hour.saturating_add(1), span.first_hour - 1) && self.holder_at(holdings[at].last_hour) == self.holder_at(span.first_hour))
+            {
                 Some(at) => {
                     holdings[at].last_hour = span.last_hour.min(hour);
                     through[at] = span.last_hour;

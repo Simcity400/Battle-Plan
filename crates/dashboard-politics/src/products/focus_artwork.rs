@@ -4,11 +4,13 @@ use dashboard_core::dto::{Artwork, FocusDatabase};
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
+use dashboard_text::triggers::inputs::{Resolution, TableRead};
 use replay_data::rows::TableId;
+use replay_lanes::lanes::Cell;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -294,16 +296,93 @@ pub(crate) fn load(
     check_cancel(cancelled)?;
     let query = dashboard_base::queries::query(source, branch)?;
     let tag = query.holders.name(&params.country, params.hour);
-    let mut reply = present_decoded(art, params, &tag, &decoded, cancelled)?;
-    if !needs_frame && let Some(block) = replay.block_at(branch, params.hour) {
+    let (reply, inputs) = dashboard_text::triggers::inputs::capture(&decoded, || present_decoded(art, params, &tag, &decoded, cancelled));
+    let mut reply = reply?;
+    if let Some(block) = replay.block_at(branch, params.hour) {
         let through = block.last_hour.min(query.holders.interval(params.hour).1);
-        if let Ok(campaign) = replay_lanes::lanes::history(replay.recording(), block.run, TableId::Campaign, &[0], replay_lanes::lanes::Keys::All, params.hour, through) {
-            let edges = campaign.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour))
-                .chain(campaign.statuses.iter().map(|status| status.first));
-            reply.valid_through = edges.filter(|&edge| edge > params.hour).min().map_or(through, |edge| edge - 1);
+        let through = if needs_frame { through.min(params.hour.saturating_add(LOOKAHEAD)) } else { through };
+        let campaign = TableRead { fields: 1, ..TableRead::keys(TableId::Campaign) };
+        let reads: Option<Vec<TableRead>> = if needs_frame {
+            inputs.footprint().map(|reads| reads.iter().copied().chain([campaign]).collect())
+        } else {
+            Some(vec![campaign])
+        };
+        if let Some(reads) = reads {
+            reply.valid_through = reads_through(&replay, block.run, &reads, params.hour, through, cancelled)?;
         }
     }
     Ok(reply)
+}
+
+const LOOKAHEAD: i32 = 24;
+
+fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
+    let mut tables: BTreeMap<TableId, (u64, Option<Vec<(u128, u128)>>)> = BTreeMap::new();
+    let mut ending: BTreeSet<TableId> = BTreeSet::new();
+    let mut merge = |read: &TableRead| {
+        if read.ends {
+            ending.insert(read.table);
+        }
+        let held = tables.entry(read.table).or_insert((0, Some(Vec::new())));
+        held.0 |= read.fields;
+        match (read.rows, read.owner, held.1.as_mut()) {
+            (Some(rows), None, Some(ranges)) => ranges.push(rows),
+            _ => held.1 = None,
+        }
+    };
+    for read in reads {
+        merge(read);
+        if let Some(owner) = read.owner {
+            merge(&match owner.by {
+                Resolution::Links => TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+                Resolution::Countries => TableRead::fields(TableId::Countries, &["canonical_slot"]),
+            });
+        }
+    }
+    let mut next = through.saturating_add(1);
+    for (table, (fields, ranges)) in tables {
+        check_cancel(cancelled)?;
+        let mut columns: Vec<usize> = (0..64).filter(|bit| fields & (1_u64 << bit) != 0).collect();
+        if columns.is_empty() {
+            columns.push(0);
+        }
+        let ranges = ranges.map(|mut ranges| {
+            ranges.sort_unstable();
+            let mut merged: Vec<(u128, u128)> = Vec::with_capacity(ranges.len());
+            for (first, last) in ranges {
+                match merged.last_mut() {
+                    Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+                    _ => merged.push((first, last)),
+                }
+            }
+            merged
+        });
+        let keys = match &ranges {
+            Some(ranges) => replay_lanes::lanes::Keys::Ranges(ranges),
+            None => replay_lanes::lanes::Keys::All,
+        };
+        let Ok(history) = replay_lanes::lanes::history(replay.recording(), run, table, &columns, keys, hour, next.saturating_sub(1)) else {
+            return Ok(hour);
+        };
+        let edges = history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).chain(history.statuses.iter().map(|status| status.first));
+        if let Some(edge) = edges.filter(|&edge| edge > hour).min() {
+            next = next.min(edge);
+        }
+        if ending.contains(&table)
+            && let Some(at) = columns.iter().position(|&column| table.field_name(column) == Some("end_hour"))
+        {
+            for (_, steps) in &history.keys {
+                let held = steps[..steps.partition_point(|step| step.hour <= hour)].last();
+                if let Some(Cell::Number(end)) = held.and_then(|step| step.cells.as_deref()).and_then(|cells| cells.get(at)).copied()
+                    && let Ok(end) = i32::try_from(end)
+                    && end > hour
+                {
+                    next = next.min(end);
+                }
+            }
+        }
+    }
+    Ok(next.saturating_sub(1).max(hour))
 }
 
 pub(crate) fn present_decoded(
@@ -388,6 +467,31 @@ mod tests {
     use super::*;
     use dashboard_text::metadata::validate_campaign;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source, source_with_content};
+
+    #[test]
+    fn a_spelling_read_holds_until_that_token_is_rewritten_and_a_dictionary_lookup_until_any_entry_changes() {
+        use replay_data::rows::LexicalTokenRow;
+        let frames: Vec<_> = (100..106)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let seven = if hour < 102 { b"first".to_vec() } else { b"second".to_vec() };
+                let mut rows = vec![LexicalTokenRow { token: 7, literal: seven }, LexicalTokenRow { token: 20, literal: b"stable".to_vec() }];
+                if hour >= 104 {
+                    rows.push(LexicalTokenRow { token: 21, literal: b"stable".to_vec() });
+                }
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(rows));
+                frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let run = replay.block_at(1, 100).unwrap().run;
+        let cancelled = AtomicBool::new(false);
+        let token = |key: u128| TableRead::fields(TableId::LexicalTokens, &["literal"]).row(key);
+        assert_eq!(reads_through(&replay, run, &[token(7)], 100, 105, &cancelled).unwrap(), 101, "a token rewritten in place ends the answer, though no higher id appeared");
+        assert_eq!(reads_through(&replay, run, &[token(20)], 100, 105, &cancelled).unwrap(), 105, "an unrelated token's rewrite or a new token leaves a lookup by id standing");
+        assert_eq!(reads_through(&replay, run, &[TableRead::fields(TableId::LexicalTokens, &["literal"])], 102, 105, &cancelled).unwrap(), 103, "a whole-dictionary lookup ends where any entry appears");
+    }
     use replay_data::{rows::TableRows, rows::tables};
     use replay_frame::{frame::SharedView, frame::TableView};
     use std::cell::Cell;
@@ -787,10 +891,10 @@ mod tests {
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
         use dashboard_base::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
-        let mut frames: Vec<_> = (100..103)
+        let mut frames: Vec<_> = (100..104)
             .map(|hour| focus_scale_frame(hour, 24, 12, &["conditional"]))
             .collect();
-        for (frame, ruling_id) in frames.iter_mut().zip([20, 30]) {
+        for (frame, ruling_id) in frames.iter_mut().zip([20, 30, 30]) {
             frame.tables[TableId::PoliticalParties.index()] =
                 TableView::Complete(TableRows::PoliticalParties(
                     [(20, "mod_group"), (30, "other_group")]
@@ -806,14 +910,14 @@ mod tests {
                 ))
                 .into();
         }
-        frames[2].tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
+        frames[3].tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
             reason: "synthetic party read failed".into(),
         }
         .into();
         let (source, context, _folders) = icon_product_source(frames);
         let cancelled = AtomicBool::new(false);
         let shared = shared_frames(&source);
-        for hour in 100..103 {
+        for hour in 100..104 {
             let basic = read_frame(source.replay_ref(), 1, hour, false, &cancelled).unwrap();
             shared.lock().unwrap().retain(basic, false, &cancelled).unwrap();
         }
@@ -825,7 +929,7 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.scoped)
         );
-        for (hour, pixel) in [(100, Some(47)), (101, Some(23)), (102, None)] {
+        for (hour, pixel, through) in [(100, Some(47), 100), (101, Some(23), 102), (102, Some(23), 102), (103, None, 103)] {
             let params = FocusArtworkParams {
                 branch_id: "1".into(),
                 hour,
@@ -837,6 +941,7 @@ mod tests {
                 icons_only: Some(true),
             };
             let reply = load(&source, &params, &context, &cancelled).unwrap();
+            assert_eq!(reply.valid_through, through, "hour {hour}: a scripted icon holds until an input it read changes, not one hour");
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
             assert_eq!(item.artwork.base_duration_days, Some(10.0));
@@ -873,7 +978,7 @@ mod tests {
                 24
             );
         }
-        assert_eq!(shared.lock().unwrap().reads, 3);
+        assert_eq!(shared.lock().unwrap().reads, 4);
     }
 
     #[test]

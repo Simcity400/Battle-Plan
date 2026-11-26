@@ -225,6 +225,24 @@ fn t2_a_marker_read_late_is_its_own_dated_completion_and_never_dates_the_status(
 }
 
 #[test]
+fn current_carries_the_attempt_the_shown_status_and_only_the_marker_that_dates_it() {
+    let facts = recorded("current-pick", 20, 30, |at| Hour { history: if at >= 26 { vec![(0, M, 24)] } else { Vec::new() }, ..hour(at, if at < 24 { RUNNING } else { COMPLETED }) });
+    let project = &facts.projects[0];
+    let evidence = facts.evidence_of(project).unwrap();
+    let late = super::current_pick(project, evidence, 30).unwrap();
+    assert_eq!((late.runs.iter().map(|run| (run.first, run.state)).collect::<Vec<_>>(), late.block_first), (vec![(20, ProjectState::Running), (24, ProjectState::Completed)], Some(24)));
+    assert_eq!(late.marker.map(|kept| (kept.entry.date, kept.read)), Some((24, 26)), "the marker of its own attempt, once read");
+    assert!(super::current_pick(project, evidence, 25).unwrap().marker.is_none(), "a marker read after the hour does not date it yet");
+    assert!(late.runs.iter().all(|run| run.first >= 20), "statuses keep their recorded bounds");
+    let gapped = recorded("current-gap", 20, 34, |at| Hour { projects_table: !(25..30).contains(&at), ..hour(at, if at < 22 { RUNNING } else { COMPLETED }) });
+    let project = &gapped.projects[0];
+    let none = super::facts::Evidence::default();
+    let pick = super::current_pick(project, gapped.evidence_of(project).unwrap_or(&none), 32).unwrap();
+    assert_eq!((pick.block_first, pick.runs.len(), pick.marker.is_none()), (Some(30), 1, true), "a completed block after an unobserved gap starts after it and takes no attempt across it");
+    assert_eq!(facts.first_definitions.values().copied().min(), Some(20), "a definition is first seen at its first status, kept as it is read");
+}
+
+#[test]
 fn t3_markers_are_kept_once_each_across_an_unknown_state_and_unavailable_projects() {
     let facts = recorded("t3", 20, 26, |at| Hour {
         history: match at { 20..=21 => vec![(0, M, 20)], _ => vec![(0, M, 20), (1, M, 22)] },
@@ -1143,13 +1161,19 @@ fn the_card_at_an_hour_orders_running_by_progress_and_dates_a_completion_only_by
         project("u", Running, vec![status(10, 50, 7, Unknown, 40)], Vec::new()),
     ];
     let available = vec![HourSpan { first_hour: 10, last_hour: 50 }];
-    let shown = shown_at(&projects, &presentations, &available, 40);
+    let shown = shown_at(&projects, &presentations, &available, 40, &[]);
     assert_eq!(shown.running, [3, 1], "more progress first, and an unknown state is not in progress");
     assert_eq!(shown.unknown, [7]);
     assert_eq!(shown.completed[..2], [ShownCompleted { project: 2, date: Some(30) }, ShownCompleted { project: 0, date: Some(20) }]);
     assert_eq!(shown.undated, 3, "a marker read after the hour, a project first seen complete and an earlier attempt's marker date nothing");
     assert!(shown.completed[2..].iter().all(|item| item.date.is_none()));
-    assert_eq!(shown_at(&projects, &presentations, &available, 60), ProjectsShown { through: Some(60), ..ProjectsShown::default() }, "an hour not recorded shows nothing");
+    assert_eq!(shown_at(&projects, &presentations, &available, 60, &[]), ProjectsShown { through: Some(60), ..ProjectsShown::default() }, "an hour not recorded shows nothing");
+    let split = vec![project("s", Running, vec![status(10, 19, 0, Running, 80), status(20, 29, 0, Completed, 100), status(30, 50, 1, Completed, 100)], vec![completion(20, 20)])];
+    assert_eq!(shown_at(&split, &presentations, &available, 40, &[]).completed, [ShownCompleted { project: 0, date: Some(20) }], "a presentation change inside the completed status keeps the attempt's completion date");
+    let gapped = vec![project("g", Running, vec![status(10, 15, 0, Running, 80), status(20, 50, 0, Completed, 100)], vec![completion(18, 20)])];
+    assert_eq!(shown_at(&gapped, &presentations, &available, 40, &[]).completed, [ShownCompleted { project: 0, date: None }], "a marker across an unread gap does not link the attempt to its completion");
+    let compact = vec![project("c", Running, vec![status(10, 19, 0, Running, 80), status(30, 50, 1, Completed, 100)], vec![completion(20, 20)])];
+    assert_eq!(shown_at(&compact, &presentations, &available, 40, &[Some(20)]).completed, [ShownCompleted { project: 0, date: Some(20) }], "a compact Current reply dates the completion from its block's start, keeping each status's own bounds");
 }
 
 #[test]
@@ -1163,4 +1187,6 @@ fn the_current_view_carries_only_the_status_at_the_hour_and_the_one_before_it_wh
     assert_eq!(shown_runs(&history, 30_000), None, "not held at the hour is not shown");
     let cancelled = [run(0, 9, ProjectState::Running), run(10, 20, ProjectState::Cancelled)];
     assert_eq!(shown_runs(&cancelled, 15), None, "a cancelled project leaves Current");
+    let relooked = [run(0, 9, ProjectState::Running), run(10, 19, ProjectState::Completed), run(20, 40, ProjectState::Completed)];
+    assert_eq!(shown_runs(&relooked, 30), Some(0..=2), "completed statuses that follow each other keep the attempt before them");
 }

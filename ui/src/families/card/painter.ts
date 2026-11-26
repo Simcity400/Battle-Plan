@@ -77,7 +77,7 @@ function drawMeter(ctx: Canvas2D, meter: CardMeter, x: number, middleY: number, 
 function drawFigure(ctx: Canvas2D, figure: CardFigure, x: number, middleY: number, width: number, align: 'left' | 'right', theme: FamilyTheme): void {
   const formatted = formatValueState(figure.value);
   if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-    drawMissingMark(ctx, x, middleY, width, theme, { figure: figure.figure, align });
+    drawMissingMark(ctx, x, middleY, width, theme, { figure: figure.figure, align, notApplicable: formatted.kind === 'notApplicable' });
   } else {
     line(ctx, formatted.text, x, middleY, width, `400 ${figure.muted ? 11 : 12}px ${theme.font}`, figure.muted ? theme.muted : theme.text, align);
   }
@@ -170,7 +170,7 @@ function drawHero(ctx: Canvas2D, row: CardHeroRow, top: number, layout: CardLayo
     const formatted = formatValueState(row.figure.value);
     const figureRight = x + w - 14;
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-      figureW = drawMissingMark(ctx, figureRight - 150, top + 30, 150, theme, { align: 'right', figure: row.figure.caption }).width;
+      figureW = drawMissingMark(ctx, figureRight - 150, top + 30, 150, theme, { align: 'right', figure: row.figure.caption, notApplicable: formatted.kind === 'notApplicable' }).width;
     } else {
       figureW = line(ctx, formatted.text, figureRight - 120, top + 26, 120, `600 22px ${theme.font}`, theme.text, 'right');
       figureW = Math.max(figureW, line(ctx, row.figure.caption, figureRight - 120, top + 46, 120, `400 11px ${theme.font}`, theme.muted, 'right'));

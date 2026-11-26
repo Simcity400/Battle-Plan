@@ -223,7 +223,7 @@ pub struct ProjectsShown {
     pub undated: u32,
 }
 
-pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPresentation], available: &[HourSpan], hour: i32) -> ProjectsShown {
+pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPresentation], available: &[HourSpan], hour: i32, completed_since: &[Option<i32>]) -> ProjectsShown {
     let mut shown = ProjectsShown { through: Some(hour), ..ProjectsShown::default() };
     if !available.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour) {
         return shown;
@@ -240,12 +240,20 @@ pub(crate) fn shown_at(projects: &[ProjectRecord], presentations: &[ProjectPrese
             ProjectState::Cancelled => {}
             ProjectState::Unknown => unknown.push((name(run), project.id.as_str(), index as u32)),
             ProjectState::Completed => {
-                let attempt = at.checked_sub(1).map(|before| &project.statuses[before]).filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused));
+                let mut first = at;
+                while first > 0 && project.statuses[first - 1].state == ProjectState::Completed && project.statuses[first - 1].last_hour.saturating_add(1) == project.statuses[first].first_hour {
+                    first -= 1;
+                }
+                let since = completed_since.get(index).copied().flatten().unwrap_or(project.statuses[first].first_hour);
+                let attempt = first
+                    .checked_sub(1)
+                    .map(|before| &project.statuses[before])
+                    .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last_hour.saturating_add(1) == since);
                 let date = attempt.and_then(|before| {
                     project
                         .entries
                         .iter()
-                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= run.first_hour && entry.read_hour <= hour)
+                        .filter(|entry| entry.completion && entry.counted && entry.date > before.last_hour && entry.date <= since && entry.read_hour <= hour)
                         .map(|entry| entry.date)
                         .max()
                 });
@@ -1091,29 +1099,75 @@ fn spans(spans: &[(i32, i32)]) -> Vec<HourSpan> {
 pub(crate) fn shown_runs(runs: &[facts::Run], hour: i32) -> Option<std::ops::RangeInclusive<usize>> {
     let at = runs.partition_point(|run| run.last < hour);
     let run = runs.get(at).filter(|run| run.first <= hour)?;
-    (run.state != ProjectState::Cancelled).then(|| at.saturating_sub(1)..=at)
+    let mut first = at;
+    while run.state == ProjectState::Completed && first > 0 && runs[first - 1].state == ProjectState::Completed && runs[first - 1].last.saturating_add(1) == runs[first].first {
+        first -= 1;
+    }
+    (run.state != ProjectState::Cancelled).then(|| first.saturating_sub(1)..=at)
+}
+
+struct Current<'f> {
+    project: &'f facts::Project,
+    runs: Vec<&'f facts::Run>,
+    block_first: Option<i32>,
+    marker: Option<&'f facts::Kept>,
+}
+
+fn current_pick<'f>(project: &'f facts::Project, evidence: &'f facts::Evidence, hour: i32) -> Option<Current<'f>> {
+    let shown = shown_runs(&project.runs, hour)?;
+    let at = *shown.end();
+    let displayed = &project.runs[at];
+    if displayed.state != ProjectState::Completed {
+        return Some(Current { project, runs: project.runs[shown].iter().collect(), block_first: None, marker: None });
+    }
+    let mut first = at;
+    while first > 0 && project.runs[first - 1].state == ProjectState::Completed && project.runs[first - 1].last.saturating_add(1) == project.runs[first].first {
+        first -= 1;
+    }
+    let completed = project.runs[first].first;
+    let before = first
+        .checked_sub(1)
+        .map(|before| &project.runs[before])
+        .filter(|before| matches!(before.state, ProjectState::Running | ProjectState::Paused) && before.last.saturating_add(1) == completed);
+    let marker = before.and_then(|before| {
+        evidence
+            .entries
+            .iter()
+            .filter(|kept| kept.entry.completion() && kept.counted && kept.entry.date > before.last && kept.entry.date <= completed && kept.read <= hour)
+            .max_by_key(|kept| kept.entry.date)
+    });
+    Some(Current { project, runs: before.into_iter().chain([displayed]).collect(), block_first: Some(completed), marker })
 }
 
 fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, follow: &incremental::Follow, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let facts = &follow.facts;
     let mut naming = Naming::new(content);
-    let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
-    let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
-    for run in facts.projects.iter().flat_map(|project| &project.runs) {
-        let look = &facts.looks[run.look as usize];
-        let first = definitions.entry(look.definition).or_insert(run.first);
-        *first = (*first).min(run.first);
-        for id in [match look.person { Person::Character(id) => Some(id), _ => None }, look.last].into_iter().flatten() {
-            let first = characters.entry(id).or_insert(run.first);
-            *first = (*first).min(run.first);
+    let current_at = match (params.current, follow.through()) {
+        (Some(true), Some(hour)) => Some(hour),
+        _ => None,
+    };
+    let none = facts::Evidence::default();
+    let chosen: Vec<Current<'_>> = match current_at {
+        Some(hour) => facts.projects.iter().filter_map(|project| current_pick(project, facts.evidence_of(project).unwrap_or(&none), hour)).collect(),
+        None => Vec::new(),
+    };
+    let (definitions, characters) = if current_at.is_some() {
+        let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
+        let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
+        for run in chosen.iter().flat_map(|pick| &pick.runs) {
+            let look = &facts.looks[run.look as usize];
+            definitions.insert(look.definition, facts.first_definitions.get(&look.definition).copied().unwrap_or(run.first));
+            for id in [match look.person { Person::Character(id) => Some(id), _ => None }, look.last].into_iter().flatten() {
+                characters.insert(id, facts.first_characters.get(&id).copied().unwrap_or(run.first));
+            }
         }
-    }
-    for kept in facts.evidence.values().flat_map(|evidence| &evidence.entries) {
-        if let Some(definition) = kept.definition {
-            let first = definitions.entry(definition).or_insert(kept.read);
-            *first = (*first).min(kept.read);
+        for definition in chosen.iter().filter_map(|pick| pick.marker.and_then(|kept| kept.definition.map(|definition| (definition, kept.read)))) {
+            definitions.insert(definition.0, facts.first_definitions.get(&definition.0).copied().unwrap_or(definition.1));
         }
-    }
+        (definitions, characters)
+    } else {
+        (facts.first_definitions.clone(), facts.first_characters.clone())
+    };
     match respell(cache.as_ref().map(|(defs, chars, ..)| (defs, chars)), &definitions, &characters) {
         Respell::Kept => {}
         Respell::All => {
@@ -1163,8 +1217,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             last_scientist,
         })
     };
-    let none = facts::Evidence::default();
-    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], evidence: &facts::Evidence, naming: &mut Naming<'_>| {
+    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], kept: &[&facts::Kept], attempts: &[facts::Attempt], naming: &mut Naming<'_>| {
         let statuses: Vec<ProjectStatus> = runs
             .iter()
             .map(|run| ProjectStatus {
@@ -1180,8 +1233,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             })
             .collect();
         let unnamed = |definition| facts::Look { definition, person: Person::Unknown("A history entry names no scientist.".into()), last: None };
-        let entries = evidence
-            .entries
+        let entries = kept
             .iter()
             .map(|kept| ProjectEntry {
                 ordinal: kept.entry.ordinal,
@@ -1192,28 +1244,25 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 presentation: kept.definition.map(|definition| shown(&unnamed(definition), kept.read, naming)),
             })
             .collect();
-        let attempts = evidence.attempts.iter().map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
+        let attempts = attempts.iter().map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
         ProjectRecord { id: format!("{}:{}:{owner}:{local}", country.0, country.1), owner, local, first_read: first.0, first_state: first.1, statuses, entries, attempts }
     };
     let mut projects = Vec::with_capacity(facts.projects.len());
-    if let (Some(true), Some(hour)) = (params.current, follow.through()) {
-        for project in &facts.projects {
-            let Some(shown) = shown_runs(&project.runs, hour) else { continue };
-            let mut markers = facts::Evidence::default();
-            if project.runs[*shown.end()].state == ProjectState::Completed {
-                markers.entries = facts.evidence_of(project).unwrap_or(&none).entries.iter().filter(|kept| kept.entry.completion() && kept.counted).cloned().collect();
-            }
-            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs[shown], &markers, &mut naming));
+    if current_at.is_some() {
+        for pick in &chosen {
+            let project = pick.project;
+            let runs: Vec<facts::Run> = pick.runs.iter().map(|&run| run.clone()).collect();
+            projects.push(record(project.country, project.owner, project.local, project.first, &runs, &pick.marker.into_iter().collect::<Vec<_>>(), &[], &mut naming));
         }
     } else {
         for project in &facts.projects {
             let evidence = facts.evidence_of(project).unwrap_or(&none);
-            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
+            projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, &evidence.entries.iter().collect::<Vec<_>>(), &evidence.attempts, &mut naming));
         }
-    }
-    for (&(slot, id, owner, local), evidence) in facts.unlisted().filter(|_| params.current != Some(true)) {
-        let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
-        projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, &mut naming));
+        for (&(slot, id, owner, local), evidence) in facts.unlisted() {
+            let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
+            projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], &evidence.entries.iter().collect::<Vec<_>>(), &evidence.attempts, &mut naming));
+        }
     }
     let counts: BTreeSet<i32> = projects.iter().flat_map(|project| &project.statuses).filter_map(|status| status.iterations).collect();
     let iteration_texts: BTreeMap<i32, Option<String>> = counts.into_iter().map(|count| (count, naming.iterations(count))).collect();
@@ -1253,7 +1302,10 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         warnings,
     };
     let reply = match follow.through() {
-        Some(hour) => SpecialProjectsReply { shown: shown_at(&reply.projects, &reply.presentations, &reply.available, hour), ..reply },
+        Some(hour) => {
+            let since: Vec<Option<i32>> = chosen.iter().map(|pick| pick.block_first).collect();
+            SpecialProjectsReply { shown: shown_at(&reply.projects, &reply.presentations, &reply.available, hour, &since), ..reply }
+        }
         None => reply,
     };
     dashboard_base::products::check_reply_budget(&reply)?;

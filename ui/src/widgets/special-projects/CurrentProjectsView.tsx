@@ -13,6 +13,7 @@ import ProjectDetails from './ProjectDetails';
 import { ProjectDossier } from './ProjectWindow';
 import { shownCard, unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import { FamilyWidget } from '../../families/host/registry.tsx';
+import { openedProject } from './specialProjectsProjection.ts';
 
 const NO_WARNINGS = () => {};
 
@@ -25,8 +26,9 @@ export default function CurrentProjectsView(props: FamilyViewProps) {
   const on = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : '';
   const shown = opened && opened.on === on ? opened : null;
   const onActivate = useCallback((action: InstalledAction) => {
-    if (!on || !tag || typeof action.meta !== 'string' || !action.meta) return;
-    setOpened({ on, tag, id: action.meta, hour: action.hour });
+    const project = typeof action.meta === 'string' ? openedProject(action.meta) : null;
+    if (!on || !project) return;
+    setOpened({ on, tag: project.country, id: project.id, hour: action.hour });
   }, [on, tag]);
   const gate = useGate(runtime, widget);
   const recorded = shown ? gate.recorded(shown.hour) : null;

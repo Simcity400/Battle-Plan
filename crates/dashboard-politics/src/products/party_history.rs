@@ -253,13 +253,23 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
 }
 
 pub(crate) fn observed_reads(recording: &replay_recording::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
-    let reads = lanes::available_reads(recording, run, table, first, last)?;
-    if !reads.is_empty() {
-        return Ok(reads);
+    reads_kept(recording, run, table, first, last, lanes::available_reads, replay_recording::columnar_frames::available)
+}
+
+pub(crate) fn complete_reads(recording: &replay_recording::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
+    reads_kept(recording, run, table, first, last, lanes::complete_reads, replay_recording::columnar_frames::complete)
+}
+
+type Reads = fn(&replay_recording::columnar_frames::Recording, u32, TableId, i32, i32) -> io::Result<Vec<(i32, i32)>>;
+
+fn reads_kept(recording: &replay_recording::columnar_frames::Recording, run: u32, table: TableId, first: i32, last: i32, reads: Reads, kept: fn(replay_columnar::manifest::Status) -> bool) -> io::Result<Vec<(i32, i32)>> {
+    let marked = reads(recording, run, table, first, last)?;
+    if !marked.is_empty() {
+        return Ok(marked);
     }
     Ok(lanes::statuses(recording, run, table, first, last)?
         .into_iter()
-        .filter(|held| replay_recording::columnar_frames::available(held.status))
+        .filter(|held| kept(held.status))
         .map(|held| (held.first, held.last))
         .collect())
 }
