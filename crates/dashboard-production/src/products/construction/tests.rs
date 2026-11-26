@@ -343,7 +343,7 @@ mod recorded {
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
 
-    fn recording(available: bool) -> Source {
+    fn recording_with(available: bool, change: impl Fn(&mut replay_frame::frame::DecodedFrame, i32)) -> Source {
         let frames = (100..=110)
             .map(|hour| {
                 let mut frame = source(1, hour, Some(1));
@@ -351,11 +351,38 @@ mod recorded {
                     frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow { id: 1, country: 9001, cost: 500_000, created_hour: 90, ..Default::default() }])).into();
                     frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
                 }
+                change(&mut frame, hour);
                 frame
             })
             .collect();
         let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         Source::from_replay(dashboard_base::SourceKey { source_id: "construction".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+    }
+
+    fn recording(available: bool) -> Source {
+        recording_with(available, |_, _| {})
+    }
+
+    #[test]
+    fn the_first_construction_page_reads_queue_rows_only_when_the_queue_changes() {
+        use dashboard_base::products::{LoadContext, Product, at_hour::counted};
+        use replay_data::rows::{ConstructionLineOutputRow, Recorded};
+
+        let source = recording_with(true, |frame, hour| {
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                ConstructionLineOutputRow {
+                    line: 1, since_hour: 100, construction_raw: i64::from(hour),
+                    country: Recorded::Value(Some(9001)), exact: true, ..Default::default()
+                },
+            ])).into();
+        });
+        let params = serde_json::from_value(serde_json::json!({ "branchId": "1", "hour": 110, "limit": 64 })).unwrap();
+        let page = || super::tail::ConstructionLogTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+        let (reply, rows) = counted(page);
+        assert_eq!(reply.rows.len(), 1);
+        assert_eq!(reply.rows[0].output.as_ref().unwrap().construction_raw.as_deref(), Some("110"));
+        assert_eq!(rows, 1 + 11, "one queue row and eleven output rows");
+        assert_eq!(counted(page).1, 0, "the second page reads the index");
     }
 
     #[test]

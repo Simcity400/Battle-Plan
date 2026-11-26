@@ -456,8 +456,6 @@ struct NamedType {
 
 struct Naming {
     buildings: Result<content_reader_key_names::buildings::Buildings, String>,
-    state_keys: Result<dashboard_text::scripted_text::StateNames, String>,
-    state_warnings: Vec<String>,
     strip: Result<LineSprite, String>,
     repair_icon: Result<String, String>,
     fallbacks: Diagnostics,
@@ -467,15 +465,8 @@ struct Naming {
 impl Naming {
     fn read(catalogue: &Catalogue) -> Self {
         let layers = &catalogue.content.layers;
-        let ((buildings, state_keys, state_warnings, strip, repair_icon), fallbacks) = content_reader_layers::content::diagnostics::observe(|| {
+        let ((buildings, strip, repair_icon), fallbacks) = content_reader_layers::content::diagnostics::observe(|| {
             let buildings = content_reader_key_names::buildings::read(layers).map_err(|error| format!("Building types are unavailable in the recorded content: {error}"));
-            let (state_keys, state_warnings) = match dashboard_text::scripted_text::read_state_content(layers) {
-                Ok(states) => {
-                    let warnings = dashboard_text::scripted_text::live_state_warnings(&states.warnings).map(|why| format!("State names: {why}")).collect();
-                    (Ok(states.names), warnings)
-                }
-                Err(error) => (Err(format!("State names are unavailable: {error}")), Vec::new()),
-            };
             let strip = line_sprite(catalogue, LINE_PICTURE).map_err(|error| format!("Building icons are unavailable: {error}"));
             let repair_icon = line_sprite(catalogue, LINE_REPAIR)
                 .and_then(|line| {
@@ -489,9 +480,9 @@ impl Naming {
                     .ok_or_else(|| dashboard_core::invalid("repair marker artwork unavailable"))
                 })
                 .map_err(|error| format!("The repair marker is unavailable, so repairs are marked in words only: {LINE_ENTRY}.{LINE_REPAIR}: {error}"));
-            (buildings, state_keys, state_warnings, strip, repair_icon)
+            (buildings, strip, repair_icon)
         });
-        Self { buildings, state_keys, state_warnings, strip, repair_icon, fallbacks, types: HashMap::new() }
+        Self { buildings, strip, repair_icon, fallbacks, types: HashMap::new() }
     }
 
     fn named(&mut self, catalogue: &Catalogue, types: &BTreeMap<u32, Option<String>>, states: &BTreeSet<u32>, warnings: &mut Vec<String>) -> Named {
@@ -527,19 +518,22 @@ impl Naming {
                 None
             }
         };
+        let state_content = catalogue.cached_states();
         let mut unnamed = Vec::new();
         let states = states
             .iter()
             .map(|&id| {
-                let name = self.state_keys.as_ref().ok().and_then(|keys| keys.get(&id)).and_then(|key| key.as_deref().ok()).and_then(|key| catalogue.localised(key, View::Plain));
-                if self.state_keys.is_ok() && name.is_none() {
+                let name = state_content.as_ref().ok().and_then(|states| states.names.get(&id)).and_then(|key| key.as_deref().ok()).and_then(|key| catalogue.localised(key, View::Plain));
+                if state_content.is_ok() && name.is_none() {
                     unnamed.push(id.to_string());
                 }
                 ConstructionStateName { id, name }
             })
             .collect();
-        warnings.extend(self.state_keys.as_ref().err().cloned());
-        warnings.extend(self.state_warnings.iter().cloned());
+        match state_content {
+            Ok(states) => warnings.extend(dashboard_text::scripted_text::live_state_warnings(&states.warnings).map(|why| format!("State names: {why}"))),
+            Err(why) => warnings.push(format!("State names are unavailable: {why}")),
+        }
         counted(warnings, "states have no name in the recorded content; their titles are unavailable", &unnamed);
         if out.iter().any(|named| named.icon.is_some()) {
             warnings.push(format!(
