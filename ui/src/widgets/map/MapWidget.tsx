@@ -38,9 +38,19 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
     return runtime.maps.register(widget.id, body.current, target);
   }, [exportSurface.active, runtime.maps, widget.id, target]);
   if (exportSurface.active) {
+    const desired = target(runtime.clock.getSnapshot());
     return (
-      <div className="dash-map-widget is-export-slot" data-export-map-id={widget.id}>
-        <div className="dash-map-surface" ref={body} />
+      <div
+        className="dash-map-widget is-export-slot"
+        data-export-map-id={desired ? widget.id : undefined}
+      >
+        <div className="dash-map-surface" ref={body}>
+          {!desired && (
+            <div className="dash-map-placeholder" role="status">
+              {track ? <WidgetState kind="outside" /> : <strong>Load a campaign to see the map.</strong>}
+            </div>
+          )}
+        </div>
       </div>
     );
   }

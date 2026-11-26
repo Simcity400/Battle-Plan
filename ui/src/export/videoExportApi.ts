@@ -206,27 +206,32 @@ export interface SurfaceTrackCoverage {
 
 export interface EmbeddedMapSpec {
   widgetId: string;
+  title: string;
   path: string;
   revision: string | null;
   branch: number;
   axisOffset: number;
-  pinnedHour: number | null;
+  timeMode: 'follow' | 'pin' | 'campaign' | 'range';
+  fixedHour: number | null;
   placement: SavedPlacement | null;
   sourceViewport: [number, number] | null;
   uiScale: number | null;
   mapMode: string | null;
   perspective: string | null;
+  perspectiveSlot?: number | null;
   fog: boolean;
   dayNight: boolean | null;
   alliedPlans: boolean | null;
   counterColorsCountry: boolean | null;
   natoCounters: boolean | null;
+  mapSettings?: unknown;
 }
 
 export interface SurfaceVideoRequest {
   kind: 'widget' | 'page';
   fromHour: number;
   toHour: number;
+  referenceOffset: number;
   fps: number;
   hoursPerSecond: number;
   skipGaps: boolean;
@@ -244,6 +249,7 @@ export interface SurfaceVideoRequest {
   dateStamp: boolean;
   followPinned: boolean;
   audioMapWidgetId: string | null;
+  allowUnverified: boolean;
   tracks: SurfaceTrackCoverage[];
   embeddedMaps: EmbeddedMapSpec[];
   payload: unknown;
@@ -259,12 +265,14 @@ export interface ExportMapRect {
 
 export interface PageAckPayload {
   seq: number;
-  kind: 'boot' | 'mount' | 'metrics' | 'step';
+  kind: 'boot' | 'mount' | 'metrics' | 'step' | 'unmount';
   dirty: boolean;
   contentWidth: number | null;
   contentHeight: number | null;
   minTextPx: number | null;
   mapRects: ExportMapRect[];
+  overlayRects?: ExportMapRect[];
+  bgRgb?: [number, number, number] | null;
   error: string | null;
 }
 

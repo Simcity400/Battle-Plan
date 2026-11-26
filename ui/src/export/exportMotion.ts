@@ -20,10 +20,16 @@ export interface ExportSurfaceContextValue {
   readonly reportWidget?: (key: string, status: ExportWidgetStatus | null) => void;
 }
 
-export const ExportSurfaceContext = createContext<ExportSurfaceContextValue>({
+const DEFAULT_EXPORT_SURFACE: ExportSurfaceContextValue = {
   active: false,
-});
+};
+
+export const ExportSurfaceContext = createContext<ExportSurfaceContextValue>(DEFAULT_EXPORT_SURFACE);
 
 export function useExportSurface(): ExportSurfaceContextValue {
-  return useContext(ExportSurfaceContext);
+  try {
+    return useContext(ExportSurfaceContext);
+  } catch {
+    return DEFAULT_EXPORT_SURFACE;
+  }
 }

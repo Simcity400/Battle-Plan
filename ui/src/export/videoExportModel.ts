@@ -41,6 +41,60 @@ export interface RangeCoverage {
   gapCount: number;
 }
 
+export function mergeRecordedTracks(tracks: readonly (readonly RecordedStretch[])[]): RecordedStretch[] {
+  const intervals: RecordedStretch[] = [];
+  for (const track of tracks) {
+    for (const s of track) {
+      intervals.push({ first: s.first, last: s.last, join: s.join });
+    }
+  }
+  intervals.sort((a, b) => (a.first !== b.first ? a.first - b.first : a.last - b.last));
+  const merged: RecordedStretch[] = [];
+  for (const item of intervals) {
+    const prev = merged.at(-1);
+    if (prev) {
+      const touches = item.first === prev.last + 1;
+      const overlaps = item.first <= prev.last;
+      if (overlaps || (touches && item.join !== 'load')) {
+        if (item.last > prev.last) {
+          prev.last = item.last;
+        }
+        continue;
+      }
+    }
+    merged.push({
+      first: item.first,
+      last: item.last,
+      join: merged.length === 0 ? 'start' : item.join,
+    });
+  }
+  return merged;
+}
+
+export function mergeUnheldGaps(
+  mergedStretches: readonly RecordedStretch[],
+  tracksUnheld: readonly (readonly UnheldGap[])[],
+): UnheldGap[] {
+  const out: UnheldGap[] = [];
+  for (let i = 1; i < mergedStretches.length; i += 1) {
+    const prev = mergedStretches[i - 1]!;
+    const next = mergedStretches[i]!;
+    const first = prev.last + 1;
+    const last = next.first - 1;
+    if (first > last) continue;
+    let reason = "Not recorded: this play happened while the recorder wasn't watching";
+    for (const gaps of tracksUnheld) {
+      const hit = gaps.find(g => g.first <= last && g.last >= first);
+      if (hit) {
+        reason = hit.reason;
+        break;
+      }
+    }
+    out.push({ first, last, reason });
+  }
+  return out;
+}
+
 export function summarizeRange(
   stretches: readonly RecordedStretch[],
   unheld: readonly UnheldGap[],
@@ -216,11 +270,14 @@ export function defaultAudioForSpeed(hoursPerSecond: number): boolean {
 
 export function exportGlideDurationMs(hoursPerSecond: number, fps: number): number {
   const safeFps = Math.max(1, fps);
-  if (!Number.isFinite(hoursPerSecond) || hoursPerSecond <= 0 || hoursPerSecond >= safeFps) {
+  if (!Number.isFinite(hoursPerSecond) || hoursPerSecond <= 0) {
     return 0;
   }
-  const hourMs = 1000 / hoursPerSecond;
-  return Math.max(24, Math.min(180, Math.round(hourMs * 0.85)));
+  if (hoursPerSecond < safeFps) {
+    const hourMs = 1000 / hoursPerSecond;
+    return Math.max(24, Math.min(180, Math.round(hourMs * 0.85)));
+  }
+  return Math.max(36, Math.min(120, Math.round((1000 / safeFps) * 3)));
 }
 
 export function readabilityHint(minTextPx: number | null, scale: number): string | null {

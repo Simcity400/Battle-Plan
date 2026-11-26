@@ -505,18 +505,26 @@ pub fn dashboard_release_source(
     source_id: String,
 ) -> Result<(), String> {
     let runtime = service.runtime(window.app_handle())?;
+    let is_export = window.label() == crate::export_webview::EXPORT_WINDOW_LABEL;
     if let Ok(source) = runtime.source(&source_id) {
+        let params = if is_export {
+            serde_json::json!({ "session": dashboard_follow::registry::EXPORT_SESSION_PREFIX })
+        } else {
+            serde_json::json!({})
+        };
         let close = ProductRequest {
             source_id: source_id.clone(),
             revision: source.key().revision.clone(),
             product: "follow-close".into(),
-            params: serde_json::json!({}),
+            params,
         };
         runtime.dispatch(DataCommand::Product { id: format!("follow-close-{source_id}"), request: close });
     }
-    window
-        .state::<crate::game_windows::GameWindows>()
-        .evict_source(&source_id);
+    if !is_export {
+        window
+            .state::<crate::game_windows::GameWindows>()
+            .evict_source(&source_id);
+    }
     runtime.dispatch(DataCommand::Release { source_id });
     Ok(())
 }

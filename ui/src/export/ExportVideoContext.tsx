@@ -30,9 +30,11 @@ export interface SurfaceExportMapWidget {
   revision: string | null;
   branch: number;
   axisOffset: number;
-  pinnedHour: number | null;
+  timeMode: 'follow' | 'pin' | 'campaign' | 'range';
+  fixedHour: number | null;
   fog: boolean;
   perspective: string | null;
+  perspectiveSlot: number | null;
 }
 
 export interface SurfaceExportContextSnapshot {
@@ -41,6 +43,7 @@ export interface SurfaceExportContextSnapshot {
   selectedBranches: Record<string, string>;
   observed: Record<string, number>;
   defaultRoleId: string | null;
+  referenceOffset: number;
   currentHour: number;
   firstHour: number;
   lastHour: number;
@@ -87,14 +90,20 @@ export interface ExportVideoController {
   job: ExportJobSnapshot;
 }
 
-export const ExportVideoContext = createContext<ExportVideoController>({
+const DEFAULT_EXPORT_VIDEO_CONTROLLER: ExportVideoController = {
   openMapVideoExport: () => undefined,
   openWidgetVideoExport: () => undefined,
   openPageVideoExport: () => undefined,
   registerSurfaceSnapshot: () => undefined,
   job: IDLE_EXPORT_JOB,
-});
+};
+
+export const ExportVideoContext = createContext<ExportVideoController>(DEFAULT_EXPORT_VIDEO_CONTROLLER);
 
 export function useExportVideo(): ExportVideoController {
-  return useContext(ExportVideoContext);
+  try {
+    return useContext(ExportVideoContext);
+  } catch {
+    return DEFAULT_EXPORT_VIDEO_CONTROLLER;
+  }
 }

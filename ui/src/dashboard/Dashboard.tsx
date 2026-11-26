@@ -599,15 +599,35 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const buildSurfaceContext = useCallback(
     (targetTemplate: DashboardTemplate, singleWidget?: WidgetSpec): SurfaceExportContextSnapshot | null => {
       const bound = bindTracks(targetTemplate, sourceMap, selectedBranches);
-      const clockRange = clockBounds(bound);
-      if (!clockRange) return null;
       const widgetsToCheck = singleWidget ? [singleWidget] : targetTemplate.widgets;
+      const relevantTrackIds = new Set<string>();
+      for (const widget of widgetsToCheck) {
+        if (singleWidget || widget.time.mode === 'follow' || widget.time.mode === 'pin') {
+          for (const id of widget.trackIds) relevantTrackIds.add(id);
+        }
+      }
+      let activeBound = bound.filter(t => relevantTrackIds.has(t.id));
+      if (activeBound.length === 0) {
+        const allReferenced = new Set(widgetsToCheck.flatMap(w => w.trackIds));
+        activeBound = bound.filter(t => allReferenced.has(t.id));
+      }
+      if (activeBound.length === 0) {
+        activeBound = bound;
+      }
+      const clockRange = clockBounds(activeBound);
+      if (!clockRange) return null;
+      const reference = activeBound.find(track => track.roleId === defaultRoleId) ?? activeBound[0];
+      const referenceOffset = reference?.axisOffset ?? 0;
       const mapWidgets: SurfaceExportMapWidget[] = [];
       for (const widget of widgetsToCheck) {
         if (widget.kind !== 'map') continue;
         const track = bound.find(item => item.id === widget.trackIds[0]) ?? bound[0];
         if (!track) continue;
         const branchNum = Number(track.branch.id);
+        const fixedHour =
+          widget.time.mode === 'follow'
+            ? null
+            : (resolveWindow(widget, track, bound, clock.getHour())?.lastHour ?? null);
         mapWidgets.push({
           widgetId: widget.id,
           title: widget.title,
@@ -616,12 +636,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           revision: track.source.revision,
           branch: Number.isFinite(branchNum) ? branchNum : 0,
           axisOffset: track.axisOffset,
-          pinnedHour: widget.time.mode === 'pin' ? (resolveWindow(widget, track, bound, clock.getHour())?.lastHour ?? null) : null,
+          timeMode: widget.time.mode,
+          fixedHour,
           fog: mapOptions.fog,
           perspective: widget.countries.kind === 'tags' ? (widget.countries.tags[0] ?? null) : track.selectedTag,
+          perspectiveSlot: widget.countries.kind === 'tags' ? null : (track.selectedSlot ?? null),
         });
       }
-      const trackSnapshots = bound.map(track => {
+      const trackSnapshots = activeBound.map(track => {
         const stretches: RecordedStretch[] = [{ first: track.branch.firstHour - track.axisOffset, last: track.branch.lastHour - track.axisOffset, join: 'start' }];
         const unheld: UnheldGap[] = [];
         return {
@@ -637,9 +659,22 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         };
       });
       const hasPinnedWidgets = widgetsToCheck.some(w => w.time.mode === 'pin');
-      const hasPagedRowsWidgets = widgetsToCheck.some(w =>
-        w.kind.includes('log') || w.kind.includes('feed') || w.kind === 'event-choices',
-      );
+      const pagedKinds = new Set([
+        'construction-log',
+        'decisions',
+        'division-log',
+        'division-service-record',
+        'espionage-log',
+        'event-choices',
+        'event-feed',
+        'land-battles',
+        'market-ledger',
+        'naval-battles',
+        'peace-deals',
+        'raid-log',
+        'ships-sunk',
+      ]);
+      const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
       const scrollEl = viewport.current;
       return {
         campaigns: campaignsRef.current.filter(c => !c.loading).map(c => ({ id: c.id, path: c.path, label: c.label })),
@@ -647,6 +682,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         selectedBranches,
         observed,
         defaultRoleId,
+        referenceOffset,
         currentHour: Math.round(clock.getHour()),
         firstHour: clockRange.firstHour,
         lastHour: clockRange.lastHour,

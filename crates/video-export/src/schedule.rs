@@ -606,6 +606,36 @@ pub fn merge_recorded_tracks(tracks: &[Vec<RecordedStretch>]) -> Vec<RecordedStr
     merged
 }
 
+pub fn merge_unheld_gaps(
+    merged_stretches: &[RecordedStretch],
+    tracks_unheld: &[Vec<UnheldGap>],
+) -> Vec<UnheldGap> {
+    let mut out = Vec::new();
+    for pair in merged_stretches.windows(2) {
+        let gap_first = i64::from(pair[0].last) + 1;
+        let gap_last = i64::from(pair[1].first) - 1;
+        if gap_first > gap_last {
+            continue;
+        }
+        let first = gap_first as i32;
+        let last = gap_last as i32;
+        let reason = tracks_unheld
+            .iter()
+            .flat_map(|gaps| gaps.iter())
+            .find(|g| g.first <= last && g.last >= first)
+            .map_or_else(
+                || "Not recorded: this play happened while the recorder wasn't watching".to_owned(),
+                |g| g.reason.clone(),
+            );
+        out.push(UnheldGap {
+            first,
+            last,
+            reason,
+        });
+    }
+    out
+}
+
 pub fn build_schedule(
     stretches: &[RecordedStretch],
     unheld: &[UnheldGap],
@@ -927,6 +957,22 @@ mod tests {
         ]]);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].join, StretchJoin::Load);
+
+        let track_a = vec![
+            RecordedStretch { first: 0, last: 50, join: StretchJoin::Start },
+            RecordedStretch { first: 100, last: 200, join: StretchJoin::Break },
+        ];
+        let track_b = vec![RecordedStretch { first: 40, last: 120, join: StretchJoin::Start }];
+        let union = merge_recorded_tracks(&[track_a, track_b]);
+        let union_gaps = merge_unheld_gaps(
+            &union,
+            &[
+                vec![UnheldGap { first: 51, last: 99, reason: "track A gap".into() }],
+                vec![],
+            ],
+        );
+        assert_eq!(union.len(), 1);
+        assert!(union_gaps.is_empty());
     }
 
     #[test]

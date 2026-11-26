@@ -73,8 +73,14 @@ export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetR
   return held;
 }
 
-export function preloadWidgetRenderers(kinds: Iterable<string>): void {
-  for (const kind of kinds) if (!loadedWidgetRenderer(kind)) void loadWidgetRenderer(kind).catch(() => {});
+export function preloadWidgetRenderers(kinds: Iterable<string>): Promise<void> {
+  const pending: Promise<unknown>[] = [];
+  for (const kind of kinds) {
+    if (!loadedWidgetRenderer(kind)) {
+      pending.push(loadWidgetRenderer(kind).catch(() => undefined));
+    }
+  }
+  return pending.length ? Promise.all(pending).then(() => undefined) : Promise.resolve();
 }
 
 const activeClocks = new Set<object>();

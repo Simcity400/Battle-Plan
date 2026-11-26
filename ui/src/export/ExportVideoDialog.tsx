@@ -29,6 +29,8 @@ import {
   formatExportDuration,
   FULL_CROP,
   isFullCrop,
+  mergeRecordedTracks,
+  mergeUnheldGaps,
   normalizeCrop,
   readabilityHint,
   snapEven,
@@ -174,7 +176,8 @@ export default function ExportVideoDialog({
       setPresetId('1080p');
       setWidth(1920);
       setHeight(1080);
-      const firstMap = ctx.mapWidgets[0]?.widgetId ?? '';
+      const advancing = ctx.mapWidgets.filter(mw => mw.timeMode === 'follow');
+      const firstMap = advancing[0]?.widgetId ?? '';
       setAudioMapWidgetId(defaultAudioForSpeed(initialSpeed) ? firstMap : '');
       const timelinesPromise = ctx.tracks.length
         ? getSurfaceExportTimelines(
@@ -183,8 +186,8 @@ export default function ExportVideoDialog({
               branch: Number.isFinite(Number(t.branchId)) ? Number(t.branchId) : 0,
               axisOffset: t.axisOffset,
             })),
-          ).catch(() => null)
-        : Promise.resolve(null);
+          )
+        : Promise.resolve([]);
       const mapSnapshotsPromise = Promise.all(
         ctx.mapWidgets.map(async mw => {
           try {
@@ -198,12 +201,18 @@ export default function ExportVideoDialog({
       void Promise.all([timelinesPromise, mapSnapshotsPromise])
         .then(([timelines, entries]) => {
           if (cancelled) return;
-          if (timelines) setSurfaceTimelines(timelines);
+          setSurfaceTimelines(timelines);
           const map: Record<string, MapExportSnapshot> = {};
           for (const entry of entries) {
             if (entry) map[entry[0]] = entry[1];
           }
           setEmbeddedSnapshots(map);
+        })
+        .catch(cause => {
+          if (!cancelled) {
+            setSurfaceTimelines(null);
+            setLoadError(errorMessage(cause));
+          }
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -215,23 +224,38 @@ export default function ExportVideoDialog({
     };
   }, [target]);
 
+  const advancingMapWidgets = useMemo(() => {
+    if (!target || target.kind === 'map') return [];
+    return target.context.mapWidgets.filter(
+      mw => mw.timeMode === 'follow' || (mw.timeMode === 'pin' && followPinned),
+    );
+  }, [target, followPinned]);
+
+  useEffect(() => {
+    if (!target || target.kind === 'map') return;
+    if (audioMapWidgetId && !advancingMapWidgets.some(mw => mw.widgetId === audioMapWidgetId)) {
+      setAudioMapWidgetId('');
+    }
+  }, [target, advancingMapWidgets, audioMapWidgetId]);
+
   useEffect(() => {
     if (audioManual || !target) return;
     if (target.kind === 'map' && mapSnapshot) {
       setAudioEnabled(defaultAudioForSpeed(speed) && !mapSnapshot.audioMuted);
     } else if (target.kind !== 'map') {
-      const firstMap = target.context.mapWidgets[0]?.widgetId ?? '';
+      const firstMap = advancingMapWidgets[0]?.widgetId ?? '';
       setAudioMapWidgetId(defaultAudioForSpeed(speed) ? firstMap : '');
     }
-  }, [speed, audioManual, target, mapSnapshot]);
+  }, [speed, audioManual, target, mapSnapshot, advancingMapWidgets]);
 
   const bounds = useMemo(() => {
-    if (!target) return { firstHour: 0, lastHour: 0, currentHour: 0, maxTexture: 8192, viewport: [1920, 1080] as [number, number] };
+    if (!target) return { firstHour: 0, lastHour: 0, currentHour: 0, referenceOffset: 0, maxTexture: 8192, viewport: [1920, 1080] as [number, number] };
     if (target.kind === 'map') {
       return {
         firstHour: mapSnapshot?.firstHour ?? 0,
         lastHour: mapSnapshot?.lastHour ?? 0,
         currentHour: mapSnapshot?.currentHour ?? 0,
+        referenceOffset: 0,
         maxTexture: mapSnapshot?.maxTextureDimension ?? 8192,
         viewport: mapSnapshot?.viewport ?? ([1920, 1080] as [number, number]),
       };
@@ -240,14 +264,33 @@ export default function ExportVideoDialog({
       firstHour: target.context.firstHour,
       lastHour: target.context.lastHour,
       currentHour: target.context.currentHour,
+      referenceOffset: target.context.referenceOffset,
       maxTexture: 8192,
       viewport: [target.context.sourceWidth, target.context.sourceHeight] as [number, number],
     };
   }, [target, mapSnapshot]);
 
-  const ready = target !== null && (target.kind !== 'map' || mapSnapshot !== null);
+  const ready =
+    target !== null &&
+    !loadError &&
+    (target.kind === 'map'
+      ? mapSnapshot !== null
+      : surfaceTimelines !== null && surfaceTimelines.length > 0);
 
   const previewGenRef = useRef(0);
+
+  const mergedSurface = useMemo(() => {
+    if (!target || target.kind === 'map' || !surfaceTimelines) return null;
+    const stretches = mergeRecordedTracks(surfaceTimelines.map(t => t.stretches));
+    const unheld = mergeUnheldGaps(stretches, surfaceTimelines.map(t => t.unheld));
+    return { stretches, unheld };
+  }, [target, surfaceTimelines]);
+
+  const activeStretches = useMemo(() => {
+    if (!target) return null;
+    if (target.kind === 'map') return mapSnapshot?.stretches ?? null;
+    return mergedSurface?.stretches ?? null;
+  }, [target, mapSnapshot, mergedSurface]);
 
   const coverage = useMemo(() => {
     if (!target) return { spanHours: 0, recordedHours: 0, missingHours: 0, gapCount: 0 };
@@ -255,19 +298,14 @@ export default function ExportVideoDialog({
       if (!mapSnapshot) return { spanHours: 0, recordedHours: 0, missingHours: 0, gapCount: 0 };
       return summarizeRange(mapSnapshot.stretches, mapSnapshot.unheld, fromHour, toHour);
     }
-    const resolvedTracks = surfaceTimelines ?? target.context.tracks.map(t => ({ stretches: t.stretches, unheld: t.unheld }));
-    const allStretches = resolvedTracks.flatMap(t => t.stretches);
-    const allUnheld = resolvedTracks.flatMap(t => t.unheld);
-    if (allStretches.length === 0) {
-      return summarizeRange([{ first: bounds.firstHour, last: bounds.lastHour, join: 'start' }], [], fromHour, toHour);
-    }
-    return summarizeRange(allStretches, allUnheld, fromHour, toHour);
-  }, [target, mapSnapshot, surfaceTimelines, fromHour, toHour, bounds.firstHour, bounds.lastHour]);
+    if (!mergedSurface) return { spanHours: 0, recordedHours: 0, missingHours: 0, gapCount: 0 };
+    return summarizeRange(mergedSurface.stretches, mergedSurface.unheld, fromHour, toHour);
+  }, [target, mapSnapshot, mergedSurface, fromHour, toHour]);
 
   const estimatedFrames = useMemo(() => {
-    if (!snapshot) return 0;
-    return estimateScheduleFrames(snapshot.stretches, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds);
-  }, [snapshot, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds]);
+    if (!activeStretches) return 0;
+    return estimateScheduleFrames(activeStretches, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds);
+  }, [activeStretches, fromHour, toHour, fps, speed, skipGaps, cutCardSeconds]);
 
   const durationSeconds = useMemo(
     () =>
@@ -277,11 +315,11 @@ export default function ExportVideoDialog({
         skipGaps,
         cutCardSeconds,
         fps,
-        snapshot?.stretches,
+        activeStretches ?? undefined,
         fromHour,
         toHour,
       ),
-    [coverage, speed, skipGaps, cutCardSeconds, fps, snapshot, fromHour, toHour],
+    [coverage, speed, skipGaps, cutCardSeconds, fps, activeStretches, fromHour, toHour],
   );
 
   const cadence = useMemo(() => analyzeCadence(speed, fps), [speed, fps]);
@@ -356,7 +394,7 @@ export default function ExportVideoDialog({
   );
 
   const buildSurfaceRequest = useCallback((): SurfaceVideoRequest | null => {
-    if (!target || target.kind === 'map') return null;
+    if (!target || target.kind === 'map' || !surfaceTimelines) return null;
     const ctx = target.context;
     const evenW = snapEven(width);
     const evenH = snapEven(height);
@@ -364,27 +402,35 @@ export default function ExportVideoDialog({
       const snap = embeddedSnapshots[mw.widgetId];
       return {
         widgetId: mw.widgetId,
+        title: mw.title,
         path: snap?.path ?? mw.path,
         revision: snap?.revision ?? mw.revision,
         branch: snap?.branch ?? mw.branch,
         axisOffset: mw.axisOffset,
-        pinnedHour: mw.pinnedHour,
+        timeMode: mw.timeMode,
+        fixedHour: mw.fixedHour,
         placement: snap?.placement ?? null,
         sourceViewport: snap?.viewport ?? null,
         uiScale: snap?.uiScale ?? 1.0,
         mapMode: snap?.mapMode ?? null,
         perspective: snap?.perspective ?? mw.perspective,
+        perspectiveSlot: snap?.perspectiveSlot ?? mw.perspectiveSlot ?? null,
         fog: snap?.fog ?? mw.fog,
         dayNight: snap?.dayNight ?? null,
         alliedPlans: snap?.alliedPlans ?? null,
         counterColorsCountry: snap?.counterColorsCountry ?? null,
         natoCounters: snap?.natoCounters ?? null,
+        mapSettings: snap?.mapSettings,
       };
     });
+    const effectiveAudioMapId = advancingMapWidgets.some(mw => mw.widgetId === audioMapWidgetId)
+      ? audioMapWidgetId
+      : null;
     return {
       kind: target.kind,
       fromHour: Math.min(fromHour, toHour),
       toHour: Math.max(fromHour, toHour),
+      referenceOffset: ctx.referenceOffset,
       fps,
       hoursPerSecond: speed,
       skipGaps,
@@ -401,8 +447,9 @@ export default function ExportVideoDialog({
       scrollTop: Math.max(0, ctx.scrollTop),
       dateStamp,
       followPinned,
-      audioMapWidgetId: audioMapWidgetId || null,
-      tracks: surfaceTimelines ?? ctx.tracks.map(t => ({ stretches: t.stretches, unheld: t.unheld })),
+      audioMapWidgetId: effectiveAudioMapId,
+      allowUnverified: false,
+      tracks: surfaceTimelines,
       embeddedMaps,
       payload: {
         template: target.template,
@@ -418,6 +465,7 @@ export default function ExportVideoDialog({
     target,
     embeddedSnapshots,
     surfaceTimelines,
+    advancingMapWidgets,
     fromHour,
     toHour,
     fps,
@@ -593,7 +641,9 @@ export default function ExportVideoDialog({
 
   const pageReadability = target?.kind === 'page' ? readabilityHint(previewMinTextPx, previewScale) : null;
   const hasAudioTrack =
-    target?.kind === 'map' ? audioEnabled : target !== null && Boolean(audioMapWidgetId);
+    target?.kind === 'map'
+      ? audioEnabled
+      : target !== null && advancingMapWidgets.some(mw => mw.widgetId === audioMapWidgetId);
 
   return (
     <dialog
@@ -634,7 +684,7 @@ export default function ExportVideoDialog({
                     <h3>Time range</h3>
                     <div className="export-video-grid-2">
                       <label className="export-video-field">
-                        <span>Start ({formatDateTime(fromHour)})</span>
+                        <span>Start ({formatDateTime(fromHour + bounds.referenceOffset)})</span>
                         <input
                           type="number"
                           min={bounds.firstHour}
@@ -645,7 +695,7 @@ export default function ExportVideoDialog({
                         />
                       </label>
                       <label className="export-video-field">
-                        <span>End ({formatDateTime(toHour)})</span>
+                        <span>End ({formatDateTime(toHour + bounds.referenceOffset)})</span>
                         <input
                           type="number"
                           min={bounds.firstHour}
@@ -716,7 +766,7 @@ export default function ExportVideoDialog({
                                   skipGaps,
                                   cutCardSeconds,
                                   fps,
-                                  snapshot?.stretches,
+                                  activeStretches ?? undefined,
                                   fromHour,
                                   toHour,
                                 ),
@@ -906,7 +956,7 @@ export default function ExportVideoDialog({
                         />
                       </label>
                     )}
-                    {target.kind !== 'map' && target.context.mapWidgets.length > 0 && (
+                    {target.kind !== 'map' && advancingMapWidgets.length > 0 && (
                       <label className="export-video-field">
                         <span>Map audio source</span>
                         <select
@@ -917,7 +967,7 @@ export default function ExportVideoDialog({
                           }}
                         >
                           <option value="">No audio</option>
-                          {target.context.mapWidgets.map(mw => (
+                          {advancingMapWidgets.map(mw => (
                             <option key={mw.widgetId} value={mw.widgetId}>
                               {mw.title} (game and mod audio)
                             </option>

@@ -43,8 +43,16 @@
   transform-origin: center center;
 }
 
-.export-presentation-stage.is-visible-mode .export-page-content {
+.export-presentation-stage.is-visible-mode .export-page-content,
+.export-page-content.is-visible-clipped {
   transform-origin: top left;
+}
+
+.export-visible-clip {
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--canvas);
 }
 
 .export-single-widget-shell {
@@ -76,7 +84,7 @@
   padding: 6px 12px;
   border-radius: var(--r-md);
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  background: var(--surface);
   color: var(--text);
   font-family: var(--font-display);
   font-size: 16px;
@@ -94,7 +102,7 @@
   padding: 7px 14px;
   border-radius: var(--r-md);
   border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  background: var(--surface);
   color: var(--text);
   font-size: 14px;
   font-weight: 500;

@@ -72,8 +72,17 @@ function rowFractions(row: BarsDataRow, form: BarsModel['form'], layout: BarsLay
     rightFrac?: number;
     rightSideFrac?: number;
     targetFrac?: number;
+    segmentShares?: Record<string, number>;
   } = {};
-  if (form === 'two-sided' && layout.twoSidedLayout === 'split-sides') {
+  if (form === 'share' || form === 'stacked') {
+    if (row.segments?.length) {
+      const shares: Record<string, number> = {};
+      for (const seg of row.segments) {
+        shares[seg.key] = seg.share;
+      }
+      out.segmentShares = shares;
+    }
+  } else if (form === 'two-sided' && layout.twoSidedLayout === 'split-sides') {
     if (isMeasuredField(row.value) && row.numeric !== undefined && row.numeric !== null) {
       out.numericFrac = row.numeric / scaleLeft;
     }
@@ -89,7 +98,7 @@ function rowFractions(row: BarsDataRow, form: BarsModel['form'], layout: BarsLay
     if (row.right && isMeasuredField(row.right.value) && row.right.numeric !== undefined && row.right.numeric !== null) {
       out.rightFrac = row.right.numeric / rightScale;
     }
-  } else if (form !== 'share' && form !== 'stacked') {
+  } else {
     if (isMeasuredField(row.value) && row.numeric !== undefined && row.numeric !== null) {
       out.numericFrac = row.numeric / scaleMax;
     }
@@ -128,6 +137,7 @@ function easedBarsOf(frame: BarsFrame): { readonly map?: ReadonlyMap<string, Bar
       rightFrac?: number;
       rightSideFrac?: number;
       targetFrac?: number;
+      segmentShares?: Record<string, number>;
     } = {};
     const step = (p: number | undefined, c: number | undefined): number | undefined => {
       if (p === undefined || c === undefined) return c;
@@ -144,6 +154,15 @@ function easedBarsOf(frame: BarsFrame): { readonly map?: ReadonlyMap<string, Bar
     if (rsf !== undefined) next.rightSideFrac = rsf;
     const tf = step(prev.targetFrac, cur.targetFrac);
     if (tf !== undefined) next.targetFrac = tf;
+    if (cur.segmentShares) {
+      const shares: Record<string, number> = {};
+      for (const [segKey, curShare] of Object.entries(cur.segmentShares)) {
+        const prevShare = prev.segmentShares?.[segKey] ?? 0;
+        const val = step(prevShare, curShare);
+        shares[segKey] = val ?? curShare;
+      }
+      next.segmentShares = shares;
+    }
     eased.set(item.key, next);
   }
   return moving ? { map: eased, moving: true } : { moving: false };

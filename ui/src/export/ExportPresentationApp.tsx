@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { nativeDashboardClient } from '../dashboard/nativeClient';
-import { bindTracks, clockBounds, type DashboardTemplate, type WidgetSpec } from '../dashboard/model';
+import { bindTracks, clockBounds, resolveWindow, type DashboardTemplate, type WidgetSpec } from '../dashboard/model';
 import { includeCampaigns } from '../dashboard/campaigns';
 import { PlaybackController } from '../dashboard/playback';
 import { MapViewsStore } from '../dashboard/geometry';
@@ -14,7 +14,7 @@ import { WidgetBody } from '../dashboard/widgets';
 import { WidgetFrameContext, widgetWording, type WidgetFrameValue } from '../dashboard/widgetFrame';
 import { HeldFailures, HeldFailuresContext } from '../dashboard/heldFailures';
 import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from '../dashboard/follow/store';
-import { preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { loadedWidgetRenderer, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { LiveMotion } from '../charts/liveMotion';
 import { useAppearance } from '../shell/appearance/useAppearance';
 import { useWidgetIconMenu, WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
@@ -131,6 +131,20 @@ function nextAnimationFrames(count = 2): Promise<void> {
   });
 }
 
+function ancestorZoom(element: HTMLElement | null, root: HTMLElement): number {
+  let factor = 1;
+  let cur: HTMLElement | null = element;
+  while (cur && cur !== root) {
+    const rawZoom = cur.style.zoom;
+    if (rawZoom) {
+      const parsed = parseFloat(rawZoom);
+      if (Number.isFinite(parsed) && parsed > 0) factor *= parsed;
+    }
+    cur = cur.parentElement;
+  }
+  return factor;
+}
+
 function measureMinTextPx(root: HTMLElement | null, pixelFactor: number): number | null {
   if (!root) return null;
   let minSize = Infinity;
@@ -146,14 +160,51 @@ function measureMinTextPx(root: HTMLElement | null, pixelFactor: number): number
     if (style.display === 'none' || style.visibility === 'hidden') continue;
     const size = parseFloat(style.fontSize);
     if (Number.isFinite(size) && size > 0) {
-      minSize = Math.min(minSize, size * pixelFactor);
+      const zoom = ancestorZoom(parent, root);
+      minSize = Math.min(minSize, size * zoom * pixelFactor);
     }
     inspected += 1;
   }
+  const canvases = root.querySelectorAll<HTMLCanvasElement>('.dash-widget canvas');
+  for (const canvas of canvases) {
+    const box = canvas.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) continue;
+    const zoom = ancestorZoom(canvas, root);
+    minSize = Math.min(minSize, 11 * zoom * pixelFactor);
+  }
   if (!Number.isFinite(minSize)) {
-    return 12 * pixelFactor;
+    return null;
   }
   return Math.round(minSize * 10) / 10;
+}
+
+function measureBgRgb(root: HTMLElement | null): [number, number, number] | null {
+  if (!root) return null;
+  const raw = window.getComputedStyle(root).backgroundColor;
+  const match = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (!match) return null;
+  return [
+    Math.min(255, Math.max(0, Number(match[1]))),
+    Math.min(255, Math.max(0, Number(match[2]))),
+    Math.min(255, Math.max(0, Number(match[3]))),
+  ];
+}
+
+function measureOverlayRects(root: HTMLElement | null, dpr: number): ExportMapRect[] {
+  if (!root) return [];
+  const nodes = root.querySelectorAll<HTMLElement>('.export-date-pill, .export-cut-banner');
+  const out: ExportMapRect[] = [];
+  for (const node of nodes) {
+    const box = node.getBoundingClientRect();
+    const x = Math.floor(box.left * dpr);
+    const y = Math.floor(box.top * dpr);
+    const width = Math.ceil(box.right * dpr) - x;
+    const height = Math.ceil(box.bottom * dpr) - y;
+    if (width > 0 && height > 0) {
+      out.push({ widgetId: node.className, x, y, width, height });
+    }
+  }
+  return out;
 }
 
 function measureMapRects(root: HTMLElement | null, dpr: number): ExportMapRect[] {
@@ -295,10 +346,19 @@ export default function ExportPresentationApp() {
 
   const sessionRef = useRef<MountedSession | null>(null);
   sessionRef.current = session;
+  const openedSourcesRef = useRef<string[]>([]);
+  const expectedFamilyIdsRef = useRef<string[]>([]);
   const widgetStatusesRef = useRef(new Map<string, ExportWidgetStatus>());
   const statusWaitersRef = useRef(new Set<() => void>());
   const lastSignatureRef = useRef<string>('');
   const lastModeRef = useRef<'recorded' | 'card'>('card');
+
+  const releaseOpenedSources = useCallback(async () => {
+    const ids = openedSourcesRef.current.splice(0, openedSourcesRef.current.length);
+    for (const id of ids) {
+      await nativeDashboardClient.releaseSource(id).catch(() => undefined);
+    }
+  }, []);
 
   const reportWidget = useCallback((key: string, status: ExportWidgetStatus | null) => {
     if (status === null) widgetStatusesRef.current.delete(key);
@@ -306,38 +366,82 @@ export default function ExportPresentationApp() {
     for (const wake of [...statusWaitersRef.current]) wake();
   }, []);
 
-  const waitForWidgetsSettled = useCallback(async (expectedBindings: Map<string, number>, timeoutMs = 15000) => {
-    const start = performance.now();
-    const artBudgetMs = 2500;
-    const isSettled = (allowPendingArt: boolean) => {
-      for (const [key, status] of widgetStatusesRef.current) {
-        if (status.mode === 'reading') return false;
-        const minBinding = expectedBindings.get(key) ?? 0;
-        if (status.binding > 0 && status.installedBinding < Math.max(status.binding, minBinding)) {
-          return false;
+  const waitForWidgetsSettled = useCallback(
+    async (
+      expectedBindings: Map<string, number>,
+      expectedTargets: Map<string, number | null>,
+      timeoutMs = 15000,
+    ) => {
+      const start = performance.now();
+      const artBudgetMs = 2500;
+      const expectedIds = expectedFamilyIdsRef.current;
+      const unsettled = (allowPendingArt: boolean): string[] => {
+        const missing: string[] = [];
+        const presentByWidget = new Map<string, ExportWidgetStatus[]>();
+        for (const status of widgetStatusesRef.current.values()) {
+          const list = presentByWidget.get(status.widgetId) ?? [];
+          list.push(status);
+          presentByWidget.set(status.widgetId, list);
         }
-        if (status.mode === 'picture' && status.expired) return false;
-        if (!allowPendingArt && (status.pendingArt || status.pendingIdentities)) return false;
+        for (const widgetId of expectedIds) {
+          if (!presentByWidget.has(widgetId)) {
+            missing.push(`${widgetId}:unmounted`);
+          }
+        }
+        for (const [key, status] of widgetStatusesRef.current) {
+          if (status.mode === 'reading') {
+            missing.push(`${key}:reading`);
+            continue;
+          }
+          const minBinding = expectedBindings.get(key) ?? 0;
+          if (status.binding > 0 && status.installedBinding < Math.max(status.binding, minBinding)) {
+            missing.push(`${key}:binding(${status.installedBinding}<${Math.max(status.binding, minBinding)})`);
+            continue;
+          }
+          if (status.mode === 'picture' && status.expired) {
+            missing.push(`${key}:expired`);
+            continue;
+          }
+          const expectedHour = expectedTargets.get(status.widgetId);
+          if (
+            expectedHour !== undefined &&
+            expectedHour !== null &&
+            status.mode === 'picture' &&
+            status.target !== null &&
+            status.target !== expectedHour
+          ) {
+            missing.push(`${key}:hour(${status.target}!=${expectedHour})`);
+            continue;
+          }
+          if (!allowPendingArt && (status.pendingArt || status.pendingIdentities)) {
+            missing.push(`${key}:art`);
+          }
+        }
+        return missing;
+      };
+      while (performance.now() - start < timeoutMs) {
+        const allowArtTimeout = performance.now() - start >= artBudgetMs;
+        if (unsettled(allowArtTimeout).length === 0) return;
+        await new Promise<void>(resolve => {
+          const timer = window.setTimeout(() => {
+            statusWaitersRef.current.delete(done);
+            resolve();
+          }, 25);
+          const done = () => {
+            window.clearTimeout(timer);
+            statusWaitersRef.current.delete(done);
+            resolve();
+          };
+          statusWaitersRef.current.add(done);
+        });
       }
-      return true;
-    };
-    while (performance.now() - start < timeoutMs) {
-      const allowArtTimeout = performance.now() - start >= artBudgetMs;
-      if (isSettled(allowArtTimeout)) return;
-      await new Promise<void>(resolve => {
-        const timer = window.setTimeout(() => {
-          statusWaitersRef.current.delete(done);
-          resolve();
-        }, 25);
-        const done = () => {
-          window.clearTimeout(timer);
-          statusWaitersRef.current.delete(done);
-          resolve();
-        };
-        statusWaitersRef.current.add(done);
-      });
-    }
-  }, []);
+      const remaining = unsettled(true);
+      if (remaining.length > 0) {
+        throw new Error(`Export timed out waiting for widgets to settle: ${remaining.join(', ')}`);
+      }
+    },
+    [],
+  );
 
   const computeSignature = useCallback((step: StepPayload) => {
     const parts: string[] = [
@@ -363,17 +467,38 @@ export default function ExportPresentationApp() {
       serial = serial.then(task).catch(() => undefined);
     };
 
+    const expectedTargetsFor = (curSession: MountedSession, clockHour: number | null): Map<string, number | null> => {
+      const map = new Map<string, number | null>();
+      if (clockHour === null) return map;
+      const bound = bindTracks(curSession.template, curSession.sources, curSession.selectedBranches);
+      const widgets = curSession.kind === 'widget' && curSession.widget ? [curSession.widget] : curSession.template.widgets;
+      for (const widget of widgets) {
+        const track = bound.find(t => t.id === widget.trackIds[0]) ?? bound[0];
+        if (!track) continue;
+        const win = resolveWindow(widget, track, bound, clockHour);
+        map.set(widget.id, win ? Math.floor(win.lastHour) : null);
+      }
+      return map;
+    };
+
     const handleMount = async (payload: MountPayload) => {
+      const openedThisMount: string[] = [];
       try {
+        setSession(null);
+        await nextAnimationFrames(1);
+        await releaseOpenedSources();
         widgetStatusesRef.current.clear();
+        expectedFamilyIdsRef.current = [];
         lastSignatureRef.current = '';
         lastModeRef.current = 'card';
         const data = payload.payload;
         const openedSources = new Map<string, DashboardSource>();
         for (const campaign of data.campaigns) {
           const source = await nativeDashboardClient.openSource(campaign.path, new AbortController().signal);
+          openedThisMount.push(source.id);
           openedSources.set(campaign.id, source);
         }
+        openedSourcesRef.current = openedThisMount;
         const campaigns = data.campaigns.map(c => ({ ...c, loading: false }));
         const baseTemplate = applyFollowPinned(data.template, payload.followPinned);
         const merged = includeCampaigns(baseTemplate, campaigns);
@@ -391,10 +516,17 @@ export default function ExportPresentationApp() {
               ? { ...data.widget, time: { mode: 'follow' as const } }
               : data.widget)
           : null;
-        const kinds = targetWidget
-          ? [targetWidget.kind]
-          : [...new Set(template.widgets.map(w => w.kind))];
+        const activeWidgets = targetWidget ? [targetWidget] : template.widgets;
+        const kinds = [...new Set(activeWidgets.map(w => w.kind))];
         await preloadWidgetRenderers(kinds);
+        expectedFamilyIdsRef.current = activeWidgets
+          .filter(w => {
+            if (w.kind === 'map') return false;
+            const viewOpt = typeof w.options?.view === 'string' ? w.options.view : undefined;
+            const renderer = loadedWidgetRenderer(w.kind, viewOpt) ?? loadedWidgetRenderer(w.kind);
+            return Boolean(renderer && 'declaration' in renderer && renderer.declaration);
+          })
+          .map(w => w.id);
         const tracks = bindTracks(template, openedSources, data.selectedBranches);
         clock.setBounds(clockBounds(tracks), true);
         clock.stepExport(payload.initialHour, payload.hoursPerSecond, true);
@@ -437,7 +569,7 @@ export default function ExportPresentationApp() {
         });
         setSession(nextSession);
         await nextAnimationFrames(4);
-        await waitForWidgetsSettled(new Map(), 15000);
+        await waitForWidgetsSettled(new Map(), expectedTargetsFor(nextSession, payload.initialHour), 15000);
         await nextAnimationFrames(2);
         const contentNode = contentRef.current;
         const contentWidth = contentNode ? contentNode.scrollWidth : payload.cssWidth;
@@ -451,9 +583,17 @@ export default function ExportPresentationApp() {
           contentHeight,
           minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
           mapRects: measureMapRects(rootRef.current, payload.dpr),
+          overlayRects: measureOverlayRects(rootRef.current, payload.dpr),
+          bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
       } catch (cause) {
+        setSession(null);
+        await nextAnimationFrames(1);
+        for (const id of openedThisMount) {
+          await nativeDashboardClient.releaseSource(id).catch(() => undefined);
+        }
+        openedSourcesRef.current = openedSourcesRef.current.filter(id => !openedThisMount.includes(id));
         await sendVideoExportPageAck({
           seq: payload.seq,
           kind: 'mount',
@@ -462,6 +602,8 @@ export default function ExportPresentationApp() {
           contentHeight: null,
           minTextPx: null,
           mapRects: [],
+          overlayRects: [],
+          bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
       }
@@ -490,6 +632,8 @@ export default function ExportPresentationApp() {
           contentHeight: contentRef.current?.scrollHeight ?? null,
           minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
           mapRects: measureMapRects(rootRef.current, payload.dpr),
+          overlayRects: measureOverlayRects(rootRef.current, payload.dpr),
+          bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
       } catch (cause) {
@@ -501,6 +645,8 @@ export default function ExportPresentationApp() {
           contentHeight: null,
           minTextPx: null,
           mapRects: [],
+          overlayRects: [],
+          bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
       }
@@ -550,6 +696,8 @@ export default function ExportPresentationApp() {
             contentHeight: null,
             minTextPx: null,
             mapRects: [],
+            overlayRects: [],
+            bgRgb: measureBgRgb(rootRef.current),
             error: null,
           });
           return;
@@ -573,11 +721,12 @@ export default function ExportPresentationApp() {
           );
         }
         await nextAnimationFrames(1);
-        await waitForWidgetsSettled(expectedBindings, 15000);
+        await waitForWidgetsSettled(expectedBindings, expectedTargetsFor(curSession, payload.hour), 15000);
         await nextAnimationFrames(2);
 
         const sig = computeSignature(payload);
         const mapRects = measureMapRects(rootRef.current, payload.dpr);
+        const overlayRects = measureOverlayRects(rootRef.current, payload.dpr);
         const dirty =
           payload.frameIndex === 0 ||
           lastModeRef.current !== 'recorded' ||
@@ -597,6 +746,8 @@ export default function ExportPresentationApp() {
               ? measureMinTextPx(rootRef.current, payload.dpr * payload.scale)
               : null,
           mapRects,
+          overlayRects,
+          bgRgb: measureBgRgb(rootRef.current),
           error: null,
         });
       } catch (cause) {
@@ -608,23 +759,47 @@ export default function ExportPresentationApp() {
           contentHeight: null,
           minTextPx: null,
           mapRects: [],
+          overlayRects: [],
+          bgRgb: measureBgRgb(rootRef.current),
           error: cause instanceof Error ? cause.message : String(cause),
         });
       }
     };
 
-    const handleUnmount = async () => {
+    const handleUnmount = async (payload?: { seq?: number } | null) => {
       widgetStatusesRef.current.clear();
+      expectedFamilyIdsRef.current = [];
       lastSignatureRef.current = '';
       setSession(null);
       setMotion(undefined);
+      await nextAnimationFrames(1);
+      await releaseOpenedSources();
+      if (payload && typeof payload.seq === 'number') {
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'unmount',
+          dirty: false,
+          contentWidth: null,
+          contentHeight: null,
+          minTextPx: null,
+          mapRects: [],
+          overlayRects: [],
+          bgRgb: null,
+          error: null,
+        });
+      }
     };
+
+    const onBeforeUnload = () => {
+      void releaseOpenedSources();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
 
     void Promise.all([
       listen<MountPayload>('video-export-mount', event => enqueue(() => handleMount(event.payload))),
       listen<MetricsPayload>('video-export-metrics', event => enqueue(() => handleMetrics(event.payload))),
       listen<StepPayload>('video-export-step', event => enqueue(() => handleStep(event.payload))),
-      listen('video-export-unmount', () => enqueue(handleUnmount)),
+      listen<{ seq?: number } | null>('video-export-unmount', event => enqueue(() => handleUnmount(event.payload))),
     ]).then(stops => {
       if (!alive) {
         for (const stop of stops) stop();
@@ -639,15 +814,19 @@ export default function ExportPresentationApp() {
         contentHeight: null,
         minTextPx: null,
         mapRects: [],
+        overlayRects: [],
+        bgRgb: measureBgRgb(rootRef.current),
         error: null,
       });
     });
 
     return () => {
       alive = false;
+      window.removeEventListener('beforeunload', onBeforeUnload);
       for (const stop of unlisteners) stop();
+      void releaseOpenedSources();
     };
-  }, [clock, waitForWidgetsSettled, computeSignature]);
+  }, [clock, waitForWidgetsSettled, computeSignature, releaseOpenedSources]);
 
   const tracks = useMemo(() => {
     if (!session) return [];
@@ -683,13 +862,19 @@ export default function ExportPresentationApp() {
     [motion, reportWidget],
   );
 
+  const isPortraitReflow = Boolean(
+    session &&
+      session.framing === 'visible' &&
+      session.reflowForPortrait &&
+      session.outputHeight > session.outputWidth,
+  );
   const pageWidth = useMemo(() => {
     if (!session) return 1280;
-    if (session.framing === 'visible' && session.reflowForPortrait && session.outputHeight > session.outputWidth) {
-      return Math.round(session.cssWidth / Math.max(0.1, session.scale));
+    if (isPortraitReflow) {
+      return Math.round(session.cssWidth / Math.max(0.01, session.scale));
     }
     return session.sourceWidth;
-  }, [session]);
+  }, [session, isPortraitReflow]);
 
   return (
     <ExportSurfaceContext.Provider value={exportContext}>
@@ -700,6 +885,34 @@ export default function ExportPresentationApp() {
               {session.kind === 'widget' && session.widget ? (
                 <div className="export-single-widget-shell" ref={contentRef}>
                   <SingleWidgetCard widget={session.widget} template={session.template} runtime={runtime} />
+                </div>
+              ) : session.framing === 'visible' && !isPortraitReflow ? (
+                <div className="export-presentation-stage">
+                  <div
+                    className="export-visible-clip"
+                    style={{
+                      width: `${Math.round(session.sourceWidth * session.scale)}px`,
+                      height: `${Math.round(session.sourceHeight * session.scale)}px`,
+                    }}
+                  >
+                    <div
+                      ref={contentRef}
+                      className="export-page-content is-visible-clipped"
+                      style={{
+                        width: `${pageWidth}px`,
+                        transform: `scale(${session.scale}) translateY(${-Math.max(0, session.scrollTop)}px)`,
+                      }}
+                    >
+                      <DashboardGrid
+                        template={session.template}
+                        runtime={runtime}
+                        editing={false}
+                        onLayouts={noop}
+                        onApply={noop}
+                        onRemove={noop}
+                      />
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div

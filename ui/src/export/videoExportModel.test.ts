@@ -9,6 +9,8 @@ import {
   exportGlideDurationMs,
   fitAspectCrop,
   isFullCrop,
+  mergeRecordedTracks,
+  mergeUnheldGaps,
   normalizeCrop,
   readabilityHint,
   snapEven,
@@ -109,11 +111,30 @@ test('easeBarFraction eases smoothly and snaps on missing values or boundaries',
 
 test('glideDurationForSpeed honors export override above 168 h/s while keeping live cutoff', () => {
   assert.equal(glideDurationForSpeed(240, false), 0);
-  assert.equal(glideDurationForSpeed(240, false, 90), 90);
-  assert.equal(glideDurationForSpeed(240, true, 90), 0);
+  const fastExportMs = exportGlideDurationMs(240, 60);
+  assert.ok(fastExportMs > 0, `expected non-zero export glide at 240 h/s, got ${fastExportMs}`);
+  assert.equal(glideDurationForSpeed(240, false, fastExportMs), fastExportMs);
+  assert.equal(glideDurationForSpeed(240, true, fastExportMs), 0);
   assert.equal(exportGlideDurationMs(24, 60), 35);
   assert.equal(exportGlideDurationMs(1, 60), 180);
-  assert.equal(exportGlideDurationMs(60, 60), 0);
+});
+
+test('mergeRecordedTracks preserves load joins and mergeUnheldGaps derives complement gaps', () => {
+  const merged = mergeRecordedTracks([
+    [
+      { first: 0, last: 50, join: 'start' },
+      { first: 100, last: 150, join: 'break' },
+      { first: 151, last: 200, join: 'load' },
+    ],
+    [{ first: 40, last: 110, join: 'start' }],
+  ]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]!.first, 0);
+  assert.equal(merged[0]!.last, 150);
+  assert.equal(merged[1]!.first, 151);
+  assert.equal(merged[1]!.join, 'load');
+  const gaps = mergeUnheldGaps(merged, [[{ first: 51, last: 99, reason: 'track A gap' }], []]);
+  assert.equal(gaps.length, 0);
 });
 
 test('readabilityHint flags small rendered text and steep page downscaling', () => {

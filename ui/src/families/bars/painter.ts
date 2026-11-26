@@ -60,6 +60,7 @@ export interface BarsEasedRow {
   readonly rightFrac?: number;
   readonly rightSideFrac?: number;
   readonly targetFrac?: number;
+  readonly segmentShares?: Readonly<Record<string, number>>;
 }
 
 export interface DrawFamilyBarsInput {
@@ -411,16 +412,23 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           figure: row.value?.figure,
           notApplicable: formatted.kind === 'notApplicable',
         });
-      } else if (row.numeric !== undefined && row.numeric !== null && (row.numeric !== 0 || (eased?.numericFrac !== undefined && eased.numericFrac !== 0))) {
-        const signedFrac = eased?.numericFrac !== undefined ? eased.numericFrac : row.numeric / layout.scaleMax;
-        if (Math.abs(signedFrac) > 1e-4) {
-          const rawW = Math.abs(signedFrac) * halfSpan;
+      } else if (eased?.numericFrac !== undefined) {
+        if (Math.abs(eased.numericFrac) > 1e-6) {
+          const rawW = Math.abs(eased.numericFrac) * halfSpan;
           const barW = Math.min(halfSpan, Math.max(2, rawW));
-          if (signedFrac > 0) {
+          if (eased.numericFrac > 0) {
             drawBar(ctx, layout.centerX, barY, barW, layout.barHeight, barColor, 'right');
           } else {
             drawBar(ctx, layout.centerX - barW, barY, barW, layout.barHeight, tokens.shortFill, 'left');
           }
+        }
+      } else if (row.numeric !== undefined && row.numeric !== null && row.numeric !== 0) {
+        const rawW = (Math.abs(row.numeric) / layout.scaleMax) * halfSpan;
+        const barW = Math.min(halfSpan, Math.max(2, rawW));
+        if (row.numeric > 0) {
+          drawBar(ctx, layout.centerX, barY, barW, layout.barHeight, barColor, 'right');
+        } else {
+          drawBar(ctx, layout.centerX - barW, barY, barW, layout.barHeight, tokens.shortFill, 'left');
         }
       }
 
@@ -489,7 +497,25 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.fillText(ellipsise(msg, Math.max(0, layout.plotWidth - 8), s => textWidth(ctx, s)), layout.plotLeft + layout.plotWidth / 2, middleY);
         ctx.restore();
       } else if (row.segments?.length) {
-        drawShareBar(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments.map(seg => ({ share: seg.share, color: seg.color, hatched: seg.hatched, label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`, shortLabel: formatShare(seg.share) })), theme, 2.5);
+        drawShareBar(
+          ctx,
+          layout.plotLeft,
+          barY,
+          layout.plotWidth,
+          layout.barHeight,
+          row.segments.map(seg => {
+            const share = eased?.segmentShares?.[seg.key] ?? seg.share;
+            return {
+              share,
+              color: seg.color,
+              hatched: seg.hatched,
+              label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`,
+              shortLabel: formatShare(seg.share),
+            };
+          }),
+          theme,
+          2.5,
+        );
       } else {
         ctx.save();
         ctx.fillStyle = tokens.barTrack;
