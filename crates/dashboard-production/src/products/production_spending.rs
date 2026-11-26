@@ -652,7 +652,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                 let fields = fields_of(variant, at);
                 let name = match &tags {
                     Ok(tags) => resolve(&fields.applied(&base(variant)), tags, lexical),
-                    Err(_) if !fields.display_name.is_empty() => resolve(&fields.applied(&base(variant)), &empty, lexical),
+                    Err(_) if !country_named(&fields) => resolve(&fields.applied(&base(variant)), &empty, lexical),
                     Err(_) => unknown.clone(),
                 };
                 dated_names.insert((variant, at), name);
@@ -673,7 +673,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             let fields = fields_of(variant, at);
             let name = match &then_tags {
                 Some(Ok(tags)) => resolve(&fields.applied(&base(variant)), tags, then_lexical),
-                _ if !fields.display_name.is_empty() => resolve(&fields.applied(&base(variant)), &empty, then_lexical),
+                _ if !country_named(&fields) => resolve(&fields.applied(&base(variant)), &empty, then_lexical),
                 _ => unknown.clone(),
             };
             dated_names.insert((variant, at), name);

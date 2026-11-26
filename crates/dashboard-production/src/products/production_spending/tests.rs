@@ -310,6 +310,9 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
             {
                 rows.retain(|row| row.id != 9001);
             }
+            if hour == 100 {
+                *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "links read failed".into() };
+            }
             *frame.tables[TableId::CountryAppearance.index()] = if hour == 106 {
                 TableView::Unavailable { reason: "appearance read failed".into() }
             } else {
@@ -336,7 +339,7 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
     assert!(tagged.contains(&103), "a name taken from the creator's tag is dated again when that country changes tag: {tagged:?}");
     assert!(tagged.contains(&106) && tagged.contains(&107), "a gap in the creator's appearance dates the name before, during and after it: {tagged:?}");
     let aliased: Vec<i32> = named[&ALIASED].names.iter().map(|entry| entry.first_hour).collect();
-    assert_eq!(named[&GENERIC].names.iter().map(|entry| (entry.first_hour, entry.known)).collect::<Vec<_>>(), [(100, true)], "a design named by no country is never dated by country changes");
+    assert_eq!(named[&GENERIC].names.iter().map(|entry| (entry.first_hour, entry.known)).collect::<Vec<_>>(), [(100, true)], "a design named by no country is named though country links are unread at its first hour, and never dated by country changes");
     assert!(aliased.contains(&108), "a creator link whose slot's appearance row is another country id is dated when that row's name tag changes: {aliased:?}");
     let names: Vec<(i32, bool)> = named[&VARIANT].names.iter().map(|entry| (entry.first_hour, entry.known)).collect();
     assert_eq!(names, [(100, true), (105, true), (109, false)], "a name per recorded change, not known once the definition is gone");
