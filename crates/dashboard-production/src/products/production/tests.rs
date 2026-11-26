@@ -28,7 +28,7 @@ fn output(line: u64, country: u32, variant: u64, units: i64, ended: bool) -> Pro
 }
 
 fn frame(hour: i32) -> DecodedFrame {
-    let mut frame = source(1, hour, Some(1));
+    let mut frame = source(1, hour, Some(i64::from(hour)));
     if let TableView::Complete(TableRows::Countries(rows)) = &mut *frame.tables[TableId::Countries.index()] {
         rows.push(CountryRow { id: 9002, canonical_slot: 8, tag: b"ITA".to_vec(), ..CountryRow::default() });
     }
@@ -66,7 +66,8 @@ fn frame(hour: i32) -> DecodedFrame {
     } else {
         let mut details = IndustrialOrganisationDetailsRow { organisation: 40, country: 11, unlocked: vec![1, 2], ..Default::default() };
         details.state.size = 3;
-        details.state.funds_raw = 250_000;
+        details.state.funds_raw = i64::from(hour) * 100;
+        details.state.points = hour - FIRST;
         details.state.policy = 0x4c17;
         TableView::Complete(TableRows::IndustrialOrganisationDetails(vec![details]))
     };
@@ -79,9 +80,86 @@ fn frame(hour: i32) -> DecodedFrame {
 }
 
 fn recording() -> Source {
-    let frames = (FIRST..=LAST).map(frame).collect();
+    from_frames((FIRST..=LAST).map(frame).collect())
+}
+
+fn from_frames(frames: Vec<DecodedFrame>) -> Source {
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "production".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn catalogue_playback_skips_changes_to_power_and_live_organisation_counters() {
+    use dashboard_base::products::at_hour::exact_panel;
+    let source = recording();
+    let params = json!({ "branchId": "1", "country": "GER" });
+    let mut rows = Vec::new();
+    for panel in [exact_panel::<EquipmentDesigns>(&source, &load(), &params), exact_panel::<IndustrialOrganisations>(&source, &load(), &params)] {
+        let panel = panel.unwrap();
+        let reads = dashboard_base::test_fixtures::played(source.replay_ref(), panel.exact().unwrap(), 1_150, 1_160);
+        assert_eq!(reads.len(), 11);
+        assert!(reads.iter().all(|read| !read.pending && read.value.is_ok()));
+        rows.push(reads.iter().skip(1).map(|read| read.rows).sum::<u64>());
+    }
+    assert_eq!(rows, [0, 0]);
+}
+
+#[test]
+fn catalogue_refusals_follow_table_availability_and_missing_row_counts() {
+    use dashboard_base::products::at_hour::exact_panel;
+    const CAUSE: &str = "unread since hour 1000 in this recording";
+    let source = from_frames((FIRST..=FIRST + 5).map(|hour| {
+        let mut frame = frame(hour);
+        for table in [TableId::VariantDefinitions, TableId::IndustrialOrganisations] {
+            let view = &mut *frame.tables[table.index()];
+            match hour - FIRST {
+                0 => *view = TableView::Unavailable { reason: CAUSE.into() },
+                count @ 3..=4 => {
+                    let TableView::Complete(rows) = view else { panic!("expected catalogue rows") };
+                    *view = TableView::Truncated { rows: rows.clone(), missing: (count - 2) as u32 };
+                }
+                _ => {}
+            }
+        }
+        *frame.tables[TableId::LexicalTokens.index()] = if hour == FIRST + 1 {
+            TableView::Unavailable { reason: CAUSE.into() }
+        } else {
+            TableView::Complete(TableRows::LexicalTokens(Vec::new()))
+        };
+        frame
+    }).collect());
+    let params = json!({ "branchId": "1", "country": "GER" });
+    for (panel, title, table, list) in [
+        (exact_panel::<EquipmentDesigns>(&source, &load(), &params), "Equipment designs", "VariantDefinitions", "designs"),
+        (exact_panel::<IndustrialOrganisations>(&source, &load(), &params), "Industrial organisations", "IndustrialOrganisations", "organisations"),
+    ] {
+        let panel = panel.unwrap();
+        let exact = panel.exact().unwrap();
+        let reads = dashboard_base::test_fixtures::played(source.replay_ref(), exact, FIRST, FIRST + 5);
+        assert_eq!(reads.len(), 6);
+        for read in reads {
+            assert!(!read.pending);
+            let value = read.value.as_ref().as_ref().unwrap();
+            let missing = match read.hour - FIRST {
+                0 => Some(format!("{table} is unavailable: {CAUSE}")),
+                count @ 3..=4 => Some(format!("{table} is truncated ({} missing rows)", count - 2)),
+                _ => None,
+            };
+            assert_eq!(value["missing"], json!(missing.as_ref().map(|why| format!("{title} are not recorded at this hour: {why}"))));
+            assert_eq!(value[list].as_array().unwrap().is_empty(), missing.is_some());
+            let lexical = format!("LexicalTokens is unavailable: {CAUSE}");
+            if read.hour == FIRST + 1 {
+                let name = if list == "designs" { &value[list][0]["name"] } else { &value[list][0] };
+                assert_eq!(name["nameUnknown"], lexical);
+                assert_eq!(name["iconUnknown"], lexical);
+                assert!(value["warnings"].as_array().unwrap().contains(&json!(format!("Production names were not read: {lexical}"))));
+            }
+            let cold = (exact.cold)(read.hour, &false.into()).unwrap();
+            for field in ["missing", list, "warnings"] {
+                assert_eq!(value[field], cold[field], "{title} {field} at {}", read.hour);
+            }
+        }
+    }
 }
 
 fn moved_frame(hour: i32) -> DecodedFrame {
@@ -288,7 +366,7 @@ fn licences_name_both_parties_by_their_countries_and_organisations_say_when_thei
     assert_eq!((organisation["size"].as_i64(), organisation["traits"].as_i64()), (Some(3), Some(2)));
     assert!(organisation.get("fundsRaw").is_none(), "funds move daily: they are a cell, not the reply's");
     let later_cells = cells(&later);
-    assert_eq!((cell(&later_cells, "40", "funds"), cell(&later_cells, "40", "points")), (Ok(250_000.0), Ok(0.0)));
+    assert_eq!((cell(&later_cells, "40", "funds"), cell(&later_cells, "40", "points")), (Ok(115_000.0), Ok(150.0)));
     assert!(organisation["policyToken"].is_null() && organisation["policyUnknown"].is_null(), "no policy selected is none, not unknown");
 }
 
@@ -297,6 +375,7 @@ fn a_countrys_designs_at_the_hour_are_its_creators_with_their_obsolete_flags_cur
     let source = recording();
     let designs = |hour: i32| {
         let reply = asked(&source, entry::<EquipmentDesigns>(), json!({ "branchId": "1", "country": "GER", "hour": hour }));
+        assert!(reply["designs"].as_array().unwrap().iter().all(|design| design["name"].get("hour").is_none()));
         assert!(reply["designs"].as_array().unwrap().iter().all(|design| design["name"]["name"].is_null() && design["name"]["nameUnknown"].is_string()));
         reply["designs"].as_array().unwrap().iter().map(|design| (design["name"]["id"].as_str().unwrap().to_owned(), design["obsolete"].as_bool().unwrap())).collect::<Vec<_>>()
     };

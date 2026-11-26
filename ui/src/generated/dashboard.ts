@@ -5016,7 +5016,7 @@ designs: Array<DesignNow>,
  * Why the designs are not known at the hour, when they are not.
  */
 missing: string | null, icons: Array<EquipmentIcon>, warnings: Array<string>, };
-export type DesignNow = { name: VariantName,
+export type DesignNow = { name: Omit<VariantName, 'hour'>,
 /**
  * Flagged obsolete at the hour.
  */

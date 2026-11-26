@@ -443,6 +443,9 @@ fn a_followed_reply_reads_each_table_under_the_projection_its_final_plan_asks() 
             assert_eq!(value["hour"], hour, "a widened projection's power and hour, never the narrow one's defaults");
         } else {
             assert_eq!(value["power"], Value::Null);
+            let lanes: Vec<_> = read.lanes.iter().filter(|lane| lane.table == TableId::Countries.index()).collect();
+            let [lane] = lanes.as_slice() else { panic!("the tags and their live power need one countries lane: {lanes:?}") };
+            assert!(lane.keyed && ["tag", "political_power_raw"].iter().all(|name| lane.columns.contains(&column(TableId::Countries, name))));
         }
     }
 }

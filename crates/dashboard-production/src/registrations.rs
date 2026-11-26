@@ -28,3 +28,5 @@ use serde_json::Value;
 type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
 
 pub const EXACT_PRODUCTIONLINESAT: ExactPanel = exact_panel::<crate::products::production::ProductionLinesAt>;
+pub const EXACT_EQUIPMENTDESIGNS: ExactPanel = exact_panel::<crate::products::production::EquipmentDesigns>;
+pub const EXACT_INDUSTRIALORGANISATIONS: ExactPanel = exact_panel::<crate::products::production::IndustrialOrganisations>;

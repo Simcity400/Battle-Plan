@@ -1,4 +1,4 @@
-use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, Named, VariantName};
+use dashboard_world::products::equipment_names::{self as names, EquipmentIcon, VariantName};
 
 use dashboard_base::products::{Country, validate_country, flows::{CountryFlowReply, FlowEdge, FlowEnd, FlowEndpoint, FlowGap, FlowPart, FlowShape, build_flows}};
 use dashboard_base::{Source, products::{LoadContext, check_reply_budget, at_hour::{At, AtHour, Owner, Read}}};
@@ -7,7 +7,7 @@ use dashboard_query::series::ranked::GroupSelection;
 use dashboard_world::products::group_members::GroupsAt;
 use dashboard_query::coverage::{Witness, witnessed, witnessed_rows};
 use dashboard_text::{metadata::link_slot, variant_names::Texts};
-use replay_data::rows::{TableId, tables};
+use replay_data::rows::{IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, TableId, VariantDefinitionRow, column, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,6 +22,21 @@ pub struct IndustrialOrganisations;
 pub struct EquipmentDesigns;
 
 const UNSELECTED_POLICY: u32 = 0x4c17;
+const FUNDS: usize = column::<IndustrialOrganisationDetailsRow>("state.funds_raw");
+const POINTS: usize = column::<IndustrialOrganisationDetailsRow>("state.points");
+const ORGANISATION_FIELDS: &[usize] = &[
+    column::<IndustrialOrganisationRow>("country"),
+    column::<IndustrialOrganisationRow>("owner"),
+    column::<IndustrialOrganisationRow>("token"),
+    column::<IndustrialOrganisationRow>("name"),
+    column::<IndustrialOrganisationRow>("icon"),
+];
+const ORGANISATION_DETAILS: &[usize] = &[
+    column::<IndustrialOrganisationDetailsRow>("state.size"),
+    column::<IndustrialOrganisationDetailsRow>("state.policy"),
+    column::<IndustrialOrganisationDetailsRow>("state.cooldown_hour"),
+    column::<IndustrialOrganisationDetailsRow>("unlocked"),
+];
 
 fn validate_branch(branch: &str) -> Result<(), &'static str> {
     branch.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
@@ -112,6 +127,7 @@ pub struct EquipmentDesignsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DesignNow {
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Omit<VariantName, 'hour'>"))]
     pub name: VariantName,
     #[doc = " Flagged obsolete at the hour."]
     pub obsolete: bool,
@@ -242,7 +258,7 @@ impl AtHour for ProductionLicences {
     }
 }
 
-fn organisations_of<'a>(frame: &'a DecodedFrame, owner: Owner) -> io::Result<Vec<&'a replay_data::rows::IndustrialOrganisationRow>> {
+fn organisations_of<'a>(frame: &'a DecodedFrame, owner: Owner) -> io::Result<Vec<&'a IndustrialOrganisationRow>> {
     let links = frame.complete::<tables::CountryLinks>()?;
     Ok(frame.complete::<tables::IndustrialOrganisations>()?.iter().filter(|row| link_slot(links, row.country) == Some(owner.slot)).collect())
 }
@@ -277,6 +293,18 @@ impl AtHour for IndustrialOrganisations {
         tables
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::IndustrialOrganisations => Some(ORGANISATION_FIELDS.to_vec()),
+            TableId::IndustrialOrganisationDetails => Some([ORGANISATION_DETAILS, &[FUNDS, POINTS]].concat()),
+            _ => names::naming_columns(table),
+        }
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        if table == TableId::IndustrialOrganisationDetails { Some(ORGANISATION_DETAILS.to_vec()) } else { Self::columns(table) }
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let owned = || organisations_of(held, owner).unwrap_or_default();
@@ -303,28 +331,20 @@ impl AtHour for IndustrialOrganisations {
         let rows = match organisations_of(frame, owner) {
             Ok(rows) => rows,
             Err(error) => {
-                reply.missing = Some(format!("Industrial organisations are not recorded at this hour: {error}"));
+                reply.missing = Some(format!("Industrial organisations are not recorded at this hour: {}", names::undated_table_error(frame, &error)));
                 return Ok(reply);
             }
         };
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
         let texts: Option<&dyn Texts> = at.context.as_ref().ok().map(|content| content.catalogue.as_ref() as &dyn Texts);
         let ids: Vec<u64> = rows.iter().map(|row| row.organisation).collect();
-        let mut named = Named::default();
-        names::name(frame, &[], &ids, at.context, &mut named);
+        let mut named = names::catalogue_names(frame, &[], &ids, at.context);
         let details_table = TableId::IndustrialOrganisationDetails;
-        let numbers = dashboard_declare::field(details_table, "state.funds_raw").and_then(|funds| Ok((funds, dashboard_declare::field(details_table, "state.points")?)));
-        match numbers {
-            Ok((funds, points)) => {
-                for row in &rows {
-                    let (id, key) = (row.organisation.to_string(), u128::from(row.organisation));
-                    at.live.value(&id, "funds", Cell { table: details_table, column: funds, key }, 1.0);
-                    at.live.value(&id, "points", Cell { table: details_table, column: points, key }, 1.0);
-                }
-            }
-            Err(error) => reply.warnings.push(format!("Organisation funds and points cannot be read: {error}")),
-        }
         for row in rows {
+            let id = row.organisation.to_string();
+            let key = u128::from(row.organisation);
+            at.live.value(&id, "funds", Cell { table: details_table, column: FUNDS, key }, 1.0);
+            at.live.value(&id, "points", Cell { table: details_table, column: POINTS, key }, 1.0);
             let name = named.organisations.remove(&row.organisation);
             let (detail, details_missing) = match witnessed::<tables::IndustrialOrganisationDetails>(frame, u128::from(row.organisation)) {
                 Witness::Row(detail) => (Some(detail), None),
@@ -341,7 +361,7 @@ impl AtHour for IndustrialOrganisations {
             };
             let policy_name = policy_token.as_deref().and_then(|token| texts.and_then(|texts| texts.text(token)));
             reply.organisations.push(OrganisationNow {
-                id: row.organisation.to_string(),
+                id,
                 token: name.as_ref().map(|name| name.token.clone()).unwrap_or_default(),
                 name: name.as_ref().and_then(|name| name.name.clone()),
                 name_unknown: name.as_ref().and_then(|name| name.name_unknown.clone()),
@@ -397,6 +417,14 @@ impl AtHour for EquipmentDesigns {
         names::TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let mut columns = names::naming_columns(table)?;
+        if table == TableId::VariantDefinitions {
+            columns.push(const { column::<VariantDefinitionRow>("obsolete") });
+        }
+        Some(columns)
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
@@ -417,13 +445,12 @@ impl AtHour for EquipmentDesigns {
         let rows = match designs_of(frame, owner) {
             Ok(rows) => rows,
             Err(error) => {
-                reply.missing = Some(format!("Equipment designs are not recorded at this hour: {error}"));
+                reply.missing = Some(format!("Equipment designs are not recorded at this hour: {}", names::undated_table_error(frame, &error)));
                 return Ok(reply);
             }
         };
         let ids: Vec<u64> = rows.iter().map(|row| row.id).collect();
-        let mut named = Named::default();
-        names::name(frame, &ids, &[], at.context, &mut named);
+        let mut named = names::catalogue_names(frame, &ids, &[], at.context);
         reply.designs = rows
             .iter()
             .filter_map(|row| Some(DesignNow { name: named.variants.remove(&row.id)?, obsolete: row.obsolete != 0 }))

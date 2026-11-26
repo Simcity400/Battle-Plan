@@ -483,25 +483,7 @@ mod market {
     fn hours_where_only_an_agreements_fuel_counters_move_reread_no_row() {
         let source = recording();
         let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "agreements" })).unwrap();
-        let exact = panel.exact().unwrap();
-        let advance = exact.advance.clone();
-        let hosted = dashboard_follow::panel::AtHour {
-            advance: Arc::new(move |hour, values, cancelled, step| {
-                let mut read = advance(hour, values, cancelled, step);
-                let mut joined: std::collections::BTreeMap<usize, playhead::Declared> = std::collections::BTreeMap::new();
-                for lane in read.lanes {
-                    let held = joined.entry(lane.table).or_insert_with(|| playhead::Declared { columns: Vec::new(), ..lane.clone() });
-                    held.columns.extend(lane.columns);
-                    held.columns.sort_unstable();
-                    held.columns.dedup();
-                }
-                read.lanes = joined.into_values().collect();
-                read
-            }),
-            cold: exact.cold.clone(),
-            read: exact.read.clone(),
-        };
-        let reads = dashboard_base::test_fixtures::played(&source.replay(), &hosted, FIRST, UNKNOWN - 1);
+        let reads = dashboard_base::test_fixtures::played(source.replay_ref(), panel.exact().unwrap(), FIRST, UNKNOWN - 1);
         assert!(reads.len() >= 4 && reads.iter().all(|read| !read.pending));
         for read in reads.iter().skip(1) {
             assert_eq!(read.rows, 0, "hour {}: the reply shows no fuel counter, so a fuel count alone re-reads nothing", read.hour);

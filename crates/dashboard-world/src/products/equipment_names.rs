@@ -261,12 +261,12 @@ pub fn spelled(lexical: &[LexicalTokenRow], token: u32) -> Option<String> {
     std::str::from_utf8(&lexical[at].literal).ok().map(str::to_owned)
 }
 
-fn unknown_variant(id: u64, hour: i32, why: String) -> VariantName {
-    VariantName { id: id.to_string(), hour: Some(hour), known: false, token: String::new(), name: None, type_name: None, name_unknown: Some(why.clone()), icon: None, icon_unknown: Some(why) }
+fn unknown_variant(id: u64, hour: Option<i32>, why: String) -> VariantName {
+    VariantName { id: id.to_string(), hour, known: false, token: String::new(), name: None, type_name: None, name_unknown: Some(why.clone()), icon: None, icon_unknown: Some(why) }
 }
 
-fn unknown_organisation(id: u64, hour: i32, why: String) -> OrganisationName {
-    OrganisationName { id: id.to_string(), hour: Some(hour), token: String::new(), name: None, name_unknown: Some(why.clone()), icon: None, icon_unknown: Some(why) }
+fn unknown_organisation(id: u64, hour: Option<i32>, why: String) -> OrganisationName {
+    OrganisationName { id: id.to_string(), hour, token: String::new(), name: None, name_unknown: Some(why.clone()), icon: None, icon_unknown: Some(why) }
 }
 
 fn wanted(variants: &[u64], organisations: &[u64], named: &Named) -> (Vec<u64>, Vec<u64>) {
@@ -286,27 +286,45 @@ fn icon_hour(frame: &DecodedFrame, context: &Context) -> Result<IconHour, String
 
 pub fn name(frame: &DecodedFrame, variants: &[u64], organisations: &[u64], context: &Context, named: &mut Named) {
     let (wanted_variants, wanted_organisations) = wanted(variants, organisations, named);
-    if wanted_variants.is_empty() && wanted_organisations.is_empty() {
-        return;
-    }
-    let icons = if wanted_variants.is_empty() { Err(String::new()) } else { icon_hour(frame, context) };
-    name_in(frame, (&wanted_variants, &wanted_organisations), context, icons.as_ref().map_err(Clone::clone), named);
+    name_wanted(frame, (&wanted_variants, &wanted_organisations), context, Some(frame.hour), named);
 }
 
-fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64], &[u64]), context: &Context, icon_hour: Result<&IconHour, String>, named: &mut Named) {
-    let hour = frame.hour;
-    let (wanted_variants, wanted_organisations) = (wanted_variants.to_vec(), wanted_organisations.to_vec());
+pub fn catalogue_names(frame: &DecodedFrame, variants: &[u64], organisations: &[u64], context: &Context) -> Named {
+    let mut named = Named::default();
+    name_wanted(frame, (variants, organisations), context, None, &mut named);
+    named
+}
+
+pub fn undated_table_error(frame: &DecodedFrame, error: &io::Error) -> String {
+    let mut reason = error.to_string();
+    let prefix = format!("hour {} ", frame.hour);
+    if reason.starts_with(&prefix) {
+        reason.drain(..prefix.len());
+    }
+    reason
+}
+
+fn name_wanted(frame: &DecodedFrame, ids: (&[u64], &[u64]), context: &Context, hour: Option<i32>, named: &mut Named) {
+    if ids.0.is_empty() && ids.1.is_empty() {
+        return;
+    }
+    let icons = if ids.0.is_empty() { Err(String::new()) } else { icon_hour(frame, context) };
+    name_in(frame, ids, context, icons.as_ref().map_err(Clone::clone), hour, named);
+}
+
+fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64], &[u64]), context: &Context, icon_hour: Result<&IconHour, String>, hour: Option<i32>, named: &mut Named) {
+    let table_error = |error: &io::Error| if hour.is_some() { error.to_string() } else { undated_table_error(frame, error) };
     let countries = frame.complete::<tables::Countries>();
     let links = frame.complete::<tables::CountryLinks>();
     let lexical = frame.complete::<tables::LexicalTokens>();
     let (countries, links, lexical) = match (countries, links, lexical) {
         (Ok(countries), Ok(links), Ok(lexical)) => (countries, links, lexical),
         (countries, links, lexical) => {
-            let why = [countries.err(), links.err(), lexical.err()].into_iter().flatten().map(|error| error.to_string()).collect::<Vec<_>>().join("; ");
-            for id in wanted_variants {
+            let why = [countries.err(), links.err(), lexical.err()].iter().flatten().map(table_error).collect::<Vec<_>>().join("; ");
+            for &id in wanted_variants {
                 named.variants.insert(id, unknown_variant(id, hour, why.clone()));
             }
-            for id in wanted_organisations {
+            for &id in wanted_organisations {
                 named.organisations.insert(id, unknown_organisation(id, hour, why.clone()));
             }
             named.warnings.insert(format!("Production names were not read: {why}"));
@@ -318,18 +336,18 @@ fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64
     let no_texts = context.as_ref().err().cloned();
     match frame.complete::<tables::VariantDefinitions>() {
         Err(error) => {
-            for id in wanted_variants {
-                named.variants.insert(id, unknown_variant(id, hour, error.to_string()));
+            for &id in wanted_variants {
+                named.variants.insert(id, unknown_variant(id, hour, table_error(&error)));
             }
         }
         Ok(definitions) => {
-            for id in wanted_variants {
+            for &id in wanted_variants {
                 let Ok(at) = definitions.binary_search_by_key(&id, |row| row.id) else {
                     named.variants.insert(id, unknown_variant(id, hour, "The variant has no definition at this hour.".to_owned()));
                     continue;
                 };
                 let definition = &definitions[at];
-                let raw = variant_names::raw_variant(definition, hour, &tags, lexical);
+                let raw = variant_names::raw_variant(definition, frame.hour, &tags, lexical);
                 let (name, type_name) = variant_names::variant_names(&raw, texts);
                 let name_unknown = match (&no_texts, &name) {
                     (Some(why), _) => Some(why.clone()),
@@ -351,18 +369,18 @@ fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64
                     (_, Err(why)) => (None, Some(why.clone())),
                     (Err(why), _) => (None, Some(why.clone())),
                 };
-                named.variants.insert(id, VariantName { id: id.to_string(), hour: Some(hour), known: true, token: raw.token.clone(), name, type_name, name_unknown, icon, icon_unknown });
+                named.variants.insert(id, VariantName { id: id.to_string(), hour, known: true, token: raw.token.clone(), name, type_name, name_unknown, icon, icon_unknown });
             }
         }
     }
     match frame.complete::<tables::IndustrialOrganisations>() {
         Err(error) => {
-            for id in wanted_organisations {
-                named.organisations.insert(id, unknown_organisation(id, hour, error.to_string()));
+            for &id in wanted_organisations {
+                named.organisations.insert(id, unknown_organisation(id, hour, table_error(&error)));
             }
         }
         Ok(rows) => {
-            for id in wanted_organisations {
+            for &id in wanted_organisations {
                 let Ok(at) = rows.binary_search_by_key(&id, |row| row.organisation) else {
                     named.organisations.insert(id, unknown_organisation(id, hour, "The organisation is not recorded at this hour.".to_owned()));
                     continue;
@@ -406,7 +424,7 @@ fn name_in(frame: &DecodedFrame, (wanted_variants, wanted_organisations): (&[u64
                         }
                     },
                 };
-                named.organisations.insert(id, OrganisationName { id: id.to_string(), hour: Some(hour), token: token.unwrap_or_default(), name, name_unknown, icon, icon_unknown });
+                named.organisations.insert(id, OrganisationName { id: id.to_string(), hour, token: token.unwrap_or_default(), name, name_unknown, icon, icon_unknown });
             }
         }
     }
@@ -591,7 +609,7 @@ impl NamingSession<'_> {
                 Ok(content @ Content { icons: Ok(_), .. }) => self.icon_hour(&frame, content),
                 _ => Arc::new(icon_hour(&frame, context)),
             };
-            name_in(&frame, (&group, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), named);
+            name_in(&frame, (&group, &[]), context, icons.as_ref().as_ref().map_err(Clone::clone), Some(hour), named);
         }
         Ok(())
     }

@@ -26,3 +26,4 @@ type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, St
 
 pub const EXACT_FUELBRANCHES: ExactPanel = exact_panel::<crate::products::economy::fuel_branches::FuelBranches>;
 pub const EXACT_LENDLEASEBALANCE: ExactPanel = exact_panel::<crate::products::economy::lend_lease_balance::LendLeaseBalance>;
+pub const EXACT_MARKETLENDLEASE: ExactPanel = exact_panel::<crate::products::economy::market::MarketLendLease>;
