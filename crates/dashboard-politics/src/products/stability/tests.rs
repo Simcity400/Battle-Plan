@@ -132,7 +132,7 @@ fn stability_panels_hold_quiet_hours_and_seed_the_requested_country_at_each_seek
                     previous = Some(expected);
                 }
             }
-            for hour in [114, 104, 106, 112] {
+            for hour in [114, 101, 104, 106, 112] {
                 let read = (exact.advance)(hour, true, &false.into(), None);
                 assert!(read.fresh);
                 assert_eq!(*read.value, materialized_frame(&mut *original, source.replay_ref(), branch, hour), "{} branch {branch} at {hour}", registration.key);
