@@ -177,8 +177,6 @@ const PLANES: &[(&str, &str)] = &[
 ];
 
 fn built(designs: &[(String, String)]) -> (Built, impl Drop) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, folder) = dashboard_base::catalogue::tests::folder_catalogue(PLANES);
     (Built::new(&Arc::new(catalogue), designs, &BTreeMap::new()), folder)
 }

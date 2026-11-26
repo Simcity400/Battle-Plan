@@ -283,7 +283,7 @@ fn leader_hour_reads_and_names_the_requested_leader_not_the_first_row_in_a_share
 
 #[test]
 fn skill_icons_are_the_installed_leader_windows_buttons_and_a_missing_one_is_named() {
-    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    dashboard_core::test_fixtures::game::enter();
     use content_reader_gui::gui::native;
     let gui = native::read(
         br#"guiTypes = {

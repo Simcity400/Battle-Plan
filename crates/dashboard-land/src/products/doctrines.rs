@@ -771,7 +771,6 @@ mod tests {
 
     #[test]
     fn doctrine_reward_content_names_generated_prose_and_recorded_conditions() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/test.lua",

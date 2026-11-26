@@ -457,7 +457,7 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
 #[test]
 fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predecessors_project_values() {
     use replay_data::rows::{ProjectVariable, ProjectVariableStore};
-    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    dashboard_core::test_fixtures::game::enter();
     const REPLACED: i32 = 35;
     const BEFORE: i32 = 30;
     const OWN: i32 = 38;
