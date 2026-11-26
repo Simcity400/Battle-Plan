@@ -12,12 +12,11 @@ export function withSoFarMembership(
   if (resolved.membership || selection.kind !== 'group' || selection.membership !== 'ever' || !groups) return resolved;
   const runs = groupRuns(groups, selection.group);
   if (!runs) return resolved;
-  const spans: MembershipRun[] = [];
+  const spans: MembershipRun[] = [...runs];
   if (validCountryIdentityHistories(groups.countryIdentities)) {
     const index = countryIdentityIndex(groups.countryIdentities);
     for (const [key, from] of index.firstHoursDuring(runs)) spans.push(...index.aliasRuns(new Set([key]), from, lastHour));
-    for (const run of runs) spans.push(...uncovered(run, index.membershipRuns([run])));
-  } else spans.push(...runs);
+  }
   spans.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const membership = new Map<string, MembershipRun[]>();
   for (const span of spans) {
@@ -30,13 +29,3 @@ export function withSoFarMembership(
   return { ...resolved, tags: [...membership.keys()], membership };
 }
 
-function uncovered(run: MembershipRun, covered: readonly MembershipRun[]): MembershipRun[] {
-  const gaps: MembershipRun[] = [];
-  let at = run.firstHour;
-  for (const piece of [...covered].sort((a, b) => a.firstHour - b.firstHour)) {
-    if (piece.firstHour > at) gaps.push({ tag: run.tag, firstHour: at, lastHour: piece.firstHour - 1 });
-    at = Math.max(at, piece.lastHour + 1);
-  }
-  if (at <= run.lastHour) gaps.push({ tag: run.tag, firstHour: at, lastHour: run.lastHour });
-  return gaps;
-}
