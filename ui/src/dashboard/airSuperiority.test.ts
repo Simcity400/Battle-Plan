@@ -36,7 +36,8 @@ test('a side chooser names each faction as its branch named it at the widget\'s 
   assert.equal(named(60), 'New League');
   assert.equal(named('not-recorded'), 'Name not recorded', 'a gap in the recording is not the campaign\'s latest name');
   assert.equal(named(null), 'Other Branch League', 'outside the recording the chooser keeps the campaign-wide name');
-  assert.equal(factionNamer([], [campaign], new Map(), 60)('7'), 'Name not recorded', 'a faction the branch does not hold is not named from elsewhere');
+  assert.equal(factionNamer([], [campaign], new Map(), 60)('7'), 'Name not recorded', 'a faction the branch does not hold, or before its groups load, is not named from elsewhere');
+  assert.equal(factionNamer([], [campaign], new Map(), 'not-recorded')('7'), 'Name not recorded', 'a gap stays a gap while the branch groups load');
   assert.equal(named(15, new Map([['7', 'My allies']])), 'My allies', "the user's own name for a faction wins");
   assert.deepEqual(factionNameChanges([branch]), [10, 21, 47, 100]);
 });

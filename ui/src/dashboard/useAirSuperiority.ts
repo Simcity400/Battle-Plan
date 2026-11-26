@@ -31,7 +31,7 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   const region = useRegion(widget);
   const shown = useRegionHour(runtime, region, true, changes);
   const gap = useRegionOutside(runtime, region)?.kind === 'not-recorded';
-  const at = !dated ? null : shown ?? (gap ? 'not-recorded' : null);
+  const at = shown ?? (gap ? 'not-recorded' : null);
   return useMemo(() => {
     const campaign = track?.source.metadata.campaignKey ?? '';
     const faction = factionNamer(dated ?? [], factions.factions, factions.displayNames, at);
