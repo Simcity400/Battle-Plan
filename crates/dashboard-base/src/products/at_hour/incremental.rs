@@ -339,6 +339,25 @@ struct Stream {
     rebuild: bool,
 }
 
+impl Stream {
+    fn lanes(&self) -> Vec<Declared> {
+        let declared = |(&table, projection): (&TableId, &Result<Projection, String>)| {
+            Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false })
+        };
+        let mut lanes: Vec<_> = self.tables.iter().filter_map(declared).collect();
+        for extra in self.extra.tables.iter().filter_map(declared) {
+            if let Some(main) = lanes.iter_mut().find(|lane| lane.table == extra.table) {
+                main.columns.extend(extra.columns);
+                main.columns.sort_unstable();
+                main.columns.dedup();
+            } else {
+                lanes.push(extra);
+            }
+        }
+        lanes
+    }
+}
+
 pub struct Held<'a>(&'a mut Arc<PanelData>);
 
 impl std::ops::Deref for Held<'_> {
@@ -513,9 +532,7 @@ where P::Context: Sync, P::Params: Sync {
         };
         let fresh = !pending && held.as_ref().is_some_and(|s| s.values_at == Some(hour));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());
-        let lanes = held.as_ref().map_or_else(Vec::new, |s| s.tables.iter().chain(&s.extra.tables)
-            .filter_map(|(table, projection)| Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false }))
-            .collect());
+        let lanes = held.as_ref().map_or_else(Vec::new, Stream::lanes);
         dashboard_follow::panel::ProductRead { value: result, rows: count, fresh, pending, live, lanes }
     })
 }

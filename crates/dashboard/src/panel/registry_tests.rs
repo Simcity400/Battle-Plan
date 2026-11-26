@@ -82,11 +82,12 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
     });
     let (source, load) = source_with_content(frames.into(), &root);
     let source = Arc::new(source);
-    for name in ["special-project-details", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
+    for name in ["special-project-details", "special-projects", "doctrine-mastery", "research-slots", "production-lines-at", "equipment-designs", "industrial-organisations", "market-lendlease", "nuclear-arsenal", "game-score", "occupation-reserve-manpower", "agency-comparison", "territory-share", "lend-lease-balance", "occupied-states"] {
         let mut params = json!({"branchId": "1", "panel": name});
         match name {
             "nuclear-arsenal" | "game-score" | "occupation-reserve-manpower" | "lend-lease-balance" | "occupied-states" => {}
             "agency-comparison" => params["includeUncreated"] = true.into(),
+            "market-lendlease" => params["countries"] = json!(["GER"]),
             "territory-share" => params["measure"] = "ownedStates".into(),
             _ => params["country"] = "GER".into(),
         }
