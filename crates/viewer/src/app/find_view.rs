@@ -57,6 +57,8 @@ pub struct FindState {
     pub refused: BTreeMap<String, usize>,
     pub window_refused: BTreeMap<String, usize>,
     pending: Option<Target>,
+    focused: Option<u32>,
+    missed: Option<u32>,
 }
 
 impl FindState {
@@ -84,6 +86,18 @@ impl FindState {
             self.searched = None;
             self.results.clear();
         }
+    }
+
+    pub fn focus(&mut self, province: Option<u32>) {
+        if self.focused != province {
+            self.focused = province;
+            self.missed = None;
+            self.pending = province.map(Target::Province).or(self.pending);
+        }
+    }
+
+    pub fn missed(&self) -> Option<String> {
+        self.missed.map(|id| format!("Province {id} is not in the recording's map layout, so the map is not centred on it."))
     }
 
     pub fn close(&mut self) {
@@ -123,8 +137,15 @@ impl FindState {
         let point = match target {
             Target::Country { capital } => state(capital?)?.map(|value| value as f32),
             Target::State(id) => state(id)?.map(|value| value as f32),
-            Target::Province(id) => document.province_geometry.centroid(id)?,
+            Target::Province(id) => {
+                let Some(point) = document.province_geometry.centroid(id) else {
+                    self.missed = Some(id);
+                    return None;
+                };
+                point
+            }
         };
+        self.missed = None;
         let width = document.map.width as f32;
         let turns = ((camera_x - point[0]) / width).round();
         Some([point[0] + turns * width, point[1]])
@@ -546,6 +567,20 @@ mod tests {
         find.click(Control::Find);
         assert!(!find.open);
         assert_eq!(find.pending, Some(Target::Province(6521)));
+    }
+
+    #[test]
+    fn a_hosts_focus_province_is_gone_to_once_each_time_it_changes() {
+        let mut find = FindState::default();
+        find.focus(Some(7));
+        assert_eq!(find.pending, Some(Target::Province(7)));
+        find.pending = None;
+        find.focus(Some(7));
+        assert_eq!(find.pending, None, "the same focus does not pull the camera back after the user moved it");
+        find.focus(None);
+        assert_eq!(find.pending, None);
+        find.focus(Some(7));
+        assert_eq!(find.pending, Some(Target::Province(7)));
     }
 
     #[test]

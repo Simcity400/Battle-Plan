@@ -31,6 +31,8 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard_core::protocol::Dash
         bounds,
         clip: bounds,
         visible: true,
+        focus_province: None,
+        battle: None,
     }
 }
 

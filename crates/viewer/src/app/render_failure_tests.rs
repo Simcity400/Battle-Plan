@@ -30,6 +30,8 @@ pub(super) fn target(fixture: &Fixture) -> dashboard_core::protocol::DashboardMa
         bounds,
         clip: bounds,
         visible: true,
+        focus_province: None,
+        battle: None,
     }
 }
 

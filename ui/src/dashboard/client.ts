@@ -52,6 +52,8 @@ export interface DashboardMapView {
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;
+  focusProvince?: number;
+  battle?: { combat: string; country: string; countrySlot?: number; playedFrom?: number; live?: [number, number][]; canvas: [number, number, number]; text: [number, number, number] };
 }
 
 export interface DashboardMapState {
@@ -77,6 +79,9 @@ export interface DashboardMapState {
   center?: [number, number] | null;
   options?: MapOptions | null;
   applied?: { graphics: MapGraphics; audio: MapAudio; counters: CounterFilter; visualMods: string[] } | null;
+  notes?: string[];
+  closeRequests?: number | null;
+  keys?: [number, string][];
 }
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };

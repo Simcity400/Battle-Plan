@@ -1943,6 +1943,7 @@ impl Viewer {
             self.perf_view = Some(target.id.clone());
         }
         self.apply_host_options(&target.options);
+        self.picker.find.focus(target.focus_province);
         let branch = target
             .branch_id
             .parse::<u64>()
@@ -2763,6 +2764,9 @@ impl Viewer {
             center: self.rendered.and(self.last_view.as_ref().map(|view| view.camera.center)),
             options: self.rendered.and(self.drawn_options.clone()),
             applied: self.rendered.and_then(|_| self.applied_settings()),
+            notes: self.picker.find.missed().into_iter().collect(),
+            close_requests: None,
+            keys: Vec::new(),
         }
     }
 
@@ -8775,6 +8779,8 @@ pub(crate) mod tests {
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         };
         let frame = eframe::Frame::_new_kittest();
         let mut output = egui::Context::default()

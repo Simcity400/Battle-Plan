@@ -973,6 +973,8 @@ mod tests {
                 bounds,
                 clip: bounds,
                 visible: true,
+                focus_province: None,
+                battle: None,
             };
             let mut output = egui::Context::default()
                 .run_ui(Default::default(), |ui| viewer.map_ui(ui, frame, &target));

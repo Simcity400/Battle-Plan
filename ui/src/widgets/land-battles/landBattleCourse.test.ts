@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import { sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
-import { courseDivisions, courseEquipment, courseManpower, courseMissing, coursePoints, sharedSpans, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
+import { courseDivisions, courseEquipment, courseFigures, courseManpower, courseMissing, coursePoints, runCovering, withinCourse, sharedSpans, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
-  ({ firstHour, lastHour, counts, rosterUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], duration: 0 });
+  ({ firstHour, lastHour, counts, rosterUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], leads: [{ slot: 2, tag: 'B' }, { slot: 4, tag: 'D' }] as [{ slot: number; tag: string }, { slot: number; tag: string }], duration: 0 });
 const wire = (losses: unknown[], runs = [run(10, 20, [3, 2])], designs = [{ name: 'Rifle', variant: '7' }, { name: 'Rifle', variant: '8' }, { name: null, variant: '9' }]) => ({
-  battle: { id: 'b', provinceId: 1, start: { hour: 10, bound: 'exact' }, end: null, endUnknownHour: null, counterBase: 0, runs, losses, result: null },
+  battle: { id: 'b', provinceId: 1, start: { hour: 10, bound: 'exact' }, end: null, endUnknownHour: null, counterBase: 0, runs,
+    losses, ic: [], men: [], menMissing: null, icMissing: null, result: null },
   designs, contentWarnings: [] });
 
 test('a course rebuilds every read by design and refuses orphan changes and repeated designs', () => {
@@ -22,6 +24,9 @@ test('a course rebuilds every read by design and refuses orphan changes and repe
   assert.deepEqual(ending({ hour: 15, bound: 'exact' }), { hour: 15, bound: 'exact' });
   assert.deepEqual(ending({ unknown: 'Ending hour not recorded' }), { unknown: 'Ending hour not recorded' });
   assert.throws(() => ending({ hour: 15 }), /malformed/);
+  const resulted = (result: unknown) => validateLandBattleCourse({ ...wire([]), battle: { ...wire([]).battle, result } }).resultHour;
+  assert.equal(resulted({ hour: 103, duration: 3, winner: { side: 0 }, countries: [[], []], countriesUnknown: [false, false] }), 103, 'a result-only battle still says when it ended');
+  assert.equal(resulted(null), null);
   const second = course.reads[1].sides;
   assert.ok(typeof second !== 'string');
   assert.deepEqual([...(second[0].equipment as Map<number, bigint>)], [[0, 100000n], [1, 250000n]]);
@@ -60,6 +65,11 @@ test('manpower and divisions are held steps to the shown hour, broken at unread 
   const [attacker, defender] = courseManpower(course, 16);
   assert.deepEqual(attacker, [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 14, lastHour: 16, value: 9, breakBefore: true }]);
   assert.deepEqual(defender, [{ firstHour: 10, lastHour: 11, value: 1 }]);
+  assert.deepEqual(withinCourse(attacker!, course), [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 14, lastHour: 14, value: 9, breakBefore: true }],
+    'a held casualty total never crosses an hour the course does not cover');
+  const resumed = validateLandBattleCourse(wire([], [run(10, 11, [3, 2]), run(15, 18, [3, 2])]));
+  assert.deepEqual(withinCourse([{ firstHour: 10, lastHour: 14, value: 5 }, { firstHour: 15, lastHour: 18, value: 9 }], resumed),
+    [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 15, lastHour: 18, value: 9, breakBefore: true }], 'a read where coverage resumes still breaks at the gap before it');
   const [divisions] = courseDivisions(course, 19);
   assert.deepEqual(divisions, [{ firstHour: 10, lastHour: 11, value: 3 }, { firstHour: 13, lastHour: 14, value: 4, breakBefore: true },
     { firstHour: 18, lastHour: 19, value: 6, breakBefore: true }]);
@@ -91,4 +101,41 @@ test('terrain replies keep each province and its reason; a name and a reason nev
   for (const bad of [{ provinceId: 1, name: 'x', missing: 'y' }, { provinceId: 1, name: null, missing: null }, { provinceId: -1, name: 'x', missing: null }]) {
     assert.throws(() => validateLandBattleTerrain({ ...reply, provinces: [bad] }), /malformed/);
   }
+});
+
+test('the sides band reads each figure at the clock hour, says what is missing, and gives the final tally at the end', () => {
+  const base = wire([
+    { hour: 12, terminal: false, sides: [{ manpower: 40, variants: [] }, { manpower: 'Casualties not read', unknown: 'x' }] },
+    { hour: 21, terminal: true, sides: [{ manpower: 90, variants: [] }, { manpower: 70, variants: [] }] },
+  ], [run(10, 14, [3, 2]), run(17, 20, [4, 1], true)]);
+  const course = validateLandBattleCourse({ ...base, battle: { ...base.battle, men: [{ hour: 10, sides: [9000, 4000] }, { hour: 13, sides: [8800, null] }],
+    ic: [{ hour: 12, sides: [3.5, null] }, { hour: 21, sides: [9, 2] }] } });
+  const [early, earlyDefender] = courseFigures(course, 11, false);
+  assert.deepEqual(early.divisions, { value: 3, soFar: false });
+  assert.deepEqual(early.men, { value: 9000, soFar: false });
+  assert.match((early.casualties as { missing: string }).missing, /^Casualties not recorded until /, 'before the first read the casualties are missing, never zero');
+  assert.deepEqual(early.icLost, { missing: `IC lost not recorded until ${formatDateTime(12)}` });
+  assert.deepEqual([earlyDefender.casualties, earlyDefender.icLost], [{ missing: `Casualties not recorded until ${formatDateTime(21)}` }, { missing: `IC lost not recorded until ${formatDateTime(21)}` }], 'each side dates its own first figure');
+  const [attacker, defender] = courseFigures(course, 13, false);
+  assert.deepEqual(attacker.casualties, { value: 40, soFar: true });
+  assert.deepEqual(attacker.icLost, { value: 3.5, soFar: true });
+  assert.deepEqual(defender.casualties, { missing: 'Casualties not read' });
+  assert.ok('missing' in defender.icLost);
+  assert.ok('missing' in defender.men, 'one unread division leaves the side’s men missing');
+  assert.deepEqual(courseFigures(course, 15, false)[0].divisions, { missing: 'Not recorded at this hour' }, 'an unrecorded stretch is a gap');
+  assert.deepEqual(courseFigures(course, 18, false)[0].divisions, { missing: 'Divisions not recorded' });
+  assert.equal(runCovering(course, 15), null, 'the sides band names no countries for an hour no run covers');
+  assert.equal(runCovering(course, 18)?.firstHour, 17);
+  const [final] = courseFigures(course, 20, true);
+  assert.deepEqual(final.casualties, { value: 90, soFar: false }, 'the last hour shows the game’s final tally');
+  assert.deepEqual(final.icLost, { value: 9, soFar: false });
+  const withheld = validateLandBattleCourse({ ...base, battle: { ...base.battle, menMissing: 'Men not recorded: older recording' } });
+  assert.deepEqual(courseFigures(withheld, 11, false)[0].men, { missing: 'Men not recorded: older recording' });
+  const empty = validateLandBattleCourse({ ...base, battle: { ...base.battle, men: [{ hour: 10, sides: [0, null] }], menMissing: 'Men not recorded: older recording' } });
+  assert.deepEqual(courseFigures(empty, 11, false).map(side => side.men), [{ value: 0, soFar: false }, { missing: 'Men not recorded: older recording' }], 'a side with no divisions keeps its known zero');
+  const unread = validateLandBattleCourse({ ...base, battle: { ...base.battle, ic: [{ hour: 21, sides: [0, null] }], icMissing: 'IC lost not recorded: build costs could not be read' } });
+  const [kept, lost] = courseFigures(unread, 20, true);
+  assert.deepEqual(kept.icLost, { value: 0, soFar: false }, 'a side that lost nothing keeps its known zero');
+  assert.deepEqual(lost.icLost, { missing: 'IC lost not recorded: build costs could not be read' }, 'an unreadable cost names its reason, not zero');
+  assert.throws(() => validateLandBattleCourse({ ...base, battle: { ...base.battle, men: [{ hour: 10, sides: [1] }] } }), /malformed/);
 });

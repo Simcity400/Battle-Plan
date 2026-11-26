@@ -472,6 +472,8 @@ fn dashboard_snapshot_envelope_gates_empty_clears_and_filters_state_replies_by_o
             bounds,
             clip: bounds,
             visible: true,
+            focus_province: None,
+            battle: None,
         }
     };
     let make_state = |id: &str, clock_id: &str, sequence: u64, hour: i32| DashboardMapState {
