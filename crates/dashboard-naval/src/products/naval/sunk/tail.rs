@@ -383,12 +383,13 @@ fn prepare(
 fn reply(prepared: &Prepared, holders: &Holders, params: &ShipsSunkTailParams, hour: i32) -> io::Result<ShipsSunkTailReply> {
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let tail = &prepared.tail;
-    let answer = tail.index.ask_with_gap_end(
+    let answer = tail.index.ask(
         holders,
         &Ask {
             hour,
             from: params.from,
             to: params.to,
+            gap_end: None,
             selection: prepared.selection.as_ref(),
             kinds: prepared.kinds.as_deref(),
             subject: None,
@@ -400,7 +401,6 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &ShipsSunkTailParams, h
             limit,
             chips: &[],
         },
-        params.to.unwrap_or(i32::MAX),
     )?;
     let end = tail.classes.partition_point(|chip| chip.first_hour <= hour);
     let mut next_change = answer.next_change.into_iter().chain(tail.classes.get(end).map(|chip| chip.first_hour)).min();

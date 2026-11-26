@@ -503,6 +503,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
         hour,
         from: params.from,
         to: params.to,
+        gap_end: None,
         selection: prepared.selection.as_ref(),
         subject: None,
         kinds: None,
@@ -514,8 +515,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
         limit,
         chips: &[],
     };
-    let gap_end = params.to.unwrap_or(i32::MAX);
-    let answer = prepared.index.ask_with_gap_end(holders, &ask, gap_end)?;
+    let answer = prepared.index.ask(holders, &ask)?;
     let mut visible_change: Option<i32> = None;
     let rows = answer
         .rows
@@ -567,7 +567,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &LandBattlesTailParams,
     if ask.live_first {
         while let Some(candidate) = boundary.filter(|at| visible_change.is_none_or(|visible| *at < visible)) {
             ask.hour = candidate;
-            let future = prepared.index.ask_with_gap_end(holders, &ask, gap_end)?;
+            let future = prepared.index.ask(holders, &ask)?;
             if future.total != answer.total || future.rows != answer.rows || future.gaps != answer.gaps || future.unattributed != answer.unattributed {
                 break;
             }

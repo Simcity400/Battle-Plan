@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -16,8 +16,6 @@ use ts_rs::TS;
 mod tests;
 
 pub const MEMBERSHIP_UNKNOWN: &str = "Group membership is unavailable at this time.";
-
-const KEPT_SIGNATURES: usize = 16;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -124,8 +122,13 @@ pub struct Occurrence<P> {
     pub payload: P,
 }
 
+#[cfg(test)]
+thread_local! { static STATE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 impl<P> Occurrence<P> {
     pub fn state_at(&self, hour: i32) -> Option<u8> {
+        #[cfg(test)]
+        STATE_READS.set(STATE_READS.get() + 1);
         let at = self.states.partition_point(|&(from, _)| from <= hour);
         at.checked_sub(1).map(|at| self.states[at].1)
     }
@@ -170,6 +173,7 @@ pub struct Ask<'a> {
     pub hour: i32,
     pub from: Option<i32>,
     pub to: Option<i32>,
+    pub gap_end: Option<i32>,
     pub selection: Option<&'a Selection>,
     pub subject: Option<u128>,
     pub kinds: Option<&'a [u16]>,
@@ -214,7 +218,7 @@ pub struct Answer {
     pub next_change: Option<i32>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Signature {
     from: Option<i32>,
     to: Option<i32>,
@@ -222,16 +226,28 @@ struct Signature {
     kinds: Option<Vec<u16>>,
     selection: Option<(Vec<(String, i32, i32)>, Vec<(i32, i32)>, Vec<(i32, i32, String)>)>,
     search: Option<String>,
+    states: Option<Vec<u8>>,
+    chips: Vec<Chip>,
 }
 
 struct Filtered {
     display: Vec<(u32, i32)>,
-    observed: Vec<i32>,
     changes: Vec<i32>,
-    unattributed: Vec<i32>,
     unattributed_rows: Vec<u32>,
-    unattributed_changes: Vec<i32>,
     unknown: Vec<MissingSpan>,
+    dated: Mutex<Option<(Direction, bool, i32, Arc<PageOrder>)>>,
+}
+
+struct PageOrder {
+    hour: i32,
+    until: Option<i32>,
+    ordered: Vec<u32>,
+    total: u64,
+    live: u64,
+    chips: Vec<u64>,
+    gaps: Vec<PlacedGap>,
+    unattributed: u64,
+    changing_keys: Vec<(u32, i32)>,
 }
 
 pub struct Index<P> {
@@ -240,7 +256,7 @@ pub struct Index<P> {
     subject_gaps: HashMap<u128, Vec<MissingSpan>>,
     gaps: Vec<MissingSpan>,
     live: u64,
-    filtered: Mutex<VecDeque<(Signature, Arc<Filtered>)>>,
+    filtered: Mutex<Option<(Signature, Arc<Filtered>)>>,
 }
 
 fn sorted_spans(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
@@ -381,10 +397,12 @@ impl<P> Index<P> {
                 }
             }
         }
-        entries.sort_unstable_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
-        if entries.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        let mut ids = HashSet::with_capacity(entries.len());
+        if entries.iter().any(|entry| !ids.insert(entry.id)) {
             return Err(invalid("Two occurrences share one id"));
         }
+        drop(ids);
+        entries.sort_unstable_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
         let mut by_subject: HashMap<u128, Vec<u32>> = HashMap::new();
         for (at, entry) in entries.iter().enumerate() {
             for &subject in &entry.subjects {
@@ -442,14 +460,30 @@ impl<P> Index<P> {
             (membership, sorted_spans(selection.unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect()), unknown)
         });
         let search = ask.search.map(str::trim).filter(|text| !text.is_empty()).map(str::to_lowercase);
-        Signature { from: ask.from, to: ask.to, subject: ask.subject, kinds, selection, search }
+        Signature { from: ask.from, to: ask.to, subject: ask.subject, kinds, selection, search, states: ask.states.map(<[u8]>::to_vec), chips: ask.chips.to_vec() }
+    }
+
+    fn changes(&self, entry: &Occurrence<P>, admitted: i32, ask: &Ask<'_>, counted: bool, mut change: impl FnMut(i32)) {
+        let accepts = |state: Option<u8>| ask.states.is_none_or(|states| state.is_some_and(|state| states.contains(&state)));
+        let live = |state: Option<u8>| state.is_some_and(|state| self.live & 1 << state != 0);
+        let mut previous = entry.state_at(admitted);
+        if accepts(previous) { change(admitted); }
+        for &(hour, state) in &entry.states[entry.states.partition_point(|&(hour, _)| hour <= admitted)..] {
+            let state = Some(state);
+            if accepts(previous) != accepts(state)
+                || (counted && accepts(state) && (live(previous) != live(state) || ask.chips.iter().any(|chip| chip.holds(entry.kind, previous) != chip.holds(entry.kind, state))))
+            {
+                change(hour);
+            }
+            previous = state;
+        }
     }
 
     fn filtered(&self, holders: &Holders, ask: &Ask<'_>) -> Arc<Filtered> {
         let signature = Self::signature(ask);
         {
             let kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((_, found)) = kept.iter().find(|(held, _)| *held == signature) {
+            if let Some((held, found)) = kept.as_ref() && *held == signature {
                 return Arc::clone(found);
             }
         }
@@ -482,32 +516,30 @@ impl<P> Index<P> {
                 visit(at);
             }
         }
-        let mut observed: Vec<i32> = display.iter().map(|&(_, from)| from).collect();
-        observed.sort_unstable();
-        let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
+        let mut changes = Vec::new();
+        for &(at, admitted) in &display {
+            self.changes(self.get(at), admitted, ask, true, |hour| changes.push(hour));
+        }
+        for &at in &unattributed_rows {
+            let entry = self.get(at);
+            self.changes(entry, entry.observed, ask, false, |hour| changes.push(hour));
+        }
         changes.sort_unstable();
-        let mut unattributed: Vec<i32> = unattributed_rows.iter().map(|&at| self.entries[at as usize].observed).collect();
-        unattributed.sort_unstable();
-        let mut unattributed_changes: Vec<i32> = unattributed_rows.iter().flat_map(|&at| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
-        unattributed_changes.sort_unstable();
+        changes.dedup();
         let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
         if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
             unknown.extend_from_slice(spans);
         }
-        let made = Arc::new(Filtered { display, observed, changes, unattributed, unattributed_rows, unattributed_changes, unknown });
-        let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
-        kept.push_back((signature, Arc::clone(&made)));
-        while kept.len() > KEPT_SIGNATURES {
-            kept.pop_front();
-        }
+        let made = Arc::new(Filtered { display, changes, unattributed_rows, unknown, dated: Mutex::default() });
+        *self.filtered.lock().unwrap_or_else(PoisonError::into_inner) = Some((signature, Arc::clone(&made)));
         made
     }
 
-    fn visible_gaps(&self, filtered: &Filtered, from: i32, hour: i32) -> Vec<MissingSpan> {
+    fn visible_gaps(&self, filtered: &Filtered, from: i32, hour: i32, gap_end: i32) -> Vec<MissingSpan> {
         let mut out: Vec<MissingSpan> = Vec::new();
         let clip = |first: i32, last: i32, reason: &str, out: &mut Vec<MissingSpan>| {
-            let (first, last) = (first.max(from), last.min(hour));
-            if first <= last {
+            let (first, last) = (first.max(from), last.min(gap_end));
+            if first <= last && first <= hour {
                 out.push(MissingSpan { first_hour: first, last_hour: last, reason: reason.to_owned() });
             }
         };
@@ -521,36 +553,26 @@ impl<P> Index<P> {
         out
     }
 
-    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool, state_filtered: bool) -> Option<i32> {
-        let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
-        let mut next = [
-            after(&filtered.observed),
-            state_changes.then(|| after(&filtered.changes)).flatten(),
-            after(&filtered.unattributed),
-            state_filtered.then(|| after(&filtered.unattributed_changes)).flatten(),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+    fn next_gap(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32) -> Option<i32> {
+        let mut next = None;
         let spans = self.gaps.iter().chain(&filtered.unknown).map(|gap| (gap.first_hour, gap.last_hour));
         for (first, last) in spans {
             let (first, last) = (first.max(from), last.min(gap_end));
             if first > last { continue; }
-            let boundary = if first <= hour && hour < last { hour + 1 } else if first > hour { first } else { continue };
-            next = Some(next.map_or(boundary, |held| held.min(boundary)));
+            if first > hour { next = Some(next.map_or(first, |held: i32| held.min(first))); }
         }
         next
     }
 
     pub fn ask(&self, holders: &Holders, ask: &Ask<'_>) -> io::Result<Answer> {
-        self.ask_with_gap_end(holders, ask, i32::MAX)
+        self.window(holders, ask, None)
     }
 
-    pub fn ask_with_gap_end(&self, holders: &Holders, ask: &Ask<'_>, gap_end: i32) -> io::Result<Answer> {
-        self.ask_visible(holders, ask, gap_end, |_| true)
+    pub fn ask_visible(&self, holders: &Holders, ask: &Ask<'_>, visible: impl Fn(&P) -> bool) -> io::Result<Answer> {
+        self.window(holders, ask, Some(&visible))
     }
 
-    pub fn ask_visible(&self, holders: &Holders, ask: &Ask<'_>, gap_end: i32, visible: impl Fn(&P) -> bool) -> io::Result<Answer> {
+    fn window(&self, holders: &Holders, ask: &Ask<'_>, visible: Option<&dyn Fn(&P) -> bool>) -> io::Result<Answer> {
         if ask.limit == 0 {
             return Err(invalid("An occurrence window holds one row or more"));
         }
@@ -559,17 +581,58 @@ impl<P> Index<P> {
         {
             return Err(invalid(format!("This log has no sort column {at}")));
         }
-        let hour = ask.hour;
         let filtered = self.filtered(holders, ask);
+        let gap_end = ask.gap_end.unwrap_or(i32::MAX).min(ask.to.unwrap_or(i32::MAX));
+        let order = match (ask.order, visible) {
+            (Order::Date(direction), None) => {
+                let mut kept = filtered.dated.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some((d, live, end, order)) = kept.as_ref()
+                    && (*d, *live, *end) == (direction, ask.live_first, gap_end)
+                    && order.hour <= ask.hour && order.until.is_none_or(|until| ask.hour < until)
+                {
+                    Arc::clone(order)
+                } else {
+                    let order = Arc::new(self.order(&filtered, ask, gap_end, None));
+                    *kept = Some((direction, ask.live_first, gap_end, Arc::clone(&order)));
+                    order
+                }
+            }
+            _ => Arc::new(self.order(&filtered, ask, gap_end, visible)),
+        };
+        let offset = ask.offset.min(order.total);
+        let start = (offset as usize).min(order.ordered.len());
+        let end = start.saturating_add(ask.limit as usize).min(order.ordered.len());
+        let mut next_change = order.until;
+        let rows: Vec<_> = order.ordered[start..end].iter().enumerate().map(|(index, &at)| {
+            let entry = self.get(at);
+            let after = entry.states.partition_point(|&(hour, _)| hour <= ask.hour);
+            next_change = next_change.into_iter().chain(entry.states.get(after).map(|step| step.0)).min();
+            let state = entry.state_at(ask.hour);
+            Shown { at, ordinal: offset + index as u64, live: state.is_some_and(|state| self.live & 1 << state != 0), state }
+        }).collect();
+        if let Order::Key(column, direction) = ask.order {
+            if ask.live_first {
+                next_change = next_change.into_iter().chain(order.changing_keys.iter().map(|change| change.1)).min();
+            } else {
+                next_change = self.next_rank_change(&rows, &order.changing_keys, ask.hour, (column, direction), next_change);
+            }
+        }
+        Ok(Answer { hour: ask.hour, total: order.total, live: order.live, offset, rows, chips: order.chips.clone(), gaps: order.gaps.clone(), unattributed: order.unattributed, next_change })
+    }
+
+    fn order(&self, filtered: &Filtered, ask: &Ask<'_>, gap_end: i32, visible: Option<&dyn Fn(&P) -> bool>) -> PageOrder {
+        let hour = ask.hour;
         let from = ask.from.unwrap_or(i32::MIN);
-        let mut gaps = self.visible_gaps(&filtered, from, hour.min(gap_end));
+        let mut gaps = self.visible_gaps(filtered, from, hour, gap_end);
         let state_ok = |state: Option<u8>| ask.states.is_none_or(|states| state.is_some_and(|state| states.contains(&state)));
         let mut chips = vec![0u64; ask.chips.len()];
-        let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
+        let mut live_rows = Vec::new();
         let mut live_count = 0u64;
-        let mut live_flip: Option<i32> = None;
-        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
-        let mut history: Vec<(u32, Option<u8>)> = Vec::new();
+        let mut next = self.next_gap(filtered, hour, from, gap_end);
+        if visible.is_none() {
+            next = next.into_iter().chain(filtered.changes.get(filtered.changes.partition_point(|&at| at <= hour)).copied()).min();
+        }
+        let mut history = Vec::new();
         let mut history_total = 0u64;
         let mut changing_keys = Vec::new();
         let wanted_end = ask.offset.saturating_add(u64::from(ask.limit));
@@ -578,14 +641,20 @@ impl<P> Index<P> {
         let mut descending: Vec<usize> = (0..gaps.len()).collect();
         descending.sort_by_key(|&at| std::cmp::Reverse((gaps[at].last_hour, gaps[at].first_hour)));
         let mut next_gap = 0usize;
-        let start = filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > hour);
+        let start = if visible.is_some() { 0 } else { filtered.display.partition_point(|&(at, _)| self.entries[at as usize].date > hour) };
         for &(at, from) in &filtered.display[start..] {
             let entry = &self.entries[at as usize];
+            if let Some(visible) = visible {
+                if !visible(&entry.payload) { continue; }
+                self.changes(entry, from, ask, true, |at| {
+                    if at > hour { next = Some(next.map_or(at, |held| held.min(at))); }
+                });
+            }
             if from > hour {
                 continue;
             }
             let state = entry.state_at(hour);
-            if !state_ok(state) || !visible(&entry.payload) {
+            if !state_ok(state) {
                 continue;
             }
             if let Order::Key(column, _) = ask.order
@@ -600,14 +669,8 @@ impl<P> Index<P> {
             }
             let live = state.is_some_and(|state| self.live & 1 << state != 0);
             live_count += u64::from(live);
-            if self.live != 0 && !state_changes {
-                let after = entry.states.partition_point(|step| step.0 <= hour);
-                if let Some(flip) = entry.states[after..].iter().find(|step| (self.live & 1 << step.1 != 0) != live) {
-                    live_flip = live_flip.into_iter().chain([flip.0]).min();
-                }
-            }
             if ask.live_first && live {
-                live_rows.push((at, state));
+                live_rows.push(at);
                 continue;
             }
             if newest {
@@ -615,12 +678,8 @@ impl<P> Index<P> {
                     placed.push((descending[next_gap], history_total));
                     next_gap += 1;
                 }
-                if history_total < wanted_end {
-                    history.push((at, state));
-                }
-            } else {
-                history.push((at, state));
             }
+            history.push(at);
             history_total += 1;
         }
         let live_total = live_rows.len() as u64;
@@ -639,7 +698,7 @@ impl<P> Index<P> {
                 ascending.sort_by_key(|&at| (gaps[at].first_hour, gaps[at].last_hour));
                 let mut seen = 0usize;
                 for at in ascending {
-                    while seen < history.len() && self.entries[history[seen].0 as usize].date < gaps[at].first_hour {
+                    while seen < history.len() && self.entries[history[seen] as usize].date < gaps[at].first_hour {
                         seen += 1;
                     }
                     placed.push((at, seen as u64));
@@ -647,8 +706,8 @@ impl<P> Index<P> {
             }
             Order::Key(column, direction) => {
                 let key = |at: u32| self.entries[at as usize].sort_keys[column].at(hour);
-                let by_key = |a: &(u32, Option<u8>), b: &(u32, Option<u8>)| {
-                    ranked((key(a.0), a.0), (key(b.0), b.0), direction)
+                let by_key = |&a: &u32, &b: &u32| {
+                    ranked((key(a), a), (key(b), b), direction)
                 };
                 let sort_prefix = |rows: &mut Vec<_>, through: u64| {
                     if through < rows.len() as u64 {
@@ -670,40 +729,21 @@ impl<P> Index<P> {
                 PlacedGap { first_hour: gap.first_hour, last_hour: gap.last_hour, reason: gap.reason, before: (live_total + before).to_string() }
             })
             .collect();
-        let mut rows = Vec::new();
-        let end = wanted_end.min(total);
-        let mut ordinal = ask.offset;
-        while ordinal < end {
-            let (at, state, live) = if ordinal < live_total {
-                let (at, state) = live_rows[ordinal as usize];
-                (at, state, true)
-            } else {
-                let Some(&(at, state)) = history.get((ordinal - live_total) as usize) else { break };
-                (at, state, state.is_some_and(|state| self.live & 1 << state != 0))
-            };
-            rows.push(Shown { at, ordinal, live, state });
-            ordinal += 1;
-        }
-        let unattributed = match ask.states {
-            None => filtered.unattributed.partition_point(|&observed| observed <= hour) as u64,
-            Some(_) => filtered.unattributed_rows.iter().map(|&at| &self.entries[at as usize]).filter(|entry| entry.observed <= hour && state_ok(entry.state_at(hour))).count() as u64,
-        };
-        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes, ask.states.is_some()).into_iter().chain(live_flip).min();
-        if !state_changes {
-            for shown in &rows {
-                let steps = &self.get(shown.at).states;
-                let after = steps.partition_point(|step| step.0 <= hour);
-                next_change = next_change.into_iter().chain(steps.get(after).map(|step| step.0)).min();
+        let unattributed = filtered.unattributed_rows.iter().filter(|&&at| {
+            let entry = self.get(at);
+            if visible.is_some() {
+                self.changes(entry, entry.observed, ask, false, |at| {
+                    if at > hour { next = Some(next.map_or(at, |held| held.min(at))); }
+                });
             }
+            entry.observed <= hour && state_ok(entry.state_at(hour))
+        }).count() as u64;
+        if live_rows.is_empty() {
+            live_rows = history;
+        } else {
+            live_rows.extend(history);
         }
-        if let Order::Key(column, direction) = ask.order {
-            next_change = if state_changes {
-                next_change.into_iter().chain(changing_keys.iter().map(|change| change.1)).min()
-            } else {
-                self.next_rank_change(&rows, &changing_keys, hour, (column, direction), next_change)
-            };
-        }
-        Ok(Answer { hour, total, live: live_count, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
+        PageOrder { hour, until: next, ordered: live_rows, total, live: live_count, chips, gaps: ordered_gaps, unattributed, changing_keys }
     }
 
     fn next_rank_change(&self, rows: &[Shown], changing: &[(u32, i32)], hour: i32, order: (usize, Direction), mut next: Option<i32>) -> Option<i32> {

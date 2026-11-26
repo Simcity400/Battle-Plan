@@ -805,12 +805,13 @@ fn reply(
         }
     }
     let current = &mut shown[0];
-    let answer = current.entries.ask_with_gap_end(
+    let answer = current.entries.ask(
         &query.holders,
         &Ask {
             hour,
             from: params.from,
             to: None,
+            gap_end: subject.and(division).and_then(|d| d.removed(hour)).map(|r| r.0),
             selection: None,
             subject: Some(subject.map_or(u128::MAX, u128::from)),
             kinds: show,
@@ -822,7 +823,6 @@ fn reply(
             limit,
             chips: &[],
         },
-        subject.and(division).and_then(|d| d.removed(hour)).map_or(i32::MAX, |r| r.0),
     )?;
     let mut entries = Vec::new();
     let mut facts = None;
