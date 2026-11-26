@@ -450,6 +450,13 @@ describe('world-tension projections', () => {
     assert.ok(dipLayout.yDomain[0] <= -4, `the axis reaches the bin's low: ${dipLayout.yDomain}`);
     const between = deriveTimeChartTooltip(reducedStack, layoutTimeChart(reducedStack, 720, 260, 'Segoe UI', measure), `plot:${hoverHour - 5}`);
     assert.ok(!(between?.payload?.items ?? []).some(item => item.value !== undefined), `inside a grouped span no figure is shown as the hour's: ${JSON.stringify(between?.payload?.items)}`);
+    const settled = worldTensionProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, hours: [H1936, hoverHour - 10], total: [0, 20], bands: [{ ...downsampledReply.bands[0]!, values: [0, 20], minValues: [0, 10], maxValues: [0, 40], valuesRaw: ['0', '2000000'] }] }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
+    const afterLast = deriveTimeChartTooltip(settled, layoutTimeChart(settled, 720, 260, 'Segoe UI', measure), `plot:${hoverHour}`);
+    assert.ok((afterLast?.payload?.items ?? []).some(item => item.value !== undefined), `after the last kept change the figures stand: ${JSON.stringify(afterLast?.payload?.items)}`);
 
     const { subpaths } = buildLineSubpaths(lineModel.series[0]!, layout, H1941);
     const ys = subpaths.flat().map(p => p[1]);
@@ -487,6 +494,14 @@ describe('world-tension projections', () => {
     const exactTip = deriveTimeChartTooltip(exactModel, exactLayout, `plot:${hoverHour}`);
     const exactItem = exactTip?.payload?.items?.find(i => i.label === 'German Reich');
     assert.equal(exactItem?.value, '+35%', 'exact hover overrides downsampled range with the signed slot contribution');
+    const readStack = worldTensionProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, bands: [{ ...downsampledReply.bands[0]!, valuesRaw: ['0', '2000000', '6000000'] }] }]]),
+      hovers: new Map([['hover', { hour: hoverHour, data: hoverReply }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
+    const readTip = deriveTimeChartTooltip(readStack, layoutTimeChart(readStack, 720, 260, 'Segoe UI', measure), `plot:${hoverHour}`);
+    assert.ok(!(readTip?.payload?.items ?? []).some(item => item.missingReason?.includes('grouped span')), `once the hour is read its figures replace the grouped-span note: ${JSON.stringify(readTip?.payload?.items)}`);
 
     const plan = worldTensionLinesDeclaration.sources({
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 },

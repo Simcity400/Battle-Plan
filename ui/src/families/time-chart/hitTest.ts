@@ -276,8 +276,10 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
       if (model.stack.hours[i]! <= hour) at = i;
       else break;
     }
-    if (at >= 0 && model.stack.reduced && model.stack.hours[at] !== hour) {
-      return [{ label: model.measureTitle, missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour', tone: 'muted' }];
+    if (at >= 0 && model.stack.reduced && model.stack.hours[at] !== hour && at + 1 < model.stack.hours.length) {
+      return model.hoverDetail?.hour === hour
+        ? []
+        : [{ label: model.measureTitle, missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour', tone: 'muted' }];
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];
@@ -504,7 +506,11 @@ export function deriveTimeChartTooltip(
         strong: true,
       };
     });
-    const valueItems = seriesTooltipItemsAt(model, m.hour);
+    const read = model.hoverDetail && model.hoverDetail.hour === m.hour ? model.hoverDetail : null;
+    const valueItems = read?.replacesSeries ? [] : seriesTooltipItemsAt(model, m.hour);
+    if (read?.items.length) {
+      valueItems.push(...(valueItems.length ? [{ ...read.items[0]!, divider: true }, ...read.items.slice(1)] : read.items));
+    }
     if (valueItems.length > 0 && eventItems.length > 0) {
       valueItems[0] = { ...valueItems[0]!, divider: true };
     }
