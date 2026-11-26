@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 use crate::{
     catalogue::tests::folder_catalogue,
     triggers::{Combat, ContentFacts, Eval, World},
@@ -133,7 +133,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
 
 #[test]
 fn groups_share_evaluation_and_reset_descendant_mode() {
-    game::enter();
+    script_game::enter();
     assert_eq!(
         run(
             "is_attacker=yes OR={is_attacker=yes frontage_full=yes} NOT={has_reserves=no}",
@@ -156,7 +156,7 @@ fn groups_share_evaluation_and_reset_descendant_mode() {
 
 #[test]
 fn an_indented_conjunction_heads_its_children_without_checks_in_mode_zero() {
-    game::enter();
+    script_game::enter();
     let source = "is_attacker=yes OR={is_attacker=yes frontage_full=yes} NOT={has_reserves=no}";
     assert_eq!(
         run_at(source, "", "", "", Some((1, 0))).unwrap(),
@@ -185,7 +185,7 @@ fn an_indented_conjunction_heads_its_children_without_checks_in_mode_zero() {
 
 #[test]
 fn operands_use_integer_fixed5_and_stored_phase_names() {
-    game::enter();
+    script_game::enter();
     assert_eq!(
         run(
             "phase=0 skill_advantage>2 hardness>0.5 has_artillery_ratio>0.1 skill>2 NOT={skill>2}",
@@ -200,7 +200,7 @@ fn operands_use_integer_fixed5_and_stored_phase_names() {
 
 #[test]
 fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
-    game::enter();
+    script_game::enter();
     let mut entries = String::new();
     let mut loc = String::new();
     for index in 0..10 {
@@ -216,7 +216,7 @@ fn conditional_entry_keeps_combat_world_and_tls_across_large_stack_handoff() {
 
 #[test]
 fn empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
-    game::enter();
+    script_game::enter();
     assert_eq!(
         run("ROOT={is_attacker=yes}", "", "", "").unwrap(),
         "[yes]: Attack\n"
@@ -235,7 +235,7 @@ fn empty_combat_scope_heading_and_counted_refusal_do_not_invent_country() {
 
 #[test]
 fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
-    game::enter();
+    script_game::enter();
     let result = run(
         "if={limit={set_temp_variable={x=7}} is_attacker=yes} if={limit={night=yes} set_temp_variable={x=8}} custom_trigger_tooltip={tooltip=TIP is_attacker=yes} has_reserves=no",
         "",
@@ -255,7 +255,7 @@ fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
 
 #[test]
 fn new_assignment_trigger_descriptions_use_native_arguments_and_inversion() {
-    game::enter();
+    script_game::enter();
     let localisation = concat!(
         " TRIGGER_FIGHTING_IN_STRATEGIC_REGION:0 \"Region $REGION$\"\n",
         " TRIGGER_NOT_FIGHTING_IN_STRATEGIC_REGION:0 \"Not region $REGION$\"\n",

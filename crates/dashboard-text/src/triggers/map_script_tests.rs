@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 
 fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     frame.tables[T::ID.index()] =
@@ -9,7 +9,7 @@ fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T:
 
 #[test]
 fn map_scripts_use_calculated_stability_war_support_and_native_ai() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::CountryStabilityInputs>(
         &mut frame,
@@ -68,7 +68,7 @@ fn map_scripts_use_calculated_stability_war_support_and_native_ai() {
 
 #[test]
 fn map_scripts_ai_control_keeps_signed_counts_and_the_live_player_fallback() {
-    game::enter();
+    script_game::enter();
     for (flag, count, player, override_ai, expected) in [
         (Some(1), 0, false, 0, true),
         (Some(7), 0, false, 0, true),
@@ -119,7 +119,7 @@ fn map_scripts_ai_control_keeps_signed_counts_and_the_live_player_fallback() {
 
 #[test]
 fn map_scripts_visit_rosters_in_order_and_keep_duplicate_cores() {
-    game::enter();
+    script_game::enter();
     let mut frame = frame(
         &[(100, 1, "GER", 1, "GER", ""), (200, 2, "AAA", 1, "AAA", "")],
         &[],
@@ -211,7 +211,7 @@ fn map_scripts_visit_rosters_in_order_and_keep_duplicate_cores() {
 
 #[test]
 fn map_scripts_clamp_expressions_keep_the_lower_arm_and_evaluate_both_bounds() {
-    game::enter();
+    script_game::enter();
     with_world(&variables_frame(), "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         let scope = Scopes::of(Scope::Country(0));
@@ -237,7 +237,7 @@ fn map_scripts_clamp_expressions_keep_the_lower_arm_and_evaluate_both_bounds() {
 
 #[test]
 fn map_scripts_state_callbacks_keep_holes_fractional_population_and_recorded_values() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::States>(
         &mut f,
@@ -319,7 +319,7 @@ fn map_scripts_state_callbacks_keep_holes_fractional_population_and_recorded_val
 
 #[test]
 fn map_scripts_state_targets_filter_in_initiator_scope_and_deduplicate() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::States>(
         &mut f,
@@ -357,7 +357,7 @@ fn map_scripts_state_targets_filter_in_initiator_scope_and_deduplicate() {
 
 #[test]
 fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::States>(
         &mut f,
@@ -439,7 +439,7 @@ fn map_scripts_target_selection_shares_temps_across_root_arrays_and_filters() {
 
 #[test]
 fn map_scripts_state_targets_skip_accepted_duplicates_but_retry_rejections() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(
         &[(100, 1, "GER", 1, "GER", ""), (200, 2, "SOV", 2, "SOV", "")],
         &[],
@@ -517,7 +517,7 @@ fn map_scripts_state_targets_skip_accepted_duplicates_but_retry_rejections() {
 
 #[test]
 fn map_scripts_daily_callbacks_refuse_stale_values_and_invalidate_reuse() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::States>(
         &mut f,
@@ -558,7 +558,7 @@ fn map_scripts_daily_callbacks_refuse_stale_values_and_invalidate_reuse() {
 
 #[test]
 fn map_scripts_tech_sharing_uses_the_certified_country_roster_not_global_members() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::LexicalTokens>(
         &mut f,
@@ -641,7 +641,7 @@ fn map_scripts_tech_sharing_uses_the_certified_country_roster_not_global_members
 
 #[test]
 fn map_scripts_idea_trait_reads_only_the_appointed_role_and_active_ideas() {
-    game::enter();
+    script_game::enter();
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
         "common/country_leader/traits.txt",
         "leader_traits = { first = {} first = {} second = {} }",
@@ -721,7 +721,7 @@ fn map_scripts_idea_trait_reads_only_the_appointed_role_and_active_ideas() {
 
 #[test]
 fn map_scripts_home_area_uses_global_area_size_and_the_states_first_province() {
-    game::enter();
+    script_game::enter();
     let mut f = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
     set::<tables::States>(
         &mut f,

@@ -1,6 +1,6 @@
 use super::carriers::{MIO, OTHER, SIZES, in_organisation, sized};
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 use content_reader_key_names::equipment::Groups;
 use content_reader_military::mio_traits::Catalog;
 use content_reader_parser::parser::Item;
@@ -166,7 +166,7 @@ fn organisations() -> DecodedFrame {
 }
 
 fn with_organisations(frame: &DecodedFrame, check: impl FnOnce(&World)) {
-    game::enter();
+    script_game::enter();
     let (catalog, groups) = content();
     let dlcs = BTreeSet::new();
     let triggers = TriggerNames::default();

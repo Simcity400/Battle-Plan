@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use engine_executable::executable_tables::{self, Tables};
-use synthetic_game::Executable;
+pub use synthetic_game::Executable;
 
 #[derive(Clone, Copy)]
 pub enum TriggerShape {

@@ -1,9 +1,9 @@
 use super::*;
-use crate::script_test_game as game;
+use crate::catalogue::tests::script_game;
 
 #[test]
 fn temp_variables_drive_localisation_conditions_and_text_weights() {
-    game::enter();
+    script_game::enter();
     let (catalogue, _folder) = catalogue(
         r#"
         a = { name = Pick text = {
