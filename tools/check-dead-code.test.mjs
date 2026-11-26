@@ -667,6 +667,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     'ui/src/nsUnusedDefaultCb.ts': 'export const draw = () => 36; export const spare = () => 37;',
     'ui/src/nsLocalAliasReader.ts': 'export const draw = () => 38; export const spare = () => 39;',
     'ui/src/nsInlineArrow.ts': 'export const draw = () => 40; export const spare = () => 41;',
+    'ui/src/nsTypedDestruct.ts': 'export const draw = () => 42; export const spare = () => 43;',
     'ui/src/angleReader.ts': `
       import * as nsDirectCast from './nsDirectCast.ts';
       export function readAngle(m: unknown) { return (<{ draw(): number }>m).draw(); }
@@ -719,6 +720,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsUnusedDefaultCb from './nsUnusedDefaultCb.ts';
       import * as nsLocalAliasReader from './nsLocalAliasReader.ts';
       import * as nsInlineArrow from './nsInlineArrow.ts';
+      import * as nsTypedDestruct from './nsTypedDestruct.ts';
       import * as aliasBarrelNs from './aliasBarrel.ts';
       import { readAngle, callDirectCast } from './angleReader.ts';
       import { read as readA } from './helperA.ts';
@@ -786,6 +788,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       }
       /** Reads draw. */
       const readDoc = (m: typeof nsDocComment) => m.draw();
+      const { draw: typedDestructDraw }: { draw(): number } = nsTypedDestruct;
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
       type Ref = import('./inlineType.ts').Inline;
@@ -797,7 +800,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
         readParamDestructDefault(nsParamDestructDefault), readAngle(nsAngleCast), callDirectCast(),
         readUnusedDefaultCb(nsUnusedDefaultCb), readerAlias(nsLocalAliasReader),
-        ((m: { draw(): number }) => m.draw())(nsInlineArrow),
+        ((m: { draw(): number }) => m.draw())(nsInlineArrow), typedDestructDraw(),
         readComputedKey(nsComputedKey), readWithThis(nsThisParam), readArguments(nsArgsObj),
         readArgsShorthand(nsArgsShorthand), readNestedOuterArgs(nsNestedOuterArgs),
         readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
@@ -829,6 +832,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         'ui/src/nsPatternDefault.ts:spare',
         'ui/src/nsTarget.ts:spare',
         'ui/src/nsThisParam.ts:spare',
+        'ui/src/nsTypedDestruct.ts:spare',
         'ui/src/nsUnusedDefaultCb.ts:spare',
       ],
     );

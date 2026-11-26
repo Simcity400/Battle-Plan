@@ -755,7 +755,8 @@ def _scan_jsx_element(text, at, end, *, blank_strings=False, on_plain=None, on_s
             generic_end = _skip_angle_group(text, ws, end)
             if generic_end > 0:
                 out.append(_blank_slice(text, cursor, ws))
-                out.append(text[ws:generic_end])
+                generic_masked, _ = _scan_ts_range(text, ws, generic_end, blank_strings=blank_strings, is_tsx=False)
+                out.append(generic_masked)
                 cursor = generic_end
         while cursor < end:
             c = text[cursor]
@@ -1252,7 +1253,39 @@ def _in_jsx_open_tag(code, pos):
         elif depth == 0:
             if ch == "<":
                 return True
-            if ch in (";", ">"):
+            if ch == ">":
+                if cursor > 0 and code[cursor - 1] in ("/", "="):
+                    return False
+                angle_depth = 1
+                scan = cursor - 1
+                inner_depth = 0
+                while scan >= 0 and angle_depth > 0:
+                    c = code[scan]
+                    if c in (")", "]", "}"):
+                        inner_depth += 1
+                    elif c in ("(", "[", "{"):
+                        if inner_depth == 0:
+                            return False
+                        inner_depth -= 1
+                    elif inner_depth == 0:
+                        if c == ">" and not (scan > 0 and code[scan - 1] == "="):
+                            angle_depth += 1
+                        elif c == "<":
+                            angle_depth -= 1
+                        elif c == ";":
+                            return False
+                    scan -= 1
+                if angle_depth != 0:
+                    return False
+                if scan + 2 < len(code) and code[scan + 2] == "/":
+                    return False
+                while scan >= 0 and code[scan].isspace():
+                    scan -= 1
+                if scan < 0 or not (code[scan].isalnum() or code[scan] in ("_", "$", ".", "-")):
+                    return False
+                cursor = scan
+                continue
+            if ch == ";":
                 return False
         cursor -= 1
     return False

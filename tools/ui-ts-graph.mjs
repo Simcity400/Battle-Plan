@@ -1756,7 +1756,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             ? parent.initializer
             : null;
           const unwrappedInit = init ? unwrapTsExpr(init) : null;
-          item.hasUnwrappedInit = Boolean(unwrappedInit && unwrappedInit !== init);
+          item.hasUnwrappedInit = Boolean(unwrappedInit);
           typeQueryNodes.push(item.node);
           if (item.hasUnwrappedInit) typeQueryNodes.push(unwrappedInit);
         }
@@ -1769,8 +1769,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           for (const item of propAccesses) {
             const objType = types[cursor++];
             const unwrappedType = item.hasUnwrapped ? types[cursor++] : null;
-            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker)
-              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
+            const targetRel = (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null)
+              ?? moduleRelFromType(objType, modSymIdToRel, checker);
             if (targetRel) {
               addModuleEdge(rel, targetRel, item.isType, item.node.name.text);
             }
@@ -1780,8 +1780,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             const objType = types[cursor++];
             const keyType = types[cursor++];
             const unwrappedType = item.hasUnwrapped ? types[cursor++] : null;
-            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker)
-              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
+            const targetRel = (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null)
+              ?? moduleRelFromType(objType, modSymIdToRel, checker);
             if (targetRel) {
               const isTypeAccess = item.isType || item.node.kind === SyntaxKind.IndexedAccessType;
               const keys = stringLiteralsFromType(keyType);
@@ -1796,8 +1796,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           for (const item of objBindings) {
             const patType = types[cursor++];
             const unwrappedType = item.hasUnwrappedInit ? types[cursor++] : null;
-            const targetRel = moduleRelFromType(patType, modSymIdToRel, checker)
-              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
+            const targetRel = (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null)
+              ?? moduleRelFromType(patType, modSymIdToRel, checker);
             if (targetRel) {
               for (const el of item.node.elements ?? []) {
                 if (el.dotDotDotToken) {

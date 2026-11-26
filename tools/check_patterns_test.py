@@ -477,7 +477,8 @@ class FamilyKitPatterns(unittest.TestCase):
                 "const box = { width: `${w}%` } satisfies React.CSSProperties;\n"
                 "el.style.width = (active ? `${w}%` : 'auto');\n"
                 "el.style.setProperty('--progress', `${w}%`);\n"
-                "export const x = (w: number, active: boolean) => <div style={{ width: width(1n), left: `${w}%`, height: (w * 100) + '%' }}><span style={active ? { width: `${w}%` } : undefined}>{color}{sample}{box.width}</span></div>;\n"
+                "export const x = (w: number, active: boolean) => <List<Item> style={{ width: width(1n), left: `${w}%`, height: (w * 100) + '%' }}><span style={active ? { width: `${w}%` } : undefined}>{color}{sample}{box.width}</span></List>;\n"
+                "export const g = () => <List<\n  /* n.toFixed(1) */\n  Item\n> />;\n"
             ),
         })[0], 0)
 
