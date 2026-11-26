@@ -16,9 +16,10 @@ import {
 import { hitHeatMatrix, layoutHeatMatrix, matrixKeyStep, revealMatrixOffset } from './matrixLayout.ts';
 import { drawHeatMatrix } from './matrixPainter.ts';
 import { deriveLanesAudit, deriveLanesMirror, deriveLanesTooltip, findRunAtHour, type HeatLanesModel } from './lanesModel.ts';
-import { hitHeatLanes, LanePixels, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
+import { hitHeatLanes, LanePixels, lanesWindow, layoutHeatLanes, projectLaneRunsToPixels } from './lanesLayout.ts';
 import { drawHeatLanes } from './lanesPainter.ts';
-import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure } from '../laneRuntime.fixture.ts';
+import { assertFreshPaint, assertQuietFrames, assertScrollKeepsStructure, driveLane, installRecordingCanvas } from '../laneRuntime.fixture.ts';
+import { navPageSteps, usableRowHeight, type FamilyNavTuple } from '../host/keyboard.ts';
 import { createLaneView } from '../laneRuntime.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { heatLanesLane } from './lanesLaneView.ts';
@@ -378,6 +379,7 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   assert.ok(scrolled.rowTops[scrolled.firstRow]! >= 12);
   assert.ok(scrolled.rowTops[scrolled.endRow - 1]! + scrolled.rowHeight <= 12 + scrolled.plotHeight);
   assert.equal(hitHeatLanes(scrolled.plotLeft + 20, scrolled.plotTop + 1, 12, scrolled, model.rows), null);
+  assert.equal(lanesWindow(scrolled, scrolled.rowTops[1]! + 0.4).firstRow, 1, 'subpixel scrolling keeps the row at the pixel boundary visible');
 
   const hit = hitHeatLanes(layout.plotLeft + 20, layout.plotTop + 10, 0, layout, model.rows);
   assert.equal(hit?.kind, 'lane');
@@ -433,6 +435,19 @@ test('heat lanes painter, hit test, tooltips, ticks, and audit honour displayed-
   const renamed = { ...model, rows: model.rows.map(row => (row.id === '11' ? { ...row, label: 'Normandy' } : row)) };
   const reordered = { ...renamed, rows: [...renamed.rows].reverse() };
   const surface = { width: 720, height: 220, dpr: 1 };
+  const recording = installRecordingCanvas();
+  try {
+    const rows = Array.from({ length: 20 }, (_, i) => ({ ...model.rows[0]!, id: String(i) }));
+    const { fields } = driveLane(createLaneView(heatLanesLane, () => {}), recording.canvases, surface)
+      .paint({ label: 'first page', binding: lane({ ...model, rows }), hour: model.hour });
+    const nav = fields.nav!.value as readonly FamilyNavTuple[];
+    const page = navPageSteps(nav, rows[0]!.id, usableRowHeight({ meta: fields.meta!.value }, surface.height));
+    const plot = layoutHeatLanes({ ...surface, scrollTop: 0, firstHour: model.firstHour,
+      lastHour: model.lastHour, displayedHour: model.hour, legend: model.legend, rows });
+    assert.equal(page.down, plot.endRow - 1, 'Page Down reaches the last painted row above the axis');
+  } finally {
+    recording.restore();
+  }
   assertQuietFrames(() => createLaneView(heatLanesLane, () => {}), { label: 'lanes', binding: held, hour: 119 }, 24, surface);
   assertFreshPaint(() => createLaneView(heatLanesLane, () => {}), [
     { label: 'held', binding: held, hour: 119, check: true },
