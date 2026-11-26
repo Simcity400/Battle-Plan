@@ -594,6 +594,10 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
 
 impl<E: Send + Sync + 'static> PlayheadHost<E> {
     pub fn new(owner: Arc<E>, get: fn(&E) -> &Playhead, anchored: fn(&E, Anchor), follow: Follow, held: Vec<bool>) -> std::io::Result<Arc<Self>> {
+        Self::new_with_budget(owner, get, anchored, follow, held, crate::lead::budget())
+    }
+
+    pub fn new_with_budget(owner: Arc<E>, get: fn(&E) -> &Playhead, anchored: fn(&E, Anchor), follow: Follow, held: Vec<bool>, budget: Arc<playhead::ByteBudget>) -> std::io::Result<Arc<Self>> {
         let playhead = get(&owner);
         let reader = playhead.declare(Vec::new(), None)?;
         let mut consumer = playhead.consumer(reader);
@@ -678,7 +682,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             }
             push.offer_from(session, PANEL, batch.finish(Some(step.last())));
         }));
-        playhead.share_budget(crate::lead::budget())?;
+        playhead.share_budget(budget)?;
         playhead.lead(crate::lead::LEAD);
         let driver_gate = Arc::new(WaitGate::new());
         let panel_gate = Arc::new(WaitGate::new());
