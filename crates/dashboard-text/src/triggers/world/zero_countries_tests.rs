@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use dashboard_core::test_fixtures::game;
 use crate::triggers::Scopes;
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CountryLinkRow, rows::FactionMemberRow,

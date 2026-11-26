@@ -1,4 +1,4 @@
-use content_reader_script::{scope::ScopeKind, trigger_keys::Reader};
+use content_reader_script::{scope::ScopeKind, test_game::TriggerShape, trigger_keys::Reader};
 use dashboard_core::test_fixtures::game;
 use engine_executable::executable_tables::{self, Tables};
 use std::sync::OnceLock;
@@ -20,10 +20,8 @@ fn tables() -> Tables {
     let mut game = game::executable();
     for (mask, reader, words) in [
         (0, Body, &[
-            "add_to_temp_variable", "all_of_scopes", "any_of_scopes", "check_variable",
-            "clamp_temp_variable", "divide_temp_variable", "is_in_array", "modulo_temp_variable",
-            "multiply_temp_variable", "set_temp_variable", "set_temp_variable_to_random",
-            "subtract_from_temp_variable",
+            "all_of_scopes", "any_of_scopes", "check_variable", "clamp_temp_variable",
+            "is_in_array", "modulo_temp_variable", "set_temp_variable_to_random",
         ][..]),
         (0, Assign, &["has_event_target", "has_variable", "round_temp_variable"]),
         (country, Assign, &[
@@ -38,7 +36,7 @@ fn tables() -> Tables {
         ]),
         (state, Body, &["any_country_with_core"]),
         (state, Assign, &[
-            "has_state_flag", "impassable", "is_claimed_by", "is_fully_controlled_by",
+            "impassable", "is_claimed_by", "is_fully_controlled_by",
             "is_in_home_area", "is_on_continent", "is_owned_and_controlled_by", "state",
         ]),
         (country | character | combat, Assign, &["tag"]),
@@ -46,14 +44,29 @@ fn tables() -> Tables {
         (character, Body, &["has_scientist_level"]),
         (combat, Assign, &["is_fighting_in_strategic_region", "night"]),
         (organisation, Assign, &[
-            "has_mio_equipment_type", "has_mio_flag", "has_mio_policy", "has_mio_policy_active",
-            "has_mio_research_category", "has_mio_trait", "is_military_industrial_organization", "is_mio_assigned_to_task",
-            "is_mio_available", "is_mio_trait_available", "is_mio_trait_completed", "is_mio_visible",
+            "has_mio_equipment_type", "has_mio_policy", "has_mio_policy_active",
+            "has_mio_research_category", "is_military_industrial_organization", "is_mio_assigned_to_task",
+            "is_mio_available", "is_mio_visible",
         ]),
-        (organisation, Comparison, &["has_mio_number_of_completed_traits", "has_mio_size"]),
+        (organisation, Comparison, &["has_mio_size"]),
     ] {
         for word in words {
             game = game.trigger(word, mask, reader, 0);
+        }
+    }
+    for (shape, mask, names) in [
+        (TriggerShape::Flag, state, &["has_state_flag"][..]),
+        (TriggerShape::Flag, organisation, &["has_mio_flag"]),
+        (TriggerShape::CompletedOrganisationTraitCount, organisation, &["has_mio_number_of_completed_traits"]),
+        (TriggerShape::OrganisationTrait, organisation, &["has_mio_trait", "is_mio_trait_completed"]),
+        (TriggerShape::OrganisationTraitAvailability, organisation, &["is_mio_trait_available"]),
+        (TriggerShape::VariableExpression, 0, &[
+            "add_to_temp_variable", "divide_temp_variable", "multiply_temp_variable",
+            "set_temp_variable", "subtract_from_temp_variable",
+        ]),
+    ] {
+        for name in names {
+            game = shape.register(game, name, mask);
         }
     }
     game.numeric_scope("GetName", executable_tables::numeric::NumericScope::Country, 1)

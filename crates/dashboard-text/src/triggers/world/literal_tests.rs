@@ -1,6 +1,6 @@
 use super::super::{inputs, refusal};
 use super::*;
-use crate::script_test_game as game;
+use dashboard_core::test_fixtures::game;
 use literals::Lookup;
 use replay_data::rows::{LexicalTokenRow, TableId, TableRows};
 

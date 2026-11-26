@@ -1,5 +1,5 @@
 use super::*;
-use crate::script_test_game as game;
+use dashboard_core::test_fixtures::game;
 
 pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::catalogue::tests::Folder)
 {
