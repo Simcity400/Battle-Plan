@@ -782,6 +782,19 @@ pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32
     Ok(out)
 }
 
+pub fn sampled(recording: &Recording, run: u32, table: TableId) -> io::Result<bool> {
+    let held = recording.run(run)?;
+    let (first, last) = (held.first_hour, held.last_hour());
+    let valid = check_withheld_run(recording, run, table, first, last)?;
+    let (Some(from), Some(to)) = (held.ordinal(first.max(valid.unwrap_or(i32::MIN))), held.ordinal(last)) else { return Ok(false) };
+    for block in held.place(from).0..held.place(to).0 + 1 {
+        if unit::reader::samples_held(&recording.table_entry(run, block, table.index())?.unit)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatusRun {
     pub first: i32,

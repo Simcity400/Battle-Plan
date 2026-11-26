@@ -127,6 +127,7 @@ pub(super) fn read(query: &Query<'_>, columns: &Columns, run: u32, held: &[(i32,
         Ok(intersect(&changed, &witnessed))
     })?;
     let witnesses = cost::storage(|| unless_withheld(lanes::history(recording, run, TableId::PoliticsCaptureCoverage, &[columns.streams], Keys::These(&raws), from, to)))?;
+    let opened = recording.run(run)?.first_hour;
     let mut covered = vec![Vec::new(); held.len()];
     if let Some([at]) = places(&witnesses, &[columns.streams]) {
         for (raw, steps) in &links {
@@ -138,7 +139,7 @@ pub(super) fn read(query: &Query<'_>, columns: &Columns, run: u32, held: &[(i32,
                     push(&mut certified, first, last);
                 }
             }
-            let stamped: Vec<(i32, i32)> = intersect(&certified, &drained).into_iter().filter(|&(first, last)| first < last).map(|(first, last)| (first, last - 1)).collect();
+            let stamped: Vec<(i32, i32)> = intersect(&certified, &drained).into_iter().map(|(first, last)| (first.max(opened.saturating_add(1)), last)).filter(|&(first, last)| first < last).map(|(first, last)| (first, last - 1)).collect();
             for (spans, &(first, last, slot)) in covered.iter_mut().zip(held) {
                 spans.extend(intersect(&stamped, &mapped(steps, slot, (first, last))));
             }

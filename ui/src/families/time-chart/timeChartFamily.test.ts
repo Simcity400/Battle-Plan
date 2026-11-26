@@ -45,6 +45,7 @@ import { occupationLinesDeclaration } from '../../widgets/occupation-trend/occup
 import { supplyHealthDeclaration, supplyHealthProjection } from '../../widgets/supply-health/supplyHealthProjection.ts';
 import { readPlanExact } from '../broker.ts';
 import { rulingPartyProjection } from '../../widgets/ruling-party/rulingPartyProjection.ts';
+import type { PartyHistoryReply } from '../../generated/dashboard';
 import { createLaneView } from '../laneRuntime.ts';
 import { drawTimeChart } from './painter.ts';
 
@@ -1942,10 +1943,36 @@ describe('stacked bounded series, supply health, and ruling party', () => {
     assert.equal(layoutTimeChart(bare, 720, 260, FONT, measure).markers.length, 1, 'and placed on the chart');
     const unrecorded = { ...history, parties: [], governmentUnobserved: [{ firstHour: base, lastHour: hour + 200 }] };
     const older = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: unrecorded });
-    assert.deepEqual(older.gaps, [{ firstHour: base, lastHour: hour + 200, reason: 'Government changes were not recorded' }]);
+    assert.deepEqual(older.gaps, [
+      { firstHour: base, lastHour: hour - 1, reason: 'Government changes were not recorded' },
+      { firstHour: hour, lastHour: hour, reason: 'Government changes are not read yet' },
+    ], 'the playhead hour waits for the drain after it');
     const olderLayout = layoutTimeChart(older, 720, 260, FONT, measure);
     const gapTip = deriveTimeChartTooltip(older, olderLayout, `gap:${olderLayout.gaps[0]!.index}`);
     assert.ok(JSON.stringify(gapTip).includes('Government changes were not recorded'), 'a chart of markers alone says where government changes were not recorded');
+
+    const failsNext = { ...history, governmentUnobserved: [{ firstHour: hour, lastHour: hour }] };
+    const playheadHover = (reply: PartyHistoryReply) => {
+      const view = createBoundedReadView({ hour, series: new Map([['popularity', new Map([[`${subject}\u00000`, part0], [`${subject}\u00001`, part1]])]]),
+        hovers: new Map([['popularityHover', { hour, data: { decimals: 5, states: [] } }]]) });
+      const projected = rulingPartyProjection.project(view, { ...options, history: reply });
+      return deriveTimeChartTooltip(projected, layoutTimeChart(projected, 720, 260, FONT, measure), `plot:${hour}`)?.payload?.items;
+    };
+    assert.deepEqual(playheadHover(failsNext), playheadHover(history), 'whether the next drain fails is not known at the playhead');
+    assert.ok(playheadHover(history)?.some(item => item.label === 'Government changes' && item.missingReason === 'Not read yet'));
+    const markersOnly = (reply: PartyHistoryReply) => rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...reply, parties: [] } }).gaps;
+    assert.deepEqual(markersOnly(failsNext), markersOnly(history), 'nor on a chart of markers alone');
+
+    const single = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...history, parties: [], governmentUnobserved: [{ firstHour: base + 100, lastHour: base + 100 }] } });
+    const singleLayout = layoutTimeChart(single, 720, 260, FONT, measure);
+    const placedSingle = singleLayout.gaps.find(gap => gap.gap.firstHour === base + 100);
+    assert.ok(placedSingle && placedSingle.x1 > placedSingle.x0, 'a one-hour gap is laid out with a width');
+    const singleKey = hitTestTimeChart(single, singleLayout, [(placedSingle!.x0 + placedSingle!.x1) / 2, 100]);
+    assert.equal(singleKey, `gap:${placedSingle!.index}@${base + 100}`);
+    assert.ok(JSON.stringify(deriveTimeChartTooltip(single, singleLayout, singleKey)).includes('Government changes were not recorded'), 'and its reason can be hovered');
+    const unwitnessed = rulingPartyProjection.project(createBoundedReadView({ hour }), { ...options, history: { ...unrecorded, elections: [] } });
+    assert.deepEqual(unwitnessed.empty, { message: 'Party popularity is unavailable.', kind: 'unavailable', detail: 'Government changes were not recorded' },
+      'with no markers yet, the empty chart still says government changes were not recorded');
 
     const exact = (raw: string, part: string) => ({ country: 7, part, hour, run: { valueRaw: raw }, missing: null });
     const audited = rulingPartyProjection.project(createBoundedReadView({ hour, panels: new Map([['popularity', { decimals: 5, states: [exact('7000000', '1'), exact('3000000', '0')] }]]) }), options);

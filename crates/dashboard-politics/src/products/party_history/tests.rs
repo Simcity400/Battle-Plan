@@ -35,7 +35,11 @@ fn frame(hour: i32) -> DecodedFrame {
         set(&mut frame, TableId::Countries, TableRows::Countries(Vec::new()));
     }
     let character = CharacterRow { id: 701, country: GER, name_token_id: 61, token: if hour >= 120 { b"TEST_LEADER_RENAMED".to_vec() } else { b"TEST_LEADER_NAME".to_vec() }, ..Default::default() };
-    set(&mut frame, TableId::Characters, TableRows::Characters(vec![character]));
+    if hour == 121 {
+        carried(&mut frame, TableId::Characters, TableRows::Characters(vec![character]));
+    } else {
+        set(&mut frame, TableId::Characters, TableRows::Characters(vec![character]));
+    }
     let spelled = if hour >= 122 { &[(51, "democratic"), (52, "fascism"), (61, "TEST_LEADER_SCRIPT")][..] } else { &[(51, "democratic"), (52, "fascism")][..] };
     let words = spelled.iter().map(|&(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect();
     set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(words));
@@ -53,7 +57,7 @@ fn frame(hour: i32) -> DecodedFrame {
     } else {
         set(&mut frame, TableId::GovernmentChanges, TableRows::GovernmentChanges(drained));
     }
-    let streams = if hour == FIRST || hour == 118 { 0 } else { PoliticsCaptureCoverageRow::GOVERNMENT };
+    let streams = if hour == 118 { 0 } else { PoliticsCaptureCoverageRow::GOVERNMENT };
     let witness = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: (hour - 1).max(FIRST), through_hour: hour, streams, ..Default::default() };
     set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![witness]));
     let fascist = hour >= 110;
@@ -103,7 +107,7 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert_eq!(parties.ruling.runs, ruling_only.ruling.runs);
     assert_eq!(parties.ruling.name_runs, ruling_only.ruling.name_runs);
     assert_eq!(parties.unobserved, ruling_only.unobserved);
-    assert!(ruling_only.leaders.is_empty() && ruling_only.people.is_empty() && ruling_only.elections.is_empty());
+    assert!(ruling_only.leaders.is_empty() && ruling_only.people.is_empty() && ruling_only.elections.is_empty() && ruling_only.government_changes.is_empty());
     let owned = |part, first_hour, last_hour| PartOwnership { part, first_hour, last_hour };
     assert_eq!(parties.parties["democratic"].parts, [owned(1, 100, 114), owned(1, 116, 123), owned(1, 126, 127)], "a part is owned only over the hours it was read");
     assert_eq!(parties.parties["communism"].parts, [owned(1, 128, LAST)], "a reused part id belongs to its new token only from its first reading");
@@ -113,12 +117,12 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     let leader = |person, first, last, starts_segment| LeaderRun { ideology: "liberalism".into(), person, first_hour: first, last_hour: last, starts_segment };
     assert_eq!(
         parties.leaders,
-        [leader(None, 100, 104, true), leader(Some(0), 105, 114, false), leader(Some(0), 116, 119, true), leader(Some(1), 120, 121, false), leader(Some(2), 122, LAST, false)],
-        "an unread party table does not discard the leader read beside it, and a leader renamed or newly spelled is named anew from the hour it was read"
+        [leader(None, 100, 104, true), leader(Some(0), 105, 114, false), leader(Some(0), 116, 119, true), leader(Some(1), 120, 120, false), leader(Some(2), 121, 121, false), leader(Some(3), 122, LAST, false)],
+        "an unread party table does not discard the leader read beside it, a leader renamed or newly spelled is named anew from the hour it was read, and a character carried unread is unnamed"
     );
     assert_eq!(
         parties.people.iter().map(|person| (person.character.id, person.character.token.as_str(), person.character.name.as_str())).collect::<Vec<_>>(),
-        [(701, "", "TEST_LEADER_NAME"), (701, "", "TEST_LEADER_RENAMED"), (701, "TEST_LEADER_SCRIPT", "TEST_LEADER_RENAMED")]
+        [(701, "", "TEST_LEADER_NAME"), (701, "", "TEST_LEADER_RENAMED"), (701, "", ""), (701, "TEST_LEADER_SCRIPT", "TEST_LEADER_RENAMED")]
     );
     let change = |hour, witnessed, before: Option<&str>, after: Option<&str>, cause| GovernmentChange { hour, witnessed, before: before.map(str::to_owned), after: after.map(str::to_owned), cause };
     assert_eq!(
@@ -134,7 +138,7 @@ fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_brid
     assert_eq!(
         parties.government_unobserved.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(),
         [(100, 100), (115, 115), (117, 118), (123, 125), (LAST, LAST)],
-        "an hour's changes are recorded only when both drains that can hold them were witnessed: not the first hour, not outside the holder, not beside an unwitnessed or unread drain, not the last"
+        "an hour's changes are recorded only when both drains that can hold them were witnessed: never the run's first hour, even witnessed, not outside the holder, not beside an unwitnessed or unread drain, not the last"
     );
     let election = |hour, witnessed| Election { hour, witnessed };
     assert_eq!(
@@ -212,6 +216,9 @@ fn a_party_named_for_another_country_follows_that_countrys_naming_and_never_brid
         ],
         "the other country's appearance carried or unread, its new tag and the reserved country's new tag each name the party anew"
     );
+    let ruling_only = read(&query, &"GER".into(), super::PartyRead::Ruling, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ruling_only.ruling.name_runs, parties.ruling.name_runs);
+    assert_eq!(ruling_only.ruling.namings, parties.ruling.namings);
 }
 
 const HELD: u32 = 5501;
@@ -272,6 +279,12 @@ fn a_renamed_holder_keeps_its_own_changes_of_government_and_names_its_party_by_i
     let recording = query.replay.recording();
     assert_eq!(super::complete_reads(recording, run, TableId::Politics, 300, 310).unwrap(), [(300, 303)]);
     assert_eq!(super::complete_reads(recording, run, TableId::Politics, 305, 310).unwrap(), [], "a stretch carried without a read is unread when the table marks its reads elsewhere");
+    let (bytes, _) = replay_journal::fixtures::written(recorder_derive::writers(), b"carried sample synthetic", &[(1, 300, 1)], &[TableId::Politics], |synthetic, _, _| {
+        let rows = [PoliticsRow { country: HELD, last_election: 50, ..Default::default() }];
+        synthetic.table(TableId::Politics, replay_journal::synthetic::Input::Snapshot { rows: &rows, partial: None, read: false, sample: replay_journal::synthetic::Sample::Carried(299) }).unwrap();
+    });
+    let sampled_before = replay_recording::columnar_frames::Recording::open(bytes).unwrap();
+    assert_eq!(super::complete_reads(&sampled_before, 0, TableId::Politics, 300, 310).unwrap(), [], "a run carrying a sample taken before it is unread, not read throughout");
 }
 
 #[test]

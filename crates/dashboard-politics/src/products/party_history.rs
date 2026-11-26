@@ -401,10 +401,15 @@ fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run:
     Ok(Naming { hours: settled(hours, first, last), reads })
 }
 
-fn character_changes(recording: &replay_recording::columnar_frames::Recording, run: u32, columns: &Columns, looks: &History, first: i32, last: i32) -> io::Result<Vec<i32>> {
+struct Recasts {
+    hours: Vec<i32>,
+    reads: Vec<(i32, i32)>,
+}
+
+fn character_changes(recording: &replay_recording::columnar_frames::Recording, run: u32, columns: &Columns, looks: &History, first: i32, last: i32) -> io::Result<Recasts> {
     let ids: Vec<u128> = numbers(looks, columns.look[1]).into_iter().map(u128::from).collect();
     if ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Recasts { hours: Vec::new(), reads: Vec::new() });
     }
     let mut hours = Vec::new();
     let characters = unless_withheld(lanes::history(recording, run, TableId::Characters, &columns.character, Keys::These(&ids), first, last))?;
@@ -413,8 +418,9 @@ fn character_changes(recording: &replay_recording::columnar_frames::Recording, r
     if !words.is_empty() {
         steps_into(&unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?, &mut hours);
     }
-    read_bounds_into(&unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?, &mut hours);
-    Ok(settled(hours, first, last))
+    let reads = unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?;
+    read_bounds_into(&reads, &mut hours);
+    Ok(Recasts { hours: settled(hours, first, last), reads })
 }
 
 struct Stepper<'a> {
@@ -490,8 +496,7 @@ fn reads_kept(recording: &replay_recording::columnar_frames::Recording, run: u32
     if !marked.is_empty() {
         return Ok(marked);
     }
-    let held = recording.run(run)?;
-    if !lanes::reads(recording, run, table, held.first_hour, held.last_hour())?.is_empty() {
+    if lanes::sampled(recording, run, table)? {
         return Ok(marked);
     }
     Ok(lanes::statuses(recording, run, table, first, last)?
@@ -582,7 +587,7 @@ impl Parties {
         let mut held = Stepper::new(&held);
         let mut looks = Stepper::new(&looks);
         let mut politics = Stepper::new(&politics);
-        let mut hours: Vec<i32> = held.hours().chain(looks.hours()).chain(politics.hours()).chain(renames.hours.iter().copied()).chain(recasts.iter().copied()).chain([first]).collect();
+        let mut hours: Vec<i32> = held.hours().chain(looks.hours()).chain(politics.hours()).chain(renames.hours.iter().copied()).chain(recasts.hours.iter().copied()).chain([first]).collect();
         read_bounds_into(&observed.concat(), &mut hours);
         let hours = settled(hours, first, last);
         let mut unread = [0; SOURCES.len()];
@@ -599,22 +604,22 @@ impl Parties {
                 }
                 reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
             });
-            let changed = [renames.hours.binary_search(&hour).is_ok(), recasts.binary_search(&hour).is_ok()];
-            self.observe(query, run, (hour, end), who, (asked, &renames.reads), columns, read, changed, [&held, &looks, &politics])?;
+            let changed = [renames.hours.binary_search(&hour).is_ok(), recasts.hours.binary_search(&hour).is_ok()];
+            self.observe(query, run, (hour, end), who, (asked, &renames.reads, &recasts.reads), columns, read, changed, [&held, &looks, &politics])?;
         }
         Ok(())
     }
 
-    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), naming: (&Country, &NamingReads), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &[(i32, i32)]), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
         let [parties_read, looks_read, politics_read] = read;
         if parties_read {
-            self.observe_parties(query, run, (hour, end), who, naming, columns, renamed, held)?;
+            self.observe_parties(query, run, (hour, end), who, (asked, naming), columns, renamed, held)?;
         } else {
             mark(&mut self.unobserved, hour, end);
             self.last = None;
         }
         if looks_read {
-            self.observe_leader(query, run, (hour, end), who, columns, recast, looks)?;
+            self.observe_leader(query, run, (hour, end), who, columns, (recast, characters), looks)?;
         } else {
             self.look_last = None;
         }
@@ -651,7 +656,7 @@ impl Parties {
         Ok(())
     }
 
-    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, recast: bool, looks: &Stepper<'_>) -> io::Result<()> {
+    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, (recast, characters): (bool, &[(i32, i32)]), looks: &Stepper<'_>) -> io::Result<()> {
         let continues = self.look_last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.look_last = Some((end, who));
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
@@ -662,7 +667,7 @@ impl Parties {
                 _ => {
                     let person = match id {
                         Some(id) => {
-                            let leader = leader_at(query, run, hour, id)?;
+                            let leader = leader_at(query, run, hour, id, read_at(characters, hour))?;
                             Some(match self.people.iter().position(|held| *held == leader) {
                                 Some(index) => index as u32,
                                 None => {
@@ -748,7 +753,7 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
     })
 }
 
-fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Leader> {
+fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32, read: bool) -> io::Result<Leader> {
     let recording = query.replay.recording();
     let key = [u128::from(id)];
     let reads = [
@@ -756,7 +761,7 @@ fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Lead
         replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&key) },
     ];
     let frame = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
-    let row = frame.complete::<tables::Characters>().ok().and_then(|rows| rows.iter().find(|row| row.id == id)).cloned();
+    let row = frame.complete::<tables::Characters>().ok().filter(|_| read).and_then(|rows| rows.iter().find(|row| row.id == id)).cloned();
     let token = match &row {
         Some(row) => {
             let words = u32::try_from(row.name_token_id).ok().map(u128::from).into_iter().collect::<Vec<_>>();

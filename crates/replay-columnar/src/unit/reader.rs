@@ -1370,6 +1370,22 @@ pub fn reads(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnM
     Ok(())
 }
 
+pub fn samples_held(entry: &TableEntry) -> io::Result<bool> {
+    let bytes = &entry.status;
+    let mut at = 0;
+    let runs = get_varint(bytes, &mut at)? as usize;
+    for _ in 0..runs {
+        get_varint(bytes, &mut at)?;
+        get_status(bytes, &mut at)?;
+        bytes.get(at).ok_or_else(|| invalid("A status run ends inside it"))?;
+        at += 1;
+        if get_varint(bytes, &mut at)? != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn statuses(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnMut(i32, i32, Status)) -> io::Result<()> {
     record_status_block();
     let mut emit = |from: u16, until: u16, status: Status| {
