@@ -22,6 +22,14 @@ function EventFeedView(props: FamilyViewProps) {
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: EventDetailSubject } | null>(null);
   const [kinds, setKinds] = useState<{ readonly scope: string; readonly list: readonly EventFeedKindInfo[] } | null>(null);
+  const [frozenState, setFrozenState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
+  const [installedState, setInstalledState] = useState<{ readonly scope: string; readonly hour: number | null }>({ scope: '', hour: null });
+  const onFrozenHour = useCallback((hour: number | null) => {
+    setFrozenState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
+  }, [scope]);
+  const onInstalledHour = useCallback((hour: number | null) => {
+    setInstalledState(prev => (prev.scope === scope && prev.hour === hour ? prev : { scope, hour }));
+  }, [scope]);
   const shown = opened && opened.scope === scope ? opened.subject : null;
   const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'event-feed-tail', shown, shown !== null);
   const hover = useTooltipText(props.runtime, props.widget.trackIds[0], 'event-feed-tail', props.widget.time.mode === 'follow', props.active, isEventRow);
@@ -115,6 +123,8 @@ function EventFeedView(props: FamilyViewProps) {
     ? Math.max(Math.floor(win.firstHour), track.branch.firstHour)
     : null;
   const pinnedHour = track && !following && win ? Math.floor(win.lastHour) : null;
+  const frozenHour = following && frozenState.scope === scope ? frozenState.hour : null;
+  const installedHour = following && installedState.scope === scope ? installedState.hour : null;
 
   return (
     <div ref={anchor} className="fh-detail-anchor">
@@ -136,12 +146,16 @@ function EventFeedView(props: FamilyViewProps) {
           excludedKinds={excludedKinds}
           from={stripFrom}
           pinnedHour={pinnedHour}
+          frozenHour={frozenHour}
+          installedHour={installedHour}
         />
       ) : null}
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
         options={familyOptions}
         onTooltipRow={hover.onTooltipRow}
+        onFrozenHour={onFrozenHour}
+        onInstalledHour={onInstalledHour}
         family={props.manifestDeclaration.family}
         declaration={props.manifestDeclaration}
         selectedKey={shown?.key ?? null}

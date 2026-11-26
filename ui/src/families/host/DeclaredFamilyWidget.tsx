@@ -95,6 +95,8 @@ export interface DeclaredFamilyWidgetProps<
   readonly onHoverHour?: (hour: number | null) => void;
   readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
   readonly onArtDemands?: (demands: readonly FamilyArtDemand[]) => void;
+  readonly onFrozenHour?: (hour: number | null) => void;
+  readonly onInstalledHour?: (hour: number | null) => void;
   readonly extraWarnings?: readonly string[];
 }
 
@@ -126,6 +128,8 @@ export default function DeclaredFamilyWidget<
   onHoverHour: externalHoverHour,
   onTooltipRow,
   onArtDemands: externalArtDemands,
+  onFrozenHour,
+  onInstalledHour,
   extraWarnings,
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
@@ -159,6 +163,15 @@ export default function DeclaredFamilyWidget<
   useEffect(() => {
     onCountryHolder?.(plan.countryHolder);
   }, [onCountryHolder, plan.countryHolder?.tag, plan.countryHolder?.origin]);
+  const frozenHour = useMemo(() => {
+    const pages = plan.pagedRows?.main;
+    if (!pages) return null;
+    const answered = Object.values(pages).find(page => 'reply' in page);
+    return answered ? answered.hour : null;
+  }, [plan.pagedRows]);
+  useEffect(() => {
+    onFrozenHour?.(frozenHour);
+  }, [onFrozenHour, frozenHour]);
   const handleActivate = useMemo(
     () => onActivate
       ? (action: InstalledAction) => {
@@ -373,6 +386,7 @@ export default function DeclaredFamilyWidget<
       onViewportChange={handleViewportChange}
       onHoverHour={handleHoverHour}
       onTooltipRow={onTooltipRow}
+      onInstalledHour={onInstalledHour}
       selectedKey={selectedKey}
       onActivate={handleActivate}
       onToggle={onToggle}

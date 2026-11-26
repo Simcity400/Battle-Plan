@@ -236,6 +236,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
   readonly onHoverHour?: (hour: number | null, drawnKeys?: DrawnKeys) => void;
   readonly onTooltipRow?: (subject: string | null, by: TooltipRowSource) => void;
+  readonly onInstalledHour?: (hour: number | null) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
   readonly onToggle?: (action: InstalledAction) => void;
@@ -301,6 +302,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onViewportChange,
   onHoverHour,
   onTooltipRow,
+  onInstalledHour,
   selectedKey = null,
   onActivate,
   onToggle,
@@ -379,6 +381,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   heldRef.current = held;
   const pauseFlushRef = useRef(0);
   const recordRef = useRef<InstalledRecord | null>(null);
+  const lastInstalledHourRef = useRef<number | null>(null);
   const resolveInstalledRef = useRef<() => InstalledPicture | null>(() => recordRef.current?.picture ?? null);
   const selectionsRef = useRef(new BoundSelections());
   const typeaheadRef = useRef({ query: '', until: 0 });
@@ -505,6 +508,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onViewportChange,
     onHoverHour,
     onTooltipRow,
+    onInstalledHour,
     selectedKey,
     onActivate,
     onToggle,
@@ -1053,6 +1057,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
       if (!visible || !fields || shown?.id === undefined) {
         recordRef.current = null;
+        if (lastInstalledHourRef.current !== null) {
+          lastInstalledHourRef.current = null;
+          cur.onInstalledHour?.(null);
+        }
         publishFocusKey();
         describe(null);
         if (lastMirrorObjRef.current !== null) {
@@ -1064,6 +1072,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
 
       const installedHour = displayedHour(shownHour ?? shown.painted ?? shown.h ?? 0);
+      if (lastInstalledHourRef.current !== installedHour) {
+        lastInstalledHourRef.current = installedHour;
+        cur.onInstalledHour?.(installedHour);
+      }
       const base = shown.viewport ?? {
         width: viewportRef.current.width,
         height: viewportRef.current.height,
@@ -1387,6 +1399,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       lastMirrorObjRef.current = null;
       syncMirrorRef.current(null);
       recordRef.current = null;
+      if (lastInstalledHourRef.current !== null) {
+        lastInstalledHourRef.current = null;
+        latestRef.current.onInstalledHour?.(null);
+      }
       publishHoverHour(null);
       publishFocusKey();
       mounted.unmount();
