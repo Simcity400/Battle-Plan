@@ -19,7 +19,7 @@ use dashboard_follow::panel::Panel;
 use dashboard_query::{
     Query,
     identity::{Country, Holders},
-    log::occurrence::{Answer, Ask, Chip, Index, PlacedGap, Selection},
+    log::occurrence::{Answer, Ask, Chip, Index, PlacedGap, Selection, Shown},
     series::ranked::GroupSelection,
     timeline::Timeline,
 };
@@ -59,6 +59,10 @@ pub struct EventFeedTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub search: Option<String>,
+    #[doc = " One row by its key, with the detail text list rows leave out; no row when it is not in the log at the hour."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub row: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sort: Option<OccurrenceSort>,
@@ -176,6 +180,10 @@ pub struct ScriptTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub search: Option<String>,
+    #[doc = " One row by its key, with the detail text list rows leave out; no row when it is not in the log at the hour."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub row: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sort: Option<OccurrenceSort>,
@@ -211,10 +219,10 @@ impl ScriptEventKind {
 }
 
 const FEED_FIELDS: dashboard_base::products::Fields =
-    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]"];
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, categories, exclude, "exclude[]", row];
 
 const CARD_FIELDS: dashboard_base::products::Fields =
-    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses];
+    dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, events, statuses, row];
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -418,7 +426,8 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
     let kinds = feed_kinds(&params.categories, params.exclude.as_deref())?;
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
-    let answer = answer(&feed.index, query, &window, hour, Some(&kinds), None, false, &[])?;
+    let mut answer = answer(&feed.index, query, &window, hour, Some(&kinds), None, false, &[])?;
+    let opened = only_row(&prepared.scanned, &feed.index, params.row.as_deref(), &mut answer, hour);
     let read = index::read_events(query, &locators(&feed.index, &answer, hour))?;
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
@@ -439,6 +448,9 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         shapes.push((head_at, choice));
     }
     let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
+    if !opened {
+        listed(&mut presented, false, true);
+    }
     let rows = answer
         .rows
         .iter()
@@ -526,6 +538,33 @@ fn chips(list: List) -> (Vec<Chip>, &'static [&'static str]) {
     }
 }
 
+fn only_row(scanned: &index::Scanned, index: &Index<Item>, row: Option<&str>, answer: &mut Answer, hour: i32) -> bool {
+    let Some(row) = row else { return false };
+    let found = scanned.locate(row).and_then(|key| index.find(key)).filter(|&at| index.get(at).date <= hour);
+    answer.rows = found
+        .map(|at| {
+            let state = index.get(at).state_at(hour);
+            Shown { at, ordinal: 0, live: state.is_some_and(|state| index::LIVE.contains(&state)), state }
+        })
+        .into_iter()
+        .collect();
+    true
+}
+
+fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
+    for row in rows.iter_mut().flatten() {
+        if let Some(cause) = row.cause.as_mut() {
+            cause.notes.clear();
+        }
+        if !description && let Some(item) = row.item.as_mut() {
+            item.description = None;
+        }
+        if !window {
+            row.window = None;
+        }
+    }
+}
+
 fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &ScriptTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<ScriptOccurrenceTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if list == List::Decisions && params.events.is_some() {
@@ -543,7 +582,8 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     };
     let (chips, keys) = chips(list);
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
-    let answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
+    let mut answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
+    let opened = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
     let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
@@ -560,7 +600,10 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         let opened = edges.first().is_some_and(|first| first == head) && EventFeedKind::of_code(events[first].code).is_some_and(|kind| list.openers().contains(&kind)) && events[first].opener.is_none();
         spans.push((first, events.len(), opened));
     }
-    let presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
+    let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
+    if !opened {
+        listed(&mut presented, list == List::Decisions, list == List::Decisions);
+    }
     let mut rows = Vec::with_capacity(answer.rows.len());
     for (shown, (first, end, opened)) in answer.rows.iter().zip(spans) {
         let occurrence = prepared.index.get(shown.at);

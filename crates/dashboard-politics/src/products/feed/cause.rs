@@ -26,11 +26,15 @@ pub(super) fn words(event: &FeedEvent, ally: Option<String>) -> Option<EventFeed
                 other => format!("native reason {other}"),
             }),
             notes: notes.into_iter().filter(|(held, _)| *held && cause.flags & 1 != 0).map(|(_, note)| note.to_owned()).collect(),
+            selected_option: None,
+            target_recorded: false,
         }
     });
     if event.scripted() {
-        let words = words.get_or_insert_with(|| EventFeedCause { how: None, within: None, conference: None, state: None, ally: None, reason: None, notes: Vec::new() });
+        let words = words.get_or_insert_with(|| EventFeedCause { how: None, within: None, conference: None, state: None, ally: None, reason: None, notes: Vec::new(), selected_option: None, target_recorded: false });
         words.notes.extend(script_notes(event));
+        words.selected_option = event.option;
+        words.target_recorded = event.country_target.is_some() || event.numeric_target.is_some();
     }
     words
 }

@@ -310,8 +310,15 @@ pub struct EventFeedCause {
     pub ally: Option<String>,
     #[doc = " A join's hostility reason."]
     pub reason: Option<String>,
-    #[doc = " The native operands that change what the event means."]
+    #[doc = " The native operands that change what the event means; empty in a list row, read with the opened row."]
     pub notes: Vec<String>,
+    #[doc = " A scripted event's selected native option ordinal, where recorded."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub selected_option: Option<i32>,
+    #[doc = " Whether a scripted event recorded a country or numeric target."]
+    #[serde(default)]
+    pub target_recorded: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

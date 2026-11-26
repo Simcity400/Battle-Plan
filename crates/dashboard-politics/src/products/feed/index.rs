@@ -110,6 +110,26 @@ pub(crate) struct Scanned {
 }
 
 impl Scanned {
+    pub(crate) fn locate(&self, id: &str) -> Option<u128> {
+        let mut parts = id.split(':');
+        let (kind, first, second) = (parts.next()?, parts.next()?, parts.next()?);
+        if parts.next().is_some() {
+            return None;
+        }
+        let found = match kind {
+            "native" => {
+                let (generation, sequence): (u64, u64) = (first.parse().ok()?, second.parse().ok()?);
+                self.briefs.iter().find(|brief| brief.generation == generation && brief.sequence == sequence && generation != FeedEventRow::DERIVED)
+            }
+            "derived" => {
+                let (hour, sequence): (i32, u32) = (first.parse().ok()?, second.parse().ok()?);
+                self.briefs.iter().find(|brief| brief.generation == FeedEventRow::DERIVED && brief.at.hour == hour && brief.sequence as u32 == sequence)
+            }
+            _ => None,
+        };
+        found.map(|brief| brief.at.key)
+    }
+
     pub(crate) fn decision_states(&self, query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
         let key = |event: &FeedEvent| (u128::from(event.generation) << 64) | u128::from(event.sequence);
         let mut out: Vec<Option<DecisionLifecycleState>> = vec![None; events.len()];

@@ -716,13 +716,14 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
         countries: None,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
         categories: vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones],
         exclude: None,
     };
-    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
+    let cards_at = |hour: i32| ScriptTailParams { branch_id: "1".into(), hour: Some(hour), from: Some(100), to: None, countries: None, group: None, search: None, row: None, sort: None, offset: None, limit: 64, events: None, statuses: None };
 
     let feed_b1 = EventFeedTail::load(&replay_source, &ask("1"), &context, &cancel).unwrap();
     let state_of = |page: &super::EventFeedTailReply, id: &str| {
@@ -755,6 +756,16 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
 
     let cards_b1 = DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap();
     assert_eq!(DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap(), cards_b1, "a second read of the hour, from the states the index remembers, is the same reply");
+    let notes = |reply: &super::ScriptOccurrenceTailReply| reply.rows.iter().flat_map(|row| row.occurrence.iter()).flat_map(|occurrence| &occurrence.edges).filter_map(|edge| edge.row.cause.as_ref()).map(|cause| cause.notes.len()).sum::<usize>();
+    let key = cards_b1.rows[0].key.clone();
+    let opened = DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(key.clone()), ..cards_at(101) }, &context, &cancel).unwrap();
+    assert_eq!(opened.rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), [key.as_str()], "the opened row is that row alone");
+    assert_eq!(notes(&cards_b1), 0, "list rows leave the notes to the opened row");
+    let reopened: usize = cards_b1.rows.iter().map(|row| notes(&DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(row.key.clone()), ..cards_at(101) }, &context, &cancel).unwrap())).sum();
+    assert!(reopened > 0, "opened rows carry them");
+    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map(|cause| (cause.selected_option, cause.target_recorded));
+    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map(|cause| (cause.selected_option, cause.target_recorded))), "a list row keeps the facts its notes carried");
+    assert!(DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:9:9".into()), ..cards_at(101) }, &context, &cancel).unwrap().rows.is_empty(), "a row not in the log at the hour is no row");
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(card_end_state(&cards_b1, "native:1:3"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
@@ -904,6 +915,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         countries,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
@@ -918,6 +930,7 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
         countries,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
@@ -1058,6 +1071,7 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
         countries: None,
         group: None,
         search: None,
+        row: None,
         sort: None,
         offset: None,
         limit: 64,
