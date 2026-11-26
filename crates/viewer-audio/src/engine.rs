@@ -611,6 +611,17 @@ impl Engine {
         (self.hour, self.emitters, self.instances.len(), voices)
     }
 
+    pub fn needs_frame(&self) -> bool {
+        self.voices.iter().flatten().any(|voice| matches!(voice.state,
+            State::FadingIn | State::FadingOut | State::Delayed))
+            || self.instances.iter().any(|instance| {
+                (instance.restart || self.content.as_ref().is_some_and(|content| content.catalog.effects[instance.effect].looping))
+                    && instance.slots.iter().filter_map(|slot| slot.voice).any(|(at, id)| {
+                        self.voices[at].as_ref().is_none_or(|voice| voice.id != id || voice.state == State::Stopped)
+                    })
+            })
+    }
+
     pub fn active(&self) -> bool {
         self.voices
             .iter()

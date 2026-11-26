@@ -364,6 +364,9 @@ impl Walker {
                     - pad.triggers[0])
                     .clamp(-1.0, 1.0);
                 self.climb = approach(self.climb, up * pace, FLY_EASE, dt);
+                if up == 0.0 && self.climb.abs() < 1e-3 * stop_scale {
+                    self.climb = 0.0;
+                }
                 self.feet[1] += self.climb * dt;
                 if self.free_camera {
                     let low = floor + MIN_FIRST_NEAR * CLEARANCE;

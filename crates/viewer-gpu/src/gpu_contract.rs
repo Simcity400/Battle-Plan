@@ -28,6 +28,7 @@ pub struct Targets {
     size: [u32; 2],
     world_size: [u32; 2],
     samples: u32,
+    pub surface_motion: crate::surface_motion::Coverage,
 }
 
 impl Targets {
@@ -112,6 +113,7 @@ impl Targets {
             refraction_depth: refraction_depth.create_view(&Default::default()),
             refraction_content: crate::textures::Content::next(),
             sea_bed,
+            surface_motion: Default::default(),
             size,
             world_size,
             samples,

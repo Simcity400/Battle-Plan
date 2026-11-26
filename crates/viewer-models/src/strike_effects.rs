@@ -200,6 +200,23 @@ impl Active {
 }
 
 impl Presentation {
+    pub fn visible_effect(
+        &self,
+        camera: Camera,
+        size: [u32; 2],
+        shown: impl Fn(Effect) -> bool,
+    ) -> bool {
+        if self.active.is_empty()
+            || camera.height - WATER_HEIGHT >= camera.defines.map_objects_cutoff
+        {
+            return false;
+        }
+        let admission = Admission::new(camera, size);
+        self.active
+            .values()
+            .any(|active| shown(active.impact.effect) && admission.admits(active.impact.bounds))
+    }
+
     pub fn effect(&self, key: (usize, u32, u32)) -> Option<Effect> {
         self.active
             .values()

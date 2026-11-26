@@ -4526,7 +4526,9 @@ impl Viewer {
         let size = ui.available_size();
         if size.x <= 0.0 || size.y <= 0.0 {
             self.rendered = None;
-            ui.ctx().request_repaint();
+            if self.capture.is_some() {
+                ui.ctx().request_repaint();
+            }
             self.wait_to_draw(document.playback.hour(), || format!("its map had no area to draw in ({} by {} points)", size.x, size.y), ui.ctx())?;
             return Ok(());
         }
@@ -5110,7 +5112,7 @@ impl Viewer {
         let moved = self.zoom.ease(camera, law, frame_delta, pixels, &floor);
         if stepped || moved {
             self.camera_manual = true;
-            ui.ctx().request_repaint();
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
         }
         if !free_mode {
             let mut orbited = false;
@@ -5143,7 +5145,7 @@ impl Viewer {
             if orbited {
                 self.zoom.reset();
                 self.camera_manual = true;
-                ui.ctx().request_repaint();
+                request_animation_frame(ui.ctx(), map_timer.elapsed());
             }
         }
         let pending_camera = crate::suite_input::take_camera(view_id).filter(|command| !command.is_cancelled());
@@ -5215,14 +5217,14 @@ impl Viewer {
                         let previous = self.walk.state().copied();
                         let eye = self.walk.camera(&controls, wheel, map, start, &world);
                         if self.walk.state() != previous.as_ref() || controls.moved_or_looked() {
-                            ui.ctx().request_repaint();
+                            request_animation_frame(ui.ctx(), map_timer.elapsed());
                         }
                         eye
                     } else {
                         let previous = self.free_cam;
                         let eye = self.fly(document, map, self.start_pick.at(), wheel, &controls);
                         if self.flight.is_some() || self.free_cam != previous || controls.moved_or_looked() {
-                            ui.ctx().request_repaint();
+                            request_animation_frame(ui.ctx(), map_timer.elapsed());
                         }
                         eye
                     };
@@ -5289,9 +5291,6 @@ impl Viewer {
                     .as_ref()
                     .is_ok_and(|defines| convoys_shown(&defines.convoys))
         });
-        if sailing {
-            ui.ctx().request_repaint();
-        }
         if (self.raid_tick != Some(tick) || sailing || self.convoys_sailing)
             && let Some(prepared) = posed.as_ref()
         {
@@ -5303,13 +5302,21 @@ impl Viewer {
                 .and_then(|capture| capture.time)
                 .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
             self.convoy_refused.clear();
-            units.extend(prepared.convoy_units(
+            let convoys = prepared.convoy_units(
                 &document.unit_models,
                 time,
                 &|x, z| heights.surface_height(x, z),
                 convoys_shown,
                 &mut self.convoy_refused,
-            ));
+            );
+            if !self.playing && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+                && convoys.iter().any(|(_, convoy)| camera.project_wrapped(convoy.position, pixels).is_some_and(|[x, y]| {
+                    x >= 0.0 && y >= 0.0 && x < pixels[0] as f32 && y < pixels[1] as f32
+                }))
+            {
+                request_animation_frame(ui.ctx(), map_timer.elapsed());
+            }
+            units.extend(convoys);
             scene
                 .apply(&state.device, &state.queue, SceneInput::SetRaidUnits(units))
                 .map_err(|error| error.to_string())?;
@@ -5515,7 +5522,7 @@ impl Viewer {
         );
         self.fade = Some(name_fade);
         if name_fade != LayerFade::instant(camera) {
-            ui.ctx().request_repaint();
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
         }
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
@@ -6544,11 +6551,12 @@ impl Viewer {
             1.0 / self.speed,
         );
         if day_night.blending_to(target_light) && self.capture.is_none() {
-            ui.ctx().request_repaint();
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
         }
         let layered_radar = self.playhead_map.as_ref().and_then(|side| side.products().radar.clone());
         let layered = self.layered_orders();
         let scene = self.scene.as_mut().unwrap();
+        scene.track_paused_motion((!self.playing && self.capture.is_none()).then_some(shown_hour));
         let (device, queue) = (&state.device, &state.queue);
         if let Some(field) = layered_radar.as_deref().or(self.prepared_overlay.as_ref().map(|prepared| &*prepared.radar)) {
             scene
@@ -6624,9 +6632,6 @@ impl Viewer {
             CameraMode::Fly => Self::fly_model(flying, &aircraft),
             _ => None,
         };
-        if free_mode && player.is_some() {
-            ui.ctx().request_repaint();
-        }
         scene
             .apply(&state.device, &state.queue, SceneInput::SetPlayer(player))
             .map_err(|error| error.to_string())?;
@@ -6708,8 +6713,20 @@ impl Viewer {
             crate::perf_log::gpu_times(scene.gpu_frame_times(&state.device));
         }
         rendered.map_err(|e| e.to_string())?;
-        if scene.waiting_for_build() {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        if scene.needs_frame() {
+            request_animation_frame(ui.ctx(), map_timer.elapsed());
+        } else if !self.playing && self.capture.is_none() {
+            let view = viewer_models::motion_view::MotionView::new(&camera, pixels);
+            let mut delay = scene.next_arrival(&camera, &view, animation_time);
+            if sailing && camera.height - viewer_models::WATER_HEIGHT < camera.defines.map_objects_cutoff
+                && let Some(prepared) = &posed
+            {
+                let heights = document.content.heights();
+                delay = delay.min(prepared.next_convoy_arrival(&document.unit_models, &view, &|x, z| heights.surface_height(x, z)));
+            }
+            if let Ok(delay) = Duration::try_from_secs_f32(delay) {
+                request_frame_after(ui.ctx(), delay, map_timer.elapsed());
+            }
         }
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
@@ -6727,6 +6744,7 @@ impl Viewer {
             let _other_cost = replay_frame::cpu::scope("frame.audio", Some("other"));
             present_audio(
                 &mut self.audio,
+                ui.ctx(),
                 document,
                 scene,
                 &camera,
@@ -7246,6 +7264,16 @@ impl InterfaceSound {
     }
 }
 
+fn request_animation_frame(ctx: &egui::Context, elapsed: Duration) {
+    request_frame_after(ctx, Duration::ZERO, elapsed);
+}
+
+fn request_frame_after(ctx: &egui::Context, delay: Duration, elapsed: Duration) {
+    let interval = Duration::from_secs_f64(1.0 / viewer_runtime::display_refresh::rate());
+    let prediction = ctx.input(|input| Duration::try_from_secs_f32(input.predicted_dt).unwrap_or_default());
+    ctx.request_repaint_after(delay.max(interval).saturating_sub(elapsed) + prediction);
+}
+
 fn build_audio_frame(
     document: &Document,
     scene: &Scene,
@@ -7327,6 +7355,7 @@ fn build_audio_frame(
 
 fn present_audio(
     audio: &mut Option<viewer_audio::Owner>,
+    ctx: &egui::Context,
     document: &Document,
     scene: &Scene,
     camera: &Camera,
@@ -7341,7 +7370,12 @@ fn present_audio(
     let Some(frame) = build_audio_frame(document, scene, camera, inputs) else {
         return;
     };
-    let owner = audio.get_or_insert_with(|| viewer_audio::System::shared().owner());
+    let owner = audio.get_or_insert_with(|| {
+        let mut owner = viewer_audio::System::shared().owner();
+        let ctx = ctx.clone();
+        owner.set_wake(move || request_animation_frame(&ctx, Duration::ZERO));
+        owner
+    });
     owner.claim();
     owner.frame(source, frame);
 }

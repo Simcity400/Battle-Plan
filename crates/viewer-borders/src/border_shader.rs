@@ -48,6 +48,7 @@ pub const SHADOW_SLOT: u32 = 3;
 
 pub struct Border {
     retained: viewer_scene_base::shader_scene::Program,
+    animated: bool,
     pipeline: Arc<gpu::Pipeline>,
     pub texel_reads: Option<String>,
 }
@@ -142,6 +143,7 @@ impl Border {
         );
         Ok(Self {
             retained,
+            animated: viewer_scene_base::shader_constants::reads_time(&pipeline, 2, 16),
             pipeline,
             texel_reads,
         })
@@ -209,10 +211,10 @@ impl Border {
                 ));
             }
         }
-        if !visible {
+        if bound.is_empty() {
             return Ok(retained);
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled borders");
+        let (mut pass, sampled) = viewer_scene_base::shader_scene::surface_pass(encoder, targets, "compiled borders", self.animated);
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
@@ -230,6 +232,9 @@ impl Border {
                 shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(run.range.clone(), 0, 0..1);
             }
+        }
+        if sampled {
+            pass.end_occlusion_query();
         }
         Ok(retained)
     }

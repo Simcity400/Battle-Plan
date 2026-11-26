@@ -40,6 +40,22 @@ pub fn both(
     Ok(())
 }
 
+pub fn reads_time(pipeline: &gpu::Pipeline, slot: u32, byte: u32) -> bool {
+    use std::mem::offset_of;
+    use viewer_gpu::frame::FrameConstants;
+    let scene_times = [
+        offset_of!(FrameConstants, cam_look_at_dir_global_time) + 3 * size_of::<f32>(),
+        offset_of!(FrameConstants, fow_opacity_time_snow_mud_day_night) + size_of::<f32>(),
+    ];
+    pipeline.constant_reads().iter().any(|buffer| {
+        let reads = |at| buffer.reads.iter().any(|read| read.contains(&at));
+        match buffer.binding / 2 {
+            0 => scene_times.iter().any(|&at| reads(at as u32)),
+            bound => bound == slot && reads(byte),
+        }
+    })
+}
+
 #[derive(Clone, Copy)]
 pub enum WorldPixelConstants {
     LightGrid([f32; 4]),

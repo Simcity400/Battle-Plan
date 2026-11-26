@@ -7,6 +7,7 @@ static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 pub mod aircraft_events;
 pub mod entity_animation;
 pub mod mesh_pose;
+pub mod motion_view;
 pub mod poses;
 pub mod sound_events;
 pub mod strike_effects;
@@ -3247,6 +3248,36 @@ impl ModelPass {
         let scale = instance.scale.abs();
         let centre = [instance.position[0] + offset + cull.x - camera.center[0], instance.position[1] + mesh.height * scale * 0.5, instance.position[2]];
         cull.test(centre, (mesh.bound + mesh.height * 0.5) * scale, mesh.cull_distance_squared)
+    }
+
+    pub fn shows_animation(
+        &self,
+        camera: &Camera,
+        rectangle: Option<[f32; 4]>,
+        offsets: &[f32],
+    ) -> bool {
+        self.drawn() > 0
+            && !self.players.is_empty()
+            && self.field.source_order().any(|(group, index)| {
+                let group = &self.field.groups[group];
+                let instance = &self.field.instances[index];
+                let (seed, identity) = instance.animation_key();
+                let key = self.player_key(group.mesh, instance);
+                let Some(rig) = self.rigs.get(key.0) else {
+                    return false;
+                };
+                !self.hidden.contains(&(group.mesh, seed, identity))
+                    && self
+                        .players
+                        .get(&key)
+                        .is_some_and(|player| player.animating(rig))
+                    && offsets.iter().any(|&offset| {
+                        visible(group, offset, rectangle)
+                            && self
+                                .game_culled(group.mesh, instance, offset, camera)
+                                .is_none()
+                    })
+            })
     }
 
     pub fn drawn(&self) -> u32 {

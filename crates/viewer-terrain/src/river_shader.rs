@@ -47,6 +47,7 @@ pub const SHADOW_SLOT: u32 = 15;
 
 pub struct River {
     retained: viewer_scene_base::shader_scene::Program,
+    animated: bool,
     pipeline: Arc<gpu::Pipeline>,
     pub texel_reads: Option<String>,
 }
@@ -138,6 +139,7 @@ impl River {
         );
         Ok(Self {
             retained,
+            animated: viewer_scene_base::shader_constants::reads_time(&pipeline, 1, 64),
             pipeline,
             texel_reads,
         })
@@ -202,7 +204,10 @@ impl River {
                 ));
             }
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled rivers");
+        if bound.is_empty() {
+            return Ok(());
+        }
+        let (mut pass, sampled) = viewer_scene_base::shader_scene::surface_pass(encoder, targets, "compiled rivers", self.animated);
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
@@ -218,6 +223,9 @@ impl River {
             previous = Some(bindings);
             shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(run.indices.clone(), 0, 0..1);
+        }
+        if sampled {
+            pass.end_occlusion_query();
         }
         Ok(())
     }

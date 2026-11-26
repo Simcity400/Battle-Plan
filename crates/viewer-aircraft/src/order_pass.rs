@@ -350,6 +350,11 @@ impl OrderPass {
                 for &offset in &admitted.offsets {
                     let constants = Self::slot(draw, resources, outer, offset, time, mode);
                     let program = &resources.compiled[&mode];
+                    if mode != Mode::Shadow && program.reads_time
+                        && (constants.ofs_x_tex_fx[1] != 0.0 || constants.ofs_x_tex_fx[2] != 0.0)
+                    {
+                        arena.request_frame();
+                    }
                     let bound = program.bindings(
                         arena,
                         native.scene,

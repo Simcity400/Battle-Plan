@@ -19,7 +19,7 @@ struct Inner {
     chunks: Vec<Chunk>,
     current: usize,
     frame: u64,
-    waiting_for_build: bool,
+    needs_frame: bool,
     recent: Vec<Recent>,
     last: [Option<Recent>; super::CONSTANT_BINDINGS],
     vertices: Vec<Recent>,
@@ -58,12 +58,12 @@ impl Slice {
 }
 
 impl Arena {
-    pub fn wait_for_build(&self) {
-        self.inner.borrow_mut().waiting_for_build = true;
+    pub fn request_frame(&self) {
+        self.inner.borrow_mut().needs_frame = true;
     }
 
-    pub fn waiting_for_build(&self) -> bool {
-        self.inner.borrow().waiting_for_build
+    pub fn needs_frame(&self) -> bool {
+        self.inner.borrow().needs_frame
     }
 
     pub fn refuse(&self, reason: &str) {
@@ -116,7 +116,7 @@ impl Arena {
         }
         inner.current = 0;
         inner.frame += 1;
-        inner.waiting_for_build = false;
+        inner.needs_frame = false;
         inner.recent.clear();
         inner.last.fill(None);
         inner.vertices.clear();

@@ -215,7 +215,19 @@ impl Drop for ShaderFrame<'_> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct SurfaceView {
+    camera: Camera,
+    hour: Option<i32>,
+    graphics: dashboard_core::protocol::MapGraphics,
+    visibility: viewer_foundation::mode_visibility::Visibility,
+    no_water: bool,
+    interface: bool,
+}
+
 pub struct Scene {
+    interaction_hour: Option<i32>,
+    surface_view: Option<SurfaceView>,
     #[cfg(any(test, feature = "test-support"))]
     pub test_faults: failure_tests::Faults,
     graphics: dashboard_core::protocol::MapGraphics,
@@ -909,6 +921,8 @@ impl Scene {
             sky: None,
             arena: shader_pipeline::gpu::Arena::new(device),
             last_animation_time: None,
+            interaction_hour: None,
+            surface_view: None,
             actor_motion: Default::default(),
             poses: viewer_models::poses::Worker::new(),
             pose_jobs: Default::default(),
@@ -1792,6 +1806,7 @@ impl Scene {
     ) -> io::Result<()> {
         let mut pass = RiverPass::new(device, self.graphics.samples, queue, SCENE_FORMAT, assets)?;
         pass.upload(device, mesh)?;
+        self.surface_view = None;
         self.rivers = Some(pass);
         Ok(())
     }
@@ -2256,6 +2271,7 @@ impl Scene {
     ) -> io::Result<()> {
         let mut pass = BorderPass::new(device, self.graphics.samples, queue, SCENE_FORMAT, assets)?;
         pass.upload(device, meshes, straits)?;
+        self.surface_view = None;
         self.borders = Some(pass);
         self.demilitarized = Some(DemilitarizedPass::new(
             device,
@@ -2276,6 +2292,7 @@ impl Scene {
         regions: &Regions,
         zone: &Zone,
     ) -> io::Result<()> {
+        self.surface_view = None;
         if let Some(pass) = &mut self.borders {
             pass.set_classes(device, meshes, regions, zone)?;
         }
@@ -2295,6 +2312,7 @@ impl Scene {
         classes: &viewer_borders::border_pass::ClassPlan,
         zone: &viewer_borders::demilitarized::ZonePlan,
     ) -> io::Result<()> {
+        self.surface_view = None;
         Self::install_border_plans(
             (
                 &mut self.borders,
@@ -2377,6 +2395,7 @@ impl Scene {
             }));
         }
         if let Some((classes, zone)) = border_plans {
+            self.surface_view = None;
             let parts = (
                 &mut self.borders,
                 &mut self.demilitarized,
@@ -2491,6 +2510,7 @@ impl Scene {
         strategic_regions: &[u32],
         color: [f32; 4],
     ) -> io::Result<()> {
+        self.surface_view = None;
         if let Some(pass) = &mut self.borders {
             pass.set_plan(device, &plan.classes)?;
         }
@@ -2691,6 +2711,12 @@ impl Scene {
         self.detail_laps.start(clock);
         self.detail_laps.record_walls();
         let rail_alpha = self.rail_fade.update(&camera, animation_time);
+        let rail_target = f32::from(u8::from(camera.height < camera.defines.railway_cutoff));
+        if self.snow_presentation.changing()
+            || (self.railways.is_some() && rail_alpha != rail_target && camera.defines.railway_cutoff_speed > 0.0)
+        {
+            arena.request_frame();
+        }
         let rails_shown = self.rail_fade.trains_visible();
         let trains_visible = rails_shown && self.graphics.supply_trains();
         let bridges_visible = rails_shown && self.graphics.railway_bridges();
@@ -2923,6 +2949,17 @@ impl Scene {
         );
         self.poses.give(animation_time, &mut self.pose_jobs);
         self.detail_laps.lap("poses");
+        let offsets = viewer_terrain::terrain::wrap_copies(camera, size);
+        let view = SurfaceView {
+            camera,
+            hour: self.interaction_hour,
+            graphics: self.graphics,
+            visibility: self.visibility,
+            no_water,
+            interface: overlay.interface,
+        };
+        let changed = self.surface_view.replace(view) != Some(view);
+        self.targets.as_mut().expect("created above").surface_motion.begin(device, changed, offsets.len(), self.interaction_hour.is_some());
         let targets = self.targets.as_ref().expect("created above");
         let events_copy_span = viewer_runtime::profiling::span("frame_events");
         let events = step::frame_events(
@@ -3042,7 +3079,6 @@ impl Scene {
         let shadow_prepared = self.shadow.prepare(&globals.frame, camera, size);
         let shadow_matrix = shadow_prepared.map(|prepared| prepared.texture_matrix);
         globals.shadow_matrix = shadow_matrix.unwrap_or([[0.0; 4]; 4]);
-        let offsets = viewer_terrain::terrain::wrap_copies(camera, size);
         let native_frames = offsets
             .iter()
             .map(|offset| {
@@ -4352,7 +4388,24 @@ impl Scene {
         self.sprite_pass.draw(&mut encoder, targets);
         #[cfg(any(test, feature = "test-support"))]
         faults.draw_sentinel(device, &mut encoder, targets);
+        targets.surface_motion.finish(&mut encoder);
         mark(&mut encoder, "overlay_sprites");
+        if self.interaction_hour.is_some() && !targets.surface_motion.live() && (
+            particle_packets.as_ref().is_some_and(|packets| packets.moving)
+            || self.strikes.visible_effect(camera, size, |effect| shows_impact(&self.graphics, effect))
+            || player.is_some_and(|player| player.pass.shows_animation(&actor_camera, None, &actor_offsets))
+            || mesh_layers.iter().any(|(pass, enabled, _, layer)| {
+                *enabled && pass.is_some_and(|pass| {
+                    if matches!(*layer, "trains" | "aircraft") {
+                        pass.drawn() != 0
+                    } else {
+                        pass.shows_animation(&actor_camera, seen_ground, &pose_offsets)
+                    }
+                })
+            })
+        ) {
+            arena.request_frame();
+        }
         if let Some(timer) = timed.borrow_mut().as_mut() {
             timer.finish(&mut encoder);
         }
@@ -4384,6 +4437,7 @@ impl Scene {
         if let Some(frame_timer) = &mut self.frame_timer {
             frame_timer.submitted();
         }
+        self.targets.as_mut().expect("rendered above").surface_motion.submitted();
         cpu_mark("queue_submit");
         self.compiled_terrain.submitted();
         if let Some(political) = political {
@@ -4627,8 +4681,41 @@ impl Scene {
         warnings
     }
 
-    pub fn waiting_for_build(&self) -> bool {
-        self.arena.waiting_for_build()
+    pub fn track_paused_motion(&mut self, hour: Option<i32>) {
+        self.interaction_hour = hour;
+    }
+
+    pub fn needs_frame(&self) -> bool {
+        self.arena.needs_frame()
+            || self.unit_history.carrying_figures()
+            || self
+                .targets
+                .as_ref()
+                .is_some_and(|targets| targets.surface_motion.live())
+    }
+
+    pub fn next_arrival(
+        &self,
+        camera: &Camera,
+        view: &viewer_models::motion_view::MotionView,
+        seconds: f32,
+    ) -> f32 {
+        let mut next = f32::INFINITY;
+        if self.graphics.supply_trains()
+            && self.rail_fade.trains_visible()
+            && let Some((_, assets, plan)) = &self.trains
+        {
+            next = plan.next_arrival(assets, view, seconds);
+        }
+        if self.graphics.aircraft()
+            && viewer_aircraft::aircraft::draws(camera)
+            && let Some((_, assets, plan)) = &self.aircraft
+        {
+            next = next.min(plan.next_arrival(assets, view, seconds, |mission| {
+                self.graphics.air_mission(mission)
+            }));
+        }
+        next
     }
 
     pub fn draw_refusals(&self) -> std::collections::BTreeSet<String> {
@@ -4793,17 +4880,18 @@ fn hidden_map_frame_actors(
         ),
     >,
 ) -> BTreeSet<(usize, u32, u32)> {
-    use viewer_models::strike_effects::Effect;
     let table = table.into_iter().filter(|_| !graphics.map_table);
-    let impacts = impacts.into_iter().filter_map(|(key, effect)| {
-        match effect? {
-            Effect::CriticalBombardment => !graphics.bombardment_explosions,
-            Effect::MissileExplosion => !graphics.missile_explosions,
-            Effect::Nuclear | Effect::Thermonuclear => !graphics.nuclear_strikes,
-        }
-        .then_some(key)
-    });
+    let impacts = impacts.into_iter().filter_map(|(key, effect)| (!shows_impact(graphics, effect?)).then_some(key));
     table.chain(impacts).collect()
+}
+
+fn shows_impact(graphics: &dashboard_core::protocol::MapGraphics, effect: viewer_models::strike_effects::Effect) -> bool {
+    use viewer_models::strike_effects::Effect;
+    match effect {
+        Effect::CriticalBombardment => graphics.bombardment_explosions,
+        Effect::MissileExplosion => graphics.missile_explosions,
+        Effect::Nuclear | Effect::Thermonuclear => graphics.nuclear_strikes,
+    }
 }
 
 #[cfg(test)]

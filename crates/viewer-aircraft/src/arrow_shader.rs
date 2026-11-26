@@ -58,6 +58,7 @@ fn late_depth(mut state: DepthStencilState, late: bool) -> DepthStencilState {
 pub const SHADOW_SLOT: u32 = 2;
 
 pub struct Arrow {
+    pub reads_time: bool,
     retained: viewer_scene_base::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     reference: u32,
@@ -187,6 +188,7 @@ impl Arrow {
         );
         Ok(Self {
             retained,
+            reads_time: viewer_scene_base::shader_constants::reads_time(&pipeline, block, if symbol { 32 } else { 48 }),
             pipeline,
             reference,
             block,

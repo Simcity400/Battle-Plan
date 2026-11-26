@@ -31,8 +31,10 @@ pub struct Source {
     pub layers: content_reader_layers::ResolvedLayers,
 }
 
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
 enum Command {
-    Frame(u64, Arc<Source>, Frame),
+    Frame(u64, Arc<Source>, Frame, Option<Wake>),
     Mix(u64, Mix),
     Claim(u64),
     Release(u64),
@@ -52,6 +54,7 @@ pub struct System {
 }
 
 pub struct Owner {
+    wake: Option<Wake>,
     token: u64,
     system: Arc<System>,
     last: Option<Instant>,
@@ -97,6 +100,7 @@ impl System {
 
     pub fn owner(self: &Arc<Self>) -> Owner {
         Owner {
+            wake: None,
             token: self.next.fetch_add(1, Ordering::Relaxed),
             system: Arc::clone(self),
             last: None,
@@ -131,6 +135,10 @@ impl Owner {
         }
     }
 
+    pub fn set_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        self.wake = Some(Arc::new(wake));
+    }
+
     pub fn owns(&self) -> bool {
         self.system.owner.load(Ordering::Acquire) == self.token
     }
@@ -163,7 +171,7 @@ impl Owner {
             .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
         self.last = Some(now);
         self.system
-            .send(Command::Frame(self.token, Arc::clone(source), frame));
+            .send(Command::Frame(self.token, Arc::clone(source), frame, self.wake.clone()));
     }
 
     pub fn status(&self) -> Status {
@@ -541,6 +549,7 @@ fn control(commands: mpsc::Receiver<Command>, status: Arc<Mutex<Status>>, silent
 }
 
 struct Control {
+    wake: Option<Wake>,
     engine: Engine,
     status: Arc<Mutex<Status>>,
     log_file: Option<std::fs::File>,
@@ -572,6 +581,7 @@ impl Control {
         loader("map music loader", music_requests, done_send);
         Self {
             engine,
+            wake: None,
             status,
             log_file,
             source: None,
@@ -614,11 +624,13 @@ impl Control {
     fn apply(&mut self, command: Command) {
         match command {
             Command::Claim(token) => {
+                self.wake = None;
                 self.owner = token;
                 self.engine.silence();
             }
             Command::Release(token) => {
                 if self.owner == token {
+                    self.wake = None;
                     self.owner = 0;
                     self.engine.silence();
                 }
@@ -628,7 +640,7 @@ impl Control {
                     self.engine.set_mix(mix);
                 }
             }
-            Command::Frame(token, source, frame) => {
+            Command::Frame(token, source, frame, wake) => {
                 if token != self.owner {
                     return;
                 }
@@ -646,6 +658,7 @@ impl Control {
                     self.source = Some(source);
                     self.generation += 1;
                 }
+                self.wake = wake;
                 self.engine.frame(&frame);
             }
         }
@@ -660,6 +673,9 @@ impl Control {
         self.request_loads();
         self.keep_device(now);
         self.mix(now);
+        if self.wake.is_some() && self.engine.needs_frame() && let Some(wake) = self.wake.take() {
+            wake();
+        }
         self.write_log(now);
     }
 

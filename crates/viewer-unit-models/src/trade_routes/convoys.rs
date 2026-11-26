@@ -196,6 +196,55 @@ fn collides(convoys: &[SailingConvoy], index: usize) -> bool {
 }
 
 impl ConvoyFleet {
+    pub fn next_arrival(
+        &self,
+        lines: &[ConvoyLine],
+        assets: &UnitModelAssets,
+        defines: &ConvoyDefines,
+        view: &viewer_models::motion_view::MotionView,
+        height: &dyn Fn(f32, f32) -> f32,
+    ) -> f32 {
+        let mut next = f32::INFINITY;
+        for (index, route) in self.lines.iter().enumerate() {
+            let Some(slot) = assets.bake_slot(&lines[index].entity) else {
+                continue;
+            };
+            let library = assets.library();
+            let mesh = &library.meshes[slot];
+            let times: Vec<_> = std::iter::once(0.0)
+                .chain(route.lengths.iter().scan(0.0, |sum, length| {
+                    *sum += length;
+                    Some(*sum)
+                }))
+                .collect();
+            let path = times
+                .iter()
+                .zip(&route.points)
+                .map(|(&at, &[x, z])| (at, [x, height(x.rem_euclid(route.width), z), z]));
+            view.times(path, mesh, 1.0, |start, end| {
+                for convoy in self.convoys.iter().filter(|convoy| convoy.line == index) {
+                    let at = times[convoy.segment] + convoy.distance;
+                    let speed = defines.speed;
+                    let delay = if !convoy.active && speed > 0.0 {
+                        convoy.sleep.max(0.0) + start / speed
+                    } else if !convoy.active || speed == 0.0 {
+                        continue;
+                    } else if speed > 0.0 && at > end {
+                        (times.last().unwrap() - at + start) / speed
+                    } else if speed < 0.0 && at < start {
+                        continue;
+                    } else if speed < 0.0 {
+                        ((end - at) / speed).max(0.0)
+                    } else {
+                        ((start - at) / speed).max(0.0)
+                    };
+                    next = next.min(delay);
+                }
+            });
+        }
+        next
+    }
+
     pub fn new(
         lines: &[ConvoyLine],
         defines: &ConvoyDefines,

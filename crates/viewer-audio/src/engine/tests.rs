@@ -333,6 +333,7 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
         (voice.volume, voice.state)
     };
     assert_eq!(volume(&fixture, 1), (0.0, State::FadingIn));
+    assert!(fixture.engine.needs_frame());
     for emitter in &mut first.emitters {
         emitter.age = 0.25;
     }
@@ -350,6 +351,7 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
     let mut waited = 0.75f32;
     let mut age = 0.5;
     while waited < delay {
+        assert!(fixture.engine.needs_frame());
         assert_eq!(
             volume(&fixture, 2),
             (0.5, State::Delayed),
@@ -363,6 +365,7 @@ fn fades_step_the_volume_by_frame_and_a_delayed_voice_skips_its_fade_in() {
         waited += 0.25;
     }
     assert_eq!(volume(&fixture, 2), (0.5, State::Playing));
+    assert!(!fixture.engine.needs_frame());
 }
 
 #[test]

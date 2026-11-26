@@ -1642,6 +1642,22 @@ pub fn stage_rig(dive_intro: bool) -> Rig {
 }
 
 impl Player {
+    pub fn animating(&self, rig: &Rig) -> bool {
+        self.nodes
+            .iter()
+            .zip(&rig.nodes)
+            .enumerate()
+            .any(|(index, (playing, node))| {
+                playing.as_ref().is_some_and(|playing| {
+                    let at = self.native_samples[index].map_or(playing.clip, |sample| sample.clip);
+                    let clip = &node.clips[at];
+                    clip.state.speed != 0.0
+                        && ((played_animation(node, at) && duration(clip) > 0.0)
+                            || !clip.state.events.is_empty())
+                })
+            })
+    }
+
     pub fn root_play_position(&self, rig: &Rig) -> Option<(f32, f32)> {
         let node = rig.nodes.first()?;
         let playing = self.nodes.first()?.as_ref()?;

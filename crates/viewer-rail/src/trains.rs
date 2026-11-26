@@ -857,6 +857,84 @@ impl TrainPlan {
         self.services.iter().map(|service| (self.routes[service.route].path.as_slice(), service.departed)).collect()
     }
 
+    pub fn next_arrival(
+        &self,
+        assets: &TrainAssets,
+        view: &viewer_models::motion_view::MotionView,
+        seconds: f32,
+    ) -> f32 {
+        let speed = assets.defines.speed;
+        if self.fleet_cap <= 0 || speed <= 0.0 {
+            return f32::INFINITY;
+        }
+        let mut next = f32::INFINITY;
+        let mut passage = |route: &Route, car: &Wagon, departure: f32, tail: f32| {
+            let Some(slot) = assets.library.slot(&car.entity) else {
+                return;
+            };
+            let path = route
+                .distance()
+                .iter()
+                .zip(route.points())
+                .map(|(&distance, position)| {
+                    (
+                        departure + distance / speed,
+                        std::array::from_fn(|axis| position[axis] + car.shift[axis]),
+                    )
+                });
+            view.times(
+                path,
+                &assets.library.meshes[slot],
+                car.scale.abs(),
+                |start, end| {
+                    if end + tail >= seconds {
+                        next = next.min((start - seconds).max(0.0));
+                    }
+                },
+            );
+        };
+        for service in &self.services {
+            let mut tail = 0.0;
+            for &index in &service.cars {
+                let car = assets.wagon(index);
+                tail += car.length / speed;
+                passage(
+                    &self.routes[service.route],
+                    car,
+                    service.departed as f32,
+                    tail,
+                );
+            }
+        }
+        let cars: BTreeSet<_> = self
+            .consists
+            .values()
+            .flatten()
+            .flat_map(|consist| {
+                consist
+                    .fixed()
+                    .chain(consist.wagon_last)
+                    .chain(consist.wagons.iter().copied())
+            })
+            .collect();
+        for (&weight, routes) in self.weights.iter().zip(&self.departures) {
+            if weight <= 0 {
+                continue;
+            }
+            for &route in routes {
+                for &car in &cars {
+                    passage(
+                        &self.routes[route],
+                        assets.wagon(car),
+                        self.next_departure as f32,
+                        0.0,
+                    );
+                }
+            }
+        }
+        next
+    }
+
     pub fn field(&mut self, assets: &TrainAssets, time: f32) -> &mut ModelField {
         let FieldScratch {
             placed,

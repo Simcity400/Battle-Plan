@@ -384,12 +384,35 @@ pub fn world_pass<'a>(
     targets: &Targets,
     label: &str,
 ) -> wgpu::RenderPass<'a> {
+    world_pass_with_query(encoder, targets, label, None)
+}
+
+pub fn surface_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    targets: &Targets,
+    label: &str,
+    animated: bool,
+) -> (wgpu::RenderPass<'a>, bool) {
+    let query = animated.then(|| targets.surface_motion.query()).flatten();
+    let mut pass = world_pass_with_query(encoder, targets, label, query.map(|(set, _)| set));
+    if let Some((_, index)) = query {
+        pass.begin_occlusion_query(index);
+    }
+    (pass, query.is_some())
+}
+
+fn world_pass_with_query<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    targets: &Targets,
+    label: &str,
+    query: Option<&wgpu::QuerySet>,
+) -> wgpu::RenderPass<'a> {
     encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
         depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
         timestamp_writes: None,
-        occlusion_query_set: None,
+        occlusion_query_set: query,
         multiview_mask: None,
     })
 }

@@ -77,6 +77,7 @@ pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Water {
     retained: viewer_scene_base::shader_scene::Program,
+    animated: bool,
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
     pub reads_snow_mud: bool,
@@ -172,6 +173,7 @@ impl Water {
         );
         Ok(Self {
             retained,
+            animated: viewer_scene_base::shader_constants::reads_time(&pipeline, 3, 0),
             pipeline,
             vertices,
             reads_snow_mud,
@@ -232,7 +234,10 @@ impl Water {
                     .map_err(refuse)?,
             );
         }
-        let mut pass = viewer_scene_base::shader_scene::world_pass(encoder, targets, "compiled water");
+        if bound.is_empty() {
+            return Ok(());
+        }
+        let (mut pass, sampled) = viewer_scene_base::shader_scene::surface_pass(encoder, targets, "compiled water", self.animated);
         let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
@@ -246,6 +251,9 @@ impl Water {
             previous = Some(bindings);
             shader_pipeline::gpu::stats::draw();
             pass.draw(0..4, 0..1);
+        }
+        if sampled {
+            pass.end_occlusion_query();
         }
         Ok(())
     }
