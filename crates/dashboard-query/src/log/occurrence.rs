@@ -553,6 +553,7 @@ impl<P> Index<P> {
         let state_ok = |state: Option<u8>| ask.states.is_none_or(|states| state.is_some_and(|state| states.contains(&state)));
         let mut chips = vec![0u64; ask.chips.len()];
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
+        let mut live_count = 0u64;
         let mut history: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history_total = 0u64;
         let mut changing_keys = Vec::new();
@@ -583,6 +584,7 @@ impl<P> Index<P> {
                 }
             }
             let live = state.is_some_and(|state| self.live & 1 << state != 0);
+            live_count += u64::from(live);
             if ask.live_first && live {
                 live_rows.push((at, state));
                 continue;
@@ -678,7 +680,7 @@ impl<P> Index<P> {
                 self.next_rank_change(&rows, &changing_keys, hour, (column, direction), next_change)
             };
         }
-        Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
+        Ok(Answer { hour, total, live: live_count, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
     }
 
     fn next_rank_change(&self, rows: &[Shown], changing: &[(u32, i32)], hour: i32, order: (usize, Direction), mut next: Option<i32>) -> Option<i32> {

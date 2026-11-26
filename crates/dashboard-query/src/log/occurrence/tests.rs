@@ -54,6 +54,7 @@ fn predicates_apply_before_the_count_and_the_slice_and_chips_count_the_matching_
     assert_eq!(filtered.total, 20, "the twenty running rows, all older than the newest eighty");
     assert_eq!(ids(&index, &filtered), (10..20).rev().collect::<Vec<u128>>(), "the window holds matching rows though the newest rows do not match");
     assert_eq!(filtered.chips, [20, 20]);
+    assert_eq!(filtered.live, 20, "the live count is every matching live row, whether or not they are moved to the front");
     let live = index.ask(&holders(), &Ask { live_first: true, offset: 18, limit: 4, chips: &chips, ..ask(200) }).unwrap();
     assert_eq!((live.total, live.live), (100, 20));
     assert_eq!(live.chips, [20, 20], "the running chip counts the population, not the rows shown");
@@ -67,7 +68,7 @@ fn a_state_belongs_to_the_hour_asked_and_its_change_is_the_next_change() {
     let index = Index::new(vec![entry], Vec::new(), &[RUNNING]).unwrap();
     let running = [RUNNING];
     let at_20 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(20) }).unwrap();
-    assert_eq!((at_20.total, at_20.live, at_20.next_change), (1, 0, Some(30)));
+    assert_eq!((at_20.total, at_20.live, at_20.next_change), (1, 1, Some(30)), "one running row is one live row in any order");
     let at_30 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(30) }).unwrap();
     assert_eq!(at_30.total, 0, "it ended at 30");
     assert!(Index::new(vec![Occurrence { states: Box::new([(11, RUNNING)]), ..occurrence(1, 10, 10) }], Vec::new(), &[]).is_err(), "a first state is the observation");
