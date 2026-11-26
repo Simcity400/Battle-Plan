@@ -123,23 +123,26 @@ pub(crate) enum Chosen {
     Refused(String),
 }
 
-pub(crate) fn chosen(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, hour: i32) -> io::Result<Chosen> {
+pub(crate) fn chosen(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, holders: &Holders, hour: i32) -> io::Result<Chosen> {
     let Some(group) = group else {
         return Ok(if countries.is_empty() { Chosen::Population } else { Chosen::These(countries.to_vec()) });
     };
-    let members = groups.members(group, hour)?;
-    Ok(match members.refused {
-        Some(reason) => Chosen::Refused(reason),
-        None => Chosen::These(members.tags.into_iter().map(Country::from).collect()),
+    let members = groups.slots_at(group, holders, hour)?;
+    Ok(match &members.slots {
+        Err(reason) => Chosen::Refused(reason.clone()),
+        Ok(slots) => Chosen::These(slots.iter().copied().map(Country::Slot).collect()),
     })
 }
 
-pub(crate) fn chosen_set(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, holders: &Holders, hour: i32) -> Option<Vec<u32>> {
-    match groups.chosen_slots(group, countries, holders, hour) {
+pub(crate) fn chosen_set(countries: &[Country], group: Option<&GroupSelection>, groups: &GroupsAt, holders: &Holders, hour: i32) -> Option<Arc<[u32]>> {
+    if let Some(group) = group {
+        return groups.slots_at(group, holders, hour).ok()?.slots.as_ref().ok().cloned();
+    }
+    match groups.chosen_slots(None, countries, holders, hour) {
         Ok(Ok(Some(slots))) => {
             let mut slots: Vec<u32> = slots.into_iter().collect();
             slots.sort_unstable();
-            Some(slots)
+            Some(slots.into())
         }
         _ => None,
     }
@@ -650,8 +653,12 @@ impl AtHour for AirForceAt {
         }
     }
 
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        (Self::reads_in(params, owner, stage, held, at), at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour))
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+        at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -667,7 +674,7 @@ impl AtHour for AirForceAt {
             AirForceMeasure::Planes => "air planes",
             AirForceMeasure::Wings => "air wings",
         };
-        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, frame.hour)? {
             Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::AirForceTotals>(frame, &Keys::All) {
@@ -788,8 +795,12 @@ impl AtHour for NavyAt {
         }
     }
 
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        (Self::reads_in(params, owner, stage, held, at), at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour))
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+        at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -811,7 +822,7 @@ impl AtHour for NavyAt {
             NavyMeasure::Ships => "ships",
             NavyMeasure::Strength => "hull strength",
         };
-        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, frame.hour)? {
             Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::NavyTotals>(frame, &Keys::All) {

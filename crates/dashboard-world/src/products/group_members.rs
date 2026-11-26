@@ -4,7 +4,7 @@ use dashboard_query::{
     Query,
     identity::{Country, Holder, Holders, SLOT_MARK, TAG_UNLINKED},
     log::{CountrySpan, UnobservedSpan, occurrence::Selection},
-    series::{MissingSpan, ranked::{GroupKind, GroupMembership, GroupSelection, Members}},
+    series::{MissingSpan, ranked::{GroupKind, GroupMembership, GroupSelection, MemberSlots, Members}},
 };
 use std::{
     borrow::Cow,
@@ -146,7 +146,7 @@ pub fn dated(source: &Source, query: &Query<'_>, context: &LoadContext, countrie
 pub fn members_at(reply: &CountryGroupReply, group: &GroupSelection, hour: i32, first: i32) -> io::Result<Members> {
     let found = match runs(reply, group)? {
         Ok(found) => found,
-        Err(refused) => return Ok(Members { tags: Vec::new(), refused: Some(refused), from: hour, until: hour }),
+        Err(refused) => return Ok(Members { tags: Vec::new(), refused: Some(refused), from: first, until: i32::MAX }),
     };
     let (runs, unknown) = (&*found.members, found.unknown.as_slice());
     let counted = |span: &HourSpan| match group.membership {
@@ -197,33 +197,43 @@ pub struct GroupsAt {
     reply: Option<Arc<CountryGroupReply>>,
     first: i32,
     held: Arc<Mutex<Option<(GroupSelection, Members)>>>,
-    ever: Arc<Mutex<Option<EverSlots>>>,
+    owners: Option<std::sync::Weak<Holders>>,
+    slots: Arc<Mutex<HashMap<GroupSelection, Arc<MemberSlots>>>>,
 }
 
-struct EverSlots {
-    group: GroupSelection,
-    from: i32,
-    until: i32,
-    slots: Result<HashSet<u32>, String>,
-}
+#[derive(Default)]
+struct BranchGroups(HashMap<(u64, Option<dashboard_base::content::LocalisationKey>), GroupsAt>);
 
 impl GroupsAt {
     pub fn new(reply: Arc<CountryGroupReply>, first: i32) -> Self {
-        Self { reply: Some(reply), first, held: Arc::default(), ever: Arc::default() }
+        Self { reply: Some(reply), first, ..Self::default() }
     }
 
     pub fn load(source: &Source, load: &LoadContext, branch_id: &str, group: Option<&GroupSelection>) -> io::Result<Self> {
-        let (Some(_), Ok(branch)) = (group, branch_id.parse::<u64>()) else { return Ok(Self::default()) };
-        let query = dashboard_base::queries::query(source, branch)?;
-        let reply = groups::shared(source, &query, load, &AtomicBool::new(false))?;
-        Ok(Self::new(reply, query.timeline.first))
+        if group.is_none() { return Ok(Self::default()); }
+        Self::load_all(source, load, branch_id)
     }
 
     pub fn load_all(source: &Source, load: &LoadContext, branch_id: &str) -> io::Result<Self> {
         let Ok(branch) = branch_id.parse::<u64>() else { return Ok(Self::default()) };
         let query = dashboard_base::queries::query(source, branch)?;
-        let reply = groups::shared(source, &query, load, &AtomicBool::new(false))?;
-        Ok(Self::new(reply, query.timeline.first))
+        Self::for_query(source, &query, load, &AtomicBool::new(false))
+    }
+
+    pub fn for_query(source: &Source, query: &Query<'_>, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self> {
+        let reply = groups::shared(source, query, load, cancelled)?;
+        let key = (query.timeline.id, load.content.as_ref().map(dashboard_base::content::localisation_key));
+        let state = source.state::<BranchGroups>();
+        let mut branches = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = branches.0.entry(key).or_default();
+        if !held.reply.as_ref().is_some_and(|old| Arc::ptr_eq(old, &reply)) || !held.owns(&query.holders) {
+            *held = Self { owners: Some(Arc::downgrade(&query.holders)), ..Self::new(reply, query.timeline.first) };
+        }
+        Ok(held.clone())
+    }
+
+    fn owns(&self, holders: &Holders) -> bool {
+        self.owners.as_ref().is_some_and(|owners| std::ptr::eq(owners.as_ptr(), holders))
     }
 
     pub fn reply(&self) -> Option<&CountryGroupReply> {
@@ -255,30 +265,52 @@ impl GroupsAt {
             return Ok(Err(reason));
         }
         let Some(group) = group else { return Ok(Ok((!countries.is_empty()).then(|| countries.iter().filter_map(slot).collect()))) };
-        let members = self.members(group, hour)?;
-        if let Some(refused) = members.refused {
-            let gap = (refused == UNKNOWN).then(|| holders.chosen_not_known(hour, hour).into_iter().next()).flatten();
-            return Ok(Err(gap.map_or(refused, |(_, _, reason)| reason)));
+        Ok(self.slots_at(group, holders, hour)?.slots.as_ref().map(|slots| Some(slots.iter().copied().collect())).map_err(Clone::clone))
+    }
+
+    pub fn slots_at(&self, group: &GroupSelection, holders: &Holders, hour: i32) -> io::Result<Arc<MemberSlots>> {
+        if !self.owns(holders) {
+            return self.resolve(group, holders, hour).map(Arc::new);
         }
-        if group.membership == GroupMembership::Hour {
-            if let Some(reason) = members.tags.iter().map(|tag| Country::Tag(tag.clone())).find(|country| slot(country).is_none()).and_then(|country| holders.not_known(&country, hour)) {
-                return Ok(Err(reason));
-            }
-            return Ok(Ok(Some(members.tags.into_iter().filter_map(|tag| slot(&Country::Tag(tag))).collect())));
-        }
-        let mut ever = self.ever.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(held) = ever.as_ref()
-            && held.group == *group
-            && held.from <= hour
-            && hour <= held.until
+        let mut cache = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(held) = cache.get(group)
+            && held.from <= hour && hour <= held.until
         {
-            return Ok(held.slots.clone().map(Some));
+            return Ok(Arc::clone(held));
         }
-        let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
-        let found = runs(reply, group)?.map_err(dashboard_core::refused)?;
-        let (slots, until) = ever_slots(&found.members, holders, hour, members.until);
-        *ever = Some(EverSlots { group: group.clone(), from: hour, until, slots: slots.clone() });
-        Ok(slots.map(Some))
+        let made = Arc::new(self.resolve(group, holders, hour)?);
+        cache.insert(group.clone(), Arc::clone(&made));
+        Ok(made)
+    }
+
+    fn resolve(&self, group: &GroupSelection, holders: &Holders, hour: i32) -> io::Result<MemberSlots> {
+        let members = self.members(group, hour)?;
+        let (first, last) = holders.interval(hour);
+        let from = first.max(members.from);
+        let until = last.min(members.until);
+        let slots = if let Some(reason) = members.refused {
+            let gap = (reason == UNKNOWN).then(|| holders.chosen_not_known(hour, hour).into_iter().next()).flatten();
+            Err(gap.map_or(reason, |(_, _, why)| why))
+        } else if group.membership == GroupMembership::Ever {
+            let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
+            let found = runs(reply, group)?.map_err(dashboard_core::refused)?;
+            ever_slots(&found.members, holders, hour)
+        } else {
+            members.tags.into_iter().map(|tag| {
+                let country = Country::Tag(tag);
+                holders.slot_at(&country, hour).ok_or_else(|| holders.unnamed(&country, hour))
+            }).collect()
+        };
+        let slots = slots.map(|slots| {
+            let mut sorted: Vec<_> = slots.into_iter().collect();
+            sorted.sort_unstable();
+            Arc::from(sorted)
+        });
+        Ok(MemberSlots { slots, from, until })
+    }
+
+    pub fn slots_until(&self, group: Option<&GroupSelection>, holders: &Holders, hour: i32) -> i32 {
+        group.map_or(i32::MAX, |group| self.slots_at(group, holders, hour).map_or(hour, |members| members.until))
     }
 
     pub fn valid_through(&self, group: Option<&GroupSelection>, hour: i32) -> i32 {
@@ -286,32 +318,21 @@ impl GroupsAt {
     }
 }
 
-fn ever_slots(members: &[MembershipRun], holders: &Holders, hour: i32, mut until: i32) -> (Result<HashSet<u32>, String>, i32) {
+fn ever_slots(members: &[MembershipRun], holders: &Holders, hour: i32) -> Result<HashSet<u32>, String> {
     let mut slots = HashSet::new();
     for run in members.iter().filter(|run| run.first_hour <= hour) {
         let last = run.last_hour.min(hour);
-        for held in holders.within(&run.tag, run.first_hour, run.last_hour) {
-            if held.first > last {
-                until = until.min(held.first - 1);
-                break;
-            }
+        for held in holders.within(&run.tag, run.first_hour, last) {
             match held.holder {
-                Holder::Found { slot, .. } => {
-                    slots.insert(slot);
-                }
-                Holder::Unresolved => return (Err(format!("Who held {} while it was a member is not known: {TAG_UNLINKED}", run.tag)), i32::MAX),
+                Holder::Found { slot, .. } => { slots.insert(slot); }
+                Holder::Unresolved => return Err(format!("Who held {} while it was a member is not known: {TAG_UNLINKED}", run.tag)),
             }
         }
-        for (first, past, reason) in &holders.unknown {
-            if *first <= last && run.first_hour <= *past {
-                return (Err(format!("Who held {} while it was a member is not known: {reason}", run.tag)), i32::MAX);
-            }
-            if *first > last && *first <= run.last_hour {
-                until = until.min(*first - 1);
-            }
+        if let Some((_, _, reason)) = holders.unknown.iter().find(|(first, past, _)| *first <= last && run.first_hour <= *past) {
+            return Err(format!("Who held {} while it was a member is not known: {reason}", run.tag));
         }
     }
-    (Ok(slots), until)
+    Ok(slots)
 }
 
 #[cfg(test)]
@@ -467,6 +488,10 @@ mod tests {
                         CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9002, canonical_slot: 8, tag: b"AAA".to_vec(), ..CountryRow::default() },
                     ]
                 };
+                tables[TableId::CountryFactories.index()] = TableView::Complete(TableRows::CountryFactories(vec![
+                    replay_data::rows::CountryFactoriesRow { country: 9001, military_total_raw: 500_000, ..Default::default() },
+                    replay_data::rows::CountryFactoriesRow { country: 9002, military_total_raw: 900_000, ..Default::default() },
+                ]));
                 tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
                 tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
                 tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(factions.clone()));
@@ -479,6 +504,7 @@ mod tests {
                 DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
             })
             .collect();
+        let final_frame = frames.last().unwrap().clone();
         let built = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
             .unwrap()
             .into_timelines(&Default::default())
@@ -492,6 +518,23 @@ mod tests {
         .unwrap();
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let group = GroupSelection { kind: GroupKind::Faction, id: Some("10".into()), tag: None, membership: GroupMembership::Ever };
+        let context = LoadContext { content: None };
+        let ranked = GroupsAt::for_query(&source, &query, &context, &AtomicBool::new(false)).unwrap();
+        let forces = GroupsAt::load(&source, &context, "1", Some(&group)).unwrap();
+        let held = ranked.slots_at(&group, &query.holders, 115).unwrap();
+        assert_eq!(held.slots.as_deref(), Ok(&[7][..]));
+        assert!(Arc::ptr_eq(&held, &forces.slots_at(&group, &query.holders, 116).unwrap()));
+        use crate::products::scalars::{FactoryMix, FactoryMixParams};
+        use dashboard_base::products::at_hour::{At, AtHour, Read, ReadsAt};
+        let factory = FactoryMixParams { branch_id: "1".into(), countries: Vec::new(), group: Some(group.clone()), top: None, mode: "built".into(), types: vec!["military".into()] };
+        let mix = FactoryMix::context_for(&source, &context, &factory).unwrap();
+        let at = ReadsAt { holders: &query.holders, context: &mix, run: 0, hour: final_frame.hour, since: None };
+        let (reads, until) = FactoryMix::retained_reads(&factory, None, 0, &final_frame, &at);
+        assert_eq!(reads, [Read::these(TableId::CountryFactories, [9001])]);
+        assert_eq!(until, held.until);
+        let at = At { owner: None, holders: &query.holders, hour: final_frame.hour, context: &mix, cancelled: &AtomicBool::new(false), live: &Default::default() };
+        let shown = FactoryMix::reply(&final_frame, &factory, &at).unwrap();
+        assert_eq!(shown.rows.iter().map(|row| (&row.country, row.tag.as_str(), row.total)).collect::<Vec<_>>(), [(&Country::Slot(7), "BBB", Some(5))]);
         let selection = dated(&source, &query, &LoadContext { content: None }, None, Some(&group), &AtomicBool::new(false))
             .unwrap()
             .unwrap();

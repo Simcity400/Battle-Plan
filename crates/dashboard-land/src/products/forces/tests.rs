@@ -45,7 +45,11 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView};
     use std::sync::atomic::AtomicBool;
 
-    let holders = linked_holders();
+    let mut holders = linked_holders();
+    let original = holders.tags.get_mut("GER").unwrap();
+    original[0].last = 39;
+    original.push(HolderRun { first: 40, last: 100, holder: Holder::Found { slot: 4, id: 40 }, starts_segment: true });
+    holders.tags.insert("DDR".into(), vec![HolderRun { first: 40, last: 100, holder: Holder::Found { slot: 1, id: 10 }, starts_segment: true }]);
 
     let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
     *tables[TableId::AirForceTotals.index()] = TableView::Complete(TableRows::AirForceTotals(vec![
@@ -116,7 +120,7 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
                 recorded_name: String::new(),
                 first_hour: 0,
                 last_hour: 100,
-                members: vec![run("GER", 0, 100), run("FRA", 20, 100)],
+                members: vec![run("GER", 0, 30), run("FRA", 20, 100)],
                 leaders: Vec::new(),
                 incomplete: vec![HourSpan { first_hour: 50, last_hour: 60 }],
             }],
@@ -143,6 +147,12 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(after.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), vec!["FRA", "GER"]);
     let unknown = AirForceAt::reply(&at_hour(55), &grouped, &grouped_at(55)).unwrap();
     assert_eq!((unknown.rows.len(), unknown.missing.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is never a guess");
+    let mut ever = grouped.clone();
+    ever.group.as_mut().unwrap().membership = GroupMembership::Ever;
+    let renamed = AirForceAt::reply(&at_hour(40), &ever, &grouped_at(40)).unwrap();
+    assert!(renamed.rows.iter().any(|row| row.slot == Some(1) && row.tag == "DDR" && row.total == Some(50)));
+    assert!(renamed.rows.iter().all(|row| row.slot != Some(4)));
+    assert_eq!(AirForceAt::valid_through(&at_hour(31), &ever, &grouped_at(31)), 39);
     let twice = AirForceAtParams { countries: vec![Country::from("GER"), Country::Slot(1)], ..truncated_params };
     assert_eq!(AirForceAt::reply(&frame, &twice, &at).unwrap().rows.len(), 1, "a holder asked by tag and by slot is one row");
 }

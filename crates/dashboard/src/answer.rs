@@ -200,8 +200,8 @@ pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &Loa
             return dashboard_world::products::scalars::world_tension::next_change(&query, params);
         }
         if product == dashboard_query::series::ranked::PRODUCT && params.get("group").is_some_and(|group| !group.is_null()) {
-            let groups = dashboard_world::products::groups::shared(source, &query, context, cancelled)?;
-            let resolve = |group: &dashboard_query::series::ranked::GroupSelection, hour: i32| dashboard_world::products::group_members::members_at(&groups, group, hour, query.timeline.first);
+            let groups = dashboard_world::products::group_members::GroupsAt::for_query(source, &query, context, cancelled)?;
+            let resolve = |group: &dashboard_query::series::ranked::GroupSelection, hour: i32| groups.slots_at(group, &query.holders, hour);
             return dashboard_query::series::answer_grouped(&query, product, params, &resolve)?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
         }
