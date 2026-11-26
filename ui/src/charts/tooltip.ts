@@ -1,6 +1,7 @@
 
 import { valueStateText, type ValueStateProps } from '../components/valueStateText.ts';
 import type { Value } from '../families/value.ts';
+import { canvasMeasureText, textWidthRevision, type Canvas2D, type MeasureText } from './textWidth.ts';
 
 export interface TooltipRow {
   detail?: string;
@@ -55,10 +56,117 @@ const FLAG = 26;
 const TITLE_LINE = 19;
 const ROW_CHARS = 34;
 const SMALL_CHARS = 42;
+const CONTENT_WIDTH = 320 - 2 * 12 - 2;
+const ROW_GAP = 16;
+const MARK_GAP = 4;
+const SWATCH = 8;
+const ROW_FLAG = 18;
+const INDENT = 8;
+const HEAD_MARK = 40 + 8;
+const VALUE_MAX = Math.max(0.6 * CONTENT_WIDTH, 160);
 
-const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.length / perLine));
+export interface TooltipMetrics {
+  readonly measure: MeasureText;
+  readonly family: string;
+  readonly sizes: { readonly xs: number; readonly sm: number; readonly md: number };
+}
 
-export function tooltipRowHeight(row: TooltipRow): number {
+type TextRole = 'title' | 'row' | 'strong' | 'small';
+
+let metricsContext: Canvas2D | null | undefined;
+let heldMetrics: { readonly key: string; readonly metrics: TooltipMetrics | null } | null = null;
+
+function activeMetrics(): TooltipMetrics | null {
+  if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return null;
+  const root = document.documentElement;
+  const key = `${textWidthRevision()}|${root.getAttribute('style') ?? ''}|${root.className}`;
+  if (heldMetrics?.key === key) return heldMetrics.metrics;
+  metricsContext ??= document.createElement('canvas').getContext('2d');
+  let metrics: TooltipMetrics | null = null;
+  if (metricsContext) {
+    const style = getComputedStyle(root);
+    const px = (name: string, fallback: number) => {
+      const value = Number.parseFloat(style.getPropertyValue(name));
+      return Number.isFinite(value) && value > 0 ? value : fallback;
+    };
+    metrics = {
+      measure: canvasMeasureText(metricsContext),
+      family: style.getPropertyValue('--font-ui').trim() || style.fontFamily,
+      sizes: { xs: px('--type-xs', 11), sm: px('--type-sm', 12), md: px('--type-md', 13) },
+    };
+  }
+  heldMetrics = { key, metrics };
+  return metrics;
+}
+
+function sizeOf(metrics: TooltipMetrics, role: TextRole): number {
+  return role === 'title' ? metrics.sizes.md : role === 'small' ? metrics.sizes.xs : metrics.sizes.sm;
+}
+
+function fontOf(metrics: TooltipMetrics, role: TextRole): string {
+  return `${role === 'title' || role === 'strong' ? 600 : 400} ${sizeOf(metrics, role)}px ${metrics.family}`;
+}
+
+function lineOf(role: TextRole, metrics: TooltipMetrics | null): number {
+  if (!metrics) return role === 'title' ? TITLE_LINE : role === 'small' ? SMALL_LINE : LINE;
+  return Math.ceil(sizeOf(metrics, role) * 1.4);
+}
+
+function lines(text: string, role: TextRole, metrics: TooltipMetrics | null, room = CONTENT_WIDTH): number {
+  if (!metrics) return Math.max(1, Math.ceil(text.length / (role === 'small' ? SMALL_CHARS : ROW_CHARS)));
+  const width = Math.max(1, room);
+  const font = fontOf(metrics, role);
+  const space = metrics.measure(' ', font);
+  let count = 1;
+  let used = 0;
+  for (const word of text.split(/\s+/)) {
+    if (!word) continue;
+    const wordWidth = metrics.measure(word, font);
+    const next = used === 0 ? wordWidth : used + space + wordWidth;
+    if (next <= width) {
+      used = next;
+      continue;
+    }
+    if (used > 0) count++;
+    used = 0;
+    for (const glyph of glyphsOf(word)) {
+      const glyphWidth = metrics.measure(glyph, font);
+      if (used > 0 && used + glyphWidth > width) {
+        count++;
+        used = 0;
+      }
+      used += glyphWidth;
+    }
+  }
+  return count;
+}
+
+const graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+
+function glyphsOf(word: string): string[] {
+  return graphemes ? Array.from(graphemes.segment(word), part => part.segment) : Array.from(word);
+}
+
+function textWidth(text: string, role: TextRole, metrics: TooltipMetrics): number {
+  return metrics.measure(text, fontOf(metrics, role));
+}
+
+function rowLines(row: TooltipRow, value: string, metrics: TooltipMetrics | null): number {
+  const role: TextRole = row.strong ? 'strong' : 'row';
+  if (!metrics) return lines(`${row.label}  ${value}`, role, metrics);
+  const mark = (row.swatch ? SWATCH + MARK_GAP : 0) + (row.countryFlag || row.icon ? ROW_FLAG + MARK_GAP : 0) + (row.indent ? INDENT : 0);
+  if (!value) return lines(row.label, role, metrics, CONTENT_WIDTH - mark);
+  const valueRole: TextRole = row.tone === 'muted' ? 'row' : 'strong';
+  const label = mark + textWidth(row.label, role, metrics);
+  const full = textWidth(value, valueRole, metrics);
+  const shown = Math.min(full, VALUE_MAX);
+  const room = CONTENT_WIDTH - ROW_GAP;
+  if (label + shown <= room) return full > shown ? lines(value, valueRole, metrics, shown) : 1;
+  const share = room / (label + shown);
+  return Math.max(lines(row.label, role, metrics, label * share - mark), lines(value, valueRole, metrics, shown * share));
+}
+
+export function tooltipRowHeight(row: TooltipRow, metrics: TooltipMetrics | null = activeMetrics()): number {
   const displayValue = row.valueState
     ? (row.valueState.kind === 'missing'
       ? 'Not recorded'
@@ -68,32 +176,34 @@ export function tooltipRowHeight(row: TooltipRow): number {
           ? `${row.valueState.text ?? ''} partial`
           : (row.valueState.text ?? ''))
     : (row.value ?? '');
-  return (row.short ? 1 : lines(`${row.label}  ${displayValue}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
+  return (row.short ? 1 : rowLines(row, displayValue, metrics)) * lineOf(row.strong ? 'strong' : 'row', metrics) + (row.divider ? DIVIDER : 0);
 }
 
-export function tooltipHeight(content: TooltipContent): number {
-  const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0);
+export function tooltipHeight(content: TooltipContent, metrics: TooltipMetrics | null = activeMetrics()): number {
+  const room = CONTENT_WIDTH - (content.countryFlag || content.icon ? HEAD_MARK : 0);
+  const title = lines(content.title, 'title', metrics, room) * lineOf('title', metrics) + (content.subtitle ? lines(content.subtitle, 'small', metrics, room) * lineOf('small', metrics) : 0);
   const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
-  const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row), 0);
-  const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, SMALL_CHARS), 0) * SMALL_LINE : 0;
-  const note = content.note ? GAP + lines(content.note, SMALL_CHARS) * SMALL_LINE : 0;
+  const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row, metrics), 0);
+  const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, 'small', metrics), 0) * lineOf('small', metrics) : 0;
+  const note = content.note ? GAP + lines(content.note, 'small', metrics) * lineOf('small', metrics) : 0;
   return BOX + header + rows + description + note;
 }
 
 export const tooltipRoom = (height: number) => height - WINDOW_MARGIN;
 
-export interface FitOptions { keep?: number; more?: (hidden: number) => string; full?: TooltipContent }
+export interface FitOptions { keep?: number; more?: (hidden: number) => string; full?: TooltipContent; metrics?: TooltipMetrics | null }
 
 const moreRows = (hidden: number) => `${hidden} more`;
 
 export function fitTooltip(forms: Iterable<TooltipContent>, height: number, options: FitOptions = {}): TooltipContent {
   const room = tooltipRoom(height);
+  const metrics = options.metrics === undefined ? activeMetrics() : options.metrics;
   let first: TooltipContent | undefined;
   let last: TooltipContent | undefined;
   for (const form of forms) {
     first ??= form;
     last = form;
-    if (tooltipHeight(form) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
+    if (tooltipHeight(form, metrics) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
   }
   if (!first || !last) return { title: '', rows: [] };
   const summary = last.rows.findIndex(row => Number.isSafeInteger(row.omittedRows) && (row.omittedRows ?? 0) > 0);
@@ -105,12 +215,12 @@ export function fitTooltip(forms: Iterable<TooltipContent>, height: number, opti
   const kept = realRows.slice(realRows.length - keep);
   const more = (hidden: number): TooltipRow => ({ label: (options.more ?? moreRows)(hidden), tone: 'muted', omittedRows: hidden });
   let cut: TooltipContent = last;
-  const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(omitted + top.length), ...kept] });
+  const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(omitted + top.length), ...kept] }, metrics);
   if (needs(cut) > room && cut.description) cut = { ...cut, description: undefined };
   if (needs(cut) > room && cut.note) cut = { ...cut, note: undefined };
   let used = needs(cut);
   let shown = 0;
-  while (shown < top.length && used + tooltipRowHeight(top[shown]) <= room) used += tooltipRowHeight(top[shown++]);
+  while (shown < top.length && used + tooltipRowHeight(top[shown], metrics) <= room) used += tooltipRowHeight(top[shown++], metrics);
   const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(omitted + top.length - shown), ...kept];
   return { ...cut, rows, spoken: tooltipText(options.full ?? first) };
 }

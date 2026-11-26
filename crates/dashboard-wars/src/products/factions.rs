@@ -4,11 +4,11 @@ pub mod tiles;
 
 use dashboard_base::products::{Country, LoadContext, validate_country};
 use dashboard_base::{Source, products::at_hour::{At, AtHour, Clock, Owner, Read, ReadsAt}};
-use dashboard_world::products::{group_members::GroupsAt, scalars::factory_channel_value, territory::{slot_tags, territory_value}};
+use dashboard_world::products::{group_members::{self, GroupsAt}, groups::{CountryGroupReply, MembershipRun}, scalars::factory_channel_value, territory::{slot_tags, territory_value}};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
     coverage::{Witness, witnessed},
-    identity::Holder,
+    identity::{Holder, Holders},
     series::{MissingSpan, ranked::{GroupMembership, GroupSelection}},
 };
 use replay_data::rows::{CountryFactoriesRow, GroupSpanRow as Span, TableId, TerritoryTotalRow, tables};
@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
+    sync::Arc,
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -185,27 +186,107 @@ fn witnessed_value(frame: &DecodedFrame, kind: &str, slot: u32, id: u32, measure
     }
 }
 
-fn ever_factions_valid_through(context: &GroupsAt, hour: i32) -> i32 {
-    let Some(reply) = context.reply() else { return hour };
-    let mut until = i32::MAX;
-    let mut edge = |start: i32| {
-        if start > hour {
-            until = until.min(start - 1);
-        }
-    };
-    for span in &reply.unobserved.factions {
-        edge(span.first_hour);
-    }
-    for faction in &reply.factions {
-        edge(faction.first_hour);
-        for run in &faction.members {
-            edge(run.first_hour);
-        }
-        for span in &faction.incomplete {
-            edge(span.first_hour);
+#[derive(Default)]
+pub struct FactionsAt {
+    groups: GroupsAt,
+    ever: Option<Arc<EverIndex>>,
+}
+
+fn slot_joins(runs: &[MembershipRun], holders: &Holders) -> Vec<(i32, u32)> {
+    let mut first_by_slot: BTreeMap<u32, i32> = BTreeMap::new();
+    for run in runs {
+        for held in holders.within(&Country::Tag(run.tag.clone()), run.first_hour, run.last_hour) {
+            if let Holder::Found { slot, .. } = held.holder {
+                let joined = held.first.max(run.first_hour);
+                first_by_slot.entry(slot).and_modify(|at| *at = (*at).min(joined)).or_insert(joined);
+            }
         }
     }
-    until.max(hour)
+    let mut joins: Vec<(i32, u32)> = first_by_slot.into_iter().map(|(slot, first)| (first, slot)).collect();
+    joins.sort_unstable();
+    joins
+}
+
+struct EverIndex {
+    edges: Vec<i32>,
+    joins: BTreeMap<String, Vec<(i32, u32)>>,
+}
+
+#[derive(Default)]
+struct EverIndexes(HashMap<(u64, Option<String>), (Arc<CountryGroupReply>, Arc<EverIndex>)>);
+
+impl EverIndex {
+    fn build(reply: &CountryGroupReply, holders: &Holders) -> Self {
+        let mut edges: Vec<i32> = reply.unobserved.factions.iter().map(|span| span.first_hour).collect();
+        let mut joins: BTreeMap<String, Vec<(i32, u32)>> = BTreeMap::new();
+        for faction in &reply.factions {
+            edges.push(faction.first_hour);
+            edges.extend(faction.incomplete.iter().map(|span| span.first_hour));
+            let faction_joins = slot_joins(&faction.members, holders);
+            edges.extend(faction_joins.iter().map(|&(first, _)| first));
+            joins.insert(faction.id.clone(), faction_joins);
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        Self { edges, joins }
+    }
+
+    fn of_group(reply: &CountryGroupReply, group: &GroupSelection, holders: &Holders) -> io::Result<Self> {
+        let joins = match group_members::runs(reply, group)? {
+            Ok(found) => slot_joins(&found.members, holders),
+            Err(_) => Vec::new(),
+        };
+        let mut edges: Vec<i32> = joins.iter().map(|&(first, _)| first).collect();
+        edges.dedup();
+        Ok(Self { edges, joins: BTreeMap::from([(GROUP_LINE.to_owned(), joins)]) })
+    }
+
+    fn shared(source: &Source, branch: u64, reply: &Arc<CountryGroupReply>, group: Option<&GroupSelection>) -> io::Result<Arc<Self>> {
+        let key = (branch, group.map(|group| serde_json::to_string(group)).transpose().map_err(io::Error::other)?);
+        let held = source.state::<EverIndexes>();
+        if let Some((built_from, index)) = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.get(&key)
+            && Arc::ptr_eq(built_from, reply)
+        {
+            return Ok(Arc::clone(index));
+        }
+        let holders = &dashboard_base::queries::query(source, branch)?.holders;
+        let index = Arc::new(match group {
+            Some(group) => Self::of_group(reply, group, holders)?,
+            None => Self::build(reply, holders),
+        });
+        held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.insert(key, (Arc::clone(reply), Arc::clone(&index)));
+        Ok(index)
+    }
+
+    fn valid_through(&self, hour: i32) -> i32 {
+        self.edges.get(self.edges.partition_point(|&edge| edge <= hour)).map_or(i32::MAX, |&edge| edge - 1)
+    }
+
+    fn members(&self, faction: &str, hour: i32) -> Vec<u32> {
+        let joins = self.joins.get(faction).map_or(&[][..], Vec::as_slice);
+        let mut slots: Vec<u32> = joins[..joins.partition_point(|&(first, _)| first <= hour)].iter().map(|&(_, slot)| slot).collect();
+        slots.sort_unstable();
+        slots
+    }
+}
+
+fn held_through(params: &FactionTotalsAtParams, context: &FactionsAt, hour: i32) -> i32 {
+    if params.membership == Some(GroupMembership::Ever) {
+        return context.ever.as_ref().map_or(hour, |index| index.valid_through(hour));
+    }
+    let joins = context.ever.as_ref().map_or(i32::MAX, |index| index.valid_through(hour));
+    context.groups.valid_through(params.group.as_ref(), hour).min(joins).max(hour)
+}
+
+fn ever_group(params: &FactionTotalsAtParams) -> Option<&GroupSelection> {
+    params.group.as_ref().filter(|group| group.membership == GroupMembership::Ever)
+}
+
+fn group_countries(group: &GroupSelection, tags: Vec<String>, context: &FactionsAt, hour: i32) -> Vec<Country> {
+    match group.membership {
+        GroupMembership::Hour => tags.into_iter().map(Country::Tag).collect(),
+        GroupMembership::Ever => context.ever.as_ref().map(|index| index.members(GROUP_LINE, hour)).unwrap_or_default().into_iter().map(Country::Slot).collect(),
+    }
 }
 
 impl AtHour for FactionTotalsAt {
@@ -216,7 +297,7 @@ impl AtHour for FactionTotalsAt {
     type Params = FactionTotalsAtParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, measure, top, members, group, membership, "members[]"];
     type Reply = FactionTotalsAtReply;
-    type Context = GroupsAt;
+    type Context = FactionsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -261,22 +342,24 @@ impl AtHour for FactionTotalsAt {
         }
         let target = if params.kind == "territory" { TableId::TerritoryTotals } else { TableId::CountryFactories };
         let key_of = |slot: u32, id: u32| if params.kind == "territory" { u128::from(slot) } else { u128::from(id) };
-        let valid = at.context.valid_through(params.group.as_ref(), at.hour);
+        let valid = held_through(params, at.context, at.hour);
         if let Some(group) = &params.group {
-            let Ok(members) = at.context.members(group, at.hour) else {
+            let Ok(members) = at.context.groups.members(group, at.hour) else {
                 return (Vec::new(), valid);
             };
-            if members.refused.is_some() || members.tags.is_empty() {
+            if members.refused.is_some() {
                 return (Vec::new(), valid);
             }
-            let keys: Vec<u128> = members
-                .tags
+            let keys: Vec<u128> = group_countries(group, members.tags, at.context, at.hour)
                 .iter()
-                .filter_map(|tag| match at.holders.at(&Country::Tag(tag.clone()), at.hour).map(|run| run.holder) {
+                .filter_map(|country| match at.holders.at(country, at.hour).map(|run| run.holder) {
                     Some(Holder::Found { slot, id }) => Some(key_of(slot, id)),
                     _ => None,
                 })
                 .collect();
+            if keys.is_empty() {
+                return (Vec::new(), valid);
+            }
             return (vec![Read::these(target, keys)], valid);
         }
         if let Some(members) = &params.members {
@@ -290,8 +373,7 @@ impl AtHour for FactionTotalsAt {
             return (vec![Read::these(target, keys)], i32::MAX);
         }
         if params.membership == Some(GroupMembership::Ever) {
-            let valid = ever_factions_valid_through(at.context, at.hour);
-            let Some(reply) = at.context.reply() else {
+            let (Some(reply), Some(index)) = (at.context.groups.reply(), at.context.ever.as_ref()) else {
                 return (Vec::new(), valid);
             };
             if reply.unobserved.factions.iter().any(|span| span.first_hour <= at.hour) {
@@ -302,11 +384,8 @@ impl AtHour for FactionTotalsAt {
                 if faction.first_hour > at.hour || faction.incomplete.iter().any(|span| span.first_hour <= at.hour) {
                     continue;
                 }
-                for run in &faction.members {
-                    if run.first_hour > at.hour {
-                        continue;
-                    }
-                    if let Some(Holder::Found { slot, id }) = at.holders.at(&Country::Tag(run.tag.clone()), at.hour).map(|r| r.holder) {
+                for slot in index.members(&faction.id, at.hour) {
+                    if let Some(Holder::Found { slot, id }) = at.holders.at(&Country::Slot(slot), at.hour).map(|r| r.holder) {
                         keys.push(key_of(slot, id));
                     }
                 }
@@ -319,21 +398,24 @@ impl AtHour for FactionTotalsAt {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        if params.membership == Some(GroupMembership::Ever) {
-            return ever_factions_valid_through(at.context, at.hour);
-        }
-        at.context.valid_through(params.group.as_ref(), at.hour)
+        held_through(params, at.context, at.hour)
     }
 
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(GroupsAt::default())
+        Ok(FactionsAt::default())
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
-        if params.membership == Some(GroupMembership::Ever) {
-            return GroupsAt::load_all(source, load, &params.branch_id);
+        let group = ever_group(params);
+        if params.membership == Some(GroupMembership::Ever) || group.is_some() {
+            let groups = GroupsAt::load_all(source, load, &params.branch_id)?;
+            let ever = match (groups.shared(), params.branch_id.parse::<u64>()) {
+                (Some(reply), Ok(branch)) => Some(EverIndex::shared(source, branch, reply, group)?),
+                _ => None,
+            };
+            return Ok(FactionsAt { groups, ever });
         }
-        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+        Ok(FactionsAt { groups: GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?, ever: None })
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -346,11 +428,12 @@ impl AtHour for FactionTotalsAt {
             warnings: Vec::new(),
         };
         let aggregate_members: Option<Vec<Country>> = if let Some(group) = &params.group {
-            let members = at.context.members(group, frame.hour)?;
+            let members = at.context.groups.members(group, frame.hour)?;
             if let Some(refused) = members.refused {
                 return Ok(empty(refused));
             }
-            if members.tags.is_empty() {
+            let countries = group_countries(group, members.tags, at.context, frame.hour);
+            if countries.is_empty() {
                 return Ok(FactionTotalsAtReply {
                     hour: frame.hour,
                     kind: params.kind.clone(),
@@ -360,7 +443,7 @@ impl AtHour for FactionTotalsAt {
                     warnings: Vec::new(),
                 });
             }
-            Some(members.tags.into_iter().map(Country::Tag).collect())
+            Some(countries)
         } else {
             params.members.clone()
         };
@@ -416,7 +499,7 @@ impl AtHour for FactionTotalsAt {
         }
 
         if params.membership == Some(GroupMembership::Ever) {
-            let Some(reply) = at.context.reply() else {
+            let Some(reply) = at.context.groups.reply() else {
                 return Ok(empty("Faction memberships were not loaded".to_owned()));
             };
             if reply.unobserved.factions.iter().any(|span| span.first_hour <= frame.hour) {
@@ -432,26 +515,22 @@ impl AtHour for FactionTotalsAt {
                     .iter()
                     .any(|span| span.first_hour <= frame.hour)
                     .then(|| "Its roster was not read whole through this hour".to_owned());
-                let mut seen: BTreeSet<&str> = BTreeSet::new();
-                for run in &faction.members {
-                    if run.first_hour <= frame.hour {
-                        seen.insert(run.tag.as_str());
-                    }
-                }
-                if seen.is_empty() {
+                let slots = at.context.ever.as_ref().map(|index| index.members(&faction.id, frame.hour)).unwrap_or_default();
+                if slots.is_empty() && missing.is_none() {
                     continue;
                 }
                 let mut sum = 0i64;
-                let mut member_tags: Vec<String> = Vec::with_capacity(seen.len());
-                let mut member_countries: Vec<Country> = Vec::with_capacity(seen.len());
-                for tag in seen {
-                    member_tags.push(tag.to_owned());
-                    let country = Country::Tag(tag.to_owned());
-                    match at.holders.at(&country, frame.hour).map(|run| run.holder) {
-                        Some(Holder::Found { slot, id }) => {
-                            member_countries.push(Country::Slot(slot));
+                let mut member_tags: Vec<String> = Vec::with_capacity(slots.len());
+                let mut member_countries: Vec<Country> = Vec::with_capacity(slots.len());
+                for slot in slots {
+                    let country = Country::Slot(slot);
+                    let tag = at.holders.tag_at(&country, frame.hour).map(str::to_owned);
+                    member_tags.push(tag.clone().unwrap_or_else(|| at.holders.unnamed(&country, frame.hour)));
+                    member_countries.push(country.clone());
+                    match (at.holders.at(&country, frame.hour).map(|run| run.holder), tag) {
+                        (Some(Holder::Found { slot, id }), Some(tag)) => {
                             if missing.is_none() {
-                                match witnessed_value(frame, &params.kind, slot, id, &params.measure, tag) {
+                                match witnessed_value(frame, &params.kind, slot, id, &params.measure, &tag) {
                                     Ok(value) => match sum.checked_add(value) {
                                         Some(next) => sum = next,
                                         None => missing = Some("Faction total overflowed at this hour".to_owned()),
@@ -461,9 +540,8 @@ impl AtHour for FactionTotalsAt {
                             }
                         }
                         _ => {
-                            member_countries.push(country);
                             if missing.is_none() {
-                                missing = Some(format!("A member ({tag}) is not present at this hour"));
+                                missing = Some(at.holders.say(&country, frame.hour, |name| format!("A member ({name}) is not present at this hour")));
                             }
                         }
                     }
@@ -516,7 +594,7 @@ impl AtHour for FactionTotalsAt {
         let mut rows_out: Vec<FactionTotalRow> = rosters
             .members
             .iter()
-            .filter(|(_, slots)| !slots.is_empty())
+            .filter(|(faction_id, slots)| !slots.is_empty() || rosters.incomplete.contains(faction_id))
             .map(|(faction_id, slots)| {
                 let mut missing = rosters.incomplete.contains(faction_id).then(|| "Its roster was not read whole at this hour".to_owned());
                 let mut sum = 0i64;

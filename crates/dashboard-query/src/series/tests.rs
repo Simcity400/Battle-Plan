@@ -527,6 +527,17 @@ fn a_step_stops_where_an_empty_measure_changes_its_explanation() {
     assert_eq!(step(first + 1, NavigationKey::ArrowRight), Some(*unread.start()), "no fuel requested, then not recorded: a step forward stops where the reason changes");
     assert_eq!(step(first, NavigationKey::ArrowRight), Some(*unread.start()), "a row witnessed on a truncated opening hour keeps its reason, so nothing changes after it until the unread hours");
     assert_eq!(step(last - 1, NavigationKey::ArrowLeft), Some(*unread.end() + 1), "and a step back stops where it changes back");
+    let parts = line.held(&ask, first, last);
+    let missing = line.missing_for_tile(ask.country.clone(), first, last, &parts).unwrap();
+    let unread_only = vec![MissingSpan { first_hour: *unread.start(), last_hour: *unread.end(), reason: "Country fuel consumers not available at this hour: reader fault".to_owned() }];
+    assert_eq!(missing, unread_only, "hours where the share is not applicable (no fuel requested) are recorded: only the unread hours are missing");
+    for width in [2, 12] {
+        let summarised = line.summaries_within(&[(ask.clone(), vec![(first, last)])], first, last, width).unwrap().remove(0).1;
+        let (opening, rest): (Vec<MissingSpan>, Vec<MissingSpan>) = summarised.iter().cloned().partition(|span| span.first_hour == first);
+        assert!(opening.iter().all(|span| span.last_hour == first), "only the truncated opening hour may be missing besides the unread hours, in a summary {width} wide: {summarised:?}");
+        let hours = |spans: &[MissingSpan]| spans.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>();
+        assert_eq!(hours(&rest), hours(&unread_only), "a summary {width} wide marks no fully read hour missing because no fuel was requested");
+    }
 }
 
 static NEGATED: Series = Series {

@@ -70,7 +70,7 @@ struct DrawnPiece {
     break_before: bool,
 }
 
-fn unknown_reason(gap: Gap) -> &'static str {
+pub(super) fn unknown_reason(gap: Gap) -> &'static str {
     let reason = match gap {
         Gap::NotRecorded => ProducedUnknown::NotRecorded,
         Gap::Cell { reason, .. } => unknown_of(reason),
@@ -207,21 +207,39 @@ fn runs(lines: &[DrawnPiece], first: i32, clip: i32) -> Vec<ChartRun> {
         .collect()
 }
 
-pub(super) fn range_baseline(line: &Line<'_, '_>, query: &Query<'_>, measure: ProducedMeasure, from_hour: Option<i32>) -> io::Result<Option<i32>> {
+pub(super) enum Baseline {
+    Unrestricted,
+    Opening(i32),
+    From(i32),
+    Unavailable(&'static str),
+}
+
+impl Baseline {
+    pub(super) fn hour(&self) -> Option<i32> {
+        match *self {
+            Self::From(hour) => Some(hour),
+            _ => None,
+        }
+    }
+}
+
+pub(super) const RANGE_BASELINE_UNRECORDED: &str = "Equipment delivered before the selected start was not recorded, so the amount since it is not known";
+
+pub(super) fn range_baseline(line: &Line<'_, '_>, query: &Query<'_>, measure: ProducedMeasure, from_hour: Option<i32>) -> io::Result<Baseline> {
     if measure != ProducedMeasure::Total {
-        return Ok(None);
+        return Ok(Baseline::Unrestricted);
     }
     let Some(start) = from_hour else {
-        return Ok(None);
+        return Ok(Baseline::Unrestricted);
     };
     let Some(stretch) = query.timeline.at(start).copied() else {
-        return Ok(None);
+        return Ok(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED));
     };
     if start <= stretch.first {
-        return Ok(None);
+        let observed = stretch.first == query.timeline.first && line.clock_at(start)?.since == Some(start);
+        return Ok(if observed { Baseline::Opening(start) } else { Baseline::Unavailable(RANGE_BASELINE_UNRECORDED) });
     }
-    let clock = line.clock(stretch.first, start)?;
-    Ok(super::measure::read_at(&clock.reads, start))
+    Ok(line.clock_at(start - 1)?.read.map_or(Baseline::Unavailable(RANGE_BASELINE_UNRECORDED), Baseline::From))
 }
 
 pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SeriesTileReply> {
@@ -287,9 +305,13 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
         let measure_decl = series.measure(produced_measure(family.count, family.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
         let line = Line::new(query, series, measure_decl)?;
         let baseline = range_baseline(&line, query, family.measure, family.from_hour)?;
+        let unavailable = match baseline {
+            Baseline::Unavailable(reason) => Some(reason),
+            _ => None,
+        };
         let fixed_back = back_of(family.measure);
         let range_fn = |base: i32| move |read: i32| (read >= base).then_some(base);
-        let range_closure = baseline.map(range_fn);
+        let range_closure = baseline.hour().map(range_fn);
         let back: Option<&dyn Fn(i32) -> Option<i32>> = match (&range_closure, &fixed_back) {
             (Some(func), _) => Some(func as &dyn Fn(i32) -> Option<i32>),
             (None, Some(func)) => Some(func as &dyn Fn(i32) -> Option<i32>),
@@ -308,23 +330,49 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, context: &LoadCo
         let parts = asked_parts(&types, &family.types);
         let parts_of = |run: u32| parts.get(&run).cloned().unwrap_or_default();
         check_cancel(cancelled)?;
-        let total_runs = line.totals(&keys, &parts_of, back, scan_first, clip)?;
+        let total_runs = match unavailable {
+            Some(_) => vec![Vec::new(); keys.len()],
+            None => line.totals(&keys, &parts_of, back, scan_first, clip)?,
+        };
+        let restarted: Vec<(i32, i32)> = match baseline {
+            Baseline::Opening(start) => line.since_runs(scan_first, clip)?.into_iter().filter(|run| run.2 != Some(start)).map(|run| (run.0, run.1)).collect(),
+            _ => Vec::new(),
+        };
         for (country, runs_for_country) in keys.into_iter().zip(total_runs) {
             let within = within_by_country.get(&country).map(Vec::as_slice);
             let mut pieces = Vec::new();
             let mut missing = Vec::new();
+            if let Some(reason) = unavailable {
+                push_missing(&mut missing, scan_first, clip, reason);
+            }
+            for &(lo, hi) in &restarted {
+                push_missing(&mut missing, lo, hi, unknown_reason(Gap::Restarted));
+            }
             for run in runs_for_country {
-                match run.value {
-                    Ok(raw) if i128::from(raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
-                        first: run.first,
-                        last: run.last,
-                        value: raw as f64 / scale,
-                        break_before: run.opens,
-                    }),
-                    Ok(_) => push_missing(&mut missing, run.first, run.last, unknown_reason(Gap::OutOfRange)),
-                    Err(gap) => push_missing(&mut missing, run.first, run.last, unknown_reason(gap)),
+                let mut kept = vec![(run.first, run.last)];
+                for &(lo, hi) in &restarted {
+                    kept = kept
+                        .into_iter()
+                        .flat_map(|(a, b)| match b < lo || a > hi {
+                            true => vec![(a, b)],
+                            false => [(a, lo - 1), (hi + 1, b)].into_iter().filter(|(x, y)| x <= y).collect(),
+                        })
+                        .collect();
+                }
+                for (first, last) in kept {
+                    match run.value {
+                        Ok(raw) if i128::from(raw).abs() <= MAX_EXACT => pieces.push(DrawnPiece {
+                            first,
+                            last,
+                            value: raw as f64 / scale,
+                            break_before: run.opens || first != run.first,
+                        }),
+                        Ok(_) => push_missing(&mut missing, first, last, unknown_reason(Gap::OutOfRange)),
+                        Err(gap) => push_missing(&mut missing, first, last, unknown_reason(gap)),
+                    }
                 }
             }
+            missing.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
             let pieces = clip_pieces(pieces, within);
             let missing = clip_missing(&missing, within);
             drawn_lines.push(pieces);
@@ -447,6 +495,175 @@ mod tests {
         let full_ger = full_at.rows[0].value.unwrap();
         let range_ger = range_at.rows[0].value.unwrap();
         assert!(range_ger > 0 && range_ger < full_ger, "range total {range_ger} must exclude pre-range production from full total {full_ger}");
+
+        let range_reply = |hour: i32, from_hour: i32| race_reply(
+            &src,
+            &query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour,
+                countries: vec![Country::Tag("GER".into())],
+                group: None,
+                top: None,
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Total,
+                types: Vec::new(),
+                refits: false,
+                from_hour: Some(from_hour),
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(range_reply(range_start, range_start).rows[0].value, Some(1), "the unit delivered at the range's first hour is in the range");
+        let before = range_reply(LAST, FIRST - 50);
+        assert_eq!(before.missing.as_deref(), Some(RANGE_BASELINE_UNRECORDED), "a range starting where the count is not recorded says so, never the whole total");
+        assert!(before.rows.is_empty());
+        assert_eq!(range_reply(LAST, FIRST).rows[0].value, full_at.rows[0].value, "a range from the hour observation began is the whole observed count");
+        let late = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-late", FIRST, LAST, FIRST + 5, true, None, None);
+        let late_query = dashboard_base::queries::query(&late, 1).unwrap();
+        let from_first = race_reply(
+            &late,
+            &late_query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour: LAST,
+                countries: vec![Country::Tag("GER".into())],
+                group: None,
+                top: None,
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Total,
+                types: Vec::new(),
+                refits: false,
+                from_hour: Some(FIRST),
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(from_first.missing.as_deref(), Some(RANGE_BASELINE_UNRECORDED), "production first read after the branch began has no proven opening balance at its first hour: {:?}", from_first.rows);
+        let ranged_top = |src: &Source, hour: i32, from_hour: i32| {
+            let query = dashboard_base::queries::query(src, 1).unwrap();
+            race_reply(
+                src,
+                &query,
+                &EquipmentProducedRaceParams {
+                    branch_id: "1".into(),
+                    hour,
+                    countries: Vec::new(),
+                    group: None,
+                    top: Some(2),
+                    count: ProducedCount::Units,
+                    measure: ProducedMeasure::Total,
+                    types: Vec::new(),
+                    refits: false,
+                    from_hour: Some(from_hour),
+                },
+                &load,
+                &cancelled,
+            )
+            .unwrap()
+        };
+        let renamed = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-renamed", FIRST, LAST, FIRST, true, Some(FIRST + 200), None);
+        let leader = ranged_top(&renamed, LAST, FIRST + 120);
+        assert_eq!(leader.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "DEU"], "a country renamed inside the window stays a contender, read by its own rows: {leader:?}");
+        assert_eq!(leader.rows[1].value, Some(8), "and its amount is the country's deliveries since the start, read by its slot: {leader:?}");
+        let restarted = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-restarted", FIRST, LAST, FIRST, true, None, Some(FIRST + 150));
+        let after = ranged_top(&restarted, LAST, FIRST);
+        assert_eq!(after.missing.as_deref(), Some(unknown_reason(Gap::Restarted)), "a range from the first hour is not known after counting restarted: {:?}", after.rows);
+        assert!(ranged_top(&restarted, FIRST + 100, FIRST).missing.is_none(), "and is known before");
+        let restarted_query = dashboard_base::queries::query(&restarted, 1).unwrap();
+        let restart_tile = tile(
+            &restarted,
+            &restarted_query,
+            &serde_json::json!({ "branchId": "1", "family": { "kind": SERIES, "count": "units", "measure": "total", "types": [], "refits": false, "fromHour": FIRST }, "binHours": 1, "index": i64::from(FIRST + 150).div_euclid(BINS as i64), "countries": [7] }),
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        let bytes = {
+            const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = Vec::new();
+            for chunk in restart_tile.bins.as_bytes().chunks_exact(4) {
+                let word = chunk.iter().fold(0u32, |word, &byte| (word << 6) | ALPHABET.iter().position(|&c| c == byte).map_or(0, |at| at as u32));
+                out.extend([(word >> 16) as u8, (word >> 8) as u8, word as u8]);
+            }
+            out.truncate(out.len() - restart_tile.bins.bytes().rev().take_while(|&byte| byte == b'=').count());
+            out
+        };
+        let drawn = tile::decode_runs(&bytes, 1, restart_tile.first_hour, 1.0, restart_tile.raw_values).unwrap().remove(0);
+        assert!(drawn.iter().all(|run| run.1 < FIRST + 150), "nothing is drawn after counting restarted, even inside a run that began before: {drawn:?}");
+        assert!(drawn.iter().any(|run| run.0 <= FIRST + 149 && FIRST + 149 <= run.1), "and the hour before is drawn: {drawn:?}");
+        let newcomer = ranged_top(&src, LAST, FIRST + 50);
+        assert_eq!(newcomer.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"], "a country with no deliveries recorded at the start has delivered nothing by then: {newcomer:?}");
+        let shared = two_producers("produced-tiles-shared", FIRST, LAST);
+        let mut shared_query = dashboard_base::queries::query(&shared, 1).unwrap();
+        let mut tags = shared_query.holders.tags.clone();
+        tags.insert("PRU".to_owned(), vec![dashboard_query::identity::HolderRun { first: FIRST, last: LAST, holder: dashboard_query::identity::Holder::Found { slot: 7, id: 11 }, starts_segment: true }]);
+        shared_query.holders = std::sync::Arc::new(dashboard_query::identity::Holders::new(tags, shared_query.holders.unknown.clone()));
+        let shared_top = race_reply(
+            &shared,
+            &shared_query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour: LAST,
+                countries: Vec::new(),
+                group: None,
+                top: Some(5),
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Total,
+                types: Vec::new(),
+                refits: false,
+                from_hour: None,
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        let ger = shared_top.rows.iter().find(|row| row.tag == "GER").unwrap_or_else(|| panic!("GER is ranked: {shared_top:?}"));
+        assert_eq!(ger.country, Country::Tag("GER".into()), "a ranked country sharing its slot with another is named by what was ranked, never by the slot: {shared_top:?}");
+        let unsure = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-unsure", FIRST, LAST, FIRST, false, None, None);
+        let unsure_query = dashboard_base::queries::query(&unsure, 1).unwrap();
+        let unsure_top = race_reply(
+            &unsure,
+            &unsure_query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour: LAST,
+                countries: Vec::new(),
+                group: None,
+                top: Some(5),
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Total,
+                types: Vec::new(),
+                refits: false,
+                from_hour: None,
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(unsure_top.missing.as_deref(), Some(dashboard_query::series::totals::TOTALS_VALUE_UNKNOWN), "a contender whose amount is unknown leaves the top unproved: {:?}", unsure_top.rows);
+        let week = race_reply(
+            &src,
+            &query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour: FIRST + 10,
+                countries: Vec::new(),
+                group: None,
+                top: Some(5),
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Week,
+                types: Vec::new(),
+                refits: false,
+                from_hour: None,
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert!(week.rows.is_empty() && week.missing.as_deref().is_some_and(|reason| reason.contains("window")), "a week not yet whole is not known, never 'nothing delivered': {:?}", week.missing);
 
         let range_tile = tile(
             &src,

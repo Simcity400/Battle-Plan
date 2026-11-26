@@ -10,6 +10,7 @@ use dashboard_base::{
 };
 use dashboard_query::{
     Query,
+    identity::Holder,
     chart::{ChartBucket, ChartRun, merge},
     series::MissingSpan,
     tile::{self, BINS, SeriesTileReply, TileLine, TileRanking},
@@ -437,6 +438,25 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
             }
             let mut pieces = clip_pieces(pieces, within);
             pieces.sort_by_key(|piece| piece.first);
+            let before = scan_first - 1;
+            let held_before = scan_first > query.timeline.first
+                && family.from_hour.is_none_or(|from| from <= before)
+                && within.is_none_or(|spans| spans.iter().any(|span| span.first_hour <= before && before <= span.last_hour))
+                && matches!((query.holders.at(key, before), query.holders.at(key, scan_first)), (Some(held), Some(now)) if held.holder == now.holder && matches!(now.holder, Holder::Found { .. }))
+                && super::observed_at(source, query, MilitaryAirFamily::AirLosses, before)?;
+            for at in 0..pieces.len() {
+                let joined = match at {
+                    0 => pieces[0].first == scan_first && held_before,
+                    _ => {
+                        let (end, start) = (pieces[at - 1].last, pieces[at].first);
+                        end.saturating_add(1) == start
+                            && matches!((query.holders.at(key, end), query.holders.at(key, start)), (Some(held), Some(now)) if held.holder == now.holder && matches!(now.holder, Holder::Found { .. }))
+                    }
+                };
+                if joined {
+                    pieces[at].break_before = false;
+                }
+            }
             let missing = clip_missing(&missing_all, family.from_hour, within);
             drawn_lines.push(pieces);
             tile_lines.push(TileLine { country: key.clone(), part: None, missing, parts: Vec::new(), marks: None });
@@ -517,6 +537,80 @@ mod tests {
 
     fn loss(id: u64, game_hour: i32, country: u32, credited_enemy: bool, amount_raw: i64, opponent: Option<u32>) -> AirLossEventRow {
         AirLossEventRow { id, game_hour, country, region: 1, native_cause: 1, family_base: 0, credited_enemy, amount_raw, opponent, daily_slot: 0 }
+    }
+
+    #[test]
+    fn a_line_held_across_a_tile_edge_continues_its_stroke_there() {
+        let frames: Vec<DecodedFrame> = (0..=300)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }]);
+                let events = if hour == 5 { vec![loss(1, 5, 9001, true, 250_000, None)] } else { Vec::new() };
+                set::<tables::AirLossEvents>(&mut frame, events);
+                frame
+            })
+            .collect();
+        let rep = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let cancelled = AtomicBool::new(false);
+        let src = Source::from_replay(SourceKey { source_id: "air-tile-edge".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
+        let q = query(&src, 1).unwrap();
+        let load = LoadContext { content: None };
+        let params = serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "dealt" }, "binHours": 1, "index": 1, "countries": [7] });
+        let reply = tile(&src, &q, &params, &load, &cancelled).unwrap();
+        let bytes = unbase64(&reply.bins);
+        assert_eq!(bytes[0] & tile::FIRST_BREAK, 0, "hour 256 continues the stroke held through 255: no break at the tile edge");
+
+        let chosen_later = serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "dealt" }, "binHours": 1, "index": 1, "countries": [7], "within": [[7, [{ "firstHour": 256, "lastHour": 300 }]]] });
+        let bytes = unbase64(&tile(&src, &q, &chosen_later, &load, &cancelled).unwrap().bins);
+        assert_eq!(bytes[0] & (tile::PRESENT | tile::FIRST_BREAK), tile::PRESENT | tile::FIRST_BREAK, "a country chosen from 256 starts its stroke there");
+
+        let unread = (0..=300)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }]);
+                if hour == 255 {
+                    *frame.tables[TableId::AirLossEvents.index()] = TableView::Unavailable { reason: "losses unread".into() };
+                } else {
+                    set::<tables::AirLossEvents>(&mut frame, if hour == 5 { vec![loss(1, 5, 9001, true, 250_000, None)] } else { Vec::new() });
+                }
+                frame
+            })
+            .collect::<Vec<DecodedFrame>>();
+        let rep = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, unread)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let gap = Source::from_replay(SourceKey { source_id: "air-tile-edge-unread".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
+        let gap_query = query(&gap, 1).unwrap();
+        let bytes = unbase64(&tile(&gap, &gap_query, &params, &load, &cancelled).unwrap().bins);
+        assert_eq!(bytes[0] & (tile::PRESENT | tile::FIRST_BREAK), tile::PRESENT | tile::FIRST_BREAK, "losses unread at 255 leave a break before 256");
+
+        let passed = (0..=300)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let TableView::Complete(TableRows::Countries(countries)) = &*frame.tables[TableId::Countries.index()] else { unreachable!("fixture countries") };
+                let (first_tag, second_tag): (&[u8], &[u8]) = if hour >= 250 { (b"DEU", b"GER") } else { (b"GER", b"ITA") };
+                let rows = vec![
+                    CountryRow { id: 9001, canonical_slot: 7, tag: first_tag.to_vec(), ..countries[0].clone() },
+                    CountryRow { id: 9002, canonical_slot: 8, tag: second_tag.to_vec(), ..countries[0].clone() },
+                ];
+                set::<tables::Countries>(&mut frame, rows);
+                set::<tables::CountryLinks>(&mut frame, vec![CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 8 }]);
+                let events = match hour {
+                    5 => vec![loss(1, 5, 9001, true, 250_000, None)],
+                    6 => vec![loss(2, 6, 9002, true, 700_000, None)],
+                    _ => Vec::new(),
+                };
+                set::<tables::AirLossEvents>(&mut frame, events);
+                frame
+            })
+            .collect::<Vec<DecodedFrame>>();
+        let rep = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, passed)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let moved = Source::from_replay(SourceKey { source_id: "air-tag-passed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
+        let moved_query = query(&moved, 1).unwrap();
+        let by_tag = serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "dealt" }, "binHours": 1, "index": 0, "countries": ["GER"] });
+        let bytes = unbase64(&tile(&moved, &moved_query, &by_tag, &load, &cancelled).unwrap().bins);
+        assert_eq!(bytes[250] & (tile::PRESENT | tile::FIRST_BREAK), tile::PRESENT | tile::FIRST_BREAK, "GER passing to another country at 250 breaks its stroke there");
     }
 
     #[test]

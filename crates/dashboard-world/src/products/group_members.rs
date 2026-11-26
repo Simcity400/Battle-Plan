@@ -230,6 +230,10 @@ impl GroupsAt {
         self.reply.as_deref()
     }
 
+    pub fn shared(&self) -> Option<&Arc<CountryGroupReply>> {
+        self.reply.as_ref()
+    }
+
     pub fn members(&self, group: &GroupSelection, hour: i32) -> io::Result<Members> {
         let reply = self.reply.as_deref().ok_or_else(|| invalid("The group's memberships were not loaded"))?;
         let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

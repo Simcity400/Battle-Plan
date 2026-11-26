@@ -20,6 +20,6 @@ export const definition = {
   description: 'Fuel each military branch requested and received, and when shortages began.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 8 },
-  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
+  countries: { max: 1 }, options: OPTIONS,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Fuel by branch over time'),
 } as const satisfies WidgetMeta;

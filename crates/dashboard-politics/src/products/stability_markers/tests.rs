@@ -60,3 +60,16 @@ fn an_event_is_matched_to_the_slot_at_its_own_hour_not_at_the_hour_asked() {
     faction_markers(&mut late, &from_350, &groups, (0, 1000));
     assert_eq!(titles(&late), [(400, "ETH capitulated"), (501, "Left Axis")], "nothing before the slot held the tag is its event");
 }
+
+#[test]
+fn a_slot_that_changes_tag_inside_its_faction_neither_leaves_nor_joins() {
+    let mut groups = groups();
+    groups.factions[0].members = serde_json::from_value(serde_json::json!([
+        { "tag": "GER", "firstHour": 100, "lastHour": 599 }, { "tag": "DEU", "firstHour": 600, "lastHour": 800 }
+    ]))
+    .unwrap();
+    let slot = |tag: &str, hour: i32| (tag == "GER" && hour < 600) || (tag == "DEU" && hour >= 600);
+    let mut out = Markers { hour: 1000, shown: Vec::new(), next: None };
+    faction_markers(&mut out, &slot, &groups, (0, 1000));
+    assert_eq!(titles(&out), [(100, "Founded Axis"), (801, "Left Axis")], "the tag change at 600 is no event: the slot stayed a member");
+}

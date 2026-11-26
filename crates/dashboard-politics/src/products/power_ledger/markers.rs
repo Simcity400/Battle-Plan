@@ -43,7 +43,7 @@ pub struct PowerSpendMarker {
 #[serde(rename_all = "camelCase")]
 pub struct PowerSpendUnrecorded {
     pub first_hour: i32,
-    #[doc = " Never after the asked hour."]
+    #[doc = " The gap's own last hour, which can be after the asked hour: a chart shows it through the hour it displays."]
     pub last_hour: i32,
     pub reason: String,
 }
@@ -89,7 +89,7 @@ impl SpendMarkers {
             if *last >= hour {
                 later(last.saturating_add(1));
             }
-            unrecorded.push(PowerSpendUnrecorded { first_hour: *first, last_hour: (*last).min(hour), reason: reason.clone() });
+            unrecorded.push(PowerSpendUnrecorded { first_hour: *first, last_hour: *last, reason: reason.clone() });
         }
         PowerSpendMarkersReply { hour, next_change: next, decimals: self.decimals, markers, unrecorded, warnings: Vec::new() }
     }
@@ -97,20 +97,28 @@ impl SpendMarkers {
 
 pub(super) fn index(reply: &PowerSpendingReply, unread: Vec<(i32, i32, String)>) -> SpendMarkers {
     let categories: HashMap<&str, &str> = reply.categories.iter().map(|category| (category.id.as_str(), category.name.as_str())).collect();
-    let mut previous: HashMap<u32, i32> = HashMap::new();
+    let observed: Vec<(i32, i32)> = reply.coverage.iter().filter(|span| span.covered).map(|span| (span.first_hour, span.last_hour)).collect();
+    let observed_before = |read: i32| {
+        let at = observed.partition_point(|&(first, _)| first < read);
+        at.checked_sub(1).map(|at| observed[at].1.min(read - 1))
+    };
     let mut markers = Vec::with_capacity(reply.payments.len());
+    let mut latest: HashMap<u32, (Option<i32>, Option<&str>, Option<u32>)> = HashMap::new();
     for payment in &reply.payments {
         let Some(item) = reply.items.get(payment.item as usize) else { continue };
-        let since = (payment.payments > 1).then(|| previous.get(&payment.item).map_or(item.first_hour, |read| read.saturating_add(1)));
-        previous.insert(payment.item, payment.read);
+        let earliest = observed_before(payment.read).unwrap_or(reply.from);
+        let newest = (payment.hour, payment.sequence.as_deref(), payment.ordinal);
+        let renewed = latest.insert(payment.item, newest) != Some(newest);
+        let own = payment.hour.filter(|&hour| renewed && hour >= earliest);
+        let since = (payment.payments > 1).then_some(earliest);
         markers.push(PowerSpendMarker {
-            hour: payment.hour.unwrap_or(payment.read),
-            dated: payment.hour.is_some(),
+            hour: own.unwrap_or(payment.read),
+            dated: own.is_some(),
             since,
             read: payment.read,
             payments: payment.payments,
             unknown: payment.unknown,
-            charge_raw: payment.known_raw.clone(),
+            charge_raw: payment.known_raw.clone().filter(|_| payment.unknown < payment.payments),
             title: item.name.clone().unwrap_or_else(|| item.action.clone()),
             category: categories.get(item.category.as_str()).map_or_else(|| item.category.clone(), |name| (*name).to_owned()),
         });

@@ -215,8 +215,9 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
         let founders = faction.members.iter().filter(|member| member.first_hour == faction.first_hour).count();
         let sole = founders == 1 && !within(&unknown, faction.first_hour);
         let name = faction.name.as_deref().unwrap_or(FACTION_UNNAMED);
+        let member_at = |hour: i32| faction.members.iter().any(|other| other.first_hour <= hour && hour <= other.last_hour && holds(&other.tag, hour));
         for run in &faction.members {
-            if run.first_hour > branch.0 && !within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) {
+            if run.first_hour > branch.0 && !within(&unknown, run.first_hour - 1) && holds(&run.tag, run.first_hour) && !member_at(run.first_hour - 1) {
                 let verb = if run.first_hour == faction.first_hour && sole { StabilityMarkerVerb::Founded } else { StabilityMarkerVerb::Joined };
                 let word = if verb == StabilityMarkerVerb::Founded { "Founded" } else { "Joined" };
                 let mut made = marker(format!("fac-j:{}:{}", faction.id, run.first_hour), run.first_hour, StabilityMarkerKind::Faction, format!("{word} {name}"));
@@ -224,7 +225,7 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
                 made.faction = Some(faction.id.clone());
                 out.push(made);
             }
-            if run.last_hour < branch.1 && !within(&unknown, run.last_hour + 1) && holds(&run.tag, run.last_hour) {
+            if run.last_hour < branch.1 && !within(&unknown, run.last_hour + 1) && holds(&run.tag, run.last_hour) && !member_at(run.last_hour + 1) {
                 let hour = run.last_hour + 1;
                 let mut made = marker(format!("fac-l:{}:{hour}", faction.id), hour, StabilityMarkerKind::Faction, format!("Left {name}"));
                 made.verb = Some(StabilityMarkerVerb::Left);

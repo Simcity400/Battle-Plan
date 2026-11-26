@@ -946,7 +946,7 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    pub(crate) fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
+    pub fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
         let Some(stretch) = self.query.timeline.at(hour) else {
             return Some(self.query.timeline.reason(hour));
         };
@@ -1366,7 +1366,7 @@ impl<'q, 'a> Line<'q, 'a> {
         self.collect_hourly_runs(drawn, from, to, Self::key_runs)
     }
 
-    pub(crate) fn hourly_runs_for_tile(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
+    pub fn hourly_runs_for_tile(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32) -> io::Result<Vec<(Vec<ChartRun>, Vec<Part>)>> {
         self.collect_hourly_runs(drawn, from, to, Self::key_runs_witnessed)
     }
 
@@ -1982,7 +1982,7 @@ impl<'q, 'a> Line<'q, 'a> {
         self.collect_missing(country.into(), from, to, parts, Self::part_coverage_table)
     }
 
-    pub(crate) fn missing_for_tile(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
+    pub fn missing_for_tile(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
         self.collect_missing(country.into(), from, to, parts, Self::part_coverage_row)
     }
 
