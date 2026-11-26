@@ -3026,5 +3026,119 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
       finally { timeChartCacheState.enabled = true; }
     })();
     assert.deepEqual(wakeCached, wakeUncached, 'waking up after trailing nulls matches uncached');
+
+    const firstBreakTiled: TiledLine = {
+      tag: 'FBRK', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 19,
+        width: 2,
+        buckets: [
+          makeBucket(H1936, H1936, 3),
+          { ...makeBucket(H1936 + 10, H1936 + 19, 5), firstBreak: true },
+        ],
+        runs: [
+          { firstHour: H1936, lastHour: H1936, value: 3 },
+          { firstHour: H1936 + 12, lastHour: H1936 + 19, value: 5, breakBefore: true },
+        ],
+        tiles: { binHours: 10, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const fbSeries = boundTiledSeries({ ...firstBreakTiled, summary: { ...firstBreakTiled.summary, runs: undefined } }, displayedHour(H1936 + 12), {
+      prefixRuns: firstBreakTiled.summary.runs,
+    });
+    const fbRes = buildBoundedStack([{ id: 'fbk', key: 'fbk', name: 'FBK', color: LANE_THEME.blue, parts: [{ series: fbSeries }] }], H1936 + 12);
+    assert.deepEqual(fbRes.hours, [H1936, H1936 + 1, H1936 + 12], 'clipped firstBreak bucket preserves the gap on first render');
+    assert.deepEqual(fbRes.bands[0]!.values, [3, null, 5]);
+
+    const mixedRunTiled: TiledLine = {
+      tag: 'MR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 30,
+        width: 31,
+        buckets: [],
+        runs: [
+          { firstHour: H1936, lastHour: H1936 + 10, value: 10 },
+          { firstHour: H1936 + 11, lastHour: H1936 + 30, value: 20 },
+        ],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedBucketTiled: TiledLine = {
+      tag: 'MB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 17,
+        width: 2,
+        buckets: [makeBucket(H1936, H1936 + 8, 5), makeBucket(H1936 + 9, H1936 + 17, 6)],
+        tiles: { binHours: 9, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    const mixedInputs = [
+      { id: 'mr', key: 'mr', name: 'MR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(mixedRunTiled, displayedHour(H1936 + 15)) }] },
+      { id: 'mb', key: 'mb', name: 'MB', color: LANE_THEME.amber, parts: [{ series: boundTiledSeries(mixedBucketTiled, displayedHour(H1936 + 15), { prefixRuns: [{ firstHour: H1936 + 9, lastHour: H1936 + 15, value: 6 }] }) }] },
+    ];
+    assert.deepEqual(buildBoundedStack(mixedInputs, H1936 + 15).hours, [H1936, H1936 + 8, H1936 + 9, H1936 + 10, H1936 + 11, H1936 + 15], 'mixed run and bucket bands preserve run transitions across prefix boundary');
+
+    const shrinkRunTiled: TiledLine = {
+      tag: 'SR', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [],
+        runs: [{ firstHour: H1936, lastHour: H1936, value: 1 }, { firstHour: H1936 + 10, lastHour: H1936 + 10, value: 2 }],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sr', key: 'sr', name: 'SR', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkRunTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking run slice drops gap revealed by removed observation',
+    );
+    const shrinkBucketTiled: TiledLine = {
+      tag: 'SB', head: 'h', decimals: 0,
+      summary: {
+        from: H1936,
+        to: H1936 + 10,
+        width: 11,
+        buckets: [makeBucket(H1936, H1936, 1), ...Array.from({ length: 9 }, () => null), makeBucket(H1936 + 10, H1936 + 10, 2)],
+        tiles: { binHours: 1, valueAt: () => null },
+      },
+      missing: [], parts: [], marks: null,
+    };
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 10)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 1, H1936 + 10],
+    );
+    assert.deepEqual(
+      buildBoundedStack([{ id: 'sb', key: 'sb', name: 'SB', color: LANE_THEME.blue, parts: [{ series: boundTiledSeries(shrinkBucketTiled, displayedHour(H1936 + 9)) }] }], H1936 + 10).hours,
+      [H1936, H1936 + 10],
+      'shrinking bucket slice drops gap revealed by removed observation',
+    );
+
+    const shortBandTiled: TiledLine = {
+      tag: 'SHORT', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936, width: 1, buckets: [makeBucket(H1936, H1936, 5)], tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const shCur = new BoundedSeriesCursor();
+    const stepShort = (h: number) => buildBoundedStack([
+      { id: 'd', key: 'd', name: 'D', color: LANE_THEME.blue, parts: [{ series: dCur.advance(denseTiled, h, { headValue: knownValue(12) }) }], head: { value: 12 } },
+      { id: 'sh', key: 'sh', name: 'SH', color: LANE_THEME.amber, parts: [{ series: shCur.advance(shortBandTiled, h), within: [[H1936, H1936]] }] },
+    ], h);
+    stepShort(H1936 + 998);
+    denseReads = 0;
+    stepShort(H1936 + 999);
+    assert.ok(denseReads < 40, `exhausted short band does not force dense band resample (reads=${denseReads})`);
   });
 });
