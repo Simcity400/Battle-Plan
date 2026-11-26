@@ -52,6 +52,7 @@ TS_STYLE_VALUE = re.compile(
 STATEMENT_BREAK = re.compile(r"[;,}]")
 COMPARED = re.compile(r"[=!]==?\s*$")
 COMPARED_AFTER = re.compile(r"\s*[=!]==?")
+CLOSED_ATTRIBUTE = re.compile(r"[\w-]+\s*=\s*(['\"])[^'\"\n]*\1")
 
 
 def mask_ts(text):
@@ -94,7 +95,7 @@ def line_of(text, offset):
 
 def statement_before(code, end):
     before = code[max(0, end - 200):end]
-    breaks = [m.end() for m in STATEMENT_BREAK.finditer(before)]
+    breaks = sorted([m.end() for m in STATEMENT_BREAK.finditer(before)] + [m.end() for m in CLOSED_ATTRIBUTE.finditer(before)])
     stop = re.search(r"addColorStop\s*\([^()]*$", before)
     return before[stop.start():] if stop else before[breaks[-1]:] if breaks else before
 
@@ -106,7 +107,7 @@ def ts_literals(text):
         found += [m.start() for m in HEX.finditer(code, start, end)]
         found += [m.start() for m in FUNCTION.finditer(code, start, end)]
         content = code[start:end].strip().lower()
-        compared = COMPARED.search(code[max(0, start - 8):start - 1]) or COMPARED_AFTER.match(code, end + 1)
+        compared = COMPARED.search(code[max(0, start - 80):start - 1]) or COMPARED_AFTER.match(code, end + 1)
         if content in NAMED and not compared and TS_STYLE_VALUE.search(statement_before(code, start - 1)):
             found.append(start)
     return sorted({line_of(text, offset) for offset in found})

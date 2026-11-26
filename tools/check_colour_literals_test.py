@@ -37,6 +37,8 @@ class TypeScript(unittest.TestCase):
             "type Tone = 'red' | 'grey';\nconst tone: Tone = 'red';\nconst kind = 'tan';\nctx.fillStyle = theme.red;\n"
             "const cell = { color: c, tone: 'red' };\nif (column.tone === 'red') return theme.red;\n"
             "ctx.fillStyle = tone === 'red' ? theme.red : theme.text;\nctx.fillStyle = 'grey' !== tone ? theme.muted : theme.text;\n"
+            "ctx.fillStyle = tone ===\n        'red' ? theme.red : theme.text;\n"
+            "const e = <path\n  fill=\"currentColor\"\n  aria-label=\"Red\"\n  title='red'\n/>;\n"
         )
         self.assertEqual(cc.literals("ui/src/families/x.ts", text), [])
 
