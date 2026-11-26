@@ -139,3 +139,105 @@ test('History lanes come from each country’s recorded statuses: one bar per wo
   assert.equal(later.lanes[0]!.subtitle?.startsWith('Completed'), true);
   assert.equal(specialProjectsHistoryProjection.nextChange!(createBoundedReadView({ hour: 60, panels }), options), 100, 'quiet until the next recorded status');
 });
+
+test('R2-S6: History clips ended statuses, dates earlier span names and tooltip titles, and looks up slot-keyed hovers', async () => {
+  const { specialProjectsHistoryProjection } = await import('./historyProjection.ts');
+  const { createBoundedReadView } = await import('../../families/boundedView.ts');
+  const base = fixture();
+  const slotKey = 'slot:5';
+  const reply: SpecialProjectsReply = {
+    ...base,
+    tag: 'AAA',
+    identities: [{ firstHour: 0, lastHour: 100, slot: 5, countryId: 10 }],
+    available: [{ firstHour: 0, lastHour: 49 }, { firstHour: 60, lastHour: 80 }],
+    partial: [],
+    unresolved: [],
+    presentations: [
+      { ...base.presentations[0]!, name: 'Old Project' },
+      { ...base.presentations[0]!, name: 'New Project' },
+    ],
+    projects: [
+      {
+        id: 'renamed',
+        owner: 1,
+        local: 0,
+        firstRead: 10,
+        firstState: 'running',
+        statuses: [
+          { firstHour: 10, lastHour: 29, readHour: 10, presentation: 0, progress: 20, state: 'running', iterations: null, scientistRead: null, lastScientistRead: null },
+          { firstHour: 30, lastHour: 49, readHour: 30, presentation: 1, progress: 40, state: 'running', iterations: null, scientistRead: null, lastScientistRead: null },
+        ],
+        entries: [],
+        attempts: [],
+      },
+    ],
+  };
+  const panels = new Map<string, unknown>([[`projects:${slotKey}`, reply]]);
+  const options = { tags: [slotKey], membership: { [slotKey]: [[0, 100]] as const }, firstHour: 0, branchFirstHour: 0, surface: '#111111' };
+
+  const unreadView = createBoundedReadView({ hour: 55, panels });
+  const unreadModel = specialProjectsHistoryProjection.project(unreadView, options);
+  const unreadLane = unreadModel.lanes[0]!;
+  assert.equal(unreadLane.subtitle, 'Not recorded', 'unread hour after last status must not carry In progress · 40%');
+  assert.deepEqual(unreadLane.spans.map(s => [s.firstHour, s.lastHour, s.label]), [
+    [10, 29, 'Old Project'],
+    [30, 49, 'New Project'],
+  ], 'earlier span keeps its dated presentation');
+
+  const vanishedView = createBoundedReadView({ hour: 70, panels });
+  const vanishedModel = specialProjectsHistoryProjection.project(vanishedView, options);
+  const vanishedLane = vanishedModel.lanes[0]!;
+  assert.equal(vanishedLane.subtitle, 'Not in progress', 'vanished project after status end must not carry In progress · 40%');
+
+  const earlyTip = specialProjectsHistoryProjection.tooltip!(vanishedModel, { kind: 'span', laneKey: vanishedLane.key, spanId: vanishedLane.spans[0]!.id, hour: 15 }, vanishedView, options);
+  assert.equal(earlyTip?.title, 'Old Project', 'tooltip title dates to the hovered span');
+  assert.deepEqual(earlyTip?.items?.slice(0, 2), [
+    { label: 'State', value: 'In progress' },
+    { label: 'Progress', value: '20%' },
+  ], 'slot-keyed hover resolves the planned panel entry');
+
+  const renamedTip = specialProjectsHistoryProjection.tooltip!(vanishedModel, { kind: 'span', laneKey: vanishedLane.key, spanId: vanishedLane.spans[1]!.id, hour: 35 }, vanishedView, options);
+  assert.equal(renamedTip?.title, 'New Project');
+  assert.equal(renamedTip?.items?.[2]?.value, earlyTip?.items?.[2]?.value, 'renaming mid-run keeps the working stretch start date');
+
+  const beforeTip = specialProjectsHistoryProjection.tooltip!(vanishedModel, { kind: 'lane', laneKey: vanishedLane.key, hour: 5 }, vanishedView, options);
+  assert.equal(beforeTip?.title, 'Special project', 'hovering before the first status does not reveal a later project name');
+
+  const ongoingGapTip = specialProjectsHistoryProjection.tooltip!(unreadModel, { kind: 'lane', laneKey: unreadLane.key, hour: 58 }, unreadView, options);
+  assert.deepEqual(ongoingGapTip?.items, [{ label: 'State', value: 'Not recorded' }], 'reused model inside an ongoing gap still checks coverage at the hovered hour');
+
+  const gapTip = specialProjectsHistoryProjection.tooltip!(vanishedModel, { kind: 'lane', laneKey: vanishedLane.key, hour: 55 }, vanishedView, options);
+  assert.equal(gapTip?.title, 'New Project');
+  assert.deepEqual(gapTip?.items, [{ label: 'State', value: 'Not recorded' }]);
+
+  const afterTip = specialProjectsHistoryProjection.tooltip!(vanishedModel, { kind: 'lane', laneKey: vanishedLane.key, hour: 70 }, vanishedView, options);
+  assert.deepEqual(afterTip?.items, [{ label: 'State', value: 'Not in progress' }]);
+
+  const emptyBase: SpecialProjectsReply = { ...base, identities: [{ firstHour: 0, lastHour: 100, slot: 5, countryId: 10 }], partial: [], unresolved: [], projects: [] };
+  const emptyRecorded: SpecialProjectsReply = { ...emptyBase, tag: 'AAA', available: [{ firstHour: 0, lastHour: 80 }] };
+  const emptyUnread: SpecialProjectsReply = { ...emptyBase, tag: 'BBB', available: [{ firstHour: 0, lastHour: 40 }] };
+  const mixedPanels = new Map<string, unknown>([['projects:AAA', emptyRecorded], ['projects:BBB', emptyUnread]]);
+  const identity = {
+    resolve: (kind: 'country', key: string, atHour: number) => ({
+      kind, key, atHour,
+      holder: { status: 'ready' as const, value: key },
+      tag: { status: 'ready' as const, value: key },
+      name: { status: 'ready' as const, value: key },
+      flagChoice: { status: 'absent' as const, reason: 'No flag' },
+      validInterval: [0, 100] as [number, number],
+      nextChangeAt: Infinity,
+    }),
+  } as Parameters<typeof createBoundedReadView>[0]['identity'];
+  const mixed = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 50, panels: mixedPanels, identity }), {
+    tags: ['AAA', 'BBB'], membership: null, firstHour: 0, branchFirstHour: 0, surface: '#111111',
+  });
+  assert.equal(mixed.empty, undefined, 'mixed coverage leaves per-country headings visible instead of a global empty message');
+  assert.deepEqual(mixed.lanes.map(lane => [lane.key, lane.label]), [
+    ['country:AAA', 'AAA · No special projects yet'],
+    ['country:BBB', 'BBB · Not recorded at this date'],
+  ], 'each empty country heading shows its own coverage status in its visible label');
+  const bothUnread = specialProjectsHistoryProjection.project(createBoundedReadView({ hour: 50, panels: new Map([['projects:BBB', emptyUnread]]) }), {
+    tags: ['BBB'], membership: null, firstHour: 0, branchFirstHour: 0, surface: '#111111',
+  });
+  assert.equal(bothUnread.emptyKind, 'unavailable', 'earlier coverage does not mask an unread displayed hour');
+});
