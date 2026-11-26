@@ -4,6 +4,7 @@ import { paletteCache, readableColour } from '../charts/palette.ts';
 import { clearTextWidthCache, measureCanvasText, textWidthCacheStats, type Canvas2D } from '../charts/textWidth.ts';
 import { colorCache, mix, parseColorAlpha } from '../shell/appearance/color.ts';
 import { engineHour, gameDate } from '../dashboard/calendar.ts';
+import { markColours } from '../shell/appearance/themes.ts';
 import type { FamilyTheme } from '../families/contract.ts';
 import {
   BEHIND_BAR_HEIGHT,
@@ -291,7 +292,7 @@ test('name slots report truncation, status marks use dots/rings, and date/missin
   const hoverTab = drawDateTab(chromeCtx.ctx, '1 Sep 1939', 100, 120, THEME, 'hover', { left: 10, right: 200 });
   assert.ok(hoverTab.width > 0);
   const tokens = resolveKitTokens(THEME);
-  assert.equal(tokens.shortage, mix(THEME.red, THEME.text, 0.4), 'negative figures use the theme error colour as ink, as the DOM --error-ink does');
+  assert.equal(tokens.shortage, readableColour(markColours(THEME.red, THEME.green).shortInk, THEME.surface), 'negative figures use the ink derived from the theme error role');
   assert.equal(tokens.dateTabBg, THEME.raised);
   assert.equal(tokens.hoverTabBg, THEME.text);
 
@@ -394,7 +395,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
   assert.equal(chev.ops.filter(op => op.op === 'stroke').length, 2);
 
   const rateTokens = resolveKitTokens(THEME);
-  assert.deepEqual([winRateColor(0.2, THEME), winRateColor(0.5, THEME), winRateColor(0.8, THEME)], [rateTokens.shortage, rateTokens.textSecondary, rateTokens.positiveInk]);
+  assert.deepEqual([winRateColor(0.2, THEME), winRateColor(0.5, THEME), winRateColor(0.8, THEME)], [rateTokens.shortage, rateTokens.textSecondary, rateTokens.goodInk]);
   const wr = makeFakeCtx();
   assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 0, 0, THEME), { pct: null });
   assert.deepEqual(drawWinRateCell(wr.ctx, 0, 120, 18, 12, 4, THEME), { pct: 75 });
@@ -428,7 +429,7 @@ test('table cell kit primitives handle minimum bar width, win rate tinting, icon
 
   const netShort = makeFakeCtx();
   drawNetBar(netShort.ctx, 0, 120, 0, 36, -0.5, THEME);
-  assert.equal(netShort.ops.find(op => op.op === 'fill')?.fillStyle, THEME.red, 'a shortage net bar is filled with the theme error colour');
+  assert.equal(netShort.ops.find(op => op.op === 'fill')?.fillStyle, resolveKitTokens(THEME).shortFill, 'a shortage net bar is filled with the fill derived from the theme error role');
   const tall = { kind: 'ready', bitmap: {} as CanvasImageSource, width: 18, height: 36 } as const;
   assert.deepEqual([iconStripSlotWidth(tall, 28), iconStripSlotWidth({ ...tall, width: 72 }, 28), iconStripSlotWidth({ kind: 'pending' }, 28)], [14, 28, 28],
     'a tall medal takes its own width at the strip height, so the gap between medals is the strip gap');
@@ -612,7 +613,7 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
   const parsesBefore = colorCache.parses;
   assert.ok(textWidthCacheStats().fonts > 0 && paletteCache.readableSolves > 0);
   resolveKitTokens({ ...lightTheme, text: '#222222', font: 'Other Sans' });
-  assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 0],
-    'R2-K13: a theme change on the same surface clears the bounded text and palette tables');
+  assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 2],
+    'R2-K13: a theme change on the same surface clears the bounded text and palette tables; only the new theme refills them (its two mark inks)');
   assert.ok(colorCache.parses < parsesBefore, 'and the colour tables, which only the new theme refills');
 });

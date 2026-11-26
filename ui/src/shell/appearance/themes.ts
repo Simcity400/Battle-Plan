@@ -1,4 +1,5 @@
 import { contrast, extendColor, isDark, mix, mixOklab, mixRgb, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
+import { readableColour } from '../../charts/palette.ts';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -123,10 +124,37 @@ function inkEnds(colors: Pick<ThemeColors, 'surface' | 'text'>): { readonly ligh
   return colorsMode({ canvas: colors.surface }) === 'dark' ? { light: textSide, dark: surfaceSide } : { light: surfaceSide, dark: textSide };
 }
 
+const MARK_ANCHORS = {
+  short: { role: '#fb414a', fill: '#e5484d', ink: '#ff6b6f' },
+  good: { role: '#22c55e', fill: '#4fbf7a', ink: '#6fd496' },
+} as const;
+
+function shiftedLike(color: string, anchor: string, target: string): string {
+  const from = rgbToOklch(parseColor(anchor)!), to = rgbToOklch(parseColor(target)!);
+  const own = rgbToOklch(parseColor(color) ?? parseColor(anchor)!);
+  return oklchHex({ l: own.l + to.l - from.l, c: own.c * (to.c / from.c), h: (own.h + to.h - from.h + 360) % 360 });
+}
+
+export interface MarkColours { readonly shortFill: string; readonly shortInk: string; readonly goodFill: string; readonly goodInk: string }
+
+export function markColours(error: string, positive: string): MarkColours {
+  const { short, good } = MARK_ANCHORS;
+  return {
+    shortFill: shiftedLike(error, short.role, short.fill),
+    shortInk: shiftedLike(error, short.role, short.ink),
+    goodFill: shiftedLike(positive, good.role, good.fill),
+    goodInk: shiftedLike(positive, good.role, good.ink),
+  };
+}
+
 export function themeVariables(colors: ThemeColors): Record<string, string> {
   const ink = inkEnds(colors), accentText = parseColor(colors.accentText)!;
   const opposite = toHex({ r: 255 - accentText.r, g: 255 - accentText.g, b: 255 - accentText.b });
-  return { '--ink-light': ink.light, '--ink-dark': ink.dark, '--accent-hover': mix(colors.accent, opposite, 0.14) };
+  const marks = markColours(colors.error, colors.positive);
+  return {
+    '--ink-light': ink.light, '--ink-dark': ink.dark, '--accent-hover': mix(colors.accent, opposite, 0.14),
+    '--short-ink': readableColour(marks.shortInk, colors.surface), '--good-ink': readableColour(marks.goodInk, colors.surface),
+  };
 }
 
 export function contrastWarnings(colors: ThemeColors): string[] {

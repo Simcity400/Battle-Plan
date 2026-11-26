@@ -5,7 +5,7 @@ import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
 import { seriesLookAt, type ChartValueFormat, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { hitChartRows, rowsTooltip } from './rows.ts';
 
-const NEGATIVE_SWATCH = 'var(--error-ink)';
+const NEGATIVE_SWATCH = 'var(--short-ink)';
 
 export type ParsedChartInspect =
   | { readonly kind: 'marker'; readonly index: number; readonly hour?: number }

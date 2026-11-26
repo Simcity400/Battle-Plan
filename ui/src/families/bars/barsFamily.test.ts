@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { resolveKitTokens } from '../../draw/kit.ts';
 import test from 'node:test';
 import { readableColour } from '../../charts/palette.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
@@ -381,7 +382,7 @@ test('ordered, fuel-against-need, two-sided, share rows, net bars, and stacked s
   assert.ok(netTexts.includes('Surplus a day'));
   assert.ok(netTexts.includes('In'));
   assert.ok(netTexts.includes('Out'));
-  assert.ok(netDraw.ops.some(o => o.op === 'roundRect' && o.fillStyle === THEME.shortage));
+  assert.ok(netDraw.ops.some(o => o.op === 'roundRect' && o.fillStyle === resolveKitTokens(THEME).shortFill), 'a bar below zero takes the shortage fill');
 
   const stackedModel: BarsModel = {
     form: 'stacked',

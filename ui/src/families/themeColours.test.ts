@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { colour } from '../charts/palette.ts';
+import { colour, MARK_CONTRAST } from '../charts/palette.ts';
+import { drawNetBar, drawWinRateCell, resolveKitTokens } from '../draw/kit.ts';
 import type { Canvas2D } from '../charts/textWidth.ts';
-import { parseColorAlpha } from '../shell/appearance/color.ts';
-import { BUILT_IN_THEMES, deriveColors, themeColors } from '../shell/appearance/themes.ts';
+import { contrast, parseColor, parseColorAlpha } from '../shell/appearance/color.ts';
+import { BUILT_IN_THEMES, deriveColors, markColours, themeColors } from '../shell/appearance/themes.ts';
 import { drawFamilyBars } from './bars/painter.ts';
 import { layoutFamilyBars } from './bars/layout.ts';
 import type { BarsModel } from './bars/model.ts';
@@ -304,5 +305,23 @@ test('heat lanes draw every colour from the theme or the palette for its surface
     const layout = layoutHeatLanes({ width: 640, height: 220, scrollTop: 0, firstHour: 0, lastHour: 480, displayedHour: 480, rows: model.rows, legend: model.legend });
     drawHeatLanes(ctx, { model, layout, theme, scrollTop: 0, hoveredRow: 0, hoveredHour: 100, selectedRowId: 'r2', focusedRowId: null });
     return model;
+  });
+});
+
+test('shortage and good marks are one derived pair: the approved shades on Carbon, readable on light themes, recoloured by every theme', () => {
+  const carbon = themeColors(BUILT_IN_THEMES[0], 'dark');
+  assert.deepEqual(markColours(carbon.error, carbon.positive), { shortFill: '#e5484d', shortInk: '#ff6b6f', goodFill: '#4fbf7a', goodInk: '#6fd496' });
+  const lights = [LIGHT, ...BUILT_IN_THEMES.map(theme => familyThemeOf(themeColors(theme, 'light')))];
+  for (const theme of lights) {
+    const tokens = resolveKitTokens(theme);
+    for (const ink of [tokens.shortage, tokens.goodInk]) assert.ok(contrast(parseColor(ink)!, parseColor(theme.surface)!) >= MARK_CONTRAST, `${ink} is readable on ${theme.surface}`);
+  }
+  assertThemed('status marks', (ctx, theme) => {
+    drawWinRateCell(ctx, 0, 200, 20, 3, 7, theme);
+    drawWinRateCell(ctx, 0, 200, 50, 8, 2, theme);
+    drawNetBar(ctx, 0, 120, 70, 30, -0.5, theme);
+    drawNetBar(ctx, 0, 120, 100, 30, 0.5, theme);
+    ctx.fillStyle = theme.text;
+    return null;
   });
 });

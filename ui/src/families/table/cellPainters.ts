@@ -199,7 +199,7 @@ function shouldDrawBehindBar(column: FamilyColumnLayout, rc: CellRenderContext):
 
 function trackFillOf(column: FamilyColumnLayout, theme: TableTheme): string {
   const tokens = resolveKitTokens(theme);
-  if (column.trackTone === 'red' || column.tone === 'red') return theme.red;
+  if (column.trackTone === 'red' || column.tone === 'red') return tokens.shortFill;
   if (column.trackTone === 'grey' || column.tone === 'grey') return tokens.trackGrey;
   return theme.accent;
 }
@@ -705,13 +705,13 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const figureColor = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
     if (figureStarts(column, rc)) {
       if (tracked) {
-        drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? theme.red : trackFillOf(column, theme), theme);
+        drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? resolveKitTokens(theme).shortFill : trackFillOf(column, theme), theme);
       }
       drawFigurePhrase(rc, formatted.text, suffix, tracked ? left + trackW + 10 : left, right, middle, valFont, suffixFont, figureColor);
       return;
     }
     if (tracked) {
-      const barColor = paintModel.bar.alert ? theme.red : trackFillOf(column, theme);
+      const barColor = paintModel.bar.alert ? resolveKitTokens(theme).shortFill : trackFillOf(column, theme);
       drawTrackBar(ctx, right - numSlot - 10 - trackW, middle, trackW, 6, fraction, barColor, theme);
     }
     let numRight = right;

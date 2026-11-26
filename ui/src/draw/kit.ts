@@ -26,6 +26,7 @@ import {
   notRecordedLabel,
 } from '../families/valueFormat.ts';
 import { paletteCache, readableColour } from '../charts/palette.ts';
+import { markColours } from '../shell/appearance/themes.ts';
 import { niceStep } from '../charts/valueAxis.ts';
 import { colorCache, contrast, extendColor, isDark, mix, mixRgb, parseColor, parseColorAlpha, rgbaColor } from '../shell/appearance/color.ts';
 import { engineHour, gameDate, HOUR_EPOCH, monthNames } from '../dashboard/calendar.ts';
@@ -67,6 +68,7 @@ function buildKitTokens(theme: KitTokenInput) {
   const ink = extendColor(theme.surface, theme.text);
   const veil = (alpha: number) => rgbaColor(ink, alpha);
   const textSecondary = mix(theme.text, theme.muted, 1 / 3);
+  const marks = markColours(theme.red, theme.green);
   return {
     dark,
     ink,
@@ -78,8 +80,10 @@ function buildKitTokens(theme: KitTokenInput) {
     rowHover: theme.rowHover ?? veil(dark ? 0.045 : 0.05),
     rowSelected: theme.rowSelected ?? rgbaColor(theme.accent, 0.14),
     childTint: theme.childTint ?? veil(dark ? 0.018 : 0.025),
-    shortage: theme.shortage ?? mix(theme.red, theme.text, 0.4),
-    positiveInk: mix(theme.green, theme.text, 0.4),
+    shortage: theme.shortage ?? readableColour(marks.shortInk, theme.surface),
+    shortFill: marks.shortFill,
+    goodFill: marks.goodFill,
+    goodInk: readableColour(marks.goodInk, theme.surface),
     barMuted: theme.barMuted ?? veil(dark ? 0.085 : 0.095),
     barTrack: theme.barTrack ?? veil(dark ? 0.08 : 0.1),
     gridLine: theme.gridLine ?? veil(dark ? 0.055 : 0.07),
@@ -1592,9 +1596,9 @@ export function drawTimeAxis(ctx: Canvas2D, ticks: readonly TimeAxisTick[], opti
 export function winRateColor(rate: number, theme: FamilyTheme): string {
   const tokens = resolveKitTokens(theme);
   if (rate <= 0.35) return tokens.shortage;
-  if (rate >= 0.65) return tokens.positiveInk;
+  if (rate >= 0.65) return tokens.goodInk;
   if (rate < 0.5) return mix(tokens.shortage, tokens.textSecondary, (rate - 0.35) / 0.15);
-  return mix(tokens.textSecondary, tokens.positiveInk, (rate - 0.5) / 0.15);
+  return mix(tokens.textSecondary, tokens.goodInk, (rate - 0.5) / 0.15);
 }
 
 export function drawWinRateCell(
@@ -1618,6 +1622,7 @@ export function drawWinRateCell(
     return { pct: null };
   }
   const rate = Math.max(0, Math.min(1, won! / total));
+  const tokens = resolveKitTokens(theme);
   const pct = Math.round(rate * 100);
   ctx.font = `600 13.5px ${theme.font}`;
   ctx.fillStyle = winRateColor(rate, theme);
@@ -1636,13 +1641,13 @@ export function drawWinRateCell(
     const wonW = won! > 0 ? Math.max(2, Math.round(usable * rate)) : 0;
     const lostW = lost! > 0 ? Math.max(2, usable - wonW) : 0;
     if (wonW > 0) {
-      ctx.fillStyle = theme.green;
+      ctx.fillStyle = tokens.goodFill;
       ctx.beginPath();
       ctx.roundRect(barX, barY, wonW, barH, [2, hasBoth ? 0 : 2, hasBoth ? 0 : 2, 2]);
       ctx.fill();
     }
     if (lostW > 0) {
-      ctx.fillStyle = theme.red;
+      ctx.fillStyle = tokens.shortFill;
       ctx.beginPath();
       ctx.roundRect(barX + wonW + splitGap, barY, lostW, barH, [hasBoth ? 0 : 2, 2, 2, hasBoth ? 0 : 2]);
       ctx.fill();
@@ -1897,7 +1902,7 @@ export function drawNetBar(
   const half = Math.max(0, width / 2 - 2);
   const barW = Math.max(BEHIND_BAR_MIN_WIDTH, Math.round(half * Math.min(1, Math.abs(share))));
   const barY = Math.round(middleY - NET_BAR_HEIGHT / 2);
-  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, theme.red, 'left', 1);
+  if (share < 0) drawBar(ctx, centerX - barW, barY, barW, NET_BAR_HEIGHT, tokens.shortFill, 'left', 1);
   else drawBar(ctx, centerX, barY, barW, NET_BAR_HEIGHT, tokens.netBar, 'right', 1);
 }
 

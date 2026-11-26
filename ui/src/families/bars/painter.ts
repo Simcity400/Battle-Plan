@@ -344,7 +344,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         if (row.numeric > 0) {
           drawBar(ctx, layout.centerX, barY, barW, layout.barHeight, barColor, 'right');
         } else {
-          drawBar(ctx, layout.centerX - barW, barY, barW, layout.barHeight, tokens.shortage, 'left');
+          drawBar(ctx, layout.centerX - barW, barY, barW, layout.barHeight, tokens.shortFill, 'left');
         }
       }
 
