@@ -428,6 +428,7 @@ mod tests {
         assert_eq!((after.rows[0].total, after.first_hour), (Some(3), 1_033));
         assert!(after.warnings.iter().any(|warning| warning.starts_with("1 sinkings")), "{:?}", after.warnings);
         let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let retention_date = dashboard_text::division_history::date(1_039);
         for period in ["running", "month"] {
             for bin_hours in [1, replay_columnar::summary::BASE_HOURS] {
                 let tile = tile(&src, &query, &serde_json::json!({
@@ -441,7 +442,7 @@ mod tests {
                 assert_eq!(after.rows[0].partial.as_deref(), Some(reason.as_str()));
                 let retained = &tile.lines[1].partial;
                 assert_eq!(retained.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(1_039, 1_040)]);
-                assert!(retained[0].reason.contains("1039"));
+                assert!(retained[0].reason.contains(&retention_date));
             }
         }
         assert_eq!(before.rows[0].partial, None);
@@ -460,7 +461,7 @@ mod tests {
         let recovered = both(1_039);
         let zero = recovered.rows.iter().find(|row| row.slot == Some(8)).unwrap();
         assert_eq!(zero.total, Some(0));
-        assert!(zero.partial.as_deref().unwrap().contains("1039"));
+        assert!(zero.partial.as_deref().unwrap().contains(&retention_date));
     }
 
     #[test]
