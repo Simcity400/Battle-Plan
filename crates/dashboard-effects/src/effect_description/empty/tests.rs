@@ -56,7 +56,7 @@ fn empty_containers_keep_child_refusals_once() {
     for effect_key in ["fixture_new_country", "fixture_end_resistance"] {
         let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
         let out = fixture.render(
-            &format!("{effect_key}={{add_political_power=2 every_purchase_contract={{}}}}"),
+            &format!("{effect_key}={{add_political_power=2 fixture_unported={{}}}}"),
             &mut scopes,
             Content::default(),
         );
@@ -65,7 +65,7 @@ fn empty_containers_keep_child_refusals_once() {
         assert!(
             out.refusals
                 .keys()
-                .all(|why| { why.contains("every_purchase_contract") })
+                .all(|why| why.ends_with("effect key fixture_unported description is unsupported"))
         );
     }
 }

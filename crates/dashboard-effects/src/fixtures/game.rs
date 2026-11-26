@@ -400,7 +400,7 @@ pub fn executable() -> Executable {
         ("fixture_province_construction", EffectShape::PROVINCE_CONSTRUCTION, effect_identity::PROVINCE_CONSTRUCTION),
         ("fixture_launch_strike", EffectShape::LAUNCH_STRIKE, effect_identity::LAUNCH_STRIKE),
         ("fixture_call_election", EffectShape::SCALAR, effect_identity::CALL_ELECTION),
-        ("fixture_list_global_army", EffectShape::ALL_STATES, effect_identity::LIST_GLOBAL_ARMY),
+        ("fixture_list_global_army", EffectShape::LEADER_ROSTER, effect_identity::LIST_GLOBAL_ARMY),
         ("fixture_pick_controlled_state", EffectShape::SINGLE_STATE, effect_identity::PICK_CONTROLLED_STATE),
         ("fixture_pick_core_state", EffectShape::SINGLE_STATE, effect_identity::PICK_CORE_STATE),
         ("fixture_restore_region_title", EffectShape::SCALAR, effect_identity::RESTORE_REGION_TITLE),
