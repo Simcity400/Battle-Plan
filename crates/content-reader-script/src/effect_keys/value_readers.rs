@@ -409,6 +409,8 @@ impl OwnReader {
         use OwnValue::{Object, ObjectIfOpen, One};
         use UnitGroup::{RegimentalSupport, Regiments, Support};
         Some(match (self, key) {
+            (Self::Wargoal { .. }, b"type") => OwnValue::InvalidBlock,
+            (Self::Wargoal { .. }, b"target") | (Self::Wargoal { expire: true }, b"expire") => One,
             (Self::CaptureGeneral, b"province" | b"country")
             | (Self::ReleaseGeneral, b"target" | b"province")
             | (Self::ScientistRole, b"character")
@@ -663,6 +665,20 @@ fn own_reader(address: u64, is_class: impl Fn(&str) -> bool) -> Option<OwnReader
         DOCTRINE_KEYS => Grammar::Doctrine,
         _ => return None,
     })
+}
+
+pub(super) fn is_own_field(value: u64, key: u64, effect: &[u8], field: &[u8]) -> Option<bool> {
+    let address = match value_form(value)? {
+        Form::CurrentOrKeys(source) | Form::ScalarOrKeys(source) | Form::StringOrKeys(source)
+        | Form::Keys(source) | Form::AlwaysKeys(source) | Form::RoleKeys(source) => source.address(value, key),
+        Form::Persistent(address) => address,
+        _ => return Some(false),
+    };
+    if address == super::READ_EFFECT {
+        return Some(false);
+    }
+    let reader = own_reader(address, |name| effect.eq_ignore_ascii_case(name.as_bytes()))?;
+    Some(reader.value(field).is_some())
 }
 
 pub(super) fn description_fields(
@@ -936,10 +952,8 @@ impl<'n, 'c> Shaper<'n, 'c> {
             } else {
                 Shape::One
             }
-        } else if field.keyword_is("type") {
-            self.value(OwnValue::InvalidBlock, field)
-        } else if field.keyword_is("target") || (expire && field.keyword_is("expire")) {
-            Shape::One
+        } else if let Some(value) = (OwnReader::Wargoal { expire }).token_value(field.key) {
+            self.value(value, field)
         } else {
             Shape::Skip
         }

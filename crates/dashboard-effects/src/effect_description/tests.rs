@@ -549,11 +549,12 @@ fn authored_ideology_accessor_uses_the_ruling_party_at_the_effect_hour() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=12}}"),
         ("common/scripted_localisation/fixture.txt",
-         "defined_text={name=GetCopperParty text={localization_key=SYN_CURRENT_PARTY}}"),
+         "defined_text={name=GetCopperParty text={localization_key=SYN_CURRENT_PARTY}} defined_text={name=GetQuietLeader text={localization_key=SYN_EMPTY}}"),
         ("localisation/fixture_l_english.yml", concat!(
             "\u{feff}l_english:\n",
             " SYN_TIP:0 \"[ROOT.GetCopperParty]\"\n",
-            " SYN_UNKNOWN:0 \"[ROOT.GetTinParty]\"\n",
+            " SYN_UNKNOWN:0 \"[ROOT.GetTinParty]\"\n SYN_UNKNOWN_LEADER:0 \"[ROOT.GetTinLeader]\"\n",
+            " SYN_KNOWN_EMPTY:0 \"A[ROOT.GetQuietLeader]/[ROOT.MissingEntry]/[ROOT.GetLeader]Z\"\n SYN_EMPTY:0 \"\"\n",
             " SYN_CURRENT_PARTY:0 \"[THIS.GetRulingParty]\"\n",
             " AAA_syn_copper_party:0 \"Copper circle\"\n",
             " AAA_syn_tin_party:0 \"Tin circle\"\n",
@@ -577,9 +578,14 @@ fn authored_ideology_accessor_uses_the_ruling_party_at_the_effect_hour() {
         assert!(out.refusals.is_empty(), "{:?}", out.refusals);
         assert_eq!(out.text.trim_end(), expected);
     }
-    let out = fixture.render("fixture_written_tooltip=SYN_UNKNOWN", &mut fresh(), Content::default());
-    assert!(out.text.is_empty());
-    assert!(out.refusals.keys().any(|why| why.contains("GetTinParty")), "{:?}", out.refusals);
+    let out = fixture.render("fixture_written_tooltip=SYN_KNOWN_EMPTY", &mut fresh(), Content::default());
+    assert_eq!(out.text.trim_end(), "A//Z");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    for (key, getter) in [("SYN_UNKNOWN", "GetTinParty"), ("SYN_UNKNOWN_LEADER", "GetTinLeader")] {
+        let out = fixture.render(&format!("fixture_written_tooltip={key}"), &mut fresh(), Content::default());
+        assert!(out.text.is_empty());
+        assert!(out.refusals.keys().any(|why| why.contains(getter)), "{:?}", out.refusals);
+    }
 }
 
 #[test]

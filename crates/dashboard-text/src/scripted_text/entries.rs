@@ -488,6 +488,15 @@ impl<'a> ScriptedText<'a> {
             ));
         }
         let Some(entry) = self.content.names.entries.get(name.as_bytes()) else {
+            if matches!(object, Object::Country(_)) {
+                let folded = name.to_ascii_lowercase();
+                if let Some(getter) = folded.strip_prefix("get")
+                    && ["party", "leader"].into_iter().any(|suffix|
+                        getter.strip_suffix(suffix).is_some_and(|group| !group.is_empty()))
+                {
+                    return Err(format!("unsupported country getter {name} has no scripted localisation entry"));
+                }
+            }
             return Ok(String::new());
         };
         let previous_len = scopes.scopes.borrow().len();

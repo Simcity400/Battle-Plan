@@ -853,27 +853,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let item = if item.value.scalar().is_some() {
             item
         } else {
-            let token = item
-                .keyword()
-                .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()));
-            if !token.is_some_and(|token| {
-                content_reader_script::effect_keys::is_own_field(token, b"target")
-                    || content_reader_script::effect_keys::class(token).is_some_and(
-                        |(value_reader, key_reader)| {
-                            value_reader == 0x1403C2880
-                                || matches!(
-                                    key_reader,
-                                    0x1403CAC20
-                                        | 0x1403CD750
-                                        | 0x1403CD0D0
-                                        | 0x1403CD910
-                                        | 0x1404BE0F0
-                                        | 0x1404BE2C0
-                                        | 0x1403CEEF0
-                                )
-                        },
-                    )
-            }) {
+            let effect = item.keyword().map(|key| key.folded()).unwrap_or_default();
+            if !content_reader_script::effect_keys::is_own_field(&effect, b"target")? {
                 scalar_operand(item)?;
             }
             let Some(target) = self.country_target_field(item, "target")? else {
@@ -970,19 +951,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         name: &str,
     ) -> Result<Option<&'a Item>, String> {
         let mut fields = children(item).iter().filter(|field| field.keyword_is(name));
-        let chains = item
-            .keyword()
-            .and_then(|key| content_reader_script::effect_keys::registered(&key.folded()))
-            .and_then(content_reader_script::effect_keys::class)
-            .is_some_and(|(_, reader)| reader == 0x1403C8220);
         if fields.clone().nth(1).is_some()
             && fields.clone().any(|field| {
                 scope_selector(field).is_some()
-                    || chains
-                        && field
-                            .value
-                            .scalar()
-                            .is_some_and(|value| value.contains(&b'.'))
+                    || field.value.scalar().is_some_and(|value| value.contains(&b'.'))
+                        && item.keyword().is_some_and(|key|
+                            content_reader_script::effect_keys::reads_scope_chain(&key.folded(), name.as_bytes()))
             })
         {
             return Err(format!(
