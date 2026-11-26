@@ -201,6 +201,15 @@ fn unread_reason(query: &Query<'_>, run: u32, status: Status, first: i32) -> io:
     })
 }
 
+const NOT_READ: &str = "The civil-war lists were not read at these hours";
+
+fn unread_span(unread: &mut Vec<(i32, i32, String)>, first: i32, last: i32, reason: String) {
+    match unread.last_mut() {
+        Some((_, held_last, held)) if held_last.saturating_add(1) == first && *held == reason => *held_last = last,
+        _ => unread.push((first, last, reason)),
+    }
+}
+
 fn merged(runs: &mut Vec<(i32, i32, i64)>) {
     runs.sort_unstable_by_key(|run| run.0);
     let mut out: Vec<(i32, i32, i64)> = Vec::with_capacity(runs.len());
@@ -224,18 +233,40 @@ pub(crate) fn evidence(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<
     let mut changes = BTreeSet::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        for status in dashboard_query::read::statuses(query.replay.recording(), stretch.run, TableId::CountryCivilWars, stretch.first, stretch.last)? {
-            if replay_recording::columnar_frames::complete(status.status) {
-                match known.last_mut() {
-                    Some(HourSpan { last_hour, .. }) if last_hour.saturating_add(1) == status.first => *last_hour = status.last,
-                    _ => known.push(HourSpan { first_hour: status.first, last_hour: status.last }),
-                }
-                continue;
+        let recording = query.replay.recording();
+        let statuses = dashboard_query::read::statuses(recording, stretch.run, TableId::CountryCivilWars, stretch.first, stretch.last)?;
+        let read = dashboard_query::cost::storage(|| replay_lanes::lanes::complete_reads(recording, stretch.run, TableId::CountryCivilWars, stretch.first, stretch.last))?;
+        let mut gaps = Vec::new();
+        let mut cursor = stretch.first;
+        for &(first, last) in &read {
+            if first > cursor {
+                gaps.push((cursor, first - 1));
             }
-            let reason = unread_reason(query, stretch.run, status.status, status.first)?;
-            match unread.last_mut() {
-                Some((_, last, held)) if last.saturating_add(1) == status.first && *held == reason => *last = status.last,
-                _ => unread.push((status.first, status.last, reason)),
+            match known.last_mut() {
+                Some(HourSpan { last_hour, .. }) if last_hour.saturating_add(1) == first => *last_hour = last,
+                _ => known.push(HourSpan { first_hour: first, last_hour: last }),
+            }
+            cursor = last.saturating_add(1);
+        }
+        if cursor <= stretch.last {
+            gaps.push((cursor, stretch.last));
+        }
+        for (gap_first, gap_last) in gaps {
+            let mut at = gap_first;
+            for status in statuses.iter().filter(|status| status.last >= gap_first && status.first <= gap_last) {
+                let (from, to) = (status.first.max(at), status.last.min(gap_last));
+                if from > to {
+                    continue;
+                }
+                if from > at {
+                    unread_span(&mut unread, at, from - 1, NOT_READ.to_owned());
+                }
+                let reason = if replay_recording::columnar_frames::complete(status.status) { NOT_READ.to_owned() } else { unread_reason(query, stretch.run, status.status, status.first)? };
+                unread_span(&mut unread, from, to, reason);
+                at = to.saturating_add(1);
+            }
+            if at <= gap_last {
+                unread_span(&mut unread, at, gap_last, NOT_READ.to_owned());
             }
         }
         let targets = stretch_runs(query, stretch, TableId::CountryCivilWars, "target")?;
@@ -254,13 +285,29 @@ pub(crate) fn evidence(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<
                     unresolved.push(first);
                     continue;
                 };
+                let mut resolved: Vec<(i32, i32)> = Vec::new();
                 for holding in own {
                     for rival in rivals {
                         let (from, to) = (first.max(holding.first).max(rival.first), last.min(holding.last).min(rival.last));
-                        if from <= to && holding.slot != rival.slot {
+                        if from > to {
+                            continue;
+                        }
+                        resolved.push((from, to));
+                        if holding.slot != rival.slot {
                             listings.push(Listing { a: holding.slot.min(rival.slot), b: holding.slot.max(rival.slot), first: from, last: to });
                         }
                     }
+                }
+                resolved.sort_unstable();
+                let mut through = first.saturating_sub(1);
+                for (from, to) in resolved {
+                    if from > through.saturating_add(1) {
+                        break;
+                    }
+                    through = through.max(to);
+                }
+                if through < last {
+                    unresolved.push(through.saturating_add(1));
                 }
             }
         }
@@ -287,6 +334,10 @@ pub(crate) fn evidence(query: &Query<'_>, cancelled: &AtomicBool) -> io::Result<
         changes.insert(entry.hour);
     }
     for annexation in &annexations {
+        let listed_at = |tag: Option<&str>| tag.is_some_and(|tag| tags.values().any(|held| tag_at(held, annexation.hour) == Some(tag)));
+        if !listed_at(annexation.annexed.as_deref()) && !listed_at(annexation.annexer.as_deref()) {
+            continue;
+        }
         changes.insert(annexation.hour);
         changes.insert(annexation.read_hour);
         let Some(annexed) = annexation.annexed.as_deref() else { continue };

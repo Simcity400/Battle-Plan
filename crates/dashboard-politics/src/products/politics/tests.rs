@@ -276,6 +276,47 @@ fn hours_the_civil_war_lists_were_not_read_are_not_known_and_say_why() {
     assert!(early.warnings.is_empty(), "a reason dated later is not given earlier: {:?}", early.warnings);
 }
 
+fn source_of(id: &str, frames: Vec<DecodedFrame>) -> Source {
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn hours_a_complete_list_was_carried_but_not_sampled_are_not_known() {
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if (123..=124).contains(&hour) {
+                frame.metrics.table_ns[TableId::CountryCivilWars.index()] = 0;
+            }
+            frame
+        })
+        .collect();
+    let source = source_of("politics-unsampled", frames);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let reply = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: LAST }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.known.iter().map(|span| (span.first_hour, span.last_hour)).collect::<Vec<_>>(), [(FIRST, 122), (125, LAST)]);
+}
+
+#[test]
+fn a_listing_whose_target_is_named_only_later_keeps_its_refusal_from_the_hour_it_was_listed() {
+    let frames = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if hour < 110 {
+                set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: 7, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+                set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 11, canonical_slot: 7 }, CountryLinkRow { id: GER, canonical_slot: 7 }]));
+            }
+            frame
+        })
+        .collect();
+    let source = source_of("politics-late-target", frames);
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let early = civil_wars::answer(&query, &civil_wars::CivilWarsParams { branch_id: "1".into(), hour: 107 }, &AtomicBool::new(false)).unwrap();
+    assert!(early.wars.is_empty());
+    assert!(early.warnings.iter().any(|warning| warning.contains("refused civil-war listings")), "the listing at 105 names a country with no identity yet: {:?}", early.warnings);
+}
+
 #[test]
 fn listings_apart_in_time_are_two_episodes_and_a_third_side_breaks_from_the_one_listed_first() {
     let tags = std::collections::BTreeMap::new();
