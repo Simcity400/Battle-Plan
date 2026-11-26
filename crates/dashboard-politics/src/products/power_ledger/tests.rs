@@ -1376,6 +1376,12 @@ fn spending_markers_are_payments_at_their_own_hour_shown_once_read_with_the_next
     again.payments[1].ordinal = again.payments[0].ordinal;
     let older = super::markers::index(&again, Vec::new()).at(LAST);
     assert_eq!((older.markers[1].hour, older.markers[1].dated), (again.payments[1].read, false), "a count whose latest payment is the one already dated gives no date of its own");
+    let mut unwitnessed = again.items[again.payments[0].item as usize].clone();
+    unwitnessed.id = format!("{}:unrecorded", unwitnessed.id);
+    again.items.push(unwitnessed);
+    again.payments[1].item = (again.items.len() - 1) as u32;
+    let relisted = super::markers::index(&again, Vec::new()).at(LAST);
+    assert_eq!((relisted.markers[1].hour, relisted.markers[1].dated), (again.payments[1].read, false), "nor when a read that did not witness its item lists the same ledger item again");
 
     let gap = super::markers::index(&first, vec![(110, 150, "The ledger was not read".to_owned())]);
     let (inside, later) = (gap.at(115), gap.at(130));

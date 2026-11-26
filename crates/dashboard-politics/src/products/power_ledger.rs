@@ -82,6 +82,9 @@ pub struct SpendItem {
     pub tooltip_token: Option<String>,
     #[doc = " A decision's category or an advisor's role, from the installed content; none for other spending."]
     pub kind: Option<SpendKind>,
+    #[serde(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
+    pub ledger: (u32, u32, u32),
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -1310,6 +1313,7 @@ fn items_at(query: &Query<'_>, slot: u32, ordinals: &[u32], hour: i32) -> io::Re
 const UNRECORDED_ITEM: u32 = 1 << 31;
 
 struct UnrecordedItem {
+    run: u32,
     slot: u32,
     ordinal: u32,
     read: i32,
@@ -1358,7 +1362,7 @@ impl Items {
         };
         let unrecorded = &mut self.unrecorded;
         let at = *self.unrecorded_index.entry((run, slot, ordinal, reason.clone())).or_insert_with(|| {
-            unrecorded.push(UnrecordedItem { slot, ordinal, read, recurring, reason });
+            unrecorded.push(UnrecordedItem { run, slot, ordinal, read, recurring, reason });
             (unrecorded.len() - 1) as u32
         });
         (UNRECORDED_ITEM | at, false)
@@ -1387,6 +1391,7 @@ fn unrecorded_item(item: &UnrecordedItem) -> SpendItem {
         unknown: Some(item.reason.clone()),
         tooltip_token: None,
         kind: None,
+        ledger: (item.run, item.slot, item.ordinal),
     }
 }
 
@@ -1548,13 +1553,13 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         let texts = idea_format::texts(content, &text_keys);
         reply.idea_tooltips = Some(SpendIdeaTooltips { ideas: infos, artwork: ideas.into_values().map(|(_, art)| art).collect(), modifiers, texts });
     }
-    for ((_, row), named) in asked.iter().zip(named) {
+    for ((run, row), named) in asked.iter().zip(named) {
         categories.entry(named.category.0.clone()).or_insert_with(|| SpendCategory {
             id: named.category.0.clone(),
             name: named.category.1.clone(),
             identified: named.category.0 != "notIdentified",
         });
-        reply.items.push(naming::ledger_item(format!("{}:{}:{}", row.holder, row.ordinal, row.first_read), row, named));
+        reply.items.push(naming::ledger_item(format!("{}:{}:{}", row.holder, row.ordinal, row.first_read), (*run, row.holder, row.ordinal), row, named));
     }
     if !items.unrecorded.is_empty() {
         let (id, name) = naming::cause_category(PowerCause::NotIdentified);

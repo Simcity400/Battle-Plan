@@ -24,6 +24,7 @@ fn item(group: &str, category: &str, name: Option<&str>) -> SpendItem {
         unknown: None,
         tooltip_token: None,
         kind: None,
+        ledger: (0, 0, 0),
     }
 }
 
