@@ -105,8 +105,32 @@ pub(crate) struct Scanned {
     pub windows_unrecorded: Vec<(i32, i32, String)>,
     states: HashMap<u128, DecisionLifecycleState>,
     resolved: Mutex<HashMap<u128, Option<DecisionLifecycleState>>>,
+    presented: Mutex<Presented>,
     breaks: Vec<(i32, i32)>,
     pub gaps: Vec<MissingSpan>,
+}
+
+pub(crate) type HeldRow = Arc<(Option<EventFeedRow>, Notices)>;
+
+const PRESENTED_REQUESTS: u64 = 32;
+
+#[derive(Default)]
+struct Presented {
+    content: Option<Arc<Catalogue>>,
+    request: u64,
+    rows: HashMap<(u64, u64, i32, bool), (u64, HeldRow)>,
+}
+
+fn same_content(held: Option<&Arc<Catalogue>>, asked: Option<&Arc<Catalogue>>) -> bool {
+    match (held, asked) {
+        (Some(held), Some(asked)) => Arc::ptr_eq(held, asked),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
+    (event.generation, event.sequence, event.read_hour, effects)
 }
 
 impl Scanned {
@@ -128,6 +152,38 @@ impl Scanned {
             _ => None,
         };
         found.map(|brief| brief.at.key)
+    }
+
+    pub(crate) fn held_rows(&self, content: Option<&Arc<Catalogue>>, effects: bool, events: &[&FeedEvent]) -> (u64, Vec<Option<HeldRow>>) {
+        let mut memo = self.presented.lock().unwrap_or_else(PoisonError::into_inner);
+        if !same_content(memo.content.as_ref(), content) {
+            memo.rows.clear();
+            memo.content = content.cloned();
+        }
+        memo.request += 1;
+        let request = memo.request;
+        let held = events
+            .iter()
+            .map(|event| {
+                memo.rows.get_mut(&presented_key(event, effects)).map(|(used, row)| {
+                    *used = request;
+                    Arc::clone(row)
+                })
+            })
+            .collect();
+        (request, held)
+    }
+
+    pub(crate) fn keep_rows(&self, content: Option<&Arc<Catalogue>>, effects: bool, request: u64, made: Vec<(&FeedEvent, HeldRow)>) {
+        let mut memo = self.presented.lock().unwrap_or_else(PoisonError::into_inner);
+        if !same_content(memo.content.as_ref(), content) {
+            return;
+        }
+        for (event, row) in made {
+            memo.rows.insert(presented_key(event, effects), (request, row));
+        }
+        let floor = memo.request.saturating_sub(PRESENTED_REQUESTS);
+        memo.rows.retain(|_, (used, _)| *used > floor);
     }
 
     pub(crate) fn decision_states(&self, query: &Query<'_>, events: &[&FeedEvent]) -> io::Result<Vec<Option<DecisionLifecycleState>>> {
@@ -302,7 +358,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, cancelled: &AtomicBool)
     breaks.retain(|(first, last)| first <= last);
     breaks.sort_unstable();
     let gaps = dashboard_base::products::log_page::missing(query, declared, query.timeline.first, query.timeline.last)?;
-    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), breaks, gaps })
+    Ok(Scanned { briefs, native, incomplete, windows_unrecorded: reasons, states, resolved: Mutex::default(), presented: Mutex::default(), breaks, gaps })
 }
 
 fn break_after(breaks: &[(i32, i32)], from: i32, hour: i32) -> Option<(i32, i32)> {

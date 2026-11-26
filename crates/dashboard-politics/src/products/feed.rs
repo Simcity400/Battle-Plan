@@ -423,10 +423,24 @@ pub(crate) fn present_all(query: &Query<'_>, scanned: &index::Scanned, events: &
     let states = scanned.decision_states(query, events)?;
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&at| events[at].hour);
-    let mut out: Vec<Option<EventFeedRow>> = (0..events.len()).map(|_| None).collect();
-    for at in order {
+    let (request, mut held) = scanned.held_rows(presenter.content(), presenter.effects(), events);
+    let mut made = Vec::new();
+    for &at in &order {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let mut presented = present(events[at], names, presenter, notices)?;
+        if held[at].is_none() {
+            let mut said = Notices::default();
+            let row = present(events[at], names, presenter, &mut said)?;
+            let kept: index::HeldRow = Arc::new((row, said));
+            made.push((events[at], Arc::clone(&kept)));
+            held[at] = Some(kept);
+        }
+    }
+    scanned.keep_rows(presenter.content(), presenter.effects(), request, made);
+    let mut out: Vec<Option<EventFeedRow>> = vec![None; events.len()];
+    for &at in &order {
+        let Some(kept) = held[at].as_ref() else { continue };
+        notices.absorb(&kept.1);
+        let mut presented = kept.0.clone();
         if let Some(row) = presented.as_mut() {
             row.decision_state = states[at].clone();
         }

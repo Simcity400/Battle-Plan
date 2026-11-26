@@ -1090,3 +1090,22 @@ fn faction_row_with_missing_dated_name_never_falls_back_to_final_name() {
     assert!(early.next_change.is_some_and(|next| next <= 103));
     assert!(at(104).warnings.iter().any(|warning| warning.contains("template token 77")));
 }
+
+#[test]
+fn notices_kept_with_each_presented_event_add_up_to_the_notices_said_at_once() {
+    let say = |notices: &mut Notices, event: u32| {
+        notices.sampled("nativeEventCountry", "Native event country", format!("actor of event {event}"), 1);
+        notices.sampled("nativeEventCountry", "Native event country", format!("target of event {event}"), 1);
+        notices.unavailable("decisionIcon", "Decision icon", "the icon is not in the installation", Some(2));
+        notices.unavailable("eventWindows", "Event windows", format!("from read {}", event % 2), None);
+    };
+    let mut direct = Notices::default();
+    let mut kept = Notices::default();
+    for event in 0..5 {
+        say(&mut direct, event);
+        let mut own = Notices::default();
+        say(&mut own, event);
+        kept.absorb(&own);
+    }
+    assert_eq!(kept.into_list(), direct.into_list(), "a reply built from kept rows says what presenting them again would");
+}

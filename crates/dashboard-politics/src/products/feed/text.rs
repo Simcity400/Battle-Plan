@@ -65,6 +65,23 @@ impl Notices {
         self.list.push(EventFeedUnavailable { kind: key.0, label: key.1, reason, count });
     }
 
+    pub fn absorb(&mut self, other: &Notices) {
+        let mut said: Vec<_> = other.keys.iter().collect();
+        said.sort_by_key(|(_, (index, _))| *index);
+        for (key, (index, samples)) in said {
+            let entry = &other.list[*index];
+            match samples.split_first() {
+                None => self.merge(key.clone(), entry.reason.clone(), entry.count, Vec::new()),
+                Some((first, rest)) => {
+                    self.merge(key.clone(), first.clone(), entry.count, vec![first.clone()]);
+                    if !rest.is_empty() {
+                        self.merge(key.clone(), first.clone(), Some(0), rest.to_vec());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn into_list(self) -> Vec<EventFeedUnavailable> {
         self.list
     }
@@ -462,6 +479,14 @@ impl<'q> Presenter<'q> {
 
     pub fn catalogue(&self) -> Option<&Catalogue> {
         self.catalogue.as_deref()
+    }
+
+    pub fn content(&self) -> Option<&Arc<Catalogue>> {
+        self.catalogue.as_ref()
+    }
+
+    pub fn effects(&self) -> bool {
+        self.effects
     }
 
     fn dated(&self, run: u32, hour: i32, frames: &mut Frames) -> io::Result<DecodedFrame> {
