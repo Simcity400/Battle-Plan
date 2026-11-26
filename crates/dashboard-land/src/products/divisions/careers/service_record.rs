@@ -298,6 +298,17 @@ fn scan(query: &Query<'_>, content: Content, cancelled: &AtomicBool) -> io::Resu
         battle_entries(query, stretch, &links, &mut entries, &mut participated, cancelled)?;
         let (first, last, run) = (stretch.first, stretch.last, stretch.run);
         roster::scan(query, stretch, &links, divisions, &mut roster.templates, &content, cancelled)?;
+        if recording.predates(TableId::DivisionKills.index()).is_none() {
+            let kills = lanes::history(recording, run, TableId::DivisionKills, &[dashboard_declare::field(TableId::DivisionKills, "killed_raw")?], LaneKeys::All, first, last)?;
+            for (key, steps) in &kills.keys {
+                if let Some(division) = divisions.get_mut(&(*key as u64)) {
+                    division.facts.extend(steps.iter().map(|step| step.hour));
+                }
+            }
+            for change in kills.statuses.windows(2).filter(|pair| pair[0].status != pair[1].status) {
+                divisions.values_mut().for_each(|division| division.facts.push(change[1].first));
+            }
+        }
         for (table, reason) in [
             (TableId::Divisions, "Division census incomplete"),
             (TableId::DivisionHistory, "Division history incomplete"),

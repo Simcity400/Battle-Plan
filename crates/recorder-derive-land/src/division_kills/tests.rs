@@ -18,6 +18,17 @@ fn damage(exit: u64, ordinal: u64, target: u64, attacker: u64, strength_raw: i64
 }
 
 #[test]
+fn an_attacker_s_damage_under_two_armies_is_one_share() {
+    let mut run = run();
+    let mut hour = Edits::default();
+    hour.put(TableId::LandDivisionDamage, damage(4, 0, TARGET, FIRST, 1))
+        .put(TableId::LandDivisionDamage, LandDivisionDamageRow { army: Some(8), ..damage(4, 1, TARGET, FIRST, 2) })
+        .put(TableId::LandCombatEdges, exit(4, TARGET, 1, Some(6)));
+    run.hour(&hour);
+    assert_eq!(kills(&run), [(FIRST, MEN / 2, None)], "half a man, not two truncated parts");
+}
+
+#[test]
 fn damage_dealt_in_one_combat_is_shared_against_the_exit_from_another_that_flushed_the_pool() {
     let mut run = run();
     let mut hour = Edits::default();

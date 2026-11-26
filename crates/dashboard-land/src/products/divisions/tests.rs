@@ -208,11 +208,19 @@ fn a_tie_at_the_cut_or_between_shown_divisions_decided_by_an_unread_measure_is_n
 fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_gaps() {
     use super::careers::service_record::{DivisionServiceRecordChoices, DivisionServiceRecordTail};
     use dashboard_base::products::{LoadContext, Product};
-    use replay_data::rows::{DivisionHistoryRow, LandCombatRow, TableId, TableRows};
+    use replay_data::rows::{DivisionHistoryRow, LandCombatEdgesRow, LandCombatRow, LandDivisionDamageRow, TableId, TableRows};
     use replay_frame::frame::TableView;
     use serde_json::json;
-    let source = decorated_source((100..=104).map(|hour| {
+    let source = decorated_source((100..=106).map(|hour| {
         let mut frame = decorated_world(hour, |id| 20 * id as i64);
+        let (damage, exits) = if hour == 106 {
+            (vec![LandDivisionDamageRow { id: 50 << 16, hour, combat: 4, target: 9, attacker: 2, army: None, strength_raw: 100 }],
+                vec![LandCombatEdgesRow { id: 50, kind: LandCombatEdgesRow::EXITED, hour, combat: 4, division: Some(9), casualties_before: Some(0), casualties_after: Some(3), pending_strength_raw: Some(100), ..Default::default() }])
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        *frame.tables[TableId::LandDivisionDamage.index()] = TableView::Complete(TableRows::LandDivisionDamage(damage));
+        *frame.tables[TableId::LandCombatEdges.index()] = TableView::Complete(TableRows::LandCombatEdges(exits));
         frame.metrics.table_ns[TableId::Divisions.index()] = 1;
         frame.metrics.table_ns[TableId::DivisionHistory.index()] = 1;
         if hour < 102 && let TableView::Complete(TableRows::Divisions(rows)) = &mut *frame.tables[TableId::Divisions.index()] {
@@ -255,6 +263,10 @@ fn a_service_record_pages_one_division_and_follows_the_decorated_leader_through_
     let career: Vec<_> = pinned.rows.iter().filter(|row| row.kind == "career").map(|row| row.hour).collect();
     assert_eq!(career, [91]);
     assert!(pinned.missing.iter().any(|gap| gap.first_hour == 103 && gap.last_hour == 103 && gap.reason.contains("history")), "{:?}", pinned.missing);
+    let quiet = ask(105, Some("2"));
+    assert_eq!(quiet.facts.as_ref().and_then(|facts| facts.enemy_killed), Some(0));
+    assert_eq!(quiet.next_change, Some(106), "an hour when only the division's kills change is a change");
+    assert_eq!(ask(106, Some("2")).facts.and_then(|facts| facts.enemy_killed), Some(3));
 }
 
 #[test]

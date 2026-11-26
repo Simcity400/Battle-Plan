@@ -140,7 +140,7 @@ pub struct DecoratedContext {
     looks: Result<BranchLooks, String>,
 }
 
-const RANKS: [DecoratedRank; 4] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken, DecoratedRank::EnemyKilled];
+const RANKS: [DecoratedRank; 3] = [DecoratedRank::Medals, DecoratedRank::Experience, DecoratedRank::CasualtiesTaken];
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]

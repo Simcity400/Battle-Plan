@@ -591,7 +591,9 @@ pub fn compare_damage(replay: &Replay, frame: &DecodedFrame, report: &mut Report
                                 recorded.exits.insert(edge.id, (division, edge.pending_strength_raw));
                             }
                         }
-                        recorded.wiped.extend(destroyed.iter().filter_map(|row| row.triggering_combat.map(|combat| (combat, row.division))));
+                        for row in destroyed.iter().filter(|row| row.triggering_combat.is_some()) {
+                            recorded.wiped.extend(row.combats.iter().chain(row.triggering_combat.as_ref()).map(|&combat| (combat, row.division)));
+                        }
                         for observer in observers {
                             recorded.ended.insert(observer.combat, decoded.hour);
                         }

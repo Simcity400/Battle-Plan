@@ -63,7 +63,10 @@ fn shares(hour: &Hour<'_>) -> HashMap<u64, Option<i64>> {
             continue;
         };
         let closed = targets.entry((key as u64 >> 16, target as u64)).or_insert((target as u64, Vec::new()));
-        closed.1.push((attacker as u64, strength));
+        match closed.1.iter_mut().find(|(held, _)| *held == attacker as u64) {
+            Some((_, total)) => *total = total.saturating_add(strength),
+            None => closed.1.push((attacker as u64, strength)),
+        }
     }
     let mut killed = HashMap::<u64, Option<i64>>::new();
     for (exit, (target, attackers)) in targets {

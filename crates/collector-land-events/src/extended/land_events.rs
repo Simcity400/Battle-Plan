@@ -214,7 +214,9 @@ impl Captured {
             Err(d.reason)
         };
         match result {
-            Ok((results, destroyed, edges, observers)) => [
+            Ok((results, destroyed, edges, observers)) => {
+                let edges_refused = edges.as_ref().err().map(|reason| (*reason).to_owned());
+                [
                 TableView::Complete(TableRows::LandCombatResults(results)),
                 TableView::Complete(TableRows::DestroyedDivisions(destroyed)),
                 coverage_table(coverage),
@@ -226,8 +228,9 @@ impl Captured {
                     (None, Ok(edges)) => TableView::Complete(TableRows::LandCombatEdges(edges)),
                 },
                 TableView::Complete(TableRows::LandCombatResultObservers(observers)),
-                self.damage_table(edges_withheld, damage_withheld),
-            ],
+                self.damage_table(edges_withheld.or(edges_refused), damage_withheld),
+                ]
+            }
             Err(reason) => {
                 coverage.complete = false;
                 [
@@ -1045,9 +1048,10 @@ mod tests {
         };
         assert_eq!(rows.iter().map(|row| row.combat).collect::<Vec<_>>(), [80, 90]);
         let words = [&wipe[..], &exit(90, 30)].concat();
-        let [_, destroyed, _, edges, _, _] = drained(&words).tables_with(None, None);
+        let [_, destroyed, _, edges, _, damage] = drained(&words).tables_with(None, None);
         assert!(matches!(destroyed, TableView::Complete(TableRows::DestroyedDivisions(ref rows)) if rows.len() == 1), "{destroyed:?}");
         assert_eq!(edges, TableView::Unavailable { reason: EDGE_OUTSIDE_INTERVAL.into() });
+        assert_eq!(damage, TableView::Unavailable { reason: EDGE_OUTSIDE_INTERVAL.into() }, "damage closed on a withheld exit is withheld with it");
     }
     #[test]
     fn a_division_damage_hit_is_folded_at_the_boundary_and_the_hour_still_decodes_whole() {
