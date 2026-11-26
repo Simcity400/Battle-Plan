@@ -1232,6 +1232,7 @@ fn a_followed_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
         let nukes = [
             NukeRow { country: 9001, nuke_type: 0, amount_raw: if hour >= 122 { -100_000_000 } else { 0 }, ready: 0 },
             NukeRow { country: 9002, nuke_type: 0, amount_raw: if hour >= 121 { 200_000_000 } else { 0 }, ready: 0 },
+            NukeRow { country: 9003, nuke_type: 0, amount_raw: 0, ready: 0 },
         ];
         frame.table(TableId::Nukes, Input::Snapshot { rows: &nukes, partial: None, read: true, sample: Sample::FromReadBit })?;
         Ok(())
@@ -1264,7 +1265,7 @@ fn a_followed_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     ranking.write(&q_nukes, &nuke_lane, Some(&changes), &tags_121, &reasons, &mut table, &mut live_out);
     let fresh_121 = Answer::parse(&answer_at(&q_nukes, &nuke_lane).unwrap()).unwrap();
     let live_121 = Answer::parse(&live_out).unwrap();
-    assert_eq!(rows(&fresh_121).iter().map(|(_, v, n)| (*v, n.as_str())).collect::<Vec<_>>(), vec![(Some(2), "USA")]);
+    assert_eq!(rows(&fresh_121).iter().map(|(_, v, n)| (*v, n.as_str())).collect::<Vec<_>>(), vec![(Some(2), "USA")], "a zero held by a country no link names is discarded, never a refusal");
     assert_eq!(rows(&live_121), rows(&fresh_121));
 
     assert_eq!(nuke_lane.step(122, &mut changes).unwrap(), 122);
