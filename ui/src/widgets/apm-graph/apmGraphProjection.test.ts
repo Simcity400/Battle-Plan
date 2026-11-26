@@ -88,6 +88,74 @@ describe('apm-graph projection', () => {
     assert.deepEqual(labels(middle, true, ['user:0', 'user:2']), { 8: 'Shared (3)', 9: 'Shared (1)' });
   });
 
+  it('numbers a head-only duplicate player together with registered players until the registry catches up (#1063)', () => {
+    const first = H1936, at = first + 5;
+    const run = (firstHour: number, lastHour: number, name = 'Shared') => ({ firstHour, lastHour, tag: 'AAA', name, nameMissing: null });
+    const reg2 = [
+      { id: 'user:2', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, at)] },
+      { id: 'user:10', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, at)] },
+    ];
+    const reg2Lagged = [
+      { id: 'user:2', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, at - 1)] },
+      { id: 'user:10', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(first, at - 1)] },
+    ];
+    const reg3 = [
+      { id: 'user:0', name: 'Shared', nameMissing: null, tags: ['AAA'], runs: [run(at, at)] },
+      ...reg2,
+    ];
+    const makeOpts = (players: typeof reg2) => apmGraphDeclaration.projectionOptions({
+      options: { group: 'player' }, countries: { all: false, tags: ['AAA'] },
+      aux: { available: true, players }, branch: { gaps: [] },
+    } as never, { extent: [first, at], surface: '#111111' });
+    const rows = [
+      { id: 'user:0', apm: 30 },
+      { id: 'user:2', apm: 20 },
+      { id: 'user:10', apm: 10 },
+    ];
+    const reply: ApmReply = {
+      available: true, players: [], warnings: [],
+      series: rows.map(({ id, apm }) => ({
+        id, name: 'Shared', nameMissing: null, tag: 'AAA', hour: at, points: [],
+        summary: { apm, confirmedApm: apm, orders: String(apm), confirmedOrders: String(apm), pausedOrders: '0',
+          unpausedMinutes: 1, unpausedMinutesNum: '1', unpausedMinutesDen: '1', complete: true, gaps: false },
+      })),
+    };
+    for (const players of [reg2, reg2Lagged, reg3]) {
+      const registeredIds = new Set(players.map(p => p.id));
+      const tiles = new Map(rows
+        .filter(({ id }) => registeredIds.has(id))
+        .map(({ id, apm }) => {
+          const tiled = makeTiled(id, apm, at);
+          if (id === 'user:0') {
+            const bucket = tiled.summary.buckets[0]!;
+            tiled.summary = { ...tiled.summary, from: at, buckets: [{ ...bucket, firstHour: at, minHour: at }] };
+          }
+          return [id, boundTiledSeries(tiled, displayedHour(at))];
+        }));
+      const options = makeOpts(players);
+      const project = (exact: boolean) => apmGraphProjection.project(createBoundedReadView({
+        hour: at, series: new Map([['apm', tiles]]), panels: new Map([['head', reply]]),
+        hovers: exact ? new Map([['hover', { hour: at, data: reply }]]) : undefined,
+      }), options);
+      const plain = project(false);
+      assert.deepEqual(
+        Object.fromEntries(plain.series.map(s => [s.id, s.endLabel?.fullName])),
+        { 'user:0': 'Shared (1)', 'user:2': 'Shared (2)', 'user:10': 'Shared (3)' },
+      );
+      for (const exact of [false, true]) {
+        const model = project(exact);
+        const layout = layoutTimeChart(model, 600, 260, 'sans-serif', text => text.length * 6);
+        const items = deriveTimeChartTooltip(model, layout, `plot:${at}`)?.payload?.items ?? [];
+        const byValue = Object.fromEntries(items.filter(item => item.value).map(item => [item.value, item.label]));
+        assert.deepEqual(byValue, { 30: 'Shared (1)', 20: 'Shared (2)', 10: 'Shared (3)' });
+      }
+      const earlierLayout = layoutTimeChart(plain, 600, 260, 'sans-serif', text => text.length * 6);
+      const earlierItems = deriveTimeChartTooltip(plain, earlierLayout, `plot:${first}`)?.payload?.items ?? [];
+      const earlierByValue = Object.fromEntries(earlierItems.filter(item => item.value).map(item => [item.value, item.label]));
+      assert.deepEqual(earlierByValue, { 20: 'Shared (1)', 10: 'Shared (2)' });
+    }
+  });
+
   it('uses the player and country recorded at the hovered hour for the name, flag and swatch', () => {
     const id = 'user:1', other = 'user:2';
     const index = new IdentityIndex({ sourceId: 's', revision: '1', branchId: 'b', content: 0 }, [H1936, H1943]);
