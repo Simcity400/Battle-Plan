@@ -691,14 +691,16 @@ window.hostDom = {
     clock.setSpeed(24);
     clock.setPlaying(true);
     const playedFrom = pipeline.view(pipeId)?.id;
+    const installsFrom = installCalls.get(pipeId) ?? 0;
     for (let i = 0; i < 12; i++) {
       sendHour(subs, clock.getSnapshot().hour, [90n + BigInt(i), 70n, 50n, 30n]);
       await frames(1);
     }
     await frames(4);
     const playedTo = pipeline.view(pipeId)?.id;
+    const installsTo = installCalls.get(pipeId) ?? 0;
     clock.setPlaying(false);
-    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, installs: (installCalls.get(pipeId) ?? 0) - installsBefore, repainted: playedTo !== undefined && playedTo !== playedFrom, calls: focused().length - before, commits };
+    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, installs: (installCalls.get(pipeId) ?? 0) - installsBefore, repainted: playedTo !== undefined && playedTo !== playedFrom && installsTo > installsFrom, calls: focused().length - before, commits };
     clock.seek(clock.getSnapshot().hour + 500);
     seek = clock.getSnapshot().seekSequence;
     const cleared = await until(() => pipeline.view(pipeId)?.mode !== 'picture', 2000);
