@@ -614,6 +614,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
     let mut warnings = weather.warnings.clone();
     let mut known: Vec<(u32, i32, i32)> = Vec::new();
     let mut complete: Vec<(i32, i32)> = Vec::new();
+    let mut terminal_failure: Option<String> = None;
     let mut reads: Vec<(i32, i32)> = Vec::new();
     let mut rows: BTreeSet<u32> = BTreeSet::new();
     let sampled = if params.show == Show::Temperature { TableId::WeatherProvinces } else { TableId::WeatherRegions };
@@ -675,7 +676,12 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
                 }
                 let found = frame.complete::<tables::WeatherProvinces>().map_err(|error| error.to_string()).and_then(|held| states(&mut memo, weather, frame.branch, at, held));
                 match found {
-                    Err(why) => refused.note(why, format!("hour {at}")),
+                    Err(why) => {
+                        if index + 1 == days.len() {
+                            terminal_failure = Some(format!("Temperature was not known at this hour ({why}), so the most active regions are not known"));
+                        }
+                        refused.note(why, format!("hour {at}"))
+                    }
                     Ok(states) => {
                         for (&region, members) in weather.members.iter().filter(|(region, _)| keeps(**region)) {
                             rows.insert(region);
@@ -742,7 +748,7 @@ fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather,
         let candidates: Vec<u32> = all_candidates.iter().copied().filter(|id| !seen.contains(id)).collect();
         let whole = days.last().is_some_and(|day| complete.iter().any(|&(first, end)| first <= day.last && day.last <= end));
         let HourRank { ranked, missing } = rank_at_hour(&candidates, &days, &measures, params.show, whole);
-        rank_missing = missing;
+        rank_missing = terminal_failure.or(missing);
         let top = if rank_missing.is_some() { 0 } else { params.top.unwrap_or(usize::MAX) };
         let chosen = automatic(ranked, &hidden, top, rank_missing.clone());
         hidden_active = chosen.hidden;

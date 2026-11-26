@@ -85,6 +85,10 @@ test('a part keeps its colour when the parts beside it change (convoys alone or 
   const reversed = colours(project([{ key: 'convoys', name: 'Convoys', unresolved: false }, { key: 'ships', name: 'Ships', unresolved: false }], [3, 2]));
   assert.deepEqual([reversed.get('ships'), reversed.get('convoys')], [both.get('ships'), both.get('convoys')], 'the order a reply lists its parts in, or a view met them in, never changes a colour');
   assert.equal(alone.get('convoys'), both.get('convoys'));
+  const air = colours(project([{ key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [2]));
+  const withCas = colours(project([{ key: 'cas', name: 'Close air support', unresolved: false }, { key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [1, 2]));
+  assert.equal(withCas.get('tactical_bomber'), air.get('tactical_bomber'), 'a part added beside it never moves a colour already shown');
+  assert.notEqual(withCas.get('cas'), withCas.get('tactical_bomber'));
   assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
   assert.notEqual(added.get('aaa'), added.get('ships'));
 });
