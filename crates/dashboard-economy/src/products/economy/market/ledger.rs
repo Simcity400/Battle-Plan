@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, PoisonError, atomic::AtomicBool},
+    sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -179,7 +179,7 @@ pub struct MarketContractRow {
     pub paid_missing: Option<String>,
     pub quotes: Vec<MarketQuote>,
     pub terms_missing: Option<String>,
-    #[doc = " The newest events by the hour asked, at most 32; `eventsTotal` counts them all."]
+    #[doc = " The newest events by the hour asked, at most 32, for an expanded contract only; `eventsTotal` counts them all."]
     pub events: Vec<MarketContractEvent>,
     pub events_total: String,
 }
@@ -218,6 +218,10 @@ pub struct MarketLedgerTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub statuses: Option<Vec<MarketContractStatus>>,
+    #[doc = " The contracts, by key, whose events are listed; the others list none, and `eventsTotal` counts them."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub expanded: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -269,8 +273,11 @@ struct Contract {
     children: Vec<Child>,
 }
 
+type TermsKey = (i32, u32, u64, u8);
+
 struct Ledger {
     index: Index<Contract>,
+    terms: Mutex<HashMap<TermsKey, Option<Arc<Terms>>>>,
 }
 
 #[derive(Default)]
@@ -435,7 +442,7 @@ fn scan(source: &Source, query: &Query<'_>, cancelled: &AtomicBool) -> io::Resul
             payload: contract,
         });
     }
-    Ok(Ledger { index: Index::new(occurrences, gaps, &LIVE)? })
+    Ok(Ledger { index: Index::new(occurrences, gaps, &LIVE)?, terms: Mutex::default() })
 }
 
 type Opened = HashMap<(Option<i64>, u64, bool), usize>;
@@ -484,20 +491,50 @@ struct Terms {
     prices: Vec<(u64, i64)>,
 }
 
-fn read_terms(query: &Query<'_>, wanted: &BTreeMap<(u32, i32), Vec<(u32, u64, u8)>>, cancelled: &AtomicBool) -> io::Result<HashMap<(i32, u32, u64, u8), Terms>> {
+fn read_terms(query: &Query<'_>, ledger: &Ledger, wanted: &BTreeMap<(u32, i32), Vec<(u32, u64, u8)>>, cancelled: &AtomicBool) -> io::Result<HashMap<TermsKey, Arc<Terms>>> {
     let recording = query.replay.recording();
     let mut out = HashMap::new();
-    let mut seeker = replay_lanes::at::Seeker::new(recording)?;
+    let mut seeker = None;
     for ((run, hour), keys) in wanted {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let frame = dashboard_query::cost::storage(|| seeker.frame(*run, *hour, &[replay_lanes::at::Read::all(TableId::MarketContractTerms)]))?;
+        let unread: Vec<(u32, u64, u8)> = {
+            let held = ledger.terms.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut unread = Vec::new();
+            for &(country, id, kind) in keys {
+                match held.get(&(*hour, country, id, kind)) {
+                    Some(Some(terms)) => {
+                        out.insert((*hour, country, id, kind), Arc::clone(terms));
+                    }
+                    Some(None) => {}
+                    None => unread.push((country, id, kind)),
+                }
+            }
+            unread
+        };
+        if unread.is_empty() {
+            continue;
+        }
+        let mut asked: Vec<u128> = unread.iter().map(|&(country, id, kind)| u128::from(country) << 72 | u128::from(id) << 8 | u128::from(kind)).collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let seeker = match &mut seeker {
+            Some(seeker) => seeker,
+            empty @ None => empty.insert(replay_lanes::at::Seeker::new(recording)?),
+        };
+        let read = [replay_lanes::at::Read { table: TableId::MarketContractTerms, columns: None, keys: replay_lanes::at::Keys::These(&asked) }];
+        let frame = dashboard_query::cost::storage(|| seeker.frame(*run, *hour, &read))?;
         let Ok(rows) = frame.complete::<tables::MarketContractTerms>() else { continue };
+        let mut found: HashMap<TermsKey, Option<Arc<Terms>>> = unread.iter().map(|&(country, id, kind)| ((*hour, country, id, kind), None)).collect();
         for row in rows {
-            if keys.contains(&(row.country, row.id, row.kind)) {
-                let items = |pool: &[replay_data::rows::MarketEquipment]| pool.iter().filter(|item| item.variant != 0).map(|item| (item.variant, item.amount_raw)).collect();
-                out.insert((*hour, row.country, row.id, row.kind), Terms { equipment: items(&row.equipment.items), prices: items(&row.prices.items) });
+            let items = |pool: &[replay_data::rows::MarketEquipment]| pool.iter().filter(|item| item.variant != 0).map(|item| (item.variant, item.amount_raw)).collect();
+            let key = (*hour, row.country, row.id, row.kind);
+            if let Some(slot) = found.get_mut(&key) {
+                let terms = Arc::new(Terms { equipment: items(&row.equipment.items), prices: items(&row.prices.items) });
+                out.insert(key, Arc::clone(&terms));
+                *slot = Some(terms);
             }
         }
+        ledger.terms.lock().unwrap_or_else(PoisonError::into_inner).extend(found);
     }
     Ok(out)
 }
@@ -581,6 +618,7 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
     let (offset, limit) = occurrences::window(params.offset.as_deref(), params.limit)?;
     let states: Option<Vec<u8>> = params.statuses.as_ref().map(|statuses| statuses.iter().map(|status| status.code()).collect());
     let chips = [Chip { kinds: None, states: Some(vec![MarketContractStatus::Active.code()]) }];
+    let expanded: BTreeSet<&str> = params.expanded.iter().flatten().map(String::as_str).collect();
     let answer = index.ask(
         &query.holders,
         &Ask {
@@ -613,13 +651,18 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
         if let (Some(run), Some(seller), Some(agreement)) = (run_of(occurrence.date), contract.seller.and_then(|raw| u32::try_from(raw).ok()), contract.agreement) {
             terms_wanted.entry((run, occurrence.date)).or_default().push((seller, agreement, u8::from(!contract.request)));
         }
+        let listed = expanded.contains(occurrence.id.to_string().as_str());
         for child in contract.children.iter().filter(|child| child.hour <= hour) {
-            if let (Some(variant), Some(run)) = (child.variant, run_of(child.hour)) {
+            let Some(variant) = child.variant else { continue };
+            if let Some(run) = run_of(occurrence.date) {
+                variants_wanted.entry((run, occurrence.date)).or_default().insert(variant);
+            }
+            if let (true, Some(run)) = (listed, run_of(child.hour)) {
                 variants_wanted.entry((run, child.hour)).or_default().insert(variant);
             }
         }
     }
-    let terms = read_terms(query, &terms_wanted, cancelled)?;
+    let terms = read_terms(query, &prepared.ledger, &terms_wanted, cancelled)?;
     for (&(when, ..), found) in &terms {
         if let Some(run) = run_of(when) {
             variants_wanted.entry((run, when)).or_default().extend(found.equipment.iter().chain(&found.prices).map(|&(variant, _)| variant));
@@ -723,10 +766,11 @@ fn load_tail_at(prepared: &Prepared, query: &Query<'_>, params: &MarketLedgerTai
                     .collect()
             })
             .unwrap_or_default();
+        let listed = expanded.contains(occurrence.id.to_string().as_str());
         let events = children
             .iter()
             .rev()
-            .take(CHILDREN_SHOWN)
+            .take(if listed { CHILDREN_SHOWN } else { 0 })
             .map(|child| {
                 let (equipment, _, equipment_missing) = match child.variant {
                     Some(variant) => name_of(child.hour, variant),
@@ -797,7 +841,7 @@ impl Product for MarketLedgerTail {
     const INTERACTIVE: bool = true;
     type Params = MarketLedgerTailParams;
     const FIELDS: dashboard_base::products::Fields =
-        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, statuses];
+        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, statuses, expanded, "expanded[]"];
     type Reply = MarketLedgerTailReply;
 
     #[cfg(any(test, feature = "export-types"))]

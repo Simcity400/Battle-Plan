@@ -844,16 +844,6 @@ impl<'a> ScriptedText<'a> {
         )
     }
 
-    pub fn with_scopes(
-        frame: &'a dyn replay_frame::frame::DecodedSource,
-        localisation: &'a Localisation,
-        content: &'a ScriptedContent,
-        root: u32,
-        scopes: RecordedScopes<'a>,
-    ) -> Self {
-        Self::with_scopes_in(HourFrame::Decoded(frame), localisation, content, root, scopes)
-    }
-
     pub fn with_scopes_in(
         frame: HourFrame<'a>,
         localisation: &'a Localisation,

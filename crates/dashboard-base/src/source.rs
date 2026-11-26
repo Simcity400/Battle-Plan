@@ -1,5 +1,4 @@
 
-use job_priority::SpawnCarried as _;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -7,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::AtomicBool,
     },
 };
 
@@ -46,18 +45,6 @@ struct RecordedMount(Option<(Weak<ResolvedContent>, Arc<Presented>)>);
 struct ContentCache {
     bound: Option<(ResolveOptions, Arc<ResolvedContent>)>,
     held: Vec<(ResolveOptions, Weak<ResolvedContent>)>,
-    ahead: Option<ContentAhead>,
-}
-
-struct ContentAhead {
-    options: ResolveOptions,
-    owner: u64,
-    state: AheadState,
-}
-
-enum AheadState {
-    Resolving(std::sync::mpsc::Receiver<Option<io::Result<ResolvedContent>>>),
-    Resolved(Arc<ResolvedContent>),
 }
 
 impl ContentCache {
@@ -72,32 +59,6 @@ impl ContentCache {
         }
     }
 
-    fn ahead(
-        &mut self,
-        options: &ResolveOptions,
-        claim: bool,
-    ) -> Option<io::Result<Arc<ResolvedContent>>> {
-        let ahead = self
-            .ahead
-            .take_if(|ahead| same_folders(&ahead.options, options))?;
-        let content = match ahead.state {
-            AheadState::Resolved(content) => content,
-            AheadState::Resolving(receiver) => match receiver.recv() {
-                Ok(Some(Ok(content))) => Arc::new(content),
-                Ok(Some(Err(error))) => return Some(Err(error)),
-                Ok(None) | Err(_) => return None,
-            },
-        };
-        if !claim {
-            self.ahead = Some(ContentAhead {
-                options: ahead.options,
-                owner: ahead.owner,
-                state: AheadState::Resolved(Arc::clone(&content)),
-            });
-        }
-        Some(Ok(content))
-    }
-
     fn bind(&mut self, options: &ResolveOptions, content: &Arc<ResolvedContent>) {
         let _ = content.layers.report_uncovered_reads();
         self.held
@@ -107,33 +68,6 @@ impl ContentCache {
             && !Arc::ptr_eq(&previous, content)
         {
             self.held.push((old, Arc::downgrade(&previous)));
-        }
-    }
-}
-
-struct ReleaseAhead<'scope> {
-    source: &'scope Source,
-    resolver: Option<(u64, std::thread::ScopedJoinHandle<'scope, ()>)>,
-    finished: &'scope AtomicBool,
-}
-
-impl Drop for ReleaseAhead<'_> {
-    fn drop(&mut self) {
-        self.finished.store(true, Ordering::Release);
-        if let Some((owner, resolver)) = self.resolver.take() {
-            let _ = resolver.join();
-            let mut cache = self
-                .source
-                .content
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if cache
-                .ahead
-                .as_ref()
-                .is_some_and(|ahead| ahead.owner == owner)
-            {
-                cache.ahead = None;
-            }
         }
     }
 }
@@ -302,18 +236,6 @@ impl Source {
         Ok(metadata)
     }
 
-    pub fn with_metadata<T>(&self, read: impl FnOnce(&ReplayMetadata) -> T) -> T {
-        let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
-        read(
-            named
-                .as_ref()
-                .map_or(&self.metadata.value, |(_, metadata, diagnostics)| {
-                    diagnostics.credit();
-                    &metadata.value
-                }),
-        )
-    }
-
     pub fn append_content_warnings(&self, warnings: &mut Vec<String>) {
         diagnostics::current().append_to(warnings);
         if let Some((_, content)) = &self
@@ -327,15 +249,12 @@ impl Source {
     }
 
     fn own_content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
-        let mut cache = self
+        let cache = self
             .content
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if let Some(content) = cache.find(options) {
             return Ok(content);
-        }
-        if let Some(resolved) = cache.ahead(options, false) {
-            return resolved;
         }
         drop(cache);
         Ok(Arc::new(self.play(options)?))
@@ -508,15 +427,12 @@ impl Source {
                         (content, rebind)
                     }
                     None => {
-                        let content = match cache.ahead(options, true) {
-                            Some(resolved) => resolved?,
-                            None => {
-                                let _memory = engine_allocation::labels::enter(
-                                    engine_allocation::labels::Owner::RUN,
-                                    engine_allocation::labels::Kind::Content,
-                                );
-                                Arc::new(self.play(options)?)
-                            }
+                        let content = {
+                            let _memory = engine_allocation::labels::enter(
+                                engine_allocation::labels::Owner::RUN,
+                                engine_allocation::labels::Kind::Content,
+                            );
+                            Arc::new(self.play(options)?)
                         };
                         cache.bind(options, &content);
                         (content, false)
@@ -561,75 +477,6 @@ impl Source {
             current.layers.admit_generation()?;
             return Ok(current);
         }
-    }
-
-    pub fn resolving_ahead<T>(
-        &self,
-        options: Option<&ResolveOptions>,
-        cancelled: &AtomicBool,
-        work: impl FnOnce() -> T,
-    ) -> T {
-        static OWNERS: AtomicU64 = AtomicU64::new(0);
-        let finished = AtomicBool::new(false);
-        std::thread::scope(|scope| {
-            let resolver = options.and_then(|options| {
-                let mut cache = self
-                    .content
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                if cancelled.load(Ordering::Acquire)
-                    || cache.find(options).is_some()
-                    || cache
-                        .ahead
-                        .as_ref()
-                        .is_some_and(|ahead| same_folders(&ahead.options, options))
-                {
-                    return None;
-                }
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                let finished = &finished;
-                let caller = job_priority::Caller::current();
-                let cpu = job_priority::accounting::Context::capture();
-                let handle = std::thread::Builder::new()
-                    .name("content resolve".into())
-                    .spawn_scoped_carried(
-                        scope,
-                        content_reader_layers::content::carry_generation(move || {
-                            caller.enter();
-                            let _cpu = cpu.enter("content resolve");
-                            let _memory = engine_allocation::labels::enter(
-                                engine_allocation::labels::Owner::RUN,
-                                engine_allocation::labels::Kind::Content,
-                            );
-                            let resolved = if cancelled.load(Ordering::Acquire)
-                                || finished.load(Ordering::Acquire)
-                            {
-                                Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"))
-                            } else {
-                                self.play(options)
-                            };
-                            let stopped = matches!(&resolved, Err(error)
-                            if error.kind() == io::ErrorKind::Interrupted
-                                && !cancelled.load(Ordering::Acquire));
-                            let _ = sender.send((!stopped).then_some(resolved));
-                        }),
-                    )
-                    .ok()?;
-                let owner = OWNERS.fetch_add(1, Ordering::Relaxed);
-                cache.ahead = Some(ContentAhead {
-                    options: options.clone(),
-                    owner,
-                    state: AheadState::Resolving(receiver),
-                });
-                Some((owner, handle))
-            });
-            let _release = ReleaseAhead {
-                source: self,
-                resolver,
-                finished: &finished,
-            };
-            work()
-        })
     }
 
     pub fn bound_content(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
@@ -917,17 +764,6 @@ fn same_folders(old: &ResolveOptions, options: &ResolveOptions) -> bool {
     old.game_dir == options.game_dir
         && old.user_dir == options.user_dir
         && old.cache_dir == options.cache_dir
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Source {
-    pub fn set_test_content(
-        &self,
-        options: content_reader_layers::ResolveOptions,
-        content: Arc<content_reader_layers::content::ResolvedContent>,
-    ) {
-        self.content.lock().unwrap().bind(&options, &content);
-    }
 }
 
 #[cfg(test)]

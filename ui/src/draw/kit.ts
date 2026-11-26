@@ -120,59 +120,67 @@ function buildKitTokens(theme: KitTokenInput) {
 
 type KitTokens = ReturnType<typeof buildKitTokens>;
 
+type ThemeSnapshot = readonly unknown[];
+
 interface CachedTokens {
-  readonly surface: string;
-  readonly text: string;
-  readonly muted: string;
-  readonly accent: string;
-  readonly red: string;
-  readonly green: string;
-  readonly dark: boolean | undefined;
-  readonly raised: string | undefined;
+  readonly snapshot: ThemeSnapshot;
   readonly tokens: KitTokens;
 }
 
 const kitTokenCache = new WeakMap<object, CachedTokens>();
-let activeTheme: string | null = null;
+let activeTheme: ThemeSnapshot | null = null;
 
-function themeKey(theme: KitTokenInput): string {
-  return [theme.surface, theme.text, theme.muted, theme.accent, theme.red, theme.green, theme.raised ?? '', theme.dark ?? '', theme.font ?? '', theme.fontSize?.small ?? '', theme.fontSize?.body ?? ''].join('\u0000');
+function themeSnapshot(theme: KitTokenInput): ThemeSnapshot {
+  return [
+    theme.surface,
+    theme.text,
+    theme.muted,
+    theme.accent,
+    theme.red,
+    theme.green,
+    theme.raised,
+    theme.dark,
+    theme.font,
+    theme.fontSize?.small,
+    theme.fontSize?.body,
+    theme.hairline,
+    theme.hairlineStrong,
+    theme.bandDivider,
+    theme.headerBand,
+    theme.rowHover,
+    theme.rowSelected,
+    theme.childTint,
+    theme.shortage,
+    theme.barMuted,
+    theme.barTrack,
+    theme.gridLine,
+    theme.zeroLine,
+    theme.playhead,
+    theme.crosshair,
+    theme.dateTabBg,
+    theme.dateTabText,
+    theme.hoverTabBg,
+    theme.hoverTabText,
+  ];
+}
+
+function sameSnapshot(a: ThemeSnapshot, b: ThemeSnapshot): boolean {
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
 }
 
 export function resolveKitTokens(theme: KitTokenInput): KitTokens {
-  const key = themeKey(theme);
-  if (activeTheme !== null && activeTheme !== key) {
+  const snapshot = themeSnapshot(theme);
+  if (activeTheme !== null && !sameSnapshot(activeTheme, snapshot)) {
     colorCache.clear();
     paletteCache.clear();
     clearTextWidthCache();
   }
-  activeTheme = key;
+  activeTheme = snapshot;
   const cached = kitTokenCache.get(theme);
-  if (
-    cached
-    && cached.surface === theme.surface
-    && cached.text === theme.text
-    && cached.muted === theme.muted
-    && cached.accent === theme.accent
-    && cached.red === theme.red
-    && cached.green === theme.green
-    && cached.dark === theme.dark
-    && cached.raised === theme.raised
-  ) {
-    return cached.tokens;
-  }
+  if (cached && sameSnapshot(cached.snapshot, snapshot)) return cached.tokens;
   const tokens = buildKitTokens(theme);
-  kitTokenCache.set(theme, {
-    surface: theme.surface,
-    text: theme.text,
-    muted: theme.muted,
-    accent: theme.accent,
-    red: theme.red,
-    green: theme.green,
-    dark: theme.dark,
-    raised: theme.raised,
-    tokens,
-  });
+  kitTokenCache.set(theme, { snapshot, tokens });
   return tokens;
 }
 

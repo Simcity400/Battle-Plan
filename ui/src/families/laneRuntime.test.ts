@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Fact } from '../dashboard/follow/facts.ts';
 import { Page, type Bitmap, type PageMessage } from '../dashboard/follow/page.ts';
-import { Lane, type Value } from '../draw/lane.ts';
+import { Lane, type LaneView, type Painted, type Value } from '../draw/lane.ts';
 import { cropSurfaces } from '../draw/laneDispatch.ts';
 import type { BoundedReadView, FamilyProjection } from './contract.ts';
 import { createLaneView, lazyLaneView, type LaneBinding, type LaneFamily } from './laneRuntime.ts';
@@ -699,6 +699,345 @@ test('a zero-sized surface waits without presenting or looping kept-content refu
     assert.equal(page.view(1).mode, 'picture', 'resizing to positive dimensions wakes the view and installs');
   } finally {
     recording.restore();
+  }
+});
+
+test('shrinking a visible widget to zero size withdraws its installed picture, mirror, nav and viewport until resized back', async () => {
+  const recording = installRecordingCanvas();
+  try {
+    let presentations = 0;
+    let clears = 0;
+    let installs = 0;
+    const view = createLaneView(family, () => {});
+    let lane!: Lane<Bitmap>;
+    const page = new Page<Bitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    lane = new Lane<Bitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 0,
+      views: () => view,
+      crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+      present: presentation => { presentations++; page.offer(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: () => {},
+    });
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.mount(1, [], 'test-lane', bound);
+    lane.bind(1, { generation: 1, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(1, { route: 0, lane: 0, owner: 'o1', surfaces: [{ install() { installs++; }, clear() { clears++; } }] });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture');
+    assert.ok(page.view(1).fields?.mirror);
+    assert.ok(page.view(1).fields?.nav);
+    assert.ok(page.view(1).viewport);
+    assert.equal(installs, 1);
+
+    const beforeCollapse = presentations;
+    lane.bind(1, { generation: 2, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(presentations, beforeCollapse + 1, 'collapsing sends one withdrawal presentation');
+    assert.equal(clears, 1, 'the visible canvas is cleared');
+    assert.equal(page.view(1).mode, 'reading');
+    assert.equal(page.view(1).fields, undefined);
+    assert.equal(page.view(1).viewport, undefined);
+
+    for (let step = 0; step < 3; step++) {
+      page.publish(10, { playing: false, seek: 0 });
+      await new Promise<void>(r => setImmediate(r));
+      page.frame();
+    }
+    assert.equal(presentations, beforeCollapse + 1, 'staying zero-sized emits no further presentations');
+
+    lane.bind(1, { generation: 3, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture');
+    assert.equal(installs, 2);
+    assert.ok(page.view(1).fields?.mirror);
+
+    lane.bind(1, { generation: 4, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    lane.bind(1, { generation: 5, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.frame();
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'reading', 'a second zero-size bind before commit carries withdrawal forward');
+    assert.equal(page.view(1).viewport, undefined);
+
+    lane.bind(1, { generation: 6, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture');
+
+    lane.supply(1, { dated: null });
+    lane.bind(1, { generation: 7, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'reading', 'collapsing to zero size after losing data proof still withdraws the old picture');
+    assert.equal(page.view(1).viewport, undefined);
+
+    lane.bind(1, { generation: 8, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture');
+
+    lane.bind(1, { generation: 9, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    lane.mount(1, [], 'test-lane', bound);
+    lane.bind(1, { generation: 10, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1', subscription: true });
+    page.frame();
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'reading', 'a same-widget remount before commit carries withdrawal forward');
+    assert.equal(page.view(1).viewport, undefined);
+    assert.equal(page.view(1).fields, undefined);
+
+    lane.bind(1, { generation: 11, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'picture');
+
+    lane.supply(1, { dated: null });
+    lane.bind(1, { generation: 12, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null });
+    page.rebind(1, { owner: 'o1' });
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    lane.bind(1, { generation: 13, owner: 'o1', surfaces: [{ width: 300, height: 100, dpr: 1 }], offset: 0, pin: null });
+    page.rebind(1, { owner: 'o1' });
+    page.frame();
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(page.view(1).mode, 'reading', 'expanding before commit after losing data proof still clears the old picture');
+    assert.equal(page.view(1).viewport, undefined);
+    assert.equal(page.view(1).fields, undefined);
+
+    let holdSiblingCrop = false;
+    let siblingEntries = 0;
+    const pendingCrops: (() => void)[] = [];
+    let siblingLane!: Lane<Bitmap>;
+    const siblingPage = new Page<Bitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') siblingLane.frame(m);
+      },
+    });
+    const plainView: LaneView = {
+      paint(input, _state, content): Painted {
+        const surface = input.binding.surfaces[0];
+        if (!surface || surface.width <= 0 || surface.height <= 0) return { surfaces: [], fields: {}, motion: false, waiting: true };
+        return {
+          surfaces: [{ source: { width: surface.width, height: surface.height }, content: content() }],
+          fields: { nav: { value: [`w${surface.width}`], content: `w${surface.width}` } },
+          motion: false,
+        };
+      },
+    };
+    siblingLane = new Lane<Bitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 0,
+      views: () => plainView,
+      crop: sources => new Promise<Bitmap[]>(resolve => {
+        const finish = () => resolve(sources.map(s => ({ width: s.width, close() {} })));
+        if (holdSiblingCrop) pendingCrops.push(finish);
+        else finish();
+      }),
+      present: presentation => { siblingEntries += presentation.entries.length; siblingPage.offer(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: () => {},
+    });
+    siblingLane.mount(1, [], 'plain');
+    siblingLane.bind(1, { generation: 1, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    siblingPage.mount(1, { route: 0, lane: 0, owner: 'o1', surfaces: [{ install() {}, clear() {} }] });
+    siblingLane.mount(2, [], 'plain');
+    siblingLane.bind(2, { generation: 1, owner: 'o2', surfaces: [{ width: 100, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    siblingPage.mount(2, { route: 0, lane: 0, owner: 'o2', surfaces: [{ install() {}, clear() {} }] });
+    siblingPage.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    siblingPage.frame();
+    assert.equal(siblingPage.view(1).viewport?.width, 200);
+
+    holdSiblingCrop = true;
+    siblingLane.bind(2, { generation: 2, owner: 'o2', surfaces: [{ width: 150, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    siblingPage.rebind(2, { owner: 'o2' });
+    siblingPage.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+
+    const entriesBeforeExpand = siblingEntries;
+    siblingLane.bind(1, { generation: 2, owner: 'o1', surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    siblingPage.rebind(1, { owner: 'o1' });
+    siblingLane.bind(1, { generation: 3, owner: 'o1', surfaces: [{ width: 300, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 9 } });
+    siblingPage.rebind(1, { owner: 'o1' });
+    holdSiblingCrop = false;
+    while (pendingCrops.length) pendingCrops.shift()!();
+    await new Promise<void>(r => setImmediate(r));
+    siblingPage.frame();
+    await new Promise<void>(r => setImmediate(r));
+    siblingPage.frame();
+    assert.ok(siblingEntries > entriesBeforeExpand, 'binding 3 emitted an entry alongside the preserved binding 2 withdrawal');
+    assert.equal(siblingPage.view(1).installedBinding, 3, 'binding 2 withdrawal cleared binding 1 before binding 3 installed');
+    assert.equal(siblingPage.view(1).viewport?.width, 300);
+    assert.deepEqual(siblingPage.view(1).fields?.nav, ['w300']);
+  } finally {
+    recording.restore();
+  }
+});
+
+test('a seek inside the same proof clears a lingering marker deadline on a stationary widget without breaking quiet reuse', async () => {
+  const recording = installRecordingCanvas();
+  try {
+    let draws = 0;
+    let lastContinuity = -1;
+    let markerShown = false;
+    const expiring: LaneFamily<Binding, Model, Layout> = {
+      ...family,
+      paint(ctx, frame) {
+        draws++;
+        lastContinuity = frame.continuity;
+        family.paint(ctx, frame);
+        if (draws === 1) {
+          markerShown = true;
+          return frame.now + 500;
+        }
+        markerShown = false;
+        return false;
+      },
+    };
+    const view = createLaneView(expiring, () => {});
+    let lane!: Lane<Bitmap>;
+    const page = new Page<Bitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    lane = new Lane<Bitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 100,
+      views: () => view,
+      crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+      present: presentation => page.offer(presentation),
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: () => {},
+    });
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.mount(1, [], 'test-lane', bound);
+    lane.bind(1, { generation: 1, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(1, { route: 0, lane: 0, owner: 'o1', surfaces: [{ install() {}, clear() {} }] });
+
+    page.publish(10, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.deepEqual([draws, markerShown], [1, true]);
+    const initialContinuity = lastContinuity;
+
+    page.publish(12, { playing: false, seek: 0 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(draws, 1, 'same seek within the same proof reuses without repaint');
+
+    page.publish(12, { playing: false, seek: 1 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.deepEqual([draws, markerShown], [2, false], 'a seek inside the same proof repaints and clears the lingering marker');
+    assert.ok(lastContinuity > initialContinuity, 'continuity advances across the seek cut');
+
+    page.publish(12, { playing: false, seek: 2 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(draws, 2, 'once no ephemeral marker remains, a seek in the same proof does not force a repaint');
+
+    page.publish(20, { playing: true, seek: 2, speed: 24, step: 10 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(draws, 3, 'continuous forward playback across a bucket boundary repaints');
+
+    page.publish(20, { playing: false, seek: 3 });
+    await new Promise<void>(r => setImmediate(r));
+    page.frame();
+    assert.equal(draws, 3, 'a stationary family returning false after forward playback is not marked ephemeral and reuses across a seek');
+  } finally {
+    recording.restore();
+  }
+});
+
+test('failing to acquire a 2D OffscreenCanvas context reports a named drawing failure instead of looping kept-content refusals', async () => {
+  const prev = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  class NoContextCanvas {
+    width: number;
+    height: number;
+    constructor(width: number, height: number) { this.width = width; this.height = height; }
+    getContext() { return null; }
+  }
+  (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = NoContextCanvas;
+  try {
+    const widgetFailures: [number, string][] = [];
+    let presentations = 0;
+    const view = createLaneView(family, () => {});
+    let lane!: Lane<Bitmap>;
+    const page = new Page<Bitmap>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    lane = new Lane<Bitmap>({
+      lane: 0,
+      lanes: 1,
+      clock: () => 0,
+      views: () => view,
+      crop: async () => [],
+      present: presentation => { presentations++; page.offer(presentation); },
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      failWidget: (widget, reason) => { widgetFailures.push([widget, reason]); },
+      later: () => {},
+    });
+    const bound = binding(rowsAt([{ key: 'A', v: 1 }]));
+    lane.mount(1, [], 'test-lane', bound);
+    lane.bind(1, { generation: 1, owner: 'o1', surfaces: [{ width: 200, height: 100, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(1, { route: 0, lane: 0, owner: 'o1', surfaces: [{ install() {}, clear() {} }] });
+    for (let step = 0; step < 3; step++) {
+      page.publish(10, { playing: false, seek: 0 });
+      await new Promise<void>(r => setImmediate(r));
+      page.frame();
+    }
+    assert.equal(widgetFailures.length, 1, 'failure is reported once and halts the widget');
+    assert.match(widgetFailures[0]![1], /drawing failed:.*2D canvas context/);
+    assert.equal(presentations, 0);
+  } finally {
+    if (prev === undefined) delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    else (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas = prev;
   }
 });
 

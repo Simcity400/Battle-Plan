@@ -52,16 +52,6 @@ pub fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
     Ok(())
 }
 
-pub fn finite_fixed64(raw: i64) -> bool {
-    (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
-}
-
-pub const FIXED5_MAX: i64 = 0x53e2_d61f_d320;
-
-pub fn faction_goal_progress_percent(raw: i64) -> Option<f64> {
-    (finite_fixed64(raw) && raw != FIXED5_MAX).then_some(raw as f64 / 1000.0)
-}
-
 pub trait ReplyWarnings {
     fn warnings_mut(&mut self) -> &mut Vec<String>;
 }
@@ -180,77 +170,4 @@ impl BranchParams {
     }
 }
 
-pub fn validate_countries(branch_id: &str, countries: &[Country]) -> Result<(), &'static str> {
-    if countries.is_empty() {
-        return Err("Invalid country selection");
-    }
-    for country in countries {
-        validate_country(country)?;
-    }
-    if branch_id.parse::<u64>().is_err() {
-        return Err("Invalid branch");
-    }
-    Ok(())
-}
-
-pub fn require_displayable_tags(
-    refused: &std::collections::BTreeMap<Vec<u8>, usize>,
-) -> io::Result<()> {
-    if refused.is_empty() {
-        return Ok(());
-    }
-    Err(dashboard_core::refused(format!(
-        "Country tags are not UTF-8 (bytes: observation count): {refused:?}; the census cannot be represented"
-    )))
-}
-
 pub use crate::metadata::recorded_rows;
-
-pub fn table_missing_reason(
-    frame: &replay_frame::frame::DecodedFrame,
-    table: replay_data::rows::TableId,
-) -> Option<String> {
-    use replay_frame::frame::TableView;
-    match &*frame.tables[table.index()] {
-        TableView::Complete(rows) if rows.table() == table => None,
-        TableView::Complete(_) => Some(format!("{}: holds rows of another kind", table.words())),
-        TableView::Truncated { .. } => Some(format!("{}: read only in part", table.words())),
-        TableView::Unavailable { reason } => Some(unavailable_reason(table, reason)),
-        TableView::NotRecorded { mode } => {
-            Some(format!("{}: not recorded in a {mode} recording", table.words()))
-        }
-    }
-}
-
-pub fn status_missing_reason(
-    status: replay_frame::frame::OperandStatus<'_>,
-    table: replay_data::rows::TableId,
-) -> Option<String> {
-    use replay_frame::frame::OperandStatus;
-    match status {
-        OperandStatus::Complete => None,
-        OperandStatus::WrongLayout => Some(format!("{}: holds rows of another kind", table.words())),
-        OperandStatus::Truncated(_) | OperandStatus::TruncatedWrongLayout(_) => {
-            Some(format!("{}: read only in part", table.words()))
-        }
-        OperandStatus::Unavailable(reason) => Some(unavailable_reason(table, reason)),
-        OperandStatus::NotRecorded(mode) => {
-            Some(format!("{}: not recorded in a {mode} recording", table.words()))
-        }
-    }
-}
-
-fn unavailable_reason(table: replay_data::rows::TableId, reason: &str) -> String {
-    if reason.starts_with("missing table baseline") {
-        return format!("{}: its first reading is missing", table.words());
-    }
-    let truncated = reason
-        .strip_prefix("truncated at keyframe: ")
-        .and_then(|count| count.strip_suffix(" rows not read"))
-        .is_some_and(|count| count.parse::<u32>().is_ok_and(|count| count != 0));
-    if truncated {
-        format!("{}: read only in part", table.words())
-    } else {
-        reason.to_owned()
-    }
-}

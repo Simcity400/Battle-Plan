@@ -1,5 +1,6 @@
 import { unavailableArt } from '../../families/art/types.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { contentSet } from '../../dashboard/options.ts';
 import { FIXED5 } from '../../dashboard/market.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
@@ -28,7 +29,10 @@ import { MARKET_LEDGER_COLUMNS } from './definition.ts';
 export interface MarketLedgerProjectionOptions {
   readonly perspective: string | null;
   readonly selectionEmpty: string | null;
+  readonly expanded?: readonly string[];
 }
+
+const GROUP = 'group:';
 
 const HEAD_LIMIT = 256;
 
@@ -234,6 +238,7 @@ function buildContractRow(
   contract: MarketContractRow,
   perspective: string | null,
   boundary: ReturnType<typeof newIdentityBoundary>,
+  expanded: readonly string[],
 ): TableRow {
   const sign = perspectiveSign(contract, perspective);
   const summary = primaryItemSummary(contract.items);
@@ -269,8 +274,9 @@ function buildContractRow(
     return out;
   };
 
+  const events = Number(contract.eventsTotal);
   return {
-    key: contract.key,
+    key: `${GROUP}${contract.key}`,
     name: title,
     rowHour: contract.hour,
     muted: statusInfo.muted === true,
@@ -292,6 +298,7 @@ function buildContractRow(
       status: logStatusCell(statusInfo.label, statusInfo.mark, statusInfo.muted ? 'muted' : undefined),
       action: { value: notApplicable('Expand contract'), blank: true },
     },
+    ...(events > 0 ? { pageGroup: { members: events, open: expanded.includes(`${GROUP}${contract.key}`) } } : {}),
     ...(children.length > 0 ? { children } : {}),
     tooltipTitle: title,
     tooltipExtra,
@@ -331,7 +338,7 @@ export const marketLedgerProjection: TableProjection<MarketLedgerProjectionOptio
       source,
       hour,
       readView.rowWindow,
-      contract => buildContractRow(readView, contract, options.perspective, boundary),
+      contract => buildContractRow(readView, contract, options.perspective, boundary, options.expanded ?? []),
     );
     const rawHead = source.rawHead as { readonly warnings?: readonly string[] } | undefined;
     return {
@@ -376,8 +383,9 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     if (ctx.options.showRequests !== false) statuses.push('requested');
     if (ctx.options.showEnded !== false) statuses.push('ended', 'requestEnded');
     const selection = occurrenceSelection(ctx);
+    const expanded = contentSet(ctx.options.expanded).filter(key => key.startsWith(GROUP)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -389,7 +397,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection },
+            ask: { ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}) },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
@@ -411,6 +419,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     return {
       perspective,
       selectionEmpty,
+      expanded: contentSet(ctx.options.expanded),
     };
   },
 };

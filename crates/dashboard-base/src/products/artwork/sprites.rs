@@ -176,13 +176,6 @@ pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String
     Ok(key.to_owned())
 }
 
-pub fn shown_icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
-    icon_key(catalogue, authored).or_else(|why| match catalogue.recorded() {
-        Some(recorded) => icon_key(recorded, authored),
-        None => Err(why),
-    })
-}
-
 fn asked_resolution(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> super::ArtResolution {
     if asked.text == Some(true) {
         return super::resolve_text_icon(catalogue, key, super::ICON_EDGE);

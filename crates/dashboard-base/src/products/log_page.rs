@@ -407,7 +407,7 @@ pub fn tail_with<R>(
     Ok((page, rows, totals, gaps))
 }
 
-pub fn quiet_tail_missing<R>(
+pub fn quiet_tail_missing(
     query: &Query<'_>,
     log_name: &str,
     caches: &LogCaches,
@@ -418,7 +418,6 @@ pub fn quiet_tail_missing<R>(
     from: Option<f64>,
     prev_hour: i32,
     hour: i32,
-    _prev_reply: &R,
 ) -> io::Result<Option<Vec<MissingSpan>>> {
     if hour <= prev_hour {
         return Ok(None);
@@ -461,7 +460,7 @@ pub fn dated_tail_panel<R, F, Q>(
 ) -> Box<dyn Panel>
 where
     R: TailPanelReply,
-    Q: Fn(i32, i32, &R, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
+    Q: Fn(i32, i32, &AtomicBool) -> io::Result<Option<Vec<MissingSpan>>> + Send + Sync + 'static,
     F: Fn(i32, &AtomicBool) -> io::Result<R> + Send + Sync + 'static,
 {
     let read = Arc::new(read);
@@ -480,7 +479,7 @@ where
                     let prev_value = Arc::clone(&prev.value);
                     let prev_rows = prev.rows;
                     drop(guard);
-                    let checked = engine_executable::executable_tables::scope(executable, || quiet(prev_hour, hour, &prev_reply, cancelled));
+                    let checked = engine_executable::executable_tables::scope(executable, || quiet(prev_hour, hour, cancelled));
                     match checked {
                         Ok(Some(gaps)) => {
                             if gaps == prev_reply.missing() {

@@ -428,38 +428,6 @@ impl<'a> ScriptedText<'a> {
         scopes: &EventScopes,
         operands: &mut Operands,
     ) -> Result<String, String> {
-        self.record_with(key, text, scopes, None, operands)
-    }
-
-    pub fn record_root(
-        &self,
-        key: &[u8],
-        text: &str,
-        operands: &mut Operands,
-    ) -> Result<String, String> {
-        let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(self.root))]);
-        self.record(key, text, &scopes, operands)
-    }
-
-    pub fn record_unseeded(
-        &self,
-        key: &[u8],
-        text: &str,
-        scopes: &EventScopes,
-        reason: &'static str,
-        operands: &mut Operands,
-    ) -> Result<String, String> {
-        self.record_with(key, text, scopes, Some(reason), operands)
-    }
-
-    fn record_with(
-        &self,
-        key: &[u8],
-        text: &str,
-        scopes: &EventScopes,
-        unseeded: Option<&'static str>,
-        operands: &mut Operands,
-    ) -> Result<String, String> {
         if scopes.scopes.is_empty() {
             let reason = "scripted text needs an event scope".to_owned();
             operands.begin_text(key, Err(reason.clone()));
@@ -469,9 +437,6 @@ impl<'a> ScriptedText<'a> {
             return Ok(text.to_owned());
         }
         let mut expansion = ExpansionScopes::new(scopes);
-        if let Some(reason) = unseeded {
-            expansion.scopes.borrow_mut()[0].random_seed_refusal = Some(reason);
-        }
         if operands.language.is_empty() {
             operands.language.clone_from(&self.localisation.language);
         }
@@ -514,6 +479,16 @@ impl<'a> ScriptedText<'a> {
             *operands = recording.operands;
         }
         expanded
+    }
+
+    pub fn record_root(
+        &self,
+        key: &[u8],
+        text: &str,
+        operands: &mut Operands,
+    ) -> Result<String, String> {
+        let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(self.root))]);
+        self.record(key, text, &scopes, operands)
     }
 }
 
