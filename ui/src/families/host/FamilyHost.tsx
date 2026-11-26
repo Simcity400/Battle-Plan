@@ -1570,15 +1570,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
 
     if (activeAdapter.navigation === 'points') {
       const pointsNav = latestRef.current.onPointsNavigate;
-      const clearPointerHover = () => {
-        tooltips.cancelHoverOpen();
-        if (inspectedKeyRef.current !== null || inspectedHitRef.current !== null) {
-          inspectedKeyRef.current = null;
-          inspectedHitRef.current = null;
-          if (pipeline && pipe !== null) pipeline.inspect(pipe, null);
-          publishHoverRow(null);
-        }
-      };
       handleFamilyPointsKeyDown(event, {
         nav: keyNav,
         focusedKey: focusedKeyRef.current,
@@ -1587,7 +1578,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusKey: key => {
           focusEpochRef.current++;
-          clearPointerHover();
+          clearHoverRef.current();
           focusedKeyRef.current = key;
           const hour = parseFamilyHit(activeAdapter, key)?.hour;
           if (hour !== undefined) publishHoverHour(hour);
@@ -1603,7 +1594,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
               zoomWindow: viewportRef.current.zoomWindow ?? null,
               focusHour: hour => {
                 if (focusEpochRef.current !== epoch || !focusInsideRef.current) return;
-                clearPointerHover();
+                clearHoverRef.current();
                 focusedKeyRef.current = `plot:${hour}`;
                 publishHoverHour(hour);
                 bindRef.current();
@@ -1661,7 +1652,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       onTogglePinTooltip: key => { run('pin', key); },
       onUnpinTooltip: unpin,
     });
-  }, [say, dispatch, gateNow, focusGridCell, focusRowByKey, focusRowByOrdinal, pipeline, pipe, publishHoverHour, publishHoverRow, refreshFocusAnchor, tooltips]);
+  }, [say, dispatch, gateNow, focusGridCell, focusRowByKey, focusRowByOrdinal, publishHoverHour, refreshFocusAnchor, tooltips]);
 
   const onFocus = useCallback(() => {
     pendingOrdinalRef.current = null;

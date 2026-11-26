@@ -2448,5 +2448,49 @@ test('points keyboard navigation supports async next-change focus without activa
     viewportHeight: 600,
   });
   assert.equal(tooltipStore.get()?.content.title, 'Hour 3', 'clearing pointer inspection on keyboard focus lets the focused hour tooltip show');
+
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const body = {
+    addEventListener(type: string, fn: (event: unknown) => void) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: (event: unknown) => void) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 220 }),
+    contains: (node: unknown) => node === body,
+  };
+  const pendingPointer: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const inspectedKeyRef = { current: null as string | null };
+  const lastPointerRef = { current: null as { readonly x: number; readonly y: number } | null };
+  const stopPointer = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    pictureNode: body as unknown as HTMLElement,
+    menuHost: body as unknown as HTMLElement,
+    pipeline: {
+      pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pendingPointer.push(cb); },
+      inspect() {},
+      view() { return null; },
+    } as unknown as Pipeline,
+    pipe: 1,
+    tooltips: tips,
+    inspectedKeyRef,
+    inspectedHitRef: { current: null },
+    lastPointerRef,
+    focusInsideRef: { current: true },
+    focusedKeyRef: { current: 'plot:3' },
+    focusAnchorRef: { current: { x: 50, y: 50 } },
+    accessibleRef: { current: body as unknown as HTMLElement },
+    pointerMode: 'continuous',
+    isBlocked: () => false,
+    getInstalled: () => installed,
+    getViewportHeight: () => 600,
+    parseHit: parseTimeChartHit,
+    onActivate: () => {},
+  });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 200, clientY: 80 });
+  stopPointer.clearHover();
+  assert.equal(pendingPointer.length, 1);
+  pendingPointer.shift()!('plot:12', { installedId: installed.id, owner: installed.owner });
+  assert.equal(inspectedKeyRef.current, null, 'clearHover invalidates an in-flight pointer hover reply so keyboard focus at plot:3 is not overwritten');
+  assert.equal(lastPointerRef.current, null);
+  stopPointer();
   tips.dispose();
 });
