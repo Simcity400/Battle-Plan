@@ -423,13 +423,13 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
 fn scripted_text_state_display_shares_precedence_language_and_cached_failures() {
     game::enter();
     let (mut cat, _folder) =
-        crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n");
+        crate::scripted_text::tests::catalogue("", " MOD_STATE:0 \"Mod state\"\n SCRIPTED_STATE:0 \"[Root.GetName] Land\"\n");
     let content = cat.scripted_content().unwrap();
     assert!(content.state_content.get().is_none());
     let first_error = cat.cached_states().err().unwrap();
     assert!(content.state_content.get().is_some());
     assert_eq!(cat.cached_states().err().unwrap(), first_error);
-    let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
+    let names = BTreeMap::from([(64, Ok("MOD_STATE".into())), (65, Ok("SCRIPTED_STATE".into())), (66, Ok("MISSING_STATE".into()))]);
     let mut state = replay_data::rows::StateRow {
         id: 64,
         ..Default::default()
@@ -438,6 +438,22 @@ fn scripted_text_state_display_shares_precedence_language_and_cached_failures() 
         state_display_name(&state, &cat, Ok(&names), StateNameUsage::Place).unwrap(),
         "Mod state"
     );
+    let scripted_err = state_display_name(
+        &replay_data::rows::StateRow { id: 65, ..Default::default() },
+        &cat,
+        Ok(&names),
+        StateNameUsage::Place,
+    )
+    .unwrap_err();
+    assert!(scripted_err.contains("SCRIPTED_STATE") && scripted_err.contains("[Root.GetName]"), "{scripted_err}");
+    let missing_err = state_display_name(
+        &replay_data::rows::StateRow { id: 66, ..Default::default() },
+        &cat,
+        Ok(&names),
+        StateNameUsage::Place,
+    )
+    .unwrap_err();
+    assert!(missing_err.contains("MISSING_STATE") && missing_err.contains("missing"), "{missing_err}");
     state.owner_name = b"Owner state".to_vec();
     assert_eq!(
         state_display_name(&state, &cat, Err("unread content"), StateNameUsage::Place).unwrap(),

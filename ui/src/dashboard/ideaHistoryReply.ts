@@ -1,5 +1,8 @@
 import { countryFromKey } from './countryKey.ts';
+import type { BoundedReadView } from '../families/contract.ts';
 import type { PointSourceRead } from '../families/plan.ts';
+import { artworkArt } from '../families/art/provider.ts';
+import { unavailableArt, type ArtResolution } from '../families/art/types.ts';
 import { isOrderedSpans } from '../charts/series.ts';
 import { artworkEntry, keepDrawableIcons } from './artwork.ts';
 import { contentTitle } from './contentTitles.ts';
@@ -14,6 +17,20 @@ export function ideaName(art: Artwork | undefined, info: IdeaInfo | undefined, u
 
 export function ideaNameMissing(art: Artwork | undefined, info: IdeaInfo | undefined): string | null {
   return art?.name == null && info?.nameMissing ? `${NAME_NOT_RECORDED}: ${info.nameMissing}` : null;
+}
+
+export function ideaArtwork(readView: BoundedReadView, look: IdeaLook): ArtResolution {
+  if (look.artwork.icon === null && look.artworkMissing) {
+    return unavailableArt(look.artworkMissing);
+  }
+  return artworkArt(readView, look.artwork);
+}
+
+export function ideaArtMissing(look: IdeaLook, icon: ArtResolution): string | null {
+  if (icon.status === 'unavailable' || icon.status === 'confirmedMissing' || icon.status === 'refused' || icon.status === 'failed') {
+    return icon.reason;
+  }
+  return look.artwork.icon === null && look.artworkMissing ? look.artworkMissing : null;
 }
 
 export function lookOf(reply: IdeaHistoryReply, holding: IdeaHolding): IdeaLook {
@@ -88,7 +105,7 @@ function isIdeaHistoryReply(data: unknown): data is IdeaHistoryReply {
   if (!object(data) || !Number.isInteger(data.hour) || !(data.nextChange === null || (Number.isInteger(data.nextChange) && (data.nextChange as number) > (data.hour as number)))) return false;
   const hour = data.hour as number;
   const looks = data.looks;
-  if (!Array.isArray(looks) || !looks.every(look => object(look) && info(look.info) && artworkEntry(look.artwork))) return false;
+  if (!Array.isArray(looks) || !looks.every(look => object(look) && info(look.info) && artworkEntry(look.artwork) && (look.artworkMissing === undefined || typeof look.artworkMissing === 'string'))) return false;
   const holdings = data.holdings;
   const holding = (value: unknown) => object(value) && typeof value.token === 'string' && Number.isInteger(value.firstHour)
     && Number.isInteger(value.lastHour) && (value.firstHour as number) <= (value.lastHour as number) && (value.lastHour as number) <= hour

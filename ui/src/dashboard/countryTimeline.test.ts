@@ -49,8 +49,8 @@ test('a held timeline answers every hour it holds, as country-styles would, and 
   assert.deepEqual(at(12, ['GER'])?.get('GER'), { tag: 'GER', name: 'Germany', color: [0x33, 0x66, 0x99], warnings: ['content'] });
   assert.equal(at(15, ['GER'])?.get('GER')?.name, 'German Reich');
   assert.deepEqual(at(36, ['GER'])?.get('GER'),
-    { tag: 'GER', name: 'German Reich', color: null, warnings: ['content', 'GER: no recorded map colour'] });
-  assert.deepEqual(at(31, ['D01', 'ENG'])?.get('D01'), { tag: 'D01', name: null, color: null,
+    { tag: 'GER', name: 'German Reich', color: null, reason: 'no recorded map colour', warnings: ['content', 'GER: no recorded map colour'] });
+  assert.deepEqual(at(31, ['D01', 'ENG'])?.get('D01'), { tag: 'D01', name: null, color: null, reason: 'not a country at this hour',
     warnings: ['content', 'D01: not a country at this hour'] });
   assert.deepEqual(at(31, ['D01', 'ENG'])?.get('ENG')?.warnings, ['content', 'ENG: not a country at this hour']);
   assert.equal(at(32, ['D01'])?.get('D01')?.name, 'Germany');

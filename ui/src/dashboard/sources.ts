@@ -32,10 +32,23 @@ export function useSourceRoles(client: DashboardClient) {
     for (const [roleId, source] of sources.current) {
       if (source.id !== sourceId || source.revision !== revision) continue;
       const identity = (country: CountryMetadata) => `${country.id}:${country.tag}`;
-      const known = new Set(source.metadata.countries.map(identity));
-      const added = countries.filter(country => { const key = identity(country); if (known.has(key)) return false; known.add(key); return true; });
-      if (!added.length) continue;
-      const next = { ...source, metadata: { ...source.metadata, countries: [...source.metadata.countries, ...added] } };
+      const incoming = new Map(countries.map(country => [identity(country), country]));
+      let changed = false;
+      const merged = source.metadata.countries.map(existing => {
+        const key = identity(existing);
+        const fresh = incoming.get(key);
+        if (fresh) {
+          incoming.delete(key);
+          if (existing.name === existing.tag && fresh.name !== fresh.tag) {
+            changed = true;
+            return { ...existing, name: fresh.name, observedBranchId: fresh.observedBranchId, observedHour: fresh.observedHour };
+          }
+        }
+        return existing;
+      });
+      const added = [...incoming.values()];
+      if (!changed && !added.length) continue;
+      const next = { ...source, metadata: { ...source.metadata, countries: [...merged, ...added] } };
       sources.current.set(roleId, next); updates.set(roleId, next);
     }
     if (updates.size) setBindings(previous => Object.fromEntries(Object.entries(previous).map(([roleId, binding]) =>

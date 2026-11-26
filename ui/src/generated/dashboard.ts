@@ -3105,7 +3105,11 @@ export type IdeaLook = { info: IdeaInfo,
 /**
  * The idea's name and icon; for an advisor, its holder's.
  */
-artwork: Artwork, };
+artwork: Artwork,
+/**
+ * Why this look's artwork is missing; omitted when artwork is present.
+ */
+artworkMissing?: string, };
 export type IdeaCharacter = {
 /**
  * The recorded character id.

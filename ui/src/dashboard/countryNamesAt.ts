@@ -1,4 +1,4 @@
-import { nameReadFrom, sameNameRead, type NameRead } from './nameReads.ts';
+import { nameReadFrom, sameNameRead, type NameFact, type NameRead } from './nameReads.ts';
 import { recordedHour } from './regionTime.ts';
 import type { Failure } from './queryError';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -146,11 +146,26 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
   return { held, requests, answered, rest, version };
 }
 
-const NAMES: FactSpec<string> = {
+function nameReasonOf(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const cleaned = reason.replace(/;\s*no recorded map colour$/, '').trim();
+  return !cleaned || cleaned === 'no recorded map colour' ? null : cleaned;
+}
+
+const NAMES: FactSpec<NameFact> = {
   product: 'country-styles', perRequest: Infinity, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
-  extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => typeof style.name === 'string' ? [[style.tag, style.name] as const] : [])),
-  held: heldFacts(style => style.name),
+  extract: data => new Map((data as CountryStyleReply).styles.flatMap((style): readonly (readonly [string, NameFact])[] => {
+    if (typeof style.name === 'string') return [[style.tag, style.name]];
+    const reason = nameReasonOf(style.reason);
+    if (reason) return [[style.tag, { reason }]];
+    return [];
+  })),
+  held: heldFacts(style => {
+    if (style.name != null) return style.name;
+    const reason = nameReasonOf(style.reason);
+    return reason ? { reason } : null;
+  }),
 };
 
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,

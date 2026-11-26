@@ -1087,10 +1087,7 @@ impl FlagContext {
         options: ResolveOptions,
         allow_unverified: bool,
     ) -> io::Result<Self> {
-        let mut warnings = vec![format!(
-            "{}; visual assets are outside the content hash coverage.",
-            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
-        )];
+        let mut warnings = vec![dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned()];
         content::check_replay(source.replay_ref(), allow_unverified, &mut warnings)?;
         let stack_key = content.layers.art_stack_key();
         let language = content::recorded_language(source.replay_ref());
@@ -1145,6 +1142,7 @@ impl FlagContext {
         }
         let sets = shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets);
         let mut shielded = Vec::new();
+        let mut reported_substitutions = BTreeSet::new();
         for (flag, choice) in (0_u32..).zip(&request.flags) {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
@@ -1176,6 +1174,14 @@ impl FlagContext {
                 }
                 match search {
                     FlagSearch::Found { asset, image, origin } => {
+                        if sets.first() == Some(&FlagSet::Medium)
+                            && set == FlagSet::Normal
+                            && reported_substitutions.insert(asset.clone())
+                        {
+                            warnings.push(format!(
+                                "{key}: medium flag is missing or undecodable; normal flag {asset} is shown"
+                            ));
+                        }
                         found = Some((asset, image, origin));
                         break;
                     }
@@ -1419,7 +1425,15 @@ mod tests {
                 .reply(&request, None, &AtomicBool::new(false))
                 .unwrap();
             assert_eq!(reply.flags.first().map(|flag| flag.asset.as_str()), asset);
-            assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+            if asset == Some("gfx/flags/mod_normal.tga") {
+                assert!(
+                    reply.warnings.iter().any(|w| w.contains("medium flag is missing or undecodable") && w.contains("gfx/flags/mod_normal.tga")),
+                    "{:?}",
+                    reply.warnings
+                );
+            } else {
+                assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+            }
             match reason {
                 Some(reason) => {
                     assert_eq!(reply.unavailable.len(), 1);
@@ -2228,5 +2242,36 @@ mod tests {
         assert!(CountryFlags::validate(&params).is_err());
         params.flags = vec![every("GER"); 33];
         assert!(CountryFlags::validate(&params).is_err());
+    }
+
+    #[test]
+    fn medium_flag_falls_back_to_normal_with_deduplicated_warning() {
+        let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[]);
+        let cells = [[4, 2], [2, 2], [2, 1]];
+        let file = folder.0.join("gfx/flags/MOD.tga");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, shield_flag(cells[0], [10, 120, 220])).unwrap();
+        let catalogue = dashboard_base::catalogue::tests::layers_catalogue(
+            content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+        );
+        let ctx = context(&catalogue.content, cells, Vec::new());
+        let choice = CountryFlagChoice {
+            keys: [Some("MOD".into()), None, None],
+            reasons: [None, Some("missing".into()), None],
+            searched: Default::default(),
+        };
+        let request = CountryFlagParams {
+            flags: vec![choice.clone(), choice],
+            size: CountryFlagSize::Medium,
+        };
+        let reply = ctx.reply(&request, None, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.flags.len(), 2);
+        assert!(reply.flags.iter().all(|f| f.asset == "gfx/flags/MOD.tga"));
+        let sub_warnings: Vec<_> = reply
+            .warnings
+            .iter()
+            .filter(|w| w.contains("medium flag is missing or undecodable") && w.contains("gfx/flags/MOD.tga"))
+            .collect();
+        assert_eq!(sub_warnings.len(), 1, "substitution warning emitted once per asset: {:?}", reply.warnings);
     }
 }

@@ -176,11 +176,15 @@ fn resource_name(
 ) -> Option<String> {
     let upper = content_reader_localisation::localisation::crt_case_text(token, true, false);
     let key = format!("PRODUCTION_MATERIALS_{upper}");
+    if localisation.get(&key).is_none() {
+        warnings.push(format!("{token}: localisation {key} is missing"));
+        return None;
+    }
     let (name, notes) = catalogue::localised_details(
         localisation,
         &key,
         &[],
-        catalogue::View::Plain,
+        catalogue::View::Scripted,
         dashboard_core::findings::Kind::Unsupported,
     );
     warnings.extend(
@@ -297,8 +301,6 @@ fn load_resource_content(
     Ok(())
 }
 
-const ARTWORK_NOTE: &str = "Artwork from current installation; visual assets are outside content hash coverage.";
-
 pub struct ResourceNaming {
     catalogue: Result<Arc<Catalogue>, String>,
     cache: Arc<std::sync::Mutex<catalogue::ByCatalogue<ContentState>>>,
@@ -385,7 +387,7 @@ fn infos(
                 })
                 .collect();
             if infos.iter().any(|resource| resource.icon.is_some()) {
-                warnings.push(ARTWORK_NOTE.to_owned());
+                warnings.push(crate::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned());
             }
             infos
         }
@@ -405,4 +407,36 @@ fn infos(
         }
     }
     Ok((infos, warnings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_name_distinguishes_absent_key_from_scripted_expression() {
+        let loc: Localisation = [
+            ("PRODUCTION_MATERIALS_ALPHA".to_owned(), "Alpha Ore".to_owned()),
+            ("PRODUCTION_MATERIALS_BETA".to_owned(), "[Root.GetName] Alloy".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let mut warnings = Vec::new();
+        assert_eq!(resource_name(&loc, "alpha", &mut warnings), Some("Alpha Ore".to_owned()));
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let mut missing_warnings = Vec::new();
+        assert_eq!(resource_name(&loc, "gamma", &mut missing_warnings), None);
+        assert!(
+            missing_warnings.iter().any(|w| w.contains("PRODUCTION_MATERIALS_GAMMA") && w.contains("missing")),
+            "{missing_warnings:?}"
+        );
+
+        let mut scripted_warnings = Vec::new();
+        assert_eq!(resource_name(&loc, "beta", &mut scripted_warnings), None);
+        assert!(
+            scripted_warnings.iter().any(|w| w.contains("PRODUCTION_MATERIALS_BETA") && w.contains("[Root.GetName]")),
+            "{scripted_warnings:?}"
+        );
+    }
 }

@@ -28,4 +28,9 @@ test('dated names distinguish an unrequested lookup, active read, absence, empty
   }
   assert.equal(nameReadMetadata(LOADING_NAME).known, undefined);
   assert.equal(nameReadMetadata(ABSENT_NAME).known, false);
+  const unnamed = nameReadFrom({ reason: 'localisation AAA_fascism: scripted trigger unavailable' }, true);
+  assert.equal(unnamed.kind, 'absent');
+  assert.equal(nameReadMetadata(unnamed).nameDetail, 'localisation AAA_fascism: scripted trigger unavailable');
+  assert.equal(sameNameRead(unnamed, nameReadFrom({ reason: 'localisation AAA_fascism: scripted trigger unavailable' }, true)), true);
+  assert.equal(sameNameRead(unnamed, ABSENT_NAME), false);
 });
