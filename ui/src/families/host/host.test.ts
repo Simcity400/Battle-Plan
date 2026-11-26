@@ -48,6 +48,13 @@ import {
 } from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 import { planFamilySources } from './planSources.ts';
+import { identitySnapshots } from './identitySnapshots.ts';
+import { withSoFarMembership } from './membership.ts';
+import { rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
+import type { CountryGroupReply } from '../../generated/dashboard';
+import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
+import { flagChoiceKey, type IdentityScope } from '../identity/types.ts';
+import { flagArtHandle, requestDemandedFlags } from '../art/provider.ts';
 import { mergeAccessibleDescription, mergeDiagnosticNotes, resolveHeaderSummary } from './headerSummary.ts';
 import { airKillsLossesLinesDeclaration } from '../../widgets/air-kills-losses/airKillsLossesLinesProjection.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -1476,4 +1483,70 @@ test('#849: header summary folds notes and partial notices into one compact mark
     mergeAccessibleDescription('69 completed. Head: 5 in progress · Radio 50%', combined),
     '69 completed. Head: 5 in progress · Radio 50%',
   );
+});
+
+test('the host identity snapshot takes a flag drawn after a paused seek although the lane asks no names', async () => {
+  const never = <T,>() => new Promise<T>(() => {});
+  const transport: IdentityTransport = {
+    loadFacts: never,
+    loadIdentities: never,
+    loadGroups: never,
+    loadStyles: never,
+    loadRegions: never,
+    loadPlaceNameRuns: never,
+    loadLeaderNameRuns: never,
+    loadFlags: async (_scope, size, batch) => ({
+      size,
+      flags: batch.map((choice, flag) => ({ flag, asset: `${choice.keys[0]}.tga`, key: `${choice.keys[0]}:${size}`, width: 41, height: 26, png: `flag://${choice.keys[0]}` })),
+      unavailable: [],
+      warnings: [],
+    }),
+  };
+  const broker = new IdentityBroker({ transport });
+  const scope: IdentityScope = { sourceId: 's1', revision: 'r1', branchId: '1', content: 1 };
+  const store = identitySnapshots(broker, scope, undefined, [0, 1000]);
+  let changes = 0;
+  const stop = store.subscribe(() => { changes++; });
+  const before = store.read();
+  assert.equal(before?.drawnFlags, undefined, 'no flag is drawn before the lane asks');
+
+  requestDemandedFlags(broker, scope, [flagArtHandle(flagChoiceKey({ keys: ['GER', null, null], reasons: [null, null, null] }))]);
+  for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+
+  assert.ok(changes > 0, 'the snapshot store hears the flag land');
+  const after = store.read();
+  assert.notEqual(after, before, 'a new snapshot is handed to the lane');
+  assert.deepEqual(Object.values(after?.drawnFlags ?? {}).map(flag => flag.url), ['flag://GER']);
+  assert.equal(store.read(), after, 'reading again without a change keeps the same snapshot');
+  stop();
+  broker.dispose();
+});
+
+test('every member so far masks each member from its first membership, so a later joiner is neither drawn nor ranked before it joined', () => {
+  const groups: CountryGroupReply = {
+    branchId: '1',
+    humans: [],
+    factions: [{
+      id: '7', name: 'Axis', nameReason: null, names: [], recordedName: 'AXIS', firstHour: 50, lastHour: 400,
+      members: [{ tag: 'GER', firstHour: 50, lastHour: 400 }, { tag: 'ITA', firstHour: 200, lastHour: 260 }, { tag: 'ITA', firstHour: 300, lastHour: 320 }],
+      leaders: [{ tag: 'GER', firstHour: 50, lastHour: 400 }],
+      incomplete: [],
+    }],
+    wars: [], warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [],
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+    warnings: [],
+  };
+  const selection = { kind: 'group' as const, group: { type: 'faction' as const, id: '7' }, membership: 'ever' as const, aggregate: false };
+  const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
+  const masked = withSoFarMembership(resolved, selection, groups, 1000);
+  assert.deepEqual([...masked.membership!.entries()], [
+    ['GER', [{ tag: 'GER', firstHour: 50, lastHour: 1000 }]],
+    ['ITA', [{ tag: 'ITA', firstHour: 200, lastHour: 1000 }]],
+  ], 'a member stays one from its first membership to the end of the branch');
+  assert.deepEqual(rankedCandidates(masked, 100, masked.tags), ['GER'], 'at hour 100 only the founder is a member so far');
+  assert.deepEqual(rankedCandidates(masked, 280, masked.tags).sort(), ['GER', 'ITA'], 'a member who has left is still a member so far');
+
+  const atHour = { ...selection, membership: 'hour' as const };
+  const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
+  assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
 });
