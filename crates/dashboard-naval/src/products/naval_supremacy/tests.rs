@@ -99,19 +99,19 @@ fn mission_registered_ships_match_panel_count_and_refuse_missing_tables() {
     *frame.tables[TableId::AirCountryRelations.index()] = TableView::Complete(TableRows::AirCountryRelations(vec![
         AirCountryRelationRow { country: 4, kind: AirCountryRelationRow::ENEMY, ordinal: 0, other: 50 },
     ]));
-    let counts = mission_registered_ships(&frame, 4);
+    let counts = ship_counts(&frame, 4, &mut ShipInputs { regions: BTreeSet::from([7]), ..ShipInputs::default() });
     assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "duplicate task-force registrations count each time as in the panel");
     assert_eq!(counts.enemy.as_ref().unwrap().get(&7), Some(&1));
 
     let relations = frame.tables[TableId::AirCountryRelations.index()].clone();
     *frame.tables[TableId::AirCountryRelations.index()] = TableView::Unavailable { reason: "not recorded".into() };
-    let counts = mission_registered_ships(&frame, 4);
+    let counts = ship_counts(&frame, 4, &mut ShipInputs { regions: BTreeSet::from([7]), ..ShipInputs::default() });
     assert_eq!(counts.own.as_ref().unwrap().get(&7), Some(&5), "an unknown enemy roster withholds only the enemy count");
     assert!(counts.enemy.is_err());
     frame.tables[TableId::AirCountryRelations.index()] = relations;
 
     *frame.tables[TableId::NavalMissionLedgers.index()] = TableView::Unavailable { reason: "not recorded".into() };
-    let counts = mission_registered_ships(&frame, 4);
+    let counts = ship_counts(&frame, 4, &mut ShipInputs { regions: BTreeSet::from([7]), ..ShipInputs::default() });
     assert!(counts.own.is_err() && counts.enemy.is_err(), "missing ledger table refuses both sides instead of returning zero");
 }
 

@@ -21,6 +21,8 @@ use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
+mod playback;
+pub use playback::panel;
 
 const DAY: i32 = 24;
 const SCALE: i32 = 100_000;
@@ -147,6 +149,10 @@ pub struct NavalSupremacyReply {
     pub last_hour: i32,
     #[doc = " The last hour through which nothing this reply shows changes: read beside the reply, never among its rows."]
     pub valid_through: i32,
+    #[serde(skip)]
+    ship_inputs: ShipInputs,
+    #[serde(skip)]
+    dated_refusal: bool,
     #[doc = " Day 0 starts at this hour (a multiple of `dayHours`); day `n` covers the `n`th day after."]
     pub first_day_hour: i32,
     pub day_hours: i32,
@@ -354,6 +360,15 @@ fn day_hours(timeline: &dashboard_query::timeline::Timeline, first: i32, last: i
     out
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ShipInputs {
+    links: BTreeSet<u32>,
+    slots: BTreeSet<u32>,
+    owners: BTreeSet<u32>,
+    regions: BTreeSet<u32>,
+    forces: BTreeSet<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MissionRegisteredShips {
     pub(crate) own: Result<BTreeMap<u32, i32>, String>,
@@ -373,7 +388,7 @@ impl MissionRegisteredShips {
     }
 }
 
-pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -> MissionRegisteredShips {
+fn ship_counts(frame: &DecodedFrame, viewer_slot: u32, inputs: &mut ShipInputs) -> MissionRegisteredShips {
     let shared = (|| -> Result<_, String> {
         let ships = frame.complete::<tables::Ships>().map_err(|e| format!("Ships table unavailable: {e}"))?;
         let ledgers = frame.complete::<tables::NavalMissionLedgers>().map_err(|e| format!("Naval mission ledgers unavailable: {e}"))?;
@@ -389,9 +404,9 @@ pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -
         *tf_ships.entry(ship.task_force).or_insert(0) += 1;
     }
     let mut by_owner_region: HashMap<(u32, u32), i32> = HashMap::new();
-    let mut regions = BTreeSet::new();
-    for row in ledgers {
-        regions.insert(row.region);
+    let mut seen_regions = BTreeSet::new();
+    for row in ledgers.iter().filter(|row| inputs.regions.contains(&row.region)) {
+        seen_regions.insert(row.region);
         let count = row
             .task_forces
             .iter()
@@ -401,20 +416,27 @@ pub(crate) fn mission_registered_ships(frame: &DecodedFrame, viewer_slot: u32) -
     }
     let slot_to_raw: HashMap<u32, u32> = countries.iter().map(|c| (c.canonical_slot, c.id)).collect();
     let own_raw = slot_to_raw.get(&viewer_slot).copied();
-    let own = regions.iter().map(|&region| (region, own_raw.and_then(|id| by_owner_region.get(&(id, region)).copied()).unwrap_or(0))).collect();
+    inputs.slots.insert(viewer_slot);
+    inputs.owners.extend(own_raw);
+    let own = seen_regions.iter().map(|&region| (region, own_raw.and_then(|id| by_owner_region.get(&(id, region)).copied()).unwrap_or(0))).collect();
     let enemy = (|| -> Result<BTreeMap<u32, i32>, String> {
         let links_rows = frame.complete::<tables::CountryLinks>().map_err(|e| format!("Country links unavailable: {e}"))?;
         let enemy_raws = naval_region_control::raw_roster(frame, viewer_slot, AirCountryRelationRow::ENEMY)?;
         let raw_to_slot: HashMap<u32, u32> = links_rows.iter().map(|l| (l.id, l.canonical_slot)).collect();
         let mut enemy_raw_ids: Vec<u32> = Vec::with_capacity(enemy_raws.len());
+        inputs.links.extend(enemy_raws.iter().copied().filter(|raw| *raw != 0));
         for raw in enemy_raws {
             let slot = if raw == 0 { 0 } else { *raw_to_slot.get(&raw).ok_or_else(|| format!("Enemy {raw} has no CountryLinks row"))? };
+            inputs.slots.insert(slot);
             if let Some(&id) = slot_to_raw.get(&slot) {
+                inputs.owners.insert(id);
                 enemy_raw_ids.push(id);
             }
         }
-        Ok(regions.iter().map(|&region| (region, enemy_raw_ids.iter().fold(0_i32, |sum, &id| sum.wrapping_add(by_owner_region.get(&(id, region)).copied().unwrap_or(0))))).collect())
+        Ok(seen_regions.iter().map(|&region| (region, enemy_raw_ids.iter().fold(0_i32, |sum, &id| sum.wrapping_add(by_owner_region.get(&(id, region)).copied().unwrap_or(0))))).collect())
     })();
+    inputs.forces.extend(ledgers.iter().filter(|row| inputs.owners.contains(&row.owner) && inputs.regions.contains(&row.region))
+        .flat_map(|row| row.task_forces.iter().copied()).filter(|&force| force != 0));
     MissionRegisteredShips { own: Ok(own), enemy }
 }
 
@@ -714,7 +736,35 @@ impl Product for NavalSupremacy {
         let last_day_index = count.checked_sub(1);
         let last_day_hour = last_day_index.and_then(|idx| hours.get(&idx).map(|&(_, h)| h));
         let last_day_unknown = last_day_index.and_then(|idx| unknown.iter().find(|u| u.first_day <= idx && idx <= u.last_day).map(|u| u.reason.clone()));
-        let ships_at_end = match (outside, last_day_hour) {
+        let mut rank_missing = None;
+        let mut ranked_view = false;
+        let mut hidden_active = 0u32;
+        let mut active_unlisted = ActiveRegions::default();
+        let chosen: Vec<(u32, bool)> = if let Some(explicit) = &params.regions {
+            explicit.iter().map(|&id| (id, true)).collect()
+        } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
+            let mut seen = HashSet::new();
+            let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
+            let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
+            ranked_view = true;
+            let scored = match (&last_day_unknown, last_day_index) {
+                (Some(reason), _) => Err(reason.clone()),
+                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day)))),
+                (None, None) => Ok(Vec::new()),
+            };
+            let scored = scored.unwrap_or_else(|reason| {
+                rank_missing = Some(reason);
+                Vec::new()
+            });
+            let chosen = automatic(scored, &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
+            hidden_active = chosen.hidden;
+            active_unlisted = chosen.active_unlisted;
+            pinned_list.into_iter().map(|id| (id, true)).chain(chosen.listed.into_iter().map(|id| (id, false))).collect()
+        } else {
+            all_choices.into_iter().map(|choice| (choice.id.parse().unwrap_or_default(), false)).collect()
+        };
+        let mut inputs = ShipInputs { regions: chosen.iter().map(|&(id, _)| id).collect(), ..ShipInputs::default() };
+        let ships_at_end = if chosen.is_empty() { None } else { Some(match (outside, last_day_hour) {
             (true, _) => MissionRegisteredShips::refused("Outside the recording".into()),
             (false, None) => MissionRegisteredShips::refused(last_day_unknown.clone().unwrap_or_else(|| "The day was not recorded".into())),
             (false, Some(ship_hour)) => match query.holders.at(&params.country, ship_hour).map(|r| r.holder) {
@@ -727,15 +777,16 @@ impl Product for NavalSupremacy {
                         at_hour::Read::all(TableId::AirCountryRelations),
                     ];
                     match at_hour::frame(&query, ship_hour, &reads, "Naval mission ships") {
-                        Ok(frame) => mission_registered_ships(&frame, slot),
+                        Ok(frame) => ship_counts(&frame, slot, &mut inputs),
                         Err(error) => MissionRegisteredShips::refused(error.to_string()),
                     }
                 }
                 _ => MissionRegisteredShips::refused(query.holders.not_known(&params.country, ship_hour).unwrap_or_else(|| "The viewer's tag is held by no country at this hour".into())),
             },
-        };
+        }) };
         let make_region = |id: u32, pinned: bool, runs_vec: Vec<SupremacyRun>| -> SupremacyRegion {
             let name = name_map.get(&id).cloned().unwrap_or_else(|| format!("Region {id} (name unavailable)"));
+            let ships_at_end = ships_at_end.as_ref().expect("ships for selected regions");
             let own_ships = MissionRegisteredShips::of(&ships_at_end.own, id);
             let enemy_ships = MissionRegisteredShips::of(&ships_at_end.enemy, id);
             let readout = if let Some(reason) = &last_day_unknown {
@@ -768,47 +819,7 @@ impl Product for NavalSupremacy {
                 runs: runs_vec,
             }
         };
-        let mut rank_missing = None;
-        let mut ranked_view = false;
-        let mut hidden_active = 0u32;
-        let mut active_unlisted = ActiveRegions::default();
-        let selected_regions: Vec<SupremacyRegion> = if let Some(explicit) = &params.regions {
-            explicit.iter().map(|&id| make_region(id, true, runs.remove(&id).unwrap_or_default())).collect()
-        } else if params.top.is_some() || params.pinned_regions.is_some() || params.hidden_regions.is_some() {
-            let mut seen = HashSet::new();
-            let pinned_list: Vec<u32> = params.pinned_regions.iter().flatten().copied().filter(|id| seen.insert(*id)).collect();
-            let hidden: HashSet<u32> = params.hidden_regions.iter().flatten().copied().collect();
-            ranked_view = true;
-            let scored = match (&last_day_unknown, last_day_index) {
-                (Some(reason), _) => Err(reason.clone()),
-                (None, Some(day)) => ranked(runs.iter().filter(|(id, _)| !seen.contains(id)).map(|(&id, region_runs)| (id, activity_on(region_runs, day)))),
-                (None, None) => Ok(Vec::new()),
-            };
-            let scored = scored.unwrap_or_else(|reason| {
-                rank_missing = Some(reason);
-                Vec::new()
-            });
-            let chosen = automatic(scored, &hidden, params.top.unwrap_or(usize::MAX), rank_missing.clone());
-            hidden_active = chosen.hidden;
-            active_unlisted = chosen.active_unlisted;
-            let scored = chosen.listed;
-            let mut out = Vec::with_capacity(pinned_list.len() + scored.len());
-            for id in pinned_list {
-                out.push(make_region(id, true, runs.remove(&id).unwrap_or_default()));
-            }
-            for id in scored {
-                out.push(make_region(id, false, runs.remove(&id).unwrap_or_default()));
-            }
-            out
-        } else {
-            all_choices
-                .into_iter()
-                .map(|choice| {
-                    let id: u32 = choice.id.parse().unwrap_or_default();
-                    make_region(id, false, runs.remove(&id).unwrap_or_default())
-                })
-                .collect()
-        };
+        let selected_regions: Vec<_> = chosen.into_iter().map(|(id, pinned)| make_region(id, pinned, runs.remove(&id).unwrap_or_default())).collect();
         let legend = supremacy_legend(&selected_regions, &viewer_label);
         let gaps: Vec<HourSpan> = query
             .timeline
@@ -826,6 +837,11 @@ impl Product for NavalSupremacy {
             first_hour: first,
             last_hour: last,
             valid_through: last,
+            ship_inputs: inputs,
+            dated_refusal: !notes.is_empty() || ships_at_end.as_ref().is_some_and(|ships| {
+                [&ships.own, &ships.enemy].iter().filter_map(|result| result.as_ref().err())
+                    .any(|reason| reason.contains(&format!("hour {look_hour} ")))
+            }),
             first_day_hour: first_day * DAY,
             day_hours: DAY,
             days: count,

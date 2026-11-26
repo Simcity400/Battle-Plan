@@ -134,8 +134,16 @@ fn validate(params: &NavalYardsParams) -> Result<(), &'static str> {
     validate_country(&params.country)
 }
 
-fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
-    held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
+use super::{fleet_fields, raws, under};
+use dashboard_base::products::at_hour::field_columns;
+
+fn yard_fields(table: TableId) -> Option<&'static [&'static str]> {
+    Some(match table {
+        TableId::Ships => &["task_force", "name", "naming", "class_id", "strength"],
+        TableId::ShipModels => &["variant", "subunit_index", "counter"],
+        TableId::NavalRepairTaskForces => &["repair_mode"],
+        _ => return fleet_fields(table),
+    })
 }
 
 fn ship_reads(ships: &BTreeSet<u64>) -> Vec<Read> {
@@ -464,14 +472,30 @@ impl AtHour for NavalRepairs {
         REPAIR_TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::CountryAppearance => &["name_tag", "original_tag", "original_tag_reference"],
+            TableId::ReservedCountryNaming => &["tag", "original_tag", "original_tag_reference"],
+            TableId::Provinces => &["state"],
+            TableId::NavalRepairCountries => &["num_used_dockyards", "max_allowed_dockyards_to_repair"],
+            _ => yard_fields(table)?,
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn holds_refusal(frame: &DecodedFrame, _error: &io::Error) -> bool {
+        !complete(frame, TableId::NavalBases)
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
-            0 => [TableId::NavalBases, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance, TableId::ReservedCountryNaming, TableId::NavalRepairQueue].map(Read::all).into(),
+            0 => [TableId::NavalBases, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance, TableId::ReservedCountryNaming].map(Read::all).into(),
             1 => {
                 let raws = raws(held, owner.slot);
                 let ports = owned_ports(held, &raws);
                 vec![
+                    under(TableId::NavalRepairQueue, ports.iter().copied(), 32),
                     Read::these(TableId::NavalRepairBases, ports.iter().map(|&id| u128::from(id))),
                     Read::these(TableId::NavalRepairCountries, raws.iter().map(|&id| u128::from(id))),
                     Read::these(TableId::Provinces, ports.iter().map(|&id| u128::from(id))),
@@ -503,7 +527,9 @@ impl AtHour for NavalRepairs {
         let raws = raws(frame, owner.slot);
         let ports = owned_ports(frame, &raws);
         let queues = queues(frame, &ports);
-        let queue_missing = witnessed_rows::<tables::NavalRepairQueue>(frame).missing;
+        let selection = frame.tables[TableId::NavalRepairQueue.index()].keys();
+        let asked = if *selection == replay_frame::frame::Keys::All { selection.clone() } else { under(TableId::NavalRepairQueue, ports.iter().copied(), 32).keys };
+        let queue_missing = dashboard_query::coverage::population::<tables::NavalRepairQueue>(frame, &asked).err();
         let places = Places::new(frame);
         let mut yard = Yard::new(frame, &at.context.cat, at.live);
         let bases = frame.complete::<tables::NavalRepairBases>().unwrap_or_default();
@@ -616,6 +642,10 @@ impl AtHour for NavalRefits {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         REFIT_TABLES.to_vec()
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        yard_fields(table).map(|fields| field_columns(table, fields))
     }
 
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
