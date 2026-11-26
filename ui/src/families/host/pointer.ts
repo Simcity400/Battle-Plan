@@ -48,6 +48,7 @@ export interface FamilyRowDrag {
 
 export interface FamilyPointerBindingOptions {
   readonly bodyNode: HTMLElement;
+  readonly pictureNode: HTMLElement;
   readonly menuHost: HTMLElement;
   readonly pipeline: Pipeline;
   readonly pipe: number;
@@ -101,6 +102,7 @@ export interface FamilyPointerBinding {
 export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyPointerBinding {
   const {
     bodyNode,
+    pictureNode,
     menuHost,
     pipeline,
     pipe,
@@ -152,7 +154,7 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): FamilyP
   };
 
   const toPoint = (clientX: number, clientY: number): [number, number] => {
-    const box = bodyNode.getBoundingClientRect();
+    const box = pictureNode.getBoundingClientRect();
     return clientPointToInstalled(clientX, clientY, box, installedNow()?.viewport);
   };
 

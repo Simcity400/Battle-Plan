@@ -1059,6 +1059,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const gestures = mountAdapter.gestures;
     const stopPointer = bindFamilyPointer({
       bodyNode: node,
+      pictureNode: mounted.canvas,
       menuHost: frameRef.current ?? node,
       pipeline,
       pipe,
