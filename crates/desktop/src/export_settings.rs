@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    sync::Mutex,
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
+    path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use tauri::WebviewWindow;
 use video_export::BackendChoice;
 
-static PENDING_STAGES_LOCK: Mutex<()> = Mutex::new(());
+static LEASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,15 +37,100 @@ fn path() -> Result<PathBuf, String> {
     )
 }
 
-fn pending_stages_path() -> Result<PathBuf, String> {
+fn stages_dir() -> Result<PathBuf, String> {
     Ok(
         PathBuf::from(std::env::var_os("APPDATA").ok_or("User configuration folder unavailable")?)
             .join("BattlePlan")
-            .join("export-pending-cleanup.json"),
+            .join("export-stages"),
     )
 }
 
+#[derive(Deserialize, Serialize)]
+struct StageRecord {
+    version: u32,
+    stage_path: PathBuf,
+}
+
+pub fn resolve_export_destination(raw: &Path) -> Result<PathBuf, String> {
+    if raw.as_os_str().is_empty() {
+        return Err("Choose a destination file before exporting.".into());
+    }
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Couldn’t resolve destination folder: {e}"))?
+            .join(raw)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err("Destination path is outside the file system root.".into());
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    let file_name = normalized
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Choose a destination file name before exporting.".to_owned())?
+        .to_owned();
+    let parent = normalized
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "Choose a destination folder before exporting.".to_owned())?;
+    let mut existing = parent;
+    let mut tail = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            break;
+        };
+        tail.push(name.to_os_string());
+        let Some(up) = existing.parent() else {
+            break;
+        };
+        existing = up;
+    }
+    let mut resolved = fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    for part in tail.into_iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved.join(file_name))
+}
+
+pub fn is_valid_stage_path(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(without_tmp) = name.strip_suffix(".tmp") else {
+        return false;
+    };
+    let Some((before_seq, seq)) = without_tmp.rsplit_once('.') else {
+        return false;
+    };
+    if seq.is_empty() || !seq.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Some((base, pid)) = before_seq.rsplit_once('.') else {
+        return false;
+    };
+    !base.is_empty() && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub fn remove_stage_with_sidecars(path: &Path) -> bool {
+    if !is_valid_stage_path(path) {
+        return false;
+    }
     let remove_one = |candidate: &Path| match fs::remove_file(candidate) {
         Ok(()) => true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => true,
@@ -61,82 +147,128 @@ pub fn remove_stage_with_sidecars(path: &Path) -> bool {
     all_gone
 }
 
-fn read_pending_manifest(manifest: &Path) -> Vec<PathBuf> {
-    let Ok(bytes) = fs::read(manifest) else {
-        return Vec::new();
-    };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+pub struct StageLease {
+    lock: Option<File>,
+    record_path: PathBuf,
+    stage_path: PathBuf,
 }
 
-fn write_pending_manifest(manifest: &Path, entries: &[PathBuf]) {
-    if entries.is_empty() {
-        let _ = fs::remove_file(manifest);
-        return;
+impl StageLease {
+    pub fn acquire(stage_path: PathBuf) -> Result<Self, String> {
+        let dir = stages_dir()?;
+        Self::acquire_in(&dir, stage_path)
     }
-    if let Some(parent) = manifest.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let Ok(bytes) = serde_json::to_vec_pretty(entries) else {
-        return;
-    };
-    let tmp = manifest.with_extension("json.tmp");
-    if fs::write(&tmp, &bytes).is_ok() {
-        if fs::rename(&tmp, manifest).is_err() {
-            let _ = fs::write(manifest, &bytes);
-            let _ = fs::remove_file(&tmp);
+
+    fn acquire_in(dir: &Path, stage_path: PathBuf) -> Result<Self, String> {
+        if !is_valid_stage_path(&stage_path) {
+            return Err("Export staging path is not an absolute BattlePlan stage file.".into());
         }
-    } else {
-        let _ = fs::write(manifest, &bytes);
+        fs::create_dir_all(dir)
+            .map_err(|e| format!("Couldn’t prepare export cleanup directory: {e}"))?;
+        let pid = std::process::id();
+        let (mut file, record_path) = loop {
+            let seq = LEASE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let candidate = dir.join(format!("job-{pid}-{seq}.stage"));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (file, candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!("Couldn’t create export cleanup record: {error}"));
+                }
+            }
+        };
+        let setup = (|| -> io::Result<()> {
+            file.try_lock().map_err(|e| match e {
+                fs::TryLockError::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "locked"),
+                fs::TryLockError::Error(err) => err,
+            })?;
+            let payload = serde_json::to_vec(&StageRecord {
+                version: 1,
+                stage_path: stage_path.clone(),
+            })
+            .map_err(io::Error::other)?;
+            file.write_all(&payload)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = setup {
+            drop(file);
+            let _ = fs::remove_file(&record_path);
+            return Err(format!("Couldn’t persist export cleanup record: {error}"));
+        }
+        Ok(Self {
+            lock: Some(file),
+            record_path,
+            stage_path,
+        })
+    }
+
+    pub fn stage_path(&self) -> &Path {
+        &self.stage_path
+    }
+
+    pub fn release_after_publish(mut self) {
+        let _ = remove_stage_with_sidecars(&self.stage_path);
+        drop(self.lock.take());
+        let _ = fs::remove_file(&self.record_path);
+    }
+
+    pub fn cleanup_and_release(mut self) {
+        let cleaned = remove_stage_with_sidecars(&self.stage_path);
+        drop(self.lock.take());
+        if cleaned {
+            let _ = fs::remove_file(&self.record_path);
+        }
+    }
+
+    pub fn abandon_for_unfinished_shutdown(mut self) {
+        if let Some(lock) = self.lock.take() {
+            std::mem::forget(lock);
+        }
     }
 }
 
-fn record_pending_stage_in(manifest: &Path, stage: &Path) {
-    let _guard = PENDING_STAGES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut entries = read_pending_manifest(manifest);
-    if !entries.iter().any(|existing| existing == stage) {
-        entries.push(stage.to_path_buf());
-        write_pending_manifest(manifest, &entries);
-    }
-}
-
-fn clear_pending_stage_in(manifest: &Path, stage: &Path) {
-    let _guard = PENDING_STAGES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut entries = read_pending_manifest(manifest);
-    let before = entries.len();
-    entries.retain(|existing| existing != stage);
-    if entries.len() != before {
-        write_pending_manifest(manifest, &entries);
-    }
-}
-
-fn sweep_pending_stages_in(manifest: &Path) {
-    let _guard = PENDING_STAGES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let entries = read_pending_manifest(manifest);
-    if entries.is_empty() {
+fn sweep_pending_stages_in(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
-    }
-    let remaining: Vec<PathBuf> = entries
-        .into_iter()
-        .filter(|stage| !remove_stage_with_sidecars(stage))
-        .collect();
-    write_pending_manifest(manifest, &remaining);
-}
-
-pub fn record_pending_stage(stage: &Path) {
-    if let Ok(manifest) = pending_stages_path() {
-        record_pending_stage_in(&manifest, stage);
-    }
-}
-
-pub fn clear_pending_stage(stage: &Path) {
-    if let Ok(manifest) = pending_stages_path() {
-        clear_pending_stage_in(&manifest, stage);
+    };
+    for entry in entries.flatten() {
+        let record_path = entry.path();
+        if record_path.extension().and_then(|e| e.to_str()) != Some("stage") {
+            continue;
+        }
+        let Ok(mut file) = OpenOptions::new().read(true).write(true).open(&record_path) else {
+            continue;
+        };
+        if file.try_lock().is_err() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<StageRecord>(&bytes) else {
+            continue;
+        };
+        if record.version != 1 || !is_valid_stage_path(&record.stage_path) {
+            continue;
+        }
+        let cleaned = remove_stage_with_sidecars(&record.stage_path);
+        drop(file);
+        if cleaned {
+            let _ = fs::remove_file(&record_path);
+        }
     }
 }
 
 pub fn sweep_pending_stages() {
-    if let Ok(manifest) = pending_stages_path() {
-        sweep_pending_stages_in(&manifest);
+    if let Ok(dir) = stages_dir() {
+        sweep_pending_stages_in(&dir);
     }
 }
 
@@ -274,39 +406,91 @@ mod tests {
     }
 
     #[test]
-    fn pending_stage_sweep_cleans_stage_and_sidecars_and_retains_unremovable_entries() {
+    fn stage_lease_blocks_sweep_while_held_and_sweeps_after_exit() {
         let dir = std::env::temp_dir().join(format!(
-            "battleplan-export-pending-stage-test-{}",
+            "battleplan-export-stage-lease-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let manifest = dir.join("export-pending-cleanup.json");
-        let removable = dir.join(".battleplan-stage-1.mp4");
-        let removable_faststart = dir.join(".battleplan-stage-1.mp4.faststart");
-        let removable_video = dir.join(".battleplan-stage-1.mp4.video.mp4");
-        let removable_audio = dir.join(".battleplan-stage-1.mp4.audio.pcm");
-        fs::write(&removable, b"stage").unwrap();
-        fs::write(&removable_faststart, b"fs").unwrap();
-        fs::write(&removable_video, b"vid").unwrap();
-        fs::write(&removable_audio, b"aud").unwrap();
+        let stage_dir = dir.join("export-stages");
+        let dest = resolve_export_destination(&dir.join("campaign.mp4")).unwrap();
+        let stage = replay_settings::exit::stage_path(&dest).unwrap();
+        assert!(is_valid_stage_path(&stage));
+        assert!(!is_valid_stage_path(&dest));
+        assert!(!is_valid_stage_path(Path::new("relative.mp4.1.0.tmp")));
 
-        let locked = dir.join(".battleplan-stage-2.mp4");
-        fs::create_dir_all(locked.join("held")).unwrap();
+        let faststart = PathBuf::from(format!("{}.faststart", stage.display()));
+        let video = PathBuf::from(format!("{}.video.mp4", stage.display()));
+        let audio = PathBuf::from(format!("{}.audio.pcm", stage.display()));
+        fs::write(&stage, b"partial-mp4").unwrap();
+        fs::write(&faststart, b"fs").unwrap();
+        fs::write(&video, b"vid").unwrap();
+        fs::write(&audio, b"aud").unwrap();
 
-        record_pending_stage_in(&manifest, &removable);
-        record_pending_stage_in(&manifest, &locked);
-        sweep_pending_stages_in(&manifest);
+        let lease = StageLease::acquire_in(&stage_dir, stage.clone()).unwrap();
+        let record_path = lease.record_path.clone();
 
-        assert!(!removable.exists());
-        assert!(!removable_faststart.exists());
-        assert!(!removable_video.exists());
-        assert!(!removable_audio.exists());
-        assert_eq!(read_pending_manifest(&manifest), vec![locked.clone()]);
+        sweep_pending_stages_in(&stage_dir);
+        assert!(stage.exists());
+        assert!(record_path.exists());
 
-        fs::remove_dir_all(&locked).unwrap();
-        sweep_pending_stages_in(&manifest);
-        assert!(!manifest.exists());
+        drop(lease);
+        sweep_pending_stages_in(&stage_dir);
+        assert!(!stage.exists());
+        assert!(!faststart.exists());
+        assert!(!video.exists());
+        assert!(!audio.exists());
+        assert!(!record_path.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_sweep_preserves_unremovable_corrupt_and_invalid_records() {
+        let dir = std::env::temp_dir().join(format!(
+            "battleplan-export-stage-sweep-guard-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let stage_dir = dir.join("export-stages");
+        fs::create_dir_all(&stage_dir).unwrap();
+
+        let corrupt = stage_dir.join("job-1-0.stage");
+        fs::write(&corrupt, b"{not json").unwrap();
+
+        let target_real = dir.join("precious.mp4");
+        fs::write(&target_real, b"keep-me").unwrap();
+        let invalid_rec = stage_dir.join("job-1-1.stage");
+        fs::write(
+            &invalid_rec,
+            serde_json::to_vec(&StageRecord {
+                version: 1,
+                stage_path: target_real.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let dest = resolve_export_destination(&dir.join("locked.mp4")).unwrap();
+        let locked_stage = replay_settings::exit::stage_path(&dest).unwrap();
+        fs::create_dir_all(locked_stage.join("held")).unwrap();
+        let locked_lease = StageLease::acquire_in(&stage_dir, locked_stage.clone()).unwrap();
+        let locked_rec = locked_lease.record_path.clone();
+        drop(locked_lease);
+
+        sweep_pending_stages_in(&stage_dir);
+        assert!(corrupt.exists());
+        assert!(target_real.exists());
+        assert!(invalid_rec.exists());
+        assert!(locked_rec.exists());
+
+        fs::remove_dir_all(&locked_stage).unwrap();
+        sweep_pending_stages_in(&stage_dir);
+        assert!(!locked_rec.exists());
+        assert!(corrupt.exists());
+        assert!(invalid_rec.exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -67,7 +67,7 @@ struct ActiveJob {
     id: u64,
     cancel: Arc<AtomicBool>,
     committing: bool,
-    staged_path: PathBuf,
+    lease: Option<export_settings::StageLease>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -76,6 +76,7 @@ struct PendingPartial {
     staged_path: PathBuf,
     destination: PathBuf,
     saving: bool,
+    lease: Option<export_settings::StageLease>,
 }
 
 #[derive(Default)]
@@ -114,41 +115,44 @@ impl ExportJobs {
     }
 
     pub fn cancel_and_cleanup_for_shutdown(&self) {
-        let (join, staged, partial_stage) = {
+        let (join, active_lease, partial_lease) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cancel) = inner.preview_cancel.take() {
                 cancel.store(true, Ordering::Release);
             }
-            let (join, staged) = if let Some(mut active) = inner.active.take() {
+            let (join, lease) = if let Some(mut active) = inner.active.take() {
                 active.cancel.store(true, Ordering::Release);
-                (active.join.take(), Some(active.staged_path))
+                (active.join.take(), active.lease.take())
             } else {
                 (None, None)
             };
-            let partial_stage = inner.pending_partial.take().map(|p| p.staged_path);
-            (join, staged, partial_stage)
+            let partial_lease = inner.pending_partial.take().and_then(|mut p| p.lease.take());
+            (join, lease, partial_lease)
         };
-        if let Some(handle) = join {
+        let joined = if let Some(handle) = join {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while !handle.is_finished() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             if handle.is_finished() {
                 let _ = handle.join();
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        if let Some(lease) = active_lease {
+            if joined {
+                lease.cleanup_and_release();
+            } else {
+                lease.abandon_for_unfinished_shutdown();
             }
         }
-        if let Some(path) = staged {
-            cleanup_stage(&path);
+        if let Some(lease) = partial_lease {
+            lease.cleanup_and_release();
         }
-        if let Some(path) = partial_stage {
-            cleanup_stage(&path);
-        }
-    }
-}
-
-fn cleanup_stage(path: &std::path::Path) {
-    if export_settings::remove_stage_with_sidecars(path) {
-        export_settings::clear_pending_stage(path);
     }
 }
 
@@ -256,10 +260,9 @@ pub fn start_map_video_export(
     jobs: State<'_, ExportJobs>,
     args: StartMapVideoExportArgs,
 ) -> Result<ExportJobSnapshot, String> {
-    let destination = PathBuf::from(args.destination.trim());
-    if destination.as_os_str().is_empty() {
-        return Err("Choose a destination file before exporting.".into());
-    }
+    let destination = export_settings::resolve_export_destination(std::path::Path::new(
+        args.destination.trim(),
+    ))?;
     let mut request = args.request;
     viewer::video_export::ensure_distinct_export_path(
         std::path::Path::new(&request.path),
@@ -274,29 +277,29 @@ pub fn start_map_video_export(
     request.allow_unverified = allow_unverified;
     let staged_path = replay_settings::exit::stage_path(&destination)
         .map_err(|e| format!("Couldn’t prepare staging file beside destination: {e}"))?;
-    export_settings::record_pending_stage(&staged_path);
+    let stage_lease = export_settings::StageLease::acquire(staged_path.clone())?;
 
     let job_id = jobs.next_id.fetch_add(1, Ordering::AcqRel) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
 
-    let (initial_snapshot, old_partial_stage) = {
+    let (initial_snapshot, old_partial_lease) = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.active.is_some() {
             drop(inner);
-            cleanup_stage(&staged_path);
+            stage_lease.cleanup_and_release();
             return Err("Another video export is already running.".into());
         }
         if inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
             drop(inner);
-            cleanup_stage(&staged_path);
+            stage_lease.cleanup_and_release();
             return Err("Wait for the partial export save to finish before starting a new export.".into());
         }
-        let old_partial = inner.pending_partial.take().map(|p| p.staged_path);
+        let old_partial = inner.pending_partial.take().and_then(|mut p| p.lease.take());
         inner.active = Some(ActiveJob {
             id: job_id,
             cancel: Arc::clone(&cancel),
             committing: false,
-            staged_path: staged_path.clone(),
+            lease: Some(stage_lease),
             join: None,
         });
         inner.snapshot = ExportJobSnapshot {
@@ -317,8 +320,8 @@ pub fn start_map_video_export(
         };
         (inner.snapshot.clone(), old_partial)
     };
-    if let Some(old_stage) = old_partial_stage {
-        cleanup_stage(&old_stage);
+    if let Some(old_lease) = old_partial_lease {
+        old_lease.cleanup_and_release();
     }
 
     let jobs_cloned = jobs.inner().clone();
@@ -364,32 +367,39 @@ pub fn start_map_video_export(
                     backend,
                     mut warnings,
                 } => {
-                    let proceed = {
+                    let (proceed, cancelled_lease) = {
                         let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
                         let cancelled = cancel.load(Ordering::Acquire)
                             || !inner.active.as_ref().is_some_and(|a| a.id == job_id);
                         if cancelled {
-                            if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
-                                inner.active = None;
-                            }
+                            let lease = if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                                inner.active.take().and_then(|mut a| a.lease.take())
+                            } else {
+                                None
+                            };
                             if inner.snapshot.id == job_id {
                                 inner.snapshot.state = "cancelled".to_owned();
                                 inner.snapshot.phase = "cancelled".to_owned();
                                 inner.snapshot.error = None;
                                 inner.snapshot.partial = None;
                             }
-                            false
+                            (false, lease)
                         } else {
                             if let Some(active) = inner.active.as_mut() {
                                 active.committing = true;
                             }
-                            true
+                            (true, None)
                         }
                     };
                     if !proceed {
-                        cleanup_stage(&finished_stage);
-                        if finished_stage != worker_staged {
-                            cleanup_stage(&worker_staged);
+                        if let Some(lease) = cancelled_lease {
+                            if lease.stage_path() != finished_stage.as_path() {
+                                let _ = export_settings::remove_stage_with_sidecars(&finished_stage);
+                            }
+                            lease.cleanup_and_release();
+                        } else {
+                            let _ = export_settings::remove_stage_with_sidecars(&finished_stage);
+                            let _ = export_settings::remove_stage_with_sidecars(&worker_staged);
                         }
                         jobs_cloned.snapshot()
                     } else {
@@ -401,12 +411,14 @@ pub fn start_map_video_export(
                                     .replace_staged(&finished_stage, &destination)
                                     .map_err(|e| e.to_string())
                             });
-                        let (snapshot, publish_ok) = {
+                        let (snapshot, publish_ok, active_lease) = {
                             let mut inner =
                                 jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
-                            if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
-                                inner.active = None;
-                            }
+                            let lease = if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                                inner.active.take().and_then(|mut a| a.lease.take())
+                            } else {
+                                None
+                            };
                             let ok = match published {
                                 Ok(applied) => {
                                     if let Some(w) = applied.warning {
@@ -438,35 +450,49 @@ pub fn start_map_video_export(
                                     false
                                 }
                             };
-                            (inner.snapshot.clone(), ok)
+                            (inner.snapshot.clone(), ok, lease)
                         };
                         if publish_ok {
-                            cleanup_stage(&worker_staged);
-                            if finished_stage != worker_staged {
-                                export_settings::clear_pending_stage(&finished_stage);
+                            if let Some(lease) = active_lease {
+                                lease.release_after_publish();
                             }
                         } else {
-                            cleanup_stage(&finished_stage);
-                            if finished_stage != worker_staged {
-                                cleanup_stage(&worker_staged);
+                            if let Some(lease) = active_lease {
+                                if lease.stage_path() != finished_stage.as_path() {
+                                    let _ =
+                                        export_settings::remove_stage_with_sidecars(&finished_stage);
+                                }
+                                lease.cleanup_and_release();
+                            } else {
+                                let _ = export_settings::remove_stage_with_sidecars(&finished_stage);
+                                let _ = export_settings::remove_stage_with_sidecars(&worker_staged);
                             }
                         }
                         snapshot
                     }
                 }
                 MapVideoOutcome::Cancelled => {
-                    cleanup_stage(&worker_staged);
-                    let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
-                    if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
-                        inner.active = None;
+                    let (snapshot, active_lease) = {
+                        let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
+                        let lease = if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
+                            inner.active.take().and_then(|mut a| a.lease.take())
+                        } else {
+                            None
+                        };
+                        if inner.snapshot.id == job_id {
+                            inner.snapshot.state = "cancelled".to_owned();
+                            inner.snapshot.phase = "cancelled".to_owned();
+                            inner.snapshot.error = None;
+                            inner.snapshot.partial = None;
+                        }
+                        (inner.snapshot.clone(), lease)
+                    };
+                    if let Some(lease) = active_lease {
+                        lease.cleanup_and_release();
+                    } else {
+                        let _ = export_settings::remove_stage_with_sidecars(&worker_staged);
                     }
-                    if inner.snapshot.id == job_id {
-                        inner.snapshot.state = "cancelled".to_owned();
-                        inner.snapshot.phase = "cancelled".to_owned();
-                        inner.snapshot.error = None;
-                        inner.snapshot.partial = None;
-                    }
-                    inner.snapshot.clone()
+                    snapshot
                 }
                 MapVideoOutcome::Failed {
                     error,
@@ -474,13 +500,17 @@ pub fn start_map_video_export(
                     partial,
                 } => {
                     let mut discard_paths = Vec::new();
+                    let mut discard_lease = None;
                     let snapshot = {
                         let mut inner = jobs_cloned.inner.lock().unwrap_or_else(|e| e.into_inner());
                         let cancelled = cancel.load(Ordering::Acquire)
                             || !inner.active.as_ref().is_some_and(|a| a.id == job_id);
-                        if inner.active.as_ref().is_some_and(|a| a.id == job_id) {
-                            inner.active = None;
-                        }
+                        let active_lease = if inner.active.as_ref().is_some_and(|a| a.id == job_id)
+                        {
+                            inner.active.take().and_then(|mut a| a.lease.take())
+                        } else {
+                            None
+                        };
                         if cancelled {
                             if inner.snapshot.id == job_id {
                                 inner.snapshot.state = "cancelled".to_owned();
@@ -491,55 +521,69 @@ pub fn start_map_video_export(
                             if let Some(p) = partial {
                                 discard_paths.push(p.staged_path);
                             }
-                            discard_paths.push(worker_staged.clone());
+                            discard_lease = active_lease;
                         } else if inner.snapshot.id == job_id {
                             inner.snapshot.state = "failed".to_owned();
                             inner.snapshot.phase = "failed".to_owned();
                             inner.snapshot.campaign_hour =
                                 campaign_hour.or(inner.snapshot.campaign_hour);
                             inner.snapshot.error = Some(error);
-                            let mut kept_stage = None;
-                            inner.snapshot.partial = partial.map(
-                                |PartialVideo {
-                                     staged_path: partial_stage,
-                                     frames,
-                                     through_hour,
-                                     duration_seconds,
-                                     backend,
-                                 }| {
+                            if let Some(PartialVideo {
+                                staged_path: partial_stage,
+                                frames,
+                                through_hour,
+                                duration_seconds,
+                                backend,
+                            }) = partial
+                            {
+                                let partial_lease = match active_lease {
+                                    Some(lease) if lease.stage_path() == partial_stage.as_path() => {
+                                        Some(lease)
+                                    }
+                                    other => {
+                                        discard_lease = other;
+                                        export_settings::StageLease::acquire(partial_stage.clone())
+                                            .ok()
+                                    }
+                                };
+                                if let Some(lease) = partial_lease {
                                     inner.snapshot.backend = Some(backend);
-                                    kept_stage = Some(partial_stage.clone());
                                     inner.pending_partial = Some(PendingPartial {
                                         id: job_id,
                                         staged_path: partial_stage,
                                         destination: destination.clone(),
                                         saving: false,
+                                        lease: Some(lease),
                                     });
-                                    PartialExportInfo {
+                                    inner.snapshot.partial = Some(PartialExportInfo {
                                         through_hour,
                                         frames,
                                         duration_seconds,
-                                    }
-                                },
-                            );
-                            if let Some(kept) = kept_stage {
-                                if kept != worker_staged {
-                                    export_settings::record_pending_stage(&kept);
-                                    discard_paths.push(worker_staged.clone());
+                                    });
+                                } else {
+                                    inner.snapshot.partial = None;
+                                    discard_paths.push(partial_stage);
                                 }
                             } else {
-                                discard_paths.push(worker_staged.clone());
+                                inner.snapshot.partial = None;
+                                discard_lease = active_lease;
+                                if discard_lease.is_none() {
+                                    discard_paths.push(worker_staged.clone());
+                                }
                             }
                         } else {
                             if let Some(p) = partial {
                                 discard_paths.push(p.staged_path);
                             }
-                            discard_paths.push(worker_staged.clone());
+                            discard_lease = active_lease;
                         }
                         inner.snapshot.clone()
                     };
+                    if let Some(lease) = discard_lease {
+                        lease.cleanup_and_release();
+                    }
                     for path in discard_paths {
-                        cleanup_stage(&path);
+                        let _ = export_settings::remove_stage_with_sidecars(&path);
                     }
                     snapshot
                 }
@@ -547,10 +591,15 @@ pub fn start_map_video_export(
             jobs_cloned.emit(&app_for_worker, final_snapshot);
         })
         .map_err(|e| {
-            let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.active = None;
-            drop(inner);
-            cleanup_stage(&staged_path);
+            let lease = {
+                let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
+                inner.active.take().and_then(|mut a| a.lease.take())
+            };
+            if let Some(lease) = lease {
+                lease.cleanup_and_release();
+            } else {
+                let _ = export_settings::remove_stage_with_sidecars(&staged_path);
+            }
             format!("Couldn’t start export worker thread: {e}")
         })?;
     {
@@ -610,13 +659,14 @@ pub fn save_partial_video_export(
         });
     match published {
         Ok(applied) => {
-            cleanup_stage(&staged_path);
             let saved_path = applied.value.to_string_lossy().into_owned();
-            let updated = {
+            let (updated, partial_lease) = {
                 let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
-                if inner.pending_partial.as_ref().is_some_and(|p| p.id == job_id) {
-                    inner.pending_partial = None;
-                }
+                let lease = if inner.pending_partial.as_ref().is_some_and(|p| p.id == job_id) {
+                    inner.pending_partial.take().and_then(|mut p| p.lease.take())
+                } else {
+                    None
+                };
                 if inner.snapshot.id == job_id {
                     inner.snapshot.state = "completed".to_owned();
                     inner.snapshot.phase = "done".to_owned();
@@ -627,8 +677,11 @@ pub fn save_partial_video_export(
                         inner.snapshot.warnings.push(w);
                     }
                 }
-                inner.snapshot.clone()
+                (inner.snapshot.clone(), lease)
             };
+            if let Some(lease) = partial_lease {
+                lease.release_after_publish();
+            }
             jobs.emit(&app, updated);
             Ok(saved_path)
         }
@@ -644,17 +697,17 @@ pub fn save_partial_video_export(
 
 #[tauri::command]
 pub fn dismiss_video_export(app: AppHandle, jobs: State<'_, ExportJobs>) -> ExportJobSnapshot {
-    let (snapshot, discarded_stage) = {
+    let (snapshot, discarded_lease) = {
         let mut inner = jobs.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.active.is_some() || inner.pending_partial.as_ref().is_some_and(|p| p.saving) {
             return inner.snapshot.clone();
         }
-        let discarded = inner.pending_partial.take().map(|p| p.staged_path);
+        let discarded = inner.pending_partial.take().and_then(|mut p| p.lease.take());
         inner.snapshot = ExportJobSnapshot::default();
         (inner.snapshot.clone(), discarded)
     };
-    if let Some(path) = discarded_stage {
-        cleanup_stage(&path);
+    if let Some(lease) = discarded_lease {
+        lease.cleanup_and_release();
     }
     jobs.emit(&app, snapshot.clone());
     snapshot
