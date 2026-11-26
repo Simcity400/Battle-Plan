@@ -435,10 +435,34 @@ class FamilyKitPatterns(unittest.TestCase):
     def test_family_hand_percent_is_refused_in_families_and_projections(self):
         code, out = check({}, {
             "ui/src/families/bars/painter.ts": "const pct = `${Math.round(share * 100)}%`;\n",
-            "ui/src/widgets/foo/fooProjection.ts": "const a = `${val.toFixed(1)}%`;\nconst b = Math.floor(share * 100) + '%';\n",
+            "ui/src/widgets/foo/fooProjection.ts": (
+                "const a = `${val.toFixed(1)}%`;\n"
+                "const b = Math.floor(share * 100) + '%';\n"
+                "const c = `${n}%`;\n"
+                "const d = `${\n  Math.round(share * 100)\n}%`;\n"
+                "const e = `hsl(${h} ${s}% ${l}%) (${pct}%)`;\n"
+                "const f = `${Math.round(n)}\n%`;\n"
+                "const g = ok ? left : `${Math.round(n)}%`;\n"
+                "const label = { left: `${Math.round(n)}%` };\n"
+            ),
+            "ui/src/widgets/foo/FooBad.tsx": (
+                "export const x = (n: number) => <b>{n}%</b>;\n"
+                "export const y = (label: string, n: number) => <span>{label}: {n}%</span>;\n"
+                "export const z = (n: number) => <span>Share = {n}%</span>;\n"
+                "export const w = (label: string, n: number) => <span>{label}&nbsp;{n}%</span>;\n"
+                "export const m = (n: number) => <span>{n}\n%</span>;\n"
+                "export const q = (n: number) => <span>\"{n}%\"</span>;\n"
+                "export const lbl = (n: number) => { const width = `${Math.round(n)}%`; return <span>{width}</span>; };\n"
+                "export const c = (n: number) => <span /* number */>{n}%</span>;\n"
+                "export const st = (n: number) => { const style = { label: `${n}%` }; return <span>{style.label}</span>; };\n"
+                "export const h = (n: number) => { function show() { return <span>{width}</span>; } const width = `${n}%`; return <div style={{ width }}>{show()}</div>; };\n"
+                "export const r = (ready: boolean, tag: string, n: number) => `${(() => { if (ready) /}/.test(tag); return n; })()}%`;\n"
+            ),
         })
         self.assertEqual(code, 1)
         self.assertIn("family-hand-percent", out)
+        self.assertIn("ui/src/widgets/foo/fooProjection.ts: family-hand-percent: 0 at the base, 8 now", out)
+        self.assertIn("ui/src/widgets/foo/FooBad.tsx: family-hand-percent: 0 at the base, 11 now; new at line 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12", out)
         self.assertIn("formatShare", out)
         self.assertIn("formatProgress", out)
         self.assertIn("formatRecordedPercent", out)
@@ -446,6 +470,40 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/valueFormat.ts": "const pct = `${Math.round(share * 100)}%`;\n",
             "ui/src/families/heat/matrixModel.ts": "if (Math.floor(at / width) === at % width) continue;\n",
             "ui/src/families/bars/barsFamily.test.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/widgets/foo/FooWidget.tsx": (
+                "const width = (value: bigint) => `${Number(value * 100_000n / axis) / 1000}%`;\n"
+                "const color = `hsl(${h} ${s}% ${l}%)`;\n"
+                "const sample = \"n + '%'\";\n"
+                "const box = { width: `${w}%` } satisfies React.CSSProperties;\n"
+                "el.style.width = (active ? `${w}%` : 'auto');\n"
+                "el.style.setProperty('--progress', `${w}%`);\n"
+                "export const x = (w: number, active: boolean) => <List<Item> style={{ width: width(1n), left: `${w}%`, height: (w * 100) + '%' }}><span style={active ? { width: `${w}%` } : undefined}>{color}{sample}{box.width}</span></List>;\n"
+                "export const g = () => <List<\n  /* n.toFixed(1) */\n  Item\n> />;\n"
+            ),
+        })[0], 0)
+
+    def test_regex_literal_brace_inside_template_substitution_does_not_hide_formatter(self):
+        code, out = check({}, {
+            "ui/src/widgets/foo/regexTemplate.ts": (
+                "const a = `${/}/.test(tag) ? n.toFixed(1) : n}`;\n"
+                "const b = `${/[}]/.test(tag) ? n.toLocaleString('en-US') : n}`;\n"
+                "const c = a! / n.toFixed(1).length / b;\n"
+                "const d = counts.default / n.toFixed(1).length / scale;\n"
+            ),
+            "ui/src/widgets/foo/JsxSlash.tsx": (
+                "export const x = (n: number) => <b> / {n.toFixed(1)}</b>;\n"
+                "export const y = (label: string, n: number) => <span>{label} / {n.toFixed(1)} / day</span>;\n"
+                "export const z = (tag: string, n: number) => `${/>}/.test(tag) ? n.toFixed(1) : n}`;\n"
+                "export const w = (tag: string, n: number) => `${/}</i.test(tag) ? n.toFixed(1) : n}`;\n"
+                "export const d = (n: number) => <><Option default />{n.toFixed(1)}<br /></>;\n"
+                "export const g = (n: number) => <List<\n  Item\n>> / {n.toFixed(1)} / day</List>;\n"
+            ),
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("ui/src/widgets/foo/regexTemplate.ts: family-locale-string: 0 at the base, 4 now; new at line 1, 2, 3, 4", out)
+        self.assertIn("ui/src/widgets/foo/JsxSlash.tsx: family-locale-string: 0 at the base, 6 now; new at line 1, 2, 3, 4, 5, 8", out)
+        self.assertEqual(check({}, {
+            "ui/src/widgets/foo/divTemplate.ts": "const s = `${a / b} plain .toFixed(1) ${c / d}`;\n",
         })[0], 0)
 
     def test_family_at_least_wording_is_refused_in_families_and_widgets(self):

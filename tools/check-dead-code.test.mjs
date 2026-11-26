@@ -532,3 +532,309 @@ test('R2-D7: invalid explicit --against ref fails instead of silently skipping b
     assert.throws(() => parseAgainstArg(['--against=']), /--against requires a commit or ref/);
   });
 });
+
+test('R3-S18: uncalled nested functions inside a called function do not keep their imports or namespace reads live', async () => {
+  await withRepo(baseFiles({
+    'ui/src/nestedDead.ts': 'export const deadFromNested = () => 1;',
+    'ui/src/nestedArrowDead.ts': 'export const deadFromArrow = () => 2;',
+    'ui/src/nestedParamDead.ts': 'export const deadFromParam = () => 21;',
+    'ui/src/nestedComputedKeyLive.ts': 'export const getKey = () => "k";',
+    'ui/src/nestedComputedValDead.ts': 'export const deadComputedCb = () => 22;',
+    'ui/src/ctorParamPropLive.ts': 'export const tick = () => 23;',
+    'ui/src/deferredParamTypeNs.ts': 'export const draw = () => 24; export const spare = () => 25;',
+    'ui/src/nestedLive.ts': 'export const liveFromNested = () => 3;',
+    'ui/src/nestedKeepDeadChild.ts': 'export const deadChildHelper = () => 4;',
+    'ui/src/nestedNs.ts': 'export const usedNs = () => 5; export const deadNs = () => 6;',
+    'ui/src/typeOnlyNs.ts': 'export const draw = () => 7; export const spare = () => 8;',
+    'ui/src/typeOnlyDyn.ts': 'export const sideEffectValue = 9;',
+    'ui/src/typeThenRuntimeHelper.ts': "import './typeThenRuntimeSideEffect.ts'; export const compute = () => 10;",
+    'ui/src/typeThenRuntimeSideEffect.ts': 'console.log("side-effect");',
+    'ui/src/shorthandTypeOnly.ts': 'export const draw = () => 11;',
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { deadFromNested } from './nestedDead.ts';
+      import { deadFromArrow } from './nestedArrowDead.ts';
+      import { deadFromParam } from './nestedParamDead.ts';
+      import { getKey } from './nestedComputedKeyLive.ts';
+      import { deadComputedCb } from './nestedComputedValDead.ts';
+      import { tick } from './ctorParamPropLive.ts';
+      import { liveFromNested } from './nestedLive.ts';
+      import { deadChildHelper } from './nestedKeepDeadChild.ts';
+      import { compute } from './typeThenRuntimeHelper.ts';
+      import { draw as shorthandDraw } from './shorthandTypeOnly.ts';
+      import * as nestedNs from './nestedNs.ts';
+      import * as typeOnlyNs from './typeOnlyNs.ts';
+      import * as deferredParamTypeNs from './deferredParamTypeNs.ts';
+      class Hooks {
+        constructor(public readonly onTick = () => tick()) {}
+      }
+      function start(
+        onTick = () => deadFromParam(),
+        _typedCb: (arg: (typeof deferredParamTypeNs)['draw']) => void = () => {},
+        { [getKey()]: _computedCb = () => deadComputedCb() }: Record<string, () => number> = {},
+      ) {
+        const result = usedHoisted();
+        function unusedInner() {
+          return deadFromNested() + nestedNs.deadNs();
+        }
+        const unusedArrow = () => deadFromArrow();
+        function usedHoisted() {
+          return liveFromNested() + nestedNs.usedNs();
+        }
+        function keep() {
+          function deadChild() {
+            return deadChildHelper();
+          }
+          return 1;
+        }
+        type KeepType = typeof keep;
+        const keepRef: KeepType = keep;
+        function runBoth() {
+          function inner() {
+            return compute();
+          }
+          return inner();
+        }
+        type RunBothReturn = ReturnType<typeof runBoth>;
+        const runBothVal: RunBothReturn = runBoth();
+        function describeDirectShorthand() {
+          return { shorthandDraw };
+        }
+        type DescC = ReturnType<typeof describeDirectShorthand>;
+        function loadTypeOnly() {
+          return typeOnlyNs.draw();
+        }
+        function dynTypeOnly() {
+          return import('./typeOnlyDyn.ts');
+        }
+        type LoadedDraw = ReturnType<typeof loadTypeOnly>;
+        type LoadedDyn = ReturnType<typeof dynTypeOnly>;
+        const typed: [LoadedDraw | null, LoadedDyn | null, DescC | null] = [null, null, null];
+        return result + keepRef() + runBothVal + typed.length + new Hooks().onTick();
+      }
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, start());
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, [
+      'ui/src/nestedArrowDead.ts',
+      'ui/src/nestedComputedValDead.ts',
+      'ui/src/nestedDead.ts',
+      'ui/src/nestedKeepDeadChild.ts',
+      'ui/src/nestedParamDead.ts',
+    ]);
+    assert.equal(result.ui.runtimeLive.has('ui/src/ctorParamPropLive.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/nestedComputedKeyLive.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/typeThenRuntimeSideEffect.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/typeOnlyDyn.ts'), false);
+    assert.deepEqual(result.exports.unusedExports.map(e => e.key), [
+      'ui/src/deferredParamTypeNs.ts:spare',
+      'ui/src/nestedNs.ts:deadNs',
+      'ui/src/typeOnlyDyn.ts:sideEffectValue',
+      'ui/src/typeOnlyNs.ts:spare',
+    ]);
+  });
+});
+
+test('R3-S19: namespace passed to a local reader credits only consumed members, handles edge calls safely, and flags unused local export aliases', async () => {
+  await withRepo(baseFiles({
+    'ui/src/nsTarget.ts': 'export const draw = () => 1; export const spare = () => 2;',
+    'ui/src/nsDestructured.ts': 'export const draw = () => 3; export const spare = () => 4;',
+    'ui/src/nsEscaped.ts': 'export const a = () => 5; export const b = () => 6;',
+    'ui/src/nsMethod.ts': 'export const draw = () => 7; export const spare = () => 8;',
+    'ui/src/nsDefaultInit.ts': 'export const draw = () => 9; export const spare = () => 10;',
+    'ui/src/nsThisParam.ts': 'export const draw = () => 11; export const spare = () => 12;',
+    'ui/src/nsArgsObj.ts': 'export const draw = () => 13; export const spare = () => 14;',
+    'ui/src/nsSameOffset.ts': 'export const draw = () => 15; export const spare = () => 16;',
+    'ui/src/nsParenEscape.ts': 'export const a = () => 17; export const b = () => 18;',
+    'ui/src/nsDocComment.ts': 'export const draw = () => 19; export const spare = () => 20;',
+    'ui/src/nsPatternDefault.ts': 'export const draw = () => 21; export const spare = () => 22;',
+    'ui/src/nsArgsShorthand.ts': 'export const draw = () => 23; export const spare = () => 24;',
+    'ui/src/nsInnerOwnArgs.ts': 'export const draw = () => 25; export const spare = () => 26;',
+    'ui/src/nsComputedKey.ts': 'export const key = "k"; export const spare = () => 27;',
+    'ui/src/nsNestedOuterArgs.ts': 'export const draw = () => 28; export const spare = () => 29;',
+    'ui/src/nsParamDestructDefault.ts': 'export const draw = () => 30; export const spare = () => 31;',
+    'ui/src/nsAngleCast.ts': 'export const draw = () => 32; export const spare = () => 33;',
+    'ui/src/nsDirectCast.ts': 'export const draw = () => 34; export const spare = () => 35;',
+    'ui/src/nsUnusedDefaultCb.ts': 'export const draw = () => 36; export const spare = () => 37;',
+    'ui/src/nsLocalAliasReader.ts': 'export const draw = () => 38; export const spare = () => 39;',
+    'ui/src/nsInlineArrow.ts': 'export const draw = () => 40; export const spare = () => 41;',
+    'ui/src/nsTypedDestruct.ts': 'export const draw = () => 42; export const spare = () => 43;',
+    'ui/src/angleReader.ts': `
+      import * as nsDirectCast from './nsDirectCast.ts';
+      export function readAngle(m: unknown) { return (<{ draw(): number }>m).draw(); }
+      export function callDirectCast() { return (<{ draw(): number }>nsDirectCast).draw(); }
+    `,
+    'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
+    'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
+    'ui/src/aliasedMod.ts': `
+      function draw() { return 10; }
+      export const run = () => draw();
+      export { draw as spare };
+    `,
+    'ui/src/aliasPair.ts': `
+      function draw() { return 11; }
+      export { draw, draw as spare };
+    `,
+    'ui/src/aliasBarrelSideEffect.ts': 'console.log("barrel-side-effect");',
+    'ui/src/aliasBarrelMidSideEffect.ts': 'console.log("barrel-mid-side-effect");',
+    'ui/src/aliasBarrelSub.ts': `
+      import './aliasBarrelSideEffect.ts';
+      function draw() { return 12; }
+      export { draw, draw as spare };
+    `,
+    'ui/src/aliasBarrelMid.ts': `
+      import './aliasBarrelMidSideEffect.ts';
+      export * from './aliasBarrelSub.ts';
+    `,
+    'ui/src/aliasBarrel.ts': `export * from './aliasBarrelMid.ts';`,
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import * as nsTarget from './nsTarget.ts';
+      import * as nsDestructured from './nsDestructured.ts';
+      import * as nsEscaped from './nsEscaped.ts';
+      import * as nsMethod from './nsMethod.ts';
+      import * as nsDefaultInit from './nsDefaultInit.ts';
+      import * as nsThisParam from './nsThisParam.ts';
+      import * as nsArgsObj from './nsArgsObj.ts';
+      import * as nsSameOffset from './nsSameOffset.ts';
+      import * as nsParenEscape from './nsParenEscape.ts';
+      import * as nsDocComment from './nsDocComment.ts';
+      import * as nsPatternDefault from './nsPatternDefault.ts';
+      import * as nsArgsShorthand from './nsArgsShorthand.ts';
+      import * as nsInnerOwnArgs from './nsInnerOwnArgs.ts';
+      import * as nsComputedKey from './nsComputedKey.ts';
+      import * as nsNestedOuterArgs from './nsNestedOuterArgs.ts';
+      import * as nsParamDestructDefault from './nsParamDestructDefault.ts';
+      import * as nsAngleCast from './nsAngleCast.ts';
+      import * as nsUnusedDefaultCb from './nsUnusedDefaultCb.ts';
+      import * as nsLocalAliasReader from './nsLocalAliasReader.ts';
+      import * as nsInlineArrow from './nsInlineArrow.ts';
+      import * as nsTypedDestruct from './nsTypedDestruct.ts';
+      import * as aliasBarrelNs from './aliasBarrel.ts';
+      import { readAngle, callDirectCast } from './angleReader.ts';
+      import { read as readA } from './helperA.ts';
+      import { read as readB } from './helperB.ts';
+      import { run } from './aliasedMod.ts';
+      import { spare as importedAliasOnly } from './aliasPair.ts';
+      function callDraw(m: typeof nsTarget) {
+        function unusedNested() {
+          return m.spare();
+        }
+        return m.draw();
+      }
+      function forwardDraw(m: typeof nsTarget) {
+        return callDraw(m);
+      }
+      function callDestructured({ draw }: typeof nsDestructured) {
+        return draw();
+      }
+      function escapeAll(m: typeof nsEscaped) {
+        return Object.keys(m).length;
+      }
+      const api = { read(m: typeof nsMethod) { return m.spare(); } };
+      api.read = m => m.draw();
+      function readDefault(m: { draw(): number }, value = m.draw()) {
+        return value;
+      }
+      function readPatternDefault(m: { draw(): number }, [v = m.draw()]: number[] = []) {
+        return v;
+      }
+      function readParamDestructDefault(m: { draw(): number }, { draw } = m) {
+        return draw();
+      }
+      function readUnusedDefaultCb(m: { draw(): number; spare(): number }, _cb = () => m.spare()) {
+        return m.draw();
+      }
+      const readerAlias = readA;
+      function readComputedKey(m: { key: string }, { [m.key]: value }: Record<string, number> = {}) {
+        return value ?? 0;
+      }
+      function readWithThis(this: unknown, m: { draw(): number }) {
+        return m.draw();
+      }
+      function readArguments(_m: { draw(): number }) {
+        return (arguments[0] as { draw(): number }).draw();
+      }
+      function readArgsShorthand(_m: { draw(): number }) {
+        const saved = { arguments };
+        return (saved.arguments[0] as { draw(): number }).draw();
+      }
+      function readNestedOuterArgs(_m: { draw(): number }) {
+        const first = () => arguments[0] as { draw(): number };
+        function draw() {
+          return first().draw();
+        }
+        return draw();
+      }
+      function readWithInnerOwnArgs(m: { draw(): number }) {
+        function inner(_x: number) {
+          return arguments[0] as number;
+        }
+        return inner(m.draw());
+      }
+      function forwardBoth(m: typeof nsSameOffset) {
+        return readA(m) + readB(m);
+      }
+      /** Reads draw. */
+      const readDoc = (m: typeof nsDocComment) => m.draw();
+      const { draw: typedDestructDraw }: { draw(): number } = nsTypedDestruct;
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(
+        loadLazy, worker, used, ref, REQUEST_PATHS,
+        forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
+        api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
+        readParamDestructDefault(nsParamDestructDefault), readAngle(nsAngleCast), callDirectCast(),
+        readUnusedDefaultCb(nsUnusedDefaultCb), readerAlias(nsLocalAliasReader),
+        ((m: { draw(): number }) => m.draw())(nsInlineArrow), typedDestructDraw(),
+        readComputedKey(nsComputedKey), readWithThis(nsThisParam), readArguments(nsArgsObj),
+        readArgsShorthand(nsArgsShorthand), readNestedOuterArgs(nsNestedOuterArgs),
+        readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
+        (nsParenEscape), readDoc(nsDocComment), run(), importedAliasOnly(), aliasBarrelNs.spare(),
+      );
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, []);
+    assert.equal(result.ui.runtimeLive.has('ui/src/aliasBarrelSideEffect.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/aliasBarrelMidSideEffect.ts'), true);
+    assert.deepEqual(
+      result.exports.unusedExports.map(e => e.key),
+      [
+        'ui/src/aliasBarrelSub.ts:draw',
+        'ui/src/aliasPair.ts:draw',
+        'ui/src/aliasedMod.ts:spare',
+        'ui/src/nsAngleCast.ts:spare',
+        'ui/src/nsComputedKey.ts:spare',
+        'ui/src/nsDefaultInit.ts:spare',
+        'ui/src/nsDestructured.ts:spare',
+        'ui/src/nsDirectCast.ts:spare',
+        'ui/src/nsDocComment.ts:spare',
+        'ui/src/nsInlineArrow.ts:spare',
+        'ui/src/nsInnerOwnArgs.ts:spare',
+        'ui/src/nsLocalAliasReader.ts:spare',
+        'ui/src/nsParamDestructDefault.ts:spare',
+        'ui/src/nsPatternDefault.ts:spare',
+        'ui/src/nsTarget.ts:spare',
+        'ui/src/nsThisParam.ts:spare',
+        'ui/src/nsTypedDestruct.ts:spare',
+        'ui/src/nsUnusedDefaultCb.ts:spare',
+      ],
+    );
+  });
+});
