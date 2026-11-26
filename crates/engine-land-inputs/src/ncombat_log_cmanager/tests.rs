@@ -652,7 +652,7 @@ fn replay_slice(owner: u32) -> u32 {
 }
 
 #[test]
-fn a_window_read_keeps_each_arrays_last_two_months() {
+fn a_window_reuses_sealed_loss_rows_and_reads_a_short_recovery_array() {
     let three: Vec<Entry> = [OCTOBER - 24 * 31, OCTOBER, NOVEMBER]
         .into_iter()
         .map(|date| Entry {
@@ -661,41 +661,49 @@ fn a_window_read_keeps_each_arrays_last_two_months() {
             pool: &[(1326, 1)],
         })
         .collect();
-    let (f, _) = Fixture::new(&[(9, [&three[..], NONE, NONE, NONE, &three[..1]])]);
-    let mut rows = vec![Row::default(); 8];
-    let outcome = walk(
-        &f,
-        BASE,
-        GAME,
-        |_| Some(Months::Window),
-        &mut rows,
-        &mut VariantMemo::default(),
+    let (mut f, manager) = Fixture::new(&[(9, [&three[..], NONE, NONE, NONE, &three[..1]])]);
+    let mut rows = Vec::new();
+    let mut sealed = SealedMonths::default();
+    let mut memo = VariantMemo::default();
+    let mut sample = |memory: &Fixture, whole: bool, rows: &mut Vec<Row>| {
+        walk_prepared(
+            memory,
+            BASE,
+            GAME,
+            &mut sealed,
+            |sealed, _| Ok(Some(Months::Retaining { whole, sealed })),
+            rows,
+            &mut memo,
+        )
+    };
+    assert_eq!(sample(&f, true, &mut rows), Outcome::Rows { len: 4 });
+    let (group, oldest) = first_group(&f, manager);
+    let pool_items =
+        |f: &Fixture, entry| read::<u64>(f, entry + loss::POOL + pool::ITEMS).unwrap() as usize;
+    f.forget(pool_items(&f, oldest), equipment_entry::STRIDE);
+    let recoveries = read::<u64>(&f, group + logs::RECOVERED).unwrap() as usize;
+    let recovery = read::<u64>(&f, recoveries).unwrap() as usize;
+    f.put(
+        pool_items(&f, recovery) + equipment_entry::AMOUNT,
+        &7_i64.to_le_bytes(),
     );
-    assert_eq!(outcome, Outcome::Rows { len: 3 });
+    assert_eq!(sample(&f, false, &mut rows), Outcome::Rows { len: 4 });
     assert_eq!(
-        rows[..3]
+        rows[..4]
             .iter()
-            .map(|row| (row.kind, row.date))
+            .map(|row| (row.kind, row.date, row.amount_raw))
             .collect::<Vec<_>>(),
         [
-            (0, OCTOBER),
-            (0, NOVEMBER),
-            (RECOVERED_KIND, OCTOBER - 24 * 31)
+            (0, three[0].date, 1),
+            (0, OCTOBER, 1),
+            (0, NOVEMBER, 1),
+            (RECOVERED_KIND, three[0].date, 7)
         ]
     );
-    let outcome = walk(
-        &f,
-        BASE,
-        GAME,
-        |_| Some(Months::All),
-        &mut rows,
-        &mut VariantMemo::default(),
-    );
-    assert_eq!(outcome, Outcome::Rows { len: 4 });
 }
 
 #[test]
-fn each_country_is_read_with_the_months_its_selector_chooses() {
+fn a_newly_selected_country_reads_every_month_on_a_window_request() {
     let three: Vec<Entry> = [OCTOBER - 24 * 31, OCTOBER, NOVEMBER]
         .into_iter()
         .map(|date| Entry {
@@ -709,39 +717,33 @@ fn each_country_is_read_with_the_months_its_selector_chooses() {
     f.pointer(MANAGERS + 16, other);
     let mut rows = vec![Row::default(); 8];
     let mut asked = Vec::new();
-    let outcome = walk(
+    let outcome = walk_prepared(
         &f,
         BASE,
         GAME,
-        |country| {
+        &mut SealedMonths::default(),
+        |sealed, country| {
             asked.push(country);
-            Some(if country == 7 {
-                Months::All
-            } else {
-                Months::Window
-            })
+            Ok((country == 8).then_some(Months::Retaining {
+                whole: false,
+                sealed,
+            }))
         },
         &mut rows,
         &mut VariantMemo::default(),
     );
-    assert_eq!(outcome, Outcome::Rows { len: 5 });
+    assert_eq!(outcome, Outcome::Rows { len: 3 });
     assert_eq!(
         asked,
         [7, 8],
         "once per manager holding a log, in slot order"
     );
     assert_eq!(
-        rows[..5]
+        rows[..3]
             .iter()
             .map(|row| (row.country, row.date))
             .collect::<Vec<_>>(),
-        [
-            (7, OCTOBER - 24 * 31),
-            (7, OCTOBER),
-            (7, NOVEMBER),
-            (8, OCTOBER),
-            (8, NOVEMBER)
-        ]
+        [(8, three[0].date), (8, OCTOBER), (8, NOVEMBER)]
     );
 }
 
