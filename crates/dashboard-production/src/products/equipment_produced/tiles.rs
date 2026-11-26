@@ -596,6 +596,32 @@ mod tests {
         assert!(drawn.iter().any(|run| run.0 <= FIRST + 149 && FIRST + 149 <= run.1), "and the hour before is drawn: {drawn:?}");
         let newcomer = ranged_top(&src, LAST, FIRST + 50);
         assert_eq!(newcomer.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"], "a country with no deliveries recorded at the start has delivered nothing by then: {newcomer:?}");
+        let shared = two_producers("produced-tiles-shared", FIRST, LAST);
+        let mut shared_query = dashboard_base::queries::query(&shared, 1).unwrap();
+        let mut tags = shared_query.holders.tags.clone();
+        tags.insert("PRU".to_owned(), vec![dashboard_query::identity::HolderRun { first: FIRST, last: LAST, holder: dashboard_query::identity::Holder::Found { slot: 7, id: 11 }, starts_segment: true }]);
+        shared_query.holders = std::sync::Arc::new(dashboard_query::identity::Holders::new(tags, shared_query.holders.unknown.clone()));
+        let shared_top = race_reply(
+            &shared,
+            &shared_query,
+            &EquipmentProducedRaceParams {
+                branch_id: "1".into(),
+                hour: LAST,
+                countries: Vec::new(),
+                group: None,
+                top: Some(5),
+                count: ProducedCount::Units,
+                measure: ProducedMeasure::Total,
+                types: Vec::new(),
+                refits: false,
+                from_hour: None,
+            },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        let ger = shared_top.rows.iter().find(|row| row.tag == "GER").unwrap_or_else(|| panic!("GER is ranked: {shared_top:?}"));
+        assert_eq!(ger.country, Country::Tag("GER".into()), "a ranked country sharing its slot with another is named by what was ranked, never by the slot: {shared_top:?}");
         let unsure = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-unsure", FIRST, LAST, FIRST, false, None, None);
         let unsure_query = dashboard_base::queries::query(&unsure, 1).unwrap();
         let unsure_top = race_reply(

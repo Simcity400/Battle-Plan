@@ -385,6 +385,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_contender_without_an_opening_row_refuses_a_window_it_delivered_in_and_is_skipped_where_it_delivered_nothing() {
+        use crate::identity::{HolderRun, Holders};
+        use crate::timeline::{Join, Stretch, Timeline};
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+        let (first, last, read, opening) = (90, 130, 124, 100);
+        for (units, expected) in [(5_i64, Err(TOTALS_WINDOW_UNRECORDED.to_owned())), (0, Ok(Vec::new()))] {
+            let replay = crate::fixture::bare(first, last, |frame, hour| {
+                let clock = ProducedValueRow { country: ProducedValueRow::CLOCK, archetype: 0, since: Some(first), as_of: Some(hour), ..Default::default() };
+                let produced = ProducedValueRow { country: 7, archetype: ProducedValueRow::WHOLE, units: Recorded::Value(units), ..Default::default() };
+                let rows = if hour == opening { vec![clock] } else { vec![produced, clock] };
+                frame.table(TableId::ProducedValues, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+            })
+            .unwrap();
+            let holders = Holders::new([("GER".to_owned(), vec![HolderRun { first, last, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true }])].into(), Vec::new());
+            let timeline = Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() };
+            let query = crate::Query { replay: &replay, timeline: std::sync::Arc::new(timeline), holders: std::sync::Arc::new(holders) };
+            let series = dashboard_declare::series("produced-values").unwrap();
+            let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+            let whole = |_: u32| vec![u128::from(ProducedValueRow::WHOLE)];
+            let from_opening = |_: i32| Some(opening);
+            assert_eq!(
+                line.totals_ranked(read, 5, &whole, Some(&from_opening), &|value| value > 0).unwrap(),
+                expected,
+                "an opening without the country's row proves no amount for {units} delivered units"
+            );
+        }
+    }
+
+    #[test]
     fn a_daily_ranking_whose_comparison_hour_has_unknown_holders_is_refused_though_production_was_read_after_it() {
         use crate::identity::{HolderRun, Holders};
         use crate::timeline::{Join, Stretch, Timeline};

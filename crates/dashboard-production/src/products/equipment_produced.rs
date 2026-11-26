@@ -836,7 +836,7 @@ fn race_reply(
                 first_hour = first_hour.max(holder_run.first);
                 last_hour = last_hour.min(holder_run.last);
                 match holder_run.holder {
-                    Holder::Found { slot, .. } => Country::Slot(slot),
+                    Holder::Found { slot, .. } if !is_population => Country::Slot(slot),
                     _ => asked,
                 }
             }
