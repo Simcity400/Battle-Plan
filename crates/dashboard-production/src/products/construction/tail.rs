@@ -698,14 +698,13 @@ fn scan(source: &Source, query: &Query<'_>, content: &Content, cancelled: &Atomi
         chips,
         types,
         repair_icon: named.repair_icon,
-        factory_cap: factory_cap(
-            content
-                .catalogue()
-                .map_err(str::to_owned)
-                .and_then(|catalogue| content_reader_defines::defines::read(&catalogue.content.layers).map_err(|why| why.to_string()))
-                .as_ref()
-                .map_err(Clone::clone),
-        ),
+        factory_cap: match content.catalogue() {
+            Ok(catalogue) => match catalogue.defines() {
+                Ok(defines) => factory_cap(Ok(defines)),
+                Err(_) => factory_cap(content_reader_defines::defines::read(&catalogue.content.layers).as_ref().map_err(|why| why.to_string())),
+            },
+            Err(why) => factory_cap(Err(why.to_owned())),
+        },
         unavailable: (!recorded).then(|| "Construction was not recorded.".to_owned()),
         warnings,
     })
