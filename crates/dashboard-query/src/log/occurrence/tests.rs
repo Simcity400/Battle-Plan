@@ -112,6 +112,16 @@ fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
     assert_eq!(ids(&index, &answer), [3, 2], "Italy joins at 200: its row of 100 is not the group's; the war join is kept by its ally alone");
     assert_eq!(answer.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.reason.as_str(), gap.before.as_str())).collect::<Vec<_>>(), [(300, 325, MEMBERSHIP_UNKNOWN, "0")], "Italy's row in the unknown stretch is the gap's, not a member's");
     assert_eq!(answer.unattributed, 1, "a row naming no identified country cannot be placed by a selection, and is counted");
+    let running = [RUNNING];
+    let states = Index::new(
+        vec![Occurrence { roles: Box::new([role(None, 100)]), states: Box::new([(100, RUNNING), (150, DONE)]), ..occurrence(1, 100, 100) }],
+        Vec::new(),
+        &[RUNNING],
+    )
+    .unwrap();
+    let asked = |hour: i32| states.ask(&holders(), &Ask { selection: Some(&selection), states: Some(&running), ..ask(hour) }).unwrap();
+    assert_eq!((asked(120).unattributed, asked(120).next_change), (1, Some(150)), "a running unattributed row passes a running filter until it ends");
+    assert_eq!(asked(160).unattributed, 0, "after it ends the running filter leaves it out, as it would a placed row");
     let everyone = index.ask(&holders(), &ask(400)).unwrap();
     assert_eq!(everyone.total, 5, "with no selection every row is kept, unidentified roles too");
 }
