@@ -163,8 +163,9 @@ test('a selected slot untagged raid is listed instead of dropped on the client',
   assert.equal(projected.key, 'r-untagged');
   assert.deepEqual(projected.cells.country?.flags?.map(flag => flag.tag), ['?', 'ENG']);
   assert.deepEqual(projected.cells.country?.value, {
-    kind: 'known',
+    kind: 'partial',
     value: "The raider's country holds no tag at the raid's hour · United Kingdom",
+    reason: "The raider's country holds no tag at the raid's hour",
   });
 });
 

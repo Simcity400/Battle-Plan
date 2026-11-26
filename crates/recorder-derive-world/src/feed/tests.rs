@@ -370,11 +370,12 @@ fn a_decision_charge_is_proven_only_for_one_execution_of_a_country_whose_power_w
         for table in [TableId::CountryPowerChanges, TableId::PoliticsCaptureCoverage] {
             store.status(table.index(), Status::Complete, true, Some(1), true).unwrap();
         }
-        for row in [charge(1, 1, PowerCurrency::Political, -50_000), charge(1, 2, PowerCurrency::Command, -5_000), charge(2, 3, PowerCurrency::Political, -1)] {
+        for row in [charge(1, 1, PowerCurrency::Political, -50_000), charge(1, 2, PowerCurrency::Command, -5_000), charge(2, 3, PowerCurrency::Political, -1), charge(2, 4, PowerCurrency::Command, -2)] {
             testing::put(store, TableId::CountryPowerChanges, &row, TEXTS).unwrap();
         }
         let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
         testing::put(store, TableId::PoliticsCaptureCoverage, &PoliticsCaptureCoverageRow { country: 1, since_hour: 0, through_hour: 10, streams, ..PoliticsCaptureCoverageRow::default() }, TEXTS).unwrap();
+        testing::put(store, TableId::PoliticsCaptureCoverage, &PoliticsCaptureCoverageRow { country: 2, since_hour: 0, through_hour: 10, streams: PoliticsCaptureCoverageRow::PP, ..PoliticsCaptureCoverageRow::default() }, TEXTS).unwrap();
         let events = vec![
             decision(occurrence(9, 1, 1, Source::DecisionSelected, ger, country(0))),
             decision(occurrence(9, 2, 1, Source::DecisionSelected, pol, country(0))),
@@ -387,11 +388,25 @@ fn a_decision_charge_is_proven_only_for_one_execution_of_a_country_whose_power_w
         powers,
         [
             (1, Recorded::Value(Some(-50_000)), Recorded::Value(Some(-5_000))),
-            (2, Recorded::NotRecorded, Recorded::NotRecorded),
+            (2, Recorded::Value(Some(-1)), Recorded::NotRecorded),
             (3, Recorded::Value(None), Recorded::Value(None)),
         ],
-        "GER's power was captured over the hour; POL's was not; a war declaration is charged nothing"
+        "GER's power was captured over the hour; POL's political power was and its command power was not, so each currency says so; a war declaration is charged nothing"
     );
+    run(&mut store, &mut writers, 2, |store| {
+        for table in [TableId::CountryPowerChanges, TableId::PoliticsCaptureCoverage] {
+            store.status(table.index(), Status::Complete, true, Some(2), true).unwrap();
+        }
+        for row in [CountryPowerChangeRow { hour: 2, ..charge(1, 5, PowerCurrency::Political, -10) }, CountryPowerChangeRow { hour: 2, ..charge(1, 6, PowerCurrency::Political, -10) }] {
+            testing::put(store, TableId::CountryPowerChanges, &row, TEXTS).unwrap();
+        }
+        let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
+        testing::put(store, TableId::PoliticsCaptureCoverage, &PoliticsCaptureCoverageRow { country: 1, since_hour: 0, through_hour: 10, streams, ..PoliticsCaptureCoverageRow::default() }, TEXTS).unwrap();
+        let selected = decision(occurrence(9, 4, 2, Source::DecisionSelected, ger, country(0)));
+        testing::put(store, TableId::EventFeedHistory, &pack(9, 2, EventFeedCoverage::Partial, vec![selected], b"dec_a", Vec::new()), TEXTS).unwrap();
+    });
+    let partial: Vec<_> = feed(&store).into_iter().filter(|row| row.generation == 9).map(|row| (row.sequence, row.political_power, row.command_power)).collect();
+    assert_eq!(partial, [(4, Recorded::NotRecorded, Recorded::NotRecorded)], "a read that may have lost a second execution proves no charge for the one it kept");
 }
 
 #[test]

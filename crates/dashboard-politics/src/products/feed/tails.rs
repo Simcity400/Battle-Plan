@@ -397,13 +397,19 @@ fn next_change(prepared: &Prepared, answer: &Answer, windows: bool, hour: i32) -
     [answer.next_change, read, reason].into_iter().flatten().min()
 }
 
-fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], hour: i32) -> Option<i32> {
+fn feed_next_change(feed: &Feed, categories: &[EventFeedCategory], (from, to): (i32, i32), hour: i32) -> Option<i32> {
     let warning = feed.warnings.iter().map(|(at, _)| *at).filter(|at| *at > hour).min();
-    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour)).copied()).flatten();
-    let projects = categories.contains(&EventFeedCategory::Milestones).then(|| {
-        feed.projects_unrecorded.iter().filter_map(|&(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) }).min()
-    }).flatten();
-    [warning, left_out, projects].into_iter().flatten().min()
+    let left_out = categories.contains(&EventFeedCategory::WarsPeace).then(|| feed.unattributed.get(feed.unattributed.partition_point(|&at| at <= hour || at < from)).copied().filter(|&at| at <= to)).flatten();
+    let unrecorded = feed
+        .unrecorded
+        .iter()
+        .filter(|family| categories.contains(&family.category))
+        .flat_map(|family| &family.spans)
+        .filter(|&&(first, last)| first <= to && last >= from)
+        .map(|&(first, last)| (first.max(from), last.min(to)))
+        .filter_map(|(first, last)| if first <= hour && hour < last { Some(hour + 1) } else { (first > hour).then_some(first) })
+        .min();
+    [warning, left_out, unrecorded].into_iter().flatten().min()
 }
 
 fn notices_for(prepared: &Prepared, answer: &Answer, windows: bool, from: i32, hour: i32, notices: &mut Notices) {
@@ -462,7 +468,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
                 Item::Family(row) => (row.id.clone(), Some(row.as_ref().clone()), None),
                 Item::Log { .. } => {
                     let row = presented[head_at].take();
-                    let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row)));
+                    let choice = choice.and_then(|at| presented[at].take().map(|row| edge(events[at], row, prepared.scanned.partial_read(events[at].read_hour))));
                     (events[head_at].id(), row, choice)
                 }
             };
@@ -502,7 +508,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         }
     }
     if params.categories.contains(&EventFeedCategory::WarsPeace) {
-        let left_out = feed.unattributed.partition_point(|&at| at <= hour) - feed.unattributed.partition_point(|&at| at < from);
+        let left_out = feed.unattributed.partition_point(|&at| at <= hour.min(params.to.unwrap_or(hour))).saturating_sub(feed.unattributed.partition_point(|&at| at < from));
         if left_out > 0 {
             notices.unavailable(
                 "warUnattributed",
@@ -512,10 +518,11 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
             );
         }
     }
-    if params.categories.contains(&EventFeedCategory::Milestones) {
-        let hours: i64 = feed.projects_unrecorded.iter().map(|&(first, last)| (i64::from(last.min(hour)) - i64::from(first.max(from)) + 1).max(0)).sum();
+    let to = params.to.map_or(hour, |to| to.min(hour));
+    for family in feed.unrecorded.iter().filter(|family| params.categories.contains(&family.category)) {
+        let hours: i64 = family.spans.iter().map(|&(first, last)| (i64::from(last.min(to)) - i64::from(first.max(from)) + 1).max(0)).sum();
         if hours > 0 {
-            notices.unavailable("projectFinished", "Special projects", format!("Project histories were not recorded for {hours} hours of this span; a completion dated then is not listed."), None);
+            notices.unavailable(family.kind, family.label, format!("{} {hours} hours of this span {}.", family.listed, family.why), None);
         }
     }
     let reply = EventFeedTailReply {
@@ -525,7 +532,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
         live: answer.live.to_string(),
         counts: Vec::new(),
         rows,
-        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, hour)].into_iter().flatten().min(),
+        next_change: [next_change(prepared, &answer, true, hour), feed_next_change(feed, &params.categories, (from, params.to.unwrap_or(query.timeline.last).min(query.timeline.last)), hour)].into_iter().flatten().min(),
         missing: answer.gaps,
         unavailable: notices.into_list(),
         warnings: feed.warnings.iter().filter(|(at, _)| *at <= hour).map(|(_, text)| text.clone()).collect(),
@@ -654,7 +661,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         if !opened_row {
             listed(&mut card, list == List::Decisions, list == List::Decisions);
         }
-        let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
+        let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row, prepared.scanned.partial_read(event.read_hour)))).collect();
         if !opened_row {
             let chosen = listed_choice(&edges);
             let mut named = false;
@@ -824,36 +831,30 @@ impl Product for EventFeedActivity {
         }
         let prepared = prepare(source, &query, branch, context, None, (params.countries.as_deref(), params.group.as_ref()), cancelled)?;
         let feed = prepared.feed.as_ref().ok_or_else(|| invalid("The event feed's index is not prepared"))?;
+        let whole = Ask {
+            hour,
+            from: None,
+            to: None,
+            gap_end: None,
+            selection: prepared.selection.as_ref(),
+            subject: None,
+            kinds: None,
+            states: None,
+            search: None,
+            order: dashboard_query::log::occurrence::Order::Date(dashboard_query::log::occurrence::Direction::Descending),
+            live_first: false,
+            offset: 0,
+            limit: 1,
+            chips: &[],
+        };
         let mut lines = Vec::with_capacity(params.categories.len());
         for &category in &params.categories {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let kinds = feed_kinds(&[category], params.exclude.as_deref())?;
-            let ask = Ask {
-                hour,
-                from: None,
-                to: None,
-                gap_end: None,
-                selection: prepared.selection.as_ref(),
-                subject: None,
-                kinds: Some(&kinds),
-                states: None,
-                search: None,
-                order: dashboard_query::log::occurrence::Order::Date(dashboard_query::log::occurrence::Direction::Descending),
-                live_first: false,
-                offset: 0,
-                limit: 1,
-                chips: &[],
-            };
-            let (before, bins) = feed.index.bins(&query.holders, &ask, params.from, hour, params.bin_hours)?;
+            let (before, bins) = feed.index.bins(&query.holders, &Ask { kinds: Some(&kinds), ..whole }, params.from, hour, params.bin_hours)?;
             lines.push(EventFeedActivityLine { category, before: before.to_string(), bins });
         }
-        let missing = feed
-            .index
-            .gaps()
-            .iter()
-            .filter(|gap| gap.first_hour <= hour && gap.last_hour >= params.from)
-            .map(|gap| dashboard_query::series::MissingSpan { first_hour: gap.first_hour.max(params.from), last_hour: gap.last_hour.min(hour), reason: gap.reason.clone() })
-            .collect();
+        let missing = feed.index.coverage(&query.holders, &whole, params.from, hour);
         Ok(EventFeedActivityReply {
             branch_id: params.branch_id.clone(),
             first_hour: (i64::from(params.from).div_euclid(params.bin_hours) * params.bin_hours) as i32,

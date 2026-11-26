@@ -1969,7 +1969,11 @@ days?: number | null,
 /**
  * The power the execution was proven to charge; absent when not proven.
  */
-costs?: Array<ScriptCost> | null, };
+costs?: Array<ScriptCost> | null,
+/**
+ * Currencies whose charge was not read while another's was: `costs` holds only what was read.
+ */
+costsUnread?: Array<ScriptCurrency>, };
 export type ScriptOccurrence = { id: string,
 /**
  * Whether the first edge opened the card; false for a continuing row whose opening was not

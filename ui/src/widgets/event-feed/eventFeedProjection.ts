@@ -38,6 +38,7 @@ const HEAD_LIMIT = 256;
 const FOLD_MIN_RUN = 5;
 
 const LOSER_SECOND_KINDS = new Set(['annexed', 'warDeclared', 'warStarted']);
+const ONE_COUNTRY_KINDS = new Set(['ceasedToExist']);
 const VIEWABLE_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected']);
 
 const KIND_SPRITES: Readonly<Record<string, string>> = {
@@ -101,7 +102,7 @@ function scriptEventDetailCell(item: EventFeedItem | null, chosenOrdinal: number
     return logStatusCell('Awaiting choice', 'waiting');
   }
   if (page.status === 'notRecorded') {
-    return { value: notRecorded('Choice not recorded (recording paused)'), missingFigure: 'Choice' };
+    return { value: notRecorded('Choice not recorded'), missingFigure: 'Choice' };
   }
   return { value: knownValue('Fired') };
 }
@@ -351,8 +352,9 @@ function buildFeedTableRow(
   for (let idx = 0; idx < rawRoles.length; idx++) {
     const tag = rawRoles[idx] ?? null;
     if (tag === null && event.participants === undefined) continue;
+    if (idx > 0 && ONE_COUNTRY_KINDS.has(event.kind)) continue;
     if (idx > 0 && tag !== null && tag === rawRoles[0]) continue;
-    if (tag === null && idx === 1 && rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released'].includes(event.kind)) {
+    if (tag === null && idx === 1 && rawRoles[0] !== null && !['scriptEventFired', 'newsEventFired', 'warDeclared', 'warJoined', 'annexed', 'released', 'guaranteeGranted'].includes(event.kind)) {
       continue;
     }
     countryEntries.push({
@@ -406,7 +408,7 @@ function buildFeedTableRow(
   const titleLabel = primary !== null ? plainScripted(primary) : (missingReason ?? 'Not recorded');
   const tooltipExtra = (): TooltipExtraRow[] => {
     const out: TooltipExtraRow[] = [
-      { label: 'Time', value: knownValue(formatDateTime(event.hour)) },
+      { label: event.exact ? 'Time' : 'Observed at', value: knownValue(formatDateTime(event.hour)) },
     ];
     if (secondary) out.push({ label: 'Detail', value: knownValue(plainScripted(secondary)) });
     if (event.cause?.how) out.push({ label: 'Cause', value: knownValue(event.cause.how) });

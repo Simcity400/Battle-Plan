@@ -38,5 +38,13 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   assert.equal(model.rows[2]?.name, 'Show all 12 terms · 11 more');
   assert.equal(model.rows[2]?.cells.terms?.value.kind === 'known' && model.rows[2].cells.terms.value.value, model.rows[2]?.name);
   assert.ok(reads.includes('country AAA at 28'));
+  assert.equal(model.rows[1]?.cells.terms?.value.kind, 'known');
+  const unnamed = createBoundedReadView({ hour: 40, rows: new Map([['main', source]]), identity: {
+    resolve: (kind, id, hour) => ({ kind, key: id, atHour: hour,
+      name: id === 'BBB' ? { status: 'absent', reason: 'Name not in the recording' } : { status: 'ready', value: `${kind} ${id}` },
+      holder: { status: 'absent', reason: 'fixture' }, validInterval: [hour, hour], nextChangeAt: Infinity }),
+  } });
+  const terms = peaceDealsProjection.project(unnamed, { expanded: [key] }).rows[1]?.cells.terms?.value;
+  assert.deepEqual(terms?.kind === 'partial' && terms.reason, 'BBB: Name not in the recording', 'a recipient whose name was not read keeps that reason in the terms the tooltip reads');
   assert.ok(reads.includes('state 7 at 32'));
 });

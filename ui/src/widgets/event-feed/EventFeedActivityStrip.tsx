@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatDay } from '../../dashboard/calendar.ts';
 import { validateProductReply } from '../../dashboard/client.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import type { BoundTrack, WidgetBase } from '../../dashboard/model';
@@ -28,6 +29,7 @@ export interface EventFeedActivityStripProps {
 interface StripState {
   readonly key: string;
   readonly firstHour: number;
+  readonly askedFrom: number;
   readonly lastHour: number;
   readonly binHours: number;
   readonly binCount: number;
@@ -78,7 +80,7 @@ export default function EventFeedActivityStrip({
     if (!bound) return null;
     const binHours = stripBinHours(bound.lastHour - bound.firstHour);
     const exKey = excludedKinds?.length ? [...excludedKinds].sort().join(',') : '';
-    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries]);
+    return JSON.stringify([track.source.id, track.source.revision, track.branch.id, bound.firstHour, bound.lastHour, binHours, categories, exKey, widget.countries, selectedCountryKeys(widget.countries, track)]);
   }, [track, active, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
   useEffect(() => {
@@ -96,7 +98,7 @@ export default function EventFeedActivityStrip({
     const cutoff = gate.recorded(bound.lastHour);
     if (cutoff === null) return;
     const group = groupSelection(widget.countries);
-    const countries = widget.countries.kind === 'tags' ? widget.countries.tags.map(countryFromKey) : null;
+    const countries = widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? selectedCountryKeys(widget.countries, track).map(countryFromKey) : null;
     const request = productRequest({
       sourceId: track.source.id,
       revision: track.source.revision,
@@ -120,6 +122,7 @@ export default function EventFeedActivityStrip({
       setStrip({
         key: queryKey,
         firstHour: data.firstHour,
+        askedFrom: bound.firstHour,
         lastHour: bound.lastHour,
         binHours: data.binHours,
         binCount,
@@ -134,18 +137,35 @@ export default function EventFeedActivityStrip({
     return () => controller.abort();
   }, [track, runtime.client, queryKey, displayedHour, categories, excludedKinds, from, gate, widget.countries]);
 
-  if (!strip || strip.binCount === 0) return null;
+  if (!strip || strip.binCount === 0 || strip.key !== queryKey) return null;
 
   const totals = new Array<number>(strip.binCount).fill(0);
   for (const s of strip.series) {
     for (let i = 0; i < strip.binCount; i++) totals[i]! += s.counts[i] ?? 0;
   }
   const maxTotal = Math.max(1, ...totals);
-  const gapBins = new Set<number>();
-  for (const span of strip.missing) {
+  const missingHours = new Array<number>(strip.binCount).fill(0);
+  const binStart = (idx: number) => Math.max(strip.firstHour + idx * strip.binHours, strip.askedFrom);
+  const binEnd = (idx: number) => Math.min(strip.firstHour + (idx + 1) * strip.binHours - 1, strip.lastHour);
+  const unread: [number, number][] = [];
+  for (const span of [...strip.missing].map(span => [Math.max(span.firstHour, strip.askedFrom), Math.min(span.lastHour, strip.lastHour)] as [number, number]).filter(([first, last]) => first <= last).sort((a, b) => a[0] - b[0])) {
+    const held = unread[unread.length - 1];
+    if (held && span[0] <= held[1] + 1) held[1] = Math.max(held[1], span[1]);
+    else unread.push(span);
+  }
+  for (const span of unread.map(([firstHour, lastHour]) => ({ firstHour, lastHour }))) {
     const firstIdx = Math.max(0, Math.min(strip.binCount - 1, Math.floor((span.firstHour - strip.firstHour) / strip.binHours)));
     const lastIdx = Math.max(firstIdx, Math.min(strip.binCount - 1, Math.floor((span.lastHour - strip.firstHour) / strip.binHours)));
-    for (let idx = firstIdx; idx <= lastIdx; idx++) gapBins.add(idx);
+    for (let idx = firstIdx; idx <= lastIdx; idx++) {
+      missingHours[idx]! += Math.max(0, Math.min(span.lastHour, binEnd(idx)) - Math.max(span.firstHour, binStart(idx)) + 1);
+    }
+  }
+  const gapBins = new Set<number>();
+  const partBins = new Set<number>();
+  for (let idx = 0; idx < strip.binCount; idx++) {
+    if (missingHours[idx]! <= 0) continue;
+    if (missingHours[idx]! >= binEnd(idx) - binStart(idx) + 1) gapBins.add(idx);
+    else partBins.add(idx);
   }
 
   const tickCount = Math.min(5, Math.max(2, Math.floor(strip.binCount / 10) + 1));
@@ -167,8 +187,9 @@ export default function EventFeedActivityStrip({
           }
           const barTotal = totals[idx]!;
           const maxPx = 22;
+          const partly = gapBins.has(idx) || partBins.has(idx);
           return (
-            <span key={idx} className="efs-bar">
+            <span key={idx} className={partly ? 'efs-bar is-partial' : 'efs-bar'} {...(partly ? { title: 'Partly not recorded' } : {})}>
               {barTotal > 0 ? strip.series.map(s => {
                 const count = s.counts[idx] ?? 0;
                 if (count <= 0) return null;

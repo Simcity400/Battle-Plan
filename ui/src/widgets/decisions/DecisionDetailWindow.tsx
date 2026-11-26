@@ -108,7 +108,10 @@ export default function DecisionDetailWindow({ subject, detail, anchor, onClose 
             {subject.costText ? (
               <>
                 <dt>Cost</dt>
-                <dd>{subject.costText}</dd>
+                <dd>
+                  {subject.costText}
+                  {subject.costMissing ? <span className="dcd-missing"> · {subject.costMissing}</span> : null}
+                </dd>
               </>
             ) : subject.costMissing ? (
               <>

@@ -179,9 +179,9 @@ impl Feed {
             let opener = open.link(out, &mut self.links, event, token, pack.read_hour)?;
             let charge = charge_key(event, token);
             let charged = matches!(event.source, Source::DecisionSelected | Source::DecisionTimeoutEffect);
-            let proven = charge.as_ref().filter(|key| executions.get(*key) == Some(&1)).and_then(|key| charges.as_ref()?.get(key));
+            let proven = charge.as_ref().filter(|key| pack.coverage == EventFeedCoverage::Complete && executions.get(*key) == Some(&1)).and_then(|key| charges.as_ref()?.get(key));
             let [political_power, command_power] = match proven {
-                Some(sums) => (*sums).map(|sum| i64::try_from(sum).map_or(Recorded::NotRecorded, |sum| Recorded::Value(Some(sum)))),
+                Some(sums) => (*sums).map(|sum| sum.and_then(|sum| i64::try_from(sum).ok()).map_or(Recorded::NotRecorded, |sum| Recorded::Value(Some(sum)))),
                 None if charged => [Recorded::NotRecorded, Recorded::NotRecorded],
                 None => [Recorded::Value(None), Recorded::Value(None)],
             };

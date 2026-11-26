@@ -6,6 +6,7 @@ use super::{
 use dashboard_base::{Source, products::LoadContext};
 use dashboard_world::products::{groups, subjects};
 use dashboard_research::products::special_projects;
+use dashboard_base::span::HourSpan;
 use dashboard_query::{
     Query,
     log::{FacetFilter, Reader},
@@ -124,6 +125,30 @@ fn follows_observed(query: &Query<'_>, unobserved: &[dashboard_base::span::HourS
 
 pub(crate) type DatedNotes = Vec<(i32, String)>;
 
+pub(crate) struct Unrecorded {
+    pub category: EventFeedCategory,
+    pub kind: &'static str,
+    pub label: &'static str,
+    pub listed: &'static str,
+    pub why: &'static str,
+    pub spans: Vec<(i32, i32)>,
+}
+
+impl Unrecorded {
+    fn of<'s>(category: EventFeedCategory, (kind, label): (&'static str, &'static str), (listed, why): (&'static str, &'static str), spans: impl IntoIterator<Item = &'s HourSpan>) -> Self {
+        let mut sorted: Vec<(i32, i32)> = spans.into_iter().filter(|span| span.first_hour <= span.last_hour).map(|span| (span.first_hour, span.last_hour)).collect();
+        sorted.sort_unstable();
+        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(sorted.len());
+        for (first, last) in sorted {
+            match merged.last_mut() {
+                Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+                _ => merged.push((first, last)),
+            }
+        }
+        Self { category, kind, label, listed, why, spans: merged }
+    }
+}
+
 pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, categories: &[EventFeedCategory], cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, DatedNotes, Vec<i32>)> {
     let wanted = |kind: EventFeedKind| categories.contains(&kind.category());
     if !wanted(EventFeedKind::WarStarted) && !wanted(EventFeedKind::FactionJoined) {
@@ -232,9 +257,9 @@ pub(crate) fn subject_rows(source: &Source, query: &Query<'_>, from: i32, to: i3
     Ok(rows)
 }
 
-pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>, Vec<(i32, i32)>)> {
+pub(crate) fn project_completions(source: &Source, query: &Query<'_>, context: &LoadContext, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<EventFeedRow>, Vec<String>, Unrecorded)> {
     let found = special_projects::completions(source, context, query, from, to, cancelled)?;
-    let unrecorded = found.unrecorded.iter().map(|span| (span.first_hour, span.last_hour)).collect();
+    let unrecorded = Unrecorded::of(EventFeedCategory::Milestones, ("projectFinished", "Special projects"), ("A completion dated in", "may not be listed: project histories were not recorded then"), &found.unrecorded);
     let rows = found.events.into_iter().filter_map(completion_row).collect();
     Ok((rows, found.warnings, unrecorded))
 }
@@ -243,7 +268,7 @@ pub(super) fn completion_row(event: special_projects::ProjectCompletion) -> Opti
     let tag = event.tag?;
     let item = EventFeedItem { token: None, name: event.name, icon: event.icon, ..Default::default() };
     let subject = format!("{}:{}:{}", event.owner, event.project, event.ordinal);
-    Some(family_row(EventFeedKind::ProjectFinished, event.date, event.observed_hour, event.observed_hour, vec![tag], Some(subject), Some(item)))
+    Some(family_row(EventFeedKind::ProjectFinished, event.date, event.observed_hour, event.date, vec![tag], Some(subject), Some(item)))
 }
 
 pub(crate) fn unread(categories: &[EventFeedCategory], notices: &mut Notices) {
