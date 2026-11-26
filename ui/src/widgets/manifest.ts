@@ -64,6 +64,7 @@ export const FAMILY_VIEW_UI: Readonly<Record<string, FamilyViewUiLoader>> = {
   'factions': { load: () => import('./factions') },
   'faction-strength': { load: () => import('./faction-strength/family.tsx'), views: ['lines'] },
   'fuel': { load: () => import('./fuel') },
+  'fuel-branches': { load: () => import('./fuel-branches') },
   'factories': { load: () => import('./factories') },
   'generals': { load: () => import('./generals/family.tsx') },
   'idea-timeline': { load: () => import('./idea-timeline') },

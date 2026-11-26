@@ -11,6 +11,7 @@
 
 .detail-window-header {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
@@ -67,4 +68,20 @@
   overflow: hidden;
   align-items: center;
   justify-content: center;
+}
+
+.detail-window-body > .drill-host {
+  height: auto;
+  overflow: visible;
+  min-width: min(560px, calc(100vw - 48px));
+}
+
+.detail-window-body > .drill-host > .drill-face {
+  position: static;
+  inset: auto;
+  transform: none;
+}
+
+.detail-window-body > .drill-host > .drill-face > .drill-body {
+  overflow: visible;
 }

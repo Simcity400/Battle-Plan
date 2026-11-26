@@ -910,7 +910,8 @@ describe('time-chart picture authority', () => {
     assert.equal(layout.gaps.length, 1, 'the earlier gap is outside the window');
     const placed = layout.gaps[0]!;
     const key = hitTestTimeChart(model, layout, [(placed.x0 + placed.x1) / 2, 100]);
-    assert.equal(key, 'gap:1');
+    assert.equal(key, `gap:1@${H1936 + 350}`);
+    assert.equal(parseTimeChartHit(key)?.hour, H1936 + 350);
     const tip = deriveTimeChartTooltip(model, layout, key);
     assert.equal(tip?.payload?.note, 'Ongoing gap');
     assert.equal(tip?.payload?.subtitle, `From ${formatDateOnly(H1936 + 300)}`, 'no end after the displayed hour');

@@ -2,6 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { END_LABELS_OPTION, LINE_AXIS_OPTIONS, TIME_CHART_TIME_OPTIONS } from '../../dashboard/lineChartOptions.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
+import { REACHED_COUNTRY_OPTION } from '../../dashboard/reachedCountry.ts';
 import { FUEL_DECIMALS_OPTION } from './fuelBranchesData.ts';
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
@@ -9,6 +10,7 @@ const overTime = (options: Readonly<Record<string, OptionValue>>) => options.vie
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Bars' }, { value: 'time', label: 'Over time' }] },
+  { ...REACHED_COUNTRY_OPTION, storeAs: 'country' },
   FUEL_DECIMALS_OPTION,
   { ...END_LABELS_OPTION, visibleWhen: overTime },
   ...TIME_CHART_TIME_OPTIONS.map(field => ({ ...field, visibleWhen: (options: Readonly<Record<string, OptionValue>>) => overTime(options) && (!field.visibleWhen || field.visibleWhen(options)) })),
