@@ -642,13 +642,22 @@ impl<'a> ContentFacts<'a> {
     }
 }
 
-#[derive(Debug)]
 pub struct LeaderRoles {
     pub(super) templates: Vec<LeaderTemplate>,
     pub(super) by_place: BTreeMap<(Vec<u8>, u32), Vec<usize>>,
     names: BTreeSet<Vec<u8>>,
     layers: Option<content_reader_layers::ResolvedLayers>,
     placed: std::sync::Mutex<Placed>,
+}
+
+impl std::fmt::Debug for LeaderRoles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LeaderRoles")
+            .field("templates", &self.templates)
+            .field("by_place", &self.by_place)
+            .field("names", &self.names)
+            .finish_non_exhaustive()
+    }
 }
 
 type PlacedFile = Arc<Vec<ScientistVisibilityTemplate>>;

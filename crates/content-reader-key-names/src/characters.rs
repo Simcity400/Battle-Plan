@@ -1264,6 +1264,14 @@ pub fn read(
 }
 
 const UNIT_LEADER_ROLES: [&str; 3] = ["corps_commander", "field_marshal", "navy_leader"];
+const UNIT_LEADER_ROLE_BLOCKS: [&str; 6] = [
+    "corps_commander",
+    "field_marshal",
+    "navy_leader",
+    "add_corps_commander_role",
+    "add_field_marshal_role",
+    "add_naval_commander_role",
+];
 
 fn is_key(item: &Item, key: &str) -> bool {
     item.keyword_is(key)
@@ -1342,7 +1350,7 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
         return Ok(None);
     };
     let role = role.value.items().ok_or_else(|| {
-        if roles == UNIT_LEADER_ROLES {
+        if roles != ["scientist"] {
             "its unit leader role is not a block".to_owned()
         } else {
             "its scientist role is not a block".to_owned()
@@ -1351,7 +1359,7 @@ fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>,
     let mut visible = Vec::new();
     for item in role.iter().filter(|item| is_key(item, "visible")) {
         let block = triggers::body(&item.value).ok_or_else(|| {
-            if roles == UNIT_LEADER_ROLES {
+            if roles != ["scientist"] {
                 "its unit leader role's visible is not a block".to_owned()
             } else {
                 "its scientist role's visible is not a block".to_owned()
@@ -1438,7 +1446,7 @@ pub fn parse_scientist_visibility_templates(
 pub fn parse_leader_visibility_templates(
     input: &[u8],
 ) -> io::Result<Vec<ScientistVisibilityTemplate>> {
-    parse_role_visibility_templates(input, &UNIT_LEADER_ROLES)
+    parse_role_visibility_templates(input, &UNIT_LEADER_ROLE_BLOCKS)
 }
 
 fn parse_role_visibility_templates(
@@ -1560,6 +1568,8 @@ effect={generate_character={
         .unwrap();
         assert_eq!(leaders.iter().map(|template| template.line).collect::<Vec<_>>(), [3]);
         assert_eq!(leaders[0].triggers.as_ref().unwrap().len(), 1);
+        let effect = super::parse_leader_visibility_templates(b"add_naval_commander_role = {\n skill = 2\n visible = { has_war = yes }\n}").unwrap();
+        assert_eq!(effect.iter().map(|template| (template.line, template.triggers.as_ref().map(Vec::len))).collect::<Vec<_>>(), [(3, Ok(1))], "a role effect carries visible directly");
         let refused = super::parse_leader_visibility_templates(b"corps_commander={\nvisible=yes\nvisible={ always=no }\n}").unwrap();
         assert_eq!(refused.len(), 1);
         assert_eq!(refused[0].line, 3);

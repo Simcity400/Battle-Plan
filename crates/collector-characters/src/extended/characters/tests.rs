@@ -3937,6 +3937,7 @@ fn serial_family_reference(
                 |row, offset| {
                     relocate(&mut row.text_a_start, offset)
                         && relocate(&mut row.text_b_start, offset)
+                        && row.visible_origin.as_mut().is_none_or(|((start, _), _)| relocate(start, offset))
                         && relocate(&mut row.training.0, offset)
                         && relocate(&mut row.training_factors.0, offset)
                 },

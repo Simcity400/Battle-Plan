@@ -3488,7 +3488,7 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
-        "country_event = {\n immediate = {\n  generate_character = {\n   field_marshal = {\n    visible = { has_country_flag = x }\n   }\n  }\n }\n}\n",
+        "country_event = {\n immediate = {\n  generate_character = {\n   field_marshal = {\n    visible = { has_country_flag = x }\n   }\n  }\n }\n}\nadd_corps_commander_role = {\n visible = { NOT = { has_country_flag = x } }\n}\n",
     )
     .unwrap();
     let placed = LeaderRoles::read_through(
@@ -3509,6 +3509,10 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
         for (owner, verdict) in [(101, Eval::True), (102, Eval::False)] {
             let row = generated(owner, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), role);
             decides(world, &row, LeaderVisibility::Conditioned(3), verdict);
+        }
+        for (owner, verdict) in [(101, Eval::False), (102, Eval::True)] {
+            let row = generated(owner, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), Some((role_file, 11)));
+            decides(world, &row, LeaderVisibility::Conditioned(4), verdict);
         }
         let (visibility, verdict) = withheld("no unit leader role's visible opens at events/generated.txt:4");
         decides(world, &generated(101, Recorded::Value(Some(UnitLeaderRow::VISIBLE)), Some((role_file, 4))), visibility, verdict);
