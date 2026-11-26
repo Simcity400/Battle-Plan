@@ -54,6 +54,14 @@ export interface BarsGlideOffset {
   readonly startedAt: number;
 }
 
+export interface BarsEasedRow {
+  readonly numericFrac?: number;
+  readonly leftFrac?: number;
+  readonly rightFrac?: number;
+  readonly rightSideFrac?: number;
+  readonly targetFrac?: number;
+  readonly segmentShares?: Readonly<Record<string, number>>;
+}
 
 export interface DrawFamilyBarsInput {
   readonly model: BarsModel;
@@ -63,6 +71,7 @@ export interface DrawFamilyBarsInput {
   readonly now: number;
   readonly glideDuration: number;
   readonly glide?: ReadonlyMap<string, BarsGlideOffset>;
+  readonly easedValues?: ReadonlyMap<string, BarsEasedRow>;
   readonly artCache?: LaneArtCache;
   readonly inspectedKey?: string | null;
   readonly selectedKey?: string | null;
@@ -81,9 +90,20 @@ export interface BarsHitResult {
   readonly side?: 'left' | 'right';
 }
 
-function easeOutCubic(t: number): number {
+export function easeOutCubic(t: number): number {
   const u = 1 - Math.max(0, Math.min(1, t));
   return 1 - u * u * u;
+}
+
+export function easeBarFraction(
+  prevFrac: number | null | undefined,
+  curFrac: number | null,
+  progress: number,
+): number | null {
+  if (curFrac === null || !Number.isFinite(curFrac)) return curFrac;
+  if (prevFrac === null || prevFrac === undefined || !Number.isFinite(prevFrac) || progress >= 1) return curFrac;
+  if (progress <= 0) return prevFrac;
+  return prevFrac + (curFrac - prevFrac) * easeOutCubic(progress);
 }
 
 function paintedRowY(
@@ -101,14 +121,14 @@ function paintedRowY(
   return entry.fromY + (baseY - entry.fromY) * easeOutCubic(progress);
 }
 
-function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, theme: FamilyTheme, fill: string, middleY: number): void {
+function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, theme: FamilyTheme, fill: string, middleY: number, eased?: BarsEasedRow): void {
   const span = layout.plotWidth;
   const h = layout.barHeight;
   const solidY = Math.round(middleY - h - 1.5);
   const outlineY = Math.round(middleY + 1.5);
   const sides = [
-    { measure: row.right, y: solidY, solid: true },
-    { measure: row.left, y: outlineY, solid: false },
+    { measure: row.right, y: solidY, solid: true, frac: eased?.rightFrac },
+    { measure: row.left, y: outlineY, solid: false, frac: eased?.leftFrac },
   ];
   const missing = sides.filter(side => side.measure && !measured(side.measure.value));
   if (missing.length === 2) {
@@ -121,9 +141,9 @@ function drawStackedPair(ctx: Canvas2D, row: BarsDataRow, layout: BarsLayout, th
         drawHatchRect(ctx, layout.plotLeft, side.y, Math.min(span, 10), h, 0, theme);
         continue;
       }
-      const numeric = side.measure.numeric ?? 0;
-      if (numeric <= 0) continue;
-      const w = Math.min(span, Math.max(2, (numeric / layout.scaleMax) * span));
+      const rawFrac = side.frac !== undefined ? side.frac : (side.measure.numeric ?? 0) / layout.scaleMax;
+      if (rawFrac <= 0) continue;
+      const w = Math.min(span, Math.max(2, rawFrac * span));
       if (side.solid) {
         drawBar(ctx, layout.plotLeft, side.y, w, h, fill, 'right');
       } else {
@@ -293,7 +313,7 @@ function drawAxis(ctx: Canvas2D, model: BarsModel, layout: BarsLayout, theme: Fa
 }
 
 export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsPaintStats {
-  const { model, layout, theme, scrollTop, now, glideDuration, glide, artCache, inspectedKey, selectedKey, focusedKey } = input;
+  const { model, layout, theme, scrollTop, now, glideDuration, glide, easedValues, artCache, inspectedKey, selectedKey, focusedKey } = input;
   const tokens = resolveKitTokens(theme);
   ctx.clearRect(0, 0, layout.width, layout.height);
 
@@ -382,6 +402,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     const barY = Math.round(middleY - layout.barHeight / 2);
     const barColor = row.labelMissing ? theme.grey : readableColour(row.color ?? theme.accent, theme.surface);
+    const eased = easedValues?.get(row.key);
 
     if (model.form === 'net') {
       const formatted = row.value ? formatBarsValueField(row.value) : null;
@@ -391,6 +412,16 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           figure: row.value?.figure,
           notApplicable: formatted.kind === 'notApplicable',
         });
+      } else if (eased?.numericFrac !== undefined) {
+        if (Math.abs(eased.numericFrac) > 1e-6) {
+          const rawW = Math.abs(eased.numericFrac) * halfSpan;
+          const barW = Math.min(halfSpan, Math.max(2, rawW));
+          if (eased.numericFrac > 0) {
+            drawBar(ctx, layout.centerX, barY, barW, layout.barHeight, barColor, 'right');
+          } else {
+            drawBar(ctx, layout.centerX - barW, barY, barW, layout.barHeight, tokens.shortFill, 'left');
+          }
+        }
       } else if (row.numeric !== undefined && row.numeric !== null && row.numeric !== 0) {
         const rawW = (Math.abs(row.numeric) / layout.scaleMax) * halfSpan;
         const barW = Math.min(halfSpan, Math.max(2, rawW));
@@ -466,7 +497,25 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         ctx.fillText(ellipsise(msg, Math.max(0, layout.plotWidth - 8), s => textWidth(ctx, s)), layout.plotLeft + layout.plotWidth / 2, middleY);
         ctx.restore();
       } else if (row.segments?.length) {
-        drawShareBar(ctx, layout.plotLeft, barY, layout.plotWidth, layout.barHeight, row.segments.map(seg => ({ share: seg.share, color: seg.color, hatched: seg.hatched, label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`, shortLabel: formatShare(seg.share) })), theme, 2.5);
+        drawShareBar(
+          ctx,
+          layout.plotLeft,
+          barY,
+          layout.plotWidth,
+          layout.barHeight,
+          row.segments.map(seg => {
+            const share = eased?.segmentShares?.[seg.key] ?? seg.share;
+            return {
+              share,
+              color: seg.color,
+              hatched: seg.hatched,
+              label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`,
+              shortLabel: formatShare(seg.share),
+            };
+          }),
+          theme,
+          2.5,
+        );
       } else {
         ctx.save();
         ctx.fillStyle = tokens.barTrack;
@@ -498,8 +547,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         if (leftFmt.kind === 'notRecorded' || leftFmt.kind === 'notApplicable') {
           drawMissingMark(ctx, layout.plotLeft, middleY, leftSpan, theme, { align: 'right', notApplicable: leftFmt.kind === 'notApplicable' });
         } else {
-          if (row.numeric && row.numeric > 0) {
-            const w = Math.min(leftSpan, Math.max(2, (row.numeric / layout.scaleLeftMax) * leftSpan));
+          const leftFrac = eased?.numericFrac !== undefined ? eased.numericFrac : (row.numeric ?? 0) / layout.scaleLeftMax;
+          if (leftFrac > 0) {
+            const w = Math.min(leftSpan, Math.max(2, leftFrac * leftSpan));
             drawBar(ctx, layout.plotRight - w, barY, w, layout.barHeight, barColor, 'left');
           }
           ctx.save();
@@ -526,8 +576,9 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.textBaseline = 'middle';
           ctx.fillText(rightFmt.text, layout.centerX + 18, middleY);
           ctx.restore();
-          if (right.numeric && right.numeric > 0) {
-            const w = Math.min(rightSpan, Math.max(2, (right.numeric / layout.scaleRightMax) * rightSpan));
+          const rightFrac = eased?.rightSideFrac !== undefined ? eased.rightSideFrac : (right.numeric ?? 0) / layout.scaleRightMax;
+          if (rightFrac > 0) {
+            const w = Math.min(rightSpan, Math.max(2, rightFrac * rightSpan));
             drawBar(ctx, layout.rightPlotLeft, barY, w, layout.barHeight, rightColor, 'right');
           }
         }
@@ -548,7 +599,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     }
 
     if (model.form === 'two-sided' && layout.twoSidedLayout === 'stacked-pair') {
-      drawStackedPair(ctx, row, layout, theme, barColor, middleY);
+      drawStackedPair(ctx, row, layout, theme, barColor, middleY, eased);
       continue;
     }
 
@@ -566,9 +617,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             notApplicable: leftFmt.kind === 'notApplicable',
           });
         } else {
-          const w = row.left.numeric && row.left.numeric > 0
-            ? Math.min(leftAvail, Math.max(2, (row.left.numeric / layout.scaleLeftMax) * leftAvail))
-            : 0;
+          const leftFrac = eased?.leftFrac !== undefined ? eased.leftFrac : (row.left.numeric ?? 0) / layout.scaleLeftMax;
+          const w = leftFrac > 0 ? Math.min(leftAvail, Math.max(2, leftFrac * leftAvail)) : 0;
           if (w > 0) drawBar(ctx, layout.centerX - w, barY, w, layout.barHeight, leftFill, 'left');
           ctx.save();
           ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -587,9 +637,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
             notApplicable: rightFmt.kind === 'notApplicable',
           });
         } else {
-          const w = row.right.numeric && row.right.numeric > 0
-            ? Math.min(rightAvail, Math.max(2, (row.right.numeric / layout.scaleRightMax) * rightAvail))
-            : 0;
+          const rightFrac = eased?.rightFrac !== undefined ? eased.rightFrac : (row.right.numeric ?? 0) / layout.scaleRightMax;
+          const w = rightFrac > 0 ? Math.min(rightAvail, Math.max(2, rightFrac * rightAvail)) : 0;
           if (w > 0) drawBar(ctx, layout.centerX, barY, w, layout.barHeight, rightFill, 'right');
           ctx.save();
           ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
@@ -623,10 +672,11 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
 
     let drawnEndX = layout.plotLeft;
     if (row.target && row.target.numeric > 0) {
-      const targetW = Math.min(layout.plotWidth, Math.max(2, (row.target.numeric / layout.scaleMax) * layout.plotWidth));
-      const delivered = Math.max(0, row.numeric ?? 0);
-      const deliveredW = delivered > 0
-        ? Math.min(targetW, Math.max(2, (delivered / layout.scaleMax) * layout.plotWidth))
+      const targetFrac = eased?.targetFrac !== undefined ? eased.targetFrac : row.target.numeric / layout.scaleMax;
+      const targetW = Math.min(layout.plotWidth, Math.max(2, targetFrac * layout.plotWidth));
+      const deliveredFrac = eased?.numericFrac !== undefined ? eased.numericFrac : Math.max(0, row.numeric ?? 0) / layout.scaleMax;
+      const deliveredW = deliveredFrac > 0
+        ? Math.min(targetW, Math.max(2, deliveredFrac * layout.plotWidth))
         : 0;
       if (deliveredW > 0) {
         drawBar(ctx, layout.plotLeft, barY, deliveredW, layout.barHeight, barColor, 'right');
@@ -653,8 +703,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       }
       drawnEndX = layout.plotLeft + targetW;
     } else if (row.segments?.length) {
-      const totalNumeric = Math.max(0, row.numeric ?? 0);
-      const totalBarW = totalNumeric > 0 ? Math.min(layout.plotWidth, Math.max(2, (totalNumeric / layout.scaleMax) * layout.plotWidth)) : 0;
+      const totalFrac = eased?.numericFrac !== undefined ? eased.numericFrac : Math.max(0, row.numeric ?? 0) / layout.scaleMax;
+      const totalBarW = totalFrac > 0 ? Math.min(layout.plotWidth, Math.max(2, totalFrac * layout.plotWidth)) : 0;
       if (totalBarW > 0) {
         drawSplitBar(
           ctx,
@@ -667,10 +717,13 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         );
       }
       drawnEndX = layout.plotLeft + totalBarW;
-    } else if (row.numeric !== undefined && row.numeric !== null && row.numeric > 0) {
-      const barW = Math.min(layout.plotWidth, Math.max(2, (row.numeric / layout.scaleMax) * layout.plotWidth));
-      drawBar(ctx, layout.plotLeft, barY, barW, layout.barHeight, barColor, 'right');
-      drawnEndX = layout.plotLeft + barW;
+    } else if ((row.numeric !== undefined && row.numeric !== null && row.numeric > 0) || (eased?.numericFrac !== undefined && eased.numericFrac > 0)) {
+      const frac = eased?.numericFrac !== undefined ? eased.numericFrac : (row.numeric ?? 0) / layout.scaleMax;
+      if (frac > 0) {
+        const barW = Math.min(layout.plotWidth, Math.max(2, frac * layout.plotWidth));
+        drawBar(ctx, layout.plotLeft, barY, barW, layout.barHeight, barColor, 'right');
+        drawnEndX = layout.plotLeft + barW;
+      }
     }
 
     if (layout.showReadout && row.readout) {

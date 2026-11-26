@@ -6,13 +6,26 @@ import {
   computeSpeedFromDuration,
   defaultAudioForSpeed,
   estimateScheduleFrames,
+  exportGlideDurationMs,
   fitAspectCrop,
   isFullCrop,
+  mergeRecordedTracks,
+  mergeUnheldGaps,
   normalizeCrop,
+  readabilityHint,
   snapEven,
   summarizeRange,
   validateDimensions,
+  widgetShowsRankMarkers,
 } from './videoExportModel.ts';
+import { easeBarFraction } from '../families/bars/painter.ts';
+import { glideDurationForSpeed } from '../families/table/painter.ts';
+import { encodeTableSettings, TABLE_SETTINGS_KEY, tableDefaults } from '../families/table/settings.ts';
+import { setOption } from '../dashboard/options.ts';
+import { TABLE_BASE as GAME_SCORE_TABLE_BASE } from '../widgets/game-score/definition.ts';
+import { TABLE_BASE as SCOREBOARD_TABLE_BASE } from '../widgets/scoreboard/definition.ts';
+import '../widgets/definitions.ts';
+import { widgetOptionFields } from '../widgets/manifest.ts';
 
 test('snapEven and validateDimensions enforce even bounds and GPU texture limits', () => {
   assert.equal(snapEven(1921), 1920);
@@ -91,4 +104,100 @@ test('fitAspectCrop and normalizeCrop keep crop rects valid and centered', () =>
   const clamped = normalizeCrop({ x: 0.9, y: -0.2, width: 0.5, height: 0.4 });
   assert.ok(Math.abs(clamped.x - 0.5) < 1e-5);
   assert.equal(clamped.y, 0);
+});
+
+test('easeBarFraction eases smoothly and snaps on missing values or boundaries', () => {
+  const mid = easeBarFraction(0.2, 0.8, 0.5);
+  assert.ok(mid !== null && mid > 0.6 && mid < 0.8);
+  assert.equal(easeBarFraction(0.2, 0.8, 0), 0.2);
+  assert.equal(easeBarFraction(0.2, 0.8, 1), 0.8);
+  assert.equal(easeBarFraction(null, 0.8, 0.5), 0.8);
+  assert.equal(easeBarFraction(undefined, 0.8, 0.5), 0.8);
+  assert.equal(easeBarFraction(0.2, null, 0.5), null);
+});
+
+test('glideDurationForSpeed honors export override above 168 h/s while keeping live cutoff', () => {
+  assert.equal(glideDurationForSpeed(240, false), 0);
+  const fastExportMs = exportGlideDurationMs(240, 60);
+  assert.ok(fastExportMs > 0, `expected non-zero export glide at 240 h/s, got ${fastExportMs}`);
+  assert.equal(glideDurationForSpeed(240, false, fastExportMs), fastExportMs);
+  assert.equal(glideDurationForSpeed(240, true, fastExportMs), 0);
+  assert.equal(exportGlideDurationMs(24, 60), 35);
+  assert.equal(exportGlideDurationMs(1, 60), 180);
+});
+
+test('mergeRecordedTracks preserves load joins across overlap and mergeUnheldGaps derives end gaps', () => {
+  const merged = mergeRecordedTracks([
+    [
+      { first: 0, last: 50, join: 'start' },
+      { first: 100, last: 150, join: 'break' },
+      { first: 151, last: 200, join: 'load' },
+    ],
+    [{ first: 40, last: 200, join: 'start' }],
+  ]);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0]!.first, 0);
+  assert.equal(merged[0]!.last, 150);
+  assert.equal(merged[1]!.first, 151);
+  assert.equal(merged[1]!.join, 'load');
+  const gaps = mergeUnheldGaps(merged, [[{ first: 51, last: 99, reason: 'track A gap' }], []], 0, 200);
+  assert.equal(gaps.length, 0);
+
+  const endGaps = mergeUnheldGaps(
+    [{ first: 10, last: 90, join: 'start' }],
+    [[
+      { first: 0, last: 9, reason: 'leading gap' },
+      { first: 91, last: 100, reason: 'trailing gap' },
+    ]],
+    0,
+    100,
+  );
+  assert.equal(endGaps.length, 2);
+  assert.deepEqual(endGaps[0], { first: 0, last: 9, reason: 'leading gap' });
+  assert.deepEqual(endGaps[1], { first: 91, last: 100, reason: 'trailing gap' });
+});
+
+test('readabilityHint flags small rendered text and steep page downscaling', () => {
+  assert.ok(readabilityHint(7.2, 0.8)?.includes('7.2 px'));
+  assert.ok(readabilityHint(11.5, 0.4)?.includes('40%'));
+  assert.equal(readabilityHint(12, 0.9), null);
+});
+
+test('widgetShowsRankMarkers gates extended preview history on effective rank-column visibility', () => {
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', undefined), undefined), false);
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', {}), {}), false);
+
+  const scoreboardWithRanks = setOption(
+    widgetOptionFields('scoreboard', undefined),
+    undefined,
+    TABLE_SETTINGS_KEY,
+    encodeTableSettings({ ...tableDefaults([], SCOREBOARD_TABLE_BASE), showRank: true }),
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', scoreboardWithRanks), scoreboardWithRanks), true);
+  const scoreboardMarkersOff = setOption(
+    widgetOptionFields('scoreboard', scoreboardWithRanks),
+    scoreboardWithRanks,
+    'rankMarkers',
+    false,
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('scoreboard', scoreboardMarkersOff), scoreboardMarkersOff), false);
+
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', undefined), undefined), false);
+  const gameScoreWithRanks = setOption(
+    widgetOptionFields('game-score', undefined),
+    undefined,
+    TABLE_SETTINGS_KEY,
+    encodeTableSettings({ ...tableDefaults([], GAME_SCORE_TABLE_BASE), showRank: true }),
+  )!;
+  assert.ok(Object.hasOwn(gameScoreWithRanks, `${TABLE_SETTINGS_KEY}@table`));
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreWithRanks), gameScoreWithRanks), true);
+  const gameScoreMarkersOff = setOption(
+    widgetOptionFields('game-score', gameScoreWithRanks),
+    gameScoreWithRanks,
+    'rankMarkers',
+    false,
+  )!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreMarkersOff), gameScoreMarkersOff), false);
+  const gameScoreRace = setOption(widgetOptionFields('game-score', gameScoreWithRanks), gameScoreWithRanks, 'view', 'race')!;
+  assert.equal(widgetShowsRankMarkers(widgetOptionFields('game-score', gameScoreRace), gameScoreRace), false);
 });

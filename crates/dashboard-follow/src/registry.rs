@@ -134,13 +134,40 @@ fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
+static EXPORT_REGISTRY: OnceLock<Registry> = OnceLock::new();
+
+pub const EXPORT_SESSION_PREFIX: &str = "export:";
 
 pub fn install(playheads: Arc<dyn Playheads>) -> bool {
     REGISTRY.set(Registry::new(Some(playheads))).is_ok()
 }
 
+pub fn install_export(playheads: Arc<dyn Playheads>) -> bool {
+    EXPORT_REGISTRY.set(Registry::new(Some(playheads))).is_ok()
+}
+
 pub fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| Registry::new(None))
+}
+
+pub fn export_registry() -> &'static Registry {
+    EXPORT_REGISTRY.get_or_init(|| Registry::new(None))
+}
+
+pub fn is_export_session(session: &str) -> bool {
+    session.starts_with(EXPORT_SESSION_PREFIX)
+}
+
+pub fn for_session(params: &Value) -> &'static Registry {
+    if params
+        .get("session")
+        .and_then(Value::as_str)
+        .is_some_and(is_export_session)
+    {
+        export_registry()
+    } else {
+        registry()
+    }
 }
 
 pub const PRODUCTS: &[&str] = &["follow", "unfollow", "follow-clock", "follow-close"];

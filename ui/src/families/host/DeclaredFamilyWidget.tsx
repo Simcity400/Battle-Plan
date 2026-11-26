@@ -384,6 +384,7 @@ export default function DeclaredFamilyWidget<
       onDiagnostics={onDiagnostics}
       extraWarnings={combinedWarnings}
       blockedState={blockedState}
+      blockedLoading={plan.bodyStatus.kind === 'loading'}
       held={plan.staticHeld}
       loadingLabel={plan.loadingLabel}
     />

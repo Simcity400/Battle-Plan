@@ -15,7 +15,7 @@ use std::{
     thread,
 };
 
-pub use embedded::install_follow;
+pub use embedded::{install_export_follow, install_follow};
 pub use window::{Inputs, WM_TAKE_FOCUS, Window};
 
 pub fn log_map_frames(prefix: &std::path::Path) {

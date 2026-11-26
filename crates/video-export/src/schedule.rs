@@ -93,6 +93,12 @@ pub struct ScheduleSummary {
     pub cadence: CadenceInfo,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewFrame {
+    pub frame: ScheduledFrame,
+    pub seed_frames: Vec<ScheduledFrame>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrameSchedule {
     pub fps: u32,
@@ -102,6 +108,7 @@ pub struct FrameSchedule {
     pub summary: ScheduleSummary,
     stretches: Vec<RecordedStretch>,
     gaps: Vec<UnheldGap>,
+    single_fraction: Option<f64>,
 }
 
 impl FrameSchedule {
@@ -110,6 +117,9 @@ impl FrameSchedule {
     }
 
     pub fn first_recorded(&self) -> Option<(i32, f64)> {
+        if let Some(frac) = self.single_fraction {
+            return Some((self.summary.from_hour, frac));
+        }
         if self.stretches.is_empty() {
             return None;
         }
@@ -152,6 +162,314 @@ impl FrameSchedule {
         None
     }
 
+    pub fn single_preview(hour: i32, fraction: f64, fps: u32, hours_per_second: f64) -> Self {
+        let safe_fps = fps.max(1);
+        let safe_hps = if hours_per_second.is_finite() && hours_per_second > 0.0 {
+            hours_per_second
+        } else {
+            1.0
+        };
+        let clamped_frac = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0 - f64::EPSILON)
+        } else {
+            0.0
+        };
+        let summary = ScheduleSummary {
+            from_hour: hour,
+            to_hour: hour,
+            recorded_hours: 1,
+            missing_hours: 0,
+            gap_count: 0,
+            total_frames: 1,
+            output_seconds: 1.0 / f64::from(safe_fps),
+            cadence: cadence_info(safe_hps, safe_fps),
+        };
+        Self {
+            fps: safe_fps,
+            hours_per_second: safe_hps,
+            skip_gaps: false,
+            cut_frames: 0,
+            summary,
+            stretches: vec![RecordedStretch {
+                first: hour,
+                last: hour,
+                join: StretchJoin::Start,
+            }],
+            gaps: Vec::new(),
+            single_fraction: Some(clamped_frac),
+        }
+    }
+
+    pub fn first_recorded_covered(&self, covered: &[RecordedStretch]) -> Option<(i32, f64)> {
+        if self.stretches.is_empty() || covered.is_empty() {
+            return None;
+        }
+        if let Some(frac) = self.single_fraction {
+            let h = self.summary.from_hour;
+            if covered.iter().any(|c| c.first <= h && h <= c.last) {
+                return Some((h, frac));
+            }
+            return None;
+        }
+        let step_hours = self.hours_per_second / f64::from(self.fps.max(1));
+        if self.skip_gaps {
+            for stretch in &self.stretches {
+                let total_steps = steps_in_span(stretch.first, stretch.last, step_hours).ok()?;
+                for cov in covered {
+                    let lo = stretch.first.max(cov.first);
+                    let hi = stretch.last.min(cov.last);
+                    if lo > hi {
+                        continue;
+                    }
+                    let start_delta = (f64::from(lo) - f64::from(stretch.first)).max(0.0);
+                    let mut k = if start_delta == 0.0 {
+                        0u64
+                    } else {
+                        (start_delta / step_hours).floor() as u64
+                    };
+                    while k < total_steps {
+                        let pos = (f64::from(stretch.first) + k as f64 * step_hours)
+                            .min(f64::from(stretch.last));
+                        let whole = pos.floor() as i32;
+                        if whole > hi {
+                            break;
+                        }
+                        if whole >= lo {
+                            let fraction = (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON);
+                            return Some((whole, fraction));
+                        }
+                        k += 1;
+                    }
+                    let last_step_hour = if total_steps > 0 {
+                        let last_pos = (f64::from(stretch.first)
+                            + (total_steps - 1) as f64 * step_hours)
+                            .min(f64::from(stretch.last));
+                        last_pos.floor() as i32
+                    } else {
+                        stretch.first
+                    };
+                    if last_step_hour < stretch.last && stretch.last >= lo && stretch.last <= hi {
+                        return Some((stretch.last, 0.0));
+                    }
+                }
+            }
+            return None;
+        }
+        let from = self.summary.from_hour;
+        let to = self.summary.to_hour;
+        let total_steps = steps_in_span(from, to, step_hours).ok()?;
+        for stretch in &self.stretches {
+            for cov in covered {
+                let lo = stretch.first.max(cov.first);
+                let hi = stretch.last.min(cov.last);
+                if lo > hi {
+                    continue;
+                }
+                let start_delta = (f64::from(lo) - f64::from(from)).max(0.0);
+                let mut k = if start_delta == 0.0 {
+                    0u64
+                } else {
+                    (start_delta / step_hours).floor() as u64
+                };
+                while k < total_steps {
+                    let pos = (f64::from(from) + k as f64 * step_hours).min(f64::from(to));
+                    let whole = pos.floor() as i32;
+                    if whole > hi {
+                        break;
+                    }
+                    if whole >= lo {
+                        let fraction = (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON);
+                        return Some((whole, fraction));
+                    }
+                    k += 1;
+                }
+                let last_step_hour = if total_steps > 0 {
+                    let last_pos =
+                        (f64::from(from) + (total_steps - 1) as f64 * step_hours).min(f64::from(to));
+                    last_pos.floor() as i32
+                } else {
+                    from
+                };
+                if last_step_hour < to && to >= lo && to <= hi {
+                    return Some((to, 0.0));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn preview_frame(&self, target_hour: i32) -> PreviewFrame {
+        self.preview_frame_with_history(target_hour, false)
+    }
+
+    pub fn preview_frame_with_history(
+        &self,
+        target_hour: i32,
+        include_rank_markers: bool,
+    ) -> PreviewFrame {
+        let step_hours = self.hours_per_second / f64::from(self.fps.max(1));
+        let target = target_hour.clamp(self.summary.from_hour, self.summary.to_hour);
+        let mk_frame = |frame_index: u64, kind: FrameKind| ScheduledFrame {
+            frame_index,
+            presentation_time: frame_index as f64 / f64::from(self.fps.max(1)),
+            audio_frames: audio_frames_for_index(frame_index, self.fps),
+            kind,
+        };
+        if self.skip_gaps {
+            let mut base_index: u64 = 0;
+            for (idx, stretch) in self.stretches.iter().enumerate() {
+                if idx > 0 {
+                    let prev = &self.stretches[idx - 1];
+                    let gap_first = i64::from(prev.last) + 1;
+                    let gap_last = i64::from(stretch.first) - 1;
+                    if gap_first <= gap_last && target > prev.last && target < stretch.first {
+                        if self.cut_frames > 0 {
+                            let omitted =
+                                (gap_last - gap_first + 1).clamp(0, i64::from(u32::MAX)) as u32;
+                            let reason = gap_reason_at(&self.gaps, gap_first as i32);
+                            return PreviewFrame {
+                                frame: mk_frame(
+                                    base_index,
+                                    FrameKind::SkipCutCard(CutNotice {
+                                        from_hour: prev.last,
+                                        to_hour: stretch.first,
+                                        omitted_hours: omitted,
+                                        reason,
+                                    }),
+                                ),
+                                seed_frames: Vec::new(),
+                            };
+                        }
+                        return PreviewFrame {
+                            frame: mk_frame(
+                                base_index,
+                                FrameKind::Recorded {
+                                    hour: stretch.first,
+                                    fraction: 0.0,
+                                    reset_continuity: true,
+                                    cut_banner: None,
+                                },
+                            ),
+                            seed_frames: Vec::new(),
+                        };
+                    }
+                    if gap_first <= gap_last {
+                        base_index += u64::from(self.cut_frames);
+                    }
+                }
+                let span_total = span_frame_count(stretch.first, stretch.last, step_hours).unwrap_or(1);
+                if target <= stretch.last || idx + 1 == self.stretches.len() {
+                    let eff_target = target.clamp(stretch.first, stretch.last);
+                    let (local, whole, fraction) =
+                        select_span_sample(stretch.first, stretch.last, eff_target, step_hours);
+                    let frame_index = base_index + local;
+                    let reset_continuity = local == 0;
+                    let seed_frames = if reset_continuity {
+                        Vec::new()
+                    } else {
+                        build_ease_seeds(
+                            base_index,
+                            stretch.first,
+                            stretch.last,
+                            local,
+                            whole,
+                            step_hours,
+                            &self.stretches,
+                            self.fps,
+                            self.hours_per_second,
+                            include_rank_markers,
+                        )
+                    };
+                    return PreviewFrame {
+                        frame: mk_frame(
+                            frame_index,
+                            FrameKind::Recorded {
+                                hour: whole,
+                                fraction,
+                                reset_continuity,
+                                cut_banner: None,
+                            },
+                        ),
+                        seed_frames,
+                    };
+                }
+                base_index += span_total;
+            }
+            return PreviewFrame {
+                frame: mk_frame(
+                    0,
+                    FrameKind::Recorded {
+                        hour: target,
+                        fraction: 0.0,
+                        reset_continuity: true,
+                        cut_banner: None,
+                    },
+                ),
+                seed_frames: Vec::new(),
+            };
+        }
+        let from = self.summary.from_hour;
+        let to = self.summary.to_hour;
+        let (local, whole, fraction) = select_span_sample(from, to, target, step_hours);
+        let prev_whole = if local > 0 {
+            let (pw, _) = eval_span_step(from, to, local - 1, step_hours);
+            Some(pw)
+        } else {
+            None
+        };
+        if stretch_at(&self.stretches, whole).is_some() {
+            let cut_banner = prev_whole
+                .and_then(|prev| traversed_gap_notice(&self.gaps, prev, whole, &[]));
+            let reset_continuity = prev_whole
+                .is_none_or(|prev| has_discontinuity(&self.stretches, prev, whole));
+            let seed_frames = if reset_continuity {
+                Vec::new()
+            } else {
+                build_ease_seeds(
+                    0,
+                    from,
+                    to,
+                    local,
+                    whole,
+                    step_hours,
+                    &self.stretches,
+                    self.fps,
+                    self.hours_per_second,
+                    include_rank_markers,
+                )
+            };
+            PreviewFrame {
+                frame: mk_frame(
+                    local,
+                    FrameKind::Recorded {
+                        hour: whole,
+                        fraction,
+                        reset_continuity,
+                        cut_banner,
+                    },
+                ),
+                seed_frames,
+            }
+        } else {
+            let (gap_first, gap_last, reason) = gap_bounds_at(&self.gaps, whole, from, to);
+            let crossed_gap = prev_whole
+                .and_then(|prev| traversed_gap_notice(&self.gaps, prev, whole, &[gap_first]));
+            PreviewFrame {
+                frame: mk_frame(
+                    local,
+                    FrameKind::GapCard {
+                        hour: whole,
+                        gap_first,
+                        gap_last,
+                        reason,
+                        crossed_gap,
+                    },
+                ),
+                seed_frames: Vec::new(),
+            }
+        }
+    }
+
     pub fn cursor(&self) -> FrameCursor<'_> {
         FrameCursor::new(self)
     }
@@ -183,6 +501,10 @@ impl FrameSchedule {
 
 #[derive(Clone, Debug)]
 enum CursorPhase {
+    Single {
+        hour: i32,
+        fraction: f64,
+    },
     Skip {
         stretch_idx: usize,
         cut_remaining: u32,
@@ -243,7 +565,12 @@ impl Iterator for OwnedFrameCursor {
 }
 
 fn initial_phase(schedule: &FrameSchedule, step_hours: f64) -> CursorPhase {
-    if schedule.stretches.is_empty() {
+    if let Some(fraction) = schedule.single_fraction {
+        CursorPhase::Single {
+            hour: schedule.summary.from_hour,
+            fraction,
+        }
+    } else if schedule.stretches.is_empty() {
         CursorPhase::Done
     } else if schedule.skip_gaps {
         let first = &schedule.stretches[0];
@@ -350,6 +677,21 @@ fn advance_cursor(
     loop {
         match phase {
             CursorPhase::Done => return None,
+            CursorPhase::Single { hour, fraction } => {
+                let h = *hour;
+                let f = *fraction;
+                *phase = CursorPhase::Done;
+                return Some(make_frame(
+                    frame_index,
+                    schedule.fps,
+                    FrameKind::Recorded {
+                        hour: h,
+                        fraction: f,
+                        reset_continuity: true,
+                        cut_banner: None,
+                    },
+                ));
+            }
             CursorPhase::Skip {
                 stretch_idx,
                 cut_remaining,
@@ -580,30 +922,115 @@ pub fn cadence_info(hours_per_second: f64, fps: u32) -> CadenceInfo {
 }
 
 pub fn merge_recorded_tracks(tracks: &[Vec<RecordedStretch>]) -> Vec<RecordedStretch> {
-    let mut intervals: Vec<(i32, i32, StretchJoin)> = tracks
-        .iter()
-        .flat_map(|track| track.iter().map(|s| (s.first, s.last, s.join)))
-        .collect();
-    intervals.sort_unstable_by_key(|&(first, last, _)| (first, last));
-    let mut merged: Vec<RecordedStretch> = Vec::new();
-    for (first, last, join) in intervals {
-        if let Some(prev) = merged.last_mut() {
-            let touches = i64::from(first) == i64::from(prev.last) + 1;
-            let overlaps = i64::from(first) <= i64::from(prev.last);
-            if overlaps || (touches && join != StretchJoin::Load) {
-                if last > prev.last {
-                    prev.last = last;
-                }
+    let mut intervals: Vec<(i32, i32)> = Vec::new();
+    let mut load_starts = std::collections::BTreeSet::new();
+    for track in tracks {
+        for s in track {
+            if s.first > s.last {
                 continue;
+            }
+            intervals.push((s.first, s.last));
+            if s.join == StretchJoin::Load {
+                load_starts.insert(s.first);
+            }
+        }
+    }
+    intervals.sort_unstable_by_key(|&(first, last)| (first, last));
+    let mut spans: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in intervals {
+        if let Some(prev) = spans.last_mut()
+            && i64::from(first) <= i64::from(prev.1) + 1
+        {
+            if last > prev.1 {
+                prev.1 = last;
+            }
+            continue;
+        }
+        spans.push((first, last));
+    }
+    let mut merged: Vec<RecordedStretch> = Vec::new();
+    for (span_first, span_last) in spans {
+        let mut cursor = span_first;
+        let mut join = if merged.is_empty() {
+            StretchJoin::Start
+        } else if load_starts.contains(&span_first) {
+            StretchJoin::Load
+        } else {
+            StretchJoin::Break
+        };
+        for &cut in load_starts.range((
+            std::ops::Bound::Excluded(span_first),
+            std::ops::Bound::Included(span_last),
+        )) {
+            if cut > cursor {
+                merged.push(RecordedStretch {
+                    first: cursor,
+                    last: cut - 1,
+                    join,
+                });
+                cursor = cut;
+                join = StretchJoin::Load;
             }
         }
         merged.push(RecordedStretch {
-            first,
-            last,
-            join: if merged.is_empty() { StretchJoin::Start } else { join },
+            first: cursor,
+            last: span_last,
+            join,
         });
     }
     merged
+}
+
+pub fn merge_unheld_gaps(
+    merged_stretches: &[RecordedStretch],
+    tracks_unheld: &[Vec<UnheldGap>],
+    from_hour: i32,
+    to_hour: i32,
+) -> Vec<UnheldGap> {
+    let lo = from_hour.min(to_hour);
+    let hi = from_hour.max(to_hour);
+    let reason_for = |first: i32, last: i32| -> String {
+        tracks_unheld
+            .iter()
+            .flat_map(|gaps| gaps.iter())
+            .find(|g| g.first <= last && g.last >= first)
+            .map_or_else(
+                || "Not recorded: this play happened while the recorder wasn't watching".to_owned(),
+                |g| g.reason.clone(),
+            )
+    };
+    let mut out = Vec::new();
+    let mut cursor = i64::from(lo);
+    let end = i64::from(hi);
+    for stretch in merged_stretches {
+        let s_first = i64::from(stretch.first).max(i64::from(lo));
+        let s_last = i64::from(stretch.last).min(end);
+        if s_first > s_last {
+            continue;
+        }
+        if cursor < s_first {
+            let first = cursor as i32;
+            let last = (s_first - 1) as i32;
+            out.push(UnheldGap {
+                first,
+                last,
+                reason: reason_for(first, last),
+            });
+        }
+        if s_last + 1 > cursor {
+            cursor = s_last + 1;
+        }
+    }
+    if cursor <= end {
+        let first = cursor as i32;
+        let last = end as i32;
+        out.push(UnheldGap {
+            first,
+            last,
+            reason: reason_for(first, last),
+        });
+    }
+    out
 }
 
 pub fn build_schedule(
@@ -718,7 +1145,131 @@ pub fn build_schedule(
         summary,
         stretches: clipped_stretches,
         gaps: clipped_gaps,
+        single_fraction: None,
     })
+}
+
+fn eval_span_step(first: i32, last: i32, local_idx: u64, step_hours: f64) -> (i32, f64) {
+    let total_steps = steps_in_span(first, last, step_hours).unwrap_or(1);
+    if local_idx >= total_steps {
+        return (last, 0.0);
+    }
+    let pos = (f64::from(first) + local_idx as f64 * step_hours).min(f64::from(last));
+    let whole = pos.floor() as i32;
+    (whole, (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON))
+}
+
+fn select_span_sample(first: i32, last: i32, target: i32, step_hours: f64) -> (u64, i32, f64) {
+    let clamped = target.clamp(first, last);
+    let span = f64::from(last) - f64::from(first);
+    if span <= 0.0 || step_hours <= 0.0 {
+        return (0, first, 0.0);
+    }
+    let total_steps = steps_in_span(first, last, step_hours).unwrap_or(1);
+    let last_step_hour = if total_steps > 0 {
+        eval_span_step(first, last, total_steps - 1, step_hours).0
+    } else {
+        first
+    };
+    if clamped == last && last_step_hour < last {
+        return (total_steps, last, 0.0);
+    }
+    let delta = (f64::from(clamped) - f64::from(first)).max(0.0);
+    let k_floor = (delta / step_hours)
+        .floor()
+        .clamp(0.0, (total_steps.saturating_sub(1)) as f64) as u64;
+    let mut k = k_floor;
+    while k < total_steps && eval_span_step(first, last, k, step_hours).0 < clamped {
+        k += 1;
+    }
+    if k < total_steps {
+        let (w, f) = eval_span_step(first, last, k, step_hours);
+        if w == clamped {
+            return (k, w, f);
+        }
+    }
+    let (w, f) = eval_span_step(first, last, k_floor, step_hours);
+    (k_floor, w, f)
+}
+
+fn export_glide_duration_ms(hours_per_second: f64, fps: u32) -> f64 {
+    let safe_fps = f64::from(fps.max(1));
+    if !hours_per_second.is_finite() || hours_per_second <= 0.0 {
+        return 0.0;
+    }
+    if hours_per_second < safe_fps {
+        ((1000.0 / hours_per_second) * 0.85).round().clamp(24.0, 180.0)
+    } else {
+        ((1000.0 / safe_fps) * 3.0).round().clamp(36.0, 120.0)
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "computes exact prior ease seed frames from span geometry and schedule parameters"
+)]
+fn build_ease_seeds(
+    base_index: u64,
+    span_first: i32,
+    span_last: i32,
+    selected_local: u64,
+    selected_hour: i32,
+    step_hours: f64,
+    stretches: &[RecordedStretch],
+    fps: u32,
+    hours_per_second: f64,
+    include_rank_markers: bool,
+) -> Vec<ScheduledFrame> {
+    if selected_local == 0 || step_hours <= 0.0 {
+        return Vec::new();
+    }
+    let safe_fps = fps.max(1);
+    let mut history_ms = export_glide_duration_ms(hours_per_second, safe_fps);
+    if include_rank_markers {
+        let rank_hold_ms = if hours_per_second > 168.0 {
+            1500.0
+        } else {
+            2500.0
+        };
+        history_ms = history_ms.max(rank_hold_ms);
+    }
+    let lookback = ((history_ms * f64::from(safe_fps)) / 1000.0).ceil().max(1.0) as u64;
+    let window_min = selected_local.saturating_sub(lookback + 1);
+    let mut start = selected_local;
+    let mut probe = selected_local;
+    while probe > window_min {
+        let prev = probe - 1;
+        let (h, _) = eval_span_step(span_first, span_last, prev, step_hours);
+        if has_discontinuity(stretches, h, selected_hour) {
+            break;
+        }
+        start = prev;
+        probe = prev;
+    }
+    if start >= selected_local {
+        return Vec::new();
+    }
+    let mk = |idx: u64, hour: i32, fraction: f64, reset_continuity: bool| ScheduledFrame {
+        frame_index: idx,
+        presentation_time: idx as f64 / f64::from(safe_fps),
+        audio_frames: audio_frames_for_index(idx, safe_fps),
+        kind: FrameKind::Recorded {
+            hour,
+            fraction,
+            reset_continuity,
+            cut_banner: None,
+        },
+    };
+    let mut seeds = Vec::new();
+    let mut last_hour: Option<i32> = None;
+    for local in start..selected_local {
+        let (h, f) = eval_span_step(span_first, span_last, local, step_hours);
+        if last_hour != Some(h) {
+            seeds.push(mk(base_index + local, h, f, seeds.is_empty()));
+            last_hour = Some(h);
+        }
+    }
+    seeds
 }
 
 fn stretch_at(stretches: &[RecordedStretch], hour: i32) -> Option<&RecordedStretch> {
@@ -927,6 +1478,24 @@ mod tests {
         ]]);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].join, StretchJoin::Load);
+
+        let track_a = vec![
+            RecordedStretch { first: 0, last: 50, join: StretchJoin::Start },
+            RecordedStretch { first: 100, last: 200, join: StretchJoin::Break },
+        ];
+        let track_b = vec![RecordedStretch { first: 40, last: 120, join: StretchJoin::Start }];
+        let union = merge_recorded_tracks(&[track_a, track_b]);
+        let union_gaps = merge_unheld_gaps(
+            &union,
+            &[
+                vec![UnheldGap { first: 51, last: 99, reason: "track A gap".into() }],
+                vec![],
+            ],
+            0,
+            200,
+        );
+        assert_eq!(union.len(), 1);
+        assert!(union_gaps.is_empty());
     }
 
     #[test]
@@ -1078,5 +1647,287 @@ mod tests {
         assert_eq!(info.suggested_hours_per_second, Some(20.0));
         assert!(!cadence_info(30.0, 60).uneven);
         assert!(!cadence_info(60.0, 60).uneven);
+    }
+
+    #[test]
+    fn merge_recorded_tracks_preserves_load_boundary_across_overlapping_track() {
+        let track_a = vec![
+            RecordedStretch { first: 0, last: 99, join: StretchJoin::Start },
+            RecordedStretch { first: 100, last: 200, join: StretchJoin::Load },
+        ];
+        let track_b = vec![RecordedStretch { first: 0, last: 200, join: StretchJoin::Start }];
+        let merged = merge_recorded_tracks(&[track_a, track_b]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0], RecordedStretch { first: 0, last: 99, join: StretchJoin::Start });
+        assert_eq!(merged[1], RecordedStretch { first: 100, last: 200, join: StretchJoin::Load });
+        let gaps = merge_unheld_gaps(&merged, &[], 0, 200);
+        assert!(gaps.is_empty());
+        let schedule = build_schedule(
+            &merged,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 99,
+                to_hour: 100,
+                fps: 1,
+                hours_per_second: 1.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let frames = schedule.collect_frames();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            frames[1].kind,
+            FrameKind::Recorded { hour: 100, reset_continuity: true, .. }
+        ));
+    }
+
+    #[test]
+    fn merge_unheld_gaps_computes_leading_and_trailing_end_gaps() {
+        let merged = vec![RecordedStretch { first: 10, last: 90, join: StretchJoin::Start }];
+        let gaps = merge_unheld_gaps(
+            &merged,
+            &[vec![
+                UnheldGap { first: 0, last: 9, reason: "before start".into() },
+                UnheldGap { first: 91, last: 100, reason: "after end".into() },
+            ]],
+            0,
+            100,
+        );
+        assert_eq!(gaps.len(), 2);
+        assert_eq!((gaps[0].first, gaps[0].last, gaps[0].reason.as_str()), (0, 9, "before start"));
+        assert_eq!((gaps[1].first, gaps[1].last, gaps[1].reason.as_str()), (91, 100, "after end"));
+    }
+
+    #[test]
+    fn preview_frame_matches_linear_fractional_cadence_and_skip_gaps() {
+        let (stretches, gaps) = sample_stretches();
+        let linear = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 4,
+                hours_per_second: 1.0,
+                skip_gaps: false,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            linear.preview_frame(270).frame.kind,
+            FrameKind::GapCard { hour: 270, gap_first: 250, gap_last: 299, .. }
+        ));
+        let recorded = linear.preview_frame(110);
+        assert!(matches!(
+            recorded.frame.kind,
+            FrameKind::Recorded { hour: 110, fraction, reset_continuity: false, .. } if fraction.abs() < 1e-6
+        ));
+        assert!(!recorded.seed_frames.is_empty());
+
+        let frac_gap = build_schedule(
+            &[
+                RecordedStretch { first: 0, last: 0, join: StretchJoin::Start },
+                RecordedStretch { first: 2, last: 5, join: StretchJoin::Break },
+            ],
+            &[UnheldGap { first: 1, last: 1, reason: "hour 1 missing".into() }],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 5,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        let frac_gap_preview = frac_gap.preview_frame(1);
+        assert_eq!(frac_gap_preview.frame.frame_index, 3);
+        assert!(matches!(
+            frac_gap_preview.frame.kind,
+            FrameKind::GapCard { hour: 1, gap_first: 1, gap_last: 1, .. }
+        ));
+
+        let frac_rec = build_schedule(
+            &[RecordedStretch { first: 0, last: 5, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 5,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        let frac_rec_preview = frac_rec.preview_frame(1);
+        assert_eq!(frac_rec_preview.frame.frame_index, 3);
+        assert!(matches!(
+            frac_rec_preview.frame.kind,
+            FrameKind::Recorded { hour: 1, fraction, reset_continuity: false, .. }
+            if (fraction - 0.2).abs() < 1e-6
+        ));
+        assert_eq!(frac_rec_preview.seed_frames.len(), 1);
+        assert!(matches!(
+            frac_rec_preview.seed_frames[0].kind,
+            FrameKind::Recorded { hour: 0, .. }
+        ));
+
+        let skip_with_card = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 30,
+                hours_per_second: 30.0,
+                skip_gaps: true,
+                cut_card_seconds: 1.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            skip_with_card.preview_frame(270).frame.kind,
+            FrameKind::SkipCutCard(CutNotice { from_hour: 249, to_hour: 300, omitted_hours: 50, .. })
+        ));
+
+        let skip_zero_card = build_schedule(
+            &stretches,
+            &gaps,
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 399,
+                fps: 30,
+                hours_per_second: 30.0,
+                skip_gaps: true,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            skip_zero_card.preview_frame(270).frame.kind,
+            FrameKind::Recorded { hour: 300, fraction, .. } if fraction.abs() < 1e-6
+        ));
+    }
+
+    #[test]
+    fn first_recorded_covered_finds_first_scheduled_position_inside_map_coverage() {
+        let page_schedule = build_schedule(
+            &[RecordedStretch { first: 50, last: 200, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 50,
+                to_hour: 200,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let map_stretches = vec![
+            RecordedStretch { first: 0, last: 10, join: StretchJoin::Start },
+            RecordedStretch { first: 100, last: 200, join: StretchJoin::Break },
+        ];
+        let first = page_schedule.first_recorded_covered(&map_stretches).unwrap();
+        assert_eq!(first.0, 100);
+        assert!(first.1.abs() < 1e-6);
+    }
+
+    #[test]
+    fn preview_frame_handles_float_rounding_and_multi_step_glide_seeding() {
+        let rounding_schedule = build_schedule(
+            &[
+                RecordedStretch { first: 0, last: 62, join: StretchJoin::Start },
+                RecordedStretch { first: 64, last: 70, join: StretchJoin::Break },
+            ],
+            &[UnheldGap { first: 63, last: 63, reason: "hour 63 missing".into() }],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 70,
+                fps: 60,
+                hours_per_second: 42.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let cursor_frames = rounding_schedule.collect_frames();
+        let preview = rounding_schedule.preview_frame(63);
+        assert_eq!(preview.frame.frame_index, 91);
+        assert_eq!(preview.frame.kind, cursor_frames[91].kind);
+
+        let fast_glide = build_schedule(
+            &[RecordedStretch { first: 0, last: 10, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 10,
+                fps: 60,
+                hours_per_second: 120.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let glide_preview = fast_glide.preview_frame(4);
+        assert_eq!(glide_preview.frame.frame_index, 2);
+        assert_eq!(glide_preview.seed_frames.len(), 2);
+        assert!(matches!(
+            glide_preview.seed_frames[0].kind,
+            FrameKind::Recorded { hour: 0, reset_continuity: true, .. }
+        ));
+        assert!(matches!(
+            glide_preview.seed_frames[1].kind,
+            FrameKind::Recorded { hour: 2, reset_continuity: false, .. }
+        ));
+
+        let rank_schedule = build_schedule(
+            &[RecordedStretch { first: 0, last: 100, join: StretchJoin::Start }],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 100,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let without_markers = rank_schedule.preview_frame_with_history(48, false);
+        let with_markers = rank_schedule.preview_frame_with_history(48, true);
+        let first_seed_hour = |pf: &PreviewFrame| match pf.seed_frames.first().map(|f| &f.kind) {
+            Some(FrameKind::Recorded { hour, .. }) => Some(*hour),
+            _ => None,
+        };
+        assert!(first_seed_hour(&without_markers).unwrap() > 24);
+        assert!(first_seed_hour(&with_markers).unwrap() <= 24);
+        assert!(with_markers.seed_frames.iter().any(|f| matches!(
+            f.kind,
+            FrameKind::Recorded { hour: 24, .. }
+        )));
+
+        let rank_with_cut = build_schedule(
+            &[
+                RecordedStretch { first: 0, last: 29, join: StretchJoin::Start },
+                RecordedStretch { first: 30, last: 100, join: StretchJoin::Load },
+            ],
+            &[],
+            &ScheduleRequest {
+                from_hour: 0,
+                to_hour: 100,
+                fps: 60,
+                hours_per_second: 24.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let cut_preview = rank_with_cut.preview_frame_with_history(48, true);
+        assert_eq!(first_seed_hour(&cut_preview), Some(30));
     }
 }

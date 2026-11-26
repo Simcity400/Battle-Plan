@@ -116,7 +116,8 @@ async function sent<T>(
 }
 
 const opened = new OpenedSources();
-const FOLLOW_PAGE_ID = crypto.randomUUID();
+const IS_EXPORT_WINDOW = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('export') === '1';
+const FOLLOW_PAGE_ID = `${IS_EXPORT_WINDOW ? 'export:' : ''}${crypto.randomUUID()}`;
 let nextFollowSession = 0;
 
 async function releaseSource(sourceId: string): Promise<void> {

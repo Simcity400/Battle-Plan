@@ -8,6 +8,8 @@ import type { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import { isSidebarIconId } from './appearance/sidebarIcons';
 import { StyledIcon } from './appearance/StyledIcon';
 import { commitZone } from './commitCount';
+import { desktopAvailable } from './api';
+import { useExportVideo } from '../export/ExportVideoContext';
 
 export default function AnalyticsNav({ pages, page, active, disabled, onChoose, onPages, onDelete, iconMenu }: {
   pages: PageEntry[]; page: PageId; active: boolean; disabled: boolean;
@@ -18,6 +20,7 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
   const [renaming, setRenaming] = useState<PageId | null>(null);
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
   const contextMenu = useContextMenu('Page actions');
+  const exportVideo = useExportVideo();
   const refocus = useRef<PageId | null>(null);
   const focusAfterRename = (id: PageId) => (element: HTMLButtonElement | null) => {
     if (!element || refocus.current !== id) return;
@@ -37,6 +40,7 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
     setRenaming(null);
   };
   const actions = (entry: PageEntry, button: HTMLButtonElement, x: number, y: number) => contextMenu.open(x, y, [
+    ...(desktopAvailable ? [{ label: 'Export page video…', icon: 'play' as const, run: () => exportVideo.openPageVideoExport(entry.id, entry.label) }] : []),
     { label: 'Rename', icon: 'edit', run: () => setRenaming(entry.id) },
     ...(isSidebarIconId(entry.id) ? iconMenu.items(entry.id, button, entry.label) : []),
     { label: 'Delete', icon: 'trash', danger: true, disabled: pages.length < 2, hint: pages.length < 2 ? 'Keep at least one page' : undefined,

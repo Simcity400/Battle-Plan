@@ -10,6 +10,7 @@ import type { TiledLine } from '../../dashboard/tiles/view';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
+import { useExportSurface } from '../../export/exportMotion.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { LaneArtResolutions } from '../art/react.ts';
 import { auditIdOf } from '../audit.ts';
@@ -247,6 +248,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
   readonly blockedState?: ReactNode;
+  readonly blockedLoading?: boolean;
   readonly held?: boolean;
   readonly loadingLabel?: string;
   readonly className?: string;
@@ -311,11 +313,15 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onDiagnostics,
   extraWarnings,
   blockedState = null,
+  blockedLoading = false,
   held = false,
   loadingLabel,
   className = '',
 }: FamilyHostComponentProps<TModel, TOptions, TBinding, TSettings>) {
   const prepared = useContext(PreparingPage);
+  const exportSurface = useExportSurface();
+  const exportReportRef = useRef(exportSurface.reportWidget);
+  exportReportRef.current = exportSurface.reportWidget;
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
   const viewportHeight = useViewportHeight();
   const contextMenu = useContextMenu(`${label} actions`);
@@ -439,6 +445,26 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   });
   const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
 
+  useEffect(() => {
+    if (!exportSurface.active || !exportSurface.reportWidget || !active || prepared || enabled) return undefined;
+    const key = `${widget.id}:${instanceId}`;
+    exportSurface.reportWidget(key, {
+      widgetId: widget.id,
+      pipe: null,
+      mode: blockedLoading ? 'reading' : 'unavailable',
+      target: null,
+      binding: 0,
+      installedBinding: 0,
+      installedId: null,
+      expired: false,
+      pendingIdentities: false,
+      pendingArt: false,
+    });
+    return () => {
+      exportSurface.reportWidget?.(key, null);
+    };
+  }, [exportSurface.active, exportSurface.reportWidget, active, prepared, enabled, blockedLoading, widget.id, instanceId]);
+
   const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
 
@@ -488,6 +514,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     bounds,
     allowEmptyFollow,
     captureActive: audit.captureActive,
+    exportMotion: exportSurface.motion,
   };
   const latestRef = useRef(latest);
   const openRegionsAt = (anchor: { readonly x: number; readonly y: number }) => {
@@ -689,6 +716,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       auditId,
       pauseFlush: pauseFlushRef.current,
       window: rowWindow,
+      ...(cur.exportMotion ? { motion: cur.exportMotion } : {}),
     });
     if (binding === null) return;
     requestedWindowRef.current = rowWindow;
@@ -701,11 +729,26 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     }
     pipeline.present(pipe, curAdapter.family);
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
-    const bound = pipeline.view(pipe)?.binding;
+    const boundView = pipeline.view(pipe);
+    const bound = boundView?.binding;
     if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
+    if (exportReportRef.current) {
+      exportReportRef.current(`${widget.id}:${instanceId}`, {
+        widgetId: widget.id,
+        pipe,
+        mode: boundView?.mode ?? 'reading',
+        target: boundView?.target ?? null,
+        binding: boundView?.binding ?? 0,
+        installedBinding: boundView?.installedBinding ?? 0,
+        installedId: boundView?.id ?? null,
+        expired: boundView?.expired === true,
+        pendingIdentities: Array.isArray(boundView?.fields?.identityDemands) && (boundView.fields.identityDemands as unknown[]).length > 0,
+        pendingArt: Array.isArray(boundView?.fields?.artDemands) && (boundView.fields.artDemands as unknown[]).length > 0,
+      });
+    }
     supply?.data(view, 'view');
     supplyDated();
-  }, [frame, pipeline, pipe, supply, supplyDated, reportWindow]);
+  }, [frame, pipeline, pipe, supply, supplyDated, reportWindow, widget.id, instanceId]);
   const showViewRef = useRef(showView);
   showViewRef.current = showView;
 
@@ -969,6 +1012,20 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
       const shownHour = reportFamilyShownHour(reportShownRef.current, visible, shown);
       auditWatch.settleIfReady(visible, shown?.mode ?? 'reading', shown?.installedBinding, shown?.fields);
+      if (exportReportRef.current) {
+        exportReportRef.current(`${widget.id}:${instanceId}`, {
+          widgetId: widget.id,
+          pipe,
+          mode: shown?.mode ?? 'reading',
+          target: shown?.target ?? null,
+          binding: shown?.binding ?? 0,
+          installedBinding: shown?.installedBinding ?? 0,
+          installedId: shown?.id ?? null,
+          expired: shown?.expired === true,
+          pendingIdentities: Array.isArray(shown?.fields?.identityDemands) && (shown.fields.identityDemands as unknown[]).length > 0,
+          pendingArt: Array.isArray(shown?.fields?.artDemands) && (shown.fields.artDemands as unknown[]).length > 0,
+        });
+      }
 
       const fields = shown?.fields;
       const rawMeta = fields?.meta as RawMeta | undefined;
@@ -1327,8 +1384,9 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       surfaceRef.current = null;
       holdElement(frameRef.current, false);
       reportFamilyShownHour(reportShownRef.current, false, null);
+      exportReportRef.current?.(`${widget.id}:${instanceId}`, null);
     };
-  }, [pipeline, pipe, instanceId, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow]);
+  }, [pipeline, pipe, instanceId, widget.id, tooltips, scrollMode, pointerMode, gestureContext, dispatch, gateNow, publishHoverHour, reportWindow]);
 
   useLayoutEffect(() => {
     const node = bodyRef.current;
@@ -1390,6 +1448,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     exactReadView,
     audit.captureActive,
     settings,
+    exportSurface.motion,
   ]);
 
   const supplyData = useCallback(() => {

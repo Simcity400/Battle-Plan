@@ -8,6 +8,11 @@ pub fn budget() -> std::sync::Arc<playhead::ByteBudget> {
     BUDGET.get_or_init(|| playhead::ByteBudget::new(BYTES)).clone()
 }
 
+pub fn export_budget() -> std::sync::Arc<playhead::ByteBudget> {
+    static EXPORT_BUDGET: std::sync::OnceLock<std::sync::Arc<playhead::ByteBudget>> = std::sync::OnceLock::new();
+    EXPORT_BUDGET.get_or_init(|| playhead::ByteBudget::new(BYTES)).clone()
+}
+
 static PRESSURE_MERGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn count_merge() { PRESSURE_MERGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }

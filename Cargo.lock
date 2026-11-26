@@ -12051,6 +12051,7 @@ dependencies = [
  "engine-heap",
  "engine-native-land",
  "gilrs",
+ "png 0.18.1",
  "recorder-derive",
  "replay",
  "replay-capture-spool",

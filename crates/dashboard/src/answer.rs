@@ -135,7 +135,7 @@ pub fn follows(product: &str) -> bool {
 pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Value> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     if follows(product) {
-        return dashboard_follow::registry::registry().answer_heads(
+        return dashboard_follow::registry::for_session(params).answer_heads(
             source.path(),
             product,
             params,

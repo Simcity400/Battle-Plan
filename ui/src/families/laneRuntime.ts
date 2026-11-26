@@ -17,6 +17,13 @@ import { projectScene, samePictures, sceneReadView, snapshotPictures, type Scene
 import { SceneTiles, type TiledSources } from './sceneTiles.ts';
 import type { PagedRows, RowWindow } from './table/rowSource.ts';
 
+export interface LaneMotion {
+  readonly easeValues?: boolean;
+  readonly glideDurationMs?: number;
+  readonly nowMs?: number;
+  readonly speed?: number;
+}
+
 export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly family: string;
@@ -39,6 +46,7 @@ export interface LaneBinding<TOptions = unknown> extends TiledSources {
   readonly revisions?: Revisions;
   readonly pagedRows?: PagedRows;
   readonly window?: RowWindow;
+  readonly motion?: LaneMotion;
 }
 
 export interface LanePrevious<TModel, TLayout> {
@@ -280,7 +288,7 @@ function windowKeyOf(binding: LaneBinding): string {
 
 function painting(input: PaintInput, binding: LaneBinding): Painting {
   return {
-    seek: input.seek, speed: input.speed, hour: input.hour, owner: input.binding.owner, pin: input.binding.pin,
+    seek: input.seek, speed: binding.motion?.speed ?? input.speed, hour: input.hour, owner: input.binding.owner, pin: input.binding.pin,
     kind: binding.kind, view: binding.view, revisions: binding.revisions,
   };
 }
@@ -521,6 +529,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       }
 
       const hour = input.hour;
+      const effectiveNow = binding.motion?.nowMs ?? input.now;
+      const effectiveSpeed = binding.motion?.speed ?? input.speed;
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
       const current = painting(input, binding);
@@ -577,7 +587,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.demandFields = demands;
         keep.drawUntil = -Infinity;
         keep.before = continuity === 'continues' ? keep.drawn : null;
-        keep.changedAt = input.now;
+        keep.changedAt = effectiveNow;
         keep.continuity++;
       }
       const projected = keep.projected!;
@@ -602,7 +612,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
       if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
         const previous = continuity === 'continues' ? keep.drawn : null;
-        keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: input.now, speed: input.speed });
+        keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: effectiveNow, speed: effectiveSpeed });
         keep.layoutKey = layoutKey;
       }
       const layout = keep.layout;
@@ -612,8 +622,8 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         binding, theme, model, layout, surface,
         hour: drawn,
         inspect: input.inspect,
-        now: input.now,
-        speed: input.speed,
+        now: effectiveNow,
+        speed: effectiveSpeed,
         art: keep.art,
         artProvider: keep.artProvider,
         index: keep.index,
@@ -626,7 +636,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       };
 
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
-      if (keep.motion || input.now >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
+      if (keep.motion || effectiveNow >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
         const shownKey = shown.join('\u0000');
         let offscreenChanged = false;

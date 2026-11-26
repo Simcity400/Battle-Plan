@@ -115,6 +115,28 @@ export class PlaybackController {
     this.publish({ ...this.snapshot, position: this.bank(), playing: false });
   }
 
+  stepExport(position: number, hoursPerSecond: number, resetContinuity: boolean): void {
+    this.cancelTimer();
+    const bounds = this.snapshot.bounds;
+    const clamped = bounds
+      ? Math.max(bounds.firstHour, Math.min(bounds.lastHour, position))
+      : position;
+    const speed = Number.isFinite(hoursPerSecond) && hoursPerSecond > 0
+      ? hoursPerSecond
+      : this.snapshot.hoursPerSecond;
+    this.publish(
+      {
+        ...this.snapshot,
+        position: clamped,
+        playing: false,
+        hoursPerSecond: speed,
+        forwardSeek: !resetContinuity && clamped >= this.snapshot.position,
+      },
+      resetContinuity,
+      false,
+    );
+  }
+
   private cancelTimer(): void {
     this.stepTask?.stop();
     this.paintTask?.stop();

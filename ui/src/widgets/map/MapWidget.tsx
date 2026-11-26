@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Icon } from '../../components/Icons';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -6,9 +6,11 @@ import { useMapsHidden, useMapState } from '../../dashboard/geometry';
 import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
 import type { PlaybackController } from '../../dashboard/playback';
+import { useExportSurface } from '../../export/exportMotion';
 import { mapFrameOnScreen, mapPresentationMatches } from './presentation';
 
 export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) {
+  const exportSurface = useExportSurface();
   const body = useRef<HTMLDivElement>(null);
   const anchor = useCallback(() => {
     const clock = runtime.clock.getSnapshot();
@@ -31,7 +33,46 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
       hour: window.lastHour, fraction: widget.time.mode === 'follow' ? clock.fraction : 0,
       sequence: widget.time.mode === 'follow' ? clock.sequence : staticSequence };
   }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
-  useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
+  useLayoutEffect(() => {
+    if (exportSurface.active || !body.current) return undefined;
+    return runtime.maps.register(widget.id, body.current, target);
+  }, [exportSurface.active, runtime.maps, widget.id, target]);
+  useEffect(() => {
+    if (!exportSurface.active || !exportSurface.reportWidget) return undefined;
+    const key = `${widget.id}:map`;
+    exportSurface.reportWidget(key, {
+      widgetId: widget.id,
+      pipe: null,
+      mode: track ? 'picture' : 'unavailable',
+      target: null,
+      binding: 0,
+      installedBinding: 0,
+      installedId: null,
+      expired: false,
+      pendingIdentities: false,
+      pendingArt: false,
+    });
+    return () => {
+      exportSurface.reportWidget?.(key, null);
+    };
+  }, [exportSurface.active, exportSurface.reportWidget, widget.id, track]);
+  if (exportSurface.active) {
+    const desired = target(runtime.clock.getSnapshot());
+    return (
+      <div
+        className="dash-map-widget is-export-slot"
+        data-export-map-id={track ? widget.id : undefined}
+      >
+        <div className="dash-map-surface" ref={body}>
+          {!desired && (
+            <div className="dash-map-placeholder" role="status">
+              {track ? <WidgetState kind="outside" /> : <strong>Load a campaign to see the map.</strong>}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
   const state = useMapState(runtime.maps, widget.id);
   const hidden = useMapsHidden(runtime.maps);
   const desired = target(runtime.clock.getSnapshot());

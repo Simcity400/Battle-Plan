@@ -15,7 +15,7 @@ import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
 import type { AircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, resolveWindow, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type { PageEntry, PageId } from './pages';
@@ -24,6 +24,7 @@ import type { LayoutLibrary, LayoutSaveAction } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
+import { widgetOptionFields } from '../widgets/manifest';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { laneModules } from '../widgets/manifest';
 import { prepareLanes } from './follow/pipeline.ts';
@@ -44,7 +45,7 @@ import type { PreparedPage } from './PreparedPages';
 import { preparingClient } from './prepare.ts';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
-import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
+import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, resolveWidgetCampaign, sameCampaignPath } from './campaigns';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
@@ -53,6 +54,9 @@ import { commitZone } from '../shell/commitCount';
 import { keepLatest } from '../shell/latest.ts';
 import type { Latest } from '../shell/latest.ts';
 import { unsavedDrafts } from './layoutDrafts.ts';
+import { useExportVideo, type SurfaceExportContextSnapshot, type SurfaceExportMapWidget } from '../export/ExportVideoContext';
+import type { RecordedStretch, UnheldGap } from '../export/videoExportApi';
+import { widgetShowsRankMarkers } from '../export/videoExportModel';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
@@ -593,6 +597,180 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
     [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
 
+  const exportVideo = useExportVideo();
+  const buildSurfaceContext = useCallback(
+    (targetTemplate: DashboardTemplate, singleWidget?: WidgetSpec): SurfaceExportContextSnapshot | null => {
+      const bound = bindTracks(targetTemplate, sourceMap, selectedBranches);
+      const rawWidgets = singleWidget ? [singleWidget] : targetTemplate.widgets;
+      const widgetsToCheck = rawWidgets.map(widget =>
+        resolveWidgetCampaign(widget, targetTemplate, defaultRoleId),
+      );
+      const followTrackIds = new Set<string>();
+      const pinnedTrackIds = new Set<string>();
+      const fallbackTrackIds = new Set<string>();
+      for (const widget of widgetsToCheck) {
+        for (const id of widget.trackIds) fallbackTrackIds.add(id);
+        if (singleWidget || widget.time.mode === 'follow') {
+          for (const id of widget.trackIds) followTrackIds.add(id);
+        } else if (widget.time.mode === 'pin') {
+          for (const id of widget.trackIds) pinnedTrackIds.add(id);
+        }
+      }
+      const initialIds = followTrackIds.size > 0
+        ? followTrackIds
+        : fallbackTrackIds.size > 0
+          ? fallbackTrackIds
+          : new Set(bound.map(t => t.id));
+      let activeBound = bound.filter(t => initialIds.has(t.id));
+      if (activeBound.length === 0) {
+        activeBound = bound;
+      }
+      const clockRange = clockBounds(activeBound);
+      if (!clockRange) return null;
+      const reference = activeBound.find(track => track.roleId === defaultRoleId) ?? activeBound[0];
+      const referenceOffset = reference?.axisOffset ?? 0;
+      const allRelevantIds = new Set<string>([...followTrackIds, ...pinnedTrackIds, ...fallbackTrackIds]);
+      let snapshotBound = bound.filter(t => allRelevantIds.has(t.id));
+      if (snapshotBound.length === 0) {
+        snapshotBound = bound;
+      }
+      const mapWidgets: SurfaceExportMapWidget[] = [];
+      for (const widget of widgetsToCheck) {
+        if (widget.kind !== 'map') continue;
+        const track = bound.find(item => item.id === widget.trackIds[0]);
+        if (!track) continue;
+        const branchNum = Number(track.branch.id);
+        const fixedHour =
+          widget.time.mode === 'follow'
+            ? null
+            : (resolveWindow(widget, track, bound, clock.getHour())?.lastHour ?? null);
+        mapWidgets.push({
+          widgetId: widget.id,
+          title: widget.title,
+          trackId: track.id,
+          path: track.source.path,
+          revision: track.source.revision,
+          branch: Number.isFinite(branchNum) ? branchNum : 0,
+          axisOffset: track.axisOffset,
+          timeMode: widget.time.mode,
+          fixedHour,
+          fog: mapOptions.fog,
+          perspective: widget.countries.kind === 'tags' ? (widget.countries.tags[0] ?? null) : track.selectedTag,
+          perspectiveSlot: widget.countries.kind === 'tags' ? null : (track.selectedSlot ?? null),
+        });
+      }
+      const trackSnapshots = snapshotBound.map(track => {
+        const stretches: RecordedStretch[] = [{ first: track.branch.firstHour - track.axisOffset, last: track.branch.lastHour - track.axisOffset, join: 'start' }];
+        const unheld: UnheldGap[] = [];
+        return {
+          id: track.id,
+          roleId: track.roleId,
+          path: track.source.path,
+          revision: track.source.revision,
+          branchId: track.branch.id,
+          axisOffset: track.axisOffset,
+          firstHour: track.branch.firstHour - track.axisOffset,
+          lastHour: track.branch.lastHour - track.axisOffset,
+          stretches,
+          unheld,
+        };
+      });
+      const requiredRoleIds = new Set(snapshotBound.map(track => track.roleId));
+      const hasPinnedWidgets = widgetsToCheck.some(w => w.time.mode === 'pin');
+      const pagedKinds = new Set([
+        'construction-log',
+        'decisions',
+        'division-log',
+        'division-service-record',
+        'espionage-log',
+        'event-choices',
+        'event-feed',
+        'land-battles',
+        'market-ledger',
+        'naval-battles',
+        'peace-deals',
+        'raid-log',
+        'ships-sunk',
+      ]);
+      const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
+      const hasRankMarkerTables = widgetsToCheck.some(w =>
+        widgetShowsRankMarkers(widgetOptionFields(w.kind, w.options), w.options, w.countries, w.time.mode),
+      );
+      const scrollEl = viewport.current;
+      return {
+        campaigns: campaignsRef.current
+          .filter(c => !c.loading && requiredRoleIds.has(c.id))
+          .map(c => ({ id: c.id, path: c.path, label: c.label, revision: sourceMap.get(c.id)?.revision ?? '' })),
+        selectedCountries,
+        selectedBranches,
+        observed,
+        defaultRoleId,
+        referenceOffset,
+        currentHour: Math.round(clock.getHour()),
+        firstHour: clockRange.firstHour,
+        lastHour: clockRange.lastHour,
+        sourceWidth: Math.max(320, Math.round(scrollEl?.clientWidth || 1280)),
+        sourceHeight: Math.max(240, Math.round(scrollEl?.clientHeight || 720)),
+        scrollTop: Math.max(0, Math.round(scrollEl?.scrollTop || 0)),
+        tracks: trackSnapshots,
+        followTrackIds: [...followTrackIds],
+        pinnedTrackIds: [...pinnedTrackIds],
+        fallbackTrackIds: [...fallbackTrackIds],
+        mapWidgets,
+        hasPinnedWidgets,
+        hasPagedRowsWidgets,
+        hasRankMarkerTables,
+      };
+    },
+    [sourceMap, selectedBranches, selectedCountries, observed, defaultRoleId, clock, mapOptions.fog],
+  );
+  useEffect(() => {
+    exportVideo.registerSurfaceSnapshot({
+      forWidget: (widget, widgetTemplate) => {
+        const ctx = buildSurfaceContext(widgetTemplate, widget);
+        if (!ctx) return null;
+        return {
+          kind: 'widget',
+          widget,
+          template: widgetTemplate,
+          label: widget.title,
+          context: ctx,
+        };
+      },
+      forPage: (pageId, label) => {
+        const pageTemplate =
+          pageId === pageRef.current
+            ? includeCampaigns(templateRef.current, campaignsRef.current)
+            : (() => {
+                const kept = pageStates.current.get(pageId as PageId)?.template;
+                if (kept) return includeCampaigns(kept, campaignsRef.current);
+                const loaded = loadLayouts(undefined, pageId as PageId).library;
+                const activeEntry = loaded.layouts.find(entry => entry.id === loaded.activeId)!;
+                return includeCampaigns(activeEntry.template, campaignsRef.current);
+              })();
+        const withRoles: DashboardTemplate = {
+          ...pageTemplate,
+          roles: pageTemplate.roles.map(role => ({
+            ...role,
+            selectedTag: selectedCountries[role.id]?.tag ?? null,
+            selectedSlot: selectedCountries[role.id]?.slot ?? null,
+            observed,
+          })),
+        };
+        const ctx = buildSurfaceContext(withRoles);
+        if (!ctx) return null;
+        return {
+          kind: 'page',
+          pageId,
+          template: withRoles,
+          label,
+          context: ctx,
+        };
+      },
+    });
+    return () => exportVideo.registerSurfaceSnapshot(null);
+  }, [exportVideo.registerSurfaceSnapshot, buildSurfaceContext, selectedCountries, observed]);
+
   const laneClient = useMemo(() => preparingClient(client), [client]);
   const [viewportBox, setViewportBox] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => setViewportBox(viewport.current), []);
@@ -716,6 +894,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           flushSync(() => setEditing(!editing));
           if (!editButton.current?.checkVisibility()) editButton.current?.parentElement?.querySelector<HTMLElement>('.header-layout-trigger')?.focus();
         }}><Icon name={editing ? 'check' : 'edit'} /><span className="toolbar-label">{editing ? 'Done' : 'Edit'}</span></button>
+      {desktopAvailable && tracks.length > 0 && template.widgets.length > 0 && <button type="button" className="icon-button" aria-label="Export page video" data-tooltip="Export page video…"
+        onClick={() => {
+          const entry = pages?.find(p => p.id === shownPage);
+          exportVideo.openPageVideoExport(shownPage, entry?.label ?? template.name);
+        }}><Icon name="play" /></button>}
       <Popover menu={saveMenu} id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options">
       {saving && discarding && <div onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); keepChanges(); } }}>
         <ConfirmStep confirmation={{ title: 'Discard layout changes?', detail: 'Your unsaved arrangement is lost.', action: 'Discard' }}

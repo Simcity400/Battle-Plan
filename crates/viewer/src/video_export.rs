@@ -22,8 +22,8 @@ use std::{
 use video_export::{
     AudioConfig, BackendChoice, Quality, VideoConfig, VideoSink,
     schedule::{
-        CutNotice, FrameKind, OwnedFrameCursor, RecordedStretch, ScheduleRequest, ScheduledFrame,
-        StretchJoin, UnheldGap, build_schedule,
+        CutNotice, FrameKind, FrameSchedule, OwnedFrameCursor, RecordedStretch, ScheduleRequest,
+        ScheduledFrame, StretchJoin, UnheldGap, build_schedule,
     },
 };
 use viewer_foundation::perspective::Choice;
@@ -241,6 +241,17 @@ pub enum MapVideoOutcome {
         campaign_hour: Option<Hour>,
         partial: Option<PartialVideo>,
     },
+}
+
+pub fn branch_schedule_inputs(
+    path: &Path,
+    branch: BranchId,
+) -> Result<(Vec<RecordedStretch>, Vec<UnheldGap>), String> {
+    let replay = replay::campaign::Replay::open_timelines(path)
+        .map_err(|e| format!("Couldn’t open recording for export: {e}"))?;
+    let timeline = dashboard_query::timeline::resolve(&replay, branch)
+        .map_err(|e| format!("Couldn’t read branch timeline: {e}"))?;
+    Ok(timeline_to_schedule_inputs(&timeline))
 }
 
 pub fn timeline_to_schedule_inputs(timeline: &Timeline) -> (Vec<RecordedStretch>, Vec<UnheldGap>) {
@@ -694,6 +705,85 @@ pub(crate) enum VideoMode {
     Preview {
         png_out: Arc<Mutex<Option<Result<Vec<u8>, String>>>>,
     },
+    Frames {
+        tx: std::sync::mpsc::SyncSender<Result<MapFrameChunk, String>>,
+        stretches: Vec<RecordedStretch>,
+        unheld: Vec<UnheldGap>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct MapFrameChunk {
+    pub rgba: Option<Vec<u8>>,
+    pub audio: Vec<i16>,
+    pub warnings: Vec<String>,
+}
+
+pub struct MapFrameStream {
+    rx: Option<std::sync::mpsc::Receiver<Result<MapFrameChunk, String>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MapFrameStream {
+    pub fn spawn(
+        config: Config,
+        request: MapVideoRequest,
+        schedule: FrameSchedule,
+    ) -> Result<Self, String> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(2);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let tx_err = tx.clone();
+        let handle = std::thread::Builder::new()
+            .name("embedded-map-export".into())
+            .spawn(move || {
+                if let Err(error) = run_map_video_inner(
+                    config,
+                    request,
+                    VideoTarget::Frames { tx, schedule },
+                    thread_stop,
+                    None,
+                ) {
+                    let _ = tx_err.send(Err(error));
+                }
+            })
+            .map_err(|e| format!("Couldn’t start embedded map export thread: {e}"))?;
+        Ok(Self {
+            rx: Some(rx),
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    pub fn next_frame(&self, cancel: &AtomicBool) -> Result<MapFrameChunk, String> {
+        let Some(rx) = &self.rx else {
+            return Err("Embedded map renderer is closed".to_owned());
+        };
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                self.stop.store(true, Ordering::Release);
+                return Err("cancelled".to_owned());
+            }
+            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(item) => return item,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Embedded map renderer stopped before finishing".to_owned());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for MapFrameStream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        drop(self.rx.take());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 pub(crate) struct VideoSession {
@@ -709,6 +799,7 @@ pub(crate) struct VideoSession {
     pub started: Instant,
     pub last_progress: Instant,
     pub mixer: Option<viewer_audio::OfflineMixer>,
+    mixer_notes_sent: usize,
     pub audio_buf: Vec<i16>,
     pub last_recorded_hour: Option<Hour>,
     pub warnings: Vec<String>,
@@ -742,6 +833,7 @@ impl VideoSession {
             started: now,
             last_progress: now,
             mixer: None,
+            mixer_notes_sent: 0,
             audio_buf: Vec::new(),
             last_recorded_hour: None,
             warnings: Vec::new(),
@@ -749,6 +841,17 @@ impl VideoSession {
             burner: None,
             cached_card: None,
         }
+    }
+
+    fn drain_frame_warnings(&mut self) -> Vec<String> {
+        let mut out = std::mem::take(&mut self.warnings);
+        if let Some(mixer) = &self.mixer
+            && self.mixer_notes_sent < mixer.notes.len()
+        {
+            out.extend(mixer.notes[self.mixer_notes_sent..].iter().cloned());
+            self.mixer_notes_sent = mixer.notes.len();
+        }
+        out
     }
 
     pub(crate) fn fps(&self) -> u32 {
@@ -786,7 +889,7 @@ impl VideoSession {
         };
         let backend = match &self.mode {
             VideoMode::Encode { sink, .. } => sink.as_ref().map(|s| s.backend_name().to_owned()),
-            VideoMode::Preview { .. } => None,
+            VideoMode::Preview { .. } | VideoMode::Frames { .. } => None,
         };
         cb(ExportProgress {
             phase: phase.to_owned(),
@@ -809,7 +912,43 @@ impl VideoSession {
                 self.finish_cancelled();
                 return Ok(true);
             }
-            if matches!(scheduled.kind, FrameKind::Recorded { .. }) {
+            if let FrameKind::Recorded { hour, .. } = scheduled.kind {
+                let uncovered_reason = match &self.mode {
+                    VideoMode::Frames { stretches, unheld, .. } => {
+                        let covered = stretches.iter().any(|s| s.first <= hour && hour <= s.last);
+                        if covered {
+                            None
+                        } else {
+                            let reason = unheld
+                                .iter()
+                                .find(|g| g.first <= hour && hour <= g.last)
+                                .map_or_else(
+                                    || "Outside this campaign’s recorded branch".to_owned(),
+                                    |g| g.reason.clone(),
+                                );
+                            Some(reason)
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = uncovered_reason {
+                    let scheduled = self.take_current().expect("checked above");
+                    let date = format_campaign_date(hour);
+                    let key = format!("map-missing:{date}:{reason}");
+                    let rgba = if self.cached_card.as_ref().is_some_and(|(k, _)| k == &key) {
+                        self.cached_card.as_ref().expect("checked").1.clone()
+                    } else {
+                        let burner = self.burner.get_or_insert_with(|| OverlayBurner::new(device));
+                        let rendered = burner
+                            .render_card_rgba(device, queue, self.size, "Not recorded", &date, &reason)
+                            .map_err(|e| e.to_string())?;
+                        self.cached_card = Some((key, rendered.clone()));
+                        rendered
+                    };
+                    self.push_frame(&rgba, None, scheduled.audio_frames, Some(hour))?;
+                    self.frames_done += 1;
+                    continue;
+                }
                 return Ok(false);
             }
             let scheduled = self.take_current().expect("checked above");
@@ -822,6 +961,11 @@ impl VideoSession {
                     reason,
                     crossed_gap,
                 } => {
+                    if matches!(self.mode, VideoMode::Frames { .. }) {
+                        self.push_non_recorded_stream(scheduled.audio_frames)?;
+                        self.frames_done += 1;
+                        continue;
+                    }
                     let dates = format!(
                         "{}  (gap: {} to {})",
                         format_campaign_date(hour),
@@ -853,6 +997,11 @@ impl VideoSession {
                     self.emit_progress("rendering", Some(hour), false);
                 }
                 FrameKind::SkipCutCard(cut) => {
+                    if matches!(self.mode, VideoMode::Frames { .. }) {
+                        self.push_non_recorded_stream(scheduled.audio_frames)?;
+                        self.frames_done += 1;
+                        continue;
+                    }
                     let dates = format!(
                         "{} -> {}",
                         format_campaign_date(cut.from_hour),
@@ -934,6 +1083,33 @@ impl VideoSession {
         self.drain_non_recorded(device, queue)
     }
 
+    fn push_non_recorded_stream(&mut self, audio_samples: usize) -> Result<(), String> {
+        let audio = if self.audio_enabled {
+            if let Some(mixer) = &mut self.mixer {
+                mixer.silence_frame(audio_samples, &mut self.audio_buf);
+            } else {
+                self.audio_buf.clear();
+                self.audio_buf.resize(audio_samples * 2, 0);
+            }
+            self.audio_buf.clone()
+        } else {
+            Vec::new()
+        };
+        if matches!(self.mode, VideoMode::Frames { .. }) {
+            let warnings = self.drain_frame_warnings();
+            let VideoMode::Frames { tx, .. } = &self.mode else {
+                unreachable!()
+            };
+            tx.send(Ok(MapFrameChunk {
+                rgba: None,
+                audio,
+                warnings,
+            }))
+            .map_err(|_| "Embedded map consumer closed".to_owned())?;
+        }
+        Ok(())
+    }
+
     fn push_frame(
         &mut self,
         rgba: &[u8],
@@ -971,6 +1147,36 @@ impl VideoSession {
                 writer.write_image_data(rgba).map_err(|e| e.to_string())?;
                 writer.finish().map_err(|e| e.to_string())?;
                 *png_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(encoded));
+                let _ = hour;
+                Ok(())
+            }
+            VideoMode::Frames { tx, .. } => {
+                let audio = if self.audio_enabled {
+                    if let (Some(mixer), Some(frame)) = (&mut self.mixer, audio_frame) {
+                        mixer.step_frame(frame, audio_samples, &mut self.audio_buf);
+                    } else if let Some(mixer) = &mut self.mixer {
+                        mixer.silence_frame(audio_samples, &mut self.audio_buf);
+                    } else {
+                        self.audio_buf.clear();
+                        self.audio_buf.resize(audio_samples * 2, 0);
+                    }
+                    self.audio_buf.clone()
+                } else {
+                    Vec::new()
+                };
+                let mut warnings = std::mem::take(&mut self.warnings);
+                if let Some(mixer) = &self.mixer
+                    && self.mixer_notes_sent < mixer.notes.len()
+                {
+                    warnings.extend(mixer.notes[self.mixer_notes_sent..].iter().cloned());
+                    self.mixer_notes_sent = mixer.notes.len();
+                }
+                tx.send(Ok(MapFrameChunk {
+                    rgba: Some(rgba.to_vec()),
+                    audio,
+                    warnings,
+                }))
+                .map_err(|_| "Embedded map consumer closed".to_owned())?;
                 let _ = hour;
                 Ok(())
             }
@@ -1055,7 +1261,7 @@ impl VideoSession {
                     }
                 }
             }
-            VideoMode::Preview { .. } => Ok(()),
+            VideoMode::Preview { .. } | VideoMode::Frames { .. } => Ok(()),
         }
     }
 
@@ -1071,6 +1277,7 @@ impl VideoSession {
                 *png_out.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(Err("Preview cancelled".to_owned()));
             }
+            VideoMode::Frames { .. } => {}
         }
     }
 
@@ -1156,6 +1363,9 @@ impl VideoSession {
             VideoMode::Preview { png_out } => {
                 *png_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(Err(error));
             }
+            VideoMode::Frames { tx, .. } => {
+                let _ = tx.send(Err(error));
+            }
         }
     }
 }
@@ -1227,6 +1437,10 @@ enum VideoTarget {
         outcome: Arc<Mutex<Option<MapVideoOutcome>>>,
     },
     Preview(Arc<Mutex<Option<Result<Vec<u8>, String>>>>),
+    Frames {
+        tx: std::sync::mpsc::SyncSender<Result<MapFrameChunk, String>>,
+        schedule: FrameSchedule,
+    },
 }
 
 fn run_map_video_inner(
@@ -1265,7 +1479,9 @@ fn run_map_video_on_thread(
             .filter(|s| !s.is_empty())
             .map(PathBuf::from),
     };
-    video_config.validate().map_err(|e| e.to_string())?;
+    if !matches!(target, VideoTarget::Frames { .. }) {
+        video_config.validate().map_err(|e| e.to_string())?;
+    }
     if cancel.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -1288,20 +1504,62 @@ fn run_map_video_on_thread(
     );
     let timeline = dashboard_query::timeline::resolve(&replay, request.branch)
         .map_err(|e| format!("Couldn’t read branch timeline: {e}"))?;
-    let (stretches, unheld) = timeline_to_schedule_inputs(&timeline);
-    let schedule = build_schedule(
-        &stretches,
-        &unheld,
-        &ScheduleRequest {
-            from_hour: request.from_hour,
-            to_hour: request.to_hour,
-            fps: request.fps,
-            hours_per_second: request.hours_per_second,
-            skip_gaps: request.skip_gaps,
-            cut_card_seconds: request.cut_card_seconds,
-        },
-    )
-    .map_err(|e| e.to_string())?;
+    let (map_stretches, map_unheld) = timeline_to_schedule_inputs(&timeline);
+    let (schedule, mode) = match target {
+        VideoTarget::File {
+            staged_path,
+            outcome,
+        } => {
+            let schedule = build_schedule(
+                &map_stretches,
+                &map_unheld,
+                &ScheduleRequest {
+                    from_hour: request.from_hour,
+                    to_hour: request.to_hour,
+                    fps: request.fps,
+                    hours_per_second: request.hours_per_second,
+                    skip_gaps: request.skip_gaps,
+                    cut_card_seconds: request.cut_card_seconds,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            let audio_cfg = request.audio_enabled.then(AudioConfig::default);
+            let sink = video_export::open(&video_config, audio_cfg, &staged_path)
+                .map_err(|e| e.to_string())?;
+            (
+                schedule,
+                VideoMode::Encode {
+                    sink: Some(sink),
+                    staged_path,
+                    outcome,
+                },
+            )
+        }
+        VideoTarget::Preview(png_out) => {
+            let schedule = build_schedule(
+                &map_stretches,
+                &map_unheld,
+                &ScheduleRequest {
+                    from_hour: request.from_hour,
+                    to_hour: request.to_hour,
+                    fps: request.fps,
+                    hours_per_second: request.hours_per_second,
+                    skip_gaps: request.skip_gaps,
+                    cut_card_seconds: request.cut_card_seconds,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            (schedule, VideoMode::Preview { png_out })
+        }
+        VideoTarget::Frames { tx, schedule } => (
+            schedule,
+            VideoMode::Frames {
+                tx,
+                stretches: map_stretches,
+                unheld: map_unheld,
+            },
+        ),
+    };
 
     let after_schedule_revision = dashboard_core::protocol::replay_revision(source_path)
         .map_err(|e| format!("Couldn’t verify recording revision: {e}"))?;
@@ -1315,25 +1573,14 @@ fn run_map_video_on_thread(
         return Ok(());
     }
 
-    let first_recorded = schedule
-        .first_recorded()
-        .ok_or_else(|| "Selected range has no recorded hours".to_owned())?;
-
-    let mode = match target {
-        VideoTarget::File {
-            staged_path,
-            outcome,
-        } => {
-            let audio_cfg = request.audio_enabled.then(AudioConfig::default);
-            let sink = video_export::open(&video_config, audio_cfg, &staged_path)
-                .map_err(|e| e.to_string())?;
-            VideoMode::Encode {
-                sink: Some(sink),
-                staged_path,
-                outcome,
-            }
-        }
-        VideoTarget::Preview(png_out) => VideoMode::Preview { png_out },
+    let first_recorded = match &mode {
+        VideoMode::Frames { stretches, .. } => schedule
+            .first_recorded_covered(stretches)
+            .or_else(|| stretches.first().map(|s| (s.first, 0.0)))
+            .ok_or_else(|| "Embedded map branch has no recorded hours".to_owned())?,
+        _ => schedule
+            .first_recorded()
+            .ok_or_else(|| "Selected range has no recorded hours".to_owned())?,
     };
 
     let crop = request.crop.map(CropRect::normalized).unwrap_or_default();

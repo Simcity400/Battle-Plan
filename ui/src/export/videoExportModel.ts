@@ -1,3 +1,6 @@
+import type { CountrySelection, WidgetTime } from '../dashboard/model';
+import { resolveOptions, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
+import { tableSettingsOf } from '../families/table/settings.ts';
 import type { CropRect, RecordedStretch, UnheldGap } from './videoExportApi';
 
 export interface DimensionPreset {
@@ -39,6 +42,91 @@ export interface RangeCoverage {
   recordedHours: number;
   missingHours: number;
   gapCount: number;
+}
+
+export function mergeRecordedTracks(tracks: readonly (readonly RecordedStretch[])[]): RecordedStretch[] {
+  const intervals: { first: number; last: number }[] = [];
+  const loadStarts = new Set<number>();
+  for (const track of tracks) {
+    for (const s of track) {
+      if (s.first > s.last) continue;
+      intervals.push({ first: s.first, last: s.last });
+      if (s.join === 'load') loadStarts.add(s.first);
+    }
+  }
+  intervals.sort((a, b) => (a.first !== b.first ? a.first - b.first : a.last - b.last));
+  const spans: { first: number; last: number }[] = [];
+  for (const item of intervals) {
+    const prev = spans.at(-1);
+    if (prev && item.first <= prev.last + 1) {
+      if (item.last > prev.last) prev.last = item.last;
+      continue;
+    }
+    spans.push({ first: item.first, last: item.last });
+  }
+  const sortedLoads = [...loadStarts].sort((a, b) => a - b);
+  const merged: RecordedStretch[] = [];
+  for (const span of spans) {
+    let cursor = span.first;
+    let join: RecordedStretch['join'] = merged.length === 0 ? 'start' : loadStarts.has(span.first) ? 'load' : 'break';
+    for (const cut of sortedLoads) {
+      if (cut <= span.first) continue;
+      if (cut > span.last) break;
+      if (cut > cursor) {
+        merged.push({ first: cursor, last: cut - 1, join });
+        cursor = cut;
+        join = 'load';
+      }
+    }
+    merged.push({ first: cursor, last: span.last, join });
+  }
+  return merged;
+}
+
+export function mergeUnheldGaps(
+  mergedStretches: readonly RecordedStretch[],
+  tracksUnheld: readonly (readonly UnheldGap[])[],
+  fromHour?: number,
+  toHour?: number,
+): UnheldGap[] {
+  const reasonFor = (first: number, last: number): string => {
+    for (const gaps of tracksUnheld) {
+      const hit = gaps.find(g => g.first <= last && g.last >= first);
+      if (hit) return hit.reason;
+    }
+    return "Not recorded: this play happened while the recorder wasn't watching";
+  };
+  if (fromHour === undefined || toHour === undefined) {
+    const out: UnheldGap[] = [];
+    for (let i = 1; i < mergedStretches.length; i += 1) {
+      const prev = mergedStretches[i - 1]!;
+      const next = mergedStretches[i]!;
+      const first = prev.last + 1;
+      const last = next.first - 1;
+      if (first > last) continue;
+      out.push({ first, last, reason: reasonFor(first, last) });
+    }
+    return out;
+  }
+  const lo = Math.min(fromHour, toHour);
+  const hi = Math.max(fromHour, toHour);
+  const out: UnheldGap[] = [];
+  let cursor = lo;
+  for (const stretch of mergedStretches) {
+    const sFirst = Math.max(lo, stretch.first);
+    const sLast = Math.min(hi, stretch.last);
+    if (sFirst > sLast) continue;
+    if (cursor < sFirst) {
+      out.push({ first: cursor, last: sFirst - 1, reason: reasonFor(cursor, sFirst - 1) });
+    }
+    if (sLast + 1 > cursor) {
+      cursor = sLast + 1;
+    }
+  }
+  if (cursor <= hi) {
+    out.push({ first: cursor, last: hi, reason: reasonFor(cursor, hi) });
+  }
+  return out;
 }
 
 export function summarizeRange(
@@ -214,6 +302,28 @@ export function defaultAudioForSpeed(hoursPerSecond: number): boolean {
   return hoursPerSecond <= 24;
 }
 
+export function exportGlideDurationMs(hoursPerSecond: number, fps: number): number {
+  const safeFps = Math.max(1, fps);
+  if (!Number.isFinite(hoursPerSecond) || hoursPerSecond <= 0) {
+    return 0;
+  }
+  if (hoursPerSecond < safeFps) {
+    const hourMs = 1000 / hoursPerSecond;
+    return Math.max(24, Math.min(180, Math.round(hourMs * 0.85)));
+  }
+  return Math.max(36, Math.min(120, Math.round((1000 / safeFps) * 3)));
+}
+
+export function readabilityHint(minTextPx: number | null, scale: number): string | null {
+  if (minTextPx !== null && Number.isFinite(minTextPx) && minTextPx > 0 && minTextPx < 9.5) {
+    return `Smallest DOM text renders around ${minTextPx.toFixed(1)} px at this output size. Try Visible viewport, Reflow for portrait, or a higher resolution.`;
+  }
+  if (Number.isFinite(scale) && scale > 0 && scale < 0.55) {
+    return `This page scales to ${Math.round(scale * 100)}% to fit the frame. Inspect the 100% crop preview or switch to Visible viewport.`;
+  }
+  return null;
+}
+
 export function normalizeCrop(crop: CropRect): CropRect {
   const width = Math.min(1, Math.max(0.05, Number.isFinite(crop.width) ? crop.width : 1));
   const height = Math.min(1, Math.max(0.05, Number.isFinite(crop.height) ? crop.height : 1));
@@ -257,4 +367,22 @@ export function formatExportDuration(seconds: number): string {
   }
   if (mins > 0) return `${mins}m ${secs}s`;
   return `${secs}s`;
+}
+
+export function widgetShowsRankMarkers(
+  fields: readonly OptionField[] | undefined,
+  options: WidgetOptions | undefined,
+  countries?: CountrySelection,
+  timeMode?: WidgetTime['mode'],
+): boolean {
+  if (!fields || fields.length === 0) return false;
+  const rankField = fields.find(item => item.key === 'rankMarkers');
+  if (!rankField) return false;
+  const resolved = resolveOptions(fields, options);
+  if (rankField.visibleWhen && !rankField.visibleWhen(resolved, countries, timeMode)) return false;
+  if (resolved.rankMarkers !== true) return false;
+  const tableField = fields.find(item => item.kind === 'table');
+  if (!tableField) return true;
+  if (tableField.visibleWhen && !tableField.visibleWhen(resolved, countries, timeMode)) return false;
+  return tableSettingsOf(resolved[tableField.key], tableField.columns, tableField.base).showRank;
 }

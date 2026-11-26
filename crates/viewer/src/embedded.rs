@@ -440,14 +440,39 @@ fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
 }
 
 pub fn install_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
-    let push = Arc::new(dashboard_follow::push::Push::default());
+    let budget = dashboard_follow::lead::budget();
+    let push = Arc::new(dashboard_follow::push::Push::with_budget(Arc::clone(&budget)));
     let drained = Arc::clone(&push);
     thread::Builder::new().name("follow push".into()).spawn(move || {
         while let Some((kind, bytes, session)) = drained.take_sent() {
             send(kind, bytes, session);
         }
     })?;
-    Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
+    Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads {
+        push,
+        budget,
+        hosts: Mutex::default(),
+        building: Mutex::default(),
+        private: false,
+    })))
+}
+
+pub fn install_export_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
+    let budget = dashboard_follow::lead::export_budget();
+    let push = Arc::new(dashboard_follow::push::Push::with_budget(Arc::clone(&budget)));
+    let drained = Arc::clone(&push);
+    thread::Builder::new().name("export follow push".into()).spawn(move || {
+        while let Some((kind, bytes, session)) = drained.take_sent() {
+            send(kind, bytes, session);
+        }
+    })?;
+    Ok(dashboard_follow::registry::install_export(Arc::new(FollowPlayheads {
+        push,
+        budget,
+        hosts: Mutex::default(),
+        building: Mutex::default(),
+        private: true,
+    })))
 }
 
 type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Entry>;
@@ -456,8 +481,10 @@ type FollowKey = (String, u64, i32);
 
 struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
+    budget: Arc<playhead::ByteBudget>,
     hosts: Mutex<BTreeMap<FollowKey, std::sync::Weak<FollowHost>>>,
     building: Mutex<BTreeMap<FollowKey, std::sync::Weak<Mutex<()>>>>,
+    private: bool,
 }
 
 impl FollowPlayheads {
@@ -505,7 +532,12 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
             return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
         }
         let (units, _) = crate::playhead_host::units::at_path(path, Some(branch)).map_err(|error| error.to_string())?;
-        let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow).map_err(|error| error.to_string())?;
+        let entry = if self.private {
+            crate::playhead_host::open_private(units, crate::playhead_host::settings(), crate::playhead_host::Side::Follow)
+        } else {
+            crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow)
+        }
+        .map_err(|error| error.to_string())?;
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
@@ -513,7 +545,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
             if let Some(message) = message { out.offer_from(stats.session, dashboard_follow::push::FOLLOW, message.bytes); }
         }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
-        let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
+        let host = dashboard_follow::host::PlayheadHost::new_with_budget(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held, Arc::clone(&self.budget)).map_err(|error| error.to_string())?;
         let hook = entry.hooks().add(hook);
         let rows = Arc::new(FollowRows { entry, branch, hook, views: std::sync::Mutex::new(std::sync::Weak::new()), on_publish: std::sync::Mutex::new(None) });
         host.show_panels(rows, Arc::clone(push));
