@@ -11,7 +11,6 @@ pub(super) struct Roster {
     slots: HashMap<u32, Vec<HourSpan>>,
     unknown: Vec<MissingSpan>,
     edges: Vec<i32>,
-    pub(super) partial_from: Option<i32>,
 }
 
 impl Roster {
@@ -77,7 +76,6 @@ impl Roster {
         roster.edges.extend(roster.unknown.iter().map(|gap| gap.first_hour));
         roster.edges.sort_unstable();
         roster.edges.dedup();
-        roster.partial_from = super::battles_partial_from(query, first, last)?;
         Ok(roster)
     }
 

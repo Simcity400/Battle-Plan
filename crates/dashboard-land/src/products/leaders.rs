@@ -505,6 +505,7 @@ pub struct LeadersContext {
     lifetimes: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
     roster: Option<Arc<Roster>>,
+    battle_coverage: Option<(u64, Option<i32>)>,
 }
 
 impl LeadersContext {
@@ -526,15 +527,21 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, battle_coverage: None })
     }
 
     fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
         let mut context = Self::load(source, load)?;
-        if let Some(LeaderSelection::Group { group }) = selection {
-            let query = context.query(parse_branch(branch).map_err(dashboard_core::invalid)?)?;
-            context.roster = Some(Roster::load(source, &query, load, group, cancelled)?);
-        }
+        let branch = parse_branch(branch).map_err(dashboard_core::invalid)?;
+        let query = context.query(branch)?;
+        let partial = battles_partial_from(&query, query.timeline.first, query.timeline.last)?;
+        let roster = if let Some(LeaderSelection::Group { group }) = selection {
+            Some(Roster::load(source, &query, load, group, cancelled)?)
+        } else {
+            None
+        };
+        context.battle_coverage = Some((branch, partial));
+        context.roster = roster;
         Ok(context)
     }
 
@@ -568,10 +575,16 @@ impl LeadersContext {
     }
 
     fn battles_partial(&self, query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
-        match &self.roster {
-            Some(roster) => Ok(roster.partial_from.filter(|&first| first <= hour)),
-            None => battles_partial_from(query, query.timeline.first, hour),
+        match self.battle_coverage {
+            Some((branch, first)) if branch == query.timeline.id => Ok(first.filter(|&first| first <= hour)),
+            _ => battles_partial_from(query, query.timeline.first, hour),
         }
+    }
+
+    fn through(&self, hour: i32) -> i32 {
+        let membership = self.roster.as_ref().map_or(i32::MAX, |roster| roster.through(hour));
+        let damage = self.battle_coverage.and_then(|(_, first)| first).filter(|&first| first > hour);
+        membership.min(damage.map_or(i32::MAX, |first| first - 1))
     }
 
     #[cfg(feature = "test-support")]
@@ -769,7 +782,7 @@ impl EvaluatedLeaders<'_> {
     }
 }
 
-const BASE_TABLES: [TableId; 4] = [TableId::UnitLeaders, TableId::UnitLeaderTraits, TableId::Countries, TableId::CountryLinks];
+const BASE_TABLES: [TableId; 3] = [TableId::UnitLeaders, TableId::Countries, TableId::CountryLinks];
 
 #[derive(Default)]
 pub struct TraitList {
@@ -949,11 +962,29 @@ impl UnitLeaders {
     }
 }
 
+fn unselected_leader_edits(frame: &DecodedFrame, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    let table = TableId::UnitLeaders;
+    let Some(changes) = edits.tables.get(&table) else { return false };
+    let membership = dashboard_base::products::at_hour::field_mask(table, &["kind", "owner"]);
+    let selected = frame.tables[TableId::UnitLeaderTraits.index()].keys();
+    edits.replaced.is_empty() && edits.tables.len() == 1
+        && changes.iter().all(|(&key, &fields)| fields & membership == 0 && !selected.contains(key << 32))
+}
+
+fn reply_through(context: &LeadersContext, frame: &DecodedFrame, missing: Option<&str>, warnings: &[String]) -> i32 {
+    let date = format!("hour {} ", frame.hour);
+    if missing.into_iter().chain(warnings.iter().map(String::as_str)).any(|reason| reason.contains(&date)) {
+        frame.hour
+    } else {
+        context.through(frame.hour)
+    }
+}
+
 impl AtHour for UnitLeaders {
     const KEY: &'static str = "unit-leaders";
     const TITLE: &'static str = "Generals leaderboard";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads leader verdicts, cumulative battle tally, first-seen hours and battles_partial_from from history context at at.hour");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = UnitLeadersParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, leaders, "selection.countries[]"];
     type Reply = UnitLeadersReply;
@@ -976,6 +1007,7 @@ impl AtHour for UnitLeaders {
         let mut tables: Vec<TableId> = BASE_TABLES.to_vec();
         tables.extend(RECORDED_TABLES.iter().copied().filter(|table| !BASE_TABLES.contains(table)));
         tables.extend([TableId::LeaderBattleTotals, TableId::LeaderTraitDates]);
+        if !tables.contains(&TableId::UnitLeaderTraits) { tables.push(TableId::UnitLeaderTraits); }
         tables
     }
 
@@ -983,10 +1015,31 @@ impl AtHour for UnitLeaders {
         if at.context.roster.as_ref().is_some_and(|roster| roster.missing(at.hour).is_some()) { return Vec::new(); }
         match step {
             0 => BASE_TABLES.into_iter().map(Read::all).collect(),
-            1 => Self::people(&Self::kept(params, held, at)),
+            1 => career::member_details(params, held, at, false),
             2 => Self::visibility_reads(params, held, at, true).0,
             _ => Vec::new(),
         }
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<dashboard_base::products::at_hour::Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let reads = match stage {
+            1 => career::member_details(params, held, at, false),
+            2 => Self::visibility_reads(params, held, at, false).0,
+            _ => Self::reads_in(params, owner, stage, held, at),
+        };
+        (reads, at.context.through(at.hour))
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        career::leader_columns(table, plan)
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        Ok(frame.tables[TableId::Clock.index()].held().is_not_selected() && unselected_leader_edits(frame, edits))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        reply_through(at.context, frame, reply.missing.as_deref(), &reply.warnings)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

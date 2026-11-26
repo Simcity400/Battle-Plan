@@ -925,6 +925,34 @@ fn top_general_follows_recorded_faction_membership() {
             }
         }
     }
+    for (registered, mut request) in [
+        (register, json!({"reference":home})),
+        (register, json!({"selection":{"kind":"all"}})),
+        (register, json!({"selection":{"kind":"countries","countries":["GER"]}})),
+        (crate::registrations::LEADERS_UNITLEADERS.panel.unwrap().open, json!({"selection":{"kind":"all"},"leaders":"land"})),
+    ] {
+        use dashboard_base::products::at_hour::frame_panel;
+        use dashboard_base::test_fixtures::{materialized_frame, played, streamed};
+        request["branchId"] = "1".into();
+        let panel = registered(&source, &load, &request).unwrap();
+        let exact = panel.exact().expect("leaders follow their recorded inputs");
+        let mut old = if request.get("leaders").is_some() {
+            frame_panel::<super::UnitLeaders>(&source, &load, &request).unwrap()
+        } else {
+            frame_panel::<super::career::LeaderHour>(&source, &load, &request).unwrap()
+        };
+        let reads = played(source.replay_ref(), exact, 150, 255);
+        let mut previous = None;
+        for read in reads {
+            let fresh = materialized_frame(&mut *old, source.replay_ref(), 1, read.hour);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&fresh, read.fresh), "{request} at {}", read.hour);
+            let structure = streamed(&fresh, false);
+            if let Some(last) = previous {
+                assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+            }
+            previous = Some(structure);
+        }
+    }
     let unknown = Some(dashboard_world::products::group_members::UNKNOWN);
     for membership in ["hour", "ever"] {
         let selection = json!({"kind":"group","group":{"type":"faction","id":"9","membership":membership}});

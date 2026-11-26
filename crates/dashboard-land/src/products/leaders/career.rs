@@ -802,25 +802,45 @@ fn leader_ranges(keys: impl Iterator<Item = u64>, bits: u32) -> Vec<(u128, u128)
     ranges
 }
 
-fn member_details(asked: &UnitLeadersParams, held: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, followed: bool) -> Vec<Read> {
+pub(super) fn member_details(asked: &UnitLeadersParams, held: &DecodedFrame, at: &ReadsAt<'_, LeadersContext>, progress: bool) -> Vec<Read> {
     let kept = UnitLeaders::kept(asked, held, at);
     let mut reads = UnitLeaders::people(&kept);
+    let handles = || kept.iter().map(|row| handle(row));
+    let ranges = leader_ranges(handles(), 32);
+    reads.push(Read { table: TableId::UnitLeaderTraits, keys: Keys::Ranges(ranges.clone()) });
     if !kept.is_empty() {
-        let handles = || kept.iter().map(|row| handle(row));
-        reads.push(Read { table: TableId::UnitLeaderTraitExperience, keys: Keys::Ranges(leader_ranges(handles(), 33)) });
-        if followed {
-            reads.push(Read { table: TableId::LeaderBattleTotals, keys: Keys::Ranges(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32)) });
-            reads.push(Read { table: TableId::LeaderTraitDates, keys: Keys::Ranges(leader_ranges(handles(), 32)) });
-        }
+        if progress { reads.push(Read { table: TableId::UnitLeaderTraitExperience, keys: Keys::Ranges(leader_ranges(handles(), 33)) }); }
+        reads.push(Read { table: TableId::LeaderBattleTotals, keys: Keys::Ranges(leader_ranges(kept.iter().map(|row| u64::from(row.id)), 32)) });
+        reads.push(Read { table: TableId::LeaderTraitDates, keys: Keys::Ranges(ranges) });
     }
     reads
+}
+
+pub(super) fn leader_columns(table: TableId, plan: &[(Vec<Read>, i32)]) -> Option<Vec<usize>> {
+    if plan.get(2).is_some_and(|(reads, _)| !reads.is_empty()) { return None; }
+    let fields = match table {
+        TableId::Countries => &["tag", "canonical_slot"][..],
+        TableId::CountryLinks => &["canonical_slot"],
+        TableId::Characters => &["name_token_id", "name", "token", "template_present", "template_tag", "template_file", "template_line", "template_generated"],
+        TableId::UnitLeaderTraits => &["token"],
+        TableId::UnitLeaderTraitExperience => &["token_id", "experience"],
+        TableId::UnitLeaders => {
+            let mut fields = dashboard_base::products::at_hour::field_columns(table, &["owner", "kind", "category", "captured", "character_id", "skill_valid", "skill_level", "visibility_choice", "template_visibility", "visible_state", "visible_origin"]);
+            let components = field(table, "skill_category").expect("leader skill category") + 1;
+            fields.extend(components..components + 4);
+            fields.sort_unstable();
+            return Some(fields);
+        }
+        _ => return None,
+    };
+    Some(dashboard_base::products::at_hour::field_columns(table, fields))
 }
 
 impl AtHour for LeaderHour {
     const KEY: &'static str = "unit-leader-hour";
     const TITLE: &'static str = "General career";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads cumulative battle tally and battles_partial_from from leader history context at at.hour");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = LeaderHourParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference, selection, "selection.countries[]"];
     type Reply = LeaderHourReply;
@@ -861,12 +881,8 @@ impl AtHour for LeaderHour {
     fn reads_in(params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         let Some(selection) = &params.selection else { return Self::reads(params, owner, step, held) };
         let asked = top_asked(&params.branch_id, selection);
-        if step == 1 && at.context.roster.is_some() { return member_details(&asked, held, at, false); }
-        let mut reads = UnitLeaders::reads_in(&asked, owner, step, held, at);
-        if step == 0 && at.context.roster.is_none() {
-            reads.push(Read::all(TableId::UnitLeaderTraitExperience));
-        }
-        reads
+        if step == 1 { return member_details(&asked, held, at, true); }
+        UnitLeaders::reads_in(&asked, owner, step, held, at)
     }
 
     fn reads(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
@@ -875,6 +891,8 @@ impl AtHour for LeaderHour {
         match step {
             0 => vec![
                 Read::these(TableId::UnitLeaders, [key]),
+                Read { table: TableId::LeaderBattleTotals, keys: Keys::Range(key & !u128::from(u32::MAX), key | u128::from(u32::MAX)) },
+                Read { table: TableId::LeaderTraitDates, keys: Keys::Range(key << 32, (key << 32) | u128::from(u32::MAX)) },
                 Read { table: TableId::UnitLeaderTraits, keys: Keys::Range(key << 32, (key << 32) | u128::from(u32::MAX)) },
                 Read { table: TableId::UnitLeaderTraitExperience, keys: Keys::Range(key << 33, (key << 33) | ((1u128 << 33) - 1)) },
                 Read::all(TableId::LexicalTokens),
@@ -900,46 +918,30 @@ impl AtHour for LeaderHour {
     }
 
     fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
-        let (Some(roster), Some(selection)) = (&at.context.roster, &params.selection) else {
-            return (Self::reads_in(params, owner, stage, held, at), i32::MAX);
+        let reads = match (stage, &params.selection) {
+            (2, Some(selection)) => UnitLeaders::visibility_reads(&top_asked(&params.branch_id, selection), held, at, false).0,
+            _ => Self::reads_in(params, owner, stage, held, at),
         };
-        let asked = top_asked(&params.branch_id, selection);
-        let reads = match stage {
-            1 => member_details(&asked, held, at, true),
-            2 => UnitLeaders::visibility_reads(&asked, held, at, false).0,
-            _ => UnitLeaders::reads_in(&asked, owner, stage, held, at),
-        };
-        (reads, roster.through(at.hour))
+        (reads, at.context.through(at.hour))
     }
 
-    fn clock_dependent(plan: &[(Vec<Read>, i32)], context: &Self::Context) -> bool {
-        context.roster.is_none() || plan.get(2).is_some_and(|(reads, _)| !reads.is_empty())
+    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        leader_columns(table, plan)
     }
 
-    fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], context: &Self::Context) -> Option<Vec<usize>> {
-        if Self::clock_dependent(plan, context) { return None; }
-        match table {
-            TableId::Countries => Some(dashboard_base::products::at_hour::field_columns(table, &["tag", "canonical_slot"])),
-            TableId::UnitLeaders => {
-                let experience = field(table, "experience").expect("leader experience column");
-                Some((0..table.field_count()).filter(|&column| column != experience).collect())
-            }
-            _ => None,
-        }
-    }
-
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        if !frame.tables[TableId::Clock.index()].held().is_not_selected() { return Ok(false); }
         let table = TableId::UnitLeaderTraitExperience;
-        if at.context.roster.is_none() || !frame.tables[TableId::Clock.index()].held().is_not_selected() { return Ok(false); }
         let training = edits.tables.get(&table).is_some_and(|rows| rows.keys().all(|key| key & (1u128 << 32) == 0));
-        Ok(training && edits.only_columns(table, 1 << field(table, "experience")?))
+        Ok(super::unselected_leader_edits(frame, edits) || training && edits.only_columns(table, 1 << field(table, "experience")?))
     }
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        let Some(roster) = &at.context.roster else { return i32::MAX };
-        let mut through = roster.through(at.hour);
-        if let Some(partial) = roster.partial_from.filter(|&hour| hour > at.hour) { through = through.min(partial - 1); }
-        through
+        at.context.through(at.hour)
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::reply_through(at.context, frame, reply.missing.as_deref(), &reply.warnings)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
