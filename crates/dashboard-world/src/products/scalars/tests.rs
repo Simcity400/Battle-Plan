@@ -703,14 +703,35 @@ fn world_tension_stack_applies_dated_group_membership_and_top_limit() {
 
     use crate::products::group_members::GroupsAt;
     use dashboard_base::products::at_hour::{At, AtHour};
-    use dashboard_query::identity::{Holder, HolderRun, Holders};
+    use crate::products::groups::{CountryGroupReply, FactionGroup, UnobservedHours};
+    use dashboard_query::series::ranked::{GroupSelection, GroupKind};
     use replay_data::rows::{TableId, TableRows, ThreatCountryAggregateRow};
     use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
 
-    let holders = Holders::new(["GER", "ITA"].into_iter().enumerate().map(|(index, tag)| {
-        let slot = index as u32 + 1;
-        (tag.to_owned(), vec![HolderRun { first: 10, last: 40, holder: Holder::Found { slot, id: slot }, starts_segment: true }])
-    }).collect(), Vec::new());
+    let groups_reply = CountryGroupReply {
+        branch_id: "1".into(),
+        humans: Vec::new(),
+        factions: vec![FactionGroup {
+            id: "42".into(),
+            name: Some("Example faction".into()),
+            name_reason: None,
+            names: Vec::new(),
+            recorded_name: "Example faction".into(),
+            first_hour: 10,
+            last_hour: 40,
+            members: members.to_vec(),
+            leaders: Vec::new(),
+            incomplete: Vec::new(),
+        }],
+        wars: Vec::new(),
+        war_starts: Vec::new(),
+        capitulations: Vec::new(),
+        identity_changes: Vec::new(),
+        country_identities: Vec::new(),
+        unobserved: UnobservedHours::default(),
+        warnings: Vec::new(),
+    };
+    let sel = GroupSelection { kind: GroupKind::Faction, id: Some("42".into()), tag: None, membership: GroupMembership::Hour };
     let groups = GroupsAt::new(groups_reply.into(), 10);
     let params = world_tension::WorldTensionParams { branch_id: "1".into(), countries: Some(vec![2]), values: Some(TensionValueMode::Recorded), group: Some(sel) };
     for (hour, raw, expected) in [(24, Some(300_000), None), (24, None, None), (25, Some(300_000), Some("300000")), (25, None, Some("0"))] {
