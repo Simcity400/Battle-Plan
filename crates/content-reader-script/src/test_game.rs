@@ -3,6 +3,22 @@ use std::sync::OnceLock;
 use engine_executable::executable_tables::{self, Tables};
 use synthetic_game::Executable;
 
+#[derive(Clone, Copy)]
+pub enum TriggerShape {
+    Flag,
+    OrganisationTrait,
+    OrganisationTraitAvailability,
+    CompletedOrganisationTraitCount,
+    VariableExpression,
+}
+
+impl TriggerShape {
+    pub fn register(self, game: Executable, name: &str, scopes: u32) -> Executable {
+        let (reader, fields) = self.readers();
+        game.trigger(name, scopes, reader, fields)
+    }
+}
+
 const INTERFACE_WORDS: &[&str] = &[
     "accelerated", "add", "add_horizontal", "allwaystransparent", "alwaystransparent", "amount",
     "anchor", "animatedmaptext", "animation", "animation_rate_fps", "animation_rate_spf",

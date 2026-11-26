@@ -174,5 +174,8 @@ fn comparison(field: &Field<'_>) -> bool {
     )
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(super) const VARIABLE_EXPRESSION_FIELDS: u64 = 0x14045AC70;
+
 #[cfg(test)]
 mod tests;
