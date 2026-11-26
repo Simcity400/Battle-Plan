@@ -1759,7 +1759,11 @@ traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, command
 observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
 export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
 export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number]>, warnings: Array<string>, };
-export type RegionalWeatherParams = { branchId: string, firstHour: number, lastHour: number,
+export type RegionalWeatherParams = { branchId: string,
+/**
+ * The window's first hour; with `windowDays`, left out: the window is that many days ending with the last hour's day.
+ */
+firstHour?: number, windowDays?: number, lastHour: number,
 /**
  * The most columns the days fold into: the view's pixel columns.
  */
@@ -6591,7 +6595,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "raid-log-tail": { "branchId": "leaf", "countries": "node", "countries[]": "any", "from": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "limit": "leaf", "offset": "leaf", "raidTypes": "node", "raidTypes[]": "leaf", "search": "leaf", "sort": "node", "sort.column": "leaf", "sort.direction": "leaf", "statuses": "node", "statuses[]": "leaf", "to": "leaf" },
   "raid-tally": { "branchId": "leaf", "countries": "node", "countries[]": "any", "hour": "leaf", "metric": "leaf", "top": "leaf" },
   "raid-tally-at": { "branchId": "leaf", "countries": "node", "countries[]": "any", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "metric": "leaf", "top": "leaf" },
-  "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf" },
+  "regional-weather": { "branchId": "leaf", "firstHour": "leaf", "hiddenRegions": "node", "hiddenRegions[]": "leaf", "lastHour": "leaf", "modifier": "leaf", "pinnedRegions": "node", "pinnedRegions[]": "leaf", "regions": "node", "regions[]": "leaf", "show": "leaf", "top": "leaf", "width": "leaf", "windowDays": "leaf" },
   "research": { "branchId": "leaf", "country": "any" },
   "research-breakdown": { "branchId": "leaf", "country": "any", "parts": "node", "parts[]": "node", "parts[].firstObservedHour": "leaf", "parts[].lastHour": "leaf", "parts[].slot": "leaf", "parts[].started": "leaf" },
   "research-history": { "branchId": "leaf", "country": "any", "folders": "node", "folders[]": "leaf", "hour": "leaf" },

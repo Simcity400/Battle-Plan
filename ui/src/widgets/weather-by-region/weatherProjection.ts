@@ -297,7 +297,6 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
     const show = weatherShow(ctx.options);
     const modifier = show === 'modifiers' && ctx.options.modifier ? contentKey(String(ctx.options.modifier)) : null;
     const chosen = regionParams(readRegionChoice(ctx.options.regions));
-    const firstHour = ctx.branch.firstHour;
     const width = Math.ceil(Math.max(1, view.width ?? WIDTH_STEP) / WIDTH_STEP) * WIDTH_STEP;
     const params = {
       branchId: ctx.branch.id,
@@ -307,6 +306,7 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
       regions: null,
       ...chosen,
       top: WEATHER_TOP,
+      windowDays: WEATHER_WINDOW_DAYS,
     };
     return {
       owner: `weather-by-region:${ctx.branch.id}:${show}:${modifier ?? ''}:${JSON.stringify(chosen)}:${width}`,
@@ -320,10 +320,10 @@ export const weatherDeclaration: HeatLanesWidgetDeclaration<WeatherProjectionOpt
           channel: 'panel',
           coverage: { mode: 'population', form: 'top', limit: WEATHER_TOP },
           product: 'regional-weather',
-          followQuery: { panel: 'regional-weather', windowDays: WEATHER_WINDOW_DAYS, ...params },
+          followQuery: { panel: 'regional-weather', ...params },
           params,
-          dynamicKeys: ['firstHour', 'lastHour'],
-          buildExactParams: (base, hour) => ({ ...base, firstHour: Math.max(firstHour, (Math.floor(hour / 24) - WEATHER_WINDOW_DAYS + 1) * 24), lastHour: hour }),
+          dynamicKeys: ['lastHour'],
+          buildExactParams: (base, hour) => ({ ...base, lastHour: hour }),
         },
       }],
     };

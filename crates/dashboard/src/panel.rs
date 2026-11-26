@@ -38,18 +38,7 @@ pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -
         "casualty-breakdown" => product_interval_panel::<dashboard_wars::products::casualties::CasualtyBreakdown>(source, load, asked, at_hour, |r| r.through),
         "bombing-damage-breakdown" => product_interval_panel::<dashboard_air::products::air_ledger::breakdown::BombingDamageBreakdown>(source, load, asked, at_hour, |r| r.through),
         "focus-card" => product_interval_panel::<dashboard_politics::products::focus_card::FocusCard>(source, load, asked, at_hour, |r| r.valid_through),
-        "regional-weather" => {
-            let days = asked["windowDays"].as_i64().and_then(|days| i32::try_from(days).ok()).filter(|&days| days > 0);
-            let first = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch)).map(|q| q.timeline.first).map_err(|e| e.to_string());
-            first.and_then(|first| days.map(|days| (first, days)).ok_or_else(|| "Expected the weather window's days".to_owned())).and_then(|(first, days)| product_interval_panel::<dashboard_air::products::regional_weather::RegionalWeather>(
-                source, load, asked, move |request, hour| {
-                    if let Some(request) = request.as_object_mut() {
-                        request.remove("windowDays");
-                    }
-                    request["firstHour"] = first.max(hour.div_euclid(24).saturating_sub(days - 1).saturating_mul(24)).into();
-                    request["lastHour"] = hour.into();
-                }, |r| r.valid_through))
-        }
+        "regional-weather" => product_interval_panel::<dashboard_air::products::regional_weather::RegionalWeather>(source, load, asked, |request, hour| request["lastHour"] = hour.into(), |r| r.valid_through),
         "series-rank" => rank_panel(source, load, asked),
         "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
         "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),

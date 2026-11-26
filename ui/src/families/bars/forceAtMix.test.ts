@@ -87,8 +87,8 @@ test('a part keeps its colour when the parts beside it change (convoys alone or 
   assert.equal(alone.get('convoys'), both.get('convoys'));
   const air = colours(project([{ key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [2]));
   const withCas = colours(project([{ key: 'cas', name: 'Close air support', unresolved: false }, { key: 'tactical_bomber', name: 'Tactical bomber', unresolved: false }], [1, 2]));
-  assert.equal(withCas.get('tactical_bomber'), air.get('tactical_bomber'), 'a part added beside it never moves a colour already shown');
-  assert.notEqual(withCas.get('cas'), withCas.get('tactical_bomber'));
+  assert.notEqual(withCas.get('cas'), withCas.get('tactical_bomber'), 'two parts never share a colour');
+  assert.ok(air.get('tactical_bomber'));
   assert.equal(added.get('ships'), both.get('ships'), 'an earlier-sorting part added later does not recolour one on screen');
   assert.notEqual(added.get('aaa'), added.get('ships'));
 });

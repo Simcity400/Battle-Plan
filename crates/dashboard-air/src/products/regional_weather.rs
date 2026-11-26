@@ -61,7 +61,13 @@ pub enum Show {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegionalWeatherParams {
     pub branch_id: String,
-    pub first_hour: i32,
+    #[doc = " The window's first hour; with `windowDays`, left out: the window is that many days ending with the last hour's day."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub first_hour: Option<i32>,
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub window_days: Option<i32>,
     pub last_hour: i32,
     #[doc = " The most columns the days fold into: the view's pixel columns."]
     pub width: u32,
@@ -610,7 +616,12 @@ fn modifier_choices(frame: Option<&DecodedFrame>, cat: &Catalogue, warnings: &mu
 
 fn history(query: &Query<'_>, params: &RegionalWeatherParams, weather: &Weather, cancelled: &AtomicBool) -> io::Result<RegionalWeatherReply> {
     let recording = query.replay.recording();
-    let (first, last) = (params.first_hour.max(query.timeline.first), params.last_hour.min(query.timeline.last));
+    let asked = match (params.first_hour, params.window_days) {
+        (Some(first), _) => first,
+        (None, Some(days)) => params.last_hour.div_euclid(DAY_HOURS).saturating_sub(days - 1).saturating_mul(DAY_HOURS),
+        (None, None) => params.last_hour,
+    };
+    let (first, last) = (asked.max(query.timeline.first), params.last_hour.min(query.timeline.last));
     let mut warnings = weather.warnings.clone();
     let mut known: Vec<(u32, i32, i32)> = Vec::new();
     let mut complete: Vec<(i32, i32)> = Vec::new();
@@ -808,12 +819,12 @@ impl Product for RegionalWeather {
     const KEY: &'static str = "regional-weather";
     const CONTENT_DEPENDENT: bool = true;
     type Params = RegionalWeatherParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, width, show, modifier, regions, pinnedRegions, hiddenRegions, top, "pinnedRegions[]", "hiddenRegions[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, windowDays, lastHour: End, width, show, modifier, regions, pinnedRegions, hiddenRegions, top, "pinnedRegions[]", "hiddenRegions[]"];
     type Reply = RegionalWeatherReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        if params.first_hour > params.last_hour || params.width == 0 {
+        if params.first_hour.is_some_and(|first| first > params.last_hour) || params.first_hour.is_some() == params.window_days.is_some() || params.window_days.is_some_and(|days| days < 1) || params.width == 0 {
             return Err("Invalid weather window");
         }
         for region in params.regions.iter().flatten() {
