@@ -3140,5 +3140,54 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
     denseReads = 0;
     stepShort(H1936 + 999);
     assert.ok(denseReads < 40, `exhausted short band does not force dense band resample (reads=${denseReads})`);
+
+    let periodicReads = 0;
+    const periodicBuckets = Array.from({ length: 1005 }, (_, i) => {
+      if (i % 3 !== 0) return null;
+      const b = makeBucket(H1936 + i, H1936 + i, 10 + (i % 7));
+      return new Proxy(b, { get: (target, prop) => { periodicReads++; return Reflect.get(target, prop); } });
+    });
+    const periodicTiled: TiledLine = {
+      tag: 'PER', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 1004, width: 1005, buckets: periodicBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const perCur = new BoundedSeriesCursor();
+    const stepPeriodic = (h: number) => buildBoundedStack([
+      { id: 'p', key: 'p', name: 'P', color: LANE_THEME.blue, parts: [{ series: perCur.advance(periodicTiled, h) }] },
+    ], h);
+    stepPeriodic(H1936 + 998);
+    for (const offset of [999, 1000, 1001, 1002]) {
+      periodicReads = 0;
+      const got = stepPeriodic(H1936 + offset);
+      assert.ok(periodicReads < 30, `periodic gaps stay O(1) at offset ${offset} (reads=${periodicReads})`);
+      const ref = (() => {
+        timeChartCacheState.enabled = false;
+        try { return stepPeriodic(H1936 + offset); }
+        finally { timeChartCacheState.enabled = true; }
+      })();
+      assert.deepEqual(got, ref, `periodic gaps match uncached at offset ${offset}`);
+    }
+
+    let wideReads = 0;
+    const wideRaw = Array.from({ length: 10000 }, (_, i) => (i === 0 ? makeBucket(H1936, H1936, 1) : i === 9999 ? makeBucket(H1936 + 9999, H1936 + 9999, 2) : null));
+    const wideBuckets = new Proxy(wideRaw, {
+      get: (target, prop) => {
+        if (typeof prop === 'string' && /^\d+$/.test(prop)) wideReads++;
+        return Reflect.get(target, prop);
+      },
+    });
+    const wideTiled: TiledLine = {
+      tag: 'WIDE', head: 'h', decimals: 0,
+      summary: { from: H1936, to: H1936 + 9999, width: 10000, buckets: wideBuckets, tiles: { binHours: 1, valueAt: () => null } },
+      missing: [], parts: [], marks: null,
+    };
+    const wideSlice = boundTiledSeries(wideTiled, displayedHour(H1936 + 9999));
+    const wideInputs = [{ id: 'w', key: 'w', name: 'W', color: LANE_THEME.blue, parts: [{ series: wideSlice }] }];
+    buildBoundedStack(wideInputs, H1936 + 3);
+    wideReads = 0;
+    const wideAt4 = buildBoundedStack(wideInputs, H1936 + 4);
+    assert.deepEqual(wideAt4.hours, [H1936, H1936 + 4]);
+    assert.ok(wideReads < 20, `wide slice caps null-bucket scan at requested hour (reads=${wideReads})`);
   });
 });

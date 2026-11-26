@@ -1036,17 +1036,20 @@ function resetStackCacheEntry(entry: CachedBoundedStack): void {
   }
 }
 
-function hasHourSorted(sorted: readonly number[], target: number): boolean {
+function lowerBoundNumber(sorted: readonly number[], target: number): number {
   let lo = 0;
-  let hi = sorted.length - 1;
-  while (lo <= hi) {
+  let hi = sorted.length;
+  while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    const v = sorted[mid]!;
-    if (v === target) return true;
-    if (v < target) lo = mid + 1;
-    else hi = mid - 1;
+    if (sorted[mid]! < target) lo = mid + 1;
+    else hi = mid;
   }
-  return false;
+  return lo;
+}
+
+function hasHourSorted(sorted: readonly number[], target: number): boolean {
+  const idx = lowerBoundNumber(sorted, target);
+  return idx < sorted.length && sorted[idx] === target;
 }
 
 function computeStackClosedThrough(
@@ -1092,6 +1095,7 @@ function collectSeriesClosedHours(
   hasAfter: boolean,
   afterHour: number,
   untilHour: number,
+  earlyTarget: Set<number>,
   target: Set<number>,
   prefixHours: readonly number[],
 ): boolean {
@@ -1111,7 +1115,7 @@ function collectSeriesClosedHours(
         const gapHour = pLast + 1;
         if (gapHour < run.firstHour) {
           if (hasAfter && gapHour <= afterHour) {
-            if (!hasHourSorted(prefixHours, gapHour)) return true;
+            if (!hasHourSorted(prefixHours, gapHour)) earlyTarget.add(gapHour);
           } else {
             add(gapHour);
           }
@@ -1142,7 +1146,10 @@ function collectSeriesClosedHours(
     cp.scannedClosed = nextScanned;
   } else {
     const buckets = series.buckets;
-    const limit = buckets.closedLength;
+    const binCap = series.binHours > 0 && Number.isFinite(untilHour)
+      ? Math.max(0, Math.floor((untilHour - series.from) / series.binHours) + 1)
+      : buckets.closedLength;
+    const limit = Math.min(buckets.closedLength, binCap);
     const minStep = Math.max(1, series.binHours);
     let pLast = cp.prevLast;
     let nextScanned = cp.scannedClosed;
@@ -1159,7 +1166,7 @@ function collectSeriesClosedHours(
         const gapHour = pLast + 1;
         if (gapHour < b.firstHour) {
           if (hasAfter && gapHour <= afterHour) {
-            if (!hasHourSorted(prefixHours, gapHour)) return true;
+            if (!hasHourSorted(prefixHours, gapHour)) earlyTarget.add(gapHour);
           } else {
             add(gapHour);
           }
@@ -1234,7 +1241,10 @@ function collectSeriesTailHours(
     }
   } else {
     const buckets = series.buckets;
-    const limit = buckets.length;
+    const binCap = series.binHours > 0 && Number.isFinite(hour)
+      ? Math.max(0, Math.floor((hour - series.from) / series.binHours) + 1)
+      : buckets.length;
+    const limit = Math.min(buckets.length, binCap);
     const minStep = Math.max(1, series.binHours);
     let pLast = cp.prevLast;
     for (let i = cp.scannedClosed; i < limit; i++) {
@@ -1400,6 +1410,7 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
 
   const commitPrefix = () => {
     if (!Number.isFinite(closedThrough) || (entry.hasClosedPrefix && closedThrough <= entry.closedThrough)) return false;
+    const earlyClosedSet = new Set<number>();
     const newSet = new Set<number>();
     const prevHasClosed = entry.hasClosedPrefix;
     const prevClosed = entry.closedThrough;
@@ -1409,10 +1420,53 @@ export function buildBoundedStack(inputs: readonly BoundedStackBandInput[], hour
       for (let p = 0; p < input.parts.length; p++) {
         const part = input.parts[p]!;
         const cp = cb.parts[p]!;
-        if (part.series && collectSeriesClosedHours(part.series, cp, prevHasClosed, prevClosed, closedThrough, newSet, entry.hours)) {
+        if (part.series && collectSeriesClosedHours(part.series, cp, prevHasClosed, prevClosed, closedThrough, earlyClosedSet, newSet, entry.hours)) {
           return true;
         }
         collectWithinHoursWindow(cp.within, prevHasClosed, prevClosed, closedThrough, hour, newSet);
+      }
+    }
+    if (earlyClosedSet.size > 0) {
+      const earlyAdded = earlyClosedSet.size > 1 ? [...earlyClosedSet].sort((a, b) => a - b) : [...earlyClosedSet];
+      for (let i = 0; i < earlyAdded.length; i++) {
+        const h = earlyAdded[i]!;
+        const ins = lowerBoundNumber(entry.hours, h);
+        const valid = sampleStackRow(inputs, h, hour, row, outsideFlags);
+        if (ins === entry.hours.length) {
+          entry.hours.push(h);
+          for (let b = 0; b < bandCount; b++) {
+            entry.valuesByBand[b]!.push(valid ? row[b]! : null);
+            if (outsideFlags[b]) {
+              let out = entry.outsideByBand[b];
+              if (!out) {
+                out = new Array<boolean>(ins + 1).fill(false);
+                entry.outsideByBand[b] = out;
+              } else {
+                out.push(true);
+              }
+              out[ins] = true;
+            } else if (entry.outsideByBand[b]) {
+              entry.outsideByBand[b]!.push(false);
+            }
+          }
+        } else {
+          entry.hours.splice(ins, 0, h);
+          for (let b = 0; b < bandCount; b++) {
+            entry.valuesByBand[b]!.splice(ins, 0, valid ? row[b]! : null);
+            if (outsideFlags[b]) {
+              let out = entry.outsideByBand[b];
+              if (!out) {
+                out = new Array<boolean>(entry.hours.length).fill(false);
+                entry.outsideByBand[b] = out;
+                out[ins] = true;
+              } else {
+                out.splice(ins, 0, true);
+              }
+            } else if (entry.outsideByBand[b]) {
+              entry.outsideByBand[b]!.splice(ins, 0, false);
+            }
+          }
+        }
       }
     }
     if (newSet.size > 0) {
