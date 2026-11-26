@@ -29,8 +29,9 @@ export function airParams(mode: AirModeSettings) {
 export function airPercent(score: number, total: number): string { return total > 0 ? `${Math.round(score * 100 / total)}%` : '—'; }
 export const airScore = (score: number, scale: number): string => formatAmount(rescale(BigInt(Math.trunc(score)), scale, 2), 2);
 
-export function factionNamer(dated: readonly FactionGroup[], campaign: readonly FactionGroup[], own: ReadonlyMap<string, string>, at: number | 'not-recorded' | null) {
-  const datedById = new Map(dated.map(faction => [faction.id, faction]));
+export function factionNamer(dated: readonly FactionGroup[] | undefined, campaign: readonly FactionGroup[], own: ReadonlyMap<string, string>, shown: number | null, gap: boolean) {
+  const at = shown ?? (gap ? 'not-recorded' : null);
+  const datedById = new Map((dated ?? []).map(faction => [faction.id, faction]));
   const campaignById = new Map(campaign.map(faction => [faction.id, faction]));
   return (id: string) => {
     const mine = own.get(id);

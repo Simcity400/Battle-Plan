@@ -31,16 +31,15 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
   const region = useRegion(widget);
   const shown = useRegionHour(runtime, region, true, changes);
   const gap = useRegionOutside(runtime, region)?.kind === 'not-recorded';
-  const at = shown ?? (gap ? 'not-recorded' : null);
   return useMemo(() => {
     const campaign = track?.source.metadata.campaignKey ?? '';
-    const faction = factionNamer(dated ?? [], factions.factions, factions.displayNames, at);
+    const faction = factionNamer(dated, factions.factions, factions.displayNames, shown, gap);
     const country = (tag: string) => looks.name(tag, hour);
     const sides = (choices.data?.sides ?? []).map(side => ({ value: airChoiceToken(campaign, side.key), label: airSideName(side, country, faction) }));
     return {
       viewpoint: [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))], sides,
       theatres: (choices.data?.theatres ?? []).map(theatre => ({ value: airChoiceToken(campaign, theatre.id), label: theatre.name })),
     };
-  }, [choices.data, looks, hour, dated, at, factions.factions, factions.displayNames, track?.source.metadata.campaignKey]);
+  }, [choices.data, looks, hour, dated, shown, gap, factions.factions, factions.displayNames, track?.source.metadata.campaignKey]);
 }
 
