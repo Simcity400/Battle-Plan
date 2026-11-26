@@ -52,7 +52,9 @@ export interface AutonomyLinesOptions {
   readonly surface: string;
 }
 
-const FORMER_SUBJECT = 'Not a subject of this overlord at this date';
+function historicalReason(roster: ReadonlySet<string>, key: string): string {
+  return roster.has(key) ? 'Outside the selected countries at this date' : 'Not a subject at this date';
+}
 
 function matchingSubjects(
   subjects: readonly AutonomySubject[],
@@ -84,7 +86,7 @@ function subjectKeys(subjects: readonly AutonomySubject[]): Set<string> {
 function buildHoverDetail(
   readView: BoundedReadView,
   options: AutonomyLinesOptions,
-  looks: ReturnType<typeof countrySeriesLooks>,
+  series: readonly TimeChartSeriesModel[],
   firstSeen: ReadonlyMap<string, number>,
 ): ChartHoverDetail | null {
   let hover;
@@ -112,11 +114,17 @@ function buildHoverDetail(
     };
   }
   const eligible = matchingSubjects(reply.subjects, options.filter, options.bySubject, hour);
+  const roster = subjectKeys(reply.subjects);
+  const byKey = new Map<string, TimeChartSeriesModel>();
+  for (const line of series) {
+    byKey.set(line.key, line);
+    if (line.bounded) byKey.set(line.bounded.tag, line);
+  }
 
   const items: TooltipListItem[] = [];
   for (const item of eligible) {
     const key = subjectKeyOf(item);
-    const look = looks.get(key);
+    const look = byKey.get(key) ?? (item.subject && byKey.get(item.subject));
     const atHour = look ? seriesLookAt(look, hour) : null;
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
@@ -155,12 +163,12 @@ function buildHoverDetail(
   const current = subjectKeys(eligible);
   for (const [key, first] of firstSeen) {
     if (first > hour || current.has(key)) continue;
-    const look = looks.get(key);
+    const look = byKey.get(key);
     const atHour = look && seriesLookAt(look, hour);
     const flag = atHour?.flag && artUrlOf(atHour.flag.art);
     items.push({
       label: atHour?.name ?? identityName(readView, 'country', key, hour),
-      missingReason: FORMER_SUBJECT, tone: 'muted', divider: items.length > 0,
+      missingReason: historicalReason(roster, key), tone: 'muted', divider: items.length > 0,
       swatch: atHour?.color ?? tailColour(options.surface),
       ...(flag ? { countryFlag: { flag } } : {}),
     });
@@ -363,6 +371,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       ));
     }
 
+    const roster = subjectKeys(reply.subjects);
     for (const key of former) {
       const look = looks.get(key)!;
       const tile = mainTiles?.get(key) ?? null;
@@ -380,13 +389,13 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
         flag: look.flag,
         identities: look.identities,
         missingSpans: missingSpansOf(tile),
-        absentReason: FORMER_SUBJECT,
+        absentReason: historicalReason(roster, key),
         endLabel: null,
       });
     }
 
     const yTop = maxSeen > 100 ? Math.ceil(maxSeen / 25) * 25 : 100;
-    const hoverDetail = buildHoverDetail(readView, options, looks, firstSeen);
+    const hoverDetail = buildHoverDetail(readView, options, seriesList, firstSeen);
     return {
       kind: 'autonomy',
       measureTitle: 'Autonomy',

@@ -65,11 +65,6 @@ function spansFor(within: TileLane['within'], tag: string, binHours: number, ind
     : [{ firstHour: Math.max(from, span.firstHour), lastHour: Math.min(to, span.lastHour) }]);
 }
 
-const tileKey = (lane: TileLane, tag: string, binHours: number, index: number) => {
-  const spans = spansFor(lane.within, tag, binHours, index);
-  return `${lane.key}${lane.marks ? '|marks' : ''}|${binHours}|${index}|${tag}${spans ? `|${JSON.stringify(spans)}` : ''}`;
-};
-
 const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.immutable
   || (tile.askedFor ?? -Infinity) >= lastHour
   || (tile.filled === null ? tile.firstHour > lastHour : tile.filled >= Math.min(tileLast(tile), lastHour));
@@ -89,11 +84,18 @@ export class TileView {
   private rankFailedHour: number | null = null;
   private readonly cache: TileCache;
   private readonly lane: TileLane;
+  private readonly cacheLane: ReturnType<TileCache['acquireLane']>;
   private readonly changed: () => void;
   asked = 0;
 
   constructor(cache: TileCache, lane: TileLane, changed: () => void) {
     this.cache = cache; this.lane = lane; this.changed = changed;
+    this.cacheLane = cache.acquireLane(lane.key);
+  }
+
+  private tileKey(tag: string, binHours: number, index: number): string {
+    const spans = spansFor(this.lane.within, tag, binHours, index);
+    return `${this.cacheLane.id}${this.lane.marks ? '|marks' : ''}|${binHours}|${index}|${tag}${spans ? `|${JSON.stringify(spans)}` : ''}`;
   }
 
   get current(): ReadonlyMap<string, TiledLine> | null { return this.lines; }
@@ -130,10 +132,10 @@ export class TileView {
       const ranking = reply.ranking;
       if (!ranking || !Array.isArray(reply.lines)) throw new Error('The chart tile reply names no top.');
       const tags = reply.lines.map(held => countryKey(held.country));
-      const tiles = tilesOf(reply, tags, binHours, index, tag => tileKey(this.lane, tag, binHours, index));
+      const tiles = tilesOf(reply, tags, binHours, index, tag => this.tileKey(tag, binHours, index));
       for (const tile of tiles) {
         const held = this.cache.has(tile.key) ? this.cache.get(tile.key) : undefined;
-        if (!held || !fresh(held, this.lane.lastHour)) this.cache.put(Object.assign(tile, { askedFor: this.lane.lastHour }));
+        if (!held || !fresh(held, this.lane.lastHour)) this.cache.put(Object.assign(tile, { askedFor: this.lane.lastHour }), this.cacheLane);
       }
       this.ranked = { tags, hour: ranking.hour, from: ranking.from, until: ranking.until, refused: ranking.refused };
       this.repin();
@@ -154,7 +156,7 @@ export class TileView {
     const wanted = this.wanted;
     if (!wanted) return;
     const keys: string[] = [];
-    for (let index = wanted.first; index <= wanted.last; index++) for (const tag of this.tags) keys.push(tileKey(this.lane, tag, wanted.binHours, index));
+    for (let index = wanted.first; index <= wanted.last; index++) for (const tag of this.tags) keys.push(this.tileKey(tag, wanted.binHours, index));
     this.cache.pin(keys);
     this.cache.unpin(wanted.keys);
     wanted.keys = keys;
@@ -171,7 +173,7 @@ export class TileView {
     const held = this.wanted;
     if (held && held.binHours === binHours && held.first === first && held.last === last && held.width === view.width && held.cell === cell) return;
     const keys: string[] = [];
-    for (let index = first; index <= last; index++) for (const tag of this.tags) keys.push(tileKey(this.lane, tag, binHours, index));
+    for (let index = first; index <= last; index++) for (const tag of this.tags) keys.push(this.tileKey(tag, binHours, index));
     this.cache.pin(keys);
     if (held) this.cache.unpin(held.keys);
     this.wanted = { binHours, first, last, width: view.width, cell, keys };
@@ -194,6 +196,7 @@ export class TileView {
     if (this.closed) return;
     this.closed = true;
     if (this.wanted) this.cache.unpin(this.wanted.keys);
+    this.cache.releaseLane(this.cacheLane);
   }
 
   private fetch(): void {
@@ -202,7 +205,7 @@ export class TileView {
     for (let index = wanted.first; index <= wanted.last; index++) {
       const lacking: string[] = [], waiting = new Set<Promise<void>>();
       for (const tag of this.tags) {
-        const key = tileKey(this.lane, tag, wanted.binHours, index);
+        const key = this.tileKey(tag, wanted.binHours, index);
         const tile = this.cache.get(key);
         if (tile && fresh(tile, this.lane.lastHour)) continue;
         const flight = this.cache.inflight.get(key);
@@ -217,13 +220,14 @@ export class TileView {
 
   private request(binHours: number, index: number, tags: string[]): void {
     const lane = this.lane, lastHour = lane.lastHour;
-    const keys = tags.map(tag => tileKey(lane, tag, binHours, index));
+    const keys = tags.map(tag => this.tileKey(tag, binHours, index));
     const within = lane.within && Object.fromEntries(tags.map(tag => [tag, spansFor(lane.within, tag, binHours, index)!]));
     this.asked++;
     const flight = lane.ask(binHours, index, tags, within).then(reply => {
       const tiles = tilesOf(reply, tags, binHours, index, tag => keys[tags.indexOf(tag)]);
-      for (const tile of tiles) this.cache.put(Object.assign(tile, { askedFor: lastHour }));
+      for (const tile of tiles) this.cache.put(Object.assign(tile, { askedFor: lastHour }), this.cacheLane);
     });
+    this.cache.retainLane(this.cacheLane);
     const join = lane.promote && (() => lane.promote!(binHours, index, tags, within));
     for (const key of keys) {
       this.cache.inflight.set(key, flight);
@@ -235,6 +239,7 @@ export class TileView {
       this.notify();
     }).finally(() => {
       for (const key of keys) if (this.cache.inflight.get(key) === flight) { this.cache.inflight.delete(key); this.cache.joins.delete(key); }
+      this.cache.releaseLane(this.cacheLane);
     });
   }
 
@@ -246,7 +251,7 @@ export class TileView {
     for (const tag of this.tags) {
       const own: Tile[] = [];
       for (let index = wanted.first; index <= wanted.last; index++) {
-        const tile = this.cache.get(tileKey(this.lane, tag, wanted.binHours, index));
+        const tile = this.cache.get(this.tileKey(tag, wanted.binHours, index));
         if (!tile) return;
         own.push(tile);
       }
