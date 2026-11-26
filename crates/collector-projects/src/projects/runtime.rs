@@ -265,7 +265,6 @@ impl Runtime {
                     || pending_stamp != held.pending_stamp
                     || row.state.iterations != held.iterations
                 {
-                    reader = None;
                     let pending = pointer
                         .checked_add(nproject_cproject::PENDING_REWARD)
                         .and_then(|address| engine_native_memory::read::<u64>(memory, address))
@@ -296,8 +295,12 @@ impl Runtime {
                             held.pending_known = held.pending_ordinal.is_some();
                         }
                     }
-                    held.pending_known &=
-                        pending_stamp == project_variable_changes::pending_stamp(store);
+                    let current_pending = reader
+                        .as_ref()
+                        .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                        .map(|(_, pending)| pending)
+                        .unwrap_or_else(|| project_variable_changes::pending_stamp(store));
+                    held.pending_known &= pending_stamp == current_pending;
                     held.pending_stamp = pending_stamp;
                     held.iterations = row.state.iterations;
                     if !held.pending_known {
@@ -313,7 +316,6 @@ impl Runtime {
                 if !force && held.variables_known && stamp == held.stamp {
                     return;
                 }
-                reader = None;
                 held.variables_known = false;
                 held.freeze_pending = false;
                 if held.pending_raw.is_none() {
@@ -338,10 +340,18 @@ impl Runtime {
                 {
                     raw.entries_len = len;
                     raw.seed = seed;
-                    held.variables_known = seed.is_some()
-                        && stamp.is_some()
-                        && stamp
-                            == project_variable_changes::register(store, row.owner, row.local_id);
+                    let after_stamp = match reader
+                        .as_ref()
+                        .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                    {
+                        Some((stamp, _)) => stamp,
+                        None => {
+                            reader = None;
+                            project_variable_changes::register(store, row.owner, row.local_id)
+                        }
+                    };
+                    held.variables_known =
+                        seed.is_some() && stamp.is_some() && stamp == after_stamp;
                     held.stamp = stamp;
                     if held.variables_known {
                         if defer && !held.queued {

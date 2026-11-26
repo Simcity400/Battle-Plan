@@ -347,6 +347,42 @@ impl Spill {
         }
         true
     }
+    fn push_bytes(
+        &self,
+        index: u64,
+        mut entry: Entry,
+        name_required: usize,
+        name_bytes: Option<&[u8]>,
+    ) -> bool {
+        let mut bytes = Vec::new();
+        let copy_len = name_bytes.map_or(0, <[u8]>::len);
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut bytes, copy_len))
+            .is_err()
+        {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(src) = name_bytes {
+            bytes.extend_from_slice(src);
+            entry.name = Some((0, src.len()));
+        }
+        let refusal = entry.name_reason;
+        let pushed = Pushed {
+            index,
+            entry,
+            name_required,
+            name: bytes,
+        };
+        if self.pushed.push(pushed).is_err() {
+            self.lost.fetch_min(index, Ordering::AcqRel);
+            return false;
+        }
+        if let Some(reason) = refusal {
+            REFUSAL.record(reason);
+            COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
     fn release(&self) {
         drop(self.pushed.take());
         *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Spilled {
@@ -496,8 +532,195 @@ struct Pending {
     refused: bool,
     cause: Option<usize>,
 }
+#[derive(Clone, Copy)]
+struct BatchedRecipient {
+    kind: u32,
+    pointer: usize,
+    host_ptr: usize,
+    recipient: native::Recipient,
+    amount: i64,
+    name: Option<(usize, usize)>,
+    name_required: usize,
+    name_reason: Option<&'static str>,
+}
+
+#[derive(Default)]
+struct PendingBatch {
+    items: Vec<BatchedRecipient>,
+    names: Vec<u8>,
+    total_name_bytes: usize,
+    max_name_len: usize,
+    table: Vec<u32>,
+    touched: Vec<usize>,
+}
+
+impl PendingBatch {
+    #[inline(always)]
+    fn hash(kind: u32, pointer: usize, host_ptr: usize) -> usize {
+        let mut h = (pointer as u64).wrapping_mul(0x517c_c1b7_2722_0a95)
+            ^ (host_ptr as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ u64::from(kind).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 32;
+        h as usize
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.names.clear();
+        self.total_name_bytes = 0;
+        self.max_name_len = 0;
+        if self.touched.len() * 4 < self.table.len() {
+            for &slot in &self.touched {
+                self.table[slot] = 0;
+            }
+        } else {
+            self.table.fill(0);
+        }
+        self.touched.clear();
+    }
+
+    #[inline(always)]
+    fn try_coalesce(
+        &mut self,
+        kind: u32,
+        pointer: usize,
+        host_ptr: usize,
+        amount: i64,
+    ) -> Option<bool> {
+        let len = self.table.len();
+        if len == 0 {
+            return None;
+        }
+        let mask = len - 1;
+        let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
+        loop {
+            let entry = self.table[slot];
+            if entry == 0 {
+                return None;
+            }
+            let item = &mut self.items[(entry - 1) as usize];
+            if item.kind == kind && item.pointer == pointer && item.host_ptr == host_ptr {
+                if let Some(sum) = item.amount.checked_add(amount) {
+                    item.amount = sum;
+                    return Some(true);
+                }
+                return Some(false);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn rehash(&mut self, new_len: usize) {
+        let mut table = Vec::new();
+        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut table, new_len))
+            .is_err()
+        {
+            return;
+        }
+        table.resize(new_len, 0);
+        let mask = new_len - 1;
+        self.touched.clear();
+        let _ = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.touched, self.items.len())
+        });
+        for (idx, item) in self.items.iter().enumerate() {
+            let mut slot = Self::hash(item.kind, item.pointer, item.host_ptr) & mask;
+            while table[slot] != 0 {
+                slot = (slot + 1) & mask;
+            }
+            table[slot] = (idx + 1) as u32;
+            if self.touched.len() < self.touched.capacity() {
+                self.touched.push(slot);
+            }
+        }
+        self.table = table;
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "batched recipient carries key fields, decoded recipient, amount, name and live memory"
+    )]
+    fn push(
+        &mut self,
+        kind: u32,
+        pointer: usize,
+        host_ptr: usize,
+        recipient: native::Recipient,
+        amount: i64,
+        stored_name: Option<&native::StoredName>,
+        mut name_reason: Option<&'static str>,
+        insert_in_table: bool,
+        memory: &impl Memory,
+    ) -> bool {
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.items, 1)).is_err() {
+            return false;
+        }
+        let name_required = stored_name.map_or(0, native::StoredName::byte_len);
+        let mut name = None;
+        if let Some(stored) = stored_name {
+            let start = self.names.len();
+            if engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.names, name_required)
+            })
+            .is_err()
+            {
+                return false;
+            }
+            self.names.resize(start + name_required, 0);
+            match stored.copy(memory, &mut self.names[start..start + name_required]) {
+                Ok(()) => name = Some((start, name_required)),
+                Err(reason) => {
+                    self.names.truncate(start);
+                    name_reason = Some(reason);
+                }
+            }
+        }
+        let idx = self.items.len();
+        self.items.push(BatchedRecipient {
+            kind,
+            pointer,
+            host_ptr,
+            recipient,
+            amount,
+            name,
+            name_required,
+            name_reason,
+        });
+        self.total_name_bytes = self.total_name_bytes.saturating_add(name_required);
+        self.max_name_len = self.max_name_len.max(name_required);
+        if insert_in_table && idx < u32::MAX as usize {
+            if self.table.is_empty() {
+                self.rehash(64);
+            } else if self.items.len() * 2 >= self.table.len() {
+                self.rehash(self.table.len().saturating_mul(2));
+            }
+            if !self.table.is_empty() && self.items.len() * 2 < self.table.len() {
+                let mask = self.table.len() - 1;
+                let mut slot = Self::hash(kind, pointer, host_ptr) & mask;
+                while self.table[slot] != 0 {
+                    slot = (slot + 1) & mask;
+                }
+                self.table[slot] = (idx + 1) as u32;
+                if self.touched.len() == self.touched.capacity() {
+                    let _ = engine_allocation::advisory(|| {
+                        engine_allocation::reserve(&mut self.touched, 1)
+                    });
+                }
+                if self.touched.len() < self.touched.capacity() {
+                    self.touched.push(slot);
+                } else {
+                    self.touched.clear();
+                    self.touched.resize(self.table.len(), 0);
+                }
+            }
+        }
+        true
+    }
+}
+
 thread_local! {
     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
+    static PENDING_BATCH: RefCell<PendingBatch> = RefCell::new(PendingBatch::default());
     static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
 }
 
@@ -521,12 +744,17 @@ fn stamp() -> Stamp {
     )
 }
 
-fn held(pending: &Pending, epoch_current: bool) -> Option<native::Located> {
+fn held_for(pending: &Pending, epoch_current: bool) -> Option<native::Located> {
     (!pending.refused
         && epoch_current
         && pending.stamp == stamp()
         && !crate::world_lifetime::invalidating())
     .then_some(pending.located)
+}
+
+#[cfg(test)]
+fn held(pending: &Pending) -> Option<native::Located> {
+    held_for(pending, pending.epoch == LOG.epoch.load(Ordering::Acquire))
 }
 
 pub fn presize(memory: &impl Memory, base: usize) {
@@ -818,6 +1046,333 @@ fn append(
     }
     retained
 }
+fn flush_batch_orphans(_call: &Call<'_>, batch: &mut PendingBatch, root: u64, country: u32) {
+    let count = batch.items.len();
+    if count == 0 {
+        batch.clear();
+        return;
+    }
+    let attempted = ENTRY_ATTEMPTS
+        .fetch_add(count as u64, Ordering::Relaxed)
+        .wrapping_add(count as u64);
+    raise(
+        &ENTRY_DEMAND,
+        attempted_since(attempted, &ENTRY_CONSUMED),
+        Ordering::Release,
+    );
+    if batch.total_name_bytes != 0 {
+        let bytes = batch.total_name_bytes as u64;
+        let attempted = NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes);
+        raise(
+            &NAME_DEMAND,
+            attempted_since(attempted, &NAME_CONSUMED),
+            Ordering::Release,
+        );
+        raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
+    }
+    let buffer = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing);
+    let base_index = LOG.cursor.fetch_add(count as u64, Ordering::AcqRel);
+    if let Some(ref buffer) = buffer {
+        let buf = buffer.0;
+        buf.cursor
+            .fetch_max(base_index + count as u64, Ordering::Relaxed);
+        let pending_entries = (base_index + count as u64 - 1)
+            .wrapping_sub(
+                LOG.consumed
+                    .load(Ordering::Acquire)
+                    .max(buf.base.load(Ordering::Acquire)),
+            )
+            .saturating_add(1);
+        raise(
+            &buf.entries_required,
+            usize::try_from(pending_entries).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
+        let entries_len = buf.entries.len();
+        let max_start = entries_len
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(buf.stride));
+        let fast = pending_entries <= entries_len as u64
+            && batch.max_name_len <= buf.stride
+            && u32::try_from(batch.max_name_len).is_ok()
+            && max_start.is_some_and(|m| u32::try_from(m).is_ok() && m < NO_NAME as usize);
+        if fast {
+            let pow2 = entries_len.is_power_of_two();
+            for (offset, item) in batch.items.iter().enumerate() {
+                let index = base_index + offset as u64;
+                let slot = if pow2 {
+                    index as usize & (entries_len - 1)
+                } else {
+                    index as usize % entries_len
+                };
+                let mut name_start = NO_NAME;
+                let mut name_len = 0_u32;
+                if let Some((start, len)) = item.name {
+                    let dst_start = slot * buf.stride;
+                    // SAFETY: `index` exclusively owns `slot` and `len <= buf.stride`.
+                    let dst = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            buf.names.as_ptr().add(dst_start).cast::<u8>().cast_mut(),
+                            len,
+                        )
+                    };
+                    dst.copy_from_slice(&batch.names[start..start + len]);
+                    name_start = dst_start as u32;
+                    name_len = len as u32;
+                }
+                if let Some(reason) = item.name_reason {
+                    REFUSAL.record(reason);
+                    COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+                }
+                let compact = CompactEntry {
+                    root,
+                    payload: CompactPayload::Recipient {
+                        reference: item.recipient.reference,
+                        amount: item.amount,
+                        name_reason: item.name_reason,
+                        country,
+                        owner: item.recipient.owner,
+                        host: item.recipient.host,
+                        name_start,
+                        name_len,
+                        kind: item.recipient.kind,
+                    },
+                };
+                // SAFETY: `index` exclusively owns `buf.entries[slot]`.
+                unsafe {
+                    *buf.entries[slot].entry.get() = compact;
+                    *buf.entries[slot].name_required.get() = item.name_required as u32;
+                }
+                buf.entries[slot]
+                    .published
+                    .store(index + 1, Ordering::Release);
+            }
+            batch.clear();
+            return;
+        }
+    }
+    let absent = buffer.is_none();
+    for (offset, item) in batch.items.iter().enumerate() {
+        let entry = Entry {
+            root,
+            country,
+            recipient: Some(item.recipient),
+            amount: item.amount,
+            name_reason: item.name_reason,
+            ..Default::default()
+        };
+        let bytes = item.name.map(|(s, l)| &batch.names[s..s + l]);
+        if !SPILL.push_bytes(base_index + offset as u64, entry, item.name_required, bytes) {
+            refuse_append(entry, absent);
+        }
+    }
+    batch.clear();
+}
+
+fn append_batch(
+    _call: &Call<'_>,
+    batch: &mut PendingBatch,
+    pending: Pending,
+    settled: native::Settled,
+    memory: &impl Memory,
+) {
+    let items_len = batch.items.len();
+    let count = items_len + 1;
+    let attempted = ENTRY_ATTEMPTS
+        .fetch_add(count as u64, Ordering::Relaxed)
+        .wrapping_add(count as u64);
+    raise(
+        &ENTRY_DEMAND,
+        attempted_since(attempted, &ENTRY_CONSUMED),
+        Ordering::Release,
+    );
+    if batch.total_name_bytes != 0 {
+        let bytes = batch.total_name_bytes as u64;
+        let attempted = NAME_ATTEMPTS
+            .fetch_add(bytes, Ordering::Relaxed)
+            .wrapping_add(bytes);
+        raise(
+            &NAME_DEMAND,
+            attempted_since(attempted, &NAME_CONSUMED),
+            Ordering::Release,
+        );
+        raise(&NAME_STRIDE, batch.max_name_len, Ordering::Release);
+    }
+    let root_entry = Entry {
+        root: pending.root,
+        country: pending.started.country,
+        started: pending.started,
+        settled,
+        refused: pending.refused,
+        ..Default::default()
+    };
+    let buffer = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing);
+    let base_index = LOG.cursor.fetch_add(count as u64, Ordering::AcqRel);
+    let root_index = base_index + items_len as u64;
+    let mut retained = true;
+    let mut published_fast = false;
+    if let Some(buffer) = &buffer {
+        let buf = buffer.0;
+        buf.cursor
+            .fetch_max(base_index + count as u64, Ordering::Relaxed);
+        let pending_entries = root_index
+            .wrapping_sub(
+                LOG.consumed
+                    .load(Ordering::Acquire)
+                    .max(buf.base.load(Ordering::Acquire)),
+            )
+            .saturating_add(1);
+        raise(
+            &buf.entries_required,
+            usize::try_from(pending_entries).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
+        let entries_len = buf.entries.len();
+        let max_start = entries_len
+            .checked_sub(1)
+            .and_then(|last| last.checked_mul(buf.stride));
+        let fast = pending_entries <= entries_len as u64
+            && batch.max_name_len <= buf.stride
+            && u32::try_from(batch.max_name_len).is_ok()
+            && max_start.is_some_and(|m| u32::try_from(m).is_ok() && m < NO_NAME as usize);
+        if fast {
+            let root_count = buf.roots.len();
+            let start_pos = buf.root_cursor.fetch_add(1, Ordering::Relaxed) % root_count;
+            let owner = root_index + 1;
+            let mut claimed = None;
+            for step in 0..root_count {
+                let pos = (start_pos + step) % root_count;
+                let root_slot = &buf.roots[pos];
+                if root_slot.owner.load(Ordering::Relaxed) == 0
+                    && root_slot
+                        .owner
+                        .compare_exchange(0, owner, Ordering::Acquire, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    claimed = Some(pos);
+                    break;
+                }
+            }
+            if let Some(root_pos) = claimed {
+                let pow2 = entries_len.is_power_of_two();
+                for (offset, item) in batch.items.iter().enumerate() {
+                    let index = base_index + offset as u64;
+                    let slot = if pow2 {
+                        index as usize & (entries_len - 1)
+                    } else {
+                        index as usize % entries_len
+                    };
+                    let mut name_start = NO_NAME;
+                    let mut name_len = 0_u32;
+                    if let Some((start, len)) = item.name {
+                        let dst_start = slot * buf.stride;
+                        // SAFETY: `index` exclusively owns `slot` and `len <= buf.stride`.
+                        let dst = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                buf.names.as_ptr().add(dst_start).cast::<u8>().cast_mut(),
+                                len,
+                            )
+                        };
+                        dst.copy_from_slice(&batch.names[start..start + len]);
+                        name_start = dst_start as u32;
+                        name_len = len as u32;
+                    }
+                    if let Some(reason) = item.name_reason {
+                        REFUSAL.record(reason);
+                        COUNTERS[8].fetch_add(1, Ordering::Relaxed);
+                    }
+                    let compact = CompactEntry {
+                        root: pending.root,
+                        payload: CompactPayload::Recipient {
+                            reference: item.recipient.reference,
+                            amount: item.amount,
+                            name_reason: item.name_reason,
+                            country: pending.started.country,
+                            owner: item.recipient.owner,
+                            host: item.recipient.host,
+                            name_start,
+                            name_len,
+                            kind: item.recipient.kind,
+                        },
+                    };
+                    // SAFETY: `index` exclusively owns `buf.entries[slot]`.
+                    unsafe {
+                        *buf.entries[slot].entry.get() = compact;
+                        *buf.entries[slot].name_required.get() = item.name_required as u32;
+                    }
+                    buf.entries[slot]
+                        .published
+                        .store(index + 1, Ordering::Release);
+                }
+                // SAFETY: `buf.roots[root_pos].owner` was exclusively claimed from 0 to `root_index + 1`.
+                unsafe {
+                    *buf.roots[root_pos].data.get() = RootData {
+                        started: root_entry.started,
+                        settled: root_entry.settled,
+                        amount: root_entry.amount,
+                        name: root_entry.name,
+                        name_reason: root_entry.name_reason,
+                        refused: root_entry.refused,
+                    };
+                }
+                let root_slot = if pow2 {
+                    root_index as usize & (entries_len - 1)
+                } else {
+                    root_index as usize % entries_len
+                };
+                let compact = CompactEntry {
+                    root: root_entry.root,
+                    payload: CompactPayload::Root {
+                        country: root_entry.country,
+                        index: root_pos as u32,
+                    },
+                };
+                // SAFETY: `root_index` exclusively owns `buf.entries[root_slot]`.
+                unsafe {
+                    *buf.entries[root_slot].entry.get() = compact;
+                    *buf.entries[root_slot].name_required.get() = 0;
+                }
+                buf.entries[root_slot]
+                    .published
+                    .store(root_index + 1, Ordering::Release);
+                published_fast = true;
+            }
+        }
+    }
+    if !published_fast {
+        let absent = buffer.is_none();
+        for (offset, item) in batch.items.iter().enumerate() {
+            let entry = Entry {
+                root: pending.root,
+                country: pending.started.country,
+                recipient: Some(item.recipient),
+                amount: item.amount,
+                name_reason: item.name_reason,
+                ..Default::default()
+            };
+            let bytes = item.name.map(|(s, l)| &batch.names[s..s + l]);
+            if !SPILL.push_bytes(base_index + offset as u64, entry, item.name_required, bytes) {
+                refuse_append(entry, absent);
+                retained = false;
+            }
+        }
+        if !SPILL.push(root_index, root_entry, None, memory) {
+            refuse_append(root_entry, absent);
+            retained = false;
+        }
+    }
+    batch.clear();
+    if pending.refused || !retained {
+        if let Some(cause) = pending.cause {
+            SETTLED_CAUSES[cause].fetch_add(1, Ordering::Relaxed);
+        }
+        COUNTERS[2].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
 fn append_root(call: &Call<'_>, pending: Pending, settled: native::Settled, memory: &impl Memory) {
     let retained = append(
         call,
@@ -1095,7 +1650,15 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     refused: false,
                     cause: None,
                 }));
-                if old.is_some() {
+                if let Some(prev) = old {
+                    PENDING_BATCH.with(|batch| {
+                        flush_batch_orphans(
+                            &call,
+                            &mut batch.borrow_mut(),
+                            prev.root,
+                            prev.started.country,
+                        )
+                    });
                     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
                     PENDING.with(|pending| {
                         if let Some(mut p) = pending.get() {
@@ -1104,11 +1667,24 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                             pending.set(Some(p));
                         }
                     });
+                } else {
+                    PENDING_BATCH.with(|batch| batch.borrow_mut().clear());
                 }
             }
             Err(reason) => {
                 REFUSAL.record(reason);
-                PENDING.set(None);
+                if let Some(prev) = PENDING.replace(None) {
+                    PENDING_BATCH.with(|batch| {
+                        flush_batch_orphans(
+                            &call,
+                            &mut batch.borrow_mut(),
+                            prev.root,
+                            prev.started.country,
+                        )
+                    });
+                } else {
+                    PENDING_BATCH.with(|batch| batch.borrow_mut().clear());
+                }
                 COUNTERS[0].fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1123,7 +1699,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         pending.refused = true;
         pending.cause.get_or_insert(0);
     }
-    let located = held(&pending, epoch_current);
+    let located = held_for(&pending, epoch_current);
     if tag == 1 {
         PENDING.set(None);
         let settled = native::settle_held(
@@ -1153,13 +1729,21 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         if pending.refused {
             REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
         }
-        append_root(&call, pending, settled.unwrap_or_default(), &memory);
+        PENDING_BATCH.with(|batch| {
+            append_batch(
+                &call,
+                &mut batch.borrow_mut(),
+                pending,
+                settled.unwrap_or_default(),
+                &memory,
+            );
+        });
         return;
     }
-    let (kind, pointer, amount) = match tag {
-        2..=6 => (0, registers.rax, registers.rdx as i64),
-        7 => (2, registers.rcx, registers.rdx as i64),
-        8 => (1, registers.rdi, registers.rbx as i64),
+    let (kind, pointer, host_ptr, amount) = match tag {
+        2..=6 => (0, registers.rax, 0, registers.rdx as i64),
+        7 => (2, registers.rcx, 0, registers.rdx as i64),
+        8 => (1, registers.rdi, registers.rdx, registers.rbx as i64),
         _ => {
             pending.refused = true;
             pending.cause.get_or_insert(7);
@@ -1168,6 +1752,16 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         }
     };
     pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
+    let coalesced =
+        PENDING_BATCH.with(|batch| batch.borrow_mut().try_coalesce(kind, pointer, host_ptr, amount));
+    if coalesced == Some(true) {
+        if located.is_some() {
+            HELD.increment(if kind == 1 { 1 } else { 2 });
+        }
+        PENDING.set(Some(pending));
+        return;
+    }
+    let insert_in_table = coalesced.is_none();
     let recipient_and_name = if kind == 1 {
         if let Some(located) = located.as_ref() {
             REGISTRY.with(|registry| {
@@ -1211,19 +1805,34 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 Some(Err(reason)) => (None, Some(reason)),
                 None => (None, None),
             };
-            if !append(
-                &call,
-                Entry {
-                    root: pending.root,
-                    country: pending.started.country,
-                    recipient: Some(recipient),
+            let buffered = PENDING_BATCH.with(|batch| {
+                batch.borrow_mut().push(
+                    kind,
+                    pointer,
+                    host_ptr,
+                    recipient,
                     amount,
+                    name.as_ref(),
                     name_reason,
-                    ..Default::default()
-                },
-                name,
-                &memory,
-            ) {
+                    insert_in_table,
+                    &memory,
+                )
+            });
+            if !buffered
+                && !append(
+                    &call,
+                    Entry {
+                        root: pending.root,
+                        country: pending.started.country,
+                        recipient: Some(recipient),
+                        amount,
+                        name_reason,
+                        ..Default::default()
+                    },
+                    name,
+                    &memory,
+                )
+            {
                 pending.refused = true;
                 pending.cause.get_or_insert(3);
             }

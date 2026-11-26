@@ -120,6 +120,14 @@ impl<'a> Projection<'a> {
             .observed_comparison_baseline::<S>(self.branch, self.hour, self.force)
     }
 
+    pub fn slice_meta(
+        &self,
+        table: TableId,
+    ) -> Option<(replay_frame::frame::BaselineToken, Option<usize>)> {
+        self.encoder
+            .slice_meta(table, self.branch, self.hour, self.force)
+    }
+
     pub fn slice_baseline_rows<S: TableSchema>(
         &self,
     ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {

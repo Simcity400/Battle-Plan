@@ -34,9 +34,11 @@ static ORDER: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 static ORIGINAL: [AtomicUsize; sites::SITES.len()] =
     [const { AtomicUsize::new(0) }; sites::SITES.len()];
-static CALLS: [AtomicU64; sites::SITES.len()] = [const { AtomicU64::new(0) }; sites::SITES.len()];
+static CALLS: crate::hook_timing::CallCounters<{ sites::SITES.len() }> =
+    crate::hook_timing::CallCounters::new();
 static FAILURES: [AtomicU64; sites::SITES.len()] =
     [const { AtomicU64::new(0) }; sites::SITES.len()];
+static CONTRIBUTIONS_GENERATION: AtomicU64 = AtomicU64::new(1);
 static FIRST_FAILURE: FirstReason = FirstReason::new();
 static CURRENT: AtomicPtr<SharedLane<Event>> = AtomicPtr::new(ptr::null_mut());
 static REFERENCES: AtomicPtr<ReferenceIndex> = AtomicPtr::new(ptr::null_mut());
@@ -130,6 +132,8 @@ struct Store {
     acquired: Vec<usize>,
     acquired_networks: Vec<usize>,
     dirty: Vec<usize>,
+    dirty_contributions: Vec<usize>,
+    contributions_generation: u64,
     next_networks: Vec<Reference>,
     epoch: u64,
     failure: u64,
@@ -158,6 +162,8 @@ impl Store {
             acquired: Vec::new(),
             acquired_networks: Vec::new(),
             dirty: Vec::new(),
+            dirty_contributions: Vec::new(),
+            contributions_generation: 0,
             next_networks: Vec::new(),
             epoch: 0,
             failure: 0,
@@ -257,7 +263,8 @@ impl Store {
         force: bool,
         contributions: &mut Vec<IntelContributionRow>,
         sources: &mut Vec<IntelSourceRow>,
-    ) -> Result<(Option<usize>, Option<usize>), &'static str> {
+    ) -> Result<(Option<crate::retained_snapshot::ContributionsDelta>, Option<usize>), &'static str>
+    {
         let Some(revision) = FLIGHT.quiet_epoch() else {
             return Err("intel source writer in progress");
         };
@@ -298,6 +305,7 @@ impl Store {
             } else {
                 Changed::NONE
             };
+            let mut owners_changed = false;
             let membership = bootstrap || seeds.is_some() || self.network_due;
             self.acquired.clear();
             self.acquired_networks.clear();
@@ -306,7 +314,7 @@ impl Store {
                     .map_err(|_| "intel source bootstrap membership allocation failed")?;
                 let old_count = self.owners.len();
                 self.owners.retain(|owner| seeds.contains(&owner.seed));
-                let mut owners_changed = self.owners.len() != old_count;
+                owners_changed = self.owners.len() != old_count;
                 for &seed in seeds {
                     let index = if let Some(index) =
                         self.owners.iter().position(|owner| owner.seed == seed)
@@ -373,8 +381,11 @@ impl Store {
                 return Ok((None, None));
             }
             self.dirty.clear();
+            self.dirty_contributions.clear();
             let mut reindex = false;
             allocation::reserve(&mut self.dirty, events.len())
+                .map_err(|_| "intel dirty source owner storage allocation failed")?;
+            allocation::reserve(&mut self.dirty_contributions, events.len())
                 .map_err(|_| "intel dirty source owner storage allocation failed")?;
             for (_, _, _, event) in &events {
                 if event.kind == state::REFERENCE {
@@ -444,14 +455,28 @@ impl Store {
                             .position(|owner| owner.seed.root == event.object)
                     })
                     .ok_or("intel source writer root absent from existing census")?;
-                changed.merge(self.owners[index].apply(*event)?);
+                let applied = self.owners[index].apply(*event)?;
+                changed.merge(applied);
+                if applied.contributions {
+                    self.owners[index].cached_contributions = None;
+                    if !self.dirty_contributions.contains(&index) {
+                        self.dirty_contributions.push(index);
+                    }
+                }
                 reindex |= event.kind == state::RESET;
                 if !self.dirty.contains(&index) {
                     self.dirty.push(index);
                 }
             }
             for &index in &self.dirty {
-                changed.merge(self.owners[index].acquire(memory)?);
+                let acquired = self.owners[index].acquire(memory)?;
+                changed.merge(acquired);
+                if acquired.contributions {
+                    self.owners[index].cached_contributions = None;
+                    if !self.dirty_contributions.contains(&index) {
+                        self.dirty_contributions.push(index);
+                    }
+                }
             }
             if reindex {
                 self.publish_index()?;
@@ -459,12 +484,49 @@ impl Store {
             if !changed.any() {
                 return Ok((None, None));
             }
-            let contribution_len = if changed.contributions {
+            let contribution_delta = if changed.contributions {
+                let full_contributions =
+                    bootstrap || owners_changed || self.contributions_generation == 0;
+                let prev_generation = if full_contributions {
+                    0
+                } else {
+                    self.contributions_generation
+                };
+                let generation = CONTRIBUTIONS_GENERATION.fetch_add(1, Ordering::Relaxed);
+                let mut dirty_owners = Vec::new();
                 contributions.clear();
-                for owner in &self.owners {
-                    owner.contribution_rows(contributions)?;
+                if !full_contributions && !self.dirty_contributions.is_empty() {
+                    self.dirty_contributions.sort_unstable();
+                    self.dirty_contributions.dedup();
+                    allocation::reserve_exact(&mut dirty_owners, self.dirty_contributions.len())
+                        .map_err(|_| "intel dirty contribution owners allocation failed")?;
+                    for &index in &self.dirty_contributions {
+                        let owner = &mut self.owners[index];
+                        dirty_owners.push(owner.seed.owner);
+                        let rows = owner.contribution_arc()?;
+                        allocation::reserve(contributions, rows.len())
+                            .map_err(|_| "intel contribution rows allocation failed")?;
+                        contributions.extend_from_slice(&rows);
+                    }
                 }
-                Some(contributions.len())
+                let mut all_owners = Vec::new();
+                allocation::reserve_exact(&mut all_owners, self.owners.len())
+                    .map_err(|_| "intel contribution owners snapshot allocation failed")?;
+                let mut total_len = 0_usize;
+                for owner in &mut self.owners {
+                    let rows = owner.contribution_arc()?;
+                    total_len = total_len.saturating_add(rows.len());
+                    all_owners.push(rows);
+                }
+                self.contributions_generation = generation;
+                Some(crate::retained_snapshot::ContributionsDelta {
+                    prev_generation,
+                    generation,
+                    dirty_owners,
+                    dirty_rows: std::mem::take(contributions),
+                    all_owners,
+                    total_len,
+                })
             } else {
                 None
             };
@@ -495,7 +557,7 @@ impl Store {
             } else {
                 None
             };
-            Ok((contribution_len, source_len))
+            Ok((contribution_delta, source_len))
         })();
         for (_, lane, index, _) in &events {
             self.lanes[*lane].release(*index);
@@ -510,9 +572,13 @@ impl Store {
             || FAILED.load(Ordering::SeqCst) != failure
         {
             self.valid = false;
+            self.contributions_generation = 0;
             return Err("intel source observation changed during cut");
         }
         self.valid = result.is_ok();
+        if !self.valid {
+            self.contributions_generation = 0;
+        }
         self.epoch = epoch;
         self.failure = failure;
         self.rejected = rejected;
@@ -585,6 +651,7 @@ pub(crate) fn network_refused() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     store.network_seen = false;
     store.valid = false;
+    store.contributions_generation = 0;
 }
 
 pub(crate) fn capture(
@@ -600,33 +667,43 @@ pub(crate) fn capture(
     let mut store = STORE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (left, right) = match store.capture(memory, base, seeds, force, contributions, sources) {
-        Ok((left, right)) => (
-            left.map_or(
-                Outcome::Unavailable {
-                    reason: SKIPPED_REASON,
-                },
-                |len| Outcome::Rows { len },
-            ),
-            right.map_or(
-                Outcome::Unavailable {
-                    reason: SKIPPED_REASON,
-                },
-                |len| Outcome::Rows { len },
-            ),
-        ),
-        Err(reason) => {
-            store.valid = false;
-            (
-                Outcome::Unavailable { reason },
-                Outcome::Unavailable { reason },
-            )
-        }
-    };
+    let (mut contribution_delta, left, right) =
+        match store.capture(memory, base, seeds, force, contributions, sources) {
+            Ok((left, right)) => {
+                let left_outcome = left.as_ref().map_or(
+                    Outcome::Unavailable {
+                        reason: SKIPPED_REASON,
+                    },
+                    |delta| Outcome::Rows {
+                        len: delta.total_len,
+                    },
+                );
+                let right_outcome = right.map_or(
+                    Outcome::Unavailable {
+                        reason: SKIPPED_REASON,
+                    },
+                    |len| Outcome::Rows { len },
+                );
+                (left, left_outcome, right_outcome)
+            }
+            Err(reason) => {
+                store.valid = false;
+                store.contributions_generation = 0;
+                (
+                    None,
+                    Outcome::Unavailable { reason },
+                    Outcome::Unavailable { reason },
+                )
+            }
+        };
     let left = store.snapshots[0].publish(
         replay_data::rows::TableId::IntelContributions,
         left,
-        || crate::retained_snapshot::AcquiredRows::Contributions(std::mem::take(contributions)),
+        || {
+            crate::retained_snapshot::AcquiredRows::ContributionsDelta(
+                contribution_delta.take().unwrap(),
+            )
+        },
         &mut shared[0],
     );
     let right = store.snapshots[1].publish(
@@ -640,6 +717,7 @@ pub(crate) fn capture(
         _ => None,
     }) {
         store.valid = false;
+        store.contributions_generation = 0;
         for snapshot in &mut store.snapshots {
             snapshot.clear();
         }
@@ -691,7 +769,7 @@ unsafe extern "system-unwind" fn callback<const I: usize>(
 ) -> usize {
     let mut flight = Flight::new();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::IntelSources);
-    CALLS[I].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(I);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let previous = CONTEXT.with(Cell::get);
     let setup = (|| {

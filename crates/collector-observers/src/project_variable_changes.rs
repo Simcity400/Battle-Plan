@@ -1,4 +1,5 @@
 use crate::country_input_changes::{self, Marks};
+use collector_primitives::asymmetric::{FlightGate, FlightGuard};
 use std::{
     collections::HashMap,
     hash::{BuildHasherDefault, Hasher},
@@ -7,6 +8,33 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
+
+const BLOOM_WORDS: usize = 256;
+const BLOOM_MASK: usize = BLOOM_WORDS * 64 - 1;
+static FLIGHT: FlightGate = FlightGate::new(0);
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+static BLOOM: [AtomicU64; BLOOM_WORDS] = [const { AtomicU64::new(0) }; BLOOM_WORDS];
+
+#[inline(always)]
+fn bloom_bits(store: usize) -> (usize, u64, usize, u64) {
+    let mut hash = (store as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    hash ^= hash >> 32;
+    let first = (hash as usize) & BLOOM_MASK;
+    let second = ((hash >> 14) as usize) & BLOOM_MASK;
+    (first >> 6, 1_u64 << (first & 63), second >> 6, 1_u64 << (second & 63))
+}
+
+#[inline(always)]
+fn bloom_contains(store: usize) -> bool {
+    let (w0, m0, w1, m1) = bloom_bits(store);
+    (BLOOM[w0].load(Ordering::Relaxed) & m0 != 0) && (BLOOM[w1].load(Ordering::Relaxed) & m1 != 0)
+}
+
+fn bloom_insert(store: usize) {
+    let (w0, m0, w1, m1) = bloom_bits(store);
+    BLOOM[w0].fetch_or(m0, Ordering::SeqCst);
+    BLOOM[w1].fetch_or(m1, Ordering::SeqCst);
+}
 
 #[derive(Default)]
 struct FastHasher(u64);
@@ -68,38 +96,49 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
             )
         });
     }
-    let mut entries = OWNERS.try_write().ok()?;
-    let entries = entries.get_or_insert_with(FastMap::default);
-    if !entries.contains_key(&store) {
-        engine_allocation::reserve_map(entries, 1).ok()?;
-        entries.insert(
-            store,
-            Entry {
-                owner,
-                id,
-                revision: AtomicU64::new(0),
-                active: AtomicUsize::new(0),
-                pending_revision: AtomicU64::new(0),
-                pending_active: AtomicUsize::new(0),
-            },
-        );
-    }
-    let entry = entries.get_mut(&store)?;
-    if entry.owner != owner || entry.id != id {
-        entry.owner = owner;
-        entry.id = id;
-        entry.revision.fetch_add(1, Ordering::SeqCst);
-    }
-    if entry.active.load(Ordering::SeqCst) != 0 {
+    let mut inserted = false;
+    let stamped = {
+        let mut entries = OWNERS.try_write().ok()?;
+        let entries = entries.get_or_insert_with(FastMap::default);
+        if !entries.contains_key(&store) {
+            engine_allocation::reserve_map(entries, 1).ok()?;
+            entries.insert(
+                store,
+                Entry {
+                    owner,
+                    id,
+                    revision: AtomicU64::new(0),
+                    active: AtomicUsize::new(0),
+                    pending_revision: AtomicU64::new(0),
+                    pending_active: AtomicUsize::new(0),
+                },
+            );
+            bloom_insert(store);
+            COUNT.store(entries.len(), Ordering::SeqCst);
+            inserted = true;
+        }
+        let entry = entries.get_mut(&store)?;
+        if entry.owner != owner || entry.id != id {
+            entry.owner = owner;
+            entry.id = id;
+            entry.revision.fetch_add(1, Ordering::SeqCst);
+        }
+        if entry.active.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+        (
+            EPOCH.load(Ordering::SeqCst),
+            entry.revision.load(Ordering::SeqCst),
+        )
+    };
+    if inserted && FLIGHT.quiet_epoch().is_none() {
         return None;
     }
-    Some((
-        EPOCH.load(Ordering::SeqCst),
-        entry.revision.load(Ordering::SeqCst),
-    ))
+    Some(stamped)
 }
 
 pub struct Write {
+    _flight: FlightGuard<'static>,
     entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
     _marks: Marks<'static>,
@@ -118,26 +157,49 @@ impl Drop for Write {
     }
 }
 
+#[inline]
 pub fn writing(store: usize) -> Write {
+    let flight = FLIGHT.enter(false);
+    if COUNT.load(Ordering::Relaxed) == 0 || !bloom_contains(store) {
+        return Write {
+            _flight: flight,
+            entries: None,
+            store,
+            _marks: Marks::none(),
+        };
+    }
+    writing_slow(flight, store)
+}
+
+#[cold]
+#[inline(never)]
+fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
     match OWNERS.try_read() {
         Ok(entries) => {
-            let marks =
-                if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
-                    entry.active.fetch_add(1, Ordering::SeqCst);
-                    entry.revision.fetch_add(1, Ordering::SeqCst);
-                    country_input_changes::project_variables_written(Some(entry.owner))
-                } else {
-                    Marks::none()
-                };
-            Write {
-                entries: Some(entries),
-                store,
-                _marks: marks,
+            if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
+                entry.active.fetch_add(1, Ordering::SeqCst);
+                entry.revision.fetch_add(1, Ordering::SeqCst);
+                let marks = country_input_changes::project_variables_written(Some(entry.owner));
+                Write {
+                    _flight: flight,
+                    entries: Some(entries),
+                    store,
+                    _marks: marks,
+                }
+            } else {
+                drop(entries);
+                Write {
+                    _flight: flight,
+                    entries: None,
+                    store,
+                    _marks: Marks::none(),
+                }
             }
         }
         Err(_) => {
             EPOCH.fetch_add(1, Ordering::SeqCst);
             Write {
+                _flight: flight,
                 entries: None,
                 store,
                 _marks: country_input_changes::project_variables_written(None),
@@ -164,6 +226,7 @@ pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
         && let Some(entries) = entries.as_mut()
     {
         entries.retain(|_, entry| keep(entry.owner, entry.id));
+        COUNT.store(entries.len(), Ordering::SeqCst);
     }
 }
 
@@ -226,6 +289,7 @@ pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
     (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
 }
 pub struct ProjectWrite {
+    _flight: FlightGuard<'static>,
     entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
 }
@@ -243,23 +307,40 @@ impl Drop for ProjectWrite {
     }
 }
 pub fn writing_project(project: usize) -> ProjectWrite {
+    let flight = FLIGHT.enter(false);
     let store = project
         .checked_add(engine_projects::nproject_cproject::VARIABLES)
         .unwrap_or(0);
+    if COUNT.load(Ordering::Relaxed) == 0 || !bloom_contains(store) {
+        return ProjectWrite {
+            _flight: flight,
+            entries: None,
+            store,
+        };
+    }
     match OWNERS.try_read() {
         Ok(entries) => {
             if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
                 entry.pending_active.fetch_add(1, Ordering::SeqCst);
                 entry.pending_revision.fetch_add(1, Ordering::SeqCst);
-            }
-            ProjectWrite {
-                entries: Some(entries),
-                store,
+                ProjectWrite {
+                    _flight: flight,
+                    entries: Some(entries),
+                    store,
+                }
+            } else {
+                drop(entries);
+                ProjectWrite {
+                    _flight: flight,
+                    entries: None,
+                    store,
+                }
             }
         }
         Err(_) => {
             EPOCH.fetch_add(1, Ordering::SeqCst);
             ProjectWrite {
+                _flight: flight,
                 entries: None,
                 store,
             }

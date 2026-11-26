@@ -219,6 +219,8 @@ pub struct Variants {
     liveness: design_changes::liveness::Observation,
     daily_released: bool,
     last_capacity: Capacities,
+    part_pool: Vec<variant_parts::VariantPart>,
+    carried_scratch: Vec<Option<std::sync::Arc<rows::VariantDesignState>>>,
 }
 
 impl Variants {
@@ -243,6 +245,8 @@ impl Variants {
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: *capacities,
+            part_pool: Vec::new(),
+            carried_scratch: Vec::new(),
         }
     }
 
@@ -267,6 +271,8 @@ impl Variants {
             organisation_bytes: 0,
             daily_released: false,
             last_capacity: Capacities::default(),
+            part_pool: Vec::new(),
+            carried_scratch: Vec::new(),
         }
     }
 
@@ -305,6 +311,14 @@ impl Variants {
             + self.unique_ids.capacity() * std::mem::size_of::<u64>()
             + self.organisation_bytes
             + self.nested_bytes
+            + self.part_pool.capacity() * std::mem::size_of::<variant_parts::VariantPart>()
+            + self
+                .part_pool
+                .iter()
+                .map(variant_parts::VariantPart::allocated_bytes)
+                .sum::<usize>()
+            + self.carried_scratch.capacity()
+                * std::mem::size_of::<Option<std::sync::Arc<rows::VariantDesignState>>>()
     }
 
     fn release_daily(&mut self) {
@@ -332,6 +346,8 @@ impl Variants {
         self.templates = None;
         self.fog = design_fog::Observation::default();
         self.liveness = design_changes::liveness::Observation::default();
+        self.part_pool = Vec::new();
+        self.carried_scratch = Vec::new();
         self.daily_released = true;
     }
 

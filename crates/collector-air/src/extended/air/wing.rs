@@ -493,6 +493,7 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     let mut fuel_references = engine_native_parts::creference_registry::ScopedResolver::new(ctx.base);
     let map_rows = engine_native_memory::walk::Buffer::Growing(&mut job.map_rows);
     let sources = engine_native_memory::walk::Buffer::Growing(&mut job.sources);
+    let raid_token = collector_observers::wing_changes::map_quiet();
     let walked = cair_wing::walk_shared_game_score_buffers_with_owners(
         &source,
         ctx.base,
@@ -532,7 +533,6 @@ fn walk_air_part(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
 
                 let _transport_reads = read_accounting::table(TableId::AirWings);
                 source.mask.set(4);
-                let raid_token = collector_observers::wing_changes::map_quiet();
                 let started = qpc();
                 let raid_pointer = transport.capture(&source, pointer, pool, row);
                 job.transport_ticks += elapsed(started);

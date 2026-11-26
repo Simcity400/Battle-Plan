@@ -172,7 +172,7 @@ fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    let mut inline = [Row::default(); 256];
+    let mut inline = [Row::default(); 32];
     let mut overflow = Vec::new();
     let (outcome, spilled) =
         match native::deleted_logs_with_overflow(&memory, base, manager, &mut inline, &mut overflow)

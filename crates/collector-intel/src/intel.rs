@@ -373,6 +373,7 @@ struct VariableInterner {
     bytes: Vec<u8>,
     published: usize,
     published_bytes: usize,
+    generation: u64,
 }
 
 impl VariableInterner {
@@ -398,6 +399,7 @@ impl VariableInterner {
         self.bytes.clear();
         self.published = 0;
         self.published_bytes = 0;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     fn reindex(&mut self) {
@@ -452,6 +454,7 @@ impl VariableInterner {
         self.spans.truncate(self.published);
         self.bytes.truncate(self.published_bytes);
         self.reindex();
+        self.generation = self.generation.wrapping_add(1);
     }
 
     fn commit(&mut self) {
@@ -576,12 +579,76 @@ impl VariableInterner {
     }
 }
 
+const SCOPE_CACHE_MIN_ENTRIES: usize = 64;
+const SCOPE_CACHE_MAX_SCOPES: usize = 128;
+const SCOPE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+struct CachedScope {
+    names: Vec<u8>,
+    lens: Vec<u32>,
+    sorted_ids: Vec<u32>,
+    sorted_perm: Vec<u32>,
+}
+
+impl CachedScope {
+    fn heap_bytes(&self) -> usize {
+        self.names.capacity()
+            + (self.lens.capacity() + self.sorted_ids.capacity() + self.sorted_perm.capacity())
+                * size_of::<u32>()
+    }
+
+    fn matches(&self, current: &[cvariables::Row], names: &[u8], total_bytes: usize) -> bool {
+        if self.lens.len() != current.len() || self.names.len() != total_bytes {
+            return false;
+        }
+        if current.is_empty() {
+            return true;
+        }
+        let first_start = current[0].name_start;
+        let mut expected_start = first_start;
+        let mut contiguous = true;
+        for (entry, &len) in current.iter().zip(&self.lens) {
+            if entry.name_len != len as usize {
+                return false;
+            }
+            if entry.name_start != expected_start {
+                contiguous = false;
+            }
+            expected_start = entry.name_start.wrapping_add(entry.name_len);
+        }
+        if contiguous {
+            return &names[first_start..first_start + total_bytes] == self.names.as_slice();
+        }
+        let mut offset = 0_usize;
+        for entry in current {
+            let end = offset + entry.name_len;
+            if &names[entry.name_start..entry.name_start + entry.name_len]
+                != &self.names[offset..end]
+            {
+                return false;
+            }
+            offset = end;
+        }
+        true
+    }
+}
+
+type FastScopeMap = std::collections::HashMap<
+    (u8, u32),
+    CachedScope,
+    std::hash::BuildHasherDefault<FnvHasher>,
+>;
+
 #[derive(Default)]
 pub struct ScriptVariableComparison {
     scopes: Vec<u64>,
     entries: Vec<u64>,
     next_values: Vec<(u32, i64)>,
+    next_indexed: Vec<(u32, u32, i64)>,
     interner: VariableInterner,
+    scope_cache: FastScopeMap,
+    scope_cache_bytes: usize,
+    scope_cache_gen: u64,
     branch: Option<BranchId>,
     kept: Option<Kept>,
     work: Option<VariableWork>,
@@ -935,6 +1002,7 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
 pub struct IntelShadow {
     branch: Option<BranchId>,
     flags: NativeShadow<ScopedFlag>,
+    contributions_held: Option<((u64, BranchId, Hour), u64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -954,6 +1022,8 @@ impl IntelShadow {
     pub fn forget(&mut self, table: TableId) {
         if table == TableId::ScriptFlags {
             self.flags.clear();
+        } else if table == TableId::IntelContributions {
+            self.contributions_held = None;
         }
     }
 }
@@ -967,6 +1037,7 @@ impl<'a> IntelConversion<'a> {
     pub fn new(branch: BranchId, hour: i32, shadow: &'a mut IntelShadow) -> Self {
         if shadow.branch != Some(branch) {
             shadow.flags.clear();
+            shadow.contributions_held = None;
             shadow.branch = Some(branch);
         }
         Self { shadow, hour }
@@ -1729,6 +1800,7 @@ impl Captured {
                 match acquired {
                     AcquiredRows::Propaganda(rows) => self.propaganda.rows = rows,
                     AcquiredRows::Contributions(rows) => self.source_contributions.rows = rows,
+                    AcquiredRows::ContributionsDelta(_) => {}
                     AcquiredRows::Sources(rows) => self.source_values.rows = rows,
                     AcquiredRows::NetworkAuxiliaries(rows) => self.network_auxiliary.rows = rows,
                 }
@@ -2740,13 +2812,13 @@ impl Captured {
         &self,
         baseline: VariableBaselines<'_>,
         scratch: &mut ScriptVariableComparison,
-        reuse: Option<&mut IntelConversion<'_>>,
+        mut reuse: Option<&mut IntelConversion<'_>>,
         mut projection: Option<&mut Projection<'_>>,
     ) -> [TableInput; N] {
         use replay_data::rows::RowCodec;
         let outcomes = self.outcomes();
         let flags = timed(TableId::ScriptFlags, || {
-            if let Some(reuse) = reuse {
+            if let Some(reuse) = reuse.as_deref_mut() {
                 reuse.shadow.flags.input(
                     TableId::ScriptFlags,
                     &self.flags,
@@ -2933,15 +3005,30 @@ impl Captured {
                     propaganda_row,
                 )
             }),
-            certified_or(23, &mut || {
-                scalar_table::<tables::IntelContributions, _>(
-                    projection.as_deref_mut(),
-                    outcomes[23],
-                    &self.source_contributions.rows,
-                    |row| RowCodec::key(row),
-                    |row| *row,
-                )
-            }),
+            match &self.certified_snapshots[1] {
+                Some(snapshot) => {
+                    if let Some(reuse) = reuse.as_deref_mut() {
+                        snapshot.contributions_input(
+                            projection.as_deref_mut(),
+                            &mut reuse.shadow.contributions_held,
+                        )
+                    } else {
+                        snapshot.input()
+                    }
+                }
+                None => {
+                    if let Some(reuse) = reuse.as_deref_mut() {
+                        reuse.shadow.contributions_held = None;
+                    }
+                    scalar_table::<tables::IntelContributions, _>(
+                        projection.as_deref_mut(),
+                        outcomes[23],
+                        &self.source_contributions.rows,
+                        |row| RowCodec::key(row),
+                        |row| *row,
+                    )
+                }
+            },
             certified_or(24, &mut || {
                 scalar_table::<tables::IntelSources, _>(
                     projection.as_deref_mut(),
@@ -3982,7 +4069,10 @@ impl Captured {
         }
         let mut previous_interner: Option<VariableInterner> = None;
         if has_dead {
-            let mut compacted = VariableInterner::default();
+            let mut compacted = VariableInterner {
+                generation: interner.generation.wrapping_add(1),
+                ..VariableInterner::default()
+            };
             let total = live_existing_count + added.len();
             if compacted.reserve_capacity(total, 0).is_none() {
                 return all_unavailable("script variable allocation failed");
@@ -4546,39 +4636,79 @@ fn scope_edit(
     } else {
         &[]
     };
-    let values_equal = !expect_changed
-        && previous.is_some()
-        && current.len() == old.len()
-        && scope_values_match(current, names, old, &scratch.interner, &mut scratch.entries)?;
-    if !values_equal {
-        let built = std::time::Instant::now();
-        scratch.next_values.clear();
-        reserve(&mut scratch.next_values, current.len()).ok()?;
-        let mut sorted = true;
-        let mut prev_id = 0_u32;
-        for entry in current {
-            let name = &names[entry.name_start..entry.name_start + entry.name_len];
-            let var_id = scratch.interner.intern(name)?;
-            if !scratch.next_values.is_empty() && var_id <= prev_id {
-                sorted = false;
-            }
-            prev_id = var_id;
-            scratch.next_values.push((var_id, entry.value_raw));
-        }
-        if !sorted {
-            scratch.next_values.sort_unstable_by_key(|&(id, _)| id);
-            if scratch.next_values.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-                return None;
-            }
-        }
+    if scratch.scope_cache_gen != scratch.interner.generation {
+        scratch.scope_cache.clear();
+        scratch.scope_cache_bytes = 0;
+        scratch.scope_cache_gen = scratch.interner.generation;
+    }
+    let cached_hit = current.len() >= SCOPE_CACHE_MIN_ENTRIES
+        && scratch
+            .scope_cache
+            .get(&identity)
+            .is_some_and(|cached| cached.matches(current, names, bytes));
+    if cached_hit {
+        let cached = scratch.scope_cache.get(&identity).unwrap();
         let before = value_edits.len();
-        let (mut i, mut j) = (0_usize, 0_usize);
-        while i < old.len() && j < scratch.next_values.len() {
-            let old_row = &old[i];
-            let (new_id, new_val) = scratch.next_values[j];
-            match old_row.var_id.cmp(&new_id) {
-                std::cmp::Ordering::Equal => {
-                    if old_row.value_raw != new_val {
+        let aligned = previous.is_some()
+            && old.len() == cached.sorted_ids.len()
+            && old
+                .iter()
+                .zip(&cached.sorted_ids)
+                .all(|(old_row, &id)| old_row.var_id == id);
+        if aligned {
+            let built = std::time::Instant::now();
+            for (old_row, &perm_idx) in old.iter().zip(&cached.sorted_perm) {
+                let new_val = current[perm_idx as usize].value_raw;
+                if old_row.value_raw != new_val {
+                    let row = rows::ScriptVariableValueRow {
+                        scope_kind,
+                        scope_id,
+                        var_id: old_row.var_id,
+                        value_raw: new_val,
+                    };
+                    reserve(value_edits, 1).ok()?;
+                    value_edits.push((row.key(), Some(row)));
+                }
+            }
+            if value_edits.len() > before {
+                if !scope_changed {
+                    work.rows_built += 1;
+                }
+                work.entry_sets_changed += 1;
+                if !scope_changed {
+                    work.rows_changed += 1;
+                }
+                build_ns = build_ns.saturating_add(elapsed_ns(built));
+            }
+        } else {
+            let built = std::time::Instant::now();
+            let (mut i, mut j) = (0_usize, 0_usize);
+            let sorted_len = cached.sorted_ids.len();
+            while i < old.len() && j < sorted_len {
+                let old_row = &old[i];
+                let new_id = cached.sorted_ids[j];
+                let new_val = current[cached.sorted_perm[j] as usize].value_raw;
+                match old_row.var_id.cmp(&new_id) {
+                    std::cmp::Ordering::Equal => {
+                        if old_row.value_raw != new_val {
+                            let row = rows::ScriptVariableValueRow {
+                                scope_kind,
+                                scope_id,
+                                var_id: new_id,
+                                value_raw: new_val,
+                            };
+                            reserve(value_edits, 1).ok()?;
+                            value_edits.push((row.key(), Some(row)));
+                        }
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => {
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((old_row.key(), None));
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
                         let row = rows::ScriptVariableValueRow {
                             scope_kind,
                             scope_id,
@@ -4587,44 +4717,260 @@ fn scope_edit(
                         };
                         reserve(value_edits, 1).ok()?;
                         value_edits.push((row.key(), Some(row)));
+                        j += 1;
                     }
-                    i += 1;
-                    j += 1;
-                }
-                std::cmp::Ordering::Less => {
-                    reserve(value_edits, 1).ok()?;
-                    value_edits.push((old_row.key(), None));
-                    i += 1;
-                }
-                std::cmp::Ordering::Greater => {
-                    let row = rows::ScriptVariableValueRow {
-                        scope_kind,
-                        scope_id,
-                        var_id: new_id,
-                        value_raw: new_val,
-                    };
-                    reserve(value_edits, 1).ok()?;
-                    value_edits.push((row.key(), Some(row)));
-                    j += 1;
                 }
             }
+            while i < old.len() {
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((old[i].key(), None));
+                i += 1;
+            }
+            while j < sorted_len {
+                let new_id = cached.sorted_ids[j];
+                let new_val = current[cached.sorted_perm[j] as usize].value_raw;
+                let row = rows::ScriptVariableValueRow {
+                    scope_kind,
+                    scope_id,
+                    var_id: new_id,
+                    value_raw: new_val,
+                };
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((row.key(), Some(row)));
+                j += 1;
+            }
+            if value_edits.len() > before {
+                if !scope_changed {
+                    work.rows_built += 1;
+                }
+                if previous.is_some() {
+                    work.entry_sets_changed += 1;
+                    if !scope_changed {
+                        work.rows_changed += 1;
+                    }
+                }
+            }
+            build_ns = build_ns.saturating_add(elapsed_ns(built));
         }
-        while i < old.len() {
-            reserve(value_edits, 1).ok()?;
-            value_edits.push((old[i].key(), None));
-            i += 1;
-        }
-        while j < scratch.next_values.len() {
-            let (new_id, new_val) = scratch.next_values[j];
-            let row = rows::ScriptVariableValueRow {
-                scope_kind,
-                scope_id,
-                var_id: new_id,
-                value_raw: new_val,
-            };
-            reserve(value_edits, 1).ok()?;
-            value_edits.push((row.key(), Some(row)));
-            j += 1;
+        work.build_ns = work.build_ns.saturating_add(build_ns);
+        work.compare_ns = work
+            .compare_ns
+            .saturating_add(elapsed_ns(started).saturating_sub(build_ns));
+        return Some(());
+    }
+    let values_equal = !expect_changed
+        && previous.is_some()
+        && current.len() == old.len()
+        && scope_values_match(current, names, old, &scratch.interner, &mut scratch.entries)?;
+    if !values_equal {
+        let built = std::time::Instant::now();
+        let cacheable =
+            current.len() >= SCOPE_CACHE_MIN_ENTRIES && u32::try_from(current.len()).is_ok();
+        let before = value_edits.len();
+        if cacheable {
+            scratch.next_indexed.clear();
+            reserve(&mut scratch.next_indexed, current.len()).ok()?;
+            let mut sorted = true;
+            let mut prev_id = 0_u32;
+            for (orig_idx, entry) in current.iter().enumerate() {
+                let name = &names[entry.name_start..entry.name_start + entry.name_len];
+                let var_id = scratch.interner.intern(name)?;
+                if !scratch.next_indexed.is_empty() && var_id <= prev_id {
+                    sorted = false;
+                }
+                prev_id = var_id;
+                scratch
+                    .next_indexed
+                    .push((var_id, orig_idx as u32, entry.value_raw));
+            }
+            if !sorted {
+                scratch.next_indexed.sort_unstable_by_key(|&(id, _, _)| id);
+                if scratch
+                    .next_indexed
+                    .windows(2)
+                    .any(|pair| pair[0].0 == pair[1].0)
+                {
+                    return None;
+                }
+            }
+            let (mut i, mut j) = (0_usize, 0_usize);
+            while i < old.len() && j < scratch.next_indexed.len() {
+                let old_row = &old[i];
+                let (new_id, _, new_val) = scratch.next_indexed[j];
+                match old_row.var_id.cmp(&new_id) {
+                    std::cmp::Ordering::Equal => {
+                        if old_row.value_raw != new_val {
+                            let row = rows::ScriptVariableValueRow {
+                                scope_kind,
+                                scope_id,
+                                var_id: new_id,
+                                value_raw: new_val,
+                            };
+                            reserve(value_edits, 1).ok()?;
+                            value_edits.push((row.key(), Some(row)));
+                        }
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => {
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((old_row.key(), None));
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let row = rows::ScriptVariableValueRow {
+                            scope_kind,
+                            scope_id,
+                            var_id: new_id,
+                            value_raw: new_val,
+                        };
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((row.key(), Some(row)));
+                        j += 1;
+                    }
+                }
+            }
+            while i < old.len() {
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((old[i].key(), None));
+                i += 1;
+            }
+            while j < scratch.next_indexed.len() {
+                let (new_id, _, new_val) = scratch.next_indexed[j];
+                let row = rows::ScriptVariableValueRow {
+                    scope_kind,
+                    scope_id,
+                    var_id: new_id,
+                    value_raw: new_val,
+                };
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((row.key(), Some(row)));
+                j += 1;
+            }
+            let old_bytes = scratch
+                .scope_cache
+                .get(&identity)
+                .map_or(0, CachedScope::heap_bytes);
+            let can_insert = (scratch.scope_cache.contains_key(&identity)
+                || scratch.scope_cache.len() < SCOPE_CACHE_MAX_SCOPES)
+                && scratch.scope_cache_bytes.saturating_sub(old_bytes)
+                    .saturating_add(bytes)
+                    .saturating_add(current.len() * 12)
+                    <= SCOPE_CACHE_MAX_BYTES;
+            if can_insert {
+                let built_cache = engine_allocation::advisory(|| {
+                    let mut cached_names = Vec::new();
+                    let mut cached_lens = Vec::new();
+                    let mut sorted_ids = Vec::new();
+                    let mut sorted_perm = Vec::new();
+                    reserve_exact(&mut cached_names, bytes).ok()?;
+                    reserve_exact(&mut cached_lens, current.len()).ok()?;
+                    reserve_exact(&mut sorted_ids, current.len()).ok()?;
+                    reserve_exact(&mut sorted_perm, current.len()).ok()?;
+                    for entry in current {
+                        cached_names.extend_from_slice(
+                            &names[entry.name_start..entry.name_start + entry.name_len],
+                        );
+                        cached_lens.push(u32::try_from(entry.name_len).ok()?);
+                    }
+                    for &(var_id, orig_idx, _) in &scratch.next_indexed {
+                        sorted_ids.push(var_id);
+                        sorted_perm.push(orig_idx);
+                    }
+                    Some(CachedScope {
+                        names: cached_names,
+                        lens: cached_lens,
+                        sorted_ids,
+                        sorted_perm,
+                    })
+                });
+                if let Some(entry) = built_cache {
+                    let new_bytes = entry.heap_bytes();
+                    if let Some(prev) = scratch.scope_cache.insert(identity, entry) {
+                        scratch.scope_cache_bytes =
+                            scratch.scope_cache_bytes.saturating_sub(prev.heap_bytes());
+                    }
+                    scratch.scope_cache_bytes = scratch.scope_cache_bytes.saturating_add(new_bytes);
+                }
+            }
+        } else {
+            scratch.next_values.clear();
+            reserve(&mut scratch.next_values, current.len()).ok()?;
+            let mut sorted = true;
+            let mut prev_id = 0_u32;
+            for entry in current {
+                let name = &names[entry.name_start..entry.name_start + entry.name_len];
+                let var_id = scratch.interner.intern(name)?;
+                if !scratch.next_values.is_empty() && var_id <= prev_id {
+                    sorted = false;
+                }
+                prev_id = var_id;
+                scratch.next_values.push((var_id, entry.value_raw));
+            }
+            if !sorted {
+                scratch.next_values.sort_unstable_by_key(|&(id, _)| id);
+                if scratch
+                    .next_values
+                    .windows(2)
+                    .any(|pair| pair[0].0 == pair[1].0)
+                {
+                    return None;
+                }
+            }
+            let (mut i, mut j) = (0_usize, 0_usize);
+            while i < old.len() && j < scratch.next_values.len() {
+                let old_row = &old[i];
+                let (new_id, new_val) = scratch.next_values[j];
+                match old_row.var_id.cmp(&new_id) {
+                    std::cmp::Ordering::Equal => {
+                        if old_row.value_raw != new_val {
+                            let row = rows::ScriptVariableValueRow {
+                                scope_kind,
+                                scope_id,
+                                var_id: new_id,
+                                value_raw: new_val,
+                            };
+                            reserve(value_edits, 1).ok()?;
+                            value_edits.push((row.key(), Some(row)));
+                        }
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => {
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((old_row.key(), None));
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let row = rows::ScriptVariableValueRow {
+                            scope_kind,
+                            scope_id,
+                            var_id: new_id,
+                            value_raw: new_val,
+                        };
+                        reserve(value_edits, 1).ok()?;
+                        value_edits.push((row.key(), Some(row)));
+                        j += 1;
+                    }
+                }
+            }
+            while i < old.len() {
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((old[i].key(), None));
+                i += 1;
+            }
+            while j < scratch.next_values.len() {
+                let (new_id, new_val) = scratch.next_values[j];
+                let row = rows::ScriptVariableValueRow {
+                    scope_kind,
+                    scope_id,
+                    var_id: new_id,
+                    value_raw: new_val,
+                };
+                reserve(value_edits, 1).ok()?;
+                value_edits.push((row.key(), Some(row)));
+                j += 1;
+            }
         }
         if value_edits.len() > before {
             if !scope_changed {

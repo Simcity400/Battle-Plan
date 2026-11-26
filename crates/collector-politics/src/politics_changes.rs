@@ -2290,7 +2290,6 @@ unsafe extern "system-unwind" fn entry_body(
     caller: usize,
     native_rbp: usize,
 ) -> usize {
-    let _hook = crate::hook_timing::label();
     if index == SET_POWER_ENTRY {
         return unsafe { set_power(a, b, c, d, fifth) };
     }

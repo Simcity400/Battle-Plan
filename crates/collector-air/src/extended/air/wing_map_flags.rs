@@ -16,6 +16,7 @@ struct Entry {
 pub struct Store {
     previous: Vec<Entry>,
     current: Vec<Entry>,
+    cursor: usize,
     training_groups: std::collections::HashSet<(u32, u64, u64)>,
     raid: super::wing_raid_flags::Store,
 }
@@ -34,6 +35,7 @@ impl Store {
         }
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.clear();
+        self.cursor = 0;
         self.training_groups.clear();
         self.ensure_capacity(wings);
     }
@@ -73,12 +75,21 @@ impl Store {
             let value = read(address)?;
             return (quiet() == Some(token)).then_some(value != 0);
         };
-        let held = self
-            .previous
-            .binary_search_by_key(&address, |entry| entry.address)
-            .ok()
-            .map(|index| self.previous[index])
-            .filter(|entry| entry.wing == wing && entry.certificate == before);
+        let found = if let Some(entry) = self.previous.get(self.cursor)
+            && entry.address == address
+        {
+            self.cursor += 1;
+            Some(*entry)
+        } else {
+            self.previous
+                .binary_search_by_key(&address, |entry| entry.address)
+                .ok()
+                .map(|index| {
+                    self.cursor = index + 1;
+                    self.previous[index]
+                })
+        };
+        let held = found.filter(|entry| entry.wing == wing && entry.certificate == before);
         let value = match held {
             Some(entry) => entry.value,
             None => read(address),
@@ -134,8 +145,11 @@ impl Store {
         flags
     }
     fn stop_demand(&mut self, row: &engine_native_air::cair_wing::Row) -> bool {
-        let key = (row.owner_slot, row.air_base, row.attached_group_pointer);
         let training = row.mission_mask & 0x800 != 0;
+        if !training && self.training_groups.is_empty() {
+            return false;
+        }
+        let key = (row.owner_slot, row.air_base, row.attached_group_pointer);
         if training
             && (self.training_groups.contains(&key)
                 || self.training_groups.len() < self.training_groups.capacity())

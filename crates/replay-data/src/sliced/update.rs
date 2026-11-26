@@ -239,6 +239,15 @@ impl SliceUpdate {
         }
     }
 
+    pub fn ranged(ranges: Vec<Range<u128>>, rows: TableRows) -> Self {
+        Self {
+            ranges,
+            owners: Vec::new(),
+            keys: Vec::new(),
+            rows,
+        }
+    }
+
     pub fn new(
         previous: &TableRows,
         fresh: TableRows,

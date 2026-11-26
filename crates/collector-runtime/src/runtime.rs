@@ -5216,13 +5216,6 @@ impl SizingShared {
         // SAFETY: This stage owns the installed frame slot.
         unsafe { shared.frame_stage(index, sampling::FrameStage::Recycle) };
         let mut proposal = *self.capacities.lock();
-        if !collector_workers::tick_gate::game_ticking() {
-            let live = unsafe { LiveMemory::new() };
-            let _ = proposal
-                .extended
-                .combat_progress
-                .presize(&live, shared.base);
-        }
         let admitted = {
             let frame = unsafe {
                 // SAFETY: This is the runtime's frame pool for the current session.

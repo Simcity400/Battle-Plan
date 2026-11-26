@@ -98,6 +98,7 @@ pub struct Owner {
     accumulators: Vec<bool>,
     image_base: usize,
     references_dirty: bool,
+    pub cached_contributions: Option<std::sync::Arc<Vec<IntelContributionRow>>>,
 }
 
 impl Owner {
@@ -144,6 +145,7 @@ impl Owner {
         self.accumulators.fill(false);
         self.dirty.fill(false);
         self.references_dirty = false;
+        self.cached_contributions = None;
         self.refresh_references(memory)?;
         Ok(())
     }
@@ -512,6 +514,19 @@ impl Owner {
             )?;
         }
         Ok(())
+    }
+
+    pub fn contribution_arc(
+        &mut self,
+    ) -> Result<std::sync::Arc<Vec<IntelContributionRow>>, &'static str> {
+        if let Some(cached) = &self.cached_contributions {
+            return Ok(std::sync::Arc::clone(cached));
+        }
+        let mut rows = Vec::new();
+        self.contribution_rows(&mut rows)?;
+        let shared = std::sync::Arc::new(rows);
+        self.cached_contributions = Some(std::sync::Arc::clone(&shared));
+        Ok(shared)
     }
 
     pub fn source_rows(
