@@ -35,7 +35,7 @@ impl Target {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Unresolved {
     Nothing(String),
     Missing(Failure),
@@ -308,9 +308,9 @@ impl RecordedScopes<'_> {
     pub fn reread(&self, query: &Query) -> u64 {
         crate::triggers::inputs::resolved_digest(|| match query {
             Query::SavedTarget(name) => {
-                crate::triggers::inputs::digest_debug(&self.saved_target_unrecorded(name))
+                crate::triggers::inputs::fingerprint(&self.saved_target_unrecorded(name))
             }
-            Query::SavedSelection(name, reader) => crate::triggers::inputs::digest_debug(
+            Query::SavedSelection(name, reader) => crate::triggers::inputs::fingerprint(
                 &self.saved_selection_unrecorded(name, *reader),
             ),
             Query::SavedCountry(raw, name) => {
@@ -328,13 +328,13 @@ impl RecordedScopes<'_> {
             }
             Query::Alias(tag) => crate::triggers::inputs::digest(&self.alias_unrecorded(tag)),
             Query::AliasEntry(tag) => {
-                crate::triggers::inputs::digest_debug(&self.alias_entry_unrecorded(tag))
+                crate::triggers::inputs::fingerprint(&self.alias_entry_unrecorded(tag))
             }
             Query::OwnedStates(slot) => {
                 crate::triggers::inputs::digest(&self.owned_states_unrecorded(*slot))
             }
             Query::OriginalTags => {
-                crate::triggers::inputs::digest_debug(&self.original_tags_unrecorded())
+                crate::triggers::inputs::fingerprint(&self.original_tags_unrecorded())
             }
             Query::Tag(slot) => crate::triggers::inputs::digest(&self.tag_unrecorded(*slot)),
             Query::Country(tag) => crate::triggers::inputs::digest(&self.country_unrecorded(tag)),
@@ -351,11 +351,11 @@ impl RecordedScopes<'_> {
             Query::FactionLeader(slot) => {
                 crate::triggers::inputs::digest(&self.faction_leader_unrecorded(*slot))
             }
-            Query::ResolveText(text, quoted, context) => crate::triggers::inputs::digest_debug(
+            Query::ResolveText(text, quoted, context) => crate::triggers::inputs::fingerprint(
                 &self.resolve_text_unrecorded(text, *quoted, context),
             ),
             Query::Resolve(scope, context) => {
-                crate::triggers::inputs::digest_debug(&self.resolve_unrecorded(&scope.0, context))
+                crate::triggers::inputs::fingerprint(&self.resolve_unrecorded(&scope.0, context))
             }
             Query::Describe(target) => {
                 crate::triggers::inputs::digest(&self.describe_unrecorded(*target))
@@ -625,7 +625,7 @@ impl<'a> RecordedScopes<'a> {
         &self,
         name: &[u8],
     ) -> Result<Option<Cow<'a, GlobalSavedEventTargetRow>>, Failure> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
             || self.saved_target_unrecorded(name),
         )
@@ -663,7 +663,7 @@ impl<'a> RecordedScopes<'a> {
         name: &[u8],
         reader: crate::triggers::saved_event_targets::Reader,
     ) -> Result<crate::triggers::saved_event_targets::Selected, Failure> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedSelection(name.to_vec(), reader)),
             || self.saved_selection_unrecorded(name, reader),
         )
@@ -827,7 +827,7 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::AliasEntry(tag.to_owned())),
             || self.alias_entry_unrecorded(tag),
         )
@@ -886,7 +886,7 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn original_tags(&self) -> &OriginalTagLists<'a> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalTags),
             || self.original_tags_unrecorded(),
         )
@@ -1059,7 +1059,7 @@ impl<'a> RecordedScopes<'a> {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || {
                 crate::triggers::inputs::Key::Scopes(Query::ResolveText(
                     text.to_owned(),
@@ -1081,7 +1081,7 @@ impl<'a> RecordedScopes<'a> {
     }
 
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug_resolved(
+        crate::triggers::inputs::query_typed_resolved(
             || {
                 crate::triggers::inputs::Key::Scopes(Query::Resolve(
                     ScopeKey(scope.clone()),

@@ -2380,3 +2380,71 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
     assert!(!confirmed.unchanged(&since));
     assert!(!confirm(&mut confirmed, &third, Some(&since)).0);
 }
+
+#[test]
+fn feed_tables_differing_in_bytes_that_are_not_text_or_in_an_older_format_have_different_fingerprints() {
+    use replay_data::{event_feed_rows::{EventFeedCoverage, EventFeedScope, EventFeedText}, rows::{EventFeedHistoryRow, Recorded}};
+    let row = |name: &[u8], read_hour: i32, windows_recorded: bool| {
+        let names = [EventFeedText::new(name).unwrap(), EventFeedText::default(), EventFeedText::default()];
+        let scope = EventFeedScope { country: 5, country_attempted: true, country_id: Some(9), country_names: Some(names), ..Default::default() };
+        let mut row = EventFeedHistoryRow { read_hour, coverage: EventFeedCoverage::Partial, script_scopes: vec![scope], ..Default::default() };
+        if !windows_recorded {
+            row.windows = Recorded::NotRecorded;
+        }
+        row.validate().expect("a row the recording accepts");
+        row
+    };
+    let table = |rows: Vec<EventFeedHistoryRow>| TableView::Complete(TableRows::EventFeedHistory(rows));
+    for windows_recorded in [true, false] {
+        let first = table(vec![row(b"Reich \xff", 10, windows_recorded)]);
+        assert_eq!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xff", 10, windows_recorded)])), "windows recorded: {windows_recorded}: the same table, the same fingerprint");
+        assert_ne!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xfe", 10, windows_recorded)])), "windows recorded: {windows_recorded}: texts differing only in bytes that are not text");
+        assert_ne!(fingerprint(&first), fingerprint(&table(vec![row(b"Reich \xff", 11, windows_recorded)])), "windows recorded: {windows_recorded}: another read hour");
+    }
+}
+
+#[test]
+fn format_101_rows_fingerprint_their_retained_inputs_and_their_stamped_hours_the_same_each_time() {
+    use replay_data::rows::{CountryAttackInputs, LandCombatDetailsRow, PacketHour, Recorded, ReservedCountryNamingRow, RetiredKept, Witnessed};
+    let combat = |anti_air: i64| {
+        let mut row = LandCombatDetailsRow { combat: 7, ..Default::default() };
+        row.sides[0].anti_air_attack = RetiredKept(Some(anti_air));
+        TableView::Complete(TableRows::LandCombatDetails(vec![row]))
+    };
+    assert_ne!(fingerprint(&combat(1)), fingerprint(&combat(2)), "a retained older input is part of the row");
+    assert_eq!(fingerprint(&combat(1)), fingerprint(&combat(1)));
+    let naming = || {
+        let attack = CountryAttackInputs { sample_hour: PacketHour::Stamped(1000), land_night_attack: Some(-20_000), land_bunker_effectiveness_factor: None };
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow { attack: Recorded::Value(Witnessed(Some(Some(attack)))), ..Default::default() }]))
+    };
+    assert_eq!(fingerprint(&naming()), fingerprint(&naming()), "a stamped hour the writer cannot write still reads the same twice");
+}
+
+#[test]
+fn a_fingerprint_that_fails_to_read_is_never_reused_and_never_counted_as_a_missed_dependency() {
+    use replay_data::{event_feed_rows::{EventFeedCoverage, EventFeedScope, EventFeedText}, rows::EventFeedHistoryRow};
+    thread_local! {
+        static STOPPED: Cell<bool> = const { Cell::new(false) };
+    }
+    fn stopped() -> bool {
+        STOPPED.with(Cell::get)
+    }
+    let names = [EventFeedText::new(b"Reich").unwrap(), EventFeedText::default(), EventFeedText::default()];
+    let scope = EventFeedScope { country: 5, country_attempted: true, country_id: Some(9), country_names: Some(names), ..Default::default() };
+    let row = EventFeedHistoryRow { read_hour: 10, coverage: EventFeedCoverage::Partial, script_scopes: vec![scope], ..Default::default() };
+    row.validate().unwrap();
+    let table = TableView::Complete(TableRows::EventFeedHistory(vec![row]));
+    let read = fingerprint(&table);
+    assert_ne!(read, UNREUSABLE);
+    engine_allocation::set_stop_hook(Some(stopped));
+    STOPPED.with(|stop| stop.set(true));
+    let failed = fingerprint(&table);
+    STOPPED.with(|stop| stop.set(false));
+    engine_allocation::set_stop_hook(None);
+    assert_eq!(failed, UNREUSABLE, "a walk the allocator stopped is marked, never hashed as a value");
+    assert_eq!(fingerprint(&table), read, "and the next read that completes is the same as before");
+    assert_eq!(agrees(read, Some(failed)), None, "a reread that could not be read declines reuse and is no missed dependency");
+    assert_eq!(agrees(UNREUSABLE, Some(read)), None, "a read that could not be fingerprinted is never reused");
+    assert_eq!(agrees(read, Some(read)), Some(true));
+    assert_eq!(agrees(read, Some(read ^ 1)), Some(false));
+}

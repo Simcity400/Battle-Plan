@@ -19,7 +19,7 @@ pub enum Kind {
 
 pub const MAX_DEPTH: usize = 128;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Value {
     Scalar(Vec<u8>),
     Block(Vec<Item>),
@@ -138,7 +138,7 @@ pub fn read_string(text: &[u8]) -> &[u8] {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Item {
     pub key: Option<Vec<u8>>,
     pub key_quoted: bool,

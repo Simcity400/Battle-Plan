@@ -20,6 +20,12 @@ impl std::fmt::Debug for OriginalTagLists<'_> {
     }
 }
 
+impl crate::triggers::inputs::Fingerprint for OriginalTagLists<'_> {
+    fn fingerprint(&self, into: &mut std::hash::DefaultHasher) {
+        self.table().as_deref().fingerprint(into);
+    }
+}
+
 impl<'a> OriginalTagLists<'a> {
     pub fn read(frame: &dyn replay_frame::frame::DecodedSource) -> Self {
         Self {

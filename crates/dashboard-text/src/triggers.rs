@@ -147,7 +147,7 @@ pub fn fold_token(key: &str) -> String {
     key.to_ascii_lowercase()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Eval {
     True,

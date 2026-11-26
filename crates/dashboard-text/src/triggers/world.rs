@@ -117,6 +117,13 @@ pub(super) struct PartialCollection<'a, T> {
     unresolved: Option<&'a Failure>,
 }
 
+impl<T: super::inputs::Fingerprint> super::inputs::Fingerprint for PartialCollection<'_, T> {
+    fn fingerprint(&self, into: &mut std::hash::DefaultHasher) {
+        self.known.fingerprint(into);
+        self.unresolved.fingerprint(into);
+    }
+}
+
 impl<T> PartialCollection<'_, T> {
     pub(super) fn any(&self, mut predicate: impl FnMut(&T) -> super::Eval) -> super::Eval {
         let mut result = super::Eval::False;
@@ -212,7 +219,7 @@ struct CountryInvasions<'a> {
     orders: Index<Vec<Invasion<'a>>>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub(super) struct Invasion<'a> {
     pub key: (u64, u32),
     pub active: u8,
@@ -328,6 +335,29 @@ fn state_list(inputs: &CountryCounterInputRow, controlled: bool) -> &[u32] {
         Recorded::Value(Some(states)) => states.as_slice(),
         _ => &[],
     }
+}
+
+type OrganisationDetails<'a> = Cow<'a, replay_data::rows::IndustrialOrganisationDetailsRow>;
+
+fn organisation_size(row: OrganisationDetails<'_>) -> i32 {
+    row.state.size
+}
+
+fn organisation_unlocked(row: OrganisationDetails<'_>) -> Cow<'_, [u32]> {
+    part(row, |row| row.unlocked.as_slice())
+}
+
+fn organisation_policies(row: OrganisationDetails<'_>) -> (Cow<'_, [u32]>, u32) {
+    let policy = row.state.policy;
+    (part(row, |row| row.allowed_policies.as_slice()), policy)
+}
+
+fn organisation_flags(row: OrganisationDetails<'_>) -> Cow<'_, [replay_data::rows::IndustrialOrganisationFlag]> {
+    part(row, |row| row.flags.as_slice())
+}
+
+fn organisation_tasks(row: OrganisationDetails<'_>) -> Cow<'_, [replay_data::rows::IndustrialOrganisationTask]> {
+    part(row, |row| row.tasks.as_slice())
 }
 
 fn part<'a, R: Clone, T: ToOwned + ?Sized>(
@@ -671,13 +701,13 @@ pub const NULL_STATE: u32 = 0;
 
 pub(super) const CHARACTER_FLAGS: u8 = 3;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PartyLeaders {
     pub ruling: bool,
     pub leaders: Vec<PartyLeader>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PartyLeader {
     pub character: Option<u32>,
     pub ordinal: u32,
@@ -869,32 +899,29 @@ impl World<'_> {
             Query::CoreGap => super::inputs::digest(&self.core_gap_unrecorded()),
             Query::TableGap(table) => super::inputs::digest(&self.table_gap_unrecorded(table)),
             Query::UnitStatus(reference) => {
-                super::inputs::digest_debug(&self.unit_status_unrecorded(*reference))
+                super::inputs::fingerprint(&self.unit_status_unrecorded(*reference))
             }
             Query::RaidWingName(reference) => {
                 super::inputs::digest(&self.raid_wing_name_unrecorded(*reference))
             }
             Query::IndustrialOrganisation(reference) => {
-                super::inputs::digest_debug(&self.industrial_organisation_unrecorded(*reference))
+                super::inputs::fingerprint(&self.industrial_organisation_unrecorded(*reference))
             }
-            Query::IndustrialOrganisationSize(reference) => super::inputs::digest_debug(
-                &self.industrial_organisation_size_unrecorded(*reference),
-            ),
-            Query::IndustrialOrganisationUnlocked(reference) => super::inputs::digest_debug(
-                &self
-                    .organisation_details(*reference)
-                    .as_ref()
-                    .map(|row| &row.unlocked),
-            ),
+            Query::IndustrialOrganisationSize(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_size))
+            }
+            Query::IndustrialOrganisationUnlocked(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_unlocked))
+            }
             Query::IndustrialOrganisationPolicies(reference) => {
-                super::inputs::digest_debug(&self.organisation_policies_unrecorded(*reference))
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_policies))
             }
-            Query::IndustrialOrganisationFlags(reference) => super::inputs::digest_debug(
-                &self.organisation_details(*reference).as_ref().map(|row| &row.flags),
-            ),
-            Query::IndustrialOrganisationTasks(reference) => super::inputs::digest_debug(
-                &self.organisation_details(*reference).as_ref().map(|row| &row.tasks),
-            ),
+            Query::IndustrialOrganisationFlags(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_flags))
+            }
+            Query::IndustrialOrganisationTasks(reference) => {
+                super::inputs::fingerprint(&self.organisation_details(*reference).map(organisation_tasks))
+            }
             Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
             Query::Tag(slot) => super::inputs::digest(&self.tag_unrecorded(*slot)),
@@ -960,20 +987,20 @@ impl World<'_> {
             Query::BuildingLevel(province, location, building_type) => super::inputs::digest(
                 &self.building_level_unrecorded(*province, *location, *building_type),
             ),
-            Query::StateMembers => super::inputs::digest_debug(&self.state_members_unrecorded()),
+            Query::StateMembers => super::inputs::fingerprint(&self.state_members_unrecorded()),
             Query::StateOrder(state) => super::inputs::digest(&self.state_order_unrecorded(*state)),
             Query::Exists(slot) => super::inputs::digest(&self.exists_unrecorded(*slot)),
             Query::OwnedStateCount(slot) => {
                 super::inputs::digest(&self.owned_state_count_unrecorded(*slot))
             }
             Query::CountryCounterInputs(slot) => {
-                super::inputs::digest_debug(&self.country_counter_inputs_unrecorded(*slot))
+                super::inputs::fingerprint(&self.country_counter_inputs_unrecorded(*slot))
             }
             Query::CountryStateRoster(slot, controlled) => {
                 super::inputs::digest(&self.country_state_roster_unrecorded(*slot, *controlled))
             }
             Query::InvasionOrders(slot) => {
-                super::inputs::digest_debug(&self.invasion_orders_unrecorded(*slot))
+                super::inputs::fingerprint(&self.invasion_orders_unrecorded(*slot))
             }
             Query::IsAllyWith(slot, other) => {
                 super::inputs::digest(&self.is_ally_with_unrecorded(*slot, *other))
@@ -1003,10 +1030,10 @@ impl World<'_> {
                 super::inputs::digest(&self.state_of_value_unrecorded(*raw))
             }
             Query::UnitLeader(reference) => {
-                super::inputs::digest_debug(&self.unit_leader_unrecorded(*reference))
+                super::inputs::fingerprint(&self.unit_leader_unrecorded(*reference))
             }
             Query::PartyLeaders(slot) => {
-                super::inputs::digest_debug(&self.party_leaders_unrecorded(*slot))
+                super::inputs::fingerprint(&self.party_leaders_unrecorded(*slot))
             }
             Query::CountryCharacters(slot) => {
                 super::inputs::digest(&self.country_characters_unrecorded(*slot))
@@ -1042,15 +1069,15 @@ impl World<'_> {
             Query::HasTemplate(slot, wanted) => {
                 super::inputs::digest(&self.has_template_unrecorded(*slot, wanted))
             }
-            Query::Character(id) => super::inputs::digest_debug(&self.character_unrecorded(*id)),
+            Query::Character(id) => super::inputs::fingerprint(&self.character_unrecorded(*id)),
             Query::Appearance(slot) => {
-                super::inputs::digest_debug(&self.appearance_unrecorded(*slot))
+                super::inputs::fingerprint(&self.appearance_unrecorded(*slot))
             }
             Query::IsCoreOf(state, country) => {
-                super::inputs::digest_debug(&self.is_core_of_unrecorded(*state, *country))
+                super::inputs::fingerprint(&self.is_core_of_unrecorded(*state, *country))
             }
             Query::IsClaimedBy(state, country) => {
-                super::inputs::digest_debug(&self.is_claimed_by_unrecorded(*state, *country))
+                super::inputs::fingerprint(&self.is_claimed_by_unrecorded(*state, *country))
             }
             Query::RawCountry(slot) => super::inputs::digest(&self.raw_country_unrecorded(*slot)),
             Query::Nukes(slot) => super::inputs::digest(&self.nukes_unrecorded(*slot)),
@@ -1645,7 +1672,7 @@ impl<'a> World<'a> {
         &self,
         reference: u64,
     ) -> Result<Cow<'a, replay_data::rows::DivisionStatusRow>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::UnitStatus(reference)),
             || self.unit_status_unrecorded(reference),
         )
@@ -1688,7 +1715,7 @@ impl<'a> World<'a> {
         &self,
         reference: u64,
     ) -> Result<Cow<'a, replay_data::rows::IndustrialOrganisationRow>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisation(reference)),
             || self.industrial_organisation_unrecorded(reference),
         )
@@ -1710,20 +1737,16 @@ impl<'a> World<'a> {
     }
 
     pub(crate) fn industrial_organisation_size(&self, reference: u64) -> Result<i32, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationSize(reference)),
-            || self.industrial_organisation_size_unrecorded(reference),
+            || self.organisation_details(reference).map(organisation_size),
         )
     }
 
-    fn industrial_organisation_size_unrecorded(&self, reference: u64) -> Result<i32, Failure> {
-        Ok(self.organisation_details(reference)?.state.size)
-    }
-
     pub(crate) fn organisation_unlocked(&self, reference: u64) -> Result<Cow<'a, [u32]>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationUnlocked(reference)),
-            || Ok(part(self.organisation_details(reference)?, |row| row.unlocked.as_slice())),
+            || self.organisation_details(reference).map(organisation_unlocked),
         )
     }
 
@@ -1731,28 +1754,19 @@ impl<'a> World<'a> {
         &self,
         reference: u64,
     ) -> Result<(Cow<'a, [u32]>, u32), Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationPolicies(reference)),
-            || self.organisation_policies_unrecorded(reference),
+            || self.organisation_details(reference).map(organisation_policies),
         )
-    }
-
-    fn organisation_policies_unrecorded(
-        &self,
-        reference: u64,
-    ) -> Result<(Cow<'a, [u32]>, u32), Failure> {
-        let row = self.organisation_details(reference)?;
-        let policy = row.state.policy;
-        Ok((part(row, |row| row.allowed_policies.as_slice()), policy))
     }
 
     pub(crate) fn organisation_flags(
         &self,
         reference: u64,
     ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationFlag]>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationFlags(reference)),
-            || Ok(part(self.organisation_details(reference)?, |row| row.flags.as_slice())),
+            || self.organisation_details(reference).map(organisation_flags),
         )
     }
 
@@ -1760,9 +1774,9 @@ impl<'a> World<'a> {
         &self,
         reference: u64,
     ) -> Result<Cow<'a, [replay_data::rows::IndustrialOrganisationTask]>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisationTasks(reference)),
-            || Ok(part(self.organisation_details(reference)?, |row| row.tasks.as_slice())),
+            || self.organisation_details(reference).map(organisation_tasks),
         )
     }
 
@@ -2777,7 +2791,7 @@ impl<'a> World<'a> {
     }
 
     pub(super) fn state_members(&self) -> Result<&BTreeMap<u32, Vec<u32>>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::StateMembers),
             || self.state_members_unrecorded(),
         )
@@ -2849,7 +2863,7 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
     ) -> Result<Cow<'a, CountryCounterInputRow>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::CountryCounterInputs(slot)),
             || self.country_counter_inputs_unrecorded(slot),
         )
@@ -2953,7 +2967,7 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
     ) -> Result<PartialCollection<'_, Invasion<'a>>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::InvasionOrders(slot)),
             || self.invasion_orders_unrecorded(slot),
         )
@@ -3491,7 +3505,7 @@ impl<'a> World<'a> {
         &self,
         reference: u64,
     ) -> Result<Option<Cow<'a, replay_data::rows::UnitLeaderRow>>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::UnitLeader(reference)),
             || self.unit_leader_unrecorded(reference),
         )
@@ -3648,7 +3662,7 @@ impl<'a> World<'a> {
     }
 
     pub fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::PartyLeaders(slot)),
             || self.party_leaders_unrecorded(slot),
         )
@@ -4313,7 +4327,7 @@ impl<'a> World<'a> {
     }
 
     pub fn character(&self, id: u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::Character(id)),
             || self.character_unrecorded(id),
         )
@@ -4334,7 +4348,7 @@ impl<'a> World<'a> {
     }
 
     pub fn appearance(&self, slot: u32) -> Result<Cow<'a, CountryAppearanceRow>, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::Appearance(slot)),
             || self.appearance_unrecorded(slot),
         )
@@ -4368,7 +4382,7 @@ impl<'a> World<'a> {
     }
 
     pub(super) fn is_core_of(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IsCoreOf(state, country)),
             || self.is_core_of_unrecorded(state, country),
         )
@@ -4384,7 +4398,7 @@ impl<'a> World<'a> {
     }
 
     pub(super) fn is_claimed_by(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
-        super::inputs::query_debug_resolved(
+        super::inputs::query_typed_resolved(
             || super::inputs::Key::World(Query::IsClaimedBy(state, country)),
             || self.is_claimed_by_unrecorded(state, country),
         )
