@@ -300,6 +300,15 @@ fn unknown_chosen(holders: &dashboard_query::identity::Holders, facets: &[FacetF
     if chosen.is_empty() {
         return out;
     }
+    chosen.sort_unstable();
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(chosen.len());
+    for (first, last) in chosen {
+        match merged.last_mut() {
+            Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+            _ => merged.push((first, last)),
+        }
+    }
+    let chosen = merged;
     for (first, last, reason) in holders.chosen_not_known(from, to) {
         for &(lo, hi) in &chosen {
             let (first_hour, last_hour) = (first.max(lo), last.min(hi));
@@ -547,6 +556,16 @@ fn a_country_filter_over_hours_whose_holders_are_not_known_names_them_a_gap_neve
     let mut dated = Vec::new();
     append_unknown_holders(&mut dated, &holders, std::slice::from_ref(&member), 100, 130);
     assert_eq!(dated, vec![MissingSpan { first_hour: 114, last_hour: 120, reason: format!("Who holds the chosen countries is not known: {reason}") }], "a dated membership names its countries only within its span");
+    let members = FacetFilter {
+        membership: vec![
+            dashboard_query::log::CountrySpan { country: Country::from("GER"), first_hour: 110, last_hour: 118 },
+            dashboard_query::log::CountrySpan { country: Country::from("ITA"), first_hour: 114, last_hour: 120 },
+        ],
+        ..member.clone()
+    };
+    let mut overlapping = Vec::new();
+    append_unknown_holders(&mut overlapping, &holders, std::slice::from_ref(&members), 100, 130);
+    assert_eq!(overlapping, vec![MissingSpan { first_hour: 110, last_hour: 120, reason: format!("Who holds the chosen countries is not known: {reason}") }], "overlapping memberships make one gap for one outage");
     let counted = LogFacetCountAsk { key: "ger".into(), facets: vec![FacetFilter { countries: vec![Country::from("GER")], ..FacetFilter { name: "country".into(), values: Vec::new(), countries: Vec::new(), membership: Vec::new(), unobserved: Vec::new(), deduplicate: false } }] };
     assert_eq!(count_not_known(&holders, &counted, 100, 115), Some(format!("Who holds the chosen countries is not known: {reason}")), "a count of a chosen country carries its own reason");
     assert_eq!(count_not_known(&holders, &counted, 121, 130), None, "outside the unknown hours it is a number");

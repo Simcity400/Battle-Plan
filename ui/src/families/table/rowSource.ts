@@ -88,6 +88,7 @@ export interface TableRowSource<TRow extends DatedLogRow> {
   readonly missing: readonly PlacedSpan[];
   readonly refused: string | null;
   readonly facetTotals?: ReadonlyMap<string, number>;
+  readonly facetMissing?: ReadonlyMap<string, string>;
   readonly rawHead?: unknown;
   sliceAt(hour: number, first: number, count: number): readonly LogRowSlot<TRow>[];
 }
@@ -277,6 +278,7 @@ export function buildRowSourceFromHead(
       missing: reply.missing,
       refused: null,
       facetTotals: reply.facetTotals,
+      ...(reply.facetMissing ? { facetMissing: reply.facetMissing } : {}),
       rawHead: answered.raw,
       sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, reply.total, ordinal => {
         const page = pageAt(shown, ordinal, limit);
@@ -307,6 +309,7 @@ export function buildRowSourceFromHead(
     missing: head.missing,
     refused: null,
     facetTotals: head.facetTotals,
+    ...(head.facetMissing ? { facetMissing: head.facetMissing } : {}),
     rawHead: headRaw,
     sliceAt: (reqHour, first, count) => sliceSlots(reqHour, first, count, head.total, ordinal => {
       const row = head.rows[ordinal];

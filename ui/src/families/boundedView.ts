@@ -607,6 +607,7 @@ function wrapBoundedRowSource<TRow extends DatedLogRow>(
     missing: boundedMissing,
     refused: source.refused,
     ...(source.facetTotals ? { facetTotals: source.facetTotals } : {}),
+    ...(source.facetMissing ? { facetMissing: source.facetMissing } : {}),
     ...(source.rawHead !== undefined ? { rawHead: source.rawHead } : {}),
     sliceAt(reqHour: number, first: number, count: number): readonly LogRowSlot<TRow>[] {
       if (reqHour > hour) {
