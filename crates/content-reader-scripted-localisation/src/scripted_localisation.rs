@@ -2,7 +2,10 @@ use content_reader_key_names::key_name_products::KeyNamesExt as _;
 
 use std::{collections::BTreeMap, io};
 
-use content_reader_script::native::{self, Kind, Misread, Shape};
+use content_reader_script::{
+    native::{self, Kind, Misread, Shape},
+    triggers::{Bodies, Body},
+};
 use crate::{
     ResolvedLayers,
     key_names::KeyNames,
@@ -28,7 +31,28 @@ struct File {
     unknown: Option<Misread>,
 }
 
+struct Parsed {
+    items: Vec<Item>,
+    known: usize,
+    misreads: Vec<Misread>,
+    unknown: Option<Misread>,
+}
+
 fn read_file(input: &[u8], names: &KeyNames) -> File {
+    let parsed = parse(input, names);
+    let items = &parsed.items[..parsed.known];
+    let bodies = Bodies::new(items);
+    File {
+        entries: items
+            .iter()
+            .map(|item| (name(item), entry(item, &bodies)))
+            .collect(),
+        misreads: parsed.misreads,
+        unknown: parsed.unknown,
+    }
+}
+
+fn parse(input: &[u8], names: &KeyNames) -> Parsed {
     let mut entries = 0;
     let mut holds = false;
     let mut untraced: Option<(usize, Misread)> = None;
@@ -109,11 +133,9 @@ fn read_file(input: &[u8], names: &KeyNames) -> File {
         ),
         (None, None) => (read.items.len(), None, read.misreads),
     };
-    File {
-        entries: read.items[..known]
-            .iter()
-            .map(|item| (name(item), entry(item)))
-            .collect(),
+    Parsed {
+        items: read.items,
+        known,
         misreads,
         unknown,
     }
@@ -136,7 +158,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Text {
     pub value: Option<TextValue>,
-    pub trigger: crate::triggers::Triggers,
+    pub trigger: Body,
     pub trigger_present: bool,
 }
 
@@ -155,11 +177,11 @@ pub struct RandomList {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RandomMember {
     pub weight: i64,
-    pub modifiers: Vec<Vec<Item>>,
+    pub modifiers: Vec<Body>,
     pub key: Vec<u8>,
 }
 
-fn random_list(item: &Item) -> RandomList {
+fn random_list(item: &Item, bodies: &Bodies<'_>) -> RandomList {
     let mut list = RandomList::default();
     for field in item.value.items().unwrap_or_default() {
         if field.keyword_is("seed") {
@@ -177,7 +199,7 @@ fn random_list(item: &Item) -> RandomList {
                 modifiers: fields
                     .iter()
                     .filter(|f| f.keyword_is("modifier"))
-                    .map(|f| f.value.items().unwrap_or_default().to_vec())
+                    .map(|f| bodies.body(f.value.items().unwrap_or_default()))
                     .collect(),
                 key: fields
                     .iter()
@@ -192,7 +214,7 @@ fn random_list(item: &Item) -> RandomList {
     list
 }
 
-fn entry(item: &Item) -> Entry {
+fn entry(item: &Item, bodies: &Bodies<'_>) -> Entry {
     let mut texts = Vec::new();
     for text in item
         .value
@@ -202,7 +224,7 @@ fn entry(item: &Item) -> Entry {
         .filter(|f| f.keyword_is("text"))
     {
         let mut value = None;
-        let mut trigger = crate::triggers::Triggers::default();
+        let mut trigger = None;
         let mut trigger_present = false;
         for field in text.value.items().unwrap_or_default() {
             if field.keyword_is("localization_key") && value.is_none() {
@@ -210,15 +232,15 @@ fn entry(item: &Item) -> Entry {
                     field.value.scalar().unwrap_or_default().to_vec(),
                 ));
             } else if field.keyword_is("random_list") && value.is_none() {
-                value = Some(TextValue::RandomList(random_list(field)));
+                value = Some(TextValue::RandomList(random_list(field, bodies)));
             } else if field.keyword_is("trigger") {
                 trigger_present = true;
-                trigger = crate::triggers::body(&field.value).unwrap_or_default();
+                trigger = Some(field.value.items().unwrap_or_default());
             }
         }
         texts.push(Text {
             value,
-            trigger,
+            trigger: bodies.body(trigger.unwrap_or_default()),
             trigger_present,
         });
     }
@@ -332,9 +354,97 @@ mod tests {
         assert_eq!(list.members[0].key, b"A");
         assert_eq!(list.members[1].key, b"C");
         assert!(list.members[2].key.is_empty());
-        assert_eq!(list.members[0].modifiers[0].len(), 3);
+        assert_eq!(list.members[0].modifiers[0].items().len(), 3);
         assert_eq!(list.seed.len(), 2);
         assert!(text.trigger_present);
+    }
+
+    #[test]
+    fn every_body_formats_on_demand_as_it_was_read() {
+        content_reader_script::test_game::enter();
+        let files = [
+            (
+                "common/scripted_localisation/a.txt",
+                r#"
+                defined_text = { name = Always text = { trigger = { always = yes } localization_key = TITLE } }
+                defined_text = { name = Political text = { trigger = { has_government = mod_group } localization_key = POLITICAL } }
+                defined_text = { name = Neighbors text = { trigger = { any_neighbor_state = { always = yes } } localization_key = NEIGHBORS } }
+                defined_text = { name = Nested
+                    text = { trigger = { if = { limit = { tag = SYN } always = yes } else_if = { limit = { NOT = { tag = ABC } } OR = { always = no "tag" = "SYN" } } else = { always = no } } localization_key = IF }
+                    text = { trigger = { a > 2 b < @[ 1 + 2 ] "c" = yes d = "quoted" has_country_flag = flag_a } localization_key = CHECKS }
+                    text = { trigger = { } localization_key = EMPTY }
+                    text = { localization_key = PLAIN }
+                }
+                "#,
+            ),
+            (
+                "common/scripted_localisation/b.txt",
+                r#"
+                defined_text = { name = Pick text = { random_list = {
+                    seed = 7
+                    10 = { localization_key = A modifier = { factor = 2 add = 0.5 tag = SYN } modifier = { factor = 0 always = no } }
+                    5 = { localization_key = B }
+                } trigger = { AND = { always = yes NOT = { tag = ABC } } } } }
+                defined_text = { name = Twice text = { trigger = { always = no } trigger = { always = yes } localization_key = LAST } }
+                "#,
+            ),
+        ];
+        let names = read(&files);
+        assert!(names.unknown.is_empty(), "{:?}", names.unknown);
+        let mut compared = 0;
+        let mut shapes = std::collections::BTreeSet::new();
+        for (_, text) in files {
+            let parsed = parse(text.as_bytes(), &KeyNames::default());
+            let items = &parsed.items[..parsed.known];
+            let bodies = Bodies::new(items);
+            fn blocks<'a>(items: &'a [Item], found: &mut Vec<&'a [Item]>) {
+                found.push(items);
+                for item in items {
+                    if let parser::Value::Block(nested) | parser::Value::Tagged { items: nested, .. } = &item.value {
+                        blocks(nested, found);
+                    }
+                }
+            }
+            let mut found = Vec::new();
+            blocks(items, &mut found);
+            for block in found {
+                assert_eq!(bodies.body(block).items(), block);
+                shapes.extend(block.iter().map(|item| (item.operator, item.key_quoted, item.kind)));
+                compared += 1;
+            }
+            for item in items {
+                let entry = &names.entries[name(item).as_slice()];
+                let texts = item.value.items().unwrap_or_default().iter().filter(|field| field.keyword_is("text"));
+                for (eager, read) in texts.zip(&entry.texts) {
+                    let fields = eager.value.items().unwrap_or_default();
+                    let trigger = fields.iter().rev().find(|field| field.keyword_is("trigger")).and_then(|field| field.value.items()).unwrap_or_default();
+                    assert_eq!(read.trigger.items(), trigger);
+                    let modifiers: Vec<&[Item]> = fields
+                        .iter()
+                        .filter(|field| field.keyword_is("random_list"))
+                        .flat_map(|list| list.value.items().unwrap_or_default())
+                        .flat_map(|member| member.value.items().unwrap_or_default())
+                        .filter(|field| field.keyword_is("modifier"))
+                        .map(|field| field.value.items().unwrap_or_default())
+                        .collect();
+                    let on_demand: Vec<_> = match &read.value {
+                        Some(TextValue::RandomList(list)) => list.members.iter().flat_map(|member| &member.modifiers).map(Body::items).collect(),
+                        _ => Vec::new(),
+                    };
+                    assert_eq!(on_demand, modifiers);
+                    compared += 1 + modifiers.len();
+                }
+            }
+        }
+        assert!(compared > 20, "{compared}");
+        for wanted in [
+            |shape: &(parser::Operator, bool, parser::Kind)| shape.0 == parser::Operator::Less,
+            |shape: &(parser::Operator, bool, parser::Kind)| shape.0 == parser::Operator::Greater,
+            |shape: &(parser::Operator, bool, parser::Kind)| shape.1,
+            |shape: &(parser::Operator, bool, parser::Kind)| shape.2 == parser::Kind::Quoted,
+        ] {
+            assert!(shapes.iter().any(wanted), "{shapes:?}");
+        }
     }
 
     fn read(files: &[(&str, &str)]) -> Names {
@@ -360,7 +470,7 @@ mod tests {
             "common/scripted_localisation/a.txt",
             "defined_text = { name = T text = { trigger = { if = { limit = { always = yes } limit = { @v = yes always = yes } always = @v } } localization_key = X } }",
         )]);
-        let trigger = &names.entries[&b"T"[..]].texts[0].trigger;
+        let trigger = names.entries[&b"T"[..]].texts[0].trigger.items();
         let body = trigger[0].value.items().unwrap();
         assert_eq!(body[1].value.items(), Some(&[][..]));
         assert_ne!(body[2].value.scalar(), Some(&b"yes"[..]));

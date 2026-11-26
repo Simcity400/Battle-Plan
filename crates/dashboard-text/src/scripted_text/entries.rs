@@ -518,8 +518,8 @@ impl<'a> ScriptedText<'a> {
         let mut evaluator = None;
         for text in &entry.texts {
             let Some(value) = &text.value else { continue };
-            let trigger = &text.trigger;
             if text.trigger_present {
+                let trigger = &text.trigger.items();
                 checked_trigger = true;
                 let projected = entry_scopes(scopes, at, bare);
                 evaluator = Some(scopes.evaluator(self, Temps::Fresh)?);
