@@ -187,12 +187,12 @@ export const timeChartHostAdapter: FamilyHostAdapter<TimeChartModel, unknown, Ti
   inspectToken: key => key,
   gestures: createTimeChartGestures(),
   deriveAuditRows: model => model.auditRows ?? [],
+  buildView: ({ viewport }) => ({ zoom: viewport.zoomWindow ? zoomOf(viewport.zoomWindow) : null }),
   buildBinding: ctx => {
     if (!ctx.extent) return null;
     const headSourceBySeries = ctx.plan ? headSourcesOf(ctx.plan) : null;
     return {
       extent: ctx.extent,
-      ...(ctx.viewport.zoomWindow ? { zoom: zoomOf(ctx.viewport.zoomWindow) } : {}),
       ...(headSourceBySeries ? { headSourceBySeries } : {}),
     };
   },

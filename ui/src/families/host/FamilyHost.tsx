@@ -557,9 +557,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const supply = useMemo(() => (pipeline && pipe !== null ? new StaticSupply(change => pipeline.supply(pipe, change)) : null), [pipeline, pipe]);
   const supplyDated = useCallback(() => supply?.date(latestRef.current.staticSources, datedNow()), [supply, datedNow]);
 
-  const bind = useCallback(() => {
-    const mounted = surfaceRef.current;
-    if (!mounted || !pipeline || pipe === null) return;
+  const frame = useCallback(() => {
     const cur = latestRef.current;
     const curAdapter = cur.adapter;
     const [defW, defH] = curAdapter.defaultSize ?? [320, 200];
@@ -609,6 +607,29 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       }
     }
 
+    const view = {
+      scrollTop: viewport.scrollTop,
+      scrollLeft: viewport.scrollLeft,
+      window: rowWindow ?? null,
+      audit: auditId !== undefined,
+      auditId: auditId ?? null,
+      ...curAdapter.buildView?.({ viewport }),
+    };
+    return { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view };
+  }, [audit.capture, sourceIdsRef]);
+
+  const showView = useCallback(() => {
+    if (!surfaceRef.current || !pipeline || pipe === null) return;
+    const { rowWindow, view } = frame();
+    requestedWindowRef.current = rowWindow;
+    reportWindow();
+    supply?.data(view, 'view');
+  }, [frame, pipeline, pipe, reportWindow, supply]);
+
+  const bind = useCallback(() => {
+    const mounted = surfaceRef.current;
+    if (!mounted || !pipeline || pipe === null) return;
+    const { cur, curAdapter, w, h, dpr, hidden, viewport, rowWindow, auditId, view } = frame();
     const binding = familyBinding(curAdapter, {
       kind: cur.declaration.kind,
       view: cur.view,
@@ -641,8 +662,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     pipeline.bind(pipe, [mounted.surface], { surfaces: [{ width: w, height: h, dpr }] }, {}, binding);
     const bound = pipeline.view(pipe)?.binding;
     if (bound !== undefined) selectionsRef.current.bound(bound, cur.selectedKey);
+    supply?.data(view, 'view');
     supplyDated();
-  }, [pipeline, pipe, audit.capture, sourceIdsRef, supplyDated, reportWindow]);
+  }, [frame, pipeline, pipe, supply, supplyDated, reportWindow]);
+  const showViewRef = useRef(showView);
+  showViewRef.current = showView;
 
   const bindRef = useRef(bind);
   bindRef.current = bind;
@@ -654,7 +678,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     viewportRef.current.zoomWindow = next;
     clearHoverRef.current();
     notifyViewportChange();
-    bindRef.current();
+    showViewRef.current();
   }, [notifyViewportChange]);
 
   const gestureContext = useCallback((): FamilyGestureContext => ({
@@ -973,7 +997,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         windowRef.current = installedUpdate.report;
         cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
       }
-      if (installedUpdate.changed) queueMicrotask(() => bindRef.current());
+      if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
 
       if (activeAdapter.chromeState) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
@@ -1128,7 +1152,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           if (left === viewportRef.current.scrollLeft && top === viewportRef.current.scrollTop) return;
           viewportRef.current.scrollLeft = left;
           viewportRef.current.scrollTop = top;
-          bindRef.current();
+          showViewRef.current();
         }
       : null;
     if (onScroll) node.addEventListener('scroll', onScroll, { passive: true });

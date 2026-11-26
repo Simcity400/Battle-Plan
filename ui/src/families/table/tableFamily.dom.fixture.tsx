@@ -747,7 +747,19 @@ window.tableFamilyDom = {
 
     hostNode!.style.width = '210px';
     const scrollsSideways = await until(() => !!hostNode!.querySelector('.tf-edges[data-right]'), 'the narrow table to show its right fade');
-    return { firstKey, afterDown, activated: [...activated], liveStatus, focusReturned, scrollsSideways, totalInstallReads };
+    const body = hostNode!.querySelector<HTMLElement>('.fh-body')!;
+    const generation = pipeline.binding(pipeId);
+    const sideways: { left: number; painted: number | null; dim: boolean }[] = [];
+    for (const left of [40, 90, 20]) {
+      body.scrollLeft = left;
+      const at = Math.floor(body.scrollLeft);
+      await until(() => pipeline.view(pipeId)?.viewport?.scrollLeft === at, `a picture painted at sideways scroll ${at}`);
+      const view = pipeline.view(pipeId);
+      sideways.push({ left: at, painted: view?.viewport?.scrollLeft ?? null, dim: view?.dim === true });
+    }
+    const scrolledGenerationKept = pipeline.binding(pipeId) === generation;
+    body.scrollLeft = 0;
+    return { firstKey, afterDown, activated: [...activated], liveStatus, focusReturned, scrollsSideways, sideways, scrolledGenerationKept, totalInstallReads };
   },
 
   async testEmptySpaceContextMenuAndValueStateTooltip() {

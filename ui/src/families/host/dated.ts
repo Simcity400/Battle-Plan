@@ -30,7 +30,7 @@ const sameDated = (a: BoundDated | null, b: BoundDated | null) => a === b || (!!
 export class StaticSupply {
   private readonly send: (change: SupplyChange) => void;
   private held: FamilyStaticSources | null | undefined = undefined;
-  private fields: Readonly<Record<string, object | undefined>> = {};
+  private readonly groups = new Map<string, Readonly<Record<string, unknown>>>();
   private dated: BoundDated | null = null;
 
   constructor(send: (change: SupplyChange) => void) {
@@ -43,17 +43,17 @@ export class StaticSupply {
     this.send({ ...this.payload(), dated });
   }
 
-  data(fields: Readonly<Record<string, object | undefined>>): void {
-    const was = this.fields;
+  data(fields: Readonly<Record<string, unknown>>, group = 'data'): void {
+    const was = this.groups.get(group) ?? {};
     const names = new Set([...Object.keys(was), ...Object.keys(fields)]);
     if ([...names].every(name => was[name] === fields[name])) return;
-    this.fields = fields;
+    this.groups.set(group, fields);
     if (this.held !== undefined) this.send(this.payload());
   }
 
   private payload(): SupplyChange {
     const sources = this.held ?? null;
-    const data = Object.fromEntries(Object.entries(this.fields).filter(([, value]) => value !== undefined));
+    const data = Object.fromEntries([...this.groups.values()].flatMap(fields => Object.entries(fields)).filter(([, value]) => value !== undefined));
     return {
       ...sources ? { stamp: revisionOf(sources.stamp) } : {},
       statics: sources || Object.keys(data).length

@@ -111,11 +111,13 @@ test('table family plays live with zero React commits, zero layout reads on inst
       cdp.close();
     }
 
-    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; focusReturned: boolean; scrollsSideways: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
+    const kbd = await act<{ firstKey: string | null; afterDown: string | null; activated: string[]; liveStatus: string; focusReturned: boolean; scrollsSideways: boolean; sideways: { left: number; painted: number | null; dim: boolean }[]; scrolledGenerationKept: boolean; totalInstallReads: number }>('testKeyboardAndNarrow()');
     assert.ok(kbd.afterDown !== null && kbd.afterDown !== kbd.firstKey, `S8: ArrowDown moved focus from ${kbd.firstKey} to ${kbd.afterDown}`);
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
     assert.equal(kbd.focusReturned, true, 'closing a window opened from a row returns focus to that row by its key');
     assert.equal(kbd.scrollsSideways, true, 'a narrow table scrolls sideways and shows the right fade');
+    assert.equal(kbd.scrolledGenerationKept, true, 'scrolling sideways keeps the binding generation, so no picture in flight is refused');
+    assert.ok(kbd.sideways.every(step => step.painted === step.left && step.left > 0 && !step.dim), `each sideways scroll installs a picture painted at that scroll, undimmed, and hit tests use it (${JSON.stringify(kbd.sideways)})`);
 
     const r5 = await act<{ opened: boolean; menuLabel: string | null; tipShown: boolean; hasMissingState: boolean; hasKnownState: boolean }>('testEmptySpaceContextMenuAndValueStateTooltip()');
     assert.equal(r5.opened, true, 'F9: right-clicking empty space with no inspected or focused row opens context menu');
