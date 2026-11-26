@@ -238,6 +238,7 @@ let staticSupplies: { readonly id: number; readonly statics: boolean; readonly t
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
 const tooltipRows: [string, string | null][] = [];
+const deepFocusRows: (string | null)[] = [];
 let currentState = {
   source: sourceA,
   active: true,
@@ -557,6 +558,7 @@ function renderApp() {
                   options={DEEP_LOG_OPTIONS}
                   label="Deep Log"
                   subject="deep-log"
+                  onTooltipRow={(subject, by) => { if (by === 'focus') deepFocusRows.push(subject); }}
                   widget={widget}
                   runtime={rt}
                   active
@@ -1223,6 +1225,8 @@ window.hostDom = {
     const deepRowIndex = rowEl(610)?.getAttribute('aria-rowindex') ?? null;
     rowEl(610)!.focus();
     await frames(2);
+    await until(() => deepFocusRows.at(-1) === 'R610', 2000);
+    deepFocusRows.length = 0;
 
     deepLogHeldRanges = [[0, 30]];
     boundIds = [];
@@ -1230,10 +1234,12 @@ window.hostDom = {
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
     const homeScrolled = await until(() => bodyD.scrollTop === 0 && !!container!.querySelector('[data-slot="deep-log"] table tbody tr[data-row-key="loading:0"]'), 2000);
     await frames(2);
+    const homeParked = [...deepFocusRows];
     const homeScrollBinds = boundIds.filter(id => id === pipeD).length;
     const homeScrollKeptGen = pipeline.binding(pipeD) === homeGen;
     releasePages();
     const homeArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === 'R0', 2000);
+    const homeFocusRows = [...deepFocusRows];
     const homeActive = activeInfo();
 
     await scrollToRow(610);
@@ -1354,6 +1360,8 @@ window.hostDom = {
     renderApp();
     await frames(2);
     return {
+      homeParked,
+      homeFocusRows,
       deepRowCount,
       deepRowIndex,
       homeScrolled,

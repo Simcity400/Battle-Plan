@@ -1027,7 +1027,6 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const record = recordInstalled(installed, fields, selectionsRef.current.at(installed.generation.binding));
       recordRef.current = record;
-      publishFocusKey();
       if (lastHoverHourRef.current !== null) publishHoverHour(lastHoverHourRef.current);
       const rawSummary = rawMeta?.empty ? null : resolveHeaderSummary({
         summaryText: rawMeta?.summaryText ?? null,
@@ -1142,6 +1141,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           }
         }
       }
+      publishFocusKey();
       if (pendingOrdinalRef.current === null && focusInsideRef.current && focusedKeyRef.current && navNow() !== lastFocusNavRef.current) {
         lastFocusNavRef.current = navNow();
         const focusedKey = focusedKeyRef.current;

@@ -2003,6 +2003,7 @@ test('R4-S3 host: ordinal bounds, gap skipping, key directions and held mirror f
     (globalThis as { document?: unknown }).document = prevDoc;
     (globalThis as { HTMLElement?: unknown }).HTMLElement = prevEl;
   }
+});
 
 test('a focused row is the subject the installed picture holds for it, a grid cell inside the grid even with no action, and none once the picture lacks it', () => {
   const nav: FamilyNavTuple[] = [['GER', 'Germany', 0, -1, '', null], ['FRA', 'France', 1, -1, '', null]];
