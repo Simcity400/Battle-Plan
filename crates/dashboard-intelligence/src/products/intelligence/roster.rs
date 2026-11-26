@@ -1,17 +1,18 @@
 
 use super::{
     Country, IDENTITY, Tags, branch, missing,
-    operative_content::{self, Art, CAPTURED, DISBANDED, KILLED, OPERATION, OPERATIVE_CATEGORY, OperativeContent},
+    operative_content::{self, Art, CAPTURED, COOLDOWN, DISBANDED, KILLED, OPERATION, OPERATIVE_CATEGORY, OperativeContent},
     placements::ACTIVE,
 };
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt, field_columns, field_mask, warnings_through}}};
+use dashboard_follow::live::Live;
 use dashboard_query::identity::{Holder, Holders};
 use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::{CharacterOperativeRow, CharacterPortraitRow, OperativeMembershipRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     io,
     sync::Arc,
 };
@@ -377,6 +378,27 @@ pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Count
     Ok(OperativesRosterReply { operatives, artwork: artwork.urls, unheld, agency_feature: agency_feature(frame), read_hour, missing: missing(frame, TableId::OperativeMemberships), warnings })
 }
 
+fn asked_slots(countries: &[dashboard_base::products::Country], holders: &Holders, hour: i32) -> HashSet<u32> {
+    countries
+        .iter()
+        .filter_map(|country| match holders.at(country, hour).map(|run| run.holder) {
+            Some(Holder::Found { slot, .. }) => Some(slot),
+            _ => None,
+        })
+        .collect()
+}
+
+fn active_mine<'a>(frame: &'a DecodedFrame, countries: &[dashboard_base::products::Country], holders: &Holders, hour: i32) -> Vec<&'a OperativeMembershipRow> {
+    if countries.iter().any(|country| holders.not_known(country, hour).is_some()) {
+        return Vec::new();
+    }
+    let (Ok(tags), Ok(rows)) = (Tags::read(frame), frame.complete::<tables::OperativeMemberships>()) else { return Vec::new() };
+    let slots = asked_slots(countries, holders, hour);
+    rows.iter()
+        .filter(|row| row.roster_kind == ACTIVE && !terminal(row.assignment) && tags.slot(row.roster_country).is_some_and(|slot| slots.contains(&slot)))
+        .collect()
+}
+
 impl AtHour for OperativesRoster {
     const KEY: &'static str = "operatives-roster";
     const TITLE: &'static str = "Operatives roster";
@@ -401,24 +423,20 @@ impl AtHour for OperativesRoster {
         TABLES.to_vec()
     }
 
-    fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
-        let rows = || held.complete::<tables::OperativeMemberships>().unwrap_or_default().iter().filter(|row| row.roster_kind == ACTIVE);
+    fn reads_in(params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> Vec<Read> {
         match step {
             0 => [TableId::OperativeMemberships, IDENTITY[0], IDENTITY[1], TableId::SimulationFeatures, TableId::CharacterOperatives].into_iter().map(Read::all).collect(),
             1 => {
-                let operations = rows().filter_map(|row| match row.operation {
+                let mine = active_mine(held, &params.countries, at.holders, at.hour);
+                let operations = mine.iter().filter_map(|row| match row.operation {
                     Recorded::Value(Some(id)) if row.assignment == OPERATION && id != 0 => Some(u128::from(id)),
                     _ => None,
                 });
-                let ids: BTreeSet<u64> = rows().map(|row| row.id).collect();
-                let characters = held
-                    .complete::<tables::CharacterOperatives>()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|row| row.resolved && row.category == OPERATIVE_CATEGORY && ids.contains(&row.reference))
-                    .map(|row| u128::from(row.character));
-                let mut reads = vec![Read::these(TableId::Operations, operations), Read::these(TableId::CharacterPortraits, characters)];
-                if rows().any(|row| row.assignment == CAPTURED) {
+                let ids: BTreeSet<u64> = mine.iter().map(|row| row.id).collect();
+                let linked = held.complete::<tables::CharacterOperatives>().map(characters).unwrap_or_default();
+                let chars = ids.iter().filter_map(|id| linked.get(id).copied().flatten().map(u128::from));
+                let mut reads = vec![Read::these(TableId::Operations, operations), Read::these(TableId::CharacterPortraits, chars)];
+                if at.context.is_ok() && mine.iter().any(|row| row.assignment == CAPTURED) {
                     reads.extend(NAMING.into_iter().map(Read::all));
                 }
                 reads
@@ -431,12 +449,143 @@ impl AtHour for OperativesRoster {
         }
     }
 
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        let through = if stage == 1 { at.holders.interval(at.hour).1 } else { i32::MAX };
+        (Self::reads_in(params, owner, stage, held, at), through)
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryLinks => &["canonical_slot"],
+            TableId::SimulationFeatures => &["dlc_mask"],
+            TableId::OperativeMemberships => &[
+                "owner_country",
+                "assignment",
+                "experience_raw",
+                "skill",
+                "capturer_country",
+                "captured_hour",
+                "action_variant",
+                "ordinal",
+                "target_country",
+                "operation",
+                "name",
+                "cooldown_kind",
+                "cooldown_start_hour",
+                "cooldown_end_hour",
+            ],
+            TableId::CharacterOperatives => &["reference", "resolved", "category", "trait_definitions"],
+            TableId::Operations => &["definition_token"],
+            TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "leader_ideology", "overlord"],
+            TableId::ReservedCountryNaming => &["tag", "name_tag", "cosmetic_tag", "leader_ideology", "group", "overlord", "autonomy", "built"],
+            TableId::Politics => &["ruling_party"],
+            TableId::PoliticalParties => &["token"],
+            TableId::Autonomy => &["state"],
+            _ => return None,
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        table == TableId::CharacterOperatives
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        match stage {
+            1 => {
+                edits.fields(TableId::OperativeMemberships, field_mask(TableId::OperativeMemberships, &["assignment", "operation"]))
+                    || edits.fields(TableId::CountryLinks, u64::MAX)
+                    || edits.fields(TableId::Countries, u64::MAX)
+                    || edits.fields(TableId::CharacterOperatives, field_mask(TableId::CharacterOperatives, &["reference", "resolved", "category"]))
+            }
+            2 => edits.fields(TableId::Operations, field_mask(TableId::Operations, &["definition_token"])),
+            _ => false,
+        }
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
         Ok(operative_content::content(source, load))
     }
 
-    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
-        if frame.tables[TableId::OperativeMemberships.index()].sampled_at().is_some() { i32::MAX } else { frame.hour }
+    fn valid_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let mut through = at.holders.interval(at.hour).1;
+        if frame.tables[TableId::OperativeMemberships.index()].sampled_at().is_some() {
+            return through;
+        }
+        let Ok(content) = at.context else {
+            return through;
+        };
+        for row in active_mine(frame, &params.countries, at.holders, at.hour) {
+            if row.assignment == CAPTURED && row.captured_hour != engine_native_memory::cgame_date::NULL_RAW_HOUR && content.has_capture_days() {
+                through = through.min(operative_content::capture_valid_through(frame.hour));
+            } else if row.assignment == COOLDOWN
+                && let Ok(Some((kind, _, end))) = operative_content::cooldown(row)
+            {
+                through = through.min(operative_content::cooldown_valid_through(kind, end, frame.hour));
+            }
+        }
+        through
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        Self::valid_through(frame, params, at).min(warnings_through(
+            frame.hour,
+            reply.missing.iter()
+                .chain(&reply.warnings)
+                .chain(reply.operatives.iter().flat_map(|op| op.traits_missing.iter().chain(&op.assignment_missing)))
+                .map(String::as_str),
+        ))
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || !data["missing"].is_null() {
+            return Ok(false);
+        }
+        if data["readHour"].as_i64().map(|hour| hour as i32) != frame.tables[TableId::OperativeMemberships.index()].sampled_at() {
+            return Ok(false);
+        }
+        if !edits.tables.keys().all(|table| matches!(table, TableId::OperativeMemberships | TableId::CharacterOperatives)) {
+            return Ok(false);
+        }
+        if params.countries.iter().any(|country| at.holders.not_known(country, at.hour).is_some()) {
+            return Ok(false);
+        }
+        if let Some(changed) = edits.tables.get(&TableId::OperativeMemberships) {
+            let Ok(tags) = Tags::read(frame) else { return Ok(false) };
+            let slots = asked_slots(&params.countries, at.holders, at.hour);
+            for &key in changed.keys() {
+                if (key as u8) == ACTIVE && tags.slot((key >> 8) as u32).is_some_and(|slot| slots.contains(&slot)) {
+                    return Ok(false);
+                }
+            }
+        }
+        if let Some(changed) = edits.tables.get(&TableId::CharacterOperatives) {
+            let Ok(current) = frame.complete::<tables::CharacterOperatives>() else { return Ok(false) };
+            let Some(replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::CharacterOperatives(previous))) =
+                edits.previous.get(&TableId::CharacterOperatives).map(|view| view.held())
+            else {
+                return Ok(false);
+            };
+            let Some(operatives) = data["operatives"].as_array() else { return Ok(false) };
+            let ids: HashSet<u64> = operatives.iter().filter_map(|op| op["id"].as_str()?.parse().ok()).collect();
+            let affects = |rows: &[CharacterOperativeRow], character: u32| {
+                rows.binary_search_by_key(&character, |row| row.character).ok().is_some_and(|at| {
+                    let row = &rows[at];
+                    row.resolved && row.category == OPERATIVE_CATEGORY && ids.contains(&row.reference)
+                })
+            };
+            for &key in changed.keys() {
+                let character = key as u32;
+                if affects(current, character) || affects(previous, character) {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {

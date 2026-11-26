@@ -1,5 +1,6 @@
-use super::{Content, IDENTITY, Tags, branch, missing, placements::{MISSION, Operative, working}};
-use dashboard_base::{Source, products::{Country as ParamCountry, LoadContext, at_hour::{At, AtHour}, validate_country}};
+use super::{Content, IDENTITY, Tags, branch, missing, placements::{ACTIVE, MISSION, Operative, working}};
+use dashboard_base::{Source, products::{Country as ParamCountry, LoadContext, at_hour::{At, AtHour, Edits, Held, Read, ReadsAt, field_columns, warnings_through}, validate_country}};
+use dashboard_follow::live::Live;
 use dashboard_world::products::groups::{FactionAt, FactionGroup, factions_at, factions_valid_through};
 use replay_data::rows::{IntelligenceAgencyRow, OperativeMembershipRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -319,8 +320,27 @@ impl AtHour for OperativeMatrix {
         params.countries.iter().try_for_each(validate_country)
     }
 
-    fn tables(_params: &Self::Params) -> Vec<TableId> {
-        TABLES.to_vec()
+    fn tables(params: &Self::Params) -> Vec<TableId> {
+        if params.form.unwrap_or_default() == OperativeMatrixForm::Pairs {
+            vec![TableId::OperativeMemberships, IDENTITY[0], IDENTITY[1]]
+        } else {
+            TABLES.to_vec()
+        }
+    }
+
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::OperativeMemberships => &["owner_country", "assignment", "action_variant", "target_country", "operation", "name"],
+            TableId::IntelligenceAgencies => &["active_count", "unknown_f0", "created"],
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryLinks => &["canonical_slot"],
+            _ => return None,
+        };
+        Some(field_columns(table, fields))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -339,8 +359,71 @@ impl AtHour for OperativeMatrix {
         Ok(MatrixContext { content, factions })
     }
 
-    fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        factions_valid_through(&at.context.factions, at.hour)
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let through = factions_valid_through(&at.context.factions, at.hour);
+        if params.countries.is_empty() { through } else { through.min(at.holders.interval(at.hour).1) }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        if partial {
+            return frame.hour;
+        }
+        Self::valid_through(frame, params, at).min(warnings_through(
+            frame.hour,
+            reply.missing.iter()
+                .chain(&reply.warnings)
+                .chain(reply.rows.iter().filter_map(|row| match &row.capacity {
+                    AgencyCapacity::Missing { reason } => Some(reason),
+                    _ => None,
+                }))
+                .map(String::as_str),
+        ))
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &Live, data: &mut Held<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || !data["missing"].is_null() {
+            return Ok(false);
+        }
+        if data["readHour"].as_i64().map(|hour| hour as i32) != frame.tables[TableId::OperativeMemberships.index()].sampled_at() {
+            return Ok(false);
+        }
+        if !edits.tables.keys().all(|table| matches!(table, TableId::OperativeMemberships | TableId::IntelligenceAgencies)) {
+            return Ok(false);
+        }
+        if params.countries.iter().any(|country| at.holders.tag_at(country, at.hour).is_none() && at.holders.not_known(country, at.hour).is_some()) {
+            return Ok(false);
+        }
+        if let Some(changed) = edits.tables.get(&TableId::OperativeMemberships)
+            && changed.keys().any(|&key| (key as u8) == ACTIVE)
+        {
+            return Ok(false);
+        }
+        if let Some(changed) = edits.tables.get(&TableId::IntelligenceAgencies)
+            && params.form.unwrap_or_default() != OperativeMatrixForm::Pairs
+        {
+            let Ok(tags) = Tags::read(frame) else { return Ok(false) };
+            let Ok(agencies) = frame.complete::<tables::IntelligenceAgencies>() else { return Ok(false) };
+            let Some(countries) = data["countries"].as_array() else { return Ok(false) };
+            let Some(rows) = data["rows"].as_array() else { return Ok(false) };
+            let row_tags: HashSet<&str> = rows.iter().filter_map(|row| countries.get(row["country"].as_u64()? as usize)?["tag"].as_str()).collect();
+            let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| {
+                params.countries.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
+            });
+            for &key in changed.keys() {
+                let raw = key as u32;
+                let Some(tag) = tags.tag(raw) else { continue };
+                if row_tags.contains(tag.as_str()) {
+                    return Ok(false);
+                }
+                if chosen.as_ref().is_some_and(|chosen| !chosen.contains(&tag)) {
+                    continue;
+                }
+                if agencies.binary_search_by_key(&raw, |row| row.country).ok().is_some_and(|at| agencies[at].created != 0) {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -355,9 +438,14 @@ impl AtHour for OperativeMatrix {
             (Ok(tags), Ok(rows)) => (tags, rows),
             (Err(error), _) | (_, Err(error)) => return Ok(empty_reply(read_hour, Some(error.to_string()), Vec::new())),
         };
-        let agencies = frame
-            .complete::<tables::IntelligenceAgencies>()
-            .map_err(|error| missing(frame, TableId::IntelligenceAgencies).unwrap_or_else(|| error.to_string()));
+        let form = params.form.unwrap_or_default();
+        let agencies = if form == OperativeMatrixForm::Pairs {
+            Ok(&[][..])
+        } else {
+            frame
+                .complete::<tables::IntelligenceAgencies>()
+                .map_err(|error| missing(frame, TableId::IntelligenceAgencies).unwrap_or_else(|| error.to_string()))
+        };
         let census = census(memberships, agencies, &tags, &at.context.content);
         let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| {
             params.countries.iter().filter_map(|country| at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned))).collect()
@@ -367,7 +455,7 @@ impl AtHour for OperativeMatrix {
         if at.context.factions.is_empty() {
             warnings.push("Factions could not be read for this branch; countries are not grouped.".to_owned());
         }
-        let shape = Shape { chosen: chosen.as_ref(), top: params.top, factions: &factions, form: params.form.unwrap_or_default() };
+        let shape = Shape { chosen: chosen.as_ref(), top: params.top, factions: &factions, form };
         let (countries, rows, columns, cells, most, largest_maximum, pairs) = build(&census, &shape);
         Ok(OperativeMatrixReply { countries, rows, columns, cells, most, largest_maximum, pairs, read_hour, missing: None, warnings })
     }
