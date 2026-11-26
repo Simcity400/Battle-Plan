@@ -983,6 +983,36 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!((gap_reply.missing[0].first_hour, gap_reply.missing[0].last_hour), (11, 12));
     assert!(gap_reply.series[0].runs.iter().all(|r| r.last_hour < 11 || r.first_hour > 12), "runs never bridge unread Raids hours");
     assert_eq!(gap_reply.series[0].runs.last().map(|r| (r.launched, r.succeeded)), Some((2, 1)), "unread RaidTargets does not discard witnessed Raids counts");
+    assert_eq!(gap_reply.partial.len(), 1);
+    assert_eq!((gap_reply.partial[0].first_hour, gap_reply.partial[0].last_hour), (13, 14), "post-gap cumulative runs carry a partial span with the gap reason");
+    assert!(gap_reply.partial[0].reason.contains("raids unread"), "{:?}", gap_reply.partial[0].reason);
+
+    let top_after_gap = RaidTally::load(
+        &gap_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![], top: Some(3), metric: RaidTallyMetric::Both, hour: 14 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(top_after_gap.series.is_empty(), "top ranking is withheld in Lines after a coverage gap");
+    assert!(top_after_gap.rank_missing.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", top_after_gap.rank_missing);
+
+    let explicit_before_gap = RaidTallyAt::load(
+        &gap_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 10 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(explicit_before_gap.partial, None);
+    let explicit_after_gap = RaidTallyAt::load(
+        &gap_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(7)], group: None, top: None, metric: RaidTallyMetric::Both, hour: 14 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert!(explicit_after_gap.partial.as_deref().is_some_and(|reason| reason.contains("raids unread")), "{:?}", explicit_after_gap.partial);
 
     let hover_gap = RaidTallyAt::load(
         &gap_source,

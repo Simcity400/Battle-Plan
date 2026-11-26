@@ -337,6 +337,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
             item: {
               label: look.name,
               value: formatExactFigure(s.exact.value, model, model.yAxis.format, s.exact.raw, s.exact.denominator),
+              ...(s.exact.partial ? { partialReason: s.exact.partial } : {}),
               swatch: negative ? NEGATIVE_SWATCH : look.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
@@ -376,6 +377,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         }
         continue;
       }
+      const partialSpan = s.partialSpans?.find(sp => hour >= sp.firstHour && hour <= sp.lastHour);
       const text = sampled.exact || sampled.min === sampled.max
         ? formatExactFigure(sampled.value, model, model.yAxis.format, sampled.raw, sampled.denominator)
         : `${formatChartAxisValue(sampled.min, model.yAxis.format)}\u2013${formatChartAxisValue(sampled.max, model.yAxis.format)}`;
@@ -384,6 +386,7 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
         item: {
           label: look.name,
           value: text,
+          ...(partialSpan ? { partialReason: partialSpan.reason } : {}),
           swatch: s.negRed && sampled.value < 0 ? NEGATIVE_SWATCH : look.color,
           tone: s.negRed && sampled.value < 0 ? 'negative' : undefined,
           ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),

@@ -95,6 +95,7 @@ export function validateRaidTallyReply(value: unknown): RaidTallyReply {
     && maybe(value.nextChange, isInt)
     && maybe(value.available, item => typeof item === 'boolean')
     && maybe(value.unavailable, isText)
+    && (value.rankMissing === undefined || maybe(value.rankMissing, isText))
     && isInt(value.unattributed) && value.unattributed >= 0
     && Array.isArray(value.series) && value.series.every(item => isRecord(item)
       && isInt(item.slot) && item.slot >= 0
@@ -110,6 +111,10 @@ export function validateRaidTallyReply(value: unknown): RaidTallyReply {
       && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
       && span.lastHour <= (value.hour as number)
       && isText(span.reason))
+    && (value.partial === undefined || (Array.isArray(value.partial) && value.partial.every(span => isRecord(span)
+      && isInt(span.firstHour) && isInt(span.lastHour) && span.firstHour <= span.lastHour
+      && span.lastHour <= (value.hour as number)
+      && isText(span.reason))))
     && Array.isArray(value.warnings) && value.warnings.every(isText);
   if (!ok) throw new Error('The raid tally reply is malformed.');
   return value as unknown as RaidTallyReply;
@@ -181,6 +186,13 @@ function missingAtHour(reply: RaidTallyReply, hour: number): string | null {
   return null;
 }
 
+function partialAtHour(reply: RaidTallyReply, hour: number): string | null {
+  for (const span of reply.partial ?? []) {
+    if (span.firstHour <= hour && hour <= span.lastHour) return span.reason;
+  }
+  return null;
+}
+
 function formatHoverRowValue(metric: RaidTallyMetric, launched: number, succeeded: number): string {
   if (metric === 'launched') return formatScalar(launched, 'integer');
   if (metric === 'succeeded') return formatScalar(succeeded, 'integer');
@@ -241,6 +253,7 @@ function buildHoverDetail(
     return {
       label,
       value: formatHoverRowValue(options.metric, row.launched, row.succeeded),
+      ...(reply.partial ? { partialReason: reply.partial } : {}),
       ...(atHour ? { swatch: atHour.color } : {}),
       ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),
     };
@@ -311,7 +324,27 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       };
     }
 
+    if (options.top !== null && reply.rankMissing) {
+      return {
+        kind: 'raid-tally',
+        measureTitle: title,
+        mode: 'lines',
+        hour,
+        extent: options.extent,
+        ...(view ? { view } : {}),
+        yAxis,
+        series: [],
+        gaps: gaps.length > 0 ? gaps : undefined,
+        summaryText: SUCCESS_NOTE,
+        warnings,
+        empty: { message: reply.rankMissing, kind: 'unavailable' },
+        auditRows: [auditRow('__rank__', reply.rankMissing)],
+      };
+    }
+
     const headMissing = missingAtHour(reply, floorHour);
+    const headPartial = headMissing === null ? partialAtHour(reply, floorHour) : null;
+    const partialSpans = reply.partial?.length ? reply.partial : undefined;
     const orderedKeys = reply.series.map(item => countryKey(item.slot));
     const slotByKey = new Map(reply.series.map(item => [countryKey(item.slot), item.slot]));
     const rawLooks = countrySeriesLooks(orderedKeys, readView, {
@@ -355,16 +388,22 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       const primaryPoints = runsToStepPoints(runs, primaryField, floorHour);
 
       if (headRun !== null) {
+        const suffix = headPartial ? ` (recorded subtotal: ${headPartial})` : '';
         if (options.metric === 'both') {
-          auditRows.push(auditRow(`${key}${LAUNCHED_SUFFIX}`, formatScalar(headRun.launched, 'integer')));
-          auditRows.push(auditRow(`${key}${SUCCEEDED_SUFFIX}`, formatScalar(headRun.succeeded, 'integer')));
+          auditRows.push(auditRow(`${key}${LAUNCHED_SUFFIX}`, `${formatScalar(headRun.launched, 'integer')}${suffix}`));
+          auditRows.push(auditRow(`${key}${SUCCEEDED_SUFFIX}`, `${formatScalar(headRun.succeeded, 'integer')}${suffix}`));
         } else {
-          auditRows.push(auditRow(key, formatScalar(headRun[primaryField], 'integer')));
+          auditRows.push(auditRow(key, `${formatScalar(headRun[primaryField], 'integer')}${suffix}`));
         }
       }
 
       const primaryId = options.metric === 'both' ? `${key}${LAUNCHED_SUFFIX}` : key;
       const primaryName = options.metric === 'both' ? `${look.name} · Launched` : look.name;
+      const endLabelValue = headRun === null
+        ? null
+        : options.metric === 'both'
+          ? `${formatScalar(headRun.launched, 'integer')} / ${formatScalar(headRun.succeeded, 'integer')}${headPartial ? ' (partial)' : ''}`
+          : `${formatScalar(headRun[primaryField], 'integer')}${headPartial ? ' (partial)' : ''}`;
       series.push({
         id: primaryId,
         key: primaryId,
@@ -380,13 +419,14 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           ? look.identities.map(run => ({ ...run, name: `${run.name} · Launched` }))
           : look.identities,
         missingSpans: reply.missing,
-        endLabel: isTail || primaryValue === null || !options.endLabels
+        ...(partialSpans ? { partialSpans } : {}),
+        endLabel: isTail || endLabelValue === null || !options.endLabels
           ? null
           : {
               flag: look.flag,
               name: look.name,
               fullName: look.name,
-              value: formatScalar(primaryValue, 'integer'),
+              value: endLabelValue,
             },
       });
 
@@ -406,6 +446,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           headHour: hour,
           identities: look.identities.map(run => ({ ...run, name: `${run.name} · Succeeded` })),
           missingSpans: reply.missing,
+          ...(partialSpans ? { partialSpans } : {}),
           endLabel: null,
         });
       }

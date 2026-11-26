@@ -102,8 +102,9 @@ export interface TimeChartSeriesModel {
   readonly identities?: readonly ChartIdentityRun[];
   readonly icon?: ChartArtSlot;
   readonly missingSpans?: readonly ChartMissingSpan[];
+  readonly partialSpans?: readonly ChartMissingSpan[];
   readonly absentReason?: string | null;
-  readonly exact?: { readonly hour: number; readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly reason?: string } | null;
+  readonly exact?: { readonly hour: number; readonly value: number | null; readonly raw?: bigint; readonly denominator?: bigint; readonly reason?: string; readonly partial?: string } | null;
 }
 
 export interface ChartStackBand {

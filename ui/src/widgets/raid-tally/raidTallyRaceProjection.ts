@@ -7,7 +7,7 @@ import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } f
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
+import { knownValue, notRecorded, partialValue, zeroValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
 import type { GroupSelection, RaidTallyAtReply, RaidTallyAtRow, RaidTallyMetric } from '../../generated/dashboard';
 
@@ -38,6 +38,7 @@ export function validateRaidTallyAt(value: unknown): RaidTallyAtReply {
     || !Number.isSafeInteger(value.unattributedLaunched)
     || !Number.isSafeInteger(value.unattributedSucceeded)
     || !(value.missing === null || typeof value.missing === 'string')
+    || !(value.partial === undefined || value.partial === null || typeof value.partial === 'string')
     || !Array.isArray(value.warnings)
   ) {
     throw new Error('The raid tally reply is malformed.');
@@ -170,7 +171,10 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
       }
 
       const primary = options.metric === 'succeeded' ? item.succeeded : item.launched;
-      const value = primary === 0 ? zeroValue() : knownValue(primary);
+      const partialReason = reply.partial ?? null;
+      const value = partialReason
+        ? partialValue(primary, partialReason)
+        : primary === 0 ? zeroValue() : knownValue(primary);
       const barFill = pres.color ?? colour(options.surface, 0);
       let segments: BarsSegment[] | undefined;
       if (options.metric === 'both' && item.launched > 0) {
@@ -178,15 +182,15 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         const other = item.launched - succeeded;
         segments = [];
         if (succeeded > 0) {
-          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: knownValue(succeeded), format: { decimals: 0 }, color: barFill });
+          segments.push({ key: 'succeeded', label: 'Succeeded', share: succeeded / item.launched, value: partialReason ? partialValue(succeeded, partialReason) : knownValue(succeeded), format: { decimals: 0 }, color: barFill });
         }
         if (other > 0) {
-          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
+          segments.push({ key: 'other', label: 'Other launched', share: other / item.launched, value: partialReason ? partialValue(other, partialReason) : knownValue(other), format: { decimals: 0 }, color: barFill, hatched: true });
         }
       }
       const tooltipItems: TooltipListItem[] = [
-        { label: 'Launches', value: countText(item.launched) },
-        { label: 'Successes', value: countText(item.succeeded) },
+        { label: 'Launches', value: countText(item.launched), ...(partialReason ? { partialReason } : {}) },
+        { label: 'Successes', value: countText(item.succeeded), ...(partialReason ? { partialReason } : {}) },
       ];
       rows.push({
         kind: 'data',

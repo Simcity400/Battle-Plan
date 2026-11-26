@@ -73,9 +73,14 @@ pub struct RaidTallyReply {
     pub next_change: Option<i32>,
     pub available: Option<bool>,
     pub unavailable: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub rank_missing: Option<String>,
     pub unattributed: u32,
     pub series: Vec<RaidTallySlotSeries>,
     pub missing: Vec<MissingSpan>,
+    #[serde(default)]
+    pub partial: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
 
@@ -548,6 +553,46 @@ fn compute_next_change(
     best
 }
 
+fn partial_spans(segments: &[(i32, i32)], missing: &[MissingSpan], first_unattributed: Option<i32>) -> Vec<MissingSpan> {
+    let first_gap = missing.first();
+    if first_gap.is_none() && first_unattributed.is_none() {
+        return Vec::new();
+    }
+    let gap_reason = first_gap.map(|gap| format!("Raid history is incomplete up to this date: {}", gap.reason));
+    let mut out: Vec<MissingSpan> = Vec::new();
+    for &(seg_first, seg_last) in segments {
+        let mut cursor = seg_first;
+        while cursor <= seg_last {
+            let end = match first_unattributed {
+                Some(u) if u > cursor && u <= seg_last => u - 1,
+                _ => seg_last,
+            };
+            let reason = if first_gap.is_some_and(|gap| cursor > gap.last_hour) {
+                gap_reason.as_deref()
+            } else if first_unattributed.is_some_and(|u| cursor >= u) {
+                Some("Some raids up to this date have an unrecorded raider.")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                if let Some(prev) = out.last_mut()
+                    && prev.reason == reason
+                    && prev.last_hour.saturating_add(1) == cursor
+                {
+                    prev.last_hour = end;
+                } else {
+                    out.push(MissingSpan { first_hour: cursor, last_hour: end, reason: reason.to_owned() });
+                }
+            }
+            if end == seg_last {
+                break;
+            }
+            cursor = end.saturating_add(1);
+        }
+    }
+    out
+}
+
 pub struct RaidTally;
 
 impl Product for RaidTally {
@@ -624,20 +669,34 @@ impl Product for RaidTally {
         let ev_end = index.events.partition_point(|ev| ev.hour <= through);
         let bounded_events = &index.events[..ev_end];
         let unattributed = index.unattributed_hours.partition_point(|&h| h <= through) as u32;
+        let first_unattributed = index.unattributed_hours.first().copied().filter(|&h| h <= through);
+        let partial = partial_spans(&segments, &bounded_missing, first_unattributed);
 
-        let (series, next_change) = if let Some(top) = params.top {
-            let (ordered_slots, membership_map) =
-                compute_top_membership(bounded_events, &segments, top as usize, params.metric);
-            let built: Vec<RaidTallySlotSeries> = ordered_slots
-                .into_iter()
-                .map(|slot| RaidTallySlotSeries {
-                    slot,
-                    runs: build_slot_runs(bounded_events, slot, &segments),
-                    membership: membership_map.get(&slot).cloned(),
-                })
-                .collect();
-            let next = compute_next_change(&index, through, true, &[], None);
-            (built, next)
+        let (series, next_change, rank_missing) = if let Some(top) = params.top {
+            if let Some(gap) = bounded_missing.first() {
+                let next = compute_next_change(&index, through, true, &[], None);
+                (Vec::new(), next, Some(format!("Raid history is incomplete up to this date: {}", gap.reason)))
+            } else if unattributed > 0 {
+                let next = compute_next_change(&index, through, true, &[], None);
+                (
+                    Vec::new(),
+                    next,
+                    Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld")),
+                )
+            } else {
+                let (ordered_slots, membership_map) =
+                    compute_top_membership(bounded_events, &segments, top as usize, params.metric);
+                let built: Vec<RaidTallySlotSeries> = ordered_slots
+                    .into_iter()
+                    .map(|slot| RaidTallySlotSeries {
+                        slot,
+                        runs: build_slot_runs(bounded_events, slot, &segments),
+                        membership: membership_map.get(&slot).cloned(),
+                    })
+                    .collect();
+                let next = compute_next_change(&index, through, true, &[], None);
+                (built, next, None)
+            }
         } else {
             let (slots, next_holder) = resolve_explicit_slots(&query, &params.countries, through);
             let built: Vec<RaidTallySlotSeries> = slots
@@ -649,7 +708,7 @@ impl Product for RaidTally {
                 })
                 .collect();
             let next = compute_next_change(&index, through, false, &slots, next_holder);
-            (built, next)
+            (built, next, None)
         };
 
         let reply = RaidTallyReply {
@@ -657,9 +716,11 @@ impl Product for RaidTally {
             next_change,
             available,
             unavailable,
+            rank_missing,
             unattributed,
             series,
             missing: bounded_missing,
+            partial,
             warnings: warnings.into_iter().collect(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;

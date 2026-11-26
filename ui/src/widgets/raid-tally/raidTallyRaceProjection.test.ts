@@ -114,4 +114,23 @@ test('raidTallyRaceProjection sends group to Rust, keys by slot, never claims em
   const read = plan.entries[0]!.read as unknown as { params: Record<string, unknown>; buildExactParams: (base: Record<string, unknown>, hour: number) => Record<string, unknown> | null };
   const exact = read.buildExactParams(read.params, 300);
   assert.deepEqual(exact?.group, { type: 'humans', membership: 'hour' }, 'group selection sent to Rust');
+
+  const partialReason = 'Raid history is incomplete up to this date: Raids were not recorded at these hours';
+  const partialModel = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, partial: partialReason }]]),
+      identity: fakeIdentity({
+        [countryKey(7)]: { name: 'German Reich', color: '#6b7280', tag: 'GER' },
+        [countryKey(9)]: { name: 'West Germany', color: '#4b5563', tag: 'GER' },
+        [countryKey(14)]: { name: 'France', color: '#2563eb', tag: 'FRA' },
+      }),
+    }),
+    { ...OPTS, top: null },
+  );
+  const partialRows = partialModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
+  assert.deepEqual(partialRows[0]!.value?.value, { kind: 'partial', value: 5, reason: partialReason });
+  assert.deepEqual(partialRows[1]!.value?.value, { kind: 'partial', value: 0, reason: partialReason }, 'post-gap zero is partial, never exact zero');
+  assert.equal(partialRows[0]!.tooltip?.items?.[0]?.partialReason, partialReason);
+  assert.equal(partialRows[2]!.value?.value.kind, 'notRecorded');
 });

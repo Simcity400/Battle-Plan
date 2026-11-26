@@ -7,6 +7,7 @@ import {
   type FamilyPlanContext,
   type IdentityProvider,
 } from '../../families/contract.ts';
+import { buildTooltipContent } from '../../families/host/tooltips.ts';
 import type { BranchToHourSourceRead, ExactHoverSourceRead } from '../../families/plan.ts';
 import { deriveTimeChartTooltip } from '../../families/time-chart/hitTest.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
@@ -144,6 +145,7 @@ test('raid-tally lines breaks across unread Raids spans, keeps distinct unresolv
       },
     ],
     missing: [{ firstHour: 110, lastHour: 119, reason: 'Raids were not recorded at these hours' }],
+    partial: [],
     warnings: [],
   };
 
@@ -261,6 +263,7 @@ test('raid-tally lines reports unavailable when raid types are absent or head is
     unattributed: 0,
     series: [],
     missing: [],
+    partial: [],
     warnings: [],
   };
   const view = createBoundedReadView({
@@ -282,4 +285,103 @@ test('raid-tally lines reports unavailable when raid types are absent or head is
   });
   assert.equal(model.empty?.kind, 'unavailable');
   assert.equal(model.empty?.message, 'No raid types available.');
+});
+
+test('R3-S6 & raid labels: post-gap totals carry partial state across end labels, audit and hover, both mode shows launched / succeeded, and Top withholds ranking', () => {
+  const partialReason = 'Raid history is incomplete up to this date: Raids were not recorded at these hours';
+  const reply: RaidTallyReply = {
+    hour: 130,
+    nextChange: null,
+    available: true,
+    unavailable: null,
+    unattributed: 0,
+    series: [
+      {
+        slot: 7,
+        runs: [
+          { firstHour: 100, lastHour: 109, launched: 1, succeeded: 0 },
+          { firstHour: 120, lastHour: 130, launched: 3, succeeded: 2 },
+        ],
+        membership: null,
+      },
+    ],
+    missing: [{ firstHour: 110, lastHour: 119, reason: 'Raids were not recorded at these hours' }],
+    partial: [{ firstHour: 120, lastHour: 130, reason: partialReason }],
+    warnings: [],
+  };
+  const identity = fakeIdentity({
+    7: { tag: 'AAA', name: 'Alpha Republic', colour: '#4488cc' },
+  });
+  const baseOpts = {
+    tags: [countryKey(7)],
+    top: null,
+    metric: 'both' as const,
+    holders: null,
+    membership: null,
+    endLabels: true,
+    settings: DEFAULT_LINE_SETTINGS,
+    extent: [100, 140] as const,
+    gaps: [],
+    surface: '#161616',
+  };
+  const model = raidTallyLinesProjection.project(
+    createBoundedReadView({ hour: displayedHour(130), panels: new Map<string, unknown>([['tally', reply]]), identity }),
+    baseOpts,
+  );
+  const launched = model.series.find(s => s.id === `${countryKey(7)}\u0000launched`)!;
+  assert.equal(launched.endLabel?.value, '3 / 2 (partial)', 'both mode distinguishes launched / succeeded and marks post-gap subtotal partial');
+  assert.equal(
+    model.auditRows?.find(r => r.row === `${countryKey(7)}\u0000launched`)?.value,
+    `3 (recorded subtotal: ${partialReason})`,
+  );
+  assert.equal(
+    model.auditRows?.find(r => r.row === `${countryKey(7)}\u0000succeeded`)?.value,
+    `2 (recorded subtotal: ${partialReason})`,
+  );
+  const layout = layoutTimeChart(model, 600, 260, 'sans-serif', t => t.length * 6);
+  const sampledTip = deriveTimeChartTooltip(model, layout, 'plot:125');
+  const sampledRow = buildTooltipContent(sampledTip!.payload!).rows.find(r => r.label === 'Alpha Republic · Launched');
+  assert.deepEqual(sampledRow?.valueState, { kind: 'partial', text: '3', reason: partialReason });
+
+  const exactAt125: RaidTallyAtReply = {
+    branchId: '1',
+    hour: 125,
+    firstHour: 120,
+    lastHour: 130,
+    metric: 'both',
+    available: true,
+    unavailable: null,
+    missing: null,
+    partial: partialReason,
+    rows: [{ country: 7, tag: 'AAA', launched: 3, succeeded: 2, missing: null }],
+    unattributed: 0,
+    unattributedLaunched: 0,
+    unattributedSucceeded: 0,
+    warnings: [],
+  };
+  const exactModel = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', reply]]),
+      hovers: new Map([['hover', { hour: 125, data: exactAt125 }]]),
+      identity,
+    }),
+    baseOpts,
+  );
+  const exactTip = deriveTimeChartTooltip(exactModel, layoutTimeChart(exactModel, 600, 260, 'sans-serif', t => t.length * 6), 'plot:125');
+  const exactRow = buildTooltipContent(exactTip!.payload!).rows.find(r => r.label === 'Alpha Republic');
+  assert.deepEqual(exactRow?.valueState, { kind: 'partial', text: '3 launched · 2 succeeded', reason: partialReason });
+
+  const topWithheld = raidTallyLinesProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(130),
+      panels: new Map<string, unknown>([['tally', { ...reply, series: [], rankMissing: partialReason }]]),
+      identity,
+    }),
+    { ...baseOpts, tags: [], top: 5 },
+  );
+  assert.equal(topWithheld.series.length, 0);
+  assert.equal(topWithheld.empty?.kind, 'unavailable');
+  assert.equal(topWithheld.empty?.message, partialReason);
+  assert.deepEqual(topWithheld.auditRows?.map(r => [r.row, r.value]), [['__rank__', partialReason]]);
 });

@@ -1474,6 +1474,9 @@ pub struct RaidTallyAtReply {
     pub unattributed_launched: u32,
     pub unattributed_succeeded: u32,
     pub missing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub partial: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -1639,6 +1642,7 @@ impl Product for RaidTallyAt {
                 unattributed_launched,
                 unattributed_succeeded,
                 missing: None,
+                partial: None,
                 warnings: cached.warnings.clone(),
             });
         }
@@ -1656,6 +1660,7 @@ impl Product for RaidTallyAt {
                 unattributed_launched,
                 unattributed_succeeded,
                 missing: Some(gap.reason.clone()),
+                partial: None,
                 warnings: cached.warnings.clone(),
             });
         }
@@ -1677,6 +1682,7 @@ impl Product for RaidTallyAt {
                     unattributed_launched,
                     unattributed_succeeded,
                     missing: Some(refused),
+                    partial: None,
                     warnings: cached.warnings.clone(),
                 });
             }
@@ -1709,6 +1715,7 @@ impl Product for RaidTallyAt {
                     unattributed_launched,
                     unattributed_succeeded,
                     missing: Some(format!("Raid history is incomplete up to this date: {}", gap.reason)),
+                    partial: None,
                     warnings: cached.warnings.clone(),
                 });
             }
@@ -1726,6 +1733,7 @@ impl Product for RaidTallyAt {
                     unattributed_launched,
                     unattributed_succeeded,
                     missing: Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider, so the top ranking is withheld")),
+                    partial: None,
                     warnings: cached.warnings.clone(),
                 });
             }
@@ -1831,6 +1839,13 @@ impl Product for RaidTallyAt {
         if let Some(limit) = params.top {
             rows_out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         }
+        let partial = if let Some(gap) = cached.missing.iter().find(|gap| gap.first_hour <= hour) {
+            Some(format!("Raid history is incomplete up to this date: {}", gap.reason))
+        } else if unattributed > 0 {
+            Some(format!("{unattributed} raid(s) up to this date have an unrecorded raider"))
+        } else {
+            None
+        };
         let reply = RaidTallyAtReply {
             branch_id: params.branch_id.clone(),
             hour,
@@ -1844,6 +1859,7 @@ impl Product for RaidTallyAt {
             unattributed_launched,
             unattributed_succeeded,
             missing: None,
+            partial,
             warnings: cached.warnings.clone(),
         };
         dashboard_base::products::check_reply_budget(&reply)?;
