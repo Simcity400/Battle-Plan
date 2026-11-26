@@ -1299,9 +1299,13 @@ pub fn chart_at(
     level: u8,
     bin_hours: i64,
 ) -> io::Result<Chart> {
+    if level != WALKED && level > summary::MAX_LEVEL {
+        return Err(invalid("A chart's summary level is not one the format holds"));
+    }
     if bin_hours <= 0 || level != WALKED && bin_hours % summary::bucket_hours(level) != 0 {
         return Err(invalid("A chart's bins are whole summary buckets of its level"));
     }
+    ordinal_of(recording, run, from)?;
     let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let first_bin_hour = i64::from(from).div_euclid(bin_hours) * bin_hours;
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
@@ -1328,7 +1332,6 @@ pub fn chart_at(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
-    ordinal_of(recording, run, from)?;
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = match level {
@@ -2097,6 +2100,7 @@ fn top_with(
     by: By,
     ranked: bool,
 ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+    ordinal_of(recording, run, from)?;
     let valid_hour = check_withheld_run(recording, run, table, from, to)?;
     let per_pixel = ((i64::from(to) - i64::from(from) + 1) / i64::from(width.max(1))).max(1);
     if per_pixel < summary::bucket_hours(0) {
@@ -2123,7 +2127,6 @@ fn top_with(
         Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
-    ordinal_of(recording, run, from)?;
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
     let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
     let extents = pieces(recording, run, table.index(), blocks.clone(), level)?;

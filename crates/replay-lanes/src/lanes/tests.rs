@@ -1115,6 +1115,9 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     assert_eq!(stored.totals, whole.totals, "falls the pieces do not store are counted, never zero");
     let floored = power_recording(Power::Summarized).0.with_coverage_from(TableId::Countries, 0, 10, "withheld before 129");
     assert!(chart_at(&floored, 0, TableId::Countries, source, None, from - 19, to, 0, 6).is_err(), "an hour before the run is refused even past a withheld floor");
+    assert!(chart_at(&floored, 0, TableId::Countries, source, None, from - 19, from + 11, 0, 6).is_err(), "and when the floor leaves no bin to read");
+    assert!(top(&floored, 0, TableId::Countries, column as u32, from - 19, from + 11, 5, 1, By::Max).is_err(), "a top view checks the asked first hour too");
+    assert!(chart_at(&bare, 0, TableId::Countries, source, None, from, to, 16, 6).is_err(), "a level the format cannot hold is refused");
     let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
     for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last), (2, 1, By::Last), (4, 2, By::Last)] {
         for start in [from, from + 2] {

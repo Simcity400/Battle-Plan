@@ -172,7 +172,7 @@ function agreementRows(
         country,
         equipment: { value: notApplicable('Its terms list no equipment or fuel') },
         monthly: { value: notApplicable('No schedule') },
-        delivered: { value: notApplicable('Nothing is listed to deliver') },
+        delivered: { value: [sent, fuelLost].find(value => value.kind === 'notRecorded') ?? notApplicable('Nothing is listed to deliver') },
         last,
         since,
       },
