@@ -120,7 +120,9 @@ impl AtHour for TechnologyEffectsAt {
         let render = |frame: &DecodedFrame| -> Result<_, String> {
             let catalogue = &content.catalogue;
             let scripted = catalogue.scripted_content()?;
-            let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, owner.slot);
+            let text = dashboard_text::triggers::inputs::unrecorded(|| {
+                dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, owner.slot)
+            });
             let cache = scripted.effects()?;
             let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None)).with_entity_links();
             Ok(dashboard_effects::effect_description::technology_description(&params.token, params.database_index, &context, owner.slot))

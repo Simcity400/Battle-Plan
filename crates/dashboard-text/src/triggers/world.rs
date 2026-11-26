@@ -962,6 +962,7 @@ pub enum Query {
     CountryScientists(u32),
     ScientistActive(u32),
     ScientistLevel(u32, u32),
+    ResearchStatus(Vec<u64>),
 }
 
 impl World<'_> {
@@ -1008,6 +1009,7 @@ impl World<'_> {
             }
             Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
+            Query::ResearchStatus(keys) => super::inputs::digest(&self.research_status_rows(keys)),
             Query::Tag(slot) => super::inputs::digest(&self.tag_unrecorded(*slot)),
             Query::StateRow(state) => super::inputs::digest(&self.state_row_unrecorded(*state)),
             Query::ProvinceRow(province) => {
@@ -2415,6 +2417,22 @@ impl<'a> World<'a> {
             Ok((out, unresolved))
         })?;
         Ok(linked(projects.contains(&(slot, token)).then_some(()), unresolved)?.is_some())
+    }
+
+    pub fn research_status(&self, country: u32, database_index: i32) -> Result<bool, String> {
+        super::inputs::fields(self.frame, tables::CountryLinks::ID, &["canonical_slot"]);
+        let keys: Vec<_> = self.slot_links(country).iter()
+            .map(|&raw| u64::from(raw) << 32 | u64::from(database_index as u32))
+            .collect();
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::ResearchStatus(keys.clone())),
+            || self.research_status_rows(&keys),
+        )
+    }
+
+    fn research_status_rows(&self, keys: &[u64]) -> Result<bool, String> {
+        let rows = self.frame.complete::<tables::ResearchTechnologies>(0).map_err(|why| why.to_string())?;
+        Ok(rows.keys().any(|key| keys.contains(&(key as u64))))
     }
 
     fn slot_links(&self, slot: u32) -> &[u32] {

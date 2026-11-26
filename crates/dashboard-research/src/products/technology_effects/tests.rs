@@ -56,8 +56,13 @@ fn technology_status_presence_rebuilds_the_description_only_when_it_changes() {
         *frame.tables[TableId::TechnologyDefinitions.index()] = TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow { technology_handle: 5, database_index: 4, id: b"probe".to_vec(), ..Default::default() },
         ])).into();
-        let status = ResearchTechnologyRow { country: 9001, technology_handle: 5, database_index: 4, ..Default::default() };
-        *frame.tables[TableId::ResearchTechnologies.index()] = TableView::Complete(TableRows::ResearchTechnologies((hour >= 25).then_some(status).into_iter().collect())).into();
+        let mut statuses = Vec::new();
+        if hour >= 25 {
+            statuses.push(ResearchTechnologyRow { country: 9001, technology_handle: 5, database_index: 4, progress_raw: i64::from(hour), ..Default::default() });
+        }
+        statuses.push(ResearchTechnologyRow { country: 9001, database_index: 10 + hour, ..Default::default() });
+        statuses.push(ResearchTechnologyRow { country: 9002, database_index: if hour % 2 == 0 { 4 } else { 5 }, ..Default::default() });
+        *frame.tables[TableId::ResearchTechnologies.index()] = TableView::Complete(TableRows::ResearchTechnologies(statuses));
         frame
     }).collect();
     let (source, load) = source_with_content(frames, &machine.root);

@@ -213,6 +213,10 @@ impl Query {
                     .row(reference.into()),
             ],
             &Query::Slot(raw) => vec![links().row(raw.into())],
+            Query::ResearchStatus(keys) => {
+                let statuses = TableRead::keys(T::ResearchTechnologies);
+                if keys.is_empty() { vec![statuses] } else { keys.iter().map(|&key| statuses.row(key.into())).collect() }
+            }
             Query::Tag(_) => vec![TableRead::fields(T::Countries, &["canonical_slot", "tag"])],
             Query::RawCountry(_) => vec![raw_ids()],
             &Query::StateRow(state) => {
