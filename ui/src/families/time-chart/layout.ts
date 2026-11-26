@@ -1,4 +1,4 @@
-import { layoutEndLabels } from '../../charts/labels.ts';
+import { ellipsise, layoutEndLabels } from '../../charts/labels.ts';
 import { ellipsiseMeasuredText, textWidthRevision, type MeasureText } from '../../charts/textWidth.ts';
 import { exactDecimal, linearTicks, logTicks, thinLogTicks } from '../../charts/valueAxis.ts';
 import { monthNames } from '../../dashboard/calendar.ts';
@@ -211,7 +211,9 @@ function fitEndLabelName(
   font: string,
   measure: MeasureText,
 ): { readonly text: string; readonly width: number } {
-  const fitted = ellipsiseMeasuredText(text, maxWidth, font, measure);
+  const fitted = timeChartCacheState.enabled
+    ? ellipsiseMeasuredText(text, maxWidth, font, measure)
+    : ellipsise(text, maxWidth, s => measure(s, font));
   return { text: fitted, width: measure(fitted, font) };
 }
 

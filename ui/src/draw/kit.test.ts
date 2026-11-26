@@ -647,7 +647,10 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
     set font(v: string) { currentFont = v; },
     measureText(text: string) { measureCalls++; return { width: text.length * 6 }; },
   } as unknown as Canvas2D;
-  measureCanvasText(ctx, 'German Reich', '500 12px Inter, sans-serif');
+  const warmScope = new TextMeasureScope();
+  warmScope.run(() => {
+    measureCanvasText(ctx, 'German Reich', '500 12px Inter, sans-serif');
+  });
   const readsAfterWarm = fontReads;
   const callsAfterWarm = measureCalls;
   for (let i = 0; i < 100; i++) {
@@ -675,6 +678,7 @@ test('K8 & K9: kit tokens cache per theme, 1,000 cells of 5 colours convert 5 co
   const parsesBefore = colorCache.parses;
   assert.ok(textWidthCacheStats().fonts > 0 && paletteCache.readableSolves > 0);
   resolveKitTokens({ ...lightTheme, text: '#222222', font: 'Other Sans' });
+  warmScope.release();
   assert.deepEqual([textWidthCacheStats().fonts, paletteCache.readableSolves], [0, 2],
     'R2-K13: a theme change on the same surface clears the bounded text and palette tables; only the new theme refills them (its two mark inks)');
   assert.ok(colorCache.parses < parsesBefore, 'and the colour tables, which only the new theme refills');

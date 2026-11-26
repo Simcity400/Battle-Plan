@@ -104,7 +104,8 @@ export interface LaneFamily<TBinding extends LaneBinding, TModel, TLayout> {
   readonly view: readonly (keyof TBinding & string)[];
   layout(model: TModel, binding: TBinding, surface: Surface, theme: FamilyTheme, measure: OffscreenCanvasRenderingContext2D, hour: number, step: LaneStep<TModel, TLayout>): TLayout;
   keepsCanvas?(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean;
-  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number };
+  paint(ctx: OffscreenCanvasRenderingContext2D, frame: LaneFrame<TBinding, TModel, TLayout>): boolean | number | { drew: boolean; next: boolean | number; partial?: boolean };
+  dispose?(ctx: OffscreenCanvasRenderingContext2D): void;
   hit(frame: LaneFrame<TBinding, TModel, TLayout>, point: readonly [number, number]): string | null;
   tooltip(frame: LaneFrame<TBinding, TModel, TLayout>, key: string, focus: boolean): LaneTooltip | null;
   structure(frame: LaneFrame<TBinding, TModel, TLayout>): Readonly<Record<string, unknown>>;
@@ -483,6 +484,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       held.art.dispose();
       held.layoutText.release();
       held.paintText.release();
+      family.dispose?.(held.ctx);
       releaseIndex(held.snapshot);
       state.delete(stateKey);
     },
@@ -498,7 +500,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (projection === 'loading') return WAITING;
       if (projection === 'unknown') {
         const failure = familyProjectionFailure(family.family, binding.kind, binding.view);
-        if (!failure) return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
+        if (!failure) {
+          const prior = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
+          if (prior) {
+            prior.flusher.cancel();
+            prior.layoutText.release();
+            prior.paintText.release();
+            family.dispose?.(prior.ctx);
+            prior.drawn = null;
+            prior.drawKey = [];
+          }
+          return { ...EMPTY, mode: 'refused', reason: unknownProjectionReason(binding) };
+        }
         return retryOrThrow(failedGenerations, input, unknownProjectionReason(binding), () => {
           retryFamilyProjection(family.family, binding.kind, binding.view);
           return projectionOf(binding, input.widget) === 'loading' ? WAITING : EMPTY;
@@ -615,6 +628,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         keep.flusher.cancel();
         keep.layoutText.release();
         keep.paintText.release();
+        family.dispose?.(keep.ctx);
         keep.drawn = null;
         keep.drawKey = [];
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
@@ -679,7 +693,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             throw error;
           }
           keep.ctx.restore();
-          if (typeof result === 'object' && !result.drew) keep.paintText.abort();
+          if (typeof result === 'object' && (!result.drew || result.partial)) keep.paintText.abort();
           else keep.paintText.commit();
           return result;
         };

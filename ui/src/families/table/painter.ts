@@ -1,5 +1,5 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
-import { ellipsiseCanvasText, measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
+import { TextMeasureScope, ellipsiseCanvasText, measureCanvasText, textWidthCacheStats } from '../../charts/textWidth.ts';
 import { formatDateRange } from '../../dashboard/calendar.ts';
 import {
   drawChildRowTint,
@@ -65,6 +65,7 @@ export interface FamilyTablePicture {
   rowMarks: (string | undefined)[];
   cells: Map<string, (string | undefined)[]>;
   ranks: (string | undefined)[];
+  textScopes: Map<string, TextMeasureScope>;
   maximaRows?: readonly FlatTableRow[];
   maximaHour?: number;
   maximaCols?: string;
@@ -82,13 +83,20 @@ export function createTablePicture(): FamilyTablePicture {
     rowMarks: [],
     cells: new Map(),
     ranks: [],
+    textScopes: new Map(),
   };
+}
+
+export function disposeTablePicture(picture: FamilyTablePicture): void {
+  for (const scope of picture.textScopes.values()) scope.release();
+  picture.textScopes.clear();
 }
 
 export interface PaintStats {
   readonly drew: boolean;
   readonly paintedCells: number;
   readonly measurements: number;
+  readonly partial?: boolean;
 }
 
 export interface DrawFamilyTableInput {
@@ -293,13 +301,49 @@ export function drawFamilyTable(
     clockSummary,
   } = input;
 
+  const withSlot = <T>(key: string, fn: () => T): T => {
+    if (!picture) return fn();
+    let scope = picture.textScopes.get(key);
+    if (!scope) picture.textScopes.set(key, scope = new TextMeasureScope());
+    return scope.run(fn);
+  };
+  const dropRowScopes = (index: number): void => {
+    if (!picture) return;
+    for (const column of layout.columns) {
+      const k = `c:${column.key}:${index}`;
+      const scope = picture.textScopes.get(k);
+      if (scope) {
+        scope.release();
+        picture.textScopes.delete(k);
+      }
+    }
+    const rk = `r:${index}`;
+    const rScope = picture.textScopes.get(rk);
+    if (rScope) {
+      rScope.release();
+      picture.textScopes.delete(rk);
+    }
+  };
+  const dropNonDataScope = (index: number): void => {
+    if (!picture) return;
+    const nk = `row:${index}`;
+    const scope = picture.textScopes.get(nk);
+    if (scope) {
+      scope.release();
+      picture.textScopes.delete(nk);
+    }
+  };
+
   if (clockSummary) {
-    if (picture) picture.frame = null;
+    if (picture) {
+      picture.frame = null;
+      disposeTablePicture(picture);
+    }
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = theme.surface;
     ctx.fillRect(0, 0, width, height);
-    drawClockSummary(ctx, width, height, clockSummary, theme);
-    return { drew: true, paintedCells: 1, measurements: 0 };
+    withSlot('chrome', () => drawClockSummary(ctx, width, height, clockSummary, theme));
+    return { drew: true, paintedCells: 1, measurements: 0, partial: false };
   }
 
   const uniformRowHeight = rowHeightMode === 'media' ? MEDIA_ROW_HEIGHT[settings.density] : ROW_HEIGHT[settings.density];
@@ -663,7 +707,8 @@ export function drawFamilyTable(
       if (item.kind !== 'data') {
         const nMark = nonDataMark(item);
         if (picture.rowKeys[index] === item.key && picture.rowMarks[index] === nMark) continue;
-        drawNonDataRow(item, index * uniformRowHeight - scrollTop, uniformRowHeight);
+        dropRowScopes(index);
+        withSlot(`row:${index}`, () => drawNonDataRow(item, index * uniformRowHeight - scrollTop, uniformRowHeight));
         picture.rowKeys[index] = item.key;
         picture.rowRefs[index] = undefined;
         picture.rowMarks[index] = nMark;
@@ -681,6 +726,7 @@ export function drawFamilyTable(
     for (const index of fullRepaintRows) {
       const item = rows[index]!;
       if (item.kind !== 'data') continue;
+      dropNonDataScope(index);
       const y = index * uniformRowHeight - scrollTop;
       const inspected = inspectedKey === item.key;
       const selected = selectedKey === item.key;
@@ -694,7 +740,7 @@ export function drawFamilyTable(
         let drawn = picture.cells.get(column.key);
         if (!drawn) picture.cells.set(column.key, drawn = []);
         const look = computeLook(item, column);
-        drawApprovedCell(renderCtx, {
+        withSlot(`c:${column.key}:${index}`, () => drawApprovedCell(renderCtx, {
           item,
           column,
           colIndex,
@@ -708,13 +754,13 @@ export function drawFamilyTable(
           rowHovered: inspected,
           rowFocused: focused,
           lastChild: isLastChildRow(rows, index),
-        });
+        }));
         drawn[index] = `${look.key}\u0001${mark}`;
         paintedCells++;
         x += column.width;
       }
       if (rank > 0) {
-        drawRankContent(item, layout.scrollable ? 0 : -bounds.left, y, uniformRowHeight);
+        withSlot(`r:${index}`, () => drawRankContent(item, layout.scrollable ? 0 : -bounds.left, y, uniformRowHeight));
         picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
       }
       dirtyRows.add(index);
@@ -737,7 +783,7 @@ export function drawFamilyTable(
         const y = index * uniformRowHeight - scrollTop;
         const hl = hairlineSpec(item, index, false);
         paintCellSliceGround(ctx, theme, x, y, column.width, uniformRowHeight, uniformRowHeight, rowWidth, item.level > 1, hl.kind, hl.left);
-        drawApprovedCell(renderCtx, {
+        withSlot(`c:${column.key}:${index}`, () => drawApprovedCell(renderCtx, {
           item,
           column,
           colIndex,
@@ -751,7 +797,7 @@ export function drawFamilyTable(
           rowHovered: false,
           rowFocused: false,
           lastChild: isLastChildRow(rows, index),
-        });
+        }));
         drawn[index] = cellSig;
         dirtyRows.add(index);
         paintedCells++;
@@ -772,7 +818,7 @@ export function drawFamilyTable(
         const y = index * uniformRowHeight - scrollTop;
         const hl = hairlineSpec(item, index, false);
         paintCellSliceGround(ctx, theme, rx, y, rank, uniformRowHeight, uniformRowHeight, rowWidth, item.level > 1, hl.kind, hl.left);
-        drawRankContent(item, rx, y, uniformRowHeight);
+        withSlot(`r:${index}`, () => drawRankContent(item, rx, y, uniformRowHeight));
         picture.ranks[index] = rSig;
         dirtyRows.add(index);
         drew = true;
@@ -802,10 +848,11 @@ export function drawFamilyTable(
     picture.lastMaximaSig = maximaSig;
     picture.lastIconVersion = iconVersion;
     picture.lastHour = hour;
-    return { drew, paintedCells, measurements };
+    return { drew, paintedCells, measurements, partial: true };
   }
 
   if (picture) {
+    disposeTablePicture(picture);
     picture.frame = frameKey;
     picture.rowKeys = [];
     picture.rowRefs = [];
@@ -827,8 +874,8 @@ export function drawFamilyTable(
     ctx.fillStyle = theme.muted;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(fit(empty, bodyFont, Math.max(1, width - 32)), width / 2, height / 2);
-    return { drew: true, paintedCells: 0, measurements };
+    withSlot('chrome', () => ctx.fillText(fit(empty, bodyFont, Math.max(1, width - 32)), width / 2, height / 2));
+    return { drew: true, paintedCells: 0, measurements, partial: false };
   }
 
   let paintedCells = 0;
@@ -892,7 +939,7 @@ export function drawFamilyTable(
       const rowH = heightAt(index);
       if (item.kind !== 'data') {
         if (!pinnedOnly) {
-          drawNonDataRow(item, y, rowH);
+          withSlot(`row:${index}`, () => drawNonDataRow(item, y, rowH));
           if (picture) {
             picture.rowKeys[index] = item.key;
             picture.rowRefs[index] = undefined;
@@ -909,20 +956,22 @@ export function drawFamilyTable(
       const hl = hairlineSpec(item, index, pinnedOnly);
       const detailRow = rowGeom?.detailRows?.get(index);
       if (detailRow) {
-        paintDetailRow(item, detailRow, y, rowH, inspected, selected, focused, hl);
+        withSlot(`row:${index}`, () => paintDetailRow(item, detailRow, y, rowH, inspected, selected, focused, hl));
         paintedCells++;
         continue;
       }
       paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1, inspected, selected, focused, hl.kind, hl.left, logRows);
       if (rank > 0) {
-        drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
+        const drawRank = () => drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
+        if (pinnedOnly) drawRank();
+        else withSlot(`r:${index}`, drawRank);
         if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
       }
       let x = pinnedOnly ? rank : rank - bounds.left;
       for (let colIndex = startCol; colIndex < endCol; colIndex++) {
         const column = layout.columns[colIndex]!;
         const look = computeLook(item, column);
-        drawApprovedCell(renderCtx, {
+        const drawCell = () => drawApprovedCell(renderCtx, {
           item,
           column,
           colIndex,
@@ -937,6 +986,8 @@ export function drawFamilyTable(
           rowFocused: focused,
           lastChild: isLastChildRow(rows, index),
         });
+        if (pinnedOnly) drawCell();
+        else withSlot(`c:${column.key}:${index}`, drawCell);
         if (!pinnedOnly) {
           paintedCells++;
           if (picture) {
@@ -965,7 +1016,7 @@ export function drawFamilyTable(
       ctx.fillStyle = theme.muted;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(fit(endNote, noteFont, Math.max(1, width - 32)), width / 2, noteTop + 6 + (END_NOTE_HEIGHT - 6) / 2);
+      withSlot('chrome', () => ctx.fillText(fit(endNote, noteFont, Math.max(1, width - 32)), width / 2, noteTop + 6 + (END_NOTE_HEIGHT - 6) / 2));
     }
   }
 
@@ -979,7 +1030,7 @@ export function drawFamilyTable(
   }
 
   ctx.restore();
-  return { drew: true, paintedCells, measurements };
+  return { drew: true, paintedCells, measurements, partial: false };
 }
 
 export interface TableGlide {

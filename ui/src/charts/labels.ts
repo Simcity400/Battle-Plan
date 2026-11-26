@@ -1,4 +1,6 @@
-import { cachedGraphemes, ellipsiseCanvasText, measureCanvasText, type Canvas2D } from './textWidth.ts';
+import { cachedGraphemes, ellipsiseCanvasText, measureCanvasText, type Canvas2D, type FittedLine } from './textWidth.ts';
+
+export type { FittedLine };
 
 export interface EndLabel { id: string; y: number; height: number }
 
@@ -54,12 +56,6 @@ export function labelFitsTwoLines(rowHeight: number, fontSize: number): boolean 
 
 export function graphemes(text: string): string[] {
   return cachedGraphemes(text).slice();
-}
-
-export interface FittedLine {
-  readonly text: string;
-  readonly truncated: boolean;
-  readonly full: string;
 }
 
 export interface FittedLabel {

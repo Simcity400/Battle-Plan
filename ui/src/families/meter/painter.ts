@@ -1,6 +1,6 @@
 import { LABEL_WEIGHT, VALUE_WEIGHT } from '../../charts/draw.ts';
 import { readableColour } from '../../charts/palette.ts';
-import { ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
+import { TextMeasureScope, ellipsiseCanvasText, measureCanvasText, type Canvas2D } from '../../charts/textWidth.ts';
 import {
   drawArtSlot,
   drawFlagSlot,
@@ -132,12 +132,19 @@ export function layoutMeterModel(
     const sectionGap = 14;
     let figureWidth = 0;
     let secondaryWidth = 0;
-    for (const section of sections) {
-      for (const row of section.rows ?? []) {
-        if (!row.figure) continue;
-        figureWidth = Math.max(figureWidth, measureWithFont(ctx, FIGURE_FONT(theme), row.figure));
-        if (row.secondary) secondaryWidth = Math.max(secondaryWidth, measureWithFont(ctx, SECONDARY_FONT(theme), row.secondary));
-      }
+    const scan = new TextMeasureScope();
+    try {
+      scan.run(() => {
+        for (const section of sections) {
+          for (const row of section.rows ?? []) {
+            if (!row.figure) continue;
+            figureWidth = Math.max(figureWidth, measureWithFont(ctx, FIGURE_FONT(theme), row.figure));
+            if (row.secondary) secondaryWidth = Math.max(secondaryWidth, measureWithFont(ctx, SECONDARY_FONT(theme), row.secondary));
+          }
+        }
+      });
+    } finally {
+      scan.release();
     }
     figureWidth = Math.ceil(figureWidth);
     secondaryWidth = Math.min(SECONDARY_MAX_PX, Math.ceil(secondaryWidth));
@@ -344,15 +351,17 @@ function drawSectionHeaderBlock(
     rightLimit -= capW + 10;
     ctx.textAlign = 'left';
   }
-  ctx.font = titleFont;
+  const countFont = `400 11.5px ${theme.font}`;
+  const countW = block.count ? measureWithFont(ctx, countFont, block.count) + 8 : 0;
+  const drawnTitleFont = block.count ? countFont : titleFont;
+  ctx.font = drawnTitleFont;
   ctx.fillStyle = theme.text;
-  const countW = block.count ? measureWithFont(ctx, `400 11.5px ${theme.font}`, block.count) + 8 : 0;
   const maxTitleW = Math.max(24, rightLimit - block.x - countW);
-  const titleText = ellipsiseCanvasText(ctx, block.title, maxTitleW, titleFont);
+  const titleText = ellipsiseCanvasText(ctx, block.title, maxTitleW, drawnTitleFont);
   ctx.fillText(titleText, block.x, midY);
   if (block.count) {
-    const drawnTitleW = measureCanvasText(ctx, titleText, titleFont);
-    ctx.font = `400 11.5px ${theme.font}`;
+    const drawnTitleW = measureCanvasText(ctx, titleText, drawnTitleFont);
+    ctx.font = countFont;
     ctx.fillStyle = theme.muted;
     ctx.fillText(block.count, block.x + drawnTitleW + 8, midY);
   }

@@ -3,7 +3,7 @@ export type MeasureText = (text: string, font: string) => number;
 
 type Measuring = Pick<Canvas2D, 'font' | 'measureText'>;
 
-export interface FittedTextLine {
+export interface FittedLine {
   readonly text: string;
   readonly truncated: boolean;
   readonly full: string;
@@ -12,7 +12,14 @@ export interface FittedTextLine {
 interface FitInterval {
   readonly min: number;
   readonly max: number;
-  readonly fitted: FittedTextLine;
+  readonly fitted: FittedLine;
+}
+
+interface ScopeFitSlot {
+  pass: number;
+  hitPass: number;
+  first: FitInterval;
+  more: FitInterval[] | null;
 }
 
 interface WidthEntry {
@@ -23,11 +30,11 @@ interface WidthEntry {
   refs: number;
   lastScope: number;
   lastPass: number;
-  fit: FitInterval | null;
-  fits: FitInterval[] | null;
   fitScope: number;
-  fitPass: number;
-  untruncated: FittedTextLine | null;
+  fitSlot: ScopeFitSlot | null;
+  otherFits: Map<number, ScopeFitSlot> | null;
+  graphemes: GraphemeEntry | null;
+  untruncated: FittedLine | null;
 }
 
 interface GraphemeEntry {
@@ -41,7 +48,7 @@ interface GraphemeEntry {
 }
 
 const ELLIPSIS = '\u2026';
-const EMPTY_FITTED: FittedTextLine = { text: '', truncated: false, full: '' };
+const EMPTY_FITTED: FittedLine = { text: '', truncated: false, full: '' };
 const ABSOLUTE_PX_FONT = /^(?:(?:normal|italic|oblique)\s+)?(?:\d{3}\s+|bold\s+|normal\s+)?\d+(?:\.\d+)?px\s+/;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -58,6 +65,7 @@ let lastFont: string | null = null;
 let lastBucket: Map<string, WidthEntry> | null = null;
 let nextScopeId = 1;
 let activeScope: TextMeasureScope | null = null;
+const scopeStack: (TextMeasureScope | null)[] = [];
 
 function fontBucket(font: string): Map<string, WidthEntry> {
   if (lastFont === font && lastBucket !== null) return lastBucket;
@@ -80,10 +88,10 @@ function storeWidthEntry(byText: Map<string, WidthEntry>, font: string, text: st
     refs: 0,
     lastScope: 0,
     lastPass: 0,
-    fit: null,
-    fits: null,
     fitScope: 0,
-    fitPass: 0,
+    fitSlot: null,
+    otherFits: null,
+    graphemes: null,
     untruncated: null,
   };
   if (!byText.has(text)) totalEntries++;
@@ -91,21 +99,42 @@ function storeWidthEntry(byText: Map<string, WidthEntry>, font: string, text: st
   return entry;
 }
 
-function releaseWidthEntry(entry: WidthEntry): void {
-  if (--entry.refs <= 0 && entry.revision === revision) {
-    const byText = widths.get(entry.font);
-    if (byText && byText.get(entry.text) === entry) {
-      byText.delete(entry.text);
-      totalEntries--;
-      if (byText.size === 0) {
-        widths.delete(entry.font);
-        if (lastFont === entry.font) {
-          lastFont = null;
-          lastBucket = null;
+function pruneScopeFitSlot(entry: WidthEntry, scopeId: number, keptPass: number): void {
+  if (entry.fitScope === scopeId && entry.fitSlot !== null) {
+    if (entry.fitSlot.pass !== keptPass && entry.fitSlot.hitPass !== keptPass) {
+      entry.fitScope = 0;
+      entry.fitSlot = null;
+    }
+    return;
+  }
+  if (entry.otherFits !== null) {
+    const slot = entry.otherFits.get(scopeId);
+    if (slot !== undefined && slot.pass !== keptPass && slot.hitPass !== keptPass) {
+      entry.otherFits.delete(scopeId);
+      if (entry.otherFits.size === 0) entry.otherFits = null;
+    }
+  }
+}
+
+function releaseWidthEntry(entry: WidthEntry, scopeId: number, keptPass: number): void {
+  if (--entry.refs <= 0) {
+    if (entry.revision === revision) {
+      const byText = widths.get(entry.font);
+      if (byText && byText.get(entry.text) === entry) {
+        byText.delete(entry.text);
+        totalEntries--;
+        if (byText.size === 0) {
+          widths.delete(entry.font);
+          if (lastFont === entry.font) {
+            lastFont = null;
+            lastBucket = null;
+          }
         }
       }
     }
+    return;
   }
+  pruneScopeFitSlot(entry, scopeId, keptPass);
 }
 
 function releaseGraphemeEntry(entry: GraphemeEntry): void {
@@ -162,7 +191,6 @@ export class TextMeasureScope {
   private nextWidths: WidthEntry[] = [];
   private heldGraphemes: GraphemeEntry[] = [];
   private nextGraphemes: GraphemeEntry[] = [];
-  private previousScope: TextMeasureScope | null = null;
   private depth = 0;
 
   passNumber(): number {
@@ -186,21 +214,21 @@ export class TextMeasureScope {
   }
 
   begin(): void {
-    if (this.depth++ > 0) return;
-    this.pass += 1;
-    this.nextWidths.length = 0;
-    this.nextGraphemes.length = 0;
-    this.previousScope = activeScope;
+    scopeStack.push(activeScope);
+    if (this.depth++ === 0) {
+      this.pass += 1;
+      this.nextWidths.length = 0;
+      this.nextGraphemes.length = 0;
+    }
     activeScope = this;
   }
 
   commit(): void {
     if (this.depth === 0) return;
+    activeScope = scopeStack.pop() ?? null;
     if (--this.depth > 0) return;
-    activeScope = this.previousScope;
-    this.previousScope = null;
     const oldWidths = this.heldWidths;
-    for (let i = 0; i < oldWidths.length; i++) releaseWidthEntry(oldWidths[i]!);
+    for (let i = 0; i < oldWidths.length; i++) releaseWidthEntry(oldWidths[i]!, this.id, this.pass);
     oldWidths.length = 0;
     this.heldWidths = this.nextWidths;
     this.nextWidths = oldWidths;
@@ -213,11 +241,10 @@ export class TextMeasureScope {
 
   abort(): void {
     if (this.depth === 0) return;
+    activeScope = scopeStack.pop() ?? null;
     if (--this.depth > 0) return;
-    activeScope = this.previousScope;
-    this.previousScope = null;
     const droppedWidths = this.nextWidths;
-    for (let i = 0; i < droppedWidths.length; i++) releaseWidthEntry(droppedWidths[i]!);
+    for (let i = 0; i < droppedWidths.length; i++) releaseWidthEntry(droppedWidths[i]!, this.id, -1);
     droppedWidths.length = 0;
     const droppedGraphemes = this.nextGraphemes;
     for (let i = 0; i < droppedGraphemes.length; i++) releaseGraphemeEntry(droppedGraphemes[i]!);
@@ -225,11 +252,8 @@ export class TextMeasureScope {
   }
 
   release(): void {
-    if (this.depth > 0) {
-      this.depth = 1;
-      this.abort();
-    }
-    for (let i = 0; i < this.heldWidths.length; i++) releaseWidthEntry(this.heldWidths[i]!);
+    while (this.depth > 0) this.abort();
+    for (let i = 0; i < this.heldWidths.length; i++) releaseWidthEntry(this.heldWidths[i]!, this.id, -1);
     this.heldWidths.length = 0;
     for (let i = 0; i < this.heldGraphemes.length; i++) releaseGraphemeEntry(this.heldGraphemes[i]!);
     this.heldGraphemes.length = 0;
@@ -289,22 +313,23 @@ function watchFonts(): void {
   }
 }
 
-function lookupWidthEntry(context: Measuring, text: string, font: string): WidthEntry {
-  let fastBucket: Map<string, WidthEntry> | undefined;
-  if (lastFont === font && lastBucket !== null) {
-    fastBucket = lastBucket;
-  } else {
-    fastBucket = widths.get(font);
-    if (fastBucket !== undefined) {
-      lastFont = font;
-      lastBucket = fastBucket;
-    }
+function findCachedBucket(font: string): Map<string, WidthEntry> | undefined {
+  if (lastFont === font && lastBucket !== null) return lastBucket;
+  const bucket = widths.get(font);
+  if (bucket !== undefined) {
+    lastFont = font;
+    lastBucket = bucket;
   }
+  return bucket;
+}
+
+function resolveWidth(context: Measuring, text: string, font: string): { readonly width: number; readonly entry: WidthEntry | null } {
+  const fastBucket = findCachedBucket(font);
   if (fastBucket !== undefined) {
     const cached = fastBucket.get(text);
     if (cached !== undefined) {
       if (activeScope !== null) activeScope.touchWidth(cached);
-      return cached;
+      return { width: cached.width, entry: cached };
     }
   }
   if (!watching) watchFonts();
@@ -314,29 +339,33 @@ function lookupWidthEntry(context: Measuring, text: string, font: string): Width
     const width = context.measureText(text).width;
     if (prev !== font) context.font = prev;
     cacheMisses++;
+    if (activeScope === null) return { width, entry: null };
     const entry = storeWidthEntry(fastBucket ?? fontBucket(font), font, text, width);
-    if (activeScope !== null) activeScope.touchWidth(entry);
-    return entry;
+    activeScope.touchWidth(entry);
+    return { width, entry };
   }
   const prev = context.font;
   if (prev !== font) context.font = font;
   const resolved = context.font;
-  const byText = fontBucket(resolved);
-  let entry = byText.get(text);
-  if (entry === undefined) {
-    const width = context.measureText(text).width;
-    cacheMisses++;
-    entry = storeWidthEntry(byText, resolved, text, width);
+  const existing = findCachedBucket(resolved);
+  const cached = existing?.get(text);
+  if (cached !== undefined) {
+    if (prev !== font) context.font = prev;
+    if (activeScope !== null) activeScope.touchWidth(cached);
+    return { width: cached.width, entry: cached };
   }
+  const width = context.measureText(text).width;
   if (prev !== font) context.font = prev;
-  if (activeScope !== null) activeScope.touchWidth(entry);
-  return entry;
+  cacheMisses++;
+  if (activeScope === null) return { width, entry: null };
+  const entry = storeWidthEntry(existing ?? fontBucket(resolved), resolved, text, width);
+  activeScope.touchWidth(entry);
+  return { width, entry };
 }
 
-function findFitInterval(entry: WidthEntry, maxWidth: number): FittedTextLine | null {
-  const first = entry.fit;
-  if (first !== null && maxWidth >= first.min && maxWidth < first.max) return first.fitted;
-  const more = entry.fits;
+function matchSlotInterval(slot: ScopeFitSlot, maxWidth: number): FittedLine | null {
+  if (maxWidth >= slot.first.min && maxWidth < slot.first.max) return slot.first.fitted;
+  const more = slot.more;
   if (more !== null) {
     for (let i = 0; i < more.length; i++) {
       const item = more[i]!;
@@ -346,23 +375,58 @@ function findFitInterval(entry: WidthEntry, maxWidth: number): FittedTextLine | 
   return null;
 }
 
-function storeFitInterval(entry: WidthEntry, min: number, max: number, fitted: FittedTextLine): void {
+function findFitInterval(entry: WidthEntry, maxWidth: number, scopeId: number, scopePass: number): FittedLine | null {
+  if (entry.fitSlot !== null) {
+    const hit = matchSlotInterval(entry.fitSlot, maxWidth);
+    if (hit !== null) {
+      if (scopeId !== 0 && entry.fitScope === scopeId) entry.fitSlot.hitPass = scopePass;
+      return hit;
+    }
+  }
+  if (entry.otherFits !== null) {
+    if (scopeId !== 0) {
+      const own = entry.otherFits.get(scopeId);
+      if (own !== undefined) {
+        const hit = matchSlotInterval(own, maxWidth);
+        if (hit !== null) {
+          own.hitPass = scopePass;
+          return hit;
+        }
+      }
+    }
+    for (const [id, slot] of entry.otherFits) {
+      if (id === scopeId) continue;
+      const hit = matchSlotInterval(slot, maxWidth);
+      if (hit !== null) return hit;
+    }
+  }
+  return null;
+}
+
+function storeFitInterval(entry: WidthEntry, min: number, max: number, fitted: FittedLine, scopeId: number, scopePass: number): void {
   const interval: FitInterval = { min, max, fitted };
-  const scopeId = activeScope?.id ?? 0;
-  const scopePass = activeScope?.passNumber() ?? 0;
-  if (entry.fit === null || scopeId === 0 || entry.fitScope !== scopeId || entry.fitPass !== scopePass) {
-    entry.fit = interval;
-    entry.fits = null;
-    entry.fitScope = scopeId;
-    entry.fitPass = scopePass;
+  if (entry.fitSlot === null || entry.fitScope === scopeId) {
+    if (entry.fitSlot === null || entry.fitSlot.pass !== scopePass) {
+      entry.fitScope = scopeId;
+      entry.fitSlot = { pass: scopePass, hitPass: scopePass, first: interval, more: null };
+      return;
+    }
+    if (entry.fitSlot.more === null) entry.fitSlot.more = [interval];
+    else entry.fitSlot.more.push(interval);
     return;
   }
-  if (entry.fits === null) entry.fits = [interval];
-  else entry.fits.push(interval);
+  if (entry.otherFits === null) entry.otherFits = new Map();
+  const slot = entry.otherFits.get(scopeId);
+  if (slot === undefined || slot.pass !== scopePass) {
+    entry.otherFits.set(scopeId, { pass: scopePass, hitPass: scopePass, first: interval, more: null });
+    return;
+  }
+  if (slot.more === null) slot.more = [interval];
+  else slot.more.push(interval);
 }
 
 export function measureCanvasText(context: Measuring, text: string, font: string): number {
-  return lookupWidthEntry(context, text, font).width;
+  return resolveWidth(context, text, font).width;
 }
 
 export function fitCanvasLine(
@@ -370,27 +434,38 @@ export function fitCanvasLine(
   text: string,
   maxWidth: number,
   font: string,
-): FittedTextLine {
+): FittedLine {
   if (!text) return EMPTY_FITTED;
   if (maxWidth <= 0) return { text: '', truncated: true, full: text };
-  const entry = lookupWidthEntry(context, text, font);
-  if (entry.width <= maxWidth) {
-    return entry.untruncated ?? (entry.untruncated = { text, truncated: false, full: text });
+  const resolved = resolveWidth(context, text, font);
+  const entry = resolved.entry;
+  if (resolved.width <= maxWidth) {
+    if (entry !== null) return entry.untruncated ?? (entry.untruncated = { text, truncated: false, full: text });
+    return { text, truncated: false, full: text };
   }
-  if (Number.isFinite(maxWidth)) {
-    const cached = findFitInterval(entry, maxWidth);
-    if (cached !== null) return cached;
+  const scopeId = activeScope?.id ?? 0;
+  const scopePass = activeScope?.passNumber() ?? 0;
+  if (entry !== null && Number.isFinite(maxWidth)) {
+    const cached = findFitInterval(entry, maxWidth, scopeId, scopePass);
+    if (cached !== null) {
+      if (activeScope !== null && entry.graphemes !== null && entry.graphemes.revision === revision) {
+        activeScope.touchGrapheme(entry.graphemes);
+      }
+      return cached;
+    }
   }
-  const ellipsis = lookupWidthEntry(context, ELLIPSIS, font);
-  if (ellipsis.width > maxWidth) {
-    const fitted: FittedTextLine = { text: '', truncated: true, full: text };
-    if (Number.isFinite(maxWidth) && Number.isFinite(ellipsis.width) && Number.isFinite(entry.width)) {
-      storeFitInterval(entry, 0, Math.min(entry.width, ellipsis.width), fitted);
+  const ellipsisWidth = resolveWidth(context, ELLIPSIS, font).width;
+  if (ellipsisWidth > maxWidth) {
+    const fitted: FittedLine = { text: '', truncated: true, full: text };
+    if (entry !== null && scopeId !== 0 && Number.isFinite(maxWidth) && Number.isFinite(ellipsisWidth) && Number.isFinite(resolved.width)) {
+      storeFitInterval(entry, 0, Math.min(resolved.width, ellipsisWidth), fitted, scopeId, scopePass);
     }
     return fitted;
   }
   const simpleAscii = isPrintableAscii(text);
-  const ends = simpleAscii ? null : graphemeEntryOf(text).ends;
+  const gEntry = simpleAscii ? null : graphemeEntryOf(text);
+  if (entry !== null && gEntry !== null && activeScope !== null) entry.graphemes = gEntry;
+  const ends = gEntry ? gEntry.ends : null;
   const count = ends ? ends.length : text.length;
   const prev = context.font;
   if (prev !== font) context.font = font;
@@ -398,7 +473,7 @@ export function fitCanvasLine(
   let hi = count;
   let maxPass = -Infinity;
   let minFail = Infinity;
-  let finite = Number.isFinite(maxWidth) && Number.isFinite(ellipsis.width) && Number.isFinite(entry.width);
+  let finite = Number.isFinite(maxWidth) && Number.isFinite(ellipsisWidth) && Number.isFinite(resolved.width);
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     const cutEnd = ends ? ends[mid - 1]! : mid;
@@ -415,12 +490,12 @@ export function fitCanvasLine(
   }
   if (prev !== font) context.font = prev;
   const cutText = `${lo > 0 ? text.slice(0, ends ? ends[lo - 1]! : lo).trimEnd() : ''}${ELLIPSIS}`;
-  const fitted: FittedTextLine = { text: cutText, truncated: true, full: text };
-  if (finite) {
-    const lower = Math.max(ellipsis.width, maxPass);
-    const upper = Math.min(entry.width, minFail);
+  const fitted: FittedLine = { text: cutText, truncated: true, full: text };
+  if (entry !== null && scopeId !== 0 && finite) {
+    const lower = Math.max(ellipsisWidth, maxPass);
+    const upper = Math.min(resolved.width, minFail);
     if (lower <= maxWidth && maxWidth < upper) {
-      storeFitInterval(entry, lower, upper, fitted);
+      storeFitInterval(entry, lower, upper, fitted, scopeId, scopePass);
     }
   }
   return fitted;
@@ -441,7 +516,7 @@ export function fitMeasuredLine(
   maxWidth: number,
   font: string,
   measure: MeasureText,
-): FittedTextLine {
+): FittedLine {
   const context = adapterContexts.get(measure);
   if (context !== undefined) return fitCanvasLine(context, text, maxWidth, font);
   if (!text) return EMPTY_FITTED;

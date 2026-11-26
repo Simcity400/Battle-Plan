@@ -43,7 +43,8 @@ import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
 import { computeColumnMaxima, declareTableProjection, tableRank, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, resolveTableRowsIncremental, updateColumnMaximaIncremental, type FlatTableRow, type TableColumnSpec, type TableModel, type TableModelSlot, type TableRow } from './model.ts';
-import { createTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
+import { textWidthCacheStats } from '../../charts/textWidth.ts';
+import { createTablePicture, disposeTablePicture, drawFamilyTable, glideCrossing, hasGlideCrossing, hitFamilyTable, NO_GLIDE, tableGlide } from './painter.ts';
 import { LaneArtCache } from '../art/laneCache.ts';
 import { treeLevelsOf, treeTextStart } from './cellPainters.ts';
 import { TREE_CHEVRON_LANE } from './layout.ts';
@@ -517,11 +518,20 @@ test('dirty cell painter repaints only changed cells and bounds text measurement
   assert.ok(swapDraw.paintedCells > 0 && swapDraw.paintedCells <= 15, `reorder repaints only dirty rows: ${swapDraw.paintedCells}`);
 
   reset();
+  const entriesBefore = textWidthCacheStats().entries;
   for (let frame = 0; frame < 60; frame++) {
     const stepRows = makeRows([[100, 1.5], [90, 2.5], [80, 0], [70, 0], [60, (frame % 5) + 0.5]]);
     drawFamilyTable(ctx, { layout, rows: stepRows, settings, hour: 10 + frame, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 10 + frame, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   }
-  assert.ok(counts().measureCalls <= 15, `text measurements stay bounded after warm-up: ${counts().measureCalls} across 60 frames`);
+  assert.ok(counts().measureCalls <= 40, `unchanged cells and shared on-screen values stay cached across 60 frames: ${counts().measureCalls}`);
+  assert.ok(textWidthCacheStats().entries <= entriesBefore + 1, `off-screen cell values are dropped instead of accumulating: ${textWidthCacheStats().entries}`);
+  reset();
+  for (let frame = 0; frame < 20; frame++) {
+    const sharedRows = makeRows([[100, 1.5], [90, 2.5], [80, 0], [70, 0], [60, frame % 2 === 0 ? 1.5 : 2.5]]);
+    drawFamilyTable(ctx, { layout, rows: sharedRows, settings, hour: 100 + frame, width: 480, height: 220, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 100 + frame, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
+  }
+  assert.equal(counts().measureCalls, 0, 'values already visible in other cells require zero re-measurements');
+  disposeTablePicture(picture);
 });
 
 test('1,500 countries project, sort, audit identically, and paint only visible rows with bounded measurements', () => {
@@ -574,6 +584,7 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const draw = drawFamilyTable(ctx, { layout, rows: followedRows, settings, hour: 200, width: 480, height: 320, scrollLeft: 0, scrollTop: 0, rankShown: true, rankWidth: 36, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, markers: new Map(), inspectedKey: null, selectedKey: null, focusedKey: null, dpr: 1 }, picture);
   assert.ok(draw.paintedCells <= 30, `only visible viewport rows painted out of 1,500: ${draw.paintedCells} cells`);
   assert.ok(counts().measureCalls <= 50, `bounded text measurements for 1,500-country table: ${counts().measureCalls}`);
+  disposeTablePicture(picture);
 });
 
 test('occupied-states projection names countries at the hour, filter ranges, unrecorded membership, and live tooltip details', () => {

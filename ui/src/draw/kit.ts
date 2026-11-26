@@ -601,12 +601,14 @@ export function drawNameSlot(
   const weight = options?.weight ?? LABEL_WEIGHT;
   const lineHeight = options?.lineHeight ?? labelLineHeight(fontSize);
   const maxLines: 1 | 2 = options?.maxLines ?? (labelFitsTwoLines(rowHeight, lineHeight) ? 2 : 1);
+  const font = `${weight} ${fontSize}px ${theme.font}`;
   ctx.save();
-  ctx.font = `${weight} ${fontSize}px ${theme.font}`;
+  ctx.font = font;
   ctx.fillStyle = options?.color ?? theme.text;
   ctx.textAlign = options?.align ?? 'left';
   ctx.textBaseline = 'middle';
   const fitted = drawFittedLabel(ctx, text, x, y + rowHeight / 2, width, {
+    font,
     fontSize,
     lineHeight,
     maxLines,

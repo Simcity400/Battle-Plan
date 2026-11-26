@@ -28,7 +28,7 @@ import {
   type TableModel,
   type TableRow,
 } from './model.ts';
-import { barPixels, barPixelSpan, createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hasGlideCrossing, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
+import { barPixels, barPixelSpan, createTablePicture, disposeTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hasGlideCrossing, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
 import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { CELL_INSET, MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, showsIcon, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
@@ -127,8 +127,12 @@ function picturesFor(ctx: OffscreenCanvasRenderingContext2D, surface: Surface, a
   const width = surface.width * surface.dpr;
   const height = surface.height * surface.dpr;
   let held = pictures.get(ctx);
-  if (!held || held.width !== width || held.height !== height) pictures.set(ctx, held = { width, height, art, list: [] });
-  else held.art = art;
+  if (!held || held.width !== width || held.height !== height) {
+    if (held) for (const item of held.list) disposeTablePicture(item);
+    pictures.set(ctx, held = { width, height, art, list: [] });
+  } else {
+    held.art = art;
+  }
   return held;
 }
 
@@ -858,7 +862,9 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       hideHeader: model.hideHeader === true,
     };
     let drew = false;
+    let partial = true;
     if (shape.panes && shape.paneGeom) {
+      while (list.length > shape.panes.length) disposeTablePicture(list.pop()!);
       const scroll = paneScroll(shape.columns, shape.paneGeom, binding.scrollLeft);
       for (let p = 0; p < shape.panes.length; p++) {
         const pane = shape.panes[p]!;
@@ -883,11 +889,13 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         }, picture);
         ctx.restore();
         drew = drew || result.drew;
+        if (!result.partial) partial = false;
       }
       if (drew) drawPaneFrame(ctx, shape.paneGeom, shape.columns, scroll, layout.height, theme);
     } else {
+      while (list.length > 1) disposeTablePicture(list.pop()!);
       const picture = list[0] ?? (list[0] = createTablePicture());
-      drew = drawFamilyTable(ctx, {
+      const result = drawFamilyTable(ctx, {
         ...common,
         rows: shape.flatRows,
         width: frame.surface.width,
@@ -905,9 +913,11 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
         ...(model.endNote && shape.windowOffset + shape.flatRows.length >= shape.totalCount ? { endNote: model.endNote } : {}),
         rowGeom: shape.rowGeom,
         clockSummary: model.clockSummary,
-      }, picture).drew;
+      }, picture);
+      drew = result.drew;
+      partial = result.partial === true;
     }
-    if (gliding) return { drew, next: true };
+    if (gliding) return { drew, next: true, partial };
     const until = nextExpiry(motion, frame.now);
     if (!Number.isFinite(until)) {
       picture.still = layout;
@@ -917,7 +927,13 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
       picture.selected = binding.selectedKey;
       picture.focused = binding.focusedKey;
     }
-    return { drew, next: Number.isFinite(until) ? until : false };
+    return { drew, next: Number.isFinite(until) ? until : false, partial };
+  },
+  dispose(ctx) {
+    const held = pictures.get(ctx);
+    if (!held) return;
+    for (const item of held.list) disposeTablePicture(item);
+    pictures.delete(ctx);
   },
   hit(frame, point) {
     const { model, layout, binding } = frame;
