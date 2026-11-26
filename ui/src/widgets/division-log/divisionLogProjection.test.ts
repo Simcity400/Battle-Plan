@@ -47,7 +47,7 @@ test('expanded groups retain their paged children and resolve identities at the 
   assert.equal(lostExtra?.some(line => line.label === 'Last seen at' || line.label === 'Place'), false, 'and states it once');
 });
 
-test('the minimum division log keeps both country flags visible without scrolling, and flags-only and named country columns size apart', () => {
+test('the minimum division log keeps both country flags visible without scrolling, and flags-only and named country columns size apart', async () => {
   const settings = tableDefaults(DIVISION_LOG_COLUMNS, LOG_TABLE_BASE);
   const serviceDefaults = tableDefaults(SERVICE_COLUMNS, LOG_TABLE_BASE);
   const serviceNames = { ...serviceDefaults, columns: { ...serviceDefaults.columns, country: { ...serviceDefaults.columns.country!, showNames: true } } };
@@ -69,4 +69,124 @@ test('the minimum division log keeps both country flags visible without scrollin
   const pair = 'German Reich · Kingdom of Hungary';
   const named = measureFixedColumnWidths(buildColumnLayouts(SERVICE_COLUMNS, serviceNames), serviceNames, theme, measure, { country: [pair] }, { hideHeader: true, flags: { country: 2 } });
   assert.ok(named.country! >= measure(pair) + 2 * (20 + 6) + 2 + 20, `with names on, a two-country service row fits both flags and both names (${named.country})`);
+
+  const { tableLane } = await import('../../families/table/laneView.ts');
+  const { readyArt } = await import('../../families/art/types.ts');
+  const { knownValue } = await import('../../families/value.ts');
+  const narrowModel = {
+    columns: DIVISION_LOG_COLUMNS,
+    hour: 100,
+    hideHeader: true,
+    unsorted: true,
+    rows: [{
+      key: 'div-1',
+      name: '1st Infantry',
+      cells: {
+        date: { value: knownValue(100) },
+        kind: { value: knownValue('Lost'), glyph: 'loss' as const },
+        item: { value: knownValue('1st Infantry') },
+        country: { value: knownValue('Germany'), flags: [{ tag: 'GER', art: readyArt('flag://div-owner') }] },
+        place: { value: knownValue('Berlin') },
+        outcome: { value: knownValue('Destroyed by SOV'), flags: [{ tag: 'SOV', art: readyArt('flag://div-killer') }] },
+        action: { value: knownValue('Inspect') },
+      },
+    }],
+  };
+  const canvasCtx = { font: '', measureText: (text: string) => ({ width: text.length * 7 }) } as unknown as OffscreenCanvasRenderingContext2D;
+  const surface = { width: 320, height: 110, dpr: 1 };
+  const binding = { family: 'table', settings, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, options: {} } as never;
+  const layout = tableLane.layout(narrowModel, binding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const visibleUrls = [...tableLane.visibleArt({ model: narrowModel, layout, binding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 1, speed: 24, before: null } as never)];
+  assert.ok(visibleUrls.includes('flag://div-owner'), `320 px Division Log keeps inline owner flag in visibleArt (got ${JSON.stringify(visibleUrls)})`);
+  assert.ok(visibleUrls.includes('flag://div-killer'), `320 px Division Log keeps inline killer flag in visibleArt (got ${JSON.stringify(visibleUrls)})`);
+
+  const serviceModel = {
+    columns: SERVICE_COLUMNS,
+    hour: 100,
+    hideHeader: true,
+    unsorted: true,
+    rows: [{
+      key: 'svc-1',
+      name: '1st Infantry',
+      cells: {
+        date: { value: knownValue(100) },
+        kind: { value: knownValue('Transfer'), glyph: 'transfer' as const },
+        item: { value: knownValue('1st Infantry') },
+        country: {
+          value: knownValue('Germany · Hungary'),
+          flags: [
+            { tag: 'GER', art: readyArt('flag://svc-ger') },
+            { tag: 'HUN', art: readyArt('flag://svc-hun') },
+          ],
+        },
+        place: { value: knownValue('Vienna') },
+      },
+    }],
+  };
+  const serviceBinding = { family: 'table', settings: serviceDefaults, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, options: {} } as never;
+  const serviceLayout = tableLane.layout(serviceModel, serviceBinding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const serviceUrls = [...tableLane.visibleArt({ model: serviceModel, layout: serviceLayout, binding: serviceBinding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 2, speed: 24, before: null } as never)];
+  assert.deepEqual(serviceUrls, ['flag://svc-ger'], '320 px Division Service Record pins only the drawn first flag and omits the clipped second flag');
+
+  const widePlaceSettings = {
+    ...settings,
+    columns: { ...settings.columns, place: { ...settings.columns.place!, width: 180 } },
+  };
+  const glyphModel = {
+    ...narrowModel,
+    rows: [{
+      ...narrowModel.rows[0]!,
+      cells: {
+        ...narrowModel.rows[0]!.cells,
+        outcome: { value: knownValue('Destroyed by SOV'), glyph: 'loss' as const, flags: [{ tag: 'SOV', art: readyArt('flag://div-killer-post-glyph') }] },
+      },
+    }],
+  };
+  const scrolledBinding = { family: 'table', settings: widePlaceSettings, width: 320, height: 110, scrollLeft: 210, scrollTop: 0, options: {} } as never;
+  const scrolledLayout = tableLane.layout(glyphModel, scrolledBinding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const scrolledUrls = [...tableLane.visibleArt({ model: glyphModel, layout: scrolledLayout, binding: scrolledBinding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 3, speed: 24, before: null } as never)];
+  assert.ok(scrolledUrls.includes('flag://div-killer-post-glyph'), `post-glyph killer flag exposed past pinned boundary stays in visibleArt (got ${JSON.stringify(scrolledUrls)})`);
+
+  const wideDateSettings = {
+    ...settings,
+    columns: { ...settings.columns, date: { ...settings.columns.date!, width: 220 } },
+  };
+  const clippedInlineBinding = { family: 'table', settings: wideDateSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, options: {} } as never;
+  const clippedInlineLayout = tableLane.layout(narrowModel, clippedInlineBinding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const clippedInlineUrls = [...tableLane.visibleArt({ model: narrowModel, layout: clippedInlineLayout, binding: clippedInlineBinding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 4, speed: 24, before: null } as never)];
+  assert.deepEqual(clippedInlineUrls, ['flag://div-owner'], `narrow Division Log with 220 px Date column omits killer flag past right edge (got ${JSON.stringify(clippedInlineUrls)})`);
+
+  const narrowRemovalSettings = {
+    ...settings,
+    columns: {
+      ...settings.columns,
+      place: { ...settings.columns.place!, width: 180 },
+      outcome: { ...settings.columns.outcome!, width: 40 },
+      action: { ...settings.columns.action!, width: 140 },
+    },
+  };
+  const spillBinding = { family: 'table', settings: narrowRemovalSettings, width: 320, height: 110, scrollLeft: 220, scrollTop: 0, options: {} } as never;
+  const spillLayout = tableLane.layout(glyphModel, spillBinding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const spillUrls = [...tableLane.visibleArt({ model: glyphModel, layout: spillLayout, binding: spillBinding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 5, speed: 24, before: null } as never)];
+  assert.ok(spillUrls.includes('flag://div-killer-post-glyph'), `post-glyph killer flag extending past a 40 px Removal column stays in visibleArt (got ${JSON.stringify(spillUrls)})`);
+
+  const { notApplicable } = await import('../../families/value.ts');
+  const naModel = {
+    ...glyphModel,
+    rows: [{
+      ...glyphModel.rows[0]!,
+      cells: {
+        ...glyphModel.rows[0]!.cells,
+        item: { value: notApplicable('Not applicable') },
+      },
+    }],
+  };
+  const naDateSettings = {
+    ...settings,
+    columns: { ...settings.columns, date: { ...settings.columns.date!, width: 209 } },
+  };
+  const naBinding = { family: 'table', settings: naDateSettings, width: 320, height: 110, scrollLeft: 0, scrollTop: 0, options: {} } as never;
+  const naLayout = tableLane.layout(naModel, naBinding, surface as never, theme, canvasCtx, 100, { previous: null, now: 1000, speed: 24 } as never);
+  const naUrls = [...tableLane.visibleArt({ model: naModel, layout: naLayout, binding: naBinding, surface, theme, hour: 100, now: 1000, changedAt: 1000, continuity: 6, speed: 24, before: null } as never)];
+  assert.deepEqual(naUrls, ['flag://div-owner'], `notApplicable primary cell uses shared missingMarkWidth and omits killer flag at x=320 (got ${JSON.stringify(naUrls)})`);
 });

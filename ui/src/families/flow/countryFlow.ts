@@ -34,6 +34,7 @@ interface FlowEndpointPresentation {
   readonly subject?: string;
   readonly tag?: string;
   readonly flag?: ArtResult;
+  readonly flagKey?: string;
   readonly unknown?: string;
 }
 
@@ -63,6 +64,7 @@ export function presentFlowEndpoint(readView: BoundedReadView, endpoint: FlowEnd
     ...(endpoint.tag ? { tag: endpoint.tag } : {}),
     ...(endpoint.unknown ? { unknown: endpoint.unknown } : {}),
     flag: shown.media.art,
+    ...(shown.flagKey ? { flagKey: shown.flagKey } : {}),
   };
 }
 

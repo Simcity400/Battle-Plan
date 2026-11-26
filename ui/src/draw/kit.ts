@@ -388,7 +388,7 @@ export function artInitials(resolvedName: string | undefined): string {
 
 export type ArtSlotState =
   | { readonly kind: 'none' }
-  | { readonly kind: 'pending' }
+  | { readonly kind: 'pending'; readonly width?: number; readonly height?: number }
   | { readonly kind: 'ready'; readonly bitmap: CanvasImageSource; readonly width: number; readonly height: number }
   | { readonly kind: 'missing'; readonly reason: string; readonly label?: string }
   | { readonly kind: 'unrecorded'; readonly reason: string }
@@ -1100,6 +1100,19 @@ export function drawDateColumn(
   }
   ctx.restore();
   return { missing: false, full: parts.full, hover: parts.hover };
+}
+
+export function missingMarkWidth(
+  maxWidth: number,
+  measure: (text: string, font: string) => number,
+  theme: Pick<FamilyTheme, 'font' | 'fontSize'>,
+  options?: { readonly figure?: string; readonly gameWindow?: boolean; readonly notApplicable?: boolean },
+): number {
+  if (options?.notApplicable) return measure(NOT_APPLICABLE_LABEL, `${VALUE_WEIGHT} ${theme.fontSize.body}px ${theme.font}`);
+  const smallFont = `${LABEL_WEIGHT} ${theme.fontSize.small}px ${theme.font}`;
+  if (options?.gameWindow) return measure(ellipsise(GAME_WINDOW_MISSING_LABEL, maxWidth, s => measure(s, smallFont)), smallFont);
+  const fullW = MISSING_BOX_SIZE + MISSING_BOX_GAP + measure(notRecordedLabel(options?.figure), smallFont);
+  return maxWidth >= fullW ? fullW : MISSING_BOX_SIZE;
 }
 
 export function drawMissingMark(
@@ -1904,8 +1917,50 @@ export interface IconStripItem {
 }
 
 export function iconStripSlotWidth(state: ArtSlotState, size: number): number {
-  if (state.kind !== 'ready' || state.width <= 0 || state.height <= 0) return size;
-  return Math.max(1, Math.min(size, Math.round(size * state.width / state.height)));
+  const width = state.kind === 'ready' || state.kind === 'pending' ? (state.width ?? 0) : 0;
+  const height = state.kind === 'ready' || state.kind === 'pending' ? (state.height ?? 0) : 0;
+  if (width <= 0 || height <= 0) return size;
+  return Math.max(1, Math.min(size, Math.round(size * width / height)));
+}
+
+export function fitIconStripCount(
+  available: number,
+  count: number,
+  slotWidth: (index: number) => number,
+  itemCount: (index: number) => number | undefined,
+  measure: (text: string, font: string) => number,
+  themeFont: string,
+): number {
+  if (count <= 0 || available <= 0) return 0;
+  const gap = ICON_STRIP_GAP;
+  const countFont = `600 11px ${themeFont}`;
+  const moreFont = `500 11.5px ${themeFont}`;
+  const totals: number[] = [];
+  let used = 0;
+  let overflowed = false;
+  for (let i = 0; i < count; i++) {
+    const n = itemCount(i);
+    const countW = n && n > 1 ? measure(`\u00d7${n}`, countFont) + 3 : 0;
+    const total = slotWidth(i) + countW;
+    totals.push(total);
+    used += (i > 0 ? gap : 0) + total;
+    if (used > available) {
+      overflowed = true;
+      break;
+    }
+  }
+  if (!overflowed) return count;
+  let drawnCount = 0;
+  let fit = 0;
+  for (let i = 0; i < totals.length; i++) {
+    const nextUsed = fit + (i > 0 ? gap : 0) + totals[i]!;
+    const remaining = count - (i + 1);
+    const moreW = remaining > 0 ? gap + measure(`+${remaining}`, moreFont) : 0;
+    if (nextUsed + moreW > available) break;
+    fit = nextUsed;
+    drawnCount = i + 1;
+  }
+  return drawnCount;
 }
 
 export function drawIconStrip(
@@ -1922,45 +1977,32 @@ export function drawIconStrip(
   const y = Math.round(middleY - size / 2);
   const countFont = `600 11px ${theme.font}`;
   const moreFont = `500 11.5px ${theme.font}`;
-  const measured = items.map(item => {
-    const countText = item.count && item.count > 1 ? `\u00d7${item.count}` : '';
-    let countW = 0;
-    if (countText) {
-      ctx.save();
-      ctx.font = countFont;
-      countW = textWidth(ctx, countText) + 3;
-      ctx.restore();
-    }
-    const width = iconStripSlotWidth(item.state, size);
-    return { item, width, countText, countW, total: width + countW };
-  });
   const available = Math.max(0, right - left);
-  let fitAll = 0;
-  for (let i = 0; i < measured.length; i++) fitAll += (i > 0 ? gap : 0) + measured[i]!.total;
-  let drawnCount = measured.length;
-  if (fitAll > available) {
-    ctx.save();
-    ctx.font = moreFont;
-    drawnCount = 0;
-    let used = 0;
-    for (let i = 0; i < measured.length; i++) {
-      const nextUsed = used + (i > 0 ? gap : 0) + measured[i]!.total;
-      const remaining = measured.length - (i + 1);
-      const moreW = remaining > 0 ? gap + textWidth(ctx, `+${remaining}`) : 0;
-      if (nextUsed + moreW > available) break;
-      used = nextUsed;
-      drawnCount = i + 1;
-    }
-    ctx.restore();
-  }
+  ctx.save();
+  const measure = (text: string, font: string): number => {
+    ctx.font = font;
+    return textWidth(ctx, text);
+  };
+  const drawnCount = fitIconStripCount(
+    available,
+    items.length,
+    i => iconStripSlotWidth(items[i]!.state, size),
+    i => items[i]!.count,
+    measure,
+    theme.font,
+  );
+  ctx.restore();
   let cursor = left;
   for (let i = 0; i < drawnCount; i++) {
-    const { item, width, countText, countW } = measured[i]!;
+    const item = items[i]!;
+    const width = iconStripSlotWidth(item.state, size);
+    const countText = item.count && item.count > 1 ? `\u00d7${item.count}` : '';
     drawArtSlot(ctx, cursor, y, width, size, item.state, theme, { radius: 3 });
     cursor += width;
     if (countText) {
       ctx.save();
       ctx.font = countFont;
+      const countW = textWidth(ctx, countText) + 3;
       ctx.fillStyle = theme.text;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';

@@ -24,6 +24,7 @@ interface GeneralRow {
   readonly name: Value<string>;
   readonly portrait: CellArt;
   readonly flag: ArtResult | undefined;
+  readonly flagKey?: string;
   readonly country: Value<string>;
   readonly skills: readonly (CellArt | null)[];
   readonly traits: readonly TableCellIconItem[];
@@ -99,7 +100,9 @@ function generalsColumns(reply: UnitLeadersReply, options: GeneralsOptions): rea
     { ...PORTRAIT!, priority: 4, sortable: false, cellKind: 'kind', iconSlot: true, art: row => row.portrait.art,
       extra: row => ({ artShape: 'portrait', artName: row.leader.name, ...(row.portrait.artKey ? { artKey: row.portrait.artKey } : {}) }),
       value: row => row.name },
-    { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag, country: row => row.leader.role.owner, value: row => row.country },
+    { ...COUNTRY!, priority: 1, iconSlot: true, art: row => row.flag,
+      extra: row => (row.flagKey ? { artKey: row.flagKey } : {}),
+      country: row => row.leader.role.owner, value: row => row.country },
     { ...COMMANDER!, priority: 0, text: true, hideable: false, cellKind: 'item', minWidth: 165, grow: 1, widest: ['Erich von Manstein'],
       extra: row => (row.leader.role.rank ? { subtext: row.leader.role.rank } : {}),
       value: row => row.name },
@@ -174,6 +177,7 @@ export const generalsProjection: TableProjection<GeneralsOptions> = declareTable
         name: datedName(readView, leader, hour),
         portrait,
         flag: presented?.media.kind === 'flag' ? presented.media.art : undefined,
+        ...(presented?.flagKey ? { flagKey: presented.flagKey } : {}),
         country: presented === null ? notRecorded('Owner not recorded') : presented.labelMissing ? notRecorded('Country name not recorded') : textValue(presented.label, 'Country name not recorded'),
         skills: leader.role.kind === KIND_NAVY ? navy : land,
         traits: (leader.row.traits ?? []).map((at, i) => ({

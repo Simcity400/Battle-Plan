@@ -1069,3 +1069,189 @@ test('non-hover frames deduplicate structure, mirror, and audit fields structura
     recording.restore();
   }
 });
+
+test('unrelated flag batch and non-country entity settlements reuse the 1,500-country index with zero projections, rebuilds, identity lookups, or flag lookups', async () => {
+  const { countryRowPresentation } = await import('./bars/model.ts');
+  reset();
+  const recording = installRecordingCanvas();
+  const countryCount = 1500;
+  const tags = Array.from({ length: countryCount }, (_, i) => `C${String(i).padStart(4, '0')}`);
+  let manyProjects = 0;
+  registerFamilyProjection<FamilyProjection<Model, Options>>({
+    kind: 'fixture-many-countries',
+    family: 'test-lane',
+    project(view: BoundedReadView): Model {
+      manyProjects++;
+      let first = '';
+      for (let i = 0; i < tags.length; i++) {
+        const pres = countryRowPresentation(view, tags[i]!);
+        if (i === 0) first = pres.label;
+      }
+      return { hour: view.hour, bucket: 0, rows: [{ key: 'A', v: 1 }], name: first };
+    },
+  });
+  const origSetFacts = IdentityIndex.prototype.setFacts;
+  const origSetIdentities = IdentityIndex.prototype.setIdentities;
+  const origResolveText = IdentityIndex.prototype.resolveText;
+  const origGetDrawnFlagByKey = IdentityIndex.prototype.getDrawnFlagByKey;
+  let factBuilds = 0;
+  let identityBuilds = 0;
+  let lookups = 0;
+  let flagLookups = 0;
+  try {
+    const scope = { sourceId: 's', revision: '1', branchId: 'b1', content: 1 };
+    const index = new IdentityIndex(scope, [0, 500]);
+    index.setFacts({
+      branchId: 'b1',
+      known: [[0, 500]],
+      names: tags.map(tag => `Country ${tag}`),
+      reasons: [],
+      flags: tags.map(tag => ({ keys: [`${tag}_democratic`, null, null], reasons: [null, null, null] })),
+      countries: tags.map((tag, i) => ({ tag, runs: [[0, i, 0x336699, -1, i]] })),
+      warnings: [],
+    }, true);
+    index.setIdentities({
+      branchId: 'b1',
+      known: [{ firstHour: 0, lastHour: 500 }],
+      countries: tags.map((tag, i) => ({ tag, identities: [{ firstHour: 0, lastHour: 500, slot: i + 1, countryId: i + 1 }], unresolved: [] })),
+      unknown: [],
+      warnings: [],
+    });
+
+    IdentityIndex.prototype.setFacts = function (...args) { factBuilds++; return origSetFacts.apply(this, args); };
+    IdentityIndex.prototype.setIdentities = function (...args) { identityBuilds++; return origSetIdentities.apply(this, args); };
+    IdentityIndex.prototype.resolveText = function (...args) { lookups++; return origResolveText.apply(this, args); };
+    IdentityIndex.prototype.getDrawnFlagByKey = function (...args) { flagLookups++; return origGetDrawnFlagByKey.apply(this, args); };
+
+    const transport = new LaneTransport();
+    const fetchBitmap = async () => ({ width: 20, height: 13, close() {} }) as unknown as ImageBitmap;
+    const lane = driveLane(createLaneView({
+      ...family,
+      visibleArt: () => ['art://unrelated-bitmap'],
+    }, () => {}, { fetchBitmap }), recording.canvases, undefined, transport);
+    const staticPanels = rowsAt([{ key: 'A', v: 1 }]);
+    const bound = (identitySnapshot: IdentitySnapshot) => binding(staticPanels, DOWN, { kind: 'fixture-many-countries', identitySnapshot });
+
+    lane.paint({ label: 'initial', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(manyProjects, 1);
+    assert.equal(factBuilds, 1);
+    assert.equal(identityBuilds, 1);
+    assert.equal(lookups, countryCount);
+
+    factBuilds = 0;
+    identityBuilds = 0;
+    lookups = 0;
+    flagLookups = 0;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    lane.paint({ label: 'bitmap settled', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(manyProjects, 1, 'an unrelated bitmap settlement keeps the projection');
+    assert.equal(lookups, 0, 'an unrelated successful bitmap decode repeats zero country identity lookups');
+    assert.equal(flagLookups, 0, 'an unrelated successful bitmap decode repeats zero flag lookups');
+
+    index.setDrawnFlag('panel', { keys: ['FRA_democratic', null, null], reasons: [null, null, null] }, { url: 'flag://FRA' });
+    lane.paint({ label: 'unrelated flag batch', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(manyProjects, 1, 'an unrelated flag batch settlement triggers zero re-projections');
+    assert.equal(factBuilds, 0, 'an unrelated flag batch settlement rebuilds zero country facts');
+    assert.equal(identityBuilds, 0, 'an unrelated flag batch settlement rebuilds zero country identities');
+    assert.equal(lookups, 0, 'an unrelated flag batch settlement repeats zero country identity lookups');
+    assert.equal(flagLookups, 0, 'an unrelated flag batch settlement repeats zero flag lookups');
+
+    index.setEntityRuns({ kind: 'state', id: '42' }, [{ firstHour: 0, lastHour: 500, name: 'Brandenburg' }]);
+    lane.paint({ label: 'unrelated state entity', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(manyProjects, 1, 'an unrelated entity settlement triggers zero re-projections');
+    assert.equal(factBuilds, 0, 'an unrelated entity settlement rebuilds zero country facts');
+    assert.equal(identityBuilds, 0, 'an unrelated entity settlement rebuilds zero country identities');
+    assert.equal(lookups, 0, 'an unrelated entity settlement repeats zero country identity lookups');
+    assert.equal(flagLookups, 0, 'an unrelated entity settlement repeats zero flag lookups even after an earlier bitmap settlement');
+    assert.ok(transport.sent.lastIdentity !== null, 'state update arrived as an identity delta');
+    assert.ok(!transport.sent.lastIdentity!.changes.set.some(([field]) => field === 'flagVersions'), 'an unrelated state update does not retransmit flagVersions');
+    assert.ok(!(transport.sent.lastIdentity!.changes.nested ?? []).some(([field]) => field === 'flagVersions'), 'an unrelated state update sends no flagVersions nested diff');
+
+    const deltasBefore = transport.sent.identities;
+    index.setDrawnFlag('panel', { keys: ['C0000_democratic', null, null], reasons: [null, null, null] }, { url: 'flag://C0000' });
+    lane.paint({ label: 'read flag settled after unrelated flag', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(transport.sent.identities, deltasBefore + 1, 'read flag update arrived through message.identity delta');
+    const flagVersionDelta = (transport.sent.lastIdentity!.changes.nested ?? []).find(([field]) => field === 'flagVersions')?.[1];
+    assert.equal(flagVersionDelta?.set.length, 1, 'flag batch delta transmits only the newly settled flag key, not the full history');
+    assert.equal(manyProjects, 2, 'a read flag settled after an earlier flag crosses PayloadSender delta and re-projects');
+
+    const { PayloadSender, PayloadStore } = await import('../dashboard/follow/payloads.ts');
+    const batchIndex = new IdentityIndex({ sourceId: 's-batch', revision: '1', branchId: 'b1', content: 1 }, [0, 500]);
+    const store = new PayloadStore();
+    type DeltaMsg = { id: number; base: number; changes: { set: [string, unknown][]; drop: string[]; nested?: [string, { set: [string, unknown][]; drop: string[] }][] } };
+    const deltas: { current: DeltaMsg | null } = { current: null };
+    const sender = new PayloadSender(message => {
+      if (message.identity) deltas.current = message.identity;
+      store.apply(message);
+    });
+    const sendSnap = (snap: IdentitySnapshot, prevIdentity?: number) => {
+      deltas.current = null;
+      const encoded = sender.acquire({ identitySnapshot: snap }, prevIdentity);
+      const resolved = store.resolve(encoded.wire) as { identitySnapshot: IdentitySnapshot };
+      const identityId = (encoded.wire as { revisions: { identitySnapshot: number } }).revisions.identitySnapshot;
+      return { encoded, identityId, snapshot: resolved.identitySnapshot, delta: deltas.current as DeltaMsg | null };
+    };
+    let prev = sendSnap(batchIndex.exportSnapshot());
+    let workerIndex = IdentityIndex.fromSnapshot(prev.snapshot);
+    let totalFlagVersionEntries = 0;
+    const batchSize = 32;
+    for (let start = 0; start < countryCount; start += batchSize) {
+      const end = Math.min(countryCount, start + batchSize);
+      for (let i = start; i < end; i++) {
+        batchIndex.setDrawnFlag('panel', { keys: [`B${i}_democratic`, null, null], reasons: [null, null, null] }, { url: `flag://B${i}` });
+      }
+      const next = sendSnap(batchIndex.exportSnapshot(), prev.identityId);
+      assert.ok(next.delta !== null, 'flag batch carries an identity delta');
+      const setEntry = next.delta!.changes.set.find(([field]) => field === 'flagVersions');
+      const nestedEntry = (next.delta!.changes.nested ?? []).find(([field]) => field === 'flagVersions');
+      totalFlagVersionEntries += setEntry ? Object.keys(setEntry[1] as Record<string, number>).length : (nestedEntry?.[1].set.length ?? 0);
+      workerIndex = IdentityIndex.fromSnapshot(next.snapshot, workerIndex);
+      sender.release(prev.encoded.ids);
+      prev = next;
+    }
+    assert.equal(totalFlagVersionEntries, countryCount, '47 batches of 32 flag settlements send exactly 1,500 flagVersions delta entries total');
+
+    batchIndex.setEntityRuns({ kind: 'state', id: '99' }, [{ firstHour: 0, lastHour: 500, name: 'Prussia' }]);
+    const stateNext = sendSnap(batchIndex.exportSnapshot(), prev.identityId);
+    assert.ok(stateNext.delta !== null, 'unrelated state update carries an identity delta');
+    assert.ok(!stateNext.delta!.changes.set.some(([field]) => field === 'flagVersions'), 'unrelated state update sends no flagVersions set');
+    assert.ok(!(stateNext.delta!.changes.nested ?? []).some(([field]) => field === 'flagVersions'), 'unrelated state update sends no flagVersions nested diff');
+    workerIndex = IdentityIndex.fromSnapshot(stateNext.snapshot, workerIndex);
+    sender.release(prev.encoded.ids);
+    prev = stateNext;
+
+    const retryChoice = { keys: ['RETRY_democratic', null, null] as [string, string | null, string | null], reasons: [null, null, null] as [string | null, string | null, string | null] };
+    for (let i = 0; i < 1000; i++) {
+      batchIndex.setDrawnFlag('panel', retryChoice, { url: 'flag://retry' });
+      batchIndex.forgetDrawnFlag('panel', retryChoice);
+      const retryNext = sendSnap(batchIndex.exportSnapshot(), prev.identityId);
+      workerIndex = IdentityIndex.fromSnapshot(retryNext.snapshot, workerIndex);
+      sender.release(prev.encoded.ids);
+      prev = retryNext;
+    }
+    const hostLogLen = (batchIndex as unknown as { flagLog: unknown[] }).flagLog.length;
+    const workerLogLen = (workerIndex as unknown as { flagLog: unknown[] }).flagLog.length;
+    assert.ok(hostLogLen <= 512, `host flagLog stays bounded across 1,000 retries (got ${hostLogLen})`);
+    assert.ok(workerLogLen <= 512, `worker flagLog stays bounded across 1,000 retries (got ${workerLogLen})`);
+    const changedAfterRetry = workerIndex.flagsChangedSince(workerIndex.flagRevision()! - 1);
+    assert.ok(changedAfterRetry !== null && changedAfterRetry.length === 1, 'flagsChangedSince still detects the latest retried handle');
+
+    index.setFacts({
+      branchId: 'b1',
+      known: [[0, 500]],
+      names: tags.map((tag, i) => (i === 0 ? 'Renamed C0000' : `Country ${tag}`)),
+      reasons: [],
+      flags: tags.map(tag => ({ keys: [`${tag}_democratic`, null, null], reasons: [null, null, null] })),
+      countries: tags.map((tag, i) => ({ tag, runs: [[0, i, 0x336699, -1, i]] })),
+      warnings: [],
+    }, true);
+    lane.paint({ label: 'changed country facts', binding: bound(index.exportSnapshot()), hour: 12 });
+    assert.equal(manyProjects, 3, 'a real country identity change still re-projects');
+  } finally {
+    IdentityIndex.prototype.setFacts = origSetFacts;
+    IdentityIndex.prototype.setIdentities = origSetIdentities;
+    IdentityIndex.prototype.resolveText = origResolveText;
+    IdentityIndex.prototype.getDrawnFlagByKey = origGetDrawnFlagByKey;
+    recording.restore();
+  }
+});

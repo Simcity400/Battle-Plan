@@ -60,8 +60,8 @@ import {
   type TableTheme,
 } from './settings.ts';
 
-const CHILD_FLAG_GAP = 6;
-const KIND_TILE_ART = { width: 20, height: 16 } as const;
+export const CHILD_FLAG_GAP = 6;
+export const KIND_TILE_ART = { width: 20, height: 16 } as const;
 const PAIR_FIGURE_LINE = 19.5;
 const PAIR_BAR_GAP = 4;
 const PAIR_BAR_HEIGHT = 3;
@@ -120,8 +120,8 @@ export interface CellRenderContext {
   readonly fit: (text: string, font: string, maxWidth: number) => string;
 }
 
-const UNIT_ART_SIZE = 14;
-const UNIT_ART_GAP = 5;
+export const UNIT_ART_SIZE = 14;
+export const UNIT_ART_GAP = 5;
 
 function drawFigurePhrase(rc: CellRenderContext, figure: string, suffix: string, left: number, right: number, middle: number, figureFont: string, suffixFont: string, figureColor: string): void {
   const { ctx, theme, measure, fit } = rc;
@@ -169,7 +169,7 @@ function slotOf(art: ArtResult | null | undefined, label: string | undefined, rc
   return art ? toArtSlotState(resolveCachedArt(art, rc.artCache), label) : { kind: 'none' };
 }
 
-function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHeight: number): { readonly width: number; readonly height: number } {
+export function artGeometry(shape: TableCell['artShape'], density: TableDensity, rowHeight: number): { readonly width: number; readonly height: number } {
   if (shape === 'portrait') {
     if (density === 'compact') return { width: 24, height: 32 };
     if (density === 'comfortable') return { width: 36, height: 48 };
@@ -269,6 +269,10 @@ const GLYPHS = {
   transfer: { path: 'M2.5 5.5h11l-2.5-2.5 M13.5 10.5h-11l2.5 2.5', size: 13 },
 } as const;
 const GLYPH_GAP = 6;
+
+export function glyphAdvance(glyph: keyof typeof GLYPHS): number {
+  return GLYPHS[glyph].size + GLYPH_GAP;
+}
 
 const glyphs = new Map<keyof typeof GLYPHS, Path2D>();
 function drawGlyph(rc: CellRenderContext, glyph: keyof typeof GLYPHS, x: number, mid: number, color: string): number {

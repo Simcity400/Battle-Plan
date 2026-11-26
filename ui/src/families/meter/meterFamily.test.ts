@@ -726,3 +726,135 @@ test('an autonomy sparkline breaks over a narrow bucket with a break inside it t
   const line = sampleSparkline(tile as never, hour)!;
   assert.ok(!line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value), JSON.stringify(line));
 });
+
+test('meterLane.visibleArt reports visible standard, cipher, and chip-line art URLs and skips idle or off-screen blocks', () => {
+  const ctx = makeFakeCtx();
+  const standardModel = {
+    layout: 'rows' as const,
+    hour: 100,
+    sections: [{
+      key: 's',
+      title: 'Researching',
+      rows: [
+        { key: 'r0', name: 'Active', spoken: 'Active', audit: 'Active', bar: { kind: 'track' as const, fraction: 0.5 }, art: { result: readyArt('asset://tech/a.png'), resolvedName: 'Active' } },
+        { key: 'r1', name: 'Idle', spoken: 'Idle', audit: 'Idle', bar: { kind: 'none' as const }, art: { result: readyArt('asset://tech/idle.png'), idle: true } },
+        { key: 'r2', name: 'Flagged', spoken: 'Flagged', audit: 'Flagged', bar: { kind: 'track' as const, fraction: 0.4 }, flag: { tag: 'GER', result: readyArt('flag://GER') } },
+        ...Array.from({ length: 12 }, (_, i) => ({
+          key: `far-${i}`,
+          name: `Far ${i}`,
+          spoken: `Far ${i}`,
+          audit: `Far ${i}`,
+          bar: { kind: 'track' as const, fraction: 0.2 },
+          art: { result: readyArt(`asset://tech/far-${i}.png`), resolvedName: `Far ${i}` },
+        })),
+      ],
+    }],
+  };
+  const standardLayout = layoutMeterModel(ctx, standardModel, 520, THEME);
+  const standardUrls = [...meterLane.visibleArt({
+    model: standardModel,
+    layout: standardLayout,
+    binding: { scrollTop: 0 } as never,
+    surface: { width: 520, height: 140, dpr: 1 } as never,
+  } as never)];
+  assert.ok(standardUrls.includes('asset://tech/a.png'), 'visible row art is reported');
+  assert.ok(standardUrls.includes('flag://GER'), 'visible row flag is reported');
+  assert.ok(!standardUrls.includes('asset://tech/idle.png'), 'idle slot art is not drawn and not reported');
+  assert.ok(!standardUrls.includes('asset://tech/far-11.png'), 'off-screen row art is excluded');
+
+  const cipherModel = {
+    layout: 'ciphers' as const,
+    hour: 100,
+    sections: [{
+      key: 'c',
+      title: 'Ciphers',
+      rows: [{
+        key: 'c0',
+        name: 'Pair',
+        spoken: 'Pair',
+        audit: 'Pair',
+        bar: { kind: 'track' as const, fraction: 0.5 },
+        pair: {
+          ownerName: 'GER',
+          ownerFlag: { tag: 'GER', result: readyArt('flag://owner') },
+          targetName: 'SOV',
+          targetFlag: { tag: 'SOV', result: readyArt('flag://target') },
+        },
+      }],
+    }],
+  };
+  const cipherLayout = layoutMeterModel(ctx, cipherModel, 520, THEME);
+  assert.deepEqual(
+    [...meterLane.visibleArt({
+      model: cipherModel,
+      layout: cipherLayout,
+      binding: { scrollTop: 0 } as never,
+      surface: { width: 520, height: 200, dpr: 1 } as never,
+    } as never)],
+    ['flag://owner', 'flag://target'],
+  );
+
+  const chipModel = {
+    layout: 'ciphers' as const,
+    hour: 100,
+    sections: [{
+      key: 'cl',
+      title: 'Decrypted',
+      chipLines: [{
+        key: 'cl0',
+        ownerName: 'United Kingdom',
+        ownerFlag: { tag: 'ENG', result: readyArt('flag://ENG') },
+        chips: [{
+          key: 'ch0',
+          targetName: 'Italy',
+          targetFlag: { tag: 'ITA', result: readyArt('flag://ITA') },
+          dateText: '1940',
+          spoken: 'Italy',
+          audit: 'Italy',
+        }],
+      }],
+    }],
+  };
+  const chipLayout = layoutMeterModel(ctx, chipModel, 520, THEME);
+  assert.deepEqual(
+    [...meterLane.visibleArt({
+      model: chipModel,
+      layout: chipLayout,
+      binding: { scrollTop: 0 } as never,
+      surface: { width: 520, height: 200, dpr: 1 } as never,
+    } as never)],
+    ['flag://ENG', 'flag://ITA'],
+  );
+
+  const wrappedModel = {
+    layout: 'ciphers' as const,
+    hour: 100,
+    sections: [{
+      key: 'cl',
+      title: 'Decrypted',
+      chipLines: [{
+        key: 'cl-big',
+        ownerName: 'United Kingdom',
+        ownerFlag: { tag: 'ENG', result: readyArt('flag://OWNER') },
+        chips: Array.from({ length: 1500 }, (_, i) => ({
+          key: `ch-${i}`,
+          targetName: `T${i}`,
+          targetFlag: { tag: `T${i}`, result: readyArt(`flag://T${i}`) },
+          dateText: '1940',
+          spoken: `T${i}`,
+          audit: `T${i}`,
+        })),
+      }],
+    }],
+  };
+  const wrappedLayout = layoutMeterModel(ctx, wrappedModel, 320, THEME);
+  const midScroll = Math.floor(wrappedLayout.contentHeight / 2);
+  const wrappedUrls = [...meterLane.visibleArt({
+    model: wrappedModel,
+    layout: wrappedLayout,
+    binding: { scrollTop: midScroll } as never,
+    surface: { width: 320, height: 120, dpr: 1 } as never,
+  } as never)];
+  assert.ok(!wrappedUrls.includes('flag://OWNER'), 'owner flag far above scrolled viewport is excluded');
+  assert.ok(wrappedUrls.length > 0 && wrappedUrls.length < 120, `wrapped 1,500-target chip line pins only chips inside the overscan band (got ${wrappedUrls.length})`);
+});

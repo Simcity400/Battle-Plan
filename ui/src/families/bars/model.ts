@@ -1,8 +1,8 @@
 import { artTooltipItem } from '../art/adapters.ts';
 import type { ActiveRegions } from '../../generated/dashboard';
 import { auditCell, auditRow, type FamilyAuditRow } from '../auditRow.ts';
-import { flagChoiceArt } from '../art/provider.ts';
-import type { ArtResult } from '../art/types.ts';
+import { flagArtHandle, flagChoiceArt } from '../art/provider.ts';
+import { artHandleKey, type ArtResult } from '../art/types.ts';
 import { canonicalAuditValue } from '../audit.ts';
 import type { BoundedReadView, FamilyProjection, MirrorModel, MirrorRow } from '../contract.ts';
 import type { FamilyActionPayload, FamilyTooltipPayload, TooltipListItem } from '../host/tooltips.ts';
@@ -28,6 +28,7 @@ export interface CountryRowPresentation {
   readonly labelLoading: boolean;
   readonly color?: string;
   readonly media: BarsRowMedia;
+  readonly flagKey?: string;
 }
 
 export function countryRowPresentation(
@@ -41,12 +42,14 @@ export function countryRowPresentation(
   const labelMissing = value.kind !== 'known' && !labelLoading;
   const color = identity.colour?.status === 'ready' ? identity.colour.value : fallbackColor;
   const art: ArtResult = flagChoiceArt(readView, identity.flagChoice);
+  const flagKey = identity.flagChoice?.status === 'ready' ? artHandleKey(flagArtHandle(identity.flagChoice.value, 'panel')) : undefined;
   return {
     label,
     labelMissing,
     labelLoading,
     color,
     media: { kind: 'flag', art, tag, dimmed },
+    ...(flagKey ? { flagKey } : {}),
   };
 }
 

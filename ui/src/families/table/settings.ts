@@ -82,6 +82,7 @@ export interface GlideOffset {
   from: number;
   to: number;
   started: number;
+  duration?: number;
 }
 
 export const TABLE_SETTINGS_KEY = 'tableSettings';
@@ -142,7 +143,9 @@ export function scrollBounds(layout: TableLayout, viewport: number, scrollLeft: 
 
 export function glideOffset(glide: GlideOffset | undefined, now: number, duration = SORT_GLIDE_MS): number {
   if (!glide) return 0;
-  const t = Math.max(0, Math.min(1, (now - glide.started) / duration));
+  const span = glide.duration ?? duration;
+  if (span <= 0) return glide.to;
+  const t = Math.max(0, Math.min(1, (now - glide.started) / span));
   const eased = t * t * (3 - 2 * t);
   return glide.from + (glide.to - glide.from) * eased;
 }

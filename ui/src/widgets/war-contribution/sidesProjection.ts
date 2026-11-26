@@ -1,4 +1,5 @@
 import { flagArtHandle, flagChoiceArt } from '../../families/art/provider.ts';
+import { artHandleKey } from '../../families/art/types.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
 import type { TableCell, TableColumnSpec, TableModel, TablePane, TablePaneTitle, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
@@ -85,13 +86,14 @@ interface Who {
 
 function who(readView: BoundedReadView, tag: string, hour: number): Who {
   const { value: name, name: shownName, loading, who: identity } = resolveName(readView, 'country', tag, { atHour: hour });
-  const art = identity.flagChoice?.status === 'ready' ? readView.art(flagArtHandle(identity.flagChoice.value, 'small')) : null;
-  const flagArt = art ?? flagChoiceArt(readView, identity.flagChoice, 'small');
+  const handle = identity.flagChoice?.status === 'ready' ? flagArtHandle(identity.flagChoice.value, 'small') : null;
+  const flagArt = handle ? readView.art(handle) : flagChoiceArt(readView, identity.flagChoice, 'small');
+  const artKey = handle ? artHandleKey(handle) : undefined;
   const flag = flagArt.status === 'ready' ? flagArt.url : undefined;
   const flagPending = flagArt.status === 'pending';
   const colour = identity.colour?.status === 'ready' ? identity.colour.value : undefined;
   return {
-    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(loading ? { loading: true } : {}), ...(colour ? { countryColor: colour } : {}) },
+    cell: { value: name, iconSlot: true, country: tag, art: flagArt, ...(artKey ? { artKey } : {}), ...(loading ? { loading: true } : {}), ...(colour ? { countryColor: colour } : {}) },
     title: { name, country: tag, ...(flag ? { flag } : {}), ...(flagPending ? { flagPending: true } : {}) },
     name: shownName,
   };

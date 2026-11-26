@@ -103,7 +103,12 @@ export function toArtSlotState<TBitmap extends CanvasImageSource>(
     case 'pending':
       return { kind: 'pending' };
     case 'ready': {
-      if (!state.bitmap) return { kind: 'pending' };
+      if (!state.bitmap) {
+        const hasOut = state.frame.outputWidth > 0 && state.frame.outputHeight > 0;
+        const width = hasOut ? state.frame.outputWidth : state.frame.frameWidth;
+        const height = hasOut ? state.frame.outputHeight : state.frame.frameHeight;
+        return width > 0 && height > 0 ? { kind: 'pending', width, height } : { kind: 'pending' };
+      }
       const { width, height } = bitmapDimensions(state.bitmap, state.frame.outputWidth, state.frame.outputHeight);
       return { kind: 'ready', bitmap: state.bitmap, width, height };
     }

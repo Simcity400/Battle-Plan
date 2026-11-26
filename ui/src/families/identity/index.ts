@@ -236,8 +236,26 @@ export type BranchRead = 'facts' | 'identities' | 'groups';
 
 export const BRANCH_READS: readonly BranchRead[] = ['facts', 'identities', 'groups'];
 
+const ALL_IDENTITY_KINDS: readonly IdentityKey['kind'][] = ['country', 'faction', 'leader', 'design', 'state', 'province', 'region'];
+const ENTITY_IDENTITY_KINDS: readonly EntityIdentityKey['kind'][] = ['leader', 'design', 'state', 'province', 'region'];
+const NO_FLAG_CHANGES: readonly string[] = [];
+let nextIndexEpoch = 1;
+
+function sameScopeBounds(previous: IdentityIndex, snapshot: IdentitySnapshot): boolean {
+  if (previous.epoch === 0 || snapshot.epoch === undefined || previous.epoch !== snapshot.epoch) return false;
+  const a = previous.scope;
+  const b = snapshot.scope;
+  if (a.sourceId !== b.sourceId || a.revision !== b.revision || a.branchId !== b.branchId || a.content !== b.content || a.language !== b.language) return false;
+  const bounds = snapshot.branchBounds;
+  const prevBounds = previous.bounds();
+  return bounds
+    ? prevBounds[0] === bounds[0] && prevBounds[1] === bounds[1]
+    : prevBounds[0] === -Infinity && prevBounds[1] === Infinity;
+}
+
 export class IdentityIndex {
   readonly scope: IdentityScope;
+  readonly epoch: number;
   private branchBounds: HourInterval;
   private facts?: RecordedValue<CountryFactsReply>;
   private factsFinal = false;
@@ -266,50 +284,159 @@ export class IdentityIndex {
   private entityFailures = new Map<string, readonly EntityFailure[]>();
   private entityUnknown = new Map<EntityIdentityKey['kind'], RecordingGap[]>();
   private drawnFlags = new Map<string, DrawnFlagEntry>();
+  private flagVersion = 0;
+  private flagVersions = new Map<string, number>();
+  private flagLog: [number, string][] = [];
+  private flagLogBase = 0;
+  private exportedFlagVersions?: Readonly<Record<string, number>>;
+  private exportedFlagVersionsAt = -1;
   private resolveChanges = 0;
   private countryChanges = 0;
+  private kindRevisions: Record<IdentityKey['kind'], number> = {
+    country: 0,
+    faction: 0,
+    leader: 0,
+    design: 0,
+    state: 0,
+    province: 0,
+    region: 0,
+  };
+  private trackedRevisions = true;
   private snapshot?: IdentitySnapshot;
   private readonly caches = new Map<IdentityKey['kind'], LookupCache>();
   private invalidHours?: Map<number, IdentityResult>;
 
-  constructor(scope: IdentityScope, branchBounds?: HourInterval) {
+  constructor(scope: IdentityScope, branchBounds?: HourInterval, epoch?: number) {
     this.scope = scope;
     this.branchBounds = branchBounds ?? [-Infinity, Infinity];
+    this.epoch = epoch ?? nextIndexEpoch++;
   }
 
-  static fromSnapshot(snapshot: IdentitySnapshot): IdentityIndex {
-    const index = new IdentityIndex(snapshot.scope, snapshot.branchBounds);
-    if (snapshot.facts) index.setFacts(snapshot.facts, snapshot.factsFinal ?? true);
-    if (snapshot.identities) index.setIdentities(snapshot.identities);
-    if (snapshot.groups) index.setGroups(snapshot.groups);
-    if (snapshot.styles) {
-      for (const [tag, entries] of Object.entries(snapshot.styles)) {
-        index.styleRuns.set(tag, [...entries].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
-      }
-    }
-    if (snapshot.entities) {
-      for (const [key, entries] of Object.entries(snapshot.entities)) {
-        index.entityRuns.set(key, [...entries].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
-      }
-    }
-    for (const [kind, spans] of Object.entries(snapshot.entityUnknown ?? {}) as [EntityIdentityKey['kind'], readonly RecordingGap[]][]) {
-      index.entityUnknown.set(kind, [...spans]);
-    }
-    if (snapshot.drawnFlags) {
-      for (const [key, entry] of Object.entries(snapshot.drawnFlags)) {
-        index.drawnFlags.set(key, entry);
-      }
-    }
+  static fromSnapshot(snapshot: IdentitySnapshot, previous?: IdentityIndex | null): IdentityIndex {
+    const index = new IdentityIndex(snapshot.scope, snapshot.branchBounds, snapshot.epoch ?? 0);
+    const revs = snapshot.revisions;
+    const canReuse = previous != null && revs !== undefined && previous.trackedRevisions && sameScopeBounds(previous, snapshot);
+    const reuseCountry = canReuse && previous.kindRevisions.country === revs.country;
+    const reuseFaction = canReuse && previous.kindRevisions.faction === revs.faction;
+    const reuseEntities = canReuse && ENTITY_IDENTITY_KINDS.every(kind => previous.kindRevisions[kind] === revs[kind]);
+    const reuseFlags = canReuse && snapshot.flagVersion !== undefined && previous.flagVersion === snapshot.flagVersion;
     const failures = snapshot.failures;
-    if (failures?.facts) index.factsFailure = keptFailure(failures.facts);
-    if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
-    if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
-    for (const [id, sent] of Object.entries(failures?.styles ?? {})) {
-      const sep = id.indexOf('\u0000');
-      index.keepStyleFailure(id.slice(sep + 1), Number(id.slice(0, sep)), keptFailure(sent));
+    if (reuseCountry) {
+      index.facts = previous.facts;
+      index.factsFinal = previous.factsFinal;
+      index.factsByTag = previous.factsByTag;
+      index.factsKnown = previous.factsKnown;
+      index.factsFailure = previous.factsFailure;
+      index.identities = previous.identities;
+      index.identitiesKnown = previous.identitiesKnown;
+      index.identitiesUnknown = previous.identitiesUnknown;
+      index.slotRuns = previous.slotRuns;
+      index.tagIdentities = previous.tagIdentities;
+      index.tagUnresolved = previous.tagUnresolved;
+      index.identitiesFailure = previous.identitiesFailure;
+      index.slotChanges = previous.slotChanges;
+      index.styleRuns = previous.styleRuns;
+      index.styleFailures = previous.styleFailures;
+      const countryCache = previous.caches.get('country');
+      if (countryCache) index.caches.set('country', countryCache);
+    } else {
+      if (snapshot.facts) index.setFacts(snapshot.facts, snapshot.factsFinal ?? true);
+      if (snapshot.identities) index.setIdentities(snapshot.identities);
+      if (snapshot.styles) {
+        for (const [tag, entries] of Object.entries(snapshot.styles)) {
+          index.styleRuns.set(tag, [...entries].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
+        }
+      }
+      if (failures?.facts) index.factsFailure = keptFailure(failures.facts);
+      if (failures?.identities) index.identitiesFailure = keptFailure(failures.identities);
+      for (const [id, sent] of Object.entries(failures?.styles ?? {})) {
+        const sep = id.indexOf('\u0000');
+        index.keepStyleFailure(id.slice(sep + 1), Number(id.slice(0, sep)), keptFailure(sent));
+      }
     }
-    for (const [key, sent] of Object.entries(failures?.entities ?? {})) {
-      index.entityFailures.set(key, sent.map(span => ({ from: span.from, to: span.to, failure: keptFailure(span) })));
+    if (reuseFaction) {
+      index.groups = previous.groups;
+      index.factionsById = previous.factionsById;
+      index.factionsUnobserved = previous.factionsUnobserved;
+      index.factionIncomplete = previous.factionIncomplete;
+      index.groupsFailure = previous.groupsFailure;
+      const factionCache = previous.caches.get('faction');
+      if (factionCache) index.caches.set('faction', factionCache);
+    } else {
+      if (snapshot.groups) index.setGroups(snapshot.groups);
+      if (failures?.groups) index.groupsFailure = keptFailure(failures.groups);
+    }
+    if (reuseEntities) {
+      index.entityRuns = previous.entityRuns;
+      index.entityUnknown = previous.entityUnknown;
+      index.entityFailures = previous.entityFailures;
+      for (const kind of ENTITY_IDENTITY_KINDS) {
+        const cache = previous.caches.get(kind);
+        if (cache) index.caches.set(kind, cache);
+      }
+    } else {
+      if (snapshot.entities) {
+        for (const [key, entries] of Object.entries(snapshot.entities)) {
+          index.entityRuns.set(key, [...entries].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour));
+        }
+      }
+      for (const [kind, spans] of Object.entries(snapshot.entityUnknown ?? {}) as [EntityIdentityKey['kind'], readonly RecordingGap[]][]) {
+        index.entityUnknown.set(kind, [...spans]);
+      }
+      for (const [key, sent] of Object.entries(failures?.entities ?? {})) {
+        index.entityFailures.set(key, sent.map(span => ({ from: span.from, to: span.to, failure: keptFailure(span) })));
+      }
+      if (canReuse) {
+        for (const kind of ENTITY_IDENTITY_KINDS) {
+          if (previous.kindRevisions[kind] === revs[kind]) {
+            const cache = previous.caches.get(kind);
+            if (cache) index.caches.set(kind, cache);
+          }
+        }
+      }
+    }
+    if (reuseFlags) {
+      index.drawnFlags = previous.drawnFlags;
+      index.flagVersion = previous.flagVersion;
+      index.flagVersions = previous.flagVersions;
+      index.flagLog = previous.flagLog;
+      index.flagLogBase = previous.flagLogBase;
+    } else {
+      if (snapshot.drawnFlags) {
+        for (const [key, entry] of Object.entries(snapshot.drawnFlags)) {
+          index.drawnFlags.set(key, entry);
+        }
+      }
+      index.flagVersion = snapshot.flagVersion ?? 0;
+      if (snapshot.flagVersions) {
+        if (canReuse && previous.flagVersion < index.flagVersion) {
+          const prevVersion = previous.flagVersion;
+          const added: [number, string][] = [];
+          for (const [key, version] of Object.entries(snapshot.flagVersions)) {
+            index.flagVersions.set(key, version);
+            if (version > prevVersion) added.push([version, key]);
+          }
+          index.flagLogBase = previous.flagLogBase;
+          index.flagLog = previous.flagLog.slice();
+          if (added.length > 1) added.sort((a, b) => a[0] - b[0]);
+          for (const [version, key] of added) index.recordFlagChange(key, version);
+        } else {
+          index.flagLogBase = index.flagVersion;
+          for (const [key, version] of Object.entries(snapshot.flagVersions)) {
+            index.flagVersions.set(key, version);
+          }
+        }
+      } else {
+        index.flagLogBase = index.flagVersion;
+      }
+    }
+    if (revs && snapshot.epoch !== undefined) {
+      index.trackedRevisions = true;
+      index.kindRevisions = { ...revs };
+      index.countryChanges = revs.country;
+      index.resolveChanges = ALL_IDENTITY_KINDS.reduce((sum, kind) => sum + revs[kind], 0);
+    } else {
+      index.trackedRevisions = false;
     }
     return index;
   }
@@ -336,9 +463,20 @@ export class IdentityIndex {
       ...(styleFailures ? { styles: styleFailures } : {}),
       ...(entityFailures ? { entities: entityFailures } : {}),
     };
+    if (this.flagVersions.size && this.exportedFlagVersionsAt !== this.flagVersion) {
+      const versions: Record<string, number> = {};
+      for (const [key, version] of this.flagVersions) versions[key] = version;
+      this.exportedFlagVersions = versions;
+      this.exportedFlagVersionsAt = this.flagVersion;
+    } else if (!this.flagVersions.size) {
+      this.exportedFlagVersions = undefined;
+      this.exportedFlagVersionsAt = this.flagVersion;
+    }
     return this.snapshot = {
       scope: this.scope,
       ...(Number.isFinite(this.branchBounds[0]) && Number.isFinite(this.branchBounds[1]) ? { branchBounds: this.branchBounds } : {}),
+      ...(this.trackedRevisions ? { epoch: this.epoch, revisions: { ...this.kindRevisions }, flagVersion: this.flagVersion } : {}),
+      ...(this.trackedRevisions && this.exportedFlagVersions ? { flagVersions: this.exportedFlagVersions } : {}),
       ...(this.facts ? { facts: this.facts, factsFinal: this.factsFinal } : {}),
       ...(this.identities ? { identities: this.identities } : {}),
       ...(this.groups ? { groups: this.groups } : {}),
@@ -348,6 +486,41 @@ export class IdentityIndex {
       ...(this.drawnFlags.size ? { drawnFlags } : {}),
       ...(Object.keys(failures).length ? { failures } : {}),
     };
+  }
+
+  sameScope(other: IdentityIndex): boolean {
+    return this.epoch !== 0
+      && this.epoch === other.epoch
+      && this.scope.sourceId === other.scope.sourceId
+      && this.scope.revision === other.scope.revision
+      && this.scope.branchId === other.scope.branchId
+      && this.scope.content === other.scope.content
+      && this.scope.language === other.scope.language
+      && this.branchBounds[0] === other.branchBounds[0]
+      && this.branchBounds[1] === other.branchBounds[1];
+  }
+
+  kindRevision(kind: IdentityKey['kind']): number | null {
+    return this.trackedRevisions ? this.kindRevisions[kind] : null;
+  }
+
+  flagRevision(): number | null {
+    return this.trackedRevisions ? this.flagVersion : null;
+  }
+
+  flagsChangedSince(sinceVersion: number): readonly string[] | null {
+    if (!this.trackedRevisions || sinceVersion < this.flagLogBase) return null;
+    if (this.flagVersion === sinceVersion) return NO_FLAG_CHANGES;
+    if (this.flagVersion > sinceVersion) {
+      const changed: string[] = [];
+      for (let i = this.flagLog.length - 1; i >= 0; i--) {
+        const entry = this.flagLog[i]!;
+        if (entry[0] <= sinceVersion) break;
+        changed.push(entry[1]);
+      }
+      return changed;
+    }
+    return null;
   }
 
   setBranchBounds(bounds: HourInterval): void {
@@ -361,7 +534,11 @@ export class IdentityIndex {
   private changed(...kinds: IdentityKey['kind'][]): void {
     this.resolveChanges++;
     this.snapshot = undefined;
-    for (const kind of kinds) this.caches.delete(kind);
+    const targets = kinds.length ? kinds : ALL_IDENTITY_KINDS;
+    for (const kind of targets) {
+      this.kindRevisions[kind]++;
+      this.caches.delete(kind);
+    }
   }
 
   resolveRevision(): number {
@@ -601,8 +778,38 @@ export class IdentityIndex {
     this.changed('state', 'province', 'leader', 'region', 'design');
   }
 
+  private recordFlagChange(key: string, version: number): void {
+    const last = this.flagLog.length ? this.flagLog[this.flagLog.length - 1] : undefined;
+    if (last && last[1] === key) {
+      this.flagLog[this.flagLog.length - 1] = [version, key];
+    } else {
+      this.flagLog.push([version, key]);
+    }
+    const limit = Math.max(64, Math.min(512, this.flagVersions.size * 2));
+    if (this.flagLog.length > limit) this.compactFlagLog();
+  }
+
+  private compactFlagLog(): void {
+    const deduped: [number, string][] = [];
+    for (let i = 0; i < this.flagLog.length; i++) {
+      const entry = this.flagLog[i]!;
+      if (this.flagVersions.get(entry[1]) === entry[0]) deduped.push(entry);
+    }
+    if (deduped.length > 512) {
+      const drop = deduped.length - 256;
+      this.flagLogBase = Math.max(this.flagLogBase, deduped[drop - 1]![0]);
+      this.flagLog = deduped.slice(drop);
+    } else {
+      this.flagLog = deduped;
+    }
+  }
+
   setDrawnFlag(size: CountryFlagSize, choice: RecordedFlagChoice, entry: DrawnFlagEntry): void {
-    this.drawnFlags.set(drawnFlagKey(size, choice), entry);
+    const key = drawnFlagKey(size, choice);
+    this.drawnFlags.set(key, entry);
+    this.flagVersion++;
+    this.flagVersions.set(key, this.flagVersion);
+    this.recordFlagChange(key, this.flagVersion);
     this.snapshot = undefined;
   }
 
@@ -615,7 +822,13 @@ export class IdentityIndex {
   }
 
   forgetDrawnFlag(size: CountryFlagSize, choice: RecordedFlagChoice): void {
-    if (this.drawnFlags.delete(drawnFlagKey(size, choice))) this.snapshot = undefined;
+    const key = drawnFlagKey(size, choice);
+    if (this.drawnFlags.delete(key)) {
+      this.flagVersion++;
+      this.flagVersions.set(key, this.flagVersion);
+      this.recordFlagChange(key, this.flagVersion);
+      this.snapshot = undefined;
+    }
   }
 
   slotHolderAt(slot: number, hour: number): { readonly tag: string; readonly countryId: number; readonly valid: HourInterval } | null {

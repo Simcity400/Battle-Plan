@@ -5,7 +5,7 @@ import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
 import { artUrlForHandle, laneArtDemand, needsArtResolution, type ArtResolutions } from './art/provider.ts';
-import { artHandleKey } from './art/types.ts';
+import { artHandleKey, flagArtKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
@@ -27,6 +27,7 @@ export interface SceneReaders {
   readonly identity?: IdentityProvider;
   readonly art?: ArtProvider;
   readonly index?: IdentityIndex | null;
+  readonly artCacheRevision?: number;
   readonly artResolutions?: ArtResolutions;
   readonly artRevision?: number;
 }
@@ -207,10 +208,17 @@ export function projectScene<TModel>(
 ): SceneProjection<TModel> {
   const demands = { identity: new Map<string, SceneIdentityDemand>(), urls: new Set<string>(), asks: new Map<string, ArtHandle>() };
   const whoReads: [EntityKind, string, DisplayedHour, IdentityResult][] = [];
+  const readKinds = new Set<EntityKind>();
   const artReads: [ArtHandle, ArtResult, string | null][] = [];
+  const flagArtReads = new Map<string, [ArtHandle, ArtResult, string | null]>();
+  const otherArtReads: [ArtHandle, ArtResult, string | null][] = [];
   let recording = true;
   const inner = readers.identity;
   const innerArt = readers.art;
+  let prevIndex = readers.index ?? null;
+  let prevFlagVersion = prevIndex?.flagRevision() ?? null;
+  let prevArtCacheRevision = readers.artCacheRevision;
+  let prevArtResolutions = readers.artResolutions;
   const recorded: SceneReaders = {
     ...readers,
     ...(inner
@@ -219,7 +227,10 @@ export function projectScene<TModel>(
             ...(inner.demandOwner ? { demandOwner: inner.demandOwner } : {}),
             resolve: (kind, key, atHour) => {
               const result = inner.resolve(kind, key, atHour);
-              if (recording) whoReads.push([kind, key, atHour, result]);
+              if (recording) {
+                readKinds.add(kind);
+                whoReads.push([kind, key, atHour, result]);
+              }
               return result;
             },
           } satisfies IdentityProvider,
@@ -233,7 +244,10 @@ export function projectScene<TModel>(
               const result = innerArt.resolve(handle);
               if (recording) {
                 const url = result.status === 'ready' ? result.url : artUrlForHandle(handle, readers.index, readers.artResolutions);
-                artReads.push([handle, result, url]);
+                const entry: [ArtHandle, ArtResult, string | null] = [handle, result, url];
+                artReads.push(entry);
+                if (handle.kind === 'flag') flagArtReads.set(flagArtKey(handle.size, handle.choice), entry);
+                else otherArtReads.push(entry);
               }
               return result;
             },
@@ -296,6 +310,11 @@ export function projectScene<TModel>(
   for (const [handle] of artReads) if (needsArtResolution(handle)) demands.asks.set(artHandleKey(handle), handle);
   let boundary = Infinity;
   for (const read of whoReads) if (read[2] === view.hour && read[3].nextChangeAt < boundary) boundary = read[3].nextChangeAt;
+  const checkArtEntry = (next: SceneReaders, [handle, was, url]: [ArtHandle, ArtResult, string | null]): boolean => {
+    const resolved = next.art!.resolve(handle);
+    const nextUrl = resolved.status === 'ready' ? resolved.url : artUrlForHandle(handle, next.index, next.artResolutions);
+    return sameArt(was, resolved) && url === nextUrl;
+  };
   return {
     model,
     view,
@@ -309,14 +328,54 @@ export function projectScene<TModel>(
       window: windowRead,
       unchanged: next => {
         if (!next.identity !== !inner || !next.art !== !innerArt) return false;
-        for (const [kind, key, atHour, was] of whoReads) {
-          if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
+        const baseIndex = prevIndex;
+        const sameScope = baseIndex !== null && next.index != null && baseIndex.sameScope(next.index);
+        if (whoReads.length > 0) {
+          let allUnchanged = sameScope;
+          if (sameScope) {
+            for (const kind of readKinds) {
+              const before = baseIndex.kindRevision(kind);
+              const after = next.index!.kindRevision(kind);
+              if (before === null || after === null || before !== after) {
+                allUnchanged = false;
+                break;
+              }
+            }
+          }
+          if (!allUnchanged) {
+            for (const [kind, key, atHour, was] of whoReads) {
+              if (sameScope) {
+                const before = baseIndex.kindRevision(kind);
+                const after = next.index!.kindRevision(kind);
+                if (before !== null && after !== null && before === after) continue;
+              }
+              if (!sameIdentity(was, next.identity!.resolve(kind, key, atHour))) return false;
+            }
+          }
         }
-        for (const [handle, was, url] of artReads) {
-          const resolved = next.art!.resolve(handle);
-          const nextUrl = resolved.status === 'ready' ? resolved.url : artUrlForHandle(handle, next.index, next.artResolutions);
-          if (!sameArt(was, resolved) || url !== nextUrl) return false;
+        const sameArtCache = prevArtCacheRevision !== undefined && prevArtCacheRevision === next.artCacheRevision;
+        if (flagArtReads.size > 0) {
+          const delta = sameScope && sameArtCache && prevFlagVersion !== null ? next.index!.flagsChangedSince(prevFlagVersion) : null;
+          if (delta !== null) {
+            for (let i = 0; i < delta.length; i++) {
+              const entry = flagArtReads.get(delta[i]!);
+              if (entry && !checkArtEntry(next, entry)) return false;
+            }
+          } else {
+            for (const entry of flagArtReads.values()) {
+              if (!checkArtEntry(next, entry)) return false;
+            }
+          }
         }
+        if (otherArtReads.length > 0 && !(sameArtCache && prevArtResolutions === next.artResolutions)) {
+          for (const entry of otherArtReads) {
+            if (!checkArtEntry(next, entry)) return false;
+          }
+        }
+        prevIndex = next.index ?? null;
+        prevFlagVersion = prevIndex?.flagRevision() ?? null;
+        prevArtCacheRevision = next.artCacheRevision;
+        prevArtResolutions = next.artResolutions;
         return true;
       },
     },
