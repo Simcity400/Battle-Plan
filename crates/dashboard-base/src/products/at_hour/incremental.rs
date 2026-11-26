@@ -126,9 +126,14 @@ impl Projection {
             return Ok(());
         }
         let cells = lane.view();
-        let continues = |step: &Step, change: &Changes| status == Status::Complete && self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
+        let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
+        if let (TableView::Truncated { missing, .. }, Status::Truncated { missing: still }, Some((step, change))) = (view.held(), status, step)
+            && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
+            && change.inserted().is_empty() && change.deleted().is_empty() && change.columns().iter().all(|written| written.is_empty()) {
+            return Ok(());
+        }
         let (held, change) = match (view.held(), step) {
-            (TableView::Complete(held), Some((step, change))) if continues(step, change) => (held, change),
+            (TableView::Complete(held), Some((step, change))) if status == Status::Complete && continues(step, change) => (held, change),
             _ => return self.whole(read, &cells, status, lane.read_rows(), sampled, sample, view, edits, count),
         };
         let mut dirty: BTreeMap<u128, u64> = BTreeMap::new();
@@ -218,6 +223,7 @@ fn settle(table: TableId, made: io::Result<TableView>, sampled: Option<i32>, sam
         edits.tables.insert(table, keys);
         return Ok(());
     }
+    if view.held() == &made { return Ok(()); }
     *view = match made {
         TableView::Complete(rows) => SharedView::from(TableView::Complete(rows)).with_sampled_at(sampled),
         made => made.into(),
@@ -498,8 +504,10 @@ where P::Context: Sync, P::Params: Sync {
                 }
             }
             let mut own = OwnRefusals::default();
+            #[cfg(any(test, feature = "test-support"))]
+            crate::test_fixtures::product_called();
             let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)))?;
-            let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_through(&state.frame, &params, &at));
+            let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_reply_through(&state.frame, &params, &at, &reply));
             finish(reply.warnings_mut(), &own, &warnings);
             let live = cells.finish();
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);

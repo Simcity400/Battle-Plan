@@ -151,6 +151,10 @@ pub trait AtHour: 'static {
         i32::MAX
     }
 
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply) -> i32 {
+        Self::valid_through(frame, params, at)
+    }
+
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool {
         matches!(Self::CLOCK, Clock::EveryHour(_))
     }
@@ -381,12 +385,19 @@ fn load<P: AtHour>(source: &Source, lease_id: &str, mut request: Value, load: &L
 
 pub fn exact_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String>
 where P::Params: Sync, P::Context: Sync {
-    let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
-    let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
     let mut request = asked.clone();
     if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
-    let params = dashboard_query::named::named::<P::Params>(&request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
+    let params = dashboard_query::named::named_fields::<P::Params>(&request).map_err(|error| {
+        let message = error.to_string();
+        let field = message.strip_prefix("missing field `").and_then(|field| field.strip_suffix('`'));
+        match field {
+            Some(field) => format!("Invalid {} panel: missing field {field}", P::KEY),
+            None => format!("Invalid {} panel: {message}", P::KEY),
+        }
+    })?;
     P::validate(&params)?;
+    let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
+    let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
     let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
     let params = Arc::new(params);
     let warnings = content_warnings::<P>(source, load);
@@ -408,6 +419,14 @@ pub fn interval_panel(
     executable: Option<engine_executable::executable_tables::Tables>,
     read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
 ) -> Box<dyn Panel> {
+    dated_interval(executable, read, |_, _| {})
+}
+
+fn dated_interval(
+    executable: Option<engine_executable::executable_tables::Tables>,
+    read: impl Fn(i32, &AtomicBool) -> io::Result<(Value, i32, u64)> + Send + Sync + 'static,
+    date: fn(&mut Arc<PanelData>, i32),
+) -> Box<dyn Panel> {
     use dashboard_follow::panel::{ExactReader, ProductRead, ProductReader};
     let read = Arc::new(move |hour, cancelled: &AtomicBool| {
         engine_executable::executable_tables::scope(executable, || read(hour, cancelled))
@@ -415,16 +434,17 @@ pub fn interval_panel(
     });
     let cold_read = Arc::clone(&read);
     let cold: ExactReader = Arc::new(move |hour, cancelled| cold_read(hour, cancelled).map(|(data, _, _)| data));
-    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>, u64)>);
+    let held = Mutex::new(None::<(std::ops::RangeInclusive<i32>, Arc<PanelData>)>);
     let advance: ProductReader = Arc::new(move |hour, seed, cancelled, _| {
         let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !seed && let Some((interval, value, rows)) = &*held && interval.contains(&hour) {
-            return ProductRead { value: value.clone(), rows: *rows, fresh: false, pending: false, live: None, lanes: Vec::new() };
+        if !seed && let Some((interval, value)) = &mut *held && interval.contains(&hour) {
+            date(value, hour);
+            return ProductRead { value: value.clone(), rows: 0, fresh: false, pending: false, live: None, lanes: Vec::new() };
         }
         let (value, rows) = match read(hour, cancelled) {
             Ok((reply, through, rows)) => {
                 let value = Arc::new(Ok(reply));
-                *held = Some((hour..=through, value.clone(), rows));
+                *held = Some((hour..=through, value.clone()));
                 (value, rows)
             }
             Err(error) => {
@@ -485,6 +505,15 @@ pub fn product_interval_panel<P: super::Product>(
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
     valid_through: fn(&P::Reply) -> i32,
 ) -> Result<Box<dyn Panel>, String> {
+    dated_product::<P>(source, load, asked, date, move |_, reply| valid_through(reply), |_, _| {})
+}
+
+pub fn dated_product<P: super::Product>(
+    source: &Arc<Source>, load: &LoadContext, asked: &Value,
+    date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
+    valid_through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
+    date_held: fn(&mut Arc<PanelData>, i32),
+) -> Result<Box<dyn Panel>, String> {
     let mut params = asked.clone();
     params.as_object_mut().ok_or("Expected panel parameters")?.remove("panel");
     let source = Arc::clone(source);
@@ -494,18 +523,20 @@ pub fn product_interval_panel<P: super::Product>(
         source.append_changed_warnings(&mut warnings, load.content.as_ref());
     }
     source.append_presentation_warnings(&mut warnings, load.content.as_ref());
-    Ok(interval_panel(source.tables(), move |hour, cancelled| {
+    Ok(dated_interval(source.tables(), move |hour, cancelled| {
         let mut request = params.clone();
         date(&mut request, hour);
         let params = dashboard_query::named::named::<P::Params>(&request)?;
         P::validate(&params).map_err(dashboard_core::invalid)?;
         let mut own = OwnRefusals::default();
+        #[cfg(any(test, feature = "test-support"))]
+        crate::test_fixtures::product_called();
         let (reply, rows) = counted(|| own_refusals(&mut own, || P::load(&source, &params, &load, cancelled)));
         let mut reply = reply?;
         finish(reply.warnings_mut(), &own, &warnings);
-        let through = valid_through(&reply);
+        let through = valid_through(&params, &reply);
         Ok((serde_json::to_value(reply)?, through, rows))
-    }))
+    }, date_held))
 }
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {

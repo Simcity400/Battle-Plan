@@ -23,6 +23,8 @@ use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
+mod playback;
+pub use playback::panel;
 
 pub const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 const BUCKET: i32 = replay_columnar::summary::BASE_HOURS as i32;

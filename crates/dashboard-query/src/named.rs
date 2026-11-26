@@ -8,6 +8,11 @@ pub fn named<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, Error> {
     T::deserialize(Named(value))
 }
 
+pub fn named_fields<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, Error> {
+    let Some(fields) = value.as_object() else { return named(value) };
+    T::deserialize(de::value::MapAccessDeserializer::new(Entries { fields: fields.iter(), value: None, name_errors: true }))
+}
+
 fn kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -44,7 +49,7 @@ impl<'de> de::Deserializer<'de> for Named<'de> {
                     left => Err(Error::invalid_length(items.len() - left, &"fewer elements")),
                 }
             }
-            Value::Object(fields) => visitor.visit_map(Entries { fields: fields.iter(), value: None }),
+            Value::Object(fields) => visitor.visit_map(Entries { fields: fields.iter(), value: None, name_errors: false }),
         }
     }
 
@@ -102,7 +107,8 @@ impl<'de> SeqAccess<'de> for Items<'de> {
 
 struct Entries<'a> {
     fields: serde_json::map::Iter<'a>,
-    value: Option<&'a Value>,
+    value: Option<(&'a str, &'a Value)>,
+    name_errors: bool,
 }
 
 impl<'de> MapAccess<'de> for Entries<'de> {
@@ -112,12 +118,13 @@ impl<'de> MapAccess<'de> for Entries<'de> {
         let Some((key, value)) = self.fields.next() else {
             return Ok(None);
         };
-        self.value = Some(value);
+        self.value = Some((key, value));
         seed.deserialize(Key(key)).map(Some)
     }
 
     fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Error> {
-        seed.deserialize(Named(self.value.take().ok_or_else(|| Error::custom("a value without its key"))?))
+        let (key, value) = self.value.take().ok_or_else(|| Error::custom("a value without its key"))?;
+        seed.deserialize(Named(value)).map_err(|error| if self.name_errors { Error::custom(format!("{key}: {error}")) } else { error })
     }
 }
 

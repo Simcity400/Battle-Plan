@@ -584,6 +584,7 @@ pub struct ResolvedCountryLook {
 }
 
 struct IndexedRunLooks {
+    unknown_dates: std::sync::OnceLock<Vec<i32>>,
     run: Arc<RunLooks>,
     by_tag: HashMap<Arc<str>, Vec<(i32, i32, u32)>>,
 }
@@ -599,7 +600,7 @@ impl IndexedRunLooks {
         for spans in by_tag.values_mut() {
             spans.sort_unstable_by_key(|&(first, last, _)| (first, last));
         }
-        Self { run, by_tag }
+        Self { run, by_tag, unknown_dates: Default::default() }
     }
 
     fn next_change(&self, hour: i32) -> i32 {
@@ -610,6 +611,24 @@ impl IndexedRunLooks {
             .filter(|&boundary| boundary > hour)
             .min()
             .unwrap_or(i32::MAX)
+    }
+
+    fn next_for(&self, tag: &str, hour: i32) -> Option<i32> {
+        let spans = self.by_tag.get(tag).map_or(&[][..], Vec::as_slice);
+        let at = spans.partition_point(|&(first, _, _)| first <= hour);
+        let next = spans.get(at).map(|span| span.0);
+        if let Some((_, last, look)) = at.checked_sub(1).map(|previous| spans[previous])
+            && hour <= last && self.run.looks.contains_key(&look) {
+            return [last.checked_add(1), next].into_iter().flatten().min();
+        }
+        let unknown = self.unknown_dates.get_or_init(|| {
+            let mut dates: Vec<_> = self.run.unknown.iter().flat_map(|&(first, last)| [first, last.saturating_add(1)]).collect();
+            dates.sort_unstable();
+            dates.dedup();
+            dates
+        });
+        let boundary = unknown.get(unknown.partition_point(|&at| at <= hour)).copied();
+        [next, boundary].into_iter().flatten().min()
     }
 
     fn resolve(&self, tag: &str, hour: i32, localisation: Option<&Localisation>) -> ResolvedCountryLook {
@@ -687,6 +706,11 @@ impl BranchLooks {
         self.timeline.at(hour).and_then(|stretch| self.runs.get(&stretch.run)).map_or(i32::MAX, |run| run.next_change(hour))
     }
 
+    pub fn next_for(&self, tag: &str, hour: i32) -> Option<i32> {
+        let stretch = self.timeline.at(hour)?;
+        self.runs.get(&stretch.run)?.next_for(tag, hour)
+    }
+
     pub fn at(&self, tag: &str, hour: i32) -> ResolvedCountryLook {
         let Some(stretch) = self.timeline.at(hour) else {
             let reason = self.timeline.reason(hour);
@@ -714,16 +738,17 @@ mod tests {
         let red = Look { colour: Some([200, 40, 40]), ..Look::default() };
         let blue = Look { colour: Some([40, 80, 220]), ..Look::default() };
         let run = Arc::new(RunLooks {
-            spans: vec![(1, 10, 0, 71), (1, 20, 72, 200)],
-            unknown: vec![],
+            spans: vec![(1, 10, 0, 71), (1, 20, 72, 200), (2, 10, 12, 21)],
+            unknown: vec![(212, 216)],
             looks: HashMap::from([(10, red), (20, blue)]),
             raw_looks: HashMap::new(),
-            tags: HashMap::from([(1, Arc::from("GER"))]),
+            tags: HashMap::from([(1, Arc::from("GER")), (2, Arc::from("USA"))]),
         });
         let indexed = IndexedRunLooks::new(run);
         assert_eq!(indexed.resolve("GER", 0, None).color, Some([200, 40, 40]));
         assert_eq!(indexed.resolve("GER", 72, None).color, Some([40, 80, 220]));
-        assert_eq!([indexed.next_change(0), indexed.next_change(72), indexed.next_change(200), indexed.next_change(201)], [72, 201, 201, i32::MAX], "a name or colour holds until the next look starts or ends");
+        assert_eq!([indexed.next_change(0), indexed.next_change(72), indexed.next_change(200), indexed.next_change(201)], [12, 201, 201, 212], "a name or colour holds until the next look starts or ends");
+        assert_eq!([indexed.next_for("GER", 0), indexed.next_for("USA", 0), indexed.next_for("USA", 12), indexed.next_for("GER", 210)], [Some(72), Some(12), Some(22), Some(212)]);
         let missing = indexed.resolve("GER", 250, None);
         assert_eq!(missing.color, None);
         assert_eq!(missing.color_missing.as_deref(), Some(NOT_A_COUNTRY));

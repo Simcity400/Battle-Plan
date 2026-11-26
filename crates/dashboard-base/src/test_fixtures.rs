@@ -194,12 +194,32 @@ pub fn recorded_mod_defines(
     (machine, source, load)
 }
 
+pub fn materialized_frame(panel: &mut dyn dashboard_follow::panel::Panel, replay: &replay::campaign::Replay, branch: u64, hour: i32) -> dashboard_follow::panel::PanelData {
+    use dashboard_follow::live::GroupState;
+    let replay::campaign::SeekResult::Frame(frame) = replay.seek_selected(branch, hour, Some(panel.tables())).unwrap() else { panic!("missing fixture frame at {hour}") };
+    let mut data = panel.data(&frame)?;
+    if let Some(live) = panel.live() {
+        let states = live.values(&frame).into_iter().map(GroupState::Values).collect::<Vec<_>>();
+        data["live"] = live.json(&states);
+    }
+    Ok(data)
+}
+
 pub struct Played {
     pub hour: i32,
     pub rows: u64,
     pub visited: u64,
+    pub product_calls: u64,
     pub pending: bool,
     pub value: std::sync::Arc<dashboard_follow::panel::PanelData>,
+}
+
+thread_local! {
+    static PRODUCT_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn product_called() {
+    PRODUCT_CALLS.set(PRODUCT_CALLS.get() + 1);
 }
 
 pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel::AtHour, first: i32, to: i32) -> Vec<Played> {
@@ -211,8 +231,9 @@ pub fn played(replay: &replay::campaign::Replay, exact: &dashboard_follow::panel
     let (send, played) = std::sync::mpsc::channel();
     let advance = exact.advance.clone();
     let hook: playhead::Hook = Box::new(move |step, lanes| {
+        PRODUCT_CALLS.set(0);
         let (read, visited) = crate::products::at_hour::counted(|| advance(step.last(), step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None })));
-        let _ = send.send(Played { hour: step.last(), rows: read.rows, visited, pending: read.pending, value: read.value });
+        let _ = send.send(Played { hour: step.last(), rows: read.rows, visited, product_calls: PRODUCT_CALLS.get(), pending: read.pending, value: read.value });
     });
     let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: 1.0, rate: 1.0, ..playhead::Settings::default() };
     let playhead = playhead::Playhead::new(Arc::clone(&pages), playhead::Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap();

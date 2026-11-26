@@ -412,15 +412,16 @@ fn variant_reads(held: &DecodedFrame) -> Vec<Read> {
     if variants.is_empty() {
         return Vec::new();
     }
-    vec![Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from))]
+    vec![
+        Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)),
+        Read::all(TableId::Countries),
+        Read::all(TableId::CountryAppearance),
+    ]
 }
 
 fn token_reads(held: &DecodedFrame) -> Vec<Read> {
     let Ok(definitions) = held.complete::<tables::VariantDefinitions>() else { return Vec::new() };
     let tokens: BTreeSet<u32> = definitions.iter().map(|row| row.equipment_token).collect();
-    if tokens.is_empty() {
-        return Vec::new();
-    }
     vec![Read::these(TableId::LexicalTokens, tokens.into_iter().map(u128::from))]
 }
 
@@ -449,12 +450,39 @@ impl AtHour for AirAcesAt {
 
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         match step {
-            0 => [TableId::AirAces, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].into_iter().map(Read::all).collect(),
+            0 => [TableId::AirAces, TableId::CountryLinks].into_iter().map(Read::all).collect(),
             1 => wing_reads(held),
             2 => variant_reads(held),
             3 => token_reads(held),
             _ => Vec::new(),
         }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply) -> i32 {
+        if reply.missing.is_some() { return frame.hour; }
+        if !reply.aces.iter().any(|ace| ace.wing.is_some()) { return i32::MAX; }
+        let Ok(wings) = frame.complete::<tables::AirWings>() else { return frame.hour };
+        if wings.iter().any(|wing| matches!(wing.name, replay_data::rows::Recorded::NotRecorded)) { return frame.hour; }
+        let names_missing = [TableId::Countries, TableId::CountryLinks, TableId::VariantDefinitions, TableId::LexicalTokens]
+            .iter().any(|table| !matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::Complete(_)));
+        if names_missing && reply.aces.iter().filter_map(|ace| ace.aircraft.as_deref()).flatten().any(|aircraft| aircraft.missing.is_some()) {
+            return frame.hour;
+        }
+        i32::MAX
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], context: &Context) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::AirAces if context.cat.is_err() => &["country", "callsign", "assigned_wing", "alive", "death"],
+            TableId::AirAces => &["country", "name", "surname", "callsign", "assigned_wing", "alive", "death", "presentation"],
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryAppearance => &["name_tag"],
+            TableId::AirWings => &["name"],
+            TableId::WingEquipment => &["variant"],
+            TableId::VariantDefinitions => &["equipment_token", "display_name", "variant_name", "origin_link", "creator_link", "append_variant_name"],
+            _ => return None,
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

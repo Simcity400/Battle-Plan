@@ -1,16 +1,3 @@
-use crate::products::leaders::career::LeaderHour;
-use dashboard_base::products::{PanelKind, PanelReader, at_hour::exact_panel};
-
-const LEADER_HOUR: PanelReader = PanelReader {
-    kind: PanelKind::ExactHourlyWhen(&["reference", "all", "countries"]),
-    open: |source, load, asked| {
-        if asked.get("branchId").is_none() {
-            return Err("Invalid unit-leader-hour panel: missing field branchId".into());
-        }
-        exact_panel::<LeaderHour>(source, load, asked)
-    },
-};
-
 dashboard_base::register_products! {
     DOCTRINES_DOCTRINES => crate::products::doctrines::Doctrines,
     ARMY_ARMYSIZE => crate::products::army::ArmySize,
@@ -32,7 +19,7 @@ dashboard_base::register_products! {
     DOCTRINE_MASTERY_DOCTRINEMASTERY => exact<crate::products::doctrine_mastery::DoctrineMastery>,
     DOCTRINE_MASTERY_REWARDS_DOCTRINEREWARDS => whole_frame<crate::products::doctrine_mastery::rewards::DoctrineRewards>,
     LEADERS_UNITLEADERS => whole_frame<crate::products::leaders::UnitLeaders>,
-    LEADERS_CAREER_LEADERHOUR => custom<LeaderHour>(LEADER_HOUR),
+    LEADERS_CAREER_LEADERHOUR => exact<crate::products::leaders::career::LeaderHour>(&["reference", "all", "countries"]),
     DIVISIONS_TEMPLATES_DIVISIONTEMPLATES => whole_frame<crate::products::divisions::templates::DivisionTemplates>,
     DIVISIONS_CAREERS_DECORATEDDIVISIONS => whole_frame<crate::products::divisions::careers::DecoratedDivisions>,
     DIVISIONS_EQUIPMENT_DIVISIONEQUIPMENT => whole_frame<crate::products::divisions::equipment::DivisionEquipment>,

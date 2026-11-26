@@ -306,6 +306,17 @@ pub(crate) fn theatres(
 
 pub(crate) const THEATRE_TABLES: [TableId; 4] = [TableId::AirTheatres, TableId::AirTheatreGroups, TableId::AirTheatreMembers, TableId::CountryLinks];
 
+pub(crate) fn theatre_columns(table: TableId) -> Option<Vec<usize>> {
+    let fields: &[&str] = match table {
+        TableId::CountryLinks => &["canonical_slot"],
+        TableId::AirTheatreGroups => &["theatre"],
+        TableId::AirTheatreMembers => &[],
+        TableId::AirWings => &["mission_region"],
+        _ => return None,
+    };
+    Some(dashboard_base::products::at_hour::field_columns(table, fields))
+}
+
 pub(crate) fn theatre_wings(held: &DecodedFrame, slot: u32) -> Option<Read> {
     let (Ok(theatres), Ok(groups), Ok(members), Ok(links)) = (
         held.complete::<tables::AirTheatres>(),
@@ -378,6 +389,14 @@ impl AtHour for AirMissionsAt {
             Read { table: TableId::AirMissionCounts, keys: Keys::Range(low, low | u128::from(u32::MAX)) },
             Read { table: TableId::AirRegionalMissions, keys: Keys::These(Vec::new()) },
         ]
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>) -> i32 {
+        if frame.complete::<tables::AirMissionCounts>().is_ok() { i32::MAX } else { frame.hour }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::AirRegionalMissions).then(Vec::new)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

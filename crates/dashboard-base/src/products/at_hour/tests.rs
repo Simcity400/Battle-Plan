@@ -340,6 +340,18 @@ impl AtHour for Static {
 }
 
 #[test]
+fn exact_panels_name_the_invalid_field_before_selecting_the_branch() {
+    let source = Arc::new(recording().0);
+    for (params, reason) in [
+        (json!({"country": "GER"}), "missing field branchId"),
+        (json!({"branchId": false, "country": "GER"}), "branchId: invalid type: boolean `false`, expected a string"),
+        (json!({"branchId": "unreadable"}), "missing field country"),
+    ] {
+        assert_eq!(exact_panel::<Power>(&source, &load(), &params).err().unwrap(), format!("Invalid test-power panel: {reason}"));
+    }
+}
+
+#[test]
 fn dated_read_in_a_gap_refuses_the_hour_between_two_recorded_stretches() {
     let segments = [(1, FIRST..=FIRST + 5), (2, FIRST + 10..=LAST)].map(|(branch, hours)| {
         records(branch, hours.map(|hour| DecodedFrame { branch, ..frame(hour) }).collect())
