@@ -873,6 +873,10 @@ export class FamilySourceBroker {
     return this.inflight.size;
   }
 
+  get activeSlotCount(): number {
+    return this.slots.size;
+  }
+
   request<T>(
     key: string,
     load: (signal: AbortSignal) => Promise<T>,
@@ -936,10 +940,14 @@ export class FamilySourceBroker {
     void promise.then(
       value => {
         if (cancelled || this.slots.get(slotId) !== slot) return;
+        this.slots.delete(slotId);
+        slot.cleanup();
         onResult(value);
       },
       error => {
         if (cancelled || this.slots.get(slotId) !== slot) return;
+        this.slots.delete(slotId);
+        slot.cleanup();
         onError?.(error);
       },
     );

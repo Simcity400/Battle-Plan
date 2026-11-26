@@ -408,11 +408,11 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
     ...(held.artResolutions ? { artResolutions: held.artResolutions } : {}),
   });
 
-  function create(surface: Surface, widget: number): Held<TBinding, TModel, TLayout> | null {
+  function create(surface: Surface, widget: number): Held<TBinding, TModel, TLayout> {
     const [width, height] = backing(surface);
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
+    if (!ctx) throw new Error('Could not acquire 2D canvas context');
     const art = new LaneArtCache({
       ...(options?.artMaxEntries !== undefined ? { maxEntries: options.artMaxEntries } : {}),
       pool: artPool,
@@ -490,9 +490,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
 
       let held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
       if (!held) {
-        const made = create(surface, input.widget);
-        if (!made) return waiting;
-        held = made;
+        held = create(surface, input.widget);
         state.set(stateKey, held);
       }
       const keep = held;
@@ -528,9 +526,12 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const current = painting(input, binding);
       const continuity = follows(keep.painting, current);
       keep.painting = current;
-      if (continuity === 'cut' && keep.before !== null) {
+      if (continuity === 'cut') {
+        const hadEphemeral = keep.motion || Number.isFinite(keep.expiry);
         keep.before = null;
-        keep.continuity++;
+        keep.motion = false;
+        keep.expiry = Infinity;
+        if (hadEphemeral) keep.continuity++;
       }
       const readers = readersOf(keep);
       let reuse = sameInputs(keep, binding, input, hour);
@@ -748,6 +749,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         surfaces: [{ source: keep.canvas, content: keep.content }],
         fields,
         motion: keep.motion,
+        ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
         hit: point => family.hit(frame, point),
       };
     },

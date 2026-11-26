@@ -5,6 +5,7 @@ import { inProcess } from '../dashboard/follow/inProcess.fixture.ts';
 import type { PageSurface } from '../dashboard/follow/page.ts';
 import type { LaneView } from '../draw/lane';
 import { createBoundedReadView, FutureDataError } from './boundedView.ts';
+import { FamilySourceBroker } from './broker.ts';
 import type { CompiledFollowSubscription, SourceEntry, SourcePlan, SourceTimeShape } from './plan.ts';
 import {
   askUnits,
@@ -911,4 +912,29 @@ test('a pinned unit uses its own branch and coverage gate, so a point at +24 on 
   });
   assert.ok(unit(zero, 'plain').spec, 'the primary is recorded at 90 and asked');
   assert.equal(unit(zero, 'aligned').spec, null, 'R5-S3: at zero shift the secondary is gated on its own track, which did not record 90');
+});
+
+test('FamilySourceBroker.runSlot releases settled slots on both resolve and reject', async () => {
+  const broker = new FamilySourceBroker();
+  let gotValue = 0;
+  let gotError: unknown = null;
+  broker.runSlot(
+    'ok-slot',
+    'k1',
+    () => Promise.resolve(42),
+    value => { gotValue = value; },
+  );
+  broker.runSlot(
+    'err-slot',
+    'k2',
+    () => Promise.reject(new Error('boom')),
+    () => {},
+    error => { gotError = error; },
+  );
+  assert.equal(broker.activeSlotCount, 2);
+  await settled();
+  assert.equal(gotValue, 42);
+  assert.ok(gotError instanceof Error && gotError.message === 'boom');
+  assert.equal(broker.activeSlotCount, 0, 'settled slots are removed immediately after resolving or rejecting');
+  assert.equal(broker.activeRequestCount, 0);
 });
