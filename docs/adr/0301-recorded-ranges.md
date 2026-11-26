@@ -1,9 +1,7 @@
 # 0301. Preserve known spans and rank boundaries across dashboard reads
 
-Treat a daily row as observed only at its supplying read and carry it through consecutive hours of the same identity. A gap, incomplete table or identity change breaks the carry. Within known coverage a missing key has no row, while outside coverage the value is unknown. An observed key valued at zero remains explicit. An unknown term makes a total unknown, and exact intermediate sums use a wide integer so only a final overflow is recorded as unavailable. A read may advance unchanged endpoints without visiting every key. Materialize endpoints before publication, direct access or checkpoint. Restored consumers establish their baseline before collecting interval changes, and equal extensions do not create new keys.
-
 Rank at each change boundary rather than rereading each hour. The sweep treats ending intervals before starting ones and keeps the endpoint after the maximum hour in a wider type. Share a boundary plan across measures while keeping their values and rank state separate. Ordinary top membership omits unknown values. Exact table ranking places active unknowns after known values and omits countries with no identity interval. Use exact comparison in both directions and break ties by recorded UTF-8 tag order. A callback that needs every supplying boundary uses rank positions, while coalesced rank runs merge unchanged neighbors and require independent bounds and stable keys. Shared clipping keeps the original supplying interval and lets the caller apply the recorded gaps and budget.
 
 Keep retained runtime maps in their lookup form, and order hash-backed entries during serialization without copying their values. This gives serialized output a stable order while leaving the read path unchanged.
 
-[Daily read runs](../../crates/dashboard-base/src/read_runs.rs) · [Rank sweep](../../crates/dashboard-base/src/ranking.rs) · [Stable map serialization](../../crates/dashboard-core/src/map_pairs.rs)
+[Rank sweep](../../crates/dashboard-base/src/ranking.rs) · [Stable map serialization](../../crates/dashboard-core/src/map_pairs.rs)

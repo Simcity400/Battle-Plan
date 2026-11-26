@@ -12,7 +12,6 @@ use std::{
 pub const HELD_AT_BRANCH_START: &str = "The war goal was already held when this branch began";
 pub const FIRST_SEEN_AFTER_GAP: &str = "The war goal was first seen after an unrecorded stretch, so its grant date was not recorded";
 pub const GRANT_NOT_READ: &str = "The war goal's grant was not read";
-pub const GRANT_SOURCE: &str = "War goal grant source was not recorded";
 pub const REMOVAL_REASON: &str = "War goal removal reason was not recorded";
 
 #[derive(Clone, Debug, PartialEq, Eq)]

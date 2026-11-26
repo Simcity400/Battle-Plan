@@ -14,15 +14,6 @@ use replay_data::rows::{Field, List, Opaque, RowCodec, RowsVisit, TableRows};
 use replay_frame::frame::{DecodedFrame, HourFrame, OperandStatus, Rowset, TableView, ViewIdentity, kept, view_reads};
 use std::sync::LazyLock;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
-pub struct ReuseCounts {
-    pub evaluated: u64,
-    pub reused: u64,
-    pub checked: u64,
-    pub mismatched: u64,
-}
-
 pub fn check_reuse() -> bool {
     #[cfg(any(test, feature = "test-support"))]
     {
