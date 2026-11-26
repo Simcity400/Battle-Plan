@@ -527,9 +527,37 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         .into_iter()
         .collect();
     let mut mapped: HashMap<u32, Vec<(i32, i32, Option<u32>)>> = HashMap::new();
+    let mut appearance: HashMap<u32, Vec<i32>> = HashMap::new();
+    let mut unread: Option<String> = None;
     if !wanted.is_empty() {
         let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
-        let history = cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], Keys::These(&wanted), span.first, span.last))?;
+        let looks = [dashboard_declare::field(TableId::CountryAppearance, "name_tag")?, dashboard_declare::field(TableId::CountryAppearance, "original_tag")?];
+        let links_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], Keys::These(&wanted), span.first, span.last)) {
+            Ok(history) => Some(history),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                unread = Some(format!("Country links were not read for design names: {error}"));
+                None
+            }
+        };
+        let looks_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::These(&wanted), span.first, span.last)) {
+            Ok(history) => Some(history),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                unread.get_or_insert_with(|| format!("Country appearance was not read for design names: {error}"));
+                None
+            }
+        };
+        if let Some(history) = &looks_history {
+            for (key, steps) in &history.keys {
+                appearance.entry(*key as u32).or_default().extend(steps.iter().map(|step| step.hour));
+            }
+            let edges: Vec<i32> = history.statuses.iter().map(|status| status.first).collect();
+            for &key in &wanted {
+                appearance.entry(key as u32).or_default().extend(edges.iter().copied());
+            }
+        }
+        let history = links_history.unwrap_or_default();
         for (key, steps) in &history.keys {
             let pieces = steps
                 .iter()
@@ -546,12 +574,24 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
             mapped.insert(*key as u32, pieces);
         }
     }
+    if let Some(why) = &unread {
+        notes.insert(why.clone());
+    }
     for held in entries.values_mut() {
+        if unread.is_some() {
+            for entry in held.iter_mut() {
+                if entry.1.as_ref().is_some_and(|fields| fields.display_name.is_empty()) {
+                    entry.1 = None;
+                }
+            }
+            continue;
+        }
         let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
         for (at, (hour, fields)) in held.iter().enumerate() {
             let Some(fields) = fields.as_ref().filter(|fields| fields.display_name.is_empty()) else { continue };
             let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
             let mut edges: BTreeSet<i32> = BTreeSet::new();
+            edges.extend(appearance.get(&naming_link(fields)).into_iter().flatten().copied().filter(|&edge| edge > *hour && edge <= until));
             for &(from, to, slot) in mapped.get(&naming_link(fields)).map_or(&[][..], Vec::as_slice) {
                 let (low, high) = (from.max(*hour), to.min(until));
                 if low > high {
