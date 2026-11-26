@@ -285,17 +285,33 @@ pub fn append_unobserved(out: &mut Vec<MissingSpan>, facets: &[FacetFilter], fro
     }
 }
 
-fn append_unknown_holders(out: &mut Vec<MissingSpan>, holders: &dashboard_query::identity::Holders, facets: &[FacetFilter], from: i32, to: i32) {
-    if from > to || facets.iter().all(|filter| filter.countries.is_empty()) {
+fn append_unknown_holders<'f>(out: &mut Vec<MissingSpan>, holders: &dashboard_query::identity::Holders, facets: impl IntoIterator<Item = &'f FacetFilter>, from: i32, to: i32) {
+    if from > to {
         return;
     }
-    let spans = holders.chosen_not_known(from, to);
-    if spans.is_empty() {
+    let mut chosen: Vec<(i32, i32)> = Vec::new();
+    for filter in facets {
+        if !filter.countries.is_empty() {
+            chosen.push((from, to));
+        }
+        chosen.extend(filter.membership.iter().map(|span| (span.first_hour.max(from), span.last_hour.min(to))).filter(|(first, last)| first <= last));
+    }
+    if chosen.is_empty() {
         return;
     }
-    out.extend(spans.into_iter().map(|(first_hour, last_hour, reason)| MissingSpan { first_hour, last_hour, reason }));
-    out.sort_by_key(|span| (span.first_hour, span.last_hour));
-    out.dedup();
+    let before = out.len();
+    for (first, last, reason) in holders.chosen_not_known(from, to) {
+        for &(lo, hi) in &chosen {
+            let (first_hour, last_hour) = (first.max(lo), last.min(hi));
+            if first_hour <= last_hour {
+                out.push(MissingSpan { first_hour, last_hour, reason: reason.clone() });
+            }
+        }
+    }
+    if out.len() > before {
+        out.sort_by_key(|span| (span.first_hour, span.last_hour));
+        out.dedup();
+    }
 }
 
 pub fn missing(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i32) -> io::Result<Vec<MissingSpan>> {
@@ -366,7 +382,7 @@ pub fn tail_with<R>(
     }
     let mut gaps = missing_with(query, log, from, to, caches.map(|c| c.coverage.as_ref()))?;
     append_unobserved(&mut gaps, facets, from, to);
-    append_unknown_holders(&mut gaps, &query.holders, facets, from, to);
+    append_unknown_holders(&mut gaps, &query.holders, facets.iter().chain(count_facets.iter().flat_map(|ask| &ask.facets)), from, to);
     Ok((page, rows, totals, gaps))
 }
 
@@ -508,4 +524,11 @@ fn a_country_filter_over_hours_whose_holders_are_not_known_names_them_a_gap_neve
     let mut none = Vec::new();
     append_unknown_holders(&mut none, &holders, std::slice::from_ref(&unfiltered), 100, 115);
     assert!(none.is_empty(), "without a country filter nothing depends on who holds what");
+    let member = FacetFilter {
+        membership: vec![dashboard_query::log::CountrySpan { country: Country::from("GER"), first_hour: 114, last_hour: 130 }],
+        ..unfiltered
+    };
+    let mut dated = Vec::new();
+    append_unknown_holders(&mut dated, &holders, std::slice::from_ref(&member), 100, 130);
+    assert_eq!(dated, vec![MissingSpan { first_hour: 114, last_hour: 120, reason: format!("Who holds the chosen countries is not known: {reason}") }], "a dated membership names its countries only within its span");
 }
