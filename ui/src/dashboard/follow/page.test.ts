@@ -641,3 +641,34 @@ test('S12: one bounded widget outside its recording bounds does not force page s
   p.publish(40, { playing: true, step: 24, speed: 1440 });
   assert.equal(p.view(1).mode, 'picture', 're-entering bounds restores picture');
 });
+
+test('accepting a refusal or extra surface closes every transferred bitmap that is not installed', () => {
+  const { p, shown, offer, view } = page({ surfaces: 1 });
+  const pic = entry({ id: 1, n: 2, c: 10, content: 'wide' });
+  const installed = pic.surfaces[0] as Fake;
+  const trailing = pic.surfaces[1] as Fake;
+  offer(pic);
+  p.publish(10);
+  assert.deepEqual([shown(), installed.closed, trailing.closed], [['wide/0'], true, true], 'trailing extra bitmap beyond widget surfaces is closed');
+
+  const ref = entry({ id: 2, n: 1, c: 10, mode: 'refused', reason: 'withheld', content: 'ref' });
+  const unused = ref.surfaces[0] as Fake;
+  offer(ref);
+  p.publish(10);
+  assert.deepEqual([view().mode, shown(), unused.closed], ['refused', [null], true], 'refusal clears surfaces and closes transferred bitmaps');
+});
+
+test('a withdrawal refuses and closes parked early entries even when nothing is installed yet', () => {
+  const { p, shown, view } = page({ surfaces: 1 });
+  p.publish(5, { playing: true, step: 5 });
+  const parked = entry({ id: 1, n: 1, h: 10, c: 20, lo: 10, hi: 20, content: 'future' });
+  const bmp = parked.surfaces[0] as Fake;
+  p.offer({ lane: 0, serial: 1, entries: [parked] });
+  p.publish(6, { playing: true, step: 5 });
+  assert.equal(view().mode, 'reading');
+  assert.equal(bmp.closed, false);
+
+  p.offer({ lane: 0, serial: 2, withdrawn: [[1, 1]], entries: [] });
+  p.publish(10, { playing: false });
+  assert.deepEqual([view().mode, shown(), bmp.closed], ['reading', [null], true], 'parked entry promoted to earlyByWidget is refused and closed on withdrawal');
+});

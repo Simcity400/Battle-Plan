@@ -45,6 +45,7 @@ export interface Presentation<B extends Bitmap = Bitmap> {
   serial: number;
   resets?: readonly (readonly [route: number, reset: number])[];
   closed?: readonly (readonly [widget: number, lo: number, hi: number])[];
+  withdrawn?: readonly (readonly [widget: number, binding: number])[];
   confirmed?: readonly (readonly [route: number, channel: 'followed' | 'panel', hour: number, seek: number, reset: number])[];
   entries: readonly Entry<B>[];
 }
@@ -478,6 +479,35 @@ export class Page<B extends Bitmap = Bitmap> {
         if (prev) this.freezeEarly(widget, prev, hi);
         if (widget.early) this.freezeEarly(widget, [widget.early, ...widget.earlyMore], hi);
       }
+      for (const [widgetId, binding] of presentation.withdrawn ?? []) {
+        const widget = this.widgets.get(widgetId);
+        if (!widget) continue;
+        if (widget.early && widget.early.binding <= binding) {
+          this.refuse(widget, widget.early, 'binding');
+          widget.early = null;
+        }
+        if (widget.earlyMore.length) {
+          const keep: Entry<B>[] = [];
+          for (const entry of widget.earlyMore) {
+            if (entry.binding <= binding) this.refuse(widget, entry, 'binding');
+            else keep.push(entry);
+          }
+          widget.earlyMore = keep;
+          if (!widget.early && widget.earlyMore.length) widget.early = widget.earlyMore.shift()!;
+        }
+        if (!widget.early) this.earlyWidgets.delete(widget);
+        const pending = earlyByWidget.get(widgetId);
+        if (pending) {
+          const keep: Entry<B>[] = [];
+          for (const entry of pending) {
+            if (entry.binding <= binding) this.refuse(widget, entry, 'binding');
+            else keep.push(entry);
+          }
+          if (keep.length) earlyByWidget.set(widgetId, keep);
+          else earlyByWidget.delete(widgetId);
+        }
+        if (widget.installed && widget.installed.binding <= binding) this.clear(widget, 'reading');
+      }
       for (const entry of presentation.entries) {
         this.stats.visited++;
         this.install(entry, presentation.lane);
@@ -582,10 +612,19 @@ export class Page<B extends Bitmap = Bitmap> {
     if (entry.gen.reset > route.reset) route.reset = entry.gen.reset;
     if (route.failed && entry.gen.seek > route.failed.seek) route.failed = null;
     try {
-      for (let k = 0; k < widget.surfaces.length; k++) {
-        const part = entry.surfaces[k];
-        if (entry.mode !== 'picture' || !part) widget.surfaces[k]!.clear();
-        else if (part !== SAME) widget.surfaces[k]!.install(part);
+      if (entry.mode !== 'picture') {
+        closeParts(entry);
+        for (let k = 0; k < widget.surfaces.length; k++) widget.surfaces[k]!.clear();
+      } else {
+        for (let k = 0; k < widget.surfaces.length; k++) {
+          const part = entry.surfaces[k];
+          if (!part) widget.surfaces[k]!.clear();
+          else if (part !== SAME) widget.surfaces[k]!.install(part);
+        }
+        for (let k = widget.surfaces.length; k < entry.surfaces.length; k++) {
+          const extra = entry.surfaces[k];
+          if (extra && extra !== SAME) extra.close();
+        }
       }
     } catch {
       closeParts(entry);

@@ -3953,3 +3953,151 @@ test('preparing projections waits for every projection to settle, when another t
   assert.equal(familyProjectionFailure('bars', 'prepare-throws'), 'the chunk is missing', 'a load that throws as it starts is recorded as that projection failing, and its waiter is woken');
   assert.equal(familyProjectionFailure('bars', 'prepare-blank'), 'Error', 'a failure without a message is still recorded as a failure, never as a missing projection');
 });
+
+test('a budget-deferred ready widget on a paused exact frame schedules a continuation without extra motion or acks', async () => {
+  for (const useSchedule of [false, true]) {
+    let clock = 0;
+    const scheduled: (() => void)[] = [];
+    const views: Record<string, LaneView> = {
+      waiting: { paint: () => ({ surfaces: [], fields: {}, motion: false, waiting: true }) },
+      heavy: {
+        paint: (input): Painted => {
+          clock += 60;
+          return { surfaces: [], fields: { h: { value: input.hour, content: `h:${input.hour}` } }, motion: false };
+        },
+      },
+    };
+    const page = new Page<Fake>({
+      lanes: 1,
+      post: (_lane, m: PageMessage) => {
+        if (m.type === 'frame') lane.frame(m);
+      },
+    });
+    const lane = new Lane<Fake>({
+      lane: 0,
+      lanes: 1,
+      views: kind => views[kind]!,
+      crop: async () => [],
+      present: presentation => page.offer(presentation),
+      release: () => {},
+      fail: reason => { throw new Error(reason); },
+      later: fn => { scheduled.push(fn); },
+      ...(useSchedule ? { schedule: fn => { scheduled.push(fn); } } : {}),
+      budget: 10,
+      clock: () => clock,
+    });
+    lane.mount(1, [], 'waiting');
+    lane.bind(1, { generation: 1, surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+    lane.mount(2, [], 'heavy');
+    lane.bind(2, { generation: 1, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.mount(2, { route: ROUTE, lane: 0, surfaces: [] });
+
+    page.publish(10, { playing: false, seek: 0 });
+    await flush();
+    while (scheduled.length) {
+      scheduled.shift()!();
+      await flush();
+    }
+    page.frame();
+    assert.equal(page.view(2).mode, 'picture', `initial paint primes heavy widget cost (schedule=${useSchedule})`);
+
+    lane.bind(1, { generation: 2, surfaces: [{ width: 0, height: 0, dpr: 1 }], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    lane.bind(2, { generation: 2, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+    page.rebind(1);
+    page.rebind(2);
+    page.publish(20, { playing: false, seek: 0 });
+    await flush();
+    assert.equal(scheduled.length > 0, true, `deferred exact frame schedules continuation (schedule=${useSchedule})`);
+    while (scheduled.length) {
+      scheduled.shift()!();
+      await flush();
+    }
+    page.frame();
+    assert.equal(page.view(2).mode, 'picture', `deferred widget installs on paused exact frame (schedule=${useSchedule})`);
+    assert.equal(page.view(2).installedBinding, 2);
+  }
+
+  let clock = 0;
+  let totalEntries = 0;
+  const scheduled: (() => void)[] = [];
+  const view: LaneView = {
+    paint: (input): Painted => {
+      clock += 15;
+      return { surfaces: [], fields: { h: { value: input.hour, content: `h:${input.hour}` } }, motion: false };
+    },
+  };
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => view,
+    crop: async () => [],
+    present: presentation => { totalEntries += presentation.entries.length; },
+    release: () => {},
+    fail: reason => { throw new Error(reason); },
+    later: () => {},
+    schedule: fn => { scheduled.push(fn); },
+    budget: 10,
+    clock: () => clock,
+  });
+  for (let id = 1; id <= 122; id++) {
+    lane.mount(id, [], 'stationary');
+    lane.bind(id, { generation: 1, surfaces: [], offset: 0, pin: null, dated: { h: 0, c: 100 } });
+  }
+  lane.frame({ type: 'frame', serial: 1, now: 10, target: 10, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  await flush();
+  let turns = 0;
+  while (scheduled.length && turns < 200) {
+    turns++;
+    scheduled.shift()!();
+    await flush();
+  }
+  assert.equal(totalEntries, 122, '122 stationary widgets on one paused exact request produce 122 entries without aging earlier inflights past STALE');
+  assert.equal(scheduled.length, 0, 'continuation stops once every deferred widget has been presented');
+});
+
+test('a refused entry never crops or transfers bitmaps even when the view returned painted surfaces', async () => {
+  let cropCalls = 0;
+  const view: LaneView = {
+    paint: (_input, _state, content) => ({
+      surfaces: [{ source: { width: 100, height: 50 }, content: content() }],
+      fields: {},
+      motion: false,
+    }),
+  };
+  let presented: Presented<Fake>[] = [];
+  const page = new Page<Fake>({
+    lanes: 1,
+    post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m);
+    },
+  });
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => view,
+    crop: async sources => {
+      cropCalls += sources.length;
+      return sources.map((s): Fake => ({ width: s.width, content: 'c', closed: false, close() { this.closed = true; } }));
+    },
+    present: presentation => { presented.push(presentation); page.offer(presentation); },
+    release: () => {},
+    fail: reason => { throw new Error(reason); },
+    later: () => {},
+    clock: () => 0,
+  });
+  lane.follow(3, 'followed');
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.mount(1, [3], 'refusable');
+  lane.bind(1, { generation: 1, surfaces: [{ width: 100, height: 50, dpr: 1 }], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+  lane.receive('follow', message(10, [{ id: 3, answer: { notRecorded: 'table withheld' } }], false, NATIVE));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.frame();
+  assert.equal(cropCalls, 0, 'refused entry performs zero surface crops');
+  assert.equal(presented.length, 1);
+  assert.deepEqual(presented[0]!.entries[0]!.surfaces, [], 'refused entry transfers no bitmaps');
+  assert.equal(page.view(1).mode, 'refused');
+  assert.equal(page.view(1).reason, 'table withheld');
+});
