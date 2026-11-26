@@ -28,7 +28,7 @@ export const browserTests = [
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   tabFullTest,
 ];
-const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);
+const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts', 'tools/native-page.test.ts']);
 
 export async function discoverTests(root = repositoryRoot) {
   async function visit(directory, pattern) {
