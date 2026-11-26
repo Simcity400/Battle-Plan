@@ -545,6 +545,9 @@ fn resource_amount(
         _ => overrides,
     };
     vec![
+        TableRead::fields(T::Clock, &["hour"]),
+        TableRead::fields(T::SliceReads, &["sample_hour"])
+            .row(crate::state_resources::supply_read_key(state)),
         TableRead::fields(
             T::StateResourceInputs,
             &[

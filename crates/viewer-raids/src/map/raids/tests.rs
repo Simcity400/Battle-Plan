@@ -52,12 +52,12 @@ fn the_target_batch_is_at_least_one() {
         target_batch(&defines)
     };
     assert_eq!(
-        batch("NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = 100 } }"),
-        Ok(100)
+        batch("NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = 37 } }"),
+        Ok(37)
     );
     assert_eq!(batch("NDefines = { NRaids = {} }"), Ok(1));
     assert_eq!(
-        batch(r#"NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = "100" } }"#),
+        batch(r#"NDefines = { NRaids = { MAX_TARGETS_TO_UPDATE_PER_FRAME = "37" } }"#),
         Ok(1)
     );
     for below in ["0", "-7", "0.5"] {
@@ -1199,6 +1199,12 @@ fn resource_frame() -> DecodedFrame {
             supply_route: 1,
         }],
     );
+    let sample_hour = frame.hour;
+    put::<tables::SliceReads>(&mut frame, vec![replay_data::rows::SliceReadRow {
+        table: TableId::StateResourceInputs.index() as u32,
+        owner: 10,
+        sample_hour,
+    }]);
     put::<tables::StateResources>(
         &mut frame,
         vec![StateResourceRow {

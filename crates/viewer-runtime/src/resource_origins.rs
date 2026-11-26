@@ -659,7 +659,7 @@ impl Values for Hour<'_> {
 
     fn operands(&self, state: u32, token: u32, controller: u32) -> Result<ResourceOperands, String> {
         self.resources
-            .operands(state, token, Some(controller), &self.joins())
+            .base_operands(state, token, Some(controller), &self.joins())
             .map_err(|why| why.to_string())
     }
 }

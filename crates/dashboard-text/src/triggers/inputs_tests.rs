@@ -2,6 +2,7 @@ use super::*;
 use crate::triggers::{
     ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query,
 };
+use dashboard_core::test_fixtures::game;
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
     rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
@@ -274,7 +275,7 @@ fn scoped_ruling_ideology_keeps_unresolved_country_refusal() {
 
 #[test]
 fn has_war_records_clock_only_when_scanning_relations() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let body = content_reader_parser::parser::parse(b"has_war=yes").unwrap().items;
     for (hour, enemies, expected, scans) in [
         (16, Vec::new(), true, true),
@@ -1497,6 +1498,10 @@ fn richer_frame() -> DecodedFrame {
             definitions: vec![1],
         }],
     );
+    let sample_hour = frame.hour;
+    set::<tables::SliceReads>(&mut frame, vec![replay_data::rows::SliceReadRow {
+        table: TableId::StateResourceInputs.index() as u32, owner: 1, sample_hour,
+    }]);
     set::<tables::StateResourceInputs>(
         &mut frame,
         vec![StateResourceInputRow {
@@ -1574,6 +1579,35 @@ fn richer_frame() -> DecodedFrame {
         *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
     }
     frame
+}
+
+#[test]
+fn a_cached_state_resource_amount_expires_after_its_route_read() {
+    let dlcs = BTreeSet::new();
+    let triggers = Default::default();
+    let aliases = Default::default();
+    let facts = || ContentFacts {
+        resource_bonuses: Ok([0, 20_000]),
+        ..ContentFacts::content_only(&dlcs, &triggers, &aliases)
+    };
+    let mut frame = richer_frame();
+    let clock = |hour| vec![replay_data::rows::ClockRow { hour, ..Default::default() }];
+    let hour = frame.hour;
+    set::<tables::Clock>(&mut frame, clock(hour));
+    let world = World::read(&frame, facts());
+    let (amount, mut inputs) = capture(&frame, || world.state_resource(1, 900));
+    assert_eq!(amount.unwrap(), 500_000);
+    let mut next = frame.clone();
+    next.hour += 1;
+    set::<tables::Clock>(&mut next, clock(hour + 1));
+    let changes = Differing { before: &frame, after: &next };
+    let since = Since::hour_before(&next, &changes).unwrap();
+    let next_world = World::read(&next, facts());
+    assert!(!inputs.confirm_since(&next, Some(&since), |key| match key {
+        Key::World(query) => Some(next_world.reread(query)),
+        _ => None,
+    }));
+    assert!(next_world.state_resource(1, 900).unwrap_err().names("StateResourceInputs.supply_route (State(1))"));
 }
 
 fn other_world_queries() -> Vec<Query> {
@@ -1847,8 +1881,7 @@ fn every_other_world_query_is_declared_and_reads_no_table_field_or_row_it_does_n
 
 #[test]
 fn content_decided_world_queries_read_no_table_field_or_row_they_do_not_declare() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let root =
         std::env::temp_dir().join(format!("dashboard-declared-trait-{}", std::process::id()));
     let file = root.join("common/country_leader/traits.txt");

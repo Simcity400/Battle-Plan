@@ -200,6 +200,15 @@ pub fn frame() -> DecodedFrame {
     );
     put(
         &mut frame,
+        TableRows::SliceReads([MIXED, EMPTY, GATED, COSTED, ORPHAN, GRANTED, GIVEN, ALIASED]
+            .map(|owner| replay_data::rows::SliceReadRow {
+                table: TableId::StateResourceInputs.index() as u32,
+                owner,
+                sample_hour: 0,
+            }).into()),
+    );
+    put(
+        &mut frame,
         TableRows::StateBaseResources(vec![
             base(MIXED, OIL, 200_000),
             base(MIXED, STEEL, 400_000),
