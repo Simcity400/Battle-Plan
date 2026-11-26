@@ -2357,6 +2357,7 @@ mod tests {
             rows::TableId, rows::TableRows, rows::tables,
         };
         use replay_frame::{frame::DecodedFrame, frame::TableView};
+        dashboard_text::catalogue::tests::script_game::enter();
         let (catalogue, _folders) = texture_catalogue(
             &[
                 (
@@ -2591,13 +2592,8 @@ mod tests {
         let conditional = context
             .focuses_at(&[("conditional", "M1")], &frame)
             .remove(0);
-        assert!(
-            conditional
-                .1
-                .as_deref()
-                .unwrap()
-                .contains("selected sprite GFX_other ")
-        );
+        let reason = conditional.1.as_deref().unwrap();
+        assert!(reason.contains("selected sprite GFX_other "), "{reason}");
         assert_eq!(
             context.focuses_at(&[("scoped", "M1")], &frame)[0]
                 .0
@@ -2609,6 +2605,12 @@ mod tests {
 
     #[test]
     fn technology_limits_use_load_time_dlcs_empty_scope_and_unknown_globals() {
+        use engine_native::cequipment_variant::FLOATING_HARBOR_CLASSIFIER_MASK;
+        crate::test_fixtures::game::executable()
+            .auxiliary(|tables| {
+                tables.category_names.as_mut().unwrap().push(("fixture_dock", FLOATING_HARBOR_CLASSIFIER_MASK));
+            })
+            .enter();
         let feature_dlc = engine_dlc::dlc_feature_state::NAME_MASKS
             .iter()
             .find(|(_, mask)| *mask == 1 << 7)
@@ -2621,7 +2623,7 @@ mod tests {
             &[
                 (
                     "common/units/equipment/mod.txt",
-                    "equipments={mod_child={} mod_harbor={type=floating_harbor}}",
+                    "equipments={mod_child={} mod_harbor={type=fixture_dock}}",
                 ),
                 ("common/technologies/mod.txt", &technologies),
                 (
@@ -2951,7 +2953,7 @@ mod tests {
             &[
                 ("gfx/mod/sheet.png", png_bytes(&image)),
                 ("gfx/mod/noise.png", vec![0x13; 20]),
-                ("gfx/mod/tiny.png", vec![0, 0, 1]),
+                ("gfx/mod/tiny.png", b"DDS ".to_vec()),
             ],
         );
         catalogue.gui_decode = Ok(Decode {
@@ -2973,9 +2975,9 @@ mod tests {
         assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 1, 20, 30, 200]);
         assert_eq!(&frame.pixels[24..], [0; 8]);
         for (token, reason) in [
-            ("bad_tech", "the game draws no texture either"),
-            ("unknown_tech", "does not determine what the game draws"),
-            ("absent_tech", "tried"),
+            ("bad_tech", "cannot be decoded"),
+            ("unknown_tech", "undefined format behaviour: a 4-byte DDS"),
+            ("absent_tech", r#"no layer holds any of ["gfx/mod/absent.dds", "gfx/mod/absent.tga", "gfx/mod/absent.png"]"#),
         ] {
             assert!(
                 artwork
@@ -3034,11 +3036,23 @@ mod tests {
             .catalogue(tokens.iter().map(String::as_str).collect(), &cancelled)
             .unwrap();
         assert!(artwork.iter().all(|art| art.icon.is_none()));
-        for (token, (_, _, reason)) in tokens.iter().zip(&refusals) {
+        let reasons = [
+            "no layer holds any of",
+            "has no extension",
+            "cannot be decoded",
+            "undefined format behaviour: a 4-byte DDS",
+            "depends on device limits",
+            "is a cube map, not a 2D UI texture",
+            "first level runs past the file",
+            "past the 16 MiB texture limit",
+        ];
+        assert_eq!(refusals.len(), reasons.len());
+        for ((token, (path, _, _)), reason) in tokens.iter().zip(&refusals).zip(reasons) {
+            let prefix = format!("{token}: icon unavailable: ");
             assert!(
-                warnings
-                    .iter()
-                    .any(|warning| warning.contains(token) && warning.contains(reason)),
+                warnings.iter().any(|warning| {
+                    warning.starts_with(&prefix) && warning.contains(path) && warning.contains(reason)
+                }),
                 "{warnings:?}"
             );
         }

@@ -4645,6 +4645,7 @@ dependencies = [
  "engine-events",
  "engine-executable",
  "engine-heap",
+ "engine-native",
  "engine-native-land",
  "engine-native-parts",
  "engine-production",
