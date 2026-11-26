@@ -4,7 +4,7 @@ import { runAt } from '../charts/series.ts';
 import { countryDrillTagAt, countryIdentityKey } from './countryIdentity.ts';
 import { datedCountrySpans, type DatedCountrySelection } from './datedCountry.ts';
 
-export const REACHED_COUNTRY_OPTION: OptionField = { key: 'country', section: 'options', label: 'Chosen country', kind: 'content-choice',
+export const REACHED_COUNTRY_OPTION: OptionField = { key: 'country', storeAs: 'country', section: 'options', label: 'Chosen country', kind: 'content-choice',
   automatic: 'Selected country', default: '', titleChoice: false, visibleWhen: () => false };
 
 export interface CountryHolder { origin: number; firstHour: number; lastHour: number }

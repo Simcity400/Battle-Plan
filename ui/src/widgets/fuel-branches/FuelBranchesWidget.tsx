@@ -26,7 +26,6 @@ import FuelConsumptionBreakdown from '../fuel/FuelConsumptionBreakdown';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from '../fuel/fuelConsumption';
 import { fuelDecimals } from './fuelBranchesData';
 import {
-  actionCountryHolder,
   branchDrillCanFollow,
   branchDrillDetailSubject,
   branchDrillSelectionKey,
@@ -58,8 +57,9 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const playing = usePlaybackMotion(runtime.clock, active && drillOpen) !== undefined;
   const clockHour = usePlaybackHour(runtime.clock, active && drillOpen && drillControl.following);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
+  const branchExtent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
-    : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
+    : branchExtent) : [0, 1];
   const menu = useContextMenu('Fuel by branch actions');
   const anchor = useRef<HTMLDivElement>(null);
 
@@ -103,9 +103,9 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
     setInitialLevel(null);
   }, [pickOwner]);
 
-  const open = (action: InstalledAction) => {
+  const open = (action: InstalledAction, activeHolder?: Holder | null) => {
     if (!track) return;
-    const holder = actionCountryHolder(action.meta) ?? chartHolder;
+    const holder = activeHolder ?? chartHolder;
     const resolved = resolveBranchDrillOpen({ active, holder, extent, hour: action.hour, subject: action.subject });
     if (!resolved) return;
     setConsumption(null);
@@ -121,10 +121,13 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const actorState = drillCountry && drillStage !== 'open' && drillStage !== 'outside' && drillStage !== 'unbound'
     ? <GateState gate={drillControl.gate} loading="Loading country…" />
     : undefined;
+  const drillExtent: [number, number] = drillFollows || (at !== null && (at < extent[0] || at > extent[1]))
+    ? branchExtent
+    : extent;
   const chart = {
     active: active && drill.breakdown !== null,
     pickOwner,
-    extent,
+    extent: drillExtent,
     branchStart: track.branch.firstHour,
     playhead: drillFollows ? actualHour : at,
     playback,

@@ -87,7 +87,7 @@ export interface DeclaredFamilyWidgetProps<
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly view?: string;
   readonly selectedKey?: string | null;
-  readonly onActivate?: (action: InstalledAction) => void;
+  readonly onActivate?: (action: InstalledAction, countryHolder?: Holder | null) => void;
   readonly onCountryHolder?: (holder: Holder | null) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
@@ -162,9 +162,7 @@ export default function DeclaredFamilyWidget<
   const handleActivate = useMemo(
     () => onActivate
       ? (action: InstalledAction) => {
-          const holder = countryHolderRef.current;
-          const baseMeta = typeof action.meta === 'object' && action.meta !== null ? action.meta : {};
-          onActivate(holder ? { ...action, meta: { ...baseMeta, countryHolder: holder } } : action);
+          onActivate(action, countryHolderRef.current);
         }
       : undefined,
     [onActivate],
