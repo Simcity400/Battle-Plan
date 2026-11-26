@@ -423,12 +423,13 @@ pub fn state_display_name(
                 .as_ref()
                 .map_err(Clone::clone)?;
             if matches!(usage, StateNameUsage::Raid) {
-                crate::catalogue::localised(&cat.localisation, key, crate::catalogue::View::Plain)
+                crate::catalogue::localised(&cat.localisation, key, crate::catalogue::View::Scripted)
                     .map_err(|_| format!("state {id} name {key} is refused"))
             } else {
-                cat.localisation
-                    .localise(key.as_bytes())
-                    .map_err(|error| error.to_string())
+                if cat.localisation.get(key).is_none() {
+                    return Err(format!("localisation {key} is missing"));
+                }
+                crate::catalogue::localised(&cat.localisation, key, crate::catalogue::View::Scripted)
             }
         },
     )

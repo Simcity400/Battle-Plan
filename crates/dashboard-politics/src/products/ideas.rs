@@ -95,6 +95,10 @@ pub struct IdeaLook {
     pub info: IdeaInfo,
     #[doc = " The idea's name and icon; for an advisor, its holder's."]
     pub artwork: Artwork,
+    #[doc = " Why this look's artwork is missing; omitted when artwork is present."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub artwork_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -873,6 +877,7 @@ fn look(content: &PoliticsContent, span: &IdeaSpan, template: Option<&Result<Bui
             let (mut art, mut problem) = content.held_idea_artwork(token, script, saved, country);
             if script.is_none() {
                 art.icon = None;
+                art.sprite = None;
                 problem = Some(format!("{token}: artwork is unknown because the holder has no recorded script token; a placeholder is shown"));
             }
             (art, problem)
@@ -885,7 +890,8 @@ fn look(content: &PoliticsContent, span: &IdeaSpan, template: Option<&Result<Bui
             None => content.idea_name_missing(token, None, country, None),
         };
     }
-    (IdeaLook { info, artwork }, problem)
+    let artwork_missing = problem.clone();
+    (IdeaLook { info, artwork, artwork_missing }, problem)
 }
 
 fn index(at: usize) -> io::Result<u32> {
@@ -908,10 +914,7 @@ pub(crate) fn present(
 ) -> io::Result<IdeaHistoryReply> {
     let (tag, hour) = (asked.tag, asked.hour);
     let ideas = &read.ideas;
-    let mut warnings = vec![format!(
-        "{}; visual assets are outside content hash coverage.",
-        dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
-    )];
+    let mut warnings = vec![dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned()];
     warnings.extend(content.warnings.iter().cloned());
     let (_, category_gap) = content.ideas.tags.categories();
     let (_, law_gap) = content.ideas.laws("");

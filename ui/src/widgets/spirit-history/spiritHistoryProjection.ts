@@ -1,10 +1,8 @@
 import { colour } from '../../charts/palette.ts';
-import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryRead, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingLabel, holdingSince, holdingSpanFlags, holdingUntil, ideaArtwork, ideaHistoryRead, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
 import { artTooltipItem } from '../../families/art/adapters.ts';
-import { artworkArt } from '../../families/art/provider.ts';
-import { unavailableArt } from '../../families/art/types.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -72,31 +70,15 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
         : reply.unrecorded && !reply.holdings.length ? `National spirits not recorded: ${reply.unrecorded}` : 'No national spirits recorded yet';
       return timelineModel({ ...base, empty, ...(all.length || !reply.unrecorded || reply.holdings.length ? {} : { emptyKind: 'unavailable' as const }), warnings: reply.warnings, nextChangeAt });
     }
-    const artWarningByToken = new Map<string, string>();
-    for (const warning of reply.warnings) {
-      const sep = warning.indexOf(': ');
-      if (sep > 0) {
-        const token = warning.slice(0, sep);
-        const detail = warning.slice(sep + 2).toLowerCase();
-        if (!artWarningByToken.has(token) && (detail.includes('artwork') || detail.includes('icon') || detail.includes('sprite') || detail.includes('portrait'))) {
-          artWarningByToken.set(token, warning);
-        }
-      }
-    }
-    const resolveArt = (artwork: IdeaHistoryReply['looks'][number]['artwork'], token: string) => {
-      const warning = artWarningByToken.get(artwork.token) ?? artWarningByToken.get(token);
-      if (artwork.icon === null && warning !== undefined) return unavailableArt(warning);
-      return artworkArt(readView, artwork, warning);
-    };
     const fill = colour(opt.surface, 0);
     const lanes: TimelineLane[] = shown.map(row => {
       const latest = row.holdings.at(-1)!;
       const latestLook = lookOf(reply, latest);
       const name = holdingLabel(latestLook, latest);
-      const icon = resolveArt(latestLook.artwork, row.token);
+      const icon = ideaArtwork(readView, latestLook);
       const spans = row.holdings.map(holding => {
         const look = lookOf(reply, holding);
-        const spanIcon = resolveArt(look.artwork, holding.token);
+        const spanIcon = ideaArtwork(readView, look);
         return {
           id: `${row.token}:${holding.firstHour}`,
           firstHour: holding.firstHour,
@@ -127,7 +109,7 @@ export const spiritHistoryProjection: TimelineProjection<SpiritHistoryOptions> =
     if (!lane) return null;
     const span = spanAt(lane, hit);
     const at = hit.hour ?? model.hour;
-    const artNote = artTooltipItem('Icon', span?.icon ?? lane.icon);
+    const artNote = artTooltipItem('Icon', span ? span.icon : lane.icon);
     const missingArt = artNote ? [artNote] : [];
     if (!span || !reply) {
       return {

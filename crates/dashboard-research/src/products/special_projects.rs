@@ -1309,10 +1309,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     warnings.extend(facts.warnings.iter().map(|(reason, count)| format!("{reason} ({count} reads).")));
     warnings.extend(naming.warnings());
     if !projects.is_empty() {
-        warnings.push(format!(
-            "{}; project icons and portraits are visual assets outside content hash coverage.",
-            dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
-        ));
+        warnings.push(dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned());
     }
     let Holding { identities, unresolved } = follow.holding.clone();
     let unavailable = if let Some(reason) = current_at.and_then(|hour| holder_not_known(&query.holders, &params.country, hour)) {

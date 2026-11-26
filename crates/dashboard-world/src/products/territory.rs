@@ -355,11 +355,7 @@ impl RegionNames {
         let mut out = Self { warnings: content.notes.clone(), ..Self::default() };
         let mut claims: HashMap<u32, BTreeSet<u32>> = HashMap::new();
         for region in content.regions.values() {
-            let name = if cat.has_presentation_key(&region.name_key) {
-                cat.localisation.localise(region.name_key.as_bytes()).map_err(|error| error.to_string()).and_then(|text| catalogue::plain_text(&text))
-            } else {
-                Err(format!("localisation {} is missing; region title is unavailable", region.name_key))
-            };
+            let name = crate::products::region_names::region_name(cat, &content, region.id);
             out.names.insert(region.id, name);
             for &province in &region.provinces {
                 claims.entry(province).or_default().insert(region.id);
