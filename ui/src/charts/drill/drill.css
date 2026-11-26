@@ -23,7 +23,7 @@
 .drill-part-bar { height: 8px; border-radius: 4px; background: var(--hover); overflow: hidden; }
 .drill-part-bar i { display: block; height: 100%; border-radius: 4px; }
 .drill-parts b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
-.drill-parts b.is-negative { color: var(--error); }
+.drill-parts b.is-negative { color: var(--short-ink); }
 .drill-parts small { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .drill-parts .is-unattributed .drill-part-label { color: var(--muted); font-style: italic; }
 .drill-parts .is-muted .drill-part-label { color: var(--muted); }

@@ -78,7 +78,7 @@ function monthBox(frame: RowsFrame, month: ChartRowMonth): readonly [number, num
 
 export function drawChartRows(ctx: Canvas2D, model: TimeChartModel, frame: RowsFrame, theme: FamilyTheme, inspect: { readonly row: number; readonly month: number } | null, artCache?: LaneArtCache): void {
   const tokens = resolveKitTokens(theme);
-  const negative = tokens.shortage;
+  const negative = tokens.shortFill;
   const nameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
   const valueFont = `600 13px ${theme.font}`;
   for (const placed of frame.rows.rows) {

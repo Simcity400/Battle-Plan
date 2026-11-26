@@ -459,7 +459,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const signed = paintModel.value.kind === 'known' || paintModel.value.kind === 'partial' ? Number(paintModel.value.value) : 0;
     if (signed !== 0 && fraction !== null) {
       ctx.save();
-      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortage;
+      ctx.fillStyle = signed > 0 ? theme.accent : tokens.shortFill;
       ctx.globalAlpha = 0.18 + 0.5 * Math.max(0, Math.min(1, fraction));
       ctx.beginPath();
       ctx.roundRect(left, middle - Math.min(rowHeight - 4, 18) / 2, Math.max(0, right - left), Math.min(rowHeight - 4, 18), 3);

@@ -36,7 +36,7 @@
 .chart-tooltip-row.is-indented > span { padding-left: var(--space-3); }
 .chart-tooltip-row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; max-width: max(60%, 10rem); overflow-wrap: anywhere; }
 .chart-tooltip-row b.is-positive { color: var(--positive); }
-.chart-tooltip-row b.is-negative { color: var(--error); }
+.chart-tooltip-row b.is-negative { color: var(--short-ink); }
 .chart-tooltip-row b.is-neutral { color: var(--warning); }
 .chart-tooltip-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
 .chart-tooltip-head > div { min-width: 0; overflow-wrap: anywhere; }

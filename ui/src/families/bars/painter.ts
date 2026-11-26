@@ -583,7 +583,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
         const gapW = Math.max(2, targetW - deliveredW - (deliveredW > 0 ? 1 : 0));
         const r = barCornerRadius(layout.barHeight);
         ctx.save();
-        ctx.fillStyle = tokens.shortage;
+        ctx.fillStyle = tokens.shortFill;
         ctx.globalAlpha = 0.16;
         ctx.beginPath();
         ctx.roundRect(gapX, barY, gapW, layout.barHeight, [0, r, r, 0]);

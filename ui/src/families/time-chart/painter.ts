@@ -618,7 +618,7 @@ export function drawTimeChart(
             below.lineTo(line.first[0], zeroY);
             below.closePath();
             ctx.globalAlpha = 0.16 * opacity;
-            ctx.fillStyle = theme.red;
+            ctx.fillStyle = tokens.shortFill;
             ctx.fill(below);
             ctx.restore();
           }
