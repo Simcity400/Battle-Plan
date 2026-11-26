@@ -2029,3 +2029,16 @@ fn a_tile_over_hours_whose_holders_are_not_known_draws_a_country_never_seen_as_n
     let outside = i64::from(FIRST + 300).div_euclid(BINS as i64) + 4;
     assert!(tile::tile(&line, "1", &[Ask::whole("ZZZ")], None, 1, outside, false).is_err(), "where every holder is known, a country never seen is still refused");
 }
+
+#[test]
+fn a_value_last_read_where_a_coarse_piece_ends_is_placed_no_later_than_that_hour() {
+    let until = FIRST + 16 * UNIT_HOURS - 1;
+    let fixture = Fixture::new(Data::PowerUntil(until), FIRST..=FIRST + 17 * UNIT_HOURS - 1);
+    let query = fixture.query();
+    let line = line_of(&query);
+    let (summary, _) = line.summary("GER", FIRST, FIRST + 17 * UNIT_HOURS - 1, 32).unwrap();
+    let buckets: Vec<&ChartBucket> = summary.buckets.iter().flatten().collect();
+    let last = buckets.iter().rev().find(|bucket| bucket.first_hour <= until).expect("a bucket holds the last read value");
+    assert!(last.last_value_hour <= until, "the last value was read at {until}, not at {}", last.last_value_hour);
+    assert!(buckets.iter().all(|bucket| bucket.first_hour <= until), "no bucket after the last read value holds one");
+}

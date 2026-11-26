@@ -1509,7 +1509,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 let span = span_of(part);
                 let Some(reads) = own.or_else(|| read.get(&(part.run, span.0, span.1))) else { continue };
                 let mut previous = false;
-                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
+                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), first_bin, bin_hours, bins).into_iter().enumerate() {
                     let Some(bucket) = bucket else {
                         previous = false;
                         continue;
@@ -1634,7 +1634,7 @@ impl<'q, 'a> Line<'q, 'a> {
                     Vec::new()
                 };
                 let mut previous = false;
-                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), level, first_bin, bin_hours, bins).into_iter().enumerate() {
+                for (slot, bucket) in self.fold_reads(reads, part.key, (part.first, part.last), first_bin, bin_hours, bins).into_iter().enumerate() {
                     let Some(mut bucket) = bucket else {
                         previous = false;
                         continue;
@@ -1688,14 +1688,10 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), level: u8, first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
+    fn fold_reads(&self, reads: &[ExtentRead], key: u128, (first, last): (i32, i32), first_bin: i64, bin_hours: i64, bins: usize) -> Vec<Option<ChartBucket>> {
         use replay_columnar::summary::bucket_hours;
         let scale = self.scale();
         let six = bucket_hours(0);
-        let ratio = match level {
-            replay_lanes::lanes::WALKED => 1,
-            _ => bucket_hours(level) / six,
-        };
         let mut folded: Vec<Option<(replay_lanes::lanes::Bin, u32, u128)>> = vec![None; bins];
         for read in reads {
             let Some(&at) = read.index.get(&key) else { continue };
@@ -1729,7 +1725,6 @@ impl<'q, 'a> Line<'q, 'a> {
                 held.hours += value.hours;
             }
         }
-        let coarse = |bucket: i32| i64::from(bucket).div_euclid(ratio) * ratio;
         folded
             .into_iter()
             .enumerate()
@@ -1737,8 +1732,8 @@ impl<'q, 'a> Line<'q, 'a> {
                 let (value, lived, abs) = folded.filter(|(value, ..)| value.hours > 0)?;
                 let start = first_bin + slot as i64 * bin_hours;
                 let (lo, hi) = (start.max(i64::from(first)), (start + bin_hours - 1).min(i64::from(last)));
-                let at_hour = |bucket: i32| (coarse(bucket) * six).clamp(lo, hi) as i32;
-                let last_six = (coarse(value.last_bucket) + ratio - 1) * six;
+                let at_hour = |bucket: i32| (i64::from(bucket) * six).clamp(lo, hi) as i32;
+                let last_six = i64::from(value.last_bucket) * six;
                 Some(ChartBucket {
                     absolute_total: abs,
                     first_hour: at_hour(value.first_bucket),
@@ -1817,7 +1812,7 @@ impl<'q, 'a> Line<'q, 'a> {
             for (at, &span) in held.iter().enumerate() {
                 let reads = self.charts_within(run, &keys, span, level, bin_hours)?;
                 for (bucket, &key) in buckets.iter_mut().zip(&keys) {
-                    let part = self.fold_reads(&reads, key, span, level, first_bin, bin_hours, 1).pop().flatten();
+                    let part = self.fold_reads(&reads, key, span, first_bin, bin_hours, 1).pop().flatten();
                     *bucket = if at == 0 { part } else { crate::chart::merge(*bucket, part) };
                 }
             }
