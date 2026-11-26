@@ -1,10 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { resolveWindow } from '../../dashboard/model';
 import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC, type GatedHour } from '../../dashboard/regionTime';
+import { SPEC, type BoundHour, type BoundWindow, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry.tsx';
@@ -21,19 +22,20 @@ function validateProducedAt(data: unknown): ProducedAtReply {
   return reply as ProducedAtReply;
 }
 
-function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
+function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits, fromHour }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
   readonly tag: string;
   readonly hour: GatedHour;
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly refits: boolean;
+  readonly fromHour: BoundHour | null;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? productRequest({
     sourceId: track.source.id,
     revision: track.source.revision,
     product: 'equipment-produced-at',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits },
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits, ...(fromHour !== null ? { fromHour } : {}) },
   }) : null;
   const reply = useProduct<ProducedAtReply>(runtime.client, request, active, validateProducedAt, track?.source);
   if (reply.error) {
@@ -64,6 +66,12 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
       })}
     </div>
   );
+}
+
+function rangeStart(widget: FamilyViewProps['widget'], runtime: FamilyViewProps['runtime'], span: (first: number, last: number) => BoundWindow | null, hour: GatedHour): BoundHour | null {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const first = track ? resolveWindow(widget, track, runtime.tracks, hour)?.firstHour : undefined;
+  return first === undefined ? null : span(first, hour)?.firstHour ?? null;
 }
 
 function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
@@ -114,6 +122,7 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
             count={count}
             measure={measure}
             refits={refits}
+            fromHour={measure === 'total' && widget.time.mode === 'range' ? rangeStart(widget, runtime, gate.span, detail.hour) : null}
           />
         ) : null}
       </DetailWindowHost>

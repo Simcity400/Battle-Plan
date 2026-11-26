@@ -3319,7 +3319,11 @@ types: Array<ProducedType>,
 mostDelivered: string | null, warnings: Array<string>, };
 export type ProducedType = { key: string, name: string | null, domain: Domain | null, };
 export type Domain = "land" | "air" | "naval";
-export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean, };
+export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean,
+/**
+ * A Range's first hour: a total counts the deliveries from it on.
+ */
+fromHour?: number, };
 export type ProducedAtReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.
@@ -6343,7 +6347,7 @@ export const REQUEST_HOURS: Readonly<Record<string, Readonly<Record<string, Hour
   "doctrines": { "hour": "read" },
   "equipment-designs": { "hour": "read" },
   "equipment-losses": { "hour": "end" },
-  "equipment-produced-at": { "hour": "read" },
+  "equipment-produced-at": { "hour": "read", "fromHour": "start" },
   "equipment-produced-race": { "hour": "read", "fromHour": "start" },
   "equipment-produced-types": {},
   "equipment-stockpile-lines": { "hour": "read", "family.membership[].firstHour": "start", "family.membership[].lastHour": "end" },
@@ -6515,7 +6519,7 @@ export const REQUEST_PATHS: Readonly<Record<string, Readonly<Record<string, "nod
   "doctrines": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-designs": { "branchId": "leaf", "country": "any", "hour": "leaf" },
   "equipment-losses": { "branchId": "leaf", "country": "any", "hour": "leaf", "landSource": "leaf" },
-  "equipment-produced-at": { "branchId": "leaf", "country": "any", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
+  "equipment-produced-at": { "branchId": "leaf", "country": "any", "fromHour": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf" },
   "equipment-produced-race": { "branchId": "leaf", "count": "leaf", "countries": "node", "countries[]": "any", "fromHour": "leaf", "group": "node", "group.id": "leaf", "group.membership": "leaf", "group.tag": "leaf", "group.type": "leaf", "hour": "leaf", "measure": "leaf", "refits": "leaf", "top": "leaf", "types": "node", "types[]": "leaf" },
   "equipment-produced-types": { "branchId": "leaf", "refits": "leaf" },
   "equipment-stockpile-lines": { "branchId": "leaf", "family": "node", "family.country": "any", "family.included": "node", "family.included[]": "leaf", "family.kind": "leaf", "family.measure": "leaf", "family.membership": "node", "family.membership[]": "node", "family.membership[].firstHour": "leaf", "family.membership[].lastHour": "leaf", "hour": "leaf", "top": "leaf" },
@@ -6687,7 +6691,7 @@ export type RequestParams<E, B> = {
   "doctrines": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-designs": { readonly [key: string]: unknown; readonly "hour"?: E | null };
   "equipment-losses": { readonly [key: string]: unknown; readonly "hour"?: B | null };
-  "equipment-produced-at": { readonly [key: string]: unknown; readonly "hour"?: E | null };
+  "equipment-produced-at": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: E | null };
   "equipment-produced-race": { readonly [key: string]: unknown; readonly "fromHour"?: B | null; readonly "hour"?: E | null };
   "equipment-produced-types": {};
   "equipment-stockpile-lines": { readonly [key: string]: unknown; readonly "family"?: { readonly [key: string]: unknown; readonly "membership"?: readonly ({ readonly [key: string]: unknown; readonly "firstHour"?: B | null; readonly "lastHour"?: B | null })[] | null } | null; readonly "hour"?: E | null };
