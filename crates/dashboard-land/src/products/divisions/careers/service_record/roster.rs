@@ -267,6 +267,7 @@ impl Roster {
 pub(super) struct Scope {
     slots: Option<BTreeSet<u32>>,
     pub(super) unknown: bool,
+    pub(super) not_known: Option<String>,
     pub(super) next: Option<i32>,
 }
 
@@ -279,6 +280,7 @@ impl Scope {
         let Some(set) = selection else { return Self::default() };
         let mut slots = BTreeSet::new();
         let mut unknown = false;
+        let mut not_known = None;
         let mut next = None;
         let mut span = |first, last: i32| {
             for at in [first, last.saturating_add(1)] {
@@ -304,17 +306,29 @@ impl Scope {
                             slots.insert(slot);
                         }
                     }
-                    unknown |= query.holders.slot_at(country, hour).is_none();
+                    if query.holders.slot_at(country, hour).is_none() {
+                        unknown = true;
+                        not_known = not_known.or_else(|| query.holders.not_known(country, hour));
+                    }
                 }
             }
         }
         for gap in &set.unknown {
-            unknown |= span(gap.first_hour, gap.last_hour);
+            if span(gap.first_hour, gap.last_hour) {
+                unknown = true;
+                not_known = not_known.or_else(|| Some(gap.reason.clone()));
+            }
         }
         for gap in &set.unobserved {
-            unknown |= span(gap.first_hour, gap.last_hour);
+            if span(gap.first_hour, gap.last_hour) {
+                unknown = true;
+                not_known = not_known.or_else(|| query.holders.chosen_not_known(hour, hour).into_iter().next().map(|(_, _, reason)| reason));
+            }
         }
-        Self { slots: Some(slots), unknown, next }
+        for &(first, last, _) in &query.holders.unknown {
+            span(first, last);
+        }
+        Self { slots: Some(slots), unknown, not_known, next }
     }
 }
 

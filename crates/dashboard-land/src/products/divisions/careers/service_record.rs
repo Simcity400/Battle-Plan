@@ -887,7 +887,9 @@ fn reply(
         || answer.gaps.iter().any(|gap| {
             gap.last_hour == hour && matches!(gap.reason.as_str(), "Division census incomplete" | "Division history incomplete")
         });
-    let unavailable = if params.division.is_some() && subject.is_none() {
+    let unavailable = if let Some(reason) = scope.not_known.clone().filter(|_| subject.is_none()) {
+        Some(reason)
+    } else if params.division.is_some() && subject.is_none() {
         Some("The chosen division has not been observed in these countries through this hour.".into())
     } else if subject.is_none() && incomplete {
         Some("The most decorated division could not be determined from the recorded census and medals.".into())
@@ -896,6 +898,9 @@ fn reply(
     };
     if ambiguous {
         warnings.note(PARTIAL_ROSTER);
+    }
+    if let Some(reason) = scope.not_known {
+        warnings.note(reason);
     }
     content.group_notes(&mut warnings);
     let reply = ServiceRecordTailReply {
@@ -972,7 +977,7 @@ impl Product for DivisionServiceRecordChoices {
         choices.sort_by(|a, b| {
             b.removed_at.cmp(&a.removed_at).then(b.medals.cmp(&a.medals)).then(a.name.cmp(&b.name)).then(a.division.cmp(&b.division))
         });
-        Ok(ServiceChoicesReply { choices, partial: partial.then(|| PARTIAL_ROSTER.to_owned()), warnings: Vec::new() })
+        Ok(ServiceChoicesReply { choices, partial: partial.then(|| scope.not_known.clone().unwrap_or_else(|| PARTIAL_ROSTER.to_owned())), warnings: Vec::new() })
     }
 }
 

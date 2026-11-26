@@ -162,6 +162,30 @@ fn a_viewpoints_days_carry_its_scores_and_a_filter_keeps_its_sides() {
     let timeline = Days { index: &index, holders: &holders, days: &days, rows: &held, params: &filtered, theatres: None };
     let shown = timeline.shown(&[3], &index, &cancelled).unwrap();
     assert_eq!(shown.cells[0], [(DAYS as u32, Some(AirDayCell::Sides(AirDaySides::new(vec![], vec![], vec![], vec![], true))))], "ENG's part is not a chosen side's");
+    let reason = "Countries was not complete at these hours";
+    let (gap_first, gap_last) = (5 * DAY, 6 * DAY - 1);
+    let split = Holders::new(
+        TAGS.iter()
+            .map(|(tag, id)| ((*tag).to_owned(), Vec::from([(0, gap_first - 1), (gap_last + 1, LAST)].map(|(first, last)| HolderRun { first, last, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }))))
+            .collect(),
+        vec![(gap_first, gap_last, reason.to_owned())],
+    );
+    let wanted = format!("Who holds {} is not known: {reason}", dashboard_base::products::Country::Slot(3).key());
+    let by_slot = AirTimelineParams { viewpoint: Some(dashboard_base::products::Country::Slot(3)), ..params(AirMode::Viewpoint, None, true, None) };
+    let timeline = Days { index: &index, holders: &split, days: &days, rows: &held, params: &by_slot, theatres: None };
+    let unknown = Some(AirDayCell::Reason { reason: wanted.clone() });
+    assert_eq!(
+        timeline.shown(&[2], &index, &cancelled).unwrap().cells[0],
+        [(5, view("150", "20")), (1, unknown), (4, view("150", "20")), (2, view("0", "0"))],
+        "the day whose holders are not known says so, never a day without the chosen country"
+    );
+    let mut ranked_days = reads(&world[..=5], gap_last);
+    if let Some(Some(read)) = ranked_days.last_mut() {
+        read.complete = false;
+    }
+    let ranked = AirTimelineParams { last_hour: gap_last, viewpoint: Some(dashboard_base::products::Country::Slot(3)), ..params(AirMode::Viewpoint, None, true, None) };
+    let rank = Days { index: &index, holders: &split, days: &ranked_days, rows: &held, params: &ranked, theatres: None }.rank_at(&REGIONS, &cancelled).unwrap();
+    assert_eq!((rank.regions.len(), rank.missing.as_deref()), (0, Some(wanted.as_str())), "nothing is ranked for a chosen country whose holder is not known, before a part read is");
 }
 
 #[test]

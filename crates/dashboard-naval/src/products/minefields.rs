@@ -290,6 +290,9 @@ impl AtHour for Minefields {
         };
         let links = links(frame);
         let names = Names::new(at.holders);
+        if let Some(reason) = params.countries.iter().flatten().find(|country| at.holders.tag_at(country, frame.hour).is_none()).and_then(|country| at.holders.not_known(country, frame.hour)) {
+            return Err(dashboard_core::refused(reason));
+        }
         let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
         let sea_known = at.context.sea.sea.is_ok();
         let sea = at.context.sea.sea.clone().unwrap_or_default();

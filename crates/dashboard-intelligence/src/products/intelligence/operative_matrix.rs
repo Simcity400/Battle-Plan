@@ -345,6 +345,9 @@ impl AtHour for OperativeMatrix {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let read_hour = frame.tables[TableId::OperativeMemberships.index()].sampled_at();
+        if let Some(reason) = params.countries.iter().find(|country| at.holders.tag_at(country, at.hour).is_none()).and_then(|country| at.holders.not_known(country, at.hour)) {
+            return Ok(empty_reply(read_hour, Some(reason), Vec::new()));
+        }
         if let Some(reason) = missing(frame, TableId::OperativeMemberships) {
             return Ok(empty_reply(read_hour, Some(reason), Vec::new()));
         }

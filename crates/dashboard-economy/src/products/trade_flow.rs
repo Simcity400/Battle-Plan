@@ -213,6 +213,15 @@ impl AtHour for TradeFlow {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut warnings = Vec::new();
+        let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
+        let subject = params.subject.as_ref().map(resolve);
+        if let Some(None) = subject {
+            return Ok(CountryFlowReply::not_recorded(params.subject.as_ref().and_then(|country| at.holders.not_known(country, at.hour)).unwrap_or_else(|| "The chosen country holds no tag at this hour".to_owned()), RESOURCE_DECIMALS, warnings));
+        }
+        let chosen = match at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(CountryFlowReply::not_recorded(refused, RESOURCE_DECIMALS, warnings)),
+        };
         let (rows, gaps) = match witnessed_deals(frame) {
             Ok(read) => read,
             Err(reason) => return Ok(CountryFlowReply::not_recorded(reason, RESOURCE_DECIMALS, warnings)),
@@ -229,15 +238,6 @@ impl AtHour for TradeFlow {
         };
         let (parts, index) = parts_at(&named, &resources.unresolved);
         let edges = edges(rows, &index, params.resource);
-        let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
-        let subject = params.subject.as_ref().map(resolve);
-        if let Some(None) = subject {
-            return Ok(CountryFlowReply::not_recorded("The chosen country holds no tag at this hour".to_owned(), RESOURCE_DECIMALS, warnings));
-        }
-        let chosen = match at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
-            Ok(chosen) => chosen,
-            Err(refused) => return Ok(CountryFlowReply::not_recorded(refused, RESOURCE_DECIMALS, warnings)),
-        };
         let shape = FlowShape {
             subject: subject.flatten(),
             chosen: chosen.as_ref(),

@@ -251,12 +251,19 @@ impl GroupsAt {
 
     pub fn chosen_slots(&self, group: Option<&GroupSelection>, countries: &[Country], holders: &Holders, hour: i32) -> io::Result<Result<Option<HashSet<u32>>, String>> {
         let slot = |country: &Country| holders.slot_at(country, hour);
+        if let Some(reason) = countries.iter().filter(|_| group.is_none()).find(|country| slot(country).is_none()).and_then(|country| holders.not_known(country, hour)) {
+            return Ok(Err(reason));
+        }
         let Some(group) = group else { return Ok(Ok((!countries.is_empty()).then(|| countries.iter().filter_map(slot).collect()))) };
         let members = self.members(group, hour)?;
         if let Some(refused) = members.refused {
-            return Ok(Err(refused));
+            let gap = (refused == UNKNOWN).then(|| holders.chosen_not_known(hour, hour).into_iter().next()).flatten();
+            return Ok(Err(gap.map_or(refused, |(_, _, reason)| reason)));
         }
         if group.membership == GroupMembership::Hour {
+            if let Some(reason) = members.tags.iter().map(|tag| Country::Tag(tag.clone())).find(|country| slot(country).is_none()).and_then(|country| holders.not_known(&country, hour)) {
+                return Ok(Err(reason));
+            }
             return Ok(Ok(Some(members.tags.into_iter().filter_map(|tag| slot(&Country::Tag(tag))).collect())));
         }
         let mut ever = self.ever.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -376,6 +383,18 @@ mod tests {
         assert_eq!(groups.valid_through(Some(&group), 500), 599);
         assert_eq!(groups.valid_through(None, 500), i32::MAX);
         assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &holders, 500).unwrap(), Ok(Some([8].into_iter().collect())));
+        let split = |slot: u32| vec![HolderRun { first: 0, last: 799, holder: Holder::Found { slot, id: slot * 10 }, starts_segment: true }, HolderRun { first: 901, last: 1000, holder: Holder::Found { slot, id: slot * 10 }, starts_segment: true }];
+        let gap = Holders::new([("GER".to_owned(), split(7)), ("ITA".to_owned(), split(8))].into_iter().collect(), vec![(800, 900, "holders not read".to_owned())]);
+        assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &gap, 850).unwrap(), Err("Who holds ITA is not known: holders not read".to_owned()), "a chosen country whose holder is not known is not recorded, never dropped");
+        assert_eq!(groups.chosen_slots(Some(&group), &[], &gap, 850).unwrap(), Err("Who holds GER is not known: holders not read".to_owned()), "nor is a member of a chosen group");
+        let mut unobserved = reply();
+        unobserved.factions[0].incomplete.push(HourSpan { first_hour: 800, last_hour: 900 });
+        let unobserved = GroupsAt::new(Arc::new(unobserved), 0);
+        assert_eq!(unobserved.chosen_slots(Some(&group), &[], &gap, 850).unwrap(), Err("Who holds the chosen countries is not known: holders not read".to_owned()), "a roster withheld for the holder gap names the gap's reason");
+        let absent = GroupSelection { id: Some("7".into()), ..faction(GroupMembership::Hour) };
+        let refused = unobserved.chosen_slots(Some(&absent), &[], &gap, 850).unwrap().unwrap_err();
+        assert!(!refused.starts_with("Who holds"), "a group that is not in the history says so, whatever the hour: {refused}");
+        assert_eq!(groups.chosen_slots(None, &[Country::Tag("ITA".into())], &gap, 950).unwrap(), Ok(Some([8].into_iter().collect())));
     }
 
     #[test]

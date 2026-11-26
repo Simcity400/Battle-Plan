@@ -131,18 +131,18 @@ impl AtHour for VolunteerFlow {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let empty = |missing: String| CountryFlowReply::not_recorded(missing, 0, Vec::new());
-        let (edges, gaps) = match aid_at(frame) {
-            Ok(read) => read,
-            Err(reason) => return Ok(empty(reason)),
-        };
         let resolve = |country: &Country| at.holders.slot_at(country, at.hour);
         let subject = params.subject.as_ref().map(resolve);
         if let Some(None) = subject {
-            return Ok(empty("The chosen country holds no tag at this hour".to_owned()));
+            return Ok(empty(params.subject.as_ref().and_then(|country| at.holders.not_known(country, at.hour)).unwrap_or_else(|| "The chosen country holds no tag at this hour".to_owned())));
         }
         let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
             Ok(chosen) => chosen,
             Err(refused) => return Ok(empty(refused)),
+        };
+        let (edges, gaps) = match aid_at(frame) {
+            Ok(read) => read,
+            Err(reason) => return Ok(empty(reason)),
         };
         let shape = FlowShape {
             subject: subject.flatten(),
