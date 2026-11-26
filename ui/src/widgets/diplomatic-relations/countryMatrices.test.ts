@@ -24,6 +24,13 @@ test('a truncated intel read keeps its witnessed network and draws every other p
   assert.equal(matrixCellAt(model, 2, 2).kind, 'diagonal');
   const whole = projectIntelCoverage(view('coverage', { ...reply, unlisted: null }), { measure: 'covered', surface: '#ffffff' });
   assert.equal(matrixCellAt(whole, 1, 0).kind, 'empty', 'a whole read proves no network');
+  const strength = projectIntelCoverage(view('coverage', {
+    ...reply, pairs: [{ ...reply.pairs[0], value: 29000n, maxStrength: 29000n }], scale: 100000n, maxValue: 29000n,
+  }), { measure: 'strongest', surface: '#ffffff' });
+  const cell = matrixCellAt(strength, 0, 1);
+  assert.equal(cell.kind === 'value' && cell.text, '29%');
+  assert.equal(strength.legend?.gradient?.highLabel, '29%');
+  assert.equal(strength.tooltip?.(strength.rows[0]!, strength.columns[1]!, cell, 0, 1)?.items?.at(-1)?.value, '29%');
 });
 
 test('diplomatic relations: a known owner\'s unlisted opinion is zero, an unknown owner\'s row is not recorded with its reason', () => {
@@ -54,12 +61,13 @@ const groupCtx = (membership: 'hour' | 'ever') => ({
   widget: { countries: { kind: 'group', group: { type: 'faction', id: '42' }, membership, aggregate: false } },
 }) as never;
 
-const readOf = (plan: { entries: readonly { read: unknown }[] }) => plan.entries[0]!.read as { params: Record<string, unknown>; coverage: unknown };
+const readOf = (plan: { entries: readonly { read: unknown }[] }) => plan.entries[0]!.read as { params: Record<string, unknown>; coverage: unknown; dynamicKeys?: readonly string[] };
 
 test('both country matrices send a faction as the group, resolved in Rust at the hour, never the union of its members', () => {
   const view = { following: true, staticSpan: null } as never;
   for (const declaration of [diplomaticRelationsDeclaration, intelCoverageDeclaration]) {
     const read = readOf(declaration.sources(groupCtx('hour'), view));
+    assert.ok(!read.dynamicKeys?.includes('hour'), declaration.kind);
     assert.deepEqual(read.params.group, { type: 'faction', id: '42', membership: 'hour' }, declaration.kind);
     assert.ok(!(read.params.countries as unknown[] | undefined)?.length, `${declaration.kind}: no member list leaves the client`);
     assert.equal(read.params.top, undefined, `${declaration.kind}: a group is not a top`);

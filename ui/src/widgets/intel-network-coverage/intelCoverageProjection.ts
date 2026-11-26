@@ -6,7 +6,7 @@ import { groupSelection } from '../../families/groupSelection.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
 import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
-import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
+import { formatRational, formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageMeasure, IntelCoverageReply, IntelPair } from '../../generated/dashboard';
 
 export const INTEL_TOP_DEFAULT = 12;
@@ -19,11 +19,7 @@ export interface IntelCoverageProjectionOptions {
 
 export function coverageText(raw: number | bigint, scale: number | bigint, measure: IntelCoverageMeasure): string {
   if (measure === 'covered') return formatScalar(raw, 'integer');
-  return formatRecordedPercent((Number(raw) / Number(scale || 1)) * 100);
-}
-
-function strengthText(raw: number | bigint): string {
-  return formatRecordedPercent((Number(raw) / FIXED) * 100);
+  return formatRational(BigInt(raw) * 100n, BigInt(scale), { maxDecimals: 5, percent: true });
 }
 
 function emptyModel(hour: number, extra: Partial<HeatMatrixModel>): HeatMatrixModel {
@@ -94,9 +90,9 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
           ? [
               { label: 'Controlled states covered', value: String(raw.coveredControlled) },
               { label: 'Core states covered', value: String(raw.coveredCore) },
-              { label: 'Strength in controlled states', value: strengthText(raw.controlledStrength) },
-              { label: 'Strength in core states', value: strengthText(raw.coreStrength) },
-              { label: 'Strongest state', value: strengthText(raw.maxStrength) },
+              { label: 'Strength in controlled states', value: coverageText(raw.controlledStrength, FIXED, 'strength') },
+              { label: 'Strength in core states', value: coverageText(raw.coreStrength, FIXED, 'strength') },
+              { label: 'Strongest state', value: coverageText(raw.maxStrength, FIXED, 'strongest') },
             ]
           : [],
       };
@@ -151,7 +147,6 @@ export const intelCoverageDeclaration: HeatMatrixWidgetDeclaration<IntelCoverage
           product: 'intel-network-coverage',
           followQuery: { panel: 'intel-network-coverage', ...params },
           params,
-          dynamicKeys: ['hour'],
         },
       }],
     };

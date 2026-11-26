@@ -213,13 +213,17 @@ export function lossCausesModel(readView: BoundedReadView, options: MilitaryAirA
       tooltip: {
         title: pres.labelMissing ? 'Name not recorded' : pres.label,
         hour: readView.hour,
+        ...(row.partial ? { note: row.partial } : {}),
         items: [
-          row.partial ? { label: options.leftHeader, value: formatBarsValueField(total).text, partialReason: row.partial } : { label: options.leftHeader, value: formatBarsValueField(total).text },
-          ...row.causes.map(cause => ({
-            label: causeLabel(cause),
-            ...(cause.missing ? { missingReason: cause.missing } : {}),
-            value: `${formatBarsValueField(militaryAirAmount(cause.taken, row.partial, options)).text}${row.complete && taken > 0n ? ` (${formatShare(Number((BigInt(cause.taken) * 10_000n) / taken) / 10_000)})` : ''}`,
-          })),
+          { label: options.leftHeader, value: formatBarsValueField(total).exact },
+          ...row.causes.flatMap(cause => {
+            const exact = formatBarsValueField(militaryAirAmount(cause.taken, row.partial, options)).exact;
+            const share = row.complete && taken > 0n ? ` (${formatShare(Number((BigInt(cause.taken) * 10_000n) / taken) / 10_000)})` : '';
+            return [
+              { label: causeLabel(cause), value: exact + share },
+              ...(cause.missing ? [{ label: 'Cause name', missingReason: cause.missing }] : []),
+            ];
+          }),
         ],
       },
     };

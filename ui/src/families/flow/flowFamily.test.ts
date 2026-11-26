@@ -156,6 +156,9 @@ test('a partial reply never says there is none: emptiness needs both sides prove
   assert.equal(table.emptyKind, 'unavailable');
   const partialTable = projectTradeTable(view({ ...centred, incoming: side(centred.incoming.links, null, unproven), table: [{ partner: 1, cells: ['8', '0'], net: '8' }] }));
   assert.equal(partialTable.titleSummaryPartial, unproven, 'trade table carries partial side reason in the header summary marker');
+  const name = partialTable.rows[0]!.cells.partner!;
+  assert.equal(name.loading, true);
+  assert.deepEqual(name.value, { kind: 'notRecorded', reason: 'Name is loading' });
   assert.equal('notes' in partialTable, false);
   const matrix = projectTradeMatrix(view({ ...base, senders: side([], null, unproven), receivers: side([], null, unproven) }));
   assert.equal(matrix.emptyKind, 'unavailable');

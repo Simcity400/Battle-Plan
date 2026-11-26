@@ -126,7 +126,6 @@ export const diplomaticRelationsDeclaration: HeatMatrixWidgetDeclaration<Diploma
           product: 'diplomatic-relations',
           followQuery: { panel: 'diplomatic-relations', ...params },
           params,
-          dynamicKeys: ['hour'],
         },
       }],
     };

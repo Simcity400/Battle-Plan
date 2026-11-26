@@ -63,6 +63,7 @@ test('R2-K6: aircraft are cut whole on screen from the recorded integer, 0.4 is 
   assert.equal(first.readout?.primary, '<1 / 1');
   const lost = lossCausesModel(view(reply({ rows: [row({ tag: 'GER', identity: '7:1', taken: '60000', causes: [cause(1, '60000')] })] })), AIR);
   assert.equal((lost.rows[0] as BarsDataRow).readout?.primary, '<1 lost');
+  assert.deepEqual((lost.rows[0] as BarsDataRow).tooltip?.items?.map(item => item.value), ['0.6', '0.6 (100%)']);
 });
 
 test('a partial row carries its reason through every display, with no lower-bound wording and no shares', () => {
@@ -74,6 +75,7 @@ test('a partial row carries its reason through every display, with no lower-boun
   assert.ok(paired.notes?.some(note => note.startsWith('No recorded country:')), 'the witnessed unattributed amount is shown');
   const causes = lossCausesModel(view(partial), AIR);
   const first = causes.rows[0] as BarsDataRow;
+  assert.equal(first.tooltip?.note, reason);
   assert.deepEqual([first.segments?.length, first.value?.value.kind], [0, 'partial'], 'no share without a proved denominator');
   const empty = lossCausesModel(view(reply({ rows: [row({ tag: 'GER', identity: '7:1', complete: false, partial: reason })] })), AIR);
   assert.notEqual(empty.empty, 'No aircraft lost yet.', 'an empty partial list is not none');
