@@ -3,6 +3,7 @@
 mod dashboard_service;
 mod export_jobs;
 mod export_settings;
+mod export_webview;
 mod follow_push;
 mod game_windows;
 mod leaving;
@@ -593,10 +594,20 @@ fn main() {
                 return pull::refuse(responder, StatusCode::FORBIDDEN, "Only the dashboard may pull followed answers");
             }
             match request.uri().path() {
-                "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
+                "/follow" => {
+                    if pull::param(&request, "session").as_deref().is_some_and(dashboard_follow::registry::is_export_session) {
+                        context.app_handle().state::<follow_push::ExportFollowPush>().ask(&request, responder);
+                    } else {
+                        context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
+                    }
+                }
                 "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
                     (Some(session), Some(released)) => {
-                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(&session)) {
+                        if dashboard_follow::registry::is_export_session(&session) {
+                            if let Some(epoch) = context.app_handle().state::<follow_push::ExportFollowPush>().outbox(|relay| relay.epoch_of(&session)) {
+                                dashboard_follow::registry::export_registry().credit(epoch, released);
+                            }
+                        } else if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(&session)) {
                             dashboard_follow::registry::registry().credit(epoch, released);
                         }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
@@ -634,6 +645,12 @@ fn main() {
                     push.state::<follow_push::FollowPush>().offer(|queue| queue.offer(payload, session));
                 }
             })?;
+            let export_push = app.handle().clone();
+            viewer::host::install_export_follow(move |kind, payload, session| {
+                if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
+                    export_push.state::<follow_push::ExportFollowPush>().offer(|queue| queue.offer(payload, session));
+                }
+            })?;
             if let Some(window) = app.get_webview_window("main") {
                 watch_page(&window)?;
                 if let Err(error) = app_update::session::follow(window.hwnd()?.0 as isize, Arc::new(SessionEnding(app.handle().clone(), exiting))) {
@@ -648,7 +665,9 @@ fn main() {
         .manage(DashboardService::default())
         .manage(game_windows::GameWindows::default())
         .manage(follow_push::FollowPush::default())
+        .manage(follow_push::ExportFollowPush::default())
         .manage(export_jobs::ExportJobs::default())
+        .manage(export_webview::ExportWebviewState::default())
         .manage(Leaving::default())
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
@@ -680,6 +699,10 @@ fn main() {
             export_jobs::choose_video_export_path,
             export_jobs::preview_map_video,
             export_jobs::start_map_video_export,
+            export_jobs::surface_export_timelines,
+            export_jobs::video_export_page_ack,
+            export_jobs::preview_surface_video,
+            export_jobs::start_surface_video_export,
             export_jobs::cancel_video_export,
             export_jobs::save_partial_video_export,
             export_jobs::dismiss_video_export,
@@ -866,6 +889,7 @@ fn start_exit_worker() -> std::io::Result<&'static Exiting> {
 
 fn shutdown(app: &tauri::AppHandle) -> bool {
     app.state::<export_jobs::ExportJobs>().cancel_and_cleanup_for_shutdown();
+    app.state::<export_webview::ExportWebviewState>().close_window(app);
     app.state::<popout::PopOuts>().close(app);
     let (ended, waited) = std::sync::mpsc::channel();
     app.state::<NativeHost>().shutdown(move || {

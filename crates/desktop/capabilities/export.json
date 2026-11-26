@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "video-export",
+  "description": "Hidden presentation-mode WebView window for offline MP4 export.",
+  "windows": ["video-export"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

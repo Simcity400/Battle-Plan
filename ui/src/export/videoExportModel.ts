@@ -214,6 +214,25 @@ export function defaultAudioForSpeed(hoursPerSecond: number): boolean {
   return hoursPerSecond <= 24;
 }
 
+export function exportGlideDurationMs(hoursPerSecond: number, fps: number): number {
+  const safeFps = Math.max(1, fps);
+  if (!Number.isFinite(hoursPerSecond) || hoursPerSecond <= 0 || hoursPerSecond >= safeFps) {
+    return 0;
+  }
+  const hourMs = 1000 / hoursPerSecond;
+  return Math.max(24, Math.min(180, Math.round(hourMs * 0.85)));
+}
+
+export function readabilityHint(minTextPx: number | null, scale: number): string | null {
+  if (minTextPx !== null && Number.isFinite(minTextPx) && minTextPx > 0 && minTextPx < 9.5) {
+    return `Smallest text renders around ${minTextPx.toFixed(1)} px at this output size. Try Visible viewport, Reflow for portrait, or a higher resolution.`;
+  }
+  if (Number.isFinite(scale) && scale > 0 && scale < 0.55) {
+    return `This page scales to ${Math.round(scale * 100)}% to fit the frame. Inspect the 100% crop preview or switch to Visible viewport.`;
+  }
+  return null;
+}
+
 export function normalizeCrop(crop: CropRect): CropRect {
   const width = Math.min(1, Math.max(0.05, Number.isFinite(crop.width) ? crop.width : 1));
   const height = Math.min(1, Math.max(0.05, Number.isFinite(crop.height) ? crop.height : 1));

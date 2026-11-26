@@ -4,7 +4,8 @@ import { useId, useMemo } from 'react';
 import { Icon } from '../components/Icons';
 import { loadable } from '../components/loadable';
 import { WidgetSettings } from './settings/WidgetSettings';
-import type { MapOptions } from '../shell/api';
+import { desktopAvailable, type MapOptions } from '../shell/api';
+import { useExportVideo } from '../export/ExportVideoContext';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './widgets';
 
@@ -20,6 +21,8 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
   const menu = usePopover();
   const { trigger, open } = menu;
   const loaded = loadedWidgetRenderer(widget.kind) !== undefined;
+  const exportVideo = useExportVideo();
+  const canExportWidget = desktopAvailable && widget.kind !== 'map' && runtime.tracks.length > 0;
   return <>
     <button ref={trigger} className="dash-icon-button" type="button" data-widget-settings aria-label={`Configure ${widget.title}`} data-tooltip="Widget settings"
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
@@ -31,6 +34,12 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
       </div>}
       {open && (loaded ? <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} mapOptions={mapOptions} onMapOptions={onMapOptions} />
         : <Settings widget={widget} template={template} runtime={runtime} onChange={onApply} mapOptions={mapOptions} onMapOptions={onMapOptions} />)}
+      {canExportWidget && <div className="widget-settings-footer">
+        <button type="button" className="button small" onClick={() => {
+          menu.popup.current?.hidePopover();
+          exportVideo.openWidgetVideoExport(widget, template);
+        }}><Icon name="play" />Export widget video…</button>
+      </div>}
     </Popover>
   </>;
 }

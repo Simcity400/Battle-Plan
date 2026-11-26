@@ -6,9 +6,11 @@ import { useMapsHidden, useMapState } from '../../dashboard/geometry';
 import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
 import type { PlaybackController } from '../../dashboard/playback';
+import { useExportSurface } from '../../export/exportMotion';
 import { mapFrameOnScreen, mapPresentationMatches } from './presentation';
 
 export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) {
+  const exportSurface = useExportSurface();
   const body = useRef<HTMLDivElement>(null);
   const anchor = useCallback(() => {
     const clock = runtime.clock.getSnapshot();
@@ -31,7 +33,17 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
       hour: window.lastHour, fraction: widget.time.mode === 'follow' ? clock.fraction : 0,
       sequence: widget.time.mode === 'follow' ? clock.sequence : staticSequence };
   }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
-  useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
+  useLayoutEffect(() => {
+    if (exportSurface.active || !body.current) return undefined;
+    return runtime.maps.register(widget.id, body.current, target);
+  }, [exportSurface.active, runtime.maps, widget.id, target]);
+  if (exportSurface.active) {
+    return (
+      <div className="dash-map-widget is-export-slot" data-export-map-id={widget.id}>
+        <div className="dash-map-surface" ref={body} />
+      </div>
+    );
+  }
   const state = useMapState(runtime.maps, widget.id);
   const hidden = useMapsHidden(runtime.maps);
   const desired = target(runtime.clock.getSnapshot());

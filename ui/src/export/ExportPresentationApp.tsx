@@ -1,0 +1,752 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { nativeDashboardClient } from '../dashboard/nativeClient';
+import { bindTracks, clockBounds, type DashboardTemplate, type WidgetSpec } from '../dashboard/model';
+import { includeCampaigns } from '../dashboard/campaigns';
+import { PlaybackController } from '../dashboard/playback';
+import { MapViewsStore } from '../dashboard/geometry';
+import { widgetDefinition } from '../dashboard/definitions';
+import type { DashboardSource } from '../dashboard/client';
+import type { CountryChoice } from '../dashboard/mapPicker';
+import DashboardGrid from '../dashboard/DashboardGrid';
+import WidgetHeader from '../dashboard/WidgetHeader';
+import { WidgetBody } from '../dashboard/widgets';
+import { WidgetFrameContext, widgetWording, type WidgetFrameValue } from '../dashboard/widgetFrame';
+import { HeldFailures, HeldFailuresContext } from '../dashboard/heldFailures';
+import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from '../dashboard/follow/store';
+import { preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { LiveMotion } from '../charts/liveMotion';
+import { useAppearance } from '../shell/appearance/useAppearance';
+import { useWidgetIconMenu, WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
+import { ExportSurfaceContext, type ExportWidgetStatus } from './exportMotion';
+import { sendVideoExportPageAck, type ExportMapRect } from './videoExportApi';
+import { exportGlideDurationMs } from './videoExportModel';
+import type { LaneMotion } from '../families/laneRuntime';
+import '../widgets';
+import '../dashboard/dashboard.css';
+import './exportPresentation.css';
+
+interface MountPayload {
+  seq: number;
+  kind: 'widget' | 'page';
+  framing: 'full' | 'visible';
+  reflowForPortrait: boolean;
+  width: number;
+  height: number;
+  cssWidth: number;
+  cssHeight: number;
+  dpr: number;
+  scale: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  scrollTop: number;
+  fps: number;
+  hoursPerSecond: number;
+  dateStamp: boolean;
+  followPinned: boolean;
+  initialHour: number;
+  payload: SurfaceMountData;
+}
+
+interface MetricsPayload {
+  seq: number;
+  cssWidth: number;
+  cssHeight: number;
+  dpr: number;
+  scale: number;
+}
+
+interface StepPayload {
+  seq: number;
+  frameIndex: number;
+  virtualNowMs: number;
+  mode: 'recorded' | 'card';
+  hour: number | null;
+  fraction: number;
+  resetContinuity: boolean;
+  dateText: string | null;
+  cardHeading: string | null;
+  cardDates: string | null;
+  cardDetail: string | null;
+  cutBanner: string | null;
+  cssWidth: number;
+  cssHeight: number;
+  dpr: number;
+  scale: number;
+}
+
+export interface SurfaceMountData {
+  template: DashboardTemplate;
+  widget?: WidgetSpec;
+  campaigns: { id: string; path: string; label: string }[];
+  selectedCountries: Record<string, CountryChoice | null>;
+  selectedBranches: Record<string, string>;
+  observed: Record<string, number>;
+  defaultRoleId: string | null;
+}
+
+interface MountedSession {
+  kind: 'widget' | 'page';
+  framing: 'full' | 'visible';
+  reflowForPortrait: boolean;
+  outputWidth: number;
+  outputHeight: number;
+  cssWidth: number;
+  cssHeight: number;
+  dpr: number;
+  scale: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  scrollTop: number;
+  fps: number;
+  hoursPerSecond: number;
+  template: DashboardTemplate;
+  widget: WidgetSpec | null;
+  sources: Map<string, DashboardSource>;
+  selectedBranches: Record<string, string>;
+  defaultRoleId: string | null;
+  campaigns: { id: string; path: string; label: string; loading: boolean }[];
+}
+
+interface StepOverlay {
+  mode: 'recorded' | 'card';
+  dateText: string | null;
+  cutBanner: string | null;
+  cardHeading: string | null;
+  cardDates: string | null;
+  cardDetail: string | null;
+}
+
+const noop = () => undefined;
+
+function nextAnimationFrames(count = 2): Promise<void> {
+  return new Promise(resolve => {
+    let remaining = Math.max(1, count);
+    const tick = () => {
+      remaining -= 1;
+      if (remaining <= 0) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+function measureMinTextPx(root: HTMLElement | null, pixelFactor: number): number | null {
+  if (!root) return null;
+  let minSize = Infinity;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let inspected = 0;
+  while (inspected < 400) {
+    const node = walker.nextNode();
+    if (!node) break;
+    if (!node.textContent || !node.textContent.trim()) continue;
+    const parent = node.parentElement;
+    if (!parent) continue;
+    const style = window.getComputedStyle(parent);
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const size = parseFloat(style.fontSize);
+    if (Number.isFinite(size) && size > 0) {
+      minSize = Math.min(minSize, size * pixelFactor);
+    }
+    inspected += 1;
+  }
+  if (!Number.isFinite(minSize)) {
+    return 12 * pixelFactor;
+  }
+  return Math.round(minSize * 10) / 10;
+}
+
+function measureMapRects(root: HTMLElement | null, dpr: number): ExportMapRect[] {
+  if (!root) return [];
+  const slots = root.querySelectorAll<HTMLElement>('[data-export-map-id]');
+  const out: ExportMapRect[] = [];
+  for (const slot of slots) {
+    const widgetId = slot.dataset.exportMapId;
+    if (!widgetId) continue;
+    const box = slot.getBoundingClientRect();
+    const x = Math.round(box.left * dpr);
+    const y = Math.round(box.top * dpr);
+    const width = Math.max(0, Math.round(box.width * dpr));
+    const height = Math.max(0, Math.round(box.height * dpr));
+    if (width >= 16 && height >= 16) {
+      out.push({ widgetId, x, y, width, height });
+    }
+  }
+  return out;
+}
+
+function applyFollowPinned(template: DashboardTemplate, followPinned: boolean): DashboardTemplate {
+  if (!followPinned) return template;
+  return {
+    ...template,
+    widgets: template.widgets.map(widget =>
+      widget.time.mode === 'pin' ? { ...widget, time: { mode: 'follow' as const } } : widget,
+    ),
+  };
+}
+
+function SingleWidgetCard({
+  widget,
+  template,
+  runtime,
+}: {
+  widget: WidgetSpec;
+  template: DashboardTemplate;
+  runtime: import('../dashboard/definitions').WidgetRuntime;
+}) {
+  const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
+  const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
+  const [filterSlot, setFilterSlot] = useState<HTMLSpanElement | null>(null);
+  const [card, setCard] = useState<HTMLElement | null>(null);
+  const [failures] = useState(() => new HeldFailures());
+  const definition = widgetDefinition(widget.kind);
+  const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
+  const campaignTrack = runtime.tracks.find(track => track.id === widget.trackIds[0]) ?? runtime.tracks[0];
+  const frameValue = useMemo<WidgetFrameValue>(
+    () => ({
+      title: widget.title,
+      subject: wording.subject,
+      things: wording.things,
+      timeMode: widget.time.mode,
+      pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
+      bounds: campaignTrack
+        ? { firstHour: campaignTrack.branch.firstHour, lastHour: campaignTrack.branch.lastHour }
+        : null,
+      hasSubject: definition?.data !== false && definition?.countrySelection !== false,
+      reportState: noop,
+      announce: noop,
+      clearAnnouncement: noop,
+      setDynamicViewSwitch: noop,
+      skeleton: definition?.skeleton ?? 'generic',
+      setSkeleton: noop,
+    }),
+    [widget.title, widget.time.mode, wording.subject, wording.things, campaignTrack, definition],
+  );
+  return (
+    <article ref={setCard} className={`dash-widget kind-${widget.kind}`} data-widget={widget.id}>
+      <WidgetHeader
+        widget={widget}
+        definition={definition}
+        effective={widget}
+        campaignTrack={campaignTrack}
+        runtime={runtime}
+        template={template}
+        editing={false}
+        readOnly
+        active
+        activeSwitch={null}
+        summarySlotRef={setHeaderSlot}
+        countrySlotRef={setCountrySlot}
+        filterSlotRef={setFilterSlot}
+        headerSlotElement={headerSlot}
+      />
+      <WidgetFrameContext.Provider value={frameValue}>
+        <div className="dash-widget-content">
+          <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
+            <HeldFailuresContext.Provider value={failures}>
+              <FollowedWidgetKey.Provider value={widget.id}>
+                <FollowedWidgetKind.Provider value={widget.kind}>
+                  <FollowedCard.Provider value={card}>
+                    <WidgetBody
+                      widget={widget}
+                      runtime={runtime}
+                      active
+                      headerSlot={headerSlot}
+                      countrySlot={countrySlot}
+                      filterSlot={filterSlot}
+                    />
+                  </FollowedCard.Provider>
+                </FollowedWidgetKind.Provider>
+              </FollowedWidgetKey.Provider>
+            </HeldFailuresContext.Provider>
+          </div>
+        </div>
+      </WidgetFrameContext.Provider>
+    </article>
+  );
+}
+
+export default function ExportPresentationApp() {
+  const appearance = useAppearance();
+  const widgetIconMenu = useWidgetIconMenu(appearance);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const clockRef = useRef<PlaybackController | null>(null);
+  if (!clockRef.current) {
+    clockRef.current = new PlaybackController(undefined, 'export-clock');
+  }
+  const clock = clockRef.current;
+  const mapsRef = useRef<MapViewsStore | null>(null);
+  if (!mapsRef.current) {
+    mapsRef.current = new MapViewsStore(nativeDashboardClient, clock);
+  }
+  const maps = mapsRef.current;
+
+  const [session, setSession] = useState<MountedSession | null>(null);
+  const [motion, setMotion] = useState<LaneMotion | undefined>(undefined);
+  const [overlay, setOverlay] = useState<StepOverlay>({
+    mode: 'recorded',
+    dateText: null,
+    cutBanner: null,
+    cardHeading: null,
+    cardDates: null,
+    cardDetail: null,
+  });
+
+  const sessionRef = useRef<MountedSession | null>(null);
+  sessionRef.current = session;
+  const widgetStatusesRef = useRef(new Map<string, ExportWidgetStatus>());
+  const statusWaitersRef = useRef(new Set<() => void>());
+  const lastSignatureRef = useRef<string>('');
+  const lastModeRef = useRef<'recorded' | 'card'>('card');
+
+  const reportWidget = useCallback((key: string, status: ExportWidgetStatus | null) => {
+    if (status === null) widgetStatusesRef.current.delete(key);
+    else widgetStatusesRef.current.set(key, status);
+    for (const wake of [...statusWaitersRef.current]) wake();
+  }, []);
+
+  const waitForWidgetsSettled = useCallback(async (expectedBindings: Map<string, number>, timeoutMs = 15000) => {
+    const start = performance.now();
+    const artBudgetMs = 2500;
+    const isSettled = (allowPendingArt: boolean) => {
+      for (const [key, status] of widgetStatusesRef.current) {
+        if (status.mode === 'reading') return false;
+        const minBinding = expectedBindings.get(key) ?? 0;
+        if (status.binding > 0 && status.installedBinding < Math.max(status.binding, minBinding)) {
+          return false;
+        }
+        if (status.mode === 'picture' && status.expired) return false;
+        if (!allowPendingArt && (status.pendingArt || status.pendingIdentities)) return false;
+      }
+      return true;
+    };
+    while (performance.now() - start < timeoutMs) {
+      const allowArtTimeout = performance.now() - start >= artBudgetMs;
+      if (isSettled(allowArtTimeout)) return;
+      await new Promise<void>(resolve => {
+        const timer = window.setTimeout(() => {
+          statusWaitersRef.current.delete(done);
+          resolve();
+        }, 25);
+        const done = () => {
+          window.clearTimeout(timer);
+          statusWaitersRef.current.delete(done);
+          resolve();
+        };
+        statusWaitersRef.current.add(done);
+      });
+    }
+  }, []);
+
+  const computeSignature = useCallback((step: StepPayload) => {
+    const parts: string[] = [
+      step.mode,
+      step.dateText ?? '',
+      step.cutBanner ?? '',
+      `${step.cssWidth}x${step.cssHeight}@${step.dpr}:${step.scale}`,
+    ];
+    const keys = [...widgetStatusesRef.current.keys()].sort();
+    for (const key of keys) {
+      const s = widgetStatusesRef.current.get(key)!;
+      parts.push(`${key}=${s.mode}:${s.installedId ?? 'n'}:${s.installedBinding}:${s.target ?? 'n'}`);
+    }
+    return parts.join('|');
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const unlisteners: (() => void)[] = [];
+    let serial = Promise.resolve();
+
+    const enqueue = (task: () => Promise<void>) => {
+      serial = serial.then(task).catch(() => undefined);
+    };
+
+    const handleMount = async (payload: MountPayload) => {
+      try {
+        widgetStatusesRef.current.clear();
+        lastSignatureRef.current = '';
+        lastModeRef.current = 'card';
+        const data = payload.payload;
+        const openedSources = new Map<string, DashboardSource>();
+        for (const campaign of data.campaigns) {
+          const source = await nativeDashboardClient.openSource(campaign.path, new AbortController().signal);
+          openedSources.set(campaign.id, source);
+        }
+        const campaigns = data.campaigns.map(c => ({ ...c, loading: false }));
+        const baseTemplate = applyFollowPinned(data.template, payload.followPinned);
+        const merged = includeCampaigns(baseTemplate, campaigns);
+        const template: DashboardTemplate = {
+          ...merged,
+          roles: merged.roles.map(role => ({
+            ...role,
+            selectedTag: data.selectedCountries[role.id]?.tag ?? null,
+            selectedSlot: data.selectedCountries[role.id]?.slot ?? null,
+            observed: data.observed,
+          })),
+        };
+        const targetWidget = payload.kind === 'widget' && data.widget
+          ? (payload.followPinned && data.widget.time.mode === 'pin'
+              ? { ...data.widget, time: { mode: 'follow' as const } }
+              : data.widget)
+          : null;
+        const kinds = targetWidget
+          ? [targetWidget.kind]
+          : [...new Set(template.widgets.map(w => w.kind))];
+        await preloadWidgetRenderers(kinds);
+        const tracks = bindTracks(template, openedSources, data.selectedBranches);
+        clock.setBounds(clockBounds(tracks), true);
+        clock.stepExport(payload.initialHour, payload.hoursPerSecond, true);
+
+        const nextSession: MountedSession = {
+          kind: payload.kind,
+          framing: payload.framing,
+          reflowForPortrait: payload.reflowForPortrait,
+          outputWidth: payload.width,
+          outputHeight: payload.height,
+          cssWidth: payload.cssWidth,
+          cssHeight: payload.cssHeight,
+          dpr: payload.dpr,
+          scale: payload.scale,
+          sourceWidth: payload.sourceWidth,
+          sourceHeight: payload.sourceHeight,
+          scrollTop: payload.scrollTop,
+          fps: payload.fps,
+          hoursPerSecond: payload.hoursPerSecond,
+          template,
+          widget: targetWidget,
+          sources: openedSources,
+          selectedBranches: data.selectedBranches,
+          defaultRoleId: data.defaultRoleId,
+          campaigns,
+        };
+        setOverlay({
+          mode: 'recorded',
+          dateText: null,
+          cutBanner: null,
+          cardHeading: null,
+          cardDates: null,
+          cardDetail: null,
+        });
+        setMotion({
+          easeValues: true,
+          glideDurationMs: exportGlideDurationMs(payload.hoursPerSecond, payload.fps),
+          nowMs: 0,
+          speed: payload.hoursPerSecond,
+        });
+        setSession(nextSession);
+        await nextAnimationFrames(4);
+        await waitForWidgetsSettled(new Map(), 15000);
+        await nextAnimationFrames(2);
+        const contentNode = contentRef.current;
+        const contentWidth = contentNode ? contentNode.scrollWidth : payload.cssWidth;
+        const contentHeight = contentNode ? contentNode.scrollHeight : payload.cssHeight;
+        const pixelFactor = payload.dpr * payload.scale;
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'mount',
+          dirty: true,
+          contentWidth,
+          contentHeight,
+          minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
+          mapRects: measureMapRects(rootRef.current, payload.dpr),
+          error: null,
+        });
+      } catch (cause) {
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'mount',
+          dirty: true,
+          contentWidth: null,
+          contentHeight: null,
+          minTextPx: null,
+          mapRects: [],
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    };
+
+    const handleMetrics = async (payload: MetricsPayload) => {
+      try {
+        setSession(prev =>
+          prev
+            ? {
+                ...prev,
+                cssWidth: payload.cssWidth,
+                cssHeight: payload.cssHeight,
+                dpr: payload.dpr,
+                scale: payload.scale,
+              }
+            : null,
+        );
+        await nextAnimationFrames(3);
+        const pixelFactor = payload.dpr * payload.scale;
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'metrics',
+          dirty: true,
+          contentWidth: contentRef.current?.scrollWidth ?? null,
+          contentHeight: contentRef.current?.scrollHeight ?? null,
+          minTextPx: measureMinTextPx(rootRef.current, pixelFactor),
+          mapRects: measureMapRects(rootRef.current, payload.dpr),
+          error: null,
+        });
+      } catch (cause) {
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'metrics',
+          dirty: true,
+          contentWidth: null,
+          contentHeight: null,
+          minTextPx: null,
+          mapRects: [],
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    };
+
+    const handleStep = async (payload: StepPayload) => {
+      try {
+        const curSession = sessionRef.current;
+        if (!curSession) {
+          throw new Error('Export page received a step before mounting.');
+        }
+        if (
+          curSession.cssWidth !== payload.cssWidth ||
+          curSession.cssHeight !== payload.cssHeight ||
+          Math.abs(curSession.dpr - payload.dpr) > 1e-4 ||
+          Math.abs(curSession.scale - payload.scale) > 1e-4
+        ) {
+          setSession(prev =>
+            prev
+              ? {
+                  ...prev,
+                  cssWidth: payload.cssWidth,
+                  cssHeight: payload.cssHeight,
+                  dpr: payload.dpr,
+                  scale: payload.scale,
+                }
+              : null,
+          );
+        }
+        setOverlay({
+          mode: payload.mode,
+          dateText: payload.dateText,
+          cutBanner: payload.cutBanner,
+          cardHeading: payload.cardHeading,
+          cardDates: payload.cardDates,
+          cardDetail: payload.cardDetail,
+        });
+        if (payload.mode === 'card') {
+          lastModeRef.current = 'card';
+          lastSignatureRef.current = '';
+          await nextAnimationFrames(2);
+          await sendVideoExportPageAck({
+            seq: payload.seq,
+            kind: 'step',
+            dirty: true,
+            contentWidth: null,
+            contentHeight: null,
+            minTextPx: null,
+            mapRects: [],
+            error: null,
+          });
+          return;
+        }
+        const expectedBindings = new Map<string, number>();
+        for (const [key, st] of widgetStatusesRef.current) {
+          expectedBindings.set(key, st.binding);
+        }
+        const glideDurationMs = exportGlideDurationMs(curSession.hoursPerSecond, curSession.fps);
+        setMotion({
+          easeValues: true,
+          glideDurationMs,
+          nowMs: payload.virtualNowMs,
+          speed: curSession.hoursPerSecond,
+        });
+        if (payload.hour !== null) {
+          clock.stepExport(
+            payload.hour + payload.fraction,
+            curSession.hoursPerSecond,
+            payload.resetContinuity,
+          );
+        }
+        await nextAnimationFrames(1);
+        await waitForWidgetsSettled(expectedBindings, 15000);
+        await nextAnimationFrames(2);
+
+        const sig = computeSignature(payload);
+        const mapRects = measureMapRects(rootRef.current, payload.dpr);
+        const dirty =
+          payload.frameIndex === 0 ||
+          lastModeRef.current !== 'recorded' ||
+          sig !== lastSignatureRef.current ||
+          mapRects.length > 0;
+        lastSignatureRef.current = sig;
+        lastModeRef.current = 'recorded';
+
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'step',
+          dirty,
+          contentWidth: contentRef.current?.scrollWidth ?? null,
+          contentHeight: contentRef.current?.scrollHeight ?? null,
+          minTextPx:
+            payload.frameIndex === 0
+              ? measureMinTextPx(rootRef.current, payload.dpr * payload.scale)
+              : null,
+          mapRects,
+          error: null,
+        });
+      } catch (cause) {
+        await sendVideoExportPageAck({
+          seq: payload.seq,
+          kind: 'step',
+          dirty: true,
+          contentWidth: null,
+          contentHeight: null,
+          minTextPx: null,
+          mapRects: [],
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    };
+
+    const handleUnmount = async () => {
+      widgetStatusesRef.current.clear();
+      lastSignatureRef.current = '';
+      setSession(null);
+      setMotion(undefined);
+    };
+
+    void Promise.all([
+      listen<MountPayload>('video-export-mount', event => enqueue(() => handleMount(event.payload))),
+      listen<MetricsPayload>('video-export-metrics', event => enqueue(() => handleMetrics(event.payload))),
+      listen<StepPayload>('video-export-step', event => enqueue(() => handleStep(event.payload))),
+      listen('video-export-unmount', () => enqueue(handleUnmount)),
+    ]).then(stops => {
+      if (!alive) {
+        for (const stop of stops) stop();
+        return;
+      }
+      unlisteners.push(...stops);
+      void sendVideoExportPageAck({
+        seq: 0,
+        kind: 'boot',
+        dirty: false,
+        contentWidth: null,
+        contentHeight: null,
+        minTextPx: null,
+        mapRects: [],
+        error: null,
+      });
+    });
+
+    return () => {
+      alive = false;
+      for (const stop of unlisteners) stop();
+    };
+  }, [clock, waitForWidgetsSettled, computeSignature]);
+
+  const tracks = useMemo(() => {
+    if (!session) return [];
+    return bindTracks(session.template, session.sources, session.selectedBranches);
+  }, [session]);
+
+  const runtime = useMemo(() => {
+    if (!session) return null;
+    return {
+      onMapBranch: noop,
+      tracks,
+      clock,
+      maps,
+      client: nativeDashboardClient,
+      campaignTracks: session.template.tracks,
+      defaultRoleId: session.defaultRoleId,
+      alignment: session.template.alignment,
+      nativeHidden: true,
+      campaigns: session.campaigns,
+      recordings: [],
+      assignCampaign: async () => undefined,
+      requestSeek: () => false,
+      addWidgetBelow: noop,
+    };
+  }, [session, tracks, clock, maps]);
+
+  const exportContext = useMemo(
+    () => ({
+      active: true,
+      motion,
+      reportWidget,
+    }),
+    [motion, reportWidget],
+  );
+
+  const pageWidth = useMemo(() => {
+    if (!session) return 1280;
+    if (session.framing === 'visible' && session.reflowForPortrait && session.outputHeight > session.outputWidth) {
+      return Math.round(session.cssWidth / Math.max(0.1, session.scale));
+    }
+    return session.sourceWidth;
+  }, [session]);
+
+  return (
+    <ExportSurfaceContext.Provider value={exportContext}>
+      <WidgetIconsContext.Provider value={widgetIconMenu.icons}>
+        <div ref={rootRef} className="export-presentation-root">
+          {session && runtime && (
+            <LiveMotion.Provider value={clock.getMotion}>
+              {session.kind === 'widget' && session.widget ? (
+                <div className="export-single-widget-shell" ref={contentRef}>
+                  <SingleWidgetCard widget={session.widget} template={session.template} runtime={runtime} />
+                </div>
+              ) : (
+                <div
+                  className={`export-presentation-stage${session.framing === 'visible' ? ' is-visible-mode' : ''}`}
+                >
+                  <div
+                    ref={contentRef}
+                    className="export-page-content"
+                    style={{
+                      width: `${pageWidth}px`,
+                      transform:
+                        session.framing === 'visible'
+                          ? `scale(${session.scale}) translateY(${-Math.max(0, session.scrollTop)}px)`
+                          : `scale(${session.scale})`,
+                    }}
+                  >
+                    <DashboardGrid
+                      template={session.template}
+                      runtime={runtime}
+                      editing={false}
+                      onLayouts={noop}
+                      onApply={noop}
+                      onRemove={noop}
+                    />
+                  </div>
+                </div>
+              )}
+            </LiveMotion.Provider>
+          )}
+
+          {overlay.mode === 'recorded' && overlay.dateText && (
+            <div className="export-date-pill">{overlay.dateText}</div>
+          )}
+
+          {overlay.mode === 'recorded' && overlay.cutBanner && (
+            <div className="export-cut-banner">{overlay.cutBanner}</div>
+          )}
+
+          {overlay.mode === 'card' && (
+            <div className="export-card-overlay">
+              <h1>{overlay.cardHeading ?? 'Unrecorded stretch'}</h1>
+              {overlay.cardDates && <p className="export-card-dates">{overlay.cardDates}</p>}
+              {overlay.cardDetail && <p className="export-card-detail">{overlay.cardDetail}</p>}
+            </div>
+          )}
+        </div>
+      </WidgetIconsContext.Provider>
+    </ExportSurfaceContext.Provider>
+  );
+}

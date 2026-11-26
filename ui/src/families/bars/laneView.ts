@@ -3,8 +3,8 @@ import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
 import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
-import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, type BarsModel } from './model.ts';
-import { collectVisibleBarsIcons, drawFamilyBars, hitFamilyBars, type BarsGlideOffset } from './painter.ts';
+import { assertBarsModelValid, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
+import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
@@ -30,7 +30,7 @@ const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly s
 
 function glideOf(frame: BarsFrame): Glide {
   const { model, layout, before, binding } = frame;
-  const duration = model.animateOrder ? glideDurationForSpeed(frame.speed, binding.reducedMotion) : 0;
+  const duration = model.animateOrder ? glideDurationForSpeed(frame.speed, binding.reducedMotion, binding.motion?.glideDurationMs) : 0;
   if (duration === 0 || !before || before.hour === frame.hour || frame.now - frame.changedAt >= duration) return { ...STILL, duration };
   let held = glides.get(layout);
   if (!held || held.continuity !== frame.continuity || held.scrollTop !== binding.scrollTop) {
@@ -54,6 +54,99 @@ function glideOf(frame: BarsFrame): Glide {
     glides.set(layout, held = { continuity: frame.continuity, scrollTop: binding.scrollTop, offsets });
   }
   return { duration, offsets: held.offsets, moving: held.offsets.size > 0 };
+}
+
+function isMeasuredField(field: BarsValueField | undefined): boolean {
+  if (!field) return true;
+  const kind = formatBarsValueField(field).kind;
+  return kind !== 'notRecorded' && kind !== 'notApplicable';
+}
+
+function rowFractions(row: BarsDataRow, form: BarsModel['form'], layout: BarsLayout): BarsEasedRow {
+  const scaleMax = Math.max(1e-6, layout.scaleMax);
+  const scaleLeft = Math.max(1e-6, layout.scaleLeftMax);
+  const scaleRight = Math.max(1e-6, layout.scaleRightMax);
+  const out: {
+    numericFrac?: number;
+    leftFrac?: number;
+    rightFrac?: number;
+    rightSideFrac?: number;
+    targetFrac?: number;
+  } = {};
+  if (form === 'two-sided' && layout.twoSidedLayout === 'split-sides') {
+    if (isMeasuredField(row.value) && row.numeric !== undefined && row.numeric !== null) {
+      out.numericFrac = row.numeric / scaleLeft;
+    }
+    if (row.rightSide && isMeasuredField(row.rightSide.value) && row.rightSide.numeric !== undefined && row.rightSide.numeric !== null) {
+      out.rightSideFrac = row.rightSide.numeric / scaleRight;
+    }
+  } else if (form === 'two-sided') {
+    const leftScale = layout.twoSidedLayout === 'stacked-pair' ? scaleMax : scaleLeft;
+    const rightScale = layout.twoSidedLayout === 'stacked-pair' ? scaleMax : scaleRight;
+    if (row.left && isMeasuredField(row.left.value) && row.left.numeric !== undefined && row.left.numeric !== null) {
+      out.leftFrac = row.left.numeric / leftScale;
+    }
+    if (row.right && isMeasuredField(row.right.value) && row.right.numeric !== undefined && row.right.numeric !== null) {
+      out.rightFrac = row.right.numeric / rightScale;
+    }
+  } else if (form !== 'share' && form !== 'stacked') {
+    if (isMeasuredField(row.value) && row.numeric !== undefined && row.numeric !== null) {
+      out.numericFrac = row.numeric / scaleMax;
+    }
+    if (row.target && row.target.numeric > 0) {
+      out.targetFrac = row.target.numeric / scaleMax;
+    }
+  }
+  return out;
+}
+
+function easedBarsOf(frame: BarsFrame): { readonly map?: ReadonlyMap<string, BarsEasedRow>; readonly moving: boolean } {
+  const motion = frame.binding.motion;
+  if (!motion?.easeValues || frame.binding.reducedMotion) return { moving: false };
+  const duration = glideDurationForSpeed(frame.speed, false, motion.glideDurationMs);
+  if (duration <= 0 || !frame.before || frame.before.hour === frame.hour || frame.before.model.form !== frame.model.form) {
+    return { moving: false };
+  }
+  const progress = (frame.now - frame.changedAt) / duration;
+  if (progress >= 1) return { moving: false };
+  const prior = new Map<string, BarsEasedRow>();
+  for (const item of frame.before.model.rows) {
+    if (item.kind === 'data') {
+      prior.set(item.key, rowFractions(item, frame.before.model.form, frame.before.layout));
+    }
+  }
+  const eased = new Map<string, BarsEasedRow>();
+  let moving = false;
+  for (const item of frame.model.rows) {
+    if (item.kind !== 'data') continue;
+    const prev = prior.get(item.key);
+    if (!prev) continue;
+    const cur = rowFractions(item, frame.model.form, frame.layout);
+    const next: {
+      numericFrac?: number;
+      leftFrac?: number;
+      rightFrac?: number;
+      rightSideFrac?: number;
+      targetFrac?: number;
+    } = {};
+    const step = (p: number | undefined, c: number | undefined): number | undefined => {
+      if (p === undefined || c === undefined) return c;
+      if (Math.abs(p - c) > 1e-4) moving = true;
+      return easeBarFraction(p, c, progress) ?? c;
+    };
+    const nf = step(prev.numericFrac, cur.numericFrac);
+    if (nf !== undefined) next.numericFrac = nf;
+    const lf = step(prev.leftFrac, cur.leftFrac);
+    if (lf !== undefined) next.leftFrac = lf;
+    const rf = step(prev.rightFrac, cur.rightFrac);
+    if (rf !== undefined) next.rightFrac = rf;
+    const rsf = step(prev.rightSideFrac, cur.rightSideFrac);
+    if (rsf !== undefined) next.rightSideFrac = rsf;
+    const tf = step(prev.targetFrac, cur.targetFrac);
+    if (tf !== undefined) next.targetFrac = tf;
+    eased.set(item.key, next);
+  }
+  return moving ? { map: eased, moving: true } : { moving: false };
 }
 
 function inspected(inspect: string | null): { readonly key: string; readonly side?: 'right' } | null {
@@ -81,6 +174,7 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   },
   paint(ctx, frame) {
     const glide = glideOf(frame);
+    const eased = easedBarsOf(frame);
     drawFamilyBars(ctx, {
       model: frame.model,
       layout: frame.layout,
@@ -89,12 +183,13 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
       now: frame.now,
       glideDuration: glide.duration,
       glide: glide.offsets,
+      ...(eased.map ? { easedValues: eased.map } : {}),
       artCache: frame.art,
       inspectedKey: inspected(frame.inspect)?.key ?? null,
       selectedKey: frame.binding.selectedKey,
       focusedKey: frame.binding.focusedKey,
     });
-    return glide.moving;
+    return glide.moving || eased.moving;
   },
   hit(frame, point) {
     if (frame.model.pickList) {

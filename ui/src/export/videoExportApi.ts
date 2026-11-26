@@ -199,6 +199,113 @@ export async function previewMapVideo(request: MapVideoRequest, previewHour: num
   return copy;
 }
 
+export interface SurfaceTrackCoverage {
+  stretches: RecordedStretch[];
+  unheld: UnheldGap[];
+}
+
+export interface EmbeddedMapSpec {
+  widgetId: string;
+  path: string;
+  revision: string | null;
+  branch: number;
+  axisOffset: number;
+  pinnedHour: number | null;
+  placement: SavedPlacement | null;
+  sourceViewport: [number, number] | null;
+  uiScale: number | null;
+  mapMode: string | null;
+  perspective: string | null;
+  fog: boolean;
+  dayNight: boolean | null;
+  alliedPlans: boolean | null;
+  counterColorsCountry: boolean | null;
+  natoCounters: boolean | null;
+}
+
+export interface SurfaceVideoRequest {
+  kind: 'widget' | 'page';
+  fromHour: number;
+  toHour: number;
+  fps: number;
+  hoursPerSecond: number;
+  skipGaps: boolean;
+  cutCardSeconds: number;
+  width: number;
+  height: number;
+  quality: Quality;
+  backend: BackendChoice;
+  ffmpegPath: string | null;
+  framing: 'full' | 'visible';
+  reflowForPortrait: boolean;
+  sourceWidth: number;
+  sourceHeight: number;
+  scrollTop: number;
+  dateStamp: boolean;
+  followPinned: boolean;
+  audioMapWidgetId: string | null;
+  tracks: SurfaceTrackCoverage[];
+  embeddedMaps: EmbeddedMapSpec[];
+  payload: unknown;
+}
+
+export interface ExportMapRect {
+  widgetId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface PageAckPayload {
+  seq: number;
+  kind: 'boot' | 'mount' | 'metrics' | 'step';
+  dirty: boolean;
+  contentWidth: number | null;
+  contentHeight: number | null;
+  minTextPx: number | null;
+  mapRects: ExportMapRect[];
+  error: string | null;
+}
+
+export interface SurfacePreviewResult {
+  pngBase64: string;
+  minTextPx: number | null;
+  contentWidth: number | null;
+  contentHeight: number | null;
+  scale: number;
+}
+
+export function getSurfaceExportTimelines(
+  tracks: { path: string; branch: number; axisOffset: number }[],
+): Promise<SurfaceTrackCoverage[]> {
+  requireDesktop();
+  return invoke<SurfaceTrackCoverage[]>('surface_export_timelines', { tracks });
+}
+
+export function previewSurfaceVideo(
+  request: SurfaceVideoRequest,
+  previewHour: number,
+): Promise<SurfacePreviewResult> {
+  requireDesktop();
+  return invoke<SurfacePreviewResult>('preview_surface_video', { request, previewHour });
+}
+
+export function startSurfaceVideoExport(
+  request: SurfaceVideoRequest,
+  destination: string,
+  targetLabel: string,
+): Promise<ExportJobSnapshot> {
+  requireDesktop();
+  return invoke<ExportJobSnapshot>('start_surface_video_export', {
+    args: { request, destination, targetLabel },
+  });
+}
+
+export function sendVideoExportPageAck(payload: PageAckPayload): Promise<void> {
+  return invoke<void>('video_export_page_ack', { payload });
+}
+
 export function startMapVideoExport(
   request: MapVideoRequest,
   destination: string,

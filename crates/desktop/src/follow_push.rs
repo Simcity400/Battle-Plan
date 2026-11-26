@@ -1,4 +1,26 @@
 pub type FollowPush = crate::pull::Pull<Relay>;
+pub type ExportFollowPush = crate::pull::Pull<ExportRelay>;
+
+#[derive(Default)]
+pub struct ExportRelay(Relay);
+
+impl ExportRelay {
+    pub fn offer(&mut self, payload: Vec<u8>, epoch: u64) {
+        self.0.offer(payload, epoch);
+    }
+
+    pub fn epoch_of(&self, session: &str) -> Option<u64> {
+        self.0.epoch_of(session)
+    }
+}
+
+impl crate::pull::Outbox for ExportRelay {
+    fn take(&mut self) -> Vec<Vec<u8>> { self.0.take() }
+    fn restart(&mut self, session: &str) {
+        let epoch = dashboard_follow::registry::export_registry().restart(session);
+        self.0.begin(session, epoch);
+    }
+}
 
 #[derive(Default)]
 pub struct Relay {

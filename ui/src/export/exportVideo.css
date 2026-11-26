@@ -323,3 +323,11 @@
   gap: 6px;
   flex-wrap: wrap;
 }
+
+.widget-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}

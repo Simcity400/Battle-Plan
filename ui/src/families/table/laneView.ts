@@ -427,7 +427,7 @@ function transition(shape: TableShape, frame: TableFrame): TableMotion {
   const markers = shape.rankMarkersOn
     ? rankMarkers(prev.orderKeys, shape.orderKeys, started, prior.markers, rankHoldForSpeed(frame.speed))
     : new Map<string, RankMarker>();
-  const glideMs = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
+  const glideMs = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true, frame.binding.motion?.glideDurationMs);
   const glide = new Map<string, GlideOffset>();
   if (glideMs > 0 && !shape.panes && !prev.panes) {
     const oldIndex = new Map<string, number>();
@@ -449,7 +449,7 @@ function transition(shape: TableShape, frame: TableFrame): TableMotion {
 }
 
 function liveGlide(frame: TableFrame): { readonly duration: number; readonly glide: TableGlide } {
-  const duration = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true);
+  const duration = glideDurationForSpeed(frame.speed, frame.binding.reducedMotion === true, frame.binding.motion?.glideDurationMs);
   const motion = motionOf(frame);
   return { duration, glide: duration > 0 && frame.now - motion.started < duration ? motion.glide : NO_GLIDE };
 }

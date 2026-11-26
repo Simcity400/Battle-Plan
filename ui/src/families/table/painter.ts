@@ -48,8 +48,10 @@ const HAIRLINE_INSET = 10;
 const DETAIL_PLATE_INSET = 5;
 const DETAIL_RULE_END = 6;
 
-export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
-  if (reducedMotion || speed > FAST_SPEED) return 0;
+export function glideDurationForSpeed(speed: number, reducedMotion = false, overrideMs?: number): number {
+  if (reducedMotion) return 0;
+  if (overrideMs !== undefined) return Math.max(0, overrideMs);
+  if (speed > FAST_SPEED) return 0;
   return speed > WATCHING_SPEED ? FAST_GLIDE_MS : WATCHING_GLIDE_MS;
 }
 

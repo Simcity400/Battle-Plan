@@ -34,6 +34,7 @@ import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/re
 import { widgetOptionFields } from '../widgets/manifest.ts';
 import { commitZone } from '../shell/commitCount';
 import { engine } from '../engine/frame.ts';
+import { useExportSurface } from '../export/exportMotion.ts';
 import { useGridPlacement } from './gridPlacement.ts';
 
 const RESET_UNDO_MS = 6000;
@@ -108,11 +109,12 @@ const onScreen = (box: DOMRect, viewport: DOMRect) =>
 const Body = memo(WidgetBody);
 
 function WidgetFrame({ prepared = false, widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
+  const exportSurface = useExportSurface();
   const element = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [card, setCard] = useState<HTMLElement | null>(null);
   const attach = useCallback((node: HTMLElement | null) => { element.current = node; setCard(node); }, []);
-  const [active, setActive] = useState<boolean | null>(typeof IntersectionObserver === 'undefined' ? true : null);
+  const [active, setActive] = useState<boolean | null>(exportSurface.active || typeof IntersectionObserver === 'undefined' ? true : null);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [filterSlot, setFilterSlot] = useState<HTMLSpanElement | null>(null);
@@ -145,6 +147,11 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   useLayoutEffect(() => {
     const target = element.current;
     if (!target) return;
+    if (exportSurface.active) {
+      slots.show();
+      setActive(true);
+      return;
+    }
     if (prepared) return mountInTurn(() => { slots.show(); setActive(true); }, { isIntersecting: false, boundingClientRect: target.getBoundingClientRect() });
     const root = target.closest(DASHBOARD_SCROLL);
     let mounted = false, visible = false, cancel = () => {};
@@ -163,7 +170,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     near.observe(target);
     seen.observe(target);
     return () => { near.disconnect(); seen.disconnect(); cancel(); };
-  }, [slots, prepared]);
+  }, [slots, prepared, exportSurface.active]);
 
   useEffect(() => { if (!prepared) perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title, prepared]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
@@ -367,6 +374,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       runtime={runtime}
       template={template}
       editing={editing}
+      readOnly={exportSurface.active}
       active={active === true}
       activeSwitch={activeSwitch}
       readingBadge={widget.kind === 'map' ? readingBadge : null}

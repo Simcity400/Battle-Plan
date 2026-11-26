@@ -447,7 +447,28 @@ pub fn install_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::R
             send(kind, bytes, session);
         }
     })?;
-    Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads { push, hosts: Mutex::default(), building: Mutex::default() })))
+    Ok(dashboard_follow::registry::install(Arc::new(FollowPlayheads {
+        push,
+        hosts: Mutex::default(),
+        building: Mutex::default(),
+        private: false,
+    })))
+}
+
+pub fn install_export_follow(send: impl Fn(u8, Vec<u8>, u64) + Send + 'static) -> io::Result<bool> {
+    let push = Arc::new(dashboard_follow::push::Push::default());
+    let drained = Arc::clone(&push);
+    thread::Builder::new().name("export follow push".into()).spawn(move || {
+        while let Some((kind, bytes, session)) = drained.take_sent() {
+            send(kind, bytes, session);
+        }
+    })?;
+    Ok(dashboard_follow::registry::install_export(Arc::new(FollowPlayheads {
+        push,
+        hosts: Mutex::default(),
+        building: Mutex::default(),
+        private: true,
+    })))
 }
 
 type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Entry>;
@@ -458,6 +479,7 @@ struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
     hosts: Mutex<BTreeMap<FollowKey, std::sync::Weak<FollowHost>>>,
     building: Mutex<BTreeMap<FollowKey, std::sync::Weak<Mutex<()>>>>,
+    private: bool,
 }
 
 impl FollowPlayheads {
@@ -505,7 +527,12 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
             return Ok(host as Arc<dyn dashboard_follow::registry::Hosted>);
         }
         let (units, _) = crate::playhead_host::units::at_path(path, Some(branch)).map_err(|error| error.to_string())?;
-        let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow).map_err(|error| error.to_string())?;
+        let entry = if self.private {
+            crate::playhead_host::open_private(units, crate::playhead_host::settings(), crate::playhead_host::Side::Follow)
+        } else {
+            crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow)
+        }
+        .map_err(|error| error.to_string())?;
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);

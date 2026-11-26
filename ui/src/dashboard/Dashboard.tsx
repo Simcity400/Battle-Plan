@@ -15,7 +15,7 @@ import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
 import type { AircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, resolveWindow, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type { PageEntry, PageId } from './pages';
@@ -53,6 +53,8 @@ import { commitZone } from '../shell/commitCount';
 import { keepLatest } from '../shell/latest.ts';
 import type { Latest } from '../shell/latest.ts';
 import { unsavedDrafts } from './layoutDrafts.ts';
+import { useExportVideo, type SurfaceExportContextSnapshot, type SurfaceExportMapWidget } from '../export/ExportVideoContext';
+import type { RecordedStretch, UnheldGap } from '../export/videoExportApi';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
@@ -593,6 +595,119 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
     [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
 
+  const exportVideo = useExportVideo();
+  const buildSurfaceContext = useCallback(
+    (targetTemplate: DashboardTemplate, singleWidget?: WidgetSpec): SurfaceExportContextSnapshot | null => {
+      const bound = bindTracks(targetTemplate, sourceMap, selectedBranches);
+      const clockRange = clockBounds(bound);
+      if (!clockRange) return null;
+      const widgetsToCheck = singleWidget ? [singleWidget] : targetTemplate.widgets;
+      const mapWidgets: SurfaceExportMapWidget[] = [];
+      for (const widget of widgetsToCheck) {
+        if (widget.kind !== 'map') continue;
+        const track = bound.find(item => item.id === widget.trackIds[0]) ?? bound[0];
+        if (!track) continue;
+        const branchNum = Number(track.branch.id);
+        mapWidgets.push({
+          widgetId: widget.id,
+          title: widget.title,
+          trackId: track.id,
+          path: track.source.path,
+          revision: track.source.revision,
+          branch: Number.isFinite(branchNum) ? branchNum : 0,
+          axisOffset: track.axisOffset,
+          pinnedHour: widget.time.mode === 'pin' ? (resolveWindow(widget, track, bound, clock.getHour())?.lastHour ?? null) : null,
+          fog: mapOptions.fog,
+          perspective: widget.countries.kind === 'tags' ? (widget.countries.tags[0] ?? null) : track.selectedTag,
+        });
+      }
+      const trackSnapshots = bound.map(track => {
+        const stretches: RecordedStretch[] = [{ first: track.branch.firstHour - track.axisOffset, last: track.branch.lastHour - track.axisOffset, join: 'start' }];
+        const unheld: UnheldGap[] = [];
+        return {
+          id: track.id,
+          roleId: track.roleId,
+          path: track.source.path,
+          branchId: track.branch.id,
+          axisOffset: track.axisOffset,
+          firstHour: track.branch.firstHour - track.axisOffset,
+          lastHour: track.branch.lastHour - track.axisOffset,
+          stretches,
+          unheld,
+        };
+      });
+      const hasPinnedWidgets = widgetsToCheck.some(w => w.time.mode === 'pin');
+      const hasPagedRowsWidgets = widgetsToCheck.some(w =>
+        w.kind.includes('log') || w.kind.includes('feed') || w.kind === 'event-choices',
+      );
+      const scrollEl = viewport.current;
+      return {
+        campaigns: campaignsRef.current.filter(c => !c.loading).map(c => ({ id: c.id, path: c.path, label: c.label })),
+        selectedCountries,
+        selectedBranches,
+        observed,
+        defaultRoleId,
+        currentHour: Math.round(clock.getHour()),
+        firstHour: clockRange.firstHour,
+        lastHour: clockRange.lastHour,
+        sourceWidth: Math.max(320, Math.round(scrollEl?.clientWidth || 1280)),
+        sourceHeight: Math.max(240, Math.round(scrollEl?.clientHeight || 720)),
+        scrollTop: Math.max(0, Math.round(scrollEl?.scrollTop || 0)),
+        tracks: trackSnapshots,
+        mapWidgets,
+        hasPinnedWidgets,
+        hasPagedRowsWidgets,
+      };
+    },
+    [sourceMap, selectedBranches, selectedCountries, observed, defaultRoleId, clock, mapOptions.fog],
+  );
+  useEffect(() => {
+    exportVideo.registerSurfaceSnapshot({
+      forWidget: (widget, widgetTemplate) => {
+        const ctx = buildSurfaceContext(widgetTemplate, widget);
+        if (!ctx) return null;
+        return {
+          kind: 'widget',
+          widget,
+          template: widgetTemplate,
+          label: widget.title,
+          context: ctx,
+        };
+      },
+      forPage: (pageId, label) => {
+        const pageTemplate =
+          pageId === pageRef.current
+            ? includeCampaigns(templateRef.current, campaignsRef.current)
+            : (() => {
+                const kept = pageStates.current.get(pageId as PageId)?.template;
+                if (kept) return includeCampaigns(kept, campaignsRef.current);
+                const loaded = loadLayouts(undefined, pageId as PageId).library;
+                const activeEntry = loaded.layouts.find(entry => entry.id === loaded.activeId)!;
+                return includeCampaigns(activeEntry.template, campaignsRef.current);
+              })();
+        const withRoles: DashboardTemplate = {
+          ...pageTemplate,
+          roles: pageTemplate.roles.map(role => ({
+            ...role,
+            selectedTag: selectedCountries[role.id]?.tag ?? null,
+            selectedSlot: selectedCountries[role.id]?.slot ?? null,
+            observed,
+          })),
+        };
+        const ctx = buildSurfaceContext(withRoles);
+        if (!ctx) return null;
+        return {
+          kind: 'page',
+          pageId,
+          template: withRoles,
+          label,
+          context: ctx,
+        };
+      },
+    });
+    return () => exportVideo.registerSurfaceSnapshot(null);
+  }, [exportVideo.registerSurfaceSnapshot, buildSurfaceContext, selectedCountries, observed]);
+
   const laneClient = useMemo(() => preparingClient(client), [client]);
   const [viewportBox, setViewportBox] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => setViewportBox(viewport.current), []);
@@ -716,6 +831,11 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           flushSync(() => setEditing(!editing));
           if (!editButton.current?.checkVisibility()) editButton.current?.parentElement?.querySelector<HTMLElement>('.header-layout-trigger')?.focus();
         }}><Icon name={editing ? 'check' : 'edit'} /><span className="toolbar-label">{editing ? 'Done' : 'Edit'}</span></button>
+      {desktopAvailable && tracks.length > 0 && template.widgets.length > 0 && <button type="button" className="icon-button" aria-label="Export page video" data-tooltip="Export page video…"
+        onClick={() => {
+          const entry = pages?.find(p => p.id === shownPage);
+          exportVideo.openPageVideoExport(shownPage, entry?.label ?? template.name);
+        }}><Icon name="play" /></button>}
       <Popover menu={saveMenu} id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options">
       {saving && discarding && <div onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); keepChanges(); } }}>
         <ConfirmStep confirmation={{ title: 'Discard layout changes?', detail: 'Your unsaved arrangement is lost.', action: 'Discard' }}

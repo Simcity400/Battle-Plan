@@ -52,16 +52,21 @@ import { leavePrompt, leavingTitle, RESTARTING, unsavedDetail } from './unsaved'
 import { draftSection, registerDraft, retryFailed, unsavedNow as pendingUnsaved, watchWrites, writesState } from './pendingWrites';
 import { closeGuard, type CloseGuard, type CloseGuardFailure, type LeavingFor } from './closeGuard.ts';
 import ExportProgressDock from '../export/ExportProgressDock';
-import ExportVideoDialog from '../export/ExportVideoDialog';
-import { ExportVideoContext, type MapVideoExportTarget } from '../export/ExportVideoContext';
+import ExportVideoDialog, { type StartedExportDescriptor } from '../export/ExportVideoDialog';
+import {
+  ExportVideoContext,
+  type ExportVideoTarget,
+  type PageVideoExportTarget,
+  type WidgetVideoExportTarget,
+} from '../export/ExportVideoContext';
 import {
   cancelVideoExport,
   getVideoExportState,
   IDLE_EXPORT_JOB,
   onVideoExportProgress,
   startMapVideoExport,
+  startSurfaceVideoExport,
   type ExportJobSnapshot,
-  type MapVideoRequest,
 } from '../export/videoExportApi';
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
@@ -271,8 +276,12 @@ export default function App() {
   const guard = useRef<CloseGuard | null>(null);
   const layoutReader = useRef<(() => readonly PageId[]) | null>(null);
   const [exportJob, setExportJob] = useState<ExportJobSnapshot>(IDLE_EXPORT_JOB);
-  const [videoExportTarget, setVideoExportTarget] = useState<MapVideoExportTarget | null>(null);
-  const lastExportRef = useRef<{ request: MapVideoRequest; destination: string; label: string } | null>(null);
+  const [videoExportTarget, setVideoExportTarget] = useState<ExportVideoTarget | null>(null);
+  const surfaceSnapshotProviderRef = useRef<{
+    forWidget: (widget: import('../dashboard/model').WidgetSpec, template: import('../dashboard/model').DashboardTemplate) => WidgetVideoExportTarget | null;
+    forPage: (pageId: string, label: string) => PageVideoExportTarget | null;
+  } | null>(null);
+  const lastExportRef = useRef<StartedExportDescriptor | null>(null);
   const exportRunning = exportJob.state === 'running';
   const exportRunningRef = useRef(false);
   exportRunningRef.current = exportRunning;
@@ -283,12 +292,40 @@ export default function App() {
     void onVideoExportProgress(setExportJob).then(stop => { unlisten = stop; }, () => undefined);
     return () => { unlisten?.(); };
   }, []);
-  const openMapVideoExport = useCallback((target: MapVideoExportTarget) => {
-    setVideoExportTarget(target);
+  const openMapVideoExport = useCallback((target: { viewId?: string; label: string }) => {
+    setVideoExportTarget({ kind: 'map', viewId: target.viewId, label: target.label });
   }, []);
+  const openWidgetVideoExport = useCallback(
+    (widget: import('../dashboard/model').WidgetSpec, template: import('../dashboard/model').DashboardTemplate) => {
+      const built = surfaceSnapshotProviderRef.current?.forWidget(widget, template);
+      if (built) setVideoExportTarget(built);
+    },
+    [],
+  );
+  const openPageVideoExport = useCallback((pageId: string, label: string) => {
+    const built = surfaceSnapshotProviderRef.current?.forPage(pageId, label);
+    if (built) setVideoExportTarget(built);
+  }, []);
+  const registerSurfaceSnapshot = useCallback(
+    (
+      provider: {
+        forWidget: (widget: import('../dashboard/model').WidgetSpec, template: import('../dashboard/model').DashboardTemplate) => WidgetVideoExportTarget | null;
+        forPage: (pageId: string, label: string) => PageVideoExportTarget | null;
+      } | null,
+    ) => {
+      surfaceSnapshotProviderRef.current = provider;
+    },
+    [],
+  );
   const exportContextValue = useMemo(
-    () => ({ openMapVideoExport, job: exportJob }),
-    [openMapVideoExport, exportJob],
+    () => ({
+      openMapVideoExport,
+      openWidgetVideoExport,
+      openPageVideoExport,
+      registerSurfaceSnapshot,
+      job: exportJob,
+    }),
+    [openMapVideoExport, openWidgetVideoExport, openPageVideoExport, registerSurfaceSnapshot, exportJob],
   );
   const unsavedNow = useCallback(() => pendingUnsaved(), []);
   useEffect(() => {
@@ -647,8 +684,8 @@ export default function App() {
         target={videoExportTarget}
         busyExport={exportRunning}
         onClose={() => setVideoExportTarget(null)}
-        onStarted={(request, destination, label) => {
-          lastExportRef.current = { request, destination, label };
+        onStarted={started => {
+          lastExportRef.current = started;
         }}
       />
       <ExportProgressDock
@@ -657,8 +694,11 @@ export default function App() {
           lastExportRef.current
             ? () => {
                 const last = lastExportRef.current;
-                if (last) {
+                if (!last) return;
+                if (last.kind === 'map') {
                   void startMapVideoExport(last.request, last.destination, last.label);
+                } else {
+                  void startSurfaceVideoExport(last.request, last.destination, last.label);
                 }
               }
             : undefined

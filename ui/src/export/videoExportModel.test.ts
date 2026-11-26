@@ -6,13 +6,17 @@ import {
   computeSpeedFromDuration,
   defaultAudioForSpeed,
   estimateScheduleFrames,
+  exportGlideDurationMs,
   fitAspectCrop,
   isFullCrop,
   normalizeCrop,
+  readabilityHint,
   snapEven,
   summarizeRange,
   validateDimensions,
 } from './videoExportModel.ts';
+import { easeBarFraction } from '../families/bars/painter.ts';
+import { glideDurationForSpeed } from '../families/table/painter.ts';
 
 test('snapEven and validateDimensions enforce even bounds and GPU texture limits', () => {
   assert.equal(snapEven(1921), 1920);
@@ -91,4 +95,29 @@ test('fitAspectCrop and normalizeCrop keep crop rects valid and centered', () =>
   const clamped = normalizeCrop({ x: 0.9, y: -0.2, width: 0.5, height: 0.4 });
   assert.ok(Math.abs(clamped.x - 0.5) < 1e-5);
   assert.equal(clamped.y, 0);
+});
+
+test('easeBarFraction eases smoothly and snaps on missing values or boundaries', () => {
+  const mid = easeBarFraction(0.2, 0.8, 0.5);
+  assert.ok(mid !== null && mid > 0.6 && mid < 0.8);
+  assert.equal(easeBarFraction(0.2, 0.8, 0), 0.2);
+  assert.equal(easeBarFraction(0.2, 0.8, 1), 0.8);
+  assert.equal(easeBarFraction(null, 0.8, 0.5), 0.8);
+  assert.equal(easeBarFraction(undefined, 0.8, 0.5), 0.8);
+  assert.equal(easeBarFraction(0.2, null, 0.5), null);
+});
+
+test('glideDurationForSpeed honors export override above 168 h/s while keeping live cutoff', () => {
+  assert.equal(glideDurationForSpeed(240, false), 0);
+  assert.equal(glideDurationForSpeed(240, false, 90), 90);
+  assert.equal(glideDurationForSpeed(240, true, 90), 0);
+  assert.equal(exportGlideDurationMs(24, 60), 35);
+  assert.equal(exportGlideDurationMs(1, 60), 180);
+  assert.equal(exportGlideDurationMs(60, 60), 0);
+});
+
+test('readabilityHint flags small rendered text and steep page downscaling', () => {
+  assert.ok(readabilityHint(7.2, 0.8)?.includes('7.2 px'));
+  assert.ok(readabilityHint(11.5, 0.4)?.includes('40%'));
+  assert.equal(readabilityHint(12, 0.9), null);
 });

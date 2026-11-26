@@ -383,6 +383,7 @@ function drawStandardMeterRow(
   selectedKey: string | null,
   focusedKey: string | null,
   artCache: LaneArtCache | undefined,
+  easedFractions?: ReadonlyMap<string, number>,
 ): void {
   const { x, y, width, height, row } = block;
   const midY = y + height / 2;
@@ -535,16 +536,18 @@ function drawStandardMeterRow(
       if (row.bar.fraction === null) {
         drawHatchRect(ctx, barX, Math.round(midY - h / 2), barW, h, 3, theme);
       } else {
-        drawTrackBar(ctx, barX, midY, barW, h, row.bar.fraction, resolveBarColor(row.bar.color, theme), theme);
+        const fraction = easedFractions?.get(row.key) ?? row.bar.fraction;
+        drawTrackBar(ctx, barX, midY, barW, h, fraction, resolveBarColor(row.bar.color, theme), theme);
       }
     } else if (row.bar.kind === 'threshold') {
+      const fraction = row.bar.fraction === null ? null : (easedFractions?.get(row.key) ?? row.bar.fraction);
       drawThresholdMeter(
         ctx,
         barX,
         midY,
         barW,
         row.bar.height ?? 7,
-        row.bar.fraction,
+        fraction,
         row.bar.ticks,
         resolveBarColor(row.bar.color, theme),
         theme,
@@ -563,6 +566,7 @@ function drawColumnMeterRow(
   inspectedKey: string | null,
   selectedKey: string | null,
   focusedKey: string | null,
+  easedFractions?: ReadonlyMap<string, number>,
 ): void {
   const { x, y, width, height, row } = block;
   const midY = y + height / 2;
@@ -598,13 +602,14 @@ function drawColumnMeterRow(
   }
 
   if (row.bar.kind === 'threshold') {
+    const fraction = row.bar.fraction === null ? null : (easedFractions?.get(row.key) ?? row.bar.fraction);
     drawThresholdMeter(
       ctx,
       barX,
       midY,
       barW,
       row.bar.height ?? 7,
-      row.bar.fraction,
+      fraction,
       row.bar.ticks,
       resolveBarColor(row.bar.color, theme),
       theme,
@@ -614,7 +619,8 @@ function drawColumnMeterRow(
     if (row.bar.fraction === null) {
       drawHatchRect(ctx, barX, Math.round(midY - h / 2), barW, h, 3, theme);
     } else {
-      drawTrackBar(ctx, barX, midY, barW, h, row.bar.fraction, resolveBarColor(row.bar.color, theme), theme);
+      const fraction = easedFractions?.get(row.key) ?? row.bar.fraction;
+      drawTrackBar(ctx, barX, midY, barW, h, fraction, resolveBarColor(row.bar.color, theme), theme);
     }
   } else if (row.bar.dash) {
     ctx.save();
@@ -686,6 +692,7 @@ function drawCipherMeterRow(
   selectedKey: string | null,
   focusedKey: string | null,
   artCache: LaneArtCache | undefined,
+  easedFractions?: ReadonlyMap<string, number>,
 ): void {
   const { x, y, width, height, row } = block;
   const midY = y + height / 2;
@@ -745,7 +752,8 @@ function drawCipherMeterRow(
     if (row.bar.fraction === null) {
       drawHatchRect(ctx, barX, Math.round(midY - h / 2), barW, h, 3, theme);
     } else {
-      drawTrackBar(ctx, barX, midY, barW, h, row.bar.fraction, resolveBarColor(row.bar.color, theme), theme);
+      const fraction = easedFractions?.get(row.key) ?? row.bar.fraction;
+      drawTrackBar(ctx, barX, midY, barW, h, fraction, resolveBarColor(row.bar.color, theme), theme);
     }
   }
 
@@ -834,10 +842,11 @@ export interface DrawMeterInput {
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
   readonly artCache?: LaneArtCache;
+  readonly easedFractions?: ReadonlyMap<string, number>;
 }
 
 export function drawMeterModel(ctx: Canvas2D, input: DrawMeterInput): void {
-  const { layout, width, height, scrollLeft, scrollTop, theme, inspectedKey, selectedKey, focusedKey, artCache } = input;
+  const { layout, width, height, scrollLeft, scrollTop, theme, inspectedKey, selectedKey, focusedKey, artCache, easedFractions } = input;
   ctx.save();
   ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, width, height);
@@ -861,11 +870,11 @@ export function drawMeterModel(ctx: Canvas2D, input: DrawMeterInput): void {
     } else if (block.kind === 'chip-line') {
       drawChipLineBlock(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
     } else if (layout.mode === 'columns') {
-      drawColumnMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey);
+      drawColumnMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, easedFractions);
     } else if (layout.mode === 'ciphers') {
-      drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
+      drawCipherMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache, easedFractions);
     } else {
-      drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache);
+      drawStandardMeterRow(ctx, block, theme, inspectedKey, selectedKey, focusedKey, artCache, easedFractions);
     }
   }
   ctx.restore();

@@ -14,6 +14,7 @@ import type {
 } from '../contract.ts';
 import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
+import type { LaneMotion } from '../laneRuntime.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
@@ -211,6 +212,7 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
   readonly window?: FamilyRowWindow | null;
+  readonly motion?: LaneMotion;
 }
 
 export interface FamilyAuditContext<TSettings = unknown> {
@@ -277,6 +279,7 @@ export interface FamilyBaseBinding<TOptions = unknown> extends FamilyBindingIden
   readonly auditId?: number;
   readonly pauseFlush: number;
   readonly window?: FamilyRowWindow;
+  readonly motion?: LaneMotion;
 }
 
 export type FamilyBindingExtras<TBinding> = Omit<TBinding, keyof FamilyBaseBinding>;
@@ -305,6 +308,7 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
     pauseFlush: ctx.pauseFlush,
     ...(ctx.window ? { window: ctx.window } : {}),
+    ...(ctx.motion ? { motion: ctx.motion } : {}),
   };
   return { ...extras, ...base } as TBinding & FamilyBaseBinding<TOptions>;
 }

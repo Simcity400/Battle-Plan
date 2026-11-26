@@ -1,0 +1,1687 @@
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    path::PathBuf,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use video_export::{
+    AudioConfig, BackendChoice, Quality, VideoConfig,
+    schedule::{
+        FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, UnheldGap, build_schedule,
+        merge_recorded_tracks,
+    },
+};
+use viewer::video_export::{
+    ExportProgress, MapFrameStream, MapVideoOutcome, MapVideoRequest, PartialVideo,
+    format_campaign_date,
+};
+
+pub const EXPORT_WINDOW_LABEL: &str = "video-export";
+const MOUNT_EVENT: &str = "video-export-mount";
+const METRICS_EVENT: &str = "video-export-metrics";
+const STEP_EVENT: &str = "video-export-step";
+const UNMOUNT_EVENT: &str = "video-export-unmount";
+const STEP_TIMEOUT: Duration = Duration::from_secs(45);
+const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceTrackCoverage {
+    pub stretches: Vec<RecordedStretch>,
+    pub unheld: Vec<UnheldGap>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddedMapSpec {
+    pub widget_id: String,
+    pub path: String,
+    pub revision: Option<String>,
+    pub branch: u64,
+    pub axis_offset: i32,
+    pub pinned_hour: Option<i32>,
+    pub placement: Option<viewer::video_export::SavedPlacement>,
+    pub source_viewport: Option<[u32; 2]>,
+    pub ui_scale: Option<f32>,
+    pub map_mode: Option<String>,
+    pub perspective: Option<String>,
+    pub fog: bool,
+    pub day_night: Option<bool>,
+    pub allied_plans: Option<bool>,
+    pub counter_colors_country: Option<bool>,
+    pub nato_counters: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceVideoRequest {
+    pub kind: String,
+    pub from_hour: i32,
+    pub to_hour: i32,
+    pub fps: u32,
+    pub hours_per_second: f64,
+    pub skip_gaps: bool,
+    pub cut_card_seconds: f64,
+    pub width: u32,
+    pub height: u32,
+    pub quality: Quality,
+    pub backend: BackendChoice,
+    pub ffmpeg_path: Option<String>,
+    pub framing: String,
+    pub reflow_for_portrait: bool,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub scroll_top: f64,
+    pub date_stamp: bool,
+    pub follow_pinned: bool,
+    pub audio_map_widget_id: Option<String>,
+    pub tracks: Vec<SurfaceTrackCoverage>,
+    pub embedded_maps: Vec<EmbeddedMapSpec>,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportMapRect {
+    pub widget_id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageAckPayload {
+    pub seq: u64,
+    pub kind: String,
+    pub dirty: bool,
+    pub content_width: Option<f64>,
+    pub content_height: Option<f64>,
+    pub min_text_px: Option<f64>,
+    pub map_rects: Vec<ExportMapRect>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfacePreviewResult {
+    pub png_base64: String,
+    pub min_text_px: Option<f64>,
+    pub content_width: Option<f64>,
+    pub content_height: Option<f64>,
+    pub scale: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MountEventPayload {
+    seq: u64,
+    kind: String,
+    framing: String,
+    reflow_for_portrait: bool,
+    width: u32,
+    height: u32,
+    css_width: u32,
+    css_height: u32,
+    dpr: f64,
+    scale: f64,
+    source_width: u32,
+    source_height: u32,
+    scroll_top: f64,
+    fps: u32,
+    hours_per_second: f64,
+    date_stamp: bool,
+    follow_pinned: bool,
+    initial_hour: i32,
+    payload: serde_json::Value,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetricsEventPayload {
+    seq: u64,
+    css_width: u32,
+    css_height: u32,
+    dpr: f64,
+    scale: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepEventPayload {
+    seq: u64,
+    frame_index: u64,
+    virtual_now_ms: f64,
+    mode: String,
+    hour: Option<i32>,
+    fraction: f64,
+    reset_continuity: bool,
+    date_text: Option<String>,
+    card_heading: Option<String>,
+    card_dates: Option<String>,
+    card_detail: Option<String>,
+    cut_banner: Option<String>,
+    css_width: u32,
+    css_height: u32,
+    dpr: f64,
+    scale: f64,
+}
+
+#[derive(Default)]
+struct AckBus {
+    booted: bool,
+    acks: HashMap<u64, PageAckPayload>,
+}
+
+#[derive(Clone, Default)]
+pub struct ExportWebviewState {
+    bus: Arc<(Mutex<AckBus>, Condvar)>,
+    next_seq: Arc<AtomicU64>,
+    op_lock: Arc<Mutex<()>>,
+}
+
+impl ExportWebviewState {
+    pub fn record_ack(&self, payload: PageAckPayload) {
+        let (lock, cv) = &*self.bus;
+        let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if payload.kind == "boot" {
+            bus.booted = true;
+        } else {
+            bus.acks.insert(payload.seq, payload);
+        }
+        cv.notify_all();
+    }
+
+    pub fn close_window(&self, app: &AppHandle) {
+        if let Some(window) = app.get_webview_window(EXPORT_WINDOW_LABEL) {
+            let _ = window.destroy();
+        }
+        let (lock, cv) = &*self.bus;
+        let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
+        bus.booted = false;
+        bus.acks.clear();
+        cv.notify_all();
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.next_seq.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn wait_for_boot(&self, cancel: &AtomicBool) -> Result<(), String> {
+        let (lock, cv) = &*self.bus;
+        let deadline = Instant::now() + BOOT_TIMEOUT;
+        let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while !bus.booted {
+            if cancel.load(Ordering::Acquire) {
+                return Err("cancelled".to_owned());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("The hidden export page timed out while starting.".to_owned());
+            }
+            let wait = (deadline - now).min(Duration::from_millis(100));
+            let (guard, _) = cv
+                .wait_timeout(bus, wait)
+                .unwrap_or_else(|e| e.into_inner());
+            bus = guard;
+        }
+        Ok(())
+    }
+
+    fn wait_for_ack(&self, seq: u64, cancel: &AtomicBool) -> Result<PageAckPayload, String> {
+        let (lock, cv) = &*self.bus;
+        let deadline = Instant::now() + STEP_TIMEOUT;
+        let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(ack) = bus.acks.remove(&seq) {
+                return Ok(ack);
+            }
+            if cancel.load(Ordering::Acquire) {
+                return Err("cancelled".to_owned());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err("The export page timed out waiting for widgets to finish drawing.".to_owned());
+            }
+            let wait = (deadline - now).min(Duration::from_millis(50));
+            let (guard, _) = cv
+                .wait_timeout(bus, wait)
+                .unwrap_or_else(|e| e.into_inner());
+            bus = guard;
+        }
+    }
+
+    fn ensure_window(&self, app: &AppHandle, cancel: &AtomicBool) -> Result<WebviewWindow, String> {
+        if let Some(existing) = app.get_webview_window(EXPORT_WINDOW_LABEL) {
+            self.wait_for_boot(cancel)?;
+            return Ok(existing);
+        }
+        {
+            let (lock, _) = &*self.bus;
+            let mut bus = lock.lock().unwrap_or_else(|e| e.into_inner());
+            bus.booted = false;
+            bus.acks.clear();
+        }
+        let app_clone = app.clone();
+        let (tx, rx) = mpsc::channel();
+        app.run_on_main_thread(move || {
+            let built = WebviewWindowBuilder::new(
+                &app_clone,
+                EXPORT_WINDOW_LABEL,
+                WebviewUrl::App("index.html?export=1".into()),
+            )
+            .title("BattlePlan Export")
+            .visible(false)
+            .skip_taskbar(true)
+            .decorations(false)
+            .resizable(false)
+            .inner_size(1280.0, 720.0)
+            .build()
+            .map_err(|e| format!("Couldn’t create hidden export window: {e}"));
+            let _ = tx.send(built);
+        })
+        .map_err(|e| format!("Couldn’t schedule hidden export window creation: {e}"))?;
+        let window = rx
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|_| "Timed out creating hidden export window".to_owned())??;
+        self.wait_for_boot(cancel)?;
+        Ok(window)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ViewportMetrics {
+    css_width: u32,
+    css_height: u32,
+    dpr: f64,
+    scale: f64,
+}
+
+fn initial_metrics(req: &SurfaceVideoRequest) -> ViewportMetrics {
+    let src_w = req.source_width.max(320);
+    let out_w = req.width.max(16);
+    let out_h = req.height.max(16);
+    if req.kind == "widget" {
+        let base_w = src_w.min(out_w).max(640.min(out_w));
+        let dpr = (f64::from(out_w) / f64::from(base_w)).clamp(1.0, 4.0);
+        let css_w = ((f64::from(out_w) / dpr).round() as u32).max(16);
+        let css_h = ((f64::from(out_h) / dpr).round() as u32).max(16);
+        return ViewportMetrics {
+            css_width: css_w,
+            css_height: css_h,
+            dpr,
+            scale: 1.0,
+        };
+    }
+    if req.framing == "visible" {
+        let target_css_w = if req.reflow_for_portrait && out_h > out_w {
+            src_w.min(480).max(360)
+        } else {
+            src_w
+        };
+        let ratio = f64::from(out_w) / f64::from(target_css_w);
+        if ratio >= 1.0 {
+            let dpr = ratio.clamp(1.0, 4.0);
+            let css_w = ((f64::from(out_w) / dpr).round() as u32).max(16);
+            let css_h = ((f64::from(out_h) / dpr).round() as u32).max(16);
+            return ViewportMetrics {
+                css_width: css_w,
+                css_height: css_h,
+                dpr,
+                scale: 1.0,
+            };
+        }
+        return ViewportMetrics {
+            css_width: out_w,
+            css_height: out_h,
+            dpr: 1.0,
+            scale: ratio.clamp(0.15, 1.0),
+        };
+    }
+    ViewportMetrics {
+        css_width: src_w,
+        css_height: req.source_height.max(720),
+        dpr: 1.0,
+        scale: 1.0,
+    }
+}
+
+fn finalized_metrics(
+    req: &SurfaceVideoRequest,
+    initial: ViewportMetrics,
+    content_width: Option<f64>,
+    content_height: Option<f64>,
+) -> ViewportMetrics {
+    if req.kind != "page" || req.framing != "full" {
+        return initial;
+    }
+    let cw = content_width
+        .filter(|v| v.is_finite() && *v >= 64.0)
+        .unwrap_or_else(|| f64::from(req.source_width.max(320)));
+    let ch = content_height
+        .filter(|v| v.is_finite() && *v >= 64.0)
+        .unwrap_or_else(|| f64::from(req.source_height.max(320)));
+    let out_w = f64::from(req.width.max(16));
+    let out_h = f64::from(req.height.max(16));
+    let fit = (out_w / cw).min(out_h / ch).clamp(0.1, 4.0);
+    if fit >= 1.0 {
+        let dpr = fit.clamp(1.0, 4.0);
+        let css_w = (out_w / dpr).round().max(16.0) as u32;
+        let css_h = (out_h / dpr).round().max(16.0) as u32;
+        ViewportMetrics {
+            css_width: css_w,
+            css_height: css_h,
+            dpr,
+            scale: 1.0,
+        }
+    } else {
+        ViewportMetrics {
+            css_width: req.width.max(16),
+            css_height: req.height.max(16),
+            dpr: 1.0,
+            scale: fit,
+        }
+    }
+}
+
+fn build_surface_schedule(req: &SurfaceVideoRequest) -> Result<FrameSchedule, String> {
+    let track_stretches: Vec<Vec<RecordedStretch>> =
+        req.tracks.iter().map(|t| t.stretches.clone()).collect();
+    let merged_stretches = if track_stretches.is_empty() {
+        vec![RecordedStretch {
+            first: req.from_hour,
+            last: req.to_hour,
+            join: video_export::schedule::StretchJoin::Start,
+        }]
+    } else {
+        merge_recorded_tracks(&track_stretches)
+    };
+    let mut merged_unheld: Vec<UnheldGap> = req
+        .tracks
+        .iter()
+        .flat_map(|t| t.unheld.iter().cloned())
+        .collect();
+    merged_unheld.sort_unstable_by_key(|g| (g.first, g.last));
+    build_schedule(
+        &merged_stretches,
+        &merged_unheld,
+        &ScheduleRequest {
+            from_hour: req.from_hour,
+            to_hour: req.to_hour,
+            fps: req.fps,
+            hours_per_second: req.hours_per_second,
+            skip_gaps: req.skip_gaps,
+            cut_card_seconds: req.cut_card_seconds,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn cdp_call(
+    window: &WebviewWindow,
+    method: &str,
+    params_json: &str,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    let method_owned = method.to_owned();
+    let params_owned = params_json.to_owned();
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    window
+        .with_webview(move |webview| {
+            let method_w = webview2_com::CoTaskMemPWSTR::from(method_owned.as_str());
+            let params_w = webview2_com::CoTaskMemPWSTR::from(params_owned.as_str());
+            let tx_cb = tx.clone();
+            let handler = webview2_com::CallDevToolsProtocolMethodCompletedHandler::create(
+                Box::new(move |err, result_json| {
+                    let reply = match err {
+                        Ok(()) => Ok(result_json),
+                        Err(e) => Err(format!("WebView2 DevTools call failed: {e}")),
+                    };
+                    let _ = tx_cb.send(reply);
+                    Ok(())
+                }),
+            );
+            // SAFETY: `webview.controller()` and its `CoreWebView2` COM interface are accessed on
+            // the UI thread inside `with_webview`, and both `CoTaskMemPWSTR` arguments outlive the
+            // synchronous COM vtable invocation.
+            let called = unsafe {
+                webview.controller().CoreWebView2().and_then(|page| {
+                    page.CallDevToolsProtocolMethod(
+                        *method_w.as_ref().as_pcwstr(),
+                        *params_w.as_ref().as_pcwstr(),
+                        &handler,
+                    )
+                })
+            };
+            if let Err(e) = called {
+                let _ = tx.send(Err(format!("Couldn’t invoke WebView2 DevTools method: {e}")));
+            }
+        })
+        .map_err(|e| format!("Couldn’t reach export WebView: {e}"))?;
+
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err("cancelled".to_owned());
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(reply) => return reply,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("WebView2 DevTools method {method} timed out"));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!("WebView2 DevTools method {method} dropped"));
+            }
+        }
+    }
+}
+
+fn set_device_metrics(
+    window: &WebviewWindow,
+    metrics: ViewportMetrics,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let params = serde_json::json!({
+        "width": metrics.css_width,
+        "height": metrics.css_height,
+        "deviceScaleFactor": metrics.dpr,
+        "mobile": false,
+        "screenWidth": metrics.css_width,
+        "screenHeight": metrics.css_height,
+    });
+    let _ = cdp_call(window, "Emulation.setDeviceMetricsOverride", &params.to_string(), cancel)?;
+    Ok(())
+}
+
+fn capture_screenshot_png(
+    window: &WebviewWindow,
+    metrics: ViewportMetrics,
+    cancel: &AtomicBool,
+) -> Result<(String, Vec<u8>), String> {
+    let params = serde_json::json!({
+        "format": "png",
+        "fromSurface": true,
+        "captureBeyondViewport": false,
+        "clip": {
+            "x": 0,
+            "y": 0,
+            "width": metrics.css_width,
+            "height": metrics.css_height,
+            "scale": 1
+        }
+    });
+    let raw = cdp_call(window, "Page.captureScreenshot", &params.to_string(), cancel)?;
+    #[derive(Deserialize)]
+    struct Shot {
+        data: String,
+    }
+    let parsed: Shot = serde_json::from_str(&raw)
+        .map_err(|e| format!("Couldn’t parse screenshot payload: {e}"))?;
+    let bytes = decode_base64(&parsed.data)?;
+    Ok((parsed.data, bytes))
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in bytes {
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => return Err("Invalid base64 byte in screenshot".to_owned()),
+        };
+        acc = (acc << 6) | u32::from(val);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_png_rgba(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut decoder = png::Decoder::new(Cursor::new(png_bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("Couldn’t decode captured PNG header: {e}"))?;
+    let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("Couldn’t decode captured PNG pixels: {e}"))?;
+    let raw = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => raw.to_vec(),
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity((info.width * info.height * 4) as usize);
+            for chunk in raw.chunks_exact(3) {
+                out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+            }
+            out
+        }
+        png::ColorType::Grayscale => {
+            let mut out = Vec::with_capacity((info.width * info.height * 4) as usize);
+            for &g in raw {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut out = Vec::with_capacity((info.width * info.height * 4) as usize);
+            for chunk in raw.chunks_exact(2) {
+                out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
+            }
+            out
+        }
+        png::ColorType::Indexed => {
+            return Err("Unexpected indexed PNG after expansion".to_owned());
+        }
+    };
+    Ok((info.width, info.height, rgba))
+}
+
+fn fit_rgba_to_exact(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src_w == dst_w && src_h == dst_h && src.len() == (dst_w * dst_h * 4) as usize {
+        return src.to_vec();
+    }
+    let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+    for pixel in dst.chunks_exact_mut(4) {
+        pixel[0] = 15;
+        pixel[1] = 19;
+        pixel[2] = 26;
+        pixel[3] = 255;
+    }
+    let copy_w = src_w.min(dst_w) as usize;
+    let copy_h = src_h.min(dst_h) as usize;
+    let src_stride = (src_w * 4) as usize;
+    let dst_stride = (dst_w * 4) as usize;
+    let row_bytes = copy_w * 4;
+    for y in 0..copy_h {
+        let s0 = y * src_stride;
+        let d0 = y * dst_stride;
+        dst[d0..d0 + row_bytes].copy_from_slice(&src[s0..s0 + row_bytes]);
+    }
+    dst
+}
+
+fn blit_rgba(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_x: i32,
+    dst_y: i32,
+) {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    let x0 = dst_x.max(0);
+    let y0 = dst_y.max(0);
+    let x1 = (dst_x + src_w as i32).min(dst_w as i32);
+    let y1 = (dst_y + src_h as i32).min(dst_h as i32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let sx0 = (x0 - dst_x) as usize;
+    let sy0 = (y0 - dst_y) as usize;
+    let copy_w = (x1 - x0) as usize;
+    let src_stride = (src_w * 4) as usize;
+    let dst_stride = (dst_w * 4) as usize;
+    let row_bytes = copy_w * 4;
+    for row in 0..(y1 - y0) as usize {
+        let s = (sy0 + row) * src_stride + sx0 * 4;
+        let d = (y0 as usize + row) * dst_stride + (x0 as usize) * 4;
+        if s + row_bytes <= src.len() && d + row_bytes <= dst.len() {
+            dst[d..d + row_bytes].copy_from_slice(&src[s..s + row_bytes]);
+        }
+    }
+}
+
+fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(encoded)
+}
+
+fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = if chunk.len() > 1 { u32::from(chunk[1]) } else { 0 };
+        let b2 = if chunk.len() > 2 { u32::from(chunk[2]) } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn map_request_for_embedded(
+    spec: &EmbeddedMapSpec,
+    rect: &ExportMapRect,
+    req: &SurfaceVideoRequest,
+    audio_enabled: bool,
+) -> MapVideoRequest {
+    let w = (rect.width & !1).max(16);
+    let h = (rect.height & !1).max(16);
+    let from = spec.pinned_hour.unwrap_or(req.from_hour + spec.axis_offset);
+    let to = spec.pinned_hour.unwrap_or(req.to_hour + spec.axis_offset);
+    MapVideoRequest {
+        path: spec.path.clone(),
+        revision: spec.revision.clone(),
+        branch: spec.branch,
+        from_hour: from,
+        to_hour: to,
+        fps: req.fps,
+        hours_per_second: req.hours_per_second,
+        skip_gaps: req.skip_gaps,
+        cut_card_seconds: req.cut_card_seconds,
+        width: w,
+        height: h,
+        quality: req.quality,
+        backend: req.backend,
+        ffmpeg_path: req.ffmpeg_path.clone(),
+        placement: spec.placement,
+        source_viewport: spec.source_viewport,
+        crop: None,
+        ui_scale: spec.ui_scale,
+        map_mode: spec.map_mode.clone(),
+        perspective: spec.perspective.clone(),
+        fog: spec.fog,
+        day_night: spec.day_night,
+        allied_plans: spec.allied_plans,
+        counter_colors_country: spec.counter_colors_country,
+        nato_counters: spec.nato_counters,
+        date_stamp: false,
+        audio_enabled,
+        allow_unverified: true,
+    }
+}
+
+fn offset_schedule(base: &FrameSchedule, axis_offset: i32) -> FrameSchedule {
+    if axis_offset == 0 {
+        return base.clone();
+    }
+    let frames = base
+        .frames
+        .iter()
+        .map(|f| {
+            let kind = match &f.kind {
+                FrameKind::Recorded {
+                    hour,
+                    fraction,
+                    reset_continuity,
+                    cut_banner,
+                } => FrameKind::Recorded {
+                    hour: hour + axis_offset,
+                    fraction: *fraction,
+                    reset_continuity: *reset_continuity,
+                    cut_banner: cut_banner.clone(),
+                },
+                FrameKind::GapCard {
+                    hour,
+                    gap_first,
+                    gap_last,
+                    reason,
+                } => FrameKind::GapCard {
+                    hour: hour + axis_offset,
+                    gap_first: gap_first + axis_offset,
+                    gap_last: gap_last + axis_offset,
+                    reason: reason.clone(),
+                },
+                FrameKind::SkipCutCard(cut) => FrameKind::SkipCutCard(cut.clone()),
+            };
+            video_export::schedule::ScheduledFrame {
+                frame_index: f.frame_index,
+                kind,
+                presentation_time: f.presentation_time,
+                audio_frames: f.audio_frames,
+            }
+        })
+        .collect();
+    FrameSchedule {
+        fps: base.fps,
+        hours_per_second: base.hours_per_second,
+        summary: base.summary.clone(),
+        frames,
+    }
+}
+
+enum EmbeddedMapSource {
+    Stream {
+        rect: ExportMapRect,
+        stream: MapFrameStream,
+        audio: bool,
+    },
+    Static {
+        rect: ExportMapRect,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
+}
+
+pub fn preview_surface_video(
+    app: &AppHandle,
+    webview_state: &ExportWebviewState,
+    config: dashboard_core::config::Config,
+    request: SurfaceVideoRequest,
+    preview_hour: i32,
+    cancel: Arc<AtomicBool>,
+) -> Result<SurfacePreviewResult, String> {
+    let _guard = webview_state
+        .op_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let window = webview_state.ensure_window(app, &cancel)?;
+    let initial = initial_metrics(&request);
+    set_device_metrics(&window, initial, &cancel)?;
+
+    let mount_seq = webview_state.next_seq();
+    let mount = MountEventPayload {
+        seq: mount_seq,
+        kind: request.kind.clone(),
+        framing: request.framing.clone(),
+        reflow_for_portrait: request.reflow_for_portrait,
+        width: request.width,
+        height: request.height,
+        css_width: initial.css_width,
+        css_height: initial.css_height,
+        dpr: initial.dpr,
+        scale: initial.scale,
+        source_width: request.source_width,
+        source_height: request.source_height,
+        scroll_top: request.scroll_top,
+        fps: request.fps,
+        hours_per_second: request.hours_per_second,
+        date_stamp: request.date_stamp,
+        follow_pinned: request.follow_pinned,
+        initial_hour: preview_hour,
+        payload: request.payload.clone(),
+    };
+    window
+        .emit(MOUNT_EVENT, mount)
+        .map_err(|e| format!("Couldn’t send mount payload to export page: {e}"))?;
+    let mount_ack = webview_state.wait_for_ack(mount_seq, &cancel)?;
+    if let Some(error) = mount_ack.error {
+        return Err(error);
+    }
+
+    let metrics = finalized_metrics(
+        &request,
+        initial,
+        mount_ack.content_width,
+        mount_ack.content_height,
+    );
+    if metrics.css_width != initial.css_width
+        || metrics.css_height != initial.css_height
+        || (metrics.dpr - initial.dpr).abs() > 1e-4
+        || (metrics.scale - initial.scale).abs() > 1e-4
+    {
+        set_device_metrics(&window, metrics, &cancel)?;
+        let metrics_seq = webview_state.next_seq();
+        window
+            .emit(
+                METRICS_EVENT,
+                MetricsEventPayload {
+                    seq: metrics_seq,
+                    css_width: metrics.css_width,
+                    css_height: metrics.css_height,
+                    dpr: metrics.dpr,
+                    scale: metrics.scale,
+                },
+            )
+            .map_err(|e| format!("Couldn’t apply export viewport metrics: {e}"))?;
+        let metrics_ack = webview_state.wait_for_ack(metrics_seq, &cancel)?;
+        if let Some(error) = metrics_ack.error {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            return Err(error);
+        }
+    }
+
+    let step_seq = webview_state.next_seq();
+    let step = StepEventPayload {
+        seq: step_seq,
+        frame_index: 0,
+        virtual_now_ms: 0.0,
+        mode: "recorded".to_owned(),
+        hour: Some(preview_hour),
+        fraction: 0.0,
+        reset_continuity: true,
+        date_text: request.date_stamp.then(|| format_campaign_date(preview_hour)),
+        card_heading: None,
+        card_dates: None,
+        card_detail: None,
+        cut_banner: None,
+        css_width: metrics.css_width,
+        css_height: metrics.css_height,
+        dpr: metrics.dpr,
+        scale: metrics.scale,
+    };
+    window
+        .emit(STEP_EVENT, step)
+        .map_err(|e| format!("Couldn’t step export page for preview: {e}"))?;
+    let step_ack = webview_state.wait_for_ack(step_seq, &cancel)?;
+    if let Some(error) = step_ack.error {
+        return Err(error);
+    }
+
+    let (png_base64, png_bytes) = capture_screenshot_png(&window, metrics, &cancel)?;
+    let mut final_base64 = png_base64;
+
+    if !step_ack.map_rects.is_empty() && !request.embedded_maps.is_empty() {
+        let (src_w, src_h, raw_rgba) = decode_png_rgba(&png_bytes)?;
+        let mut rgba = fit_rgba_to_exact(&raw_rgba, src_w, src_h, request.width, request.height);
+        for rect in &step_ack.map_rects {
+            if let Some(spec) = request
+                .embedded_maps
+                .iter()
+                .find(|m| m.widget_id == rect.widget_id)
+                && rect.width >= 16
+                && rect.height >= 16
+            {
+                let map_req = map_request_for_embedded(spec, rect, &request, false);
+                let map_hour = spec.pinned_hour.unwrap_or(preview_hour + spec.axis_offset);
+                if let Ok(map_png) = viewer::video_export::render_map_video_preview(
+                    config.clone(),
+                    map_req,
+                    map_hour,
+                    Arc::clone(&cancel),
+                ) && let Ok((mw, mh, mrgba)) = decode_png_rgba(&map_png)
+                {
+                    blit_rgba(
+                        &mut rgba,
+                        request.width,
+                        request.height,
+                        &mrgba,
+                        mw,
+                        mh,
+                        rect.x,
+                        rect.y,
+                    );
+                }
+            }
+        }
+        let composited = encode_rgba_png(&rgba, request.width, request.height)?;
+        final_base64 = encode_base64(&composited);
+    }
+
+    let _ = window.emit(UNMOUNT_EVENT, ());
+    Ok(SurfacePreviewResult {
+        png_base64: final_base64,
+        min_text_px: step_ack.min_text_px.or(mount_ack.min_text_px),
+        content_width: mount_ack.content_width,
+        content_height: mount_ack.content_height,
+        scale: metrics.scale * metrics.dpr,
+    })
+}
+
+pub fn run_surface_video_export(
+    app: AppHandle,
+    webview_state: ExportWebviewState,
+    config: dashboard_core::config::Config,
+    request: SurfaceVideoRequest,
+    staged_path: PathBuf,
+    cancel: Arc<AtomicBool>,
+    progress: Option<Arc<dyn Fn(ExportProgress) + Send + Sync>>,
+) -> MapVideoOutcome {
+    let _guard = webview_state
+        .op_lock
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let video_config = VideoConfig {
+        width: request.width,
+        height: request.height,
+        fps: request.fps,
+        quality: request.quality,
+        backend: request.backend,
+        ffmpeg_path: request
+            .ffmpeg_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
+    };
+    if let Err(e) = video_config.validate() {
+        return MapVideoOutcome::Failed {
+            error: e.to_string(),
+            campaign_hour: None,
+            partial: None,
+        };
+    }
+    let schedule = match build_surface_schedule(&request) {
+        Ok(s) => s,
+        Err(error) => {
+            return MapVideoOutcome::Failed {
+                error,
+                campaign_hour: None,
+                partial: None,
+            };
+        }
+    };
+    let first_recorded_hour = schedule
+        .frames
+        .iter()
+        .find_map(|f| match f.kind {
+            FrameKind::Recorded { hour, .. } => Some(hour),
+            _ => None,
+        })
+        .unwrap_or(request.from_hour);
+
+    let window = match webview_state.ensure_window(&app, &cancel) {
+        Ok(w) => w,
+        Err(error) => {
+            if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                return MapVideoOutcome::Cancelled;
+            }
+            return MapVideoOutcome::Failed {
+                error,
+                campaign_hour: None,
+                partial: None,
+            };
+        }
+    };
+
+    let initial = initial_metrics(&request);
+    if let Err(error) = set_device_metrics(&window, initial, &cancel) {
+        let _ = window.emit(UNMOUNT_EVENT, ());
+        return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+            MapVideoOutcome::Cancelled
+        } else {
+            MapVideoOutcome::Failed {
+                error,
+                campaign_hour: None,
+                partial: None,
+            }
+        };
+    }
+
+    let mount_seq = webview_state.next_seq();
+    let mount = MountEventPayload {
+        seq: mount_seq,
+        kind: request.kind.clone(),
+        framing: request.framing.clone(),
+        reflow_for_portrait: request.reflow_for_portrait,
+        width: request.width,
+        height: request.height,
+        css_width: initial.css_width,
+        css_height: initial.css_height,
+        dpr: initial.dpr,
+        scale: initial.scale,
+        source_width: request.source_width,
+        source_height: request.source_height,
+        scroll_top: request.scroll_top,
+        fps: request.fps,
+        hours_per_second: request.hours_per_second,
+        date_stamp: request.date_stamp,
+        follow_pinned: request.follow_pinned,
+        initial_hour: first_recorded_hour,
+        payload: request.payload.clone(),
+    };
+    if let Err(e) = window.emit(MOUNT_EVENT, mount) {
+        return MapVideoOutcome::Failed {
+            error: format!("Couldn’t mount export page: {e}"),
+            campaign_hour: None,
+            partial: None,
+        };
+    }
+    let mount_ack = match webview_state.wait_for_ack(mount_seq, &cancel) {
+        Ok(ack) => ack,
+        Err(error) => {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                MapVideoOutcome::Cancelled
+            } else {
+                MapVideoOutcome::Failed {
+                    error,
+                    campaign_hour: None,
+                    partial: None,
+                }
+            };
+        }
+    };
+    if let Some(error) = mount_ack.error {
+        let _ = window.emit(UNMOUNT_EVENT, ());
+        return MapVideoOutcome::Failed {
+            error,
+            campaign_hour: None,
+            partial: None,
+        };
+    }
+
+    let metrics = finalized_metrics(
+        &request,
+        initial,
+        mount_ack.content_width,
+        mount_ack.content_height,
+    );
+    let mut final_map_rects = mount_ack.map_rects;
+    if metrics.css_width != initial.css_width
+        || metrics.css_height != initial.css_height
+        || (metrics.dpr - initial.dpr).abs() > 1e-4
+        || (metrics.scale - initial.scale).abs() > 1e-4
+    {
+        if let Err(error) = set_device_metrics(&window, metrics, &cancel) {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                MapVideoOutcome::Cancelled
+            } else {
+                MapVideoOutcome::Failed {
+                    error,
+                    campaign_hour: None,
+                    partial: None,
+                }
+            };
+        }
+        let metrics_seq = webview_state.next_seq();
+        if let Err(e) = window.emit(
+            METRICS_EVENT,
+            MetricsEventPayload {
+                seq: metrics_seq,
+                css_width: metrics.css_width,
+                css_height: metrics.css_height,
+                dpr: metrics.dpr,
+                scale: metrics.scale,
+            },
+        ) {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            return MapVideoOutcome::Failed {
+                error: format!("Couldn’t apply export viewport metrics: {e}"),
+                campaign_hour: None,
+                partial: None,
+            };
+        }
+        match webview_state.wait_for_ack(metrics_seq, &cancel) {
+            Ok(ack) => {
+                if let Some(error) = ack.error {
+                    let _ = window.emit(UNMOUNT_EVENT, ());
+                    return MapVideoOutcome::Failed {
+                        error,
+                        campaign_hour: None,
+                        partial: None,
+                    };
+                }
+                final_map_rects = ack.map_rects;
+            }
+            Err(error) => {
+                let _ = window.emit(UNMOUNT_EVENT, ());
+                return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                    MapVideoOutcome::Cancelled
+                } else {
+                    MapVideoOutcome::Failed {
+                        error,
+                        campaign_hour: None,
+                        partial: None,
+                    }
+                };
+            }
+        }
+    }
+
+    let mut map_sources: Vec<EmbeddedMapSource> = Vec::new();
+    let mut audio_enabled = false;
+    if !final_map_rects.is_empty() && !request.embedded_maps.is_empty() {
+        for rect in &final_map_rects {
+            let Some(spec) = request
+                .embedded_maps
+                .iter()
+                .find(|m| m.widget_id == rect.widget_id)
+            else {
+                continue;
+            };
+            if rect.width < 16 || rect.height < 16 {
+                continue;
+            }
+            let wants_audio = request
+                .audio_map_widget_id
+                .as_deref()
+                .is_some_and(|id| id == spec.widget_id);
+            if let Some(pinned) = spec.pinned_hour
+                && !request.follow_pinned
+            {
+                let map_req = map_request_for_embedded(spec, rect, &request, false);
+                match viewer::video_export::render_map_video_preview(
+                    config.clone(),
+                    map_req,
+                    pinned,
+                    Arc::clone(&cancel),
+                )
+                .and_then(|png| decode_png_rgba(&png))
+                {
+                    Ok((mw, mh, rgba)) => map_sources.push(EmbeddedMapSource::Static {
+                        rect: rect.clone(),
+                        rgba,
+                        width: mw,
+                        height: mh,
+                    }),
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        return MapVideoOutcome::Failed {
+                            error,
+                            campaign_hour: Some(pinned),
+                            partial: None,
+                        };
+                    }
+                }
+            } else {
+                let map_req = map_request_for_embedded(spec, rect, &request, wants_audio);
+                let map_schedule = offset_schedule(&schedule, spec.axis_offset);
+                match MapFrameStream::spawn(
+                    config.clone(),
+                    map_req,
+                    map_schedule,
+                    Arc::clone(&cancel),
+                ) {
+                    Ok(stream) => {
+                        if wants_audio {
+                            audio_enabled = true;
+                        }
+                        map_sources.push(EmbeddedMapSource::Stream {
+                            rect: rect.clone(),
+                            stream,
+                            audio: wants_audio,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        return MapVideoOutcome::Failed {
+                            error,
+                            campaign_hour: None,
+                            partial: None,
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    let audio_cfg = audio_enabled.then(AudioConfig::default);
+    let mut sink = match video_export::open(&video_config, audio_cfg, &staged_path) {
+        Ok(s) => s,
+        Err(error) => {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            return MapVideoOutcome::Failed {
+                error: error.to_string(),
+                campaign_hour: None,
+                partial: None,
+            };
+        }
+    };
+    let backend_name = sink.backend_name().to_owned();
+    let started = Instant::now();
+    let mut last_progress = started;
+    let total_frames = schedule.summary.total_frames;
+    let mut last_recorded_hour: Option<i32> = None;
+    let mut cached_page_rgba: Option<Vec<u8>> = None;
+    let mut cached_card: Option<(String, Vec<u8>)> = None;
+
+    let emit_progress = |phase: &str, frame: u64, hour: Option<i32>, last: &mut Instant, force: bool| {
+        let Some(cb) = &progress else {
+            return;
+        };
+        let now = Instant::now();
+        if !force && now.duration_since(*last).as_millis() < 120 {
+            return;
+        }
+        *last = now;
+        let elapsed_ms = now.duration_since(started).as_millis() as u64;
+        let eta_ms = if frame >= 5 && total_frames > frame {
+            Some(elapsed_ms.saturating_mul(total_frames - frame) / frame)
+        } else {
+            None
+        };
+        cb(ExportProgress {
+            phase: phase.to_owned(),
+            frame,
+            total_frames,
+            campaign_hour: hour,
+            elapsed_ms,
+            eta_ms,
+            backend: Some(backend_name.clone()),
+        });
+    };
+
+    let finalize_partial = |sink: Box<dyn video_export::VideoSink>,
+                            error: String,
+                            last_hour: Option<i32>|
+     -> MapVideoOutcome {
+        let written = sink.frames_written();
+        let partial = if written > 0 {
+            match sink.finish() {
+                Ok(finished) => {
+                    let playable = video_export::mp4_boxes::inspect_mp4(&finished.path)
+                        .is_ok_and(|summary| summary.has_avc1);
+                    if playable {
+                        Some(PartialVideo {
+                            staged_path: finished.path,
+                            frames: finished.frames,
+                            through_hour: last_hour.unwrap_or(schedule.summary.from_hour),
+                            duration_seconds: finished.frames as f64 / f64::from(schedule.fps),
+                            backend: finished.backend,
+                        })
+                    } else {
+                        let _ = std::fs::remove_file(&finished.path);
+                        None
+                    }
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(&staged_path);
+                    None
+                }
+            }
+        } else {
+            sink.abort();
+            None
+        };
+        MapVideoOutcome::Failed {
+            error,
+            campaign_hour: last_hour,
+            partial,
+        }
+    };
+
+    for scheduled in &schedule.frames {
+        if cancel.load(Ordering::Acquire) {
+            sink.abort();
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            webview_state.close_window(&app);
+            return MapVideoOutcome::Cancelled;
+        }
+        let virtual_now_ms = (scheduled.frame_index as f64 * 1000.0) / f64::from(schedule.fps);
+        let (step_payload, card_key, frame_hour) = match &scheduled.kind {
+            FrameKind::Recorded {
+                hour,
+                fraction,
+                reset_continuity,
+                cut_banner,
+            } => (
+                StepEventPayload {
+                    seq: webview_state.next_seq(),
+                    frame_index: scheduled.frame_index,
+                    virtual_now_ms,
+                    mode: "recorded".to_owned(),
+                    hour: Some(*hour),
+                    fraction: *fraction,
+                    reset_continuity: *reset_continuity,
+                    date_text: request.date_stamp.then(|| format_campaign_date(*hour)),
+                    card_heading: None,
+                    card_dates: None,
+                    card_detail: None,
+                    cut_banner: cut_banner.as_ref().map(|c| {
+                        format!(
+                            "Unrecorded gap skipped · {} -> {} ({} h omitted)",
+                            format_campaign_date(c.from_hour),
+                            format_campaign_date(c.to_hour),
+                            c.omitted_hours,
+                        )
+                    }),
+                    css_width: metrics.css_width,
+                    css_height: metrics.css_height,
+                    dpr: metrics.dpr,
+                    scale: metrics.scale,
+                },
+                None,
+                Some(*hour),
+            ),
+            FrameKind::GapCard {
+                hour,
+                gap_first,
+                gap_last,
+                reason,
+            } => {
+                let dates = format!(
+                    "{}  (gap: {} to {})",
+                    format_campaign_date(*hour),
+                    format_campaign_date(*gap_first),
+                    format_campaign_date(*gap_last),
+                );
+                let key = format!("gap:{dates}:{reason}");
+                (
+                    StepEventPayload {
+                        seq: webview_state.next_seq(),
+                        frame_index: scheduled.frame_index,
+                        virtual_now_ms,
+                        mode: "card".to_owned(),
+                        hour: Some(*hour),
+                        fraction: 0.0,
+                        reset_continuity: true,
+                        date_text: None,
+                        card_heading: Some("Unrecorded stretch".to_owned()),
+                        card_dates: Some(dates),
+                        card_detail: Some(reason.clone()),
+                        cut_banner: None,
+                        css_width: metrics.css_width,
+                        css_height: metrics.css_height,
+                        dpr: metrics.dpr,
+                        scale: metrics.scale,
+                    },
+                    Some(key),
+                    Some(*hour),
+                )
+            }
+            FrameKind::SkipCutCard(cut) => {
+                let dates = format!(
+                    "{} -> {}",
+                    format_campaign_date(cut.from_hour),
+                    format_campaign_date(cut.to_hour),
+                );
+                let detail = format!("{} unrecorded hours omitted · {}", cut.omitted_hours, cut.reason);
+                let key = format!("cut:{dates}:{detail}");
+                (
+                    StepEventPayload {
+                        seq: webview_state.next_seq(),
+                        frame_index: scheduled.frame_index,
+                        virtual_now_ms,
+                        mode: "card".to_owned(),
+                        hour: Some(cut.to_hour),
+                        fraction: 0.0,
+                        reset_continuity: true,
+                        date_text: None,
+                        card_heading: Some("Unrecorded gap skipped".to_owned()),
+                        card_dates: Some(dates),
+                        card_detail: Some(detail),
+                        cut_banner: None,
+                        css_width: metrics.css_width,
+                        css_height: metrics.css_height,
+                        dpr: metrics.dpr,
+                        scale: metrics.scale,
+                    },
+                    Some(key),
+                    Some(cut.to_hour),
+                )
+            }
+        };
+
+        let mut frame_audio: Option<Vec<i16>> = None;
+        let mut embedded_frames: Vec<(ExportMapRect, Vec<u8>, u32, u32)> = Vec::new();
+        for source in &map_sources {
+            match source {
+                EmbeddedMapSource::Stream {
+                    rect,
+                    stream,
+                    audio,
+                } => match stream.next_frame() {
+                    Ok(chunk) => {
+                        if *audio {
+                            frame_audio = Some(chunk.audio);
+                        }
+                        if let Some(rgba) = chunk.rgba {
+                            let mw = (rect.width & !1).max(16);
+                            let mh = (rect.height & !1).max(16);
+                            embedded_frames.push((rect.clone(), rgba, mw, mh));
+                        }
+                    }
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return if cancel.load(Ordering::Acquire) {
+                            sink.abort();
+                            MapVideoOutcome::Cancelled
+                        } else {
+                            finalize_partial(sink, error, last_recorded_hour)
+                        };
+                    }
+                },
+                EmbeddedMapSource::Static {
+                    rect,
+                    rgba,
+                    width,
+                    height,
+                } => {
+                    if card_key.is_none() {
+                        embedded_frames.push((rect.clone(), rgba.clone(), *width, *height));
+                    }
+                }
+            }
+        }
+
+        let mut frame_rgba = if let Some(key) = &card_key {
+            if cached_card.as_ref().is_some_and(|(k, _)| k == key) {
+                cached_card.as_ref().expect("checked").1.clone()
+            } else {
+                let seq = step_payload.seq;
+                if let Err(e) = window.emit(STEP_EVENT, step_payload) {
+                    let _ = window.emit(UNMOUNT_EVENT, ());
+                    webview_state.close_window(&app);
+                    return finalize_partial(sink, format!("Couldn’t step export card: {e}"), last_recorded_hour);
+                }
+                match webview_state.wait_for_ack(seq, &cancel) {
+                    Ok(ack) if ack.error.is_none() => {}
+                    Ok(ack) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return finalize_partial(
+                            sink,
+                            ack.error.unwrap_or_else(|| "Export page error".to_owned()),
+                            last_recorded_hour,
+                        );
+                    }
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                            sink.abort();
+                            MapVideoOutcome::Cancelled
+                        } else {
+                            finalize_partial(sink, error, last_recorded_hour)
+                        };
+                    }
+                }
+                let (_, png_bytes) = match capture_screenshot_png(&window, metrics, &cancel) {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                            sink.abort();
+                            MapVideoOutcome::Cancelled
+                        } else {
+                            finalize_partial(sink, error, last_recorded_hour)
+                        };
+                    }
+                };
+                let (sw, sh, raw) = match decode_png_rgba(&png_bytes) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return finalize_partial(sink, error, last_recorded_hour);
+                    }
+                };
+                let exact = fit_rgba_to_exact(&raw, sw, sh, request.width, request.height);
+                cached_card = Some((key.clone(), exact.clone()));
+                exact
+            }
+        } else {
+            let seq = step_payload.seq;
+            if let Err(e) = window.emit(STEP_EVENT, step_payload) {
+                let _ = window.emit(UNMOUNT_EVENT, ());
+                webview_state.close_window(&app);
+                return finalize_partial(sink, format!("Couldn’t step export page: {e}"), last_recorded_hour);
+            }
+            let ack = match webview_state.wait_for_ack(seq, &cancel) {
+                Ok(ack) => ack,
+                Err(error) => {
+                    let _ = window.emit(UNMOUNT_EVENT, ());
+                    webview_state.close_window(&app);
+                    return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                        sink.abort();
+                        MapVideoOutcome::Cancelled
+                    } else {
+                        finalize_partial(sink, error, last_recorded_hour)
+                    };
+                }
+            };
+            if let Some(error) = ack.error {
+                let _ = window.emit(UNMOUNT_EVENT, ());
+                webview_state.close_window(&app);
+                return finalize_partial(sink, error, last_recorded_hour);
+            }
+            if !ack.dirty
+                && let Some(cached) = &cached_page_rgba
+            {
+                cached.clone()
+            } else {
+                let (_, png_bytes) = match capture_screenshot_png(&window, metrics, &cancel) {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return if cancel.load(Ordering::Acquire) || error == "cancelled" {
+                            sink.abort();
+                            MapVideoOutcome::Cancelled
+                        } else {
+                            finalize_partial(sink, error, last_recorded_hour)
+                        };
+                    }
+                };
+                let (sw, sh, raw) = match decode_png_rgba(&png_bytes) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        let _ = window.emit(UNMOUNT_EVENT, ());
+                        webview_state.close_window(&app);
+                        return finalize_partial(sink, error, last_recorded_hour);
+                    }
+                };
+                let exact = fit_rgba_to_exact(&raw, sw, sh, request.width, request.height);
+                cached_page_rgba = Some(exact.clone());
+                exact
+            }
+        };
+
+        if card_key.is_none() {
+            for (rect, mrgba, mw, mh) in &embedded_frames {
+                blit_rgba(
+                    &mut frame_rgba,
+                    request.width,
+                    request.height,
+                    mrgba,
+                    *mw,
+                    *mh,
+                    rect.x,
+                    rect.y,
+                );
+            }
+            last_recorded_hour = frame_hour;
+        }
+
+        if let Err(error) = sink.push_video_rgba(&frame_rgba) {
+            let _ = window.emit(UNMOUNT_EVENT, ());
+            webview_state.close_window(&app);
+            sink.abort();
+            return MapVideoOutcome::Failed {
+                error: error.to_string(),
+                campaign_hour: last_recorded_hour,
+                partial: None,
+            };
+        }
+        if audio_enabled {
+            let samples = frame_audio
+                .unwrap_or_else(|| vec![0i16; scheduled.audio_frames * 2]);
+            if let Err(error) = sink.push_audio_stereo_i16(&samples) {
+                let _ = window.emit(UNMOUNT_EVENT, ());
+                webview_state.close_window(&app);
+                sink.abort();
+                return MapVideoOutcome::Failed {
+                    error: error.to_string(),
+                    campaign_hour: last_recorded_hour,
+                    partial: None,
+                };
+            }
+        }
+        emit_progress(
+            "rendering",
+            scheduled.frame_index + 1,
+            frame_hour,
+            &mut last_progress,
+            false,
+        );
+    }
+
+    emit_progress("finalizing", total_frames, last_recorded_hour, &mut last_progress, true);
+    drop(map_sources);
+    let _ = window.emit(UNMOUNT_EVENT, ());
+    webview_state.close_window(&app);
+
+    match sink.finish() {
+        Ok(finished) => MapVideoOutcome::Completed {
+            staged_path: finished.path,
+            frames: finished.frames,
+            audio_frames: finished.audio_frames,
+            backend: finished.backend,
+            warnings: Vec::new(),
+        },
+        Err(error) => MapVideoOutcome::Failed {
+            error: error.to_string(),
+            campaign_hour: last_recorded_hour,
+            partial: None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_round_trips_binary_payloads() {
+        let sample: Vec<u8> = (0u8..=255).collect();
+        let encoded = encode_base64(&sample);
+        let decoded = decode_base64(&encoded).unwrap();
+        assert_eq!(decoded, sample);
+    }
+
+    #[test]
+    fn blit_rgba_clips_partially_offscreen_embedded_map_rect() {
+        let mut dst = vec![0u8; 4 * 4 * 4];
+        let src = vec![255u8; 2 * 2 * 4];
+        blit_rgba(&mut dst, 4, 4, &src, 2, 2, 3, 3);
+        let idx = (3 * 4 + 3) * 4;
+        assert_eq!(&dst[idx..idx + 4], &[255, 255, 255, 255]);
+        assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn fit_rgba_pads_or_crops_to_exact_encoder_dimensions() {
+        let src = vec![99u8; 3 * 2 * 4];
+        let fitted = fit_rgba_to_exact(&src, 3, 2, 4, 4);
+        assert_eq!(fitted.len(), 4 * 4 * 4);
+        assert_eq!(&fitted[0..4], &[99, 99, 99, 99]);
+        assert_eq!(&fitted[(3 * 4 + 3) * 4..(3 * 4 + 3) * 4 + 4], &[15, 19, 26, 255]);
+    }
+}
