@@ -34,7 +34,9 @@ impl Evaluator<'_, '_> {
                 .iter()
                 .position(|key| *key == name)
             {
-                let row = self.country_stability_inputs(slot)?;
+                let row = self.country_stability_inputs(
+                    slot, tables::CountryStabilityInputs::ID.full_mask(),
+                )?;
                 return self.stability_modifier_input(&row, slot, index).map(Some);
             }
             return Err(format!(
@@ -627,9 +629,10 @@ impl Evaluator<'_, '_> {
         })()
     }
 
-    fn country_stability_inputs(
+    pub(super) fn country_stability_inputs(
         &self,
         slot: u32,
+        fields: u64,
     ) -> Result<Cow<'_, replay_data::rows::CountryStabilityInputRow>, Failure> {
         let world = self.world();
         let raw = match world.raw_country(slot) {
@@ -644,12 +647,8 @@ impl Evaluator<'_, '_> {
                 ));
             }
         };
-        recorded_row::<tables::CountryStabilityInputs>(
-            world.tables(),
-            tables::CountryStabilityInputs::ID.full_mask(),
-            u128::from(raw),
-        )?
-        .ok_or_else(|| {
+        recorded_row::<tables::CountryStabilityInputs>(world.tables(), fields, u128::from(raw))?
+            .ok_or_else(|| {
                 Failure::input(
                     replay_data::rows::TableId::CountryStabilityInputs,
                     "",
@@ -679,7 +678,8 @@ impl Evaluator<'_, '_> {
     }
 
     pub(super) fn country_stability_value(&self, slot: u32, support: bool) -> Result<i64, Failure> {
-        let row = self.country_stability_inputs(slot)?;
+        let row =
+            self.country_stability_inputs(slot, tables::CountryStabilityInputs::ID.full_mask())?;
         let mut missing = Vec::new();
         for index in 0..6 {
             let needed = if support {

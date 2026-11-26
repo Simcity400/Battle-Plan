@@ -8,6 +8,37 @@ fn set<T: replay_data::rows::TableSchema>(frame: &mut DecodedFrame, rows: Vec<T:
 }
 
 #[test]
+fn defensive_war_uses_the_scope_country_at_the_frame_hour() {
+    script_game::enter();
+    let mut frame = frame(&[(100, 1, "AAA", 1, "AAA", ""), (200, 2, "BBB", 1, "BBB", "")], &[]);
+    let check = |frame: &DecodedFrame, country, body: &str| {
+        with_world(frame, "", Err("none"), |world| {
+            Evaluator::new(world, None)
+                .evaluate(&items(body), Scopes::of(Scope::Country(country)))
+                .decided_input()
+        })
+    };
+    let rows = vec![
+        replay_data::rows::CountryStabilityInputRow { country: 100, at_war: 0, defensive_war: 1, ..Default::default() },
+        replay_data::rows::CountryStabilityInputRow { country: 200, ..Default::default() },
+    ];
+    set::<tables::CountryStabilityInputs>(&mut frame, rows);
+    assert_eq!(check(&frame, 1, "has_defensive_war = yes"), Ok(true));
+    assert_eq!(check(&frame, 2, "has_defensive_war = yes"), Ok(false));
+    assert_eq!(check(&frame, 2, "has_defensive_war = no"), Ok(true));
+    frame.hour += 1;
+    set::<tables::CountryStabilityInputs>(&mut frame, vec![
+        replay_data::rows::CountryStabilityInputRow { country: 200, defensive_war: 1, ..Default::default() },
+    ]);
+    assert_eq!(check(&frame, 2, "has_defensive_war = no"), Ok(false));
+    assert!(check(&frame, 1, "has_defensive_war = no").unwrap_err().names("CountryStabilityInputs"));
+    *frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Unavailable {
+        reason: "stability inputs unreadable".into(),
+    };
+    assert!(check(&frame, 2, "has_defensive_war = no").unwrap_err().names("CountryStabilityInputs"));
+}
+
+#[test]
 fn map_scripts_use_calculated_stability_war_support_and_native_ai() {
     script_game::enter();
     let mut frame = frame(&[(100, 1, "GER", 1, "GER", "")], &[]);
