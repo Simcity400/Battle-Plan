@@ -925,15 +925,28 @@ impl AtHour for LeaderHour {
         (reads, at.context.through(at.hour))
     }
 
+    fn context_revision(context: &Self::Context) -> u64 { context.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).revision }
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        super::leader_plan_changes(stage, edits)
+    }
+
     fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         leader_columns(table, plan)
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !frame.tables[TableId::Clock.index()].held().is_not_selected() { return Ok(false); }
-        let table = TableId::UnitLeaderTraitExperience;
-        let training = edits.tables.get(&table).is_some_and(|rows| rows.keys().all(|key| key & (1u128 << 32) == 0));
-        Ok(super::unselected_leader_edits(frame, edits) || training && edits.only_columns(table, 1 << field(table, "experience")?))
+        if super::unselected_leader_edits(frame, edits) { return Ok(true); }
+        let winner = data.get("reference").and_then(serde_json::Value::as_str).and_then(|key| key.parse::<u128>().ok());
+        let experience = 1 << field(TableId::UnitLeaderTraitExperience, "experience")?;
+        Ok(edits.replaced.is_empty() && edits.tables.iter().all(|(&table, rows)| match table {
+            TableId::UnitLeaderTraitExperience => rows.iter().all(|(&key, &fields)| {
+                Some(key >> 33) != winner || key & (1 << 32) == 0 && fields & !experience == 0
+            }),
+            TableId::UnitLeaderTraits | TableId::LeaderTraitDates => rows.keys().all(|key| Some(key >> 32) != winner),
+            _ => false,
+        }))
     }
 
     fn valid_through(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {

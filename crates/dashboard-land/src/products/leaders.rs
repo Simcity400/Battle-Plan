@@ -506,7 +506,7 @@ pub struct LeadersContext {
     lifetimes: HashMap<u32, Arc<Vec<(u128, i64, i64)>>>,
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
     roster: Option<Arc<Roster>>,
-    visibility: std::sync::Mutex<Option<visibility::Dated>>,
+    visibility: std::sync::Mutex<visibility::Visibility>,
     battle_coverage: Option<(u64, Option<i32>)>,
 }
 
@@ -549,7 +549,7 @@ impl LeadersContext {
 
     fn verdicts_at(&self, run: u32, hour: i32) -> HashMap<u64, Result<bool, String>> {
         let mut decisions = self.verdicts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).at.get(&(run, hour)).cloned().unwrap_or_default();
-        if let Some(held) = self.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().filter(|held| held.covers(run, hour)) {
+        if let Some(held) = self.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).held.as_ref().filter(|held| held.covers(run, hour)) {
             decisions.extend(held.decisions.iter().map(|(&key, value)| (key, value.clone())));
         }
         decisions
@@ -590,9 +590,7 @@ impl LeadersContext {
     fn through(&self, hour: i32) -> i32 {
         let membership = self.roster.as_ref().map_or(i32::MAX, |roster| roster.through(hour));
         let damage = self.battle_coverage.and_then(|(_, first)| first).filter(|&first| first > hour);
-        let visibility = self.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let world = visibility.as_ref().map_or(i32::MAX, |held| held.through);
-        membership.min(damage.map_or(i32::MAX, |first| first - 1)).min(world)
+        membership.min(damage.map_or(i32::MAX, |first| first - 1))
     }
 
     #[cfg(feature = "test-support")]
@@ -970,6 +968,21 @@ impl UnitLeaders {
     }
 }
 
+fn leader_plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+    let table = TableId::UnitLeaders;
+    match stage {
+        1 | 2 => {
+            let fields: &[&str] = if stage == 1 { &["owner", "kind", "character_id"] } else {
+                &["owner", "kind", "category", "captured", "character_id", "visibility_choice", "template_visibility", "visible_state", "visible_origin"]
+            };
+            edits.fields(table, dashboard_base::products::at_hour::field_mask(table, fields))
+                || edits.fields(TableId::Countries, u64::MAX) || edits.fields(TableId::CountryLinks, u64::MAX)
+                || stage == 2 && (edits.fields(TableId::Characters, u64::MAX) || edits.fields(TableId::LexicalTokens, u64::MAX))
+        }
+        _ => false,
+    }
+}
+
 fn unselected_leader_edits(frame: &DecodedFrame, edits: &dashboard_base::products::at_hour::Edits) -> bool {
     let table = TableId::UnitLeaders;
     let Some(changes) = edits.tables.get(&table) else { return false };
@@ -980,12 +993,7 @@ fn unselected_leader_edits(frame: &DecodedFrame, edits: &dashboard_base::product
 }
 
 fn reply_through(context: &LeadersContext, frame: &DecodedFrame, missing: Option<&str>, warnings: &[String]) -> i32 {
-    let date = format!("hour {} ", frame.hour);
-    if missing.into_iter().chain(warnings.iter().map(String::as_str)).any(|reason| reason.contains(&date)) {
-        frame.hour
-    } else {
-        context.through(frame.hour)
-    }
+    context.through(frame.hour).min(super::warnings_through(frame.hour, missing.into_iter().chain(warnings.iter().map(String::as_str))))
 }
 
 impl AtHour for UnitLeaders {
@@ -1036,6 +1044,12 @@ impl AtHour for UnitLeaders {
             _ => Self::reads_in(params, owner, stage, held, at),
         };
         (reads, at.context.through(at.hour))
+    }
+
+    fn context_revision(context: &Self::Context) -> u64 { context.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).revision }
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        leader_plan_changes(stage, edits)
     }
 
     fn projection(_params: &Self::Params, table: TableId, plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {

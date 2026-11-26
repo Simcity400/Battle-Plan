@@ -1,0 +1,123 @@
+use super::*;
+use dashboard_base::{Source, SourceKey, products::{LoadContext, Registered, at_hour::{AtHour, frame_panel}}, test_fixtures::{CAMPAIGN, materialized_frame, ownership_frame, played, records, streamed}};
+use replay::campaign::Replay;
+use replay_data::rows::*;
+use replay_frame::frame::{DecodedFrame, TableView};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+fn frame(branch: u64, hour: i32) -> DecodedFrame {
+    let mut frame = ownership_frame(branch, hour, 9001);
+    for table in TableId::ALL {
+        if !table.is_derived() && table.key_bits() != 0 && matches!(frame.tables[table.index()].held(), TableView::Unavailable { .. }) {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+    }
+    let change = i32::from(hour >= 107);
+    let amount = hour + branch as i32 * 100;
+    let mut set = |table: TableId, rows| {
+        *frame.tables[table.index()] = if (113..115).contains(&hour) {
+            TableView::Unavailable { reason: "damaged land table".into() }
+        } else { TableView::Complete(rows) };
+    };
+    set(TableId::CombatLogGroups, TableRows::CombatLogGroups(vec![CombatLogGroupRow { country: 9001, group: 1 << 32, ..Default::default() }]));
+    set(TableId::OrdersGroups, TableRows::OrdersGroups(vec![OrdersGroupRow { handle: 1 << 32, country: 9001, ..Default::default() }]));
+    set(TableId::CombatLogManpower, TableRows::CombatLogManpower(vec![
+        CombatLogManpowerRow { country: 44, group: 1, losses_0: hour, ..Default::default() },
+        CombatLogManpowerRow { country: 9001, group: 1, date: 43_800_000, losses_0: amount, losses_1: change, ..Default::default() },
+    ]));
+    set(TableId::UnitLeaders, TableRows::UnitLeaders(vec![UnitLeaderRow {
+        id: 1, owner: 9001, kind: crate::products::leaders::KIND_ARMY, skill_valid: 1,
+        skill_level: 3 + change, experience: i64::from(amount), ..Default::default()
+    }]));
+    set(TableId::DivisionTemplates, TableRows::DivisionTemplates(vec![DivisionTemplateRow { template: 1, owner: 9001, ..Default::default() }]));
+    set(TableId::DivisionTemplateIcons, TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
+        template: 1, base_width: Recorded::Value(Some(10 + i64::from(change))), ..Default::default()
+    }]));
+    frame
+}
+
+fn recording(branches: &[u64]) -> Arc<Source> {
+    let records: Vec<_> = branches.iter().map(|&branch| records(branch, (100..=120).map(|hour| frame(branch, hour)).collect())).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &records).unwrap().into_timelines(&Default::default()).unwrap();
+    Arc::new(Source::from_replay(SourceKey { source_id: "land".into(), revision: "1".into() }, "land.battleplan".into(), Arc::new(replay), &false.into()).unwrap())
+}
+
+fn played_structure(key: &str, data: &dashboard_follow::panel::PanelData, fresh: bool) -> dashboard_follow::panel::PanelData {
+    let mut data = streamed(data, fresh);
+    if key == "army-losses" && !fresh && let Ok(reply) = &mut data
+        && reply.pointer("/rollup/months/0/liveRow").is_some_and(|row| row == "r:0")
+    {
+        assert_eq!(reply["live"]["rows"], json!(["r:0"]));
+        assert_eq!(reply["live"]["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap()).collect::<Vec<_>>(), ["p0", "p1", "p2", "total"]);
+        let bar = &mut reply["rollup"]["months"][0];
+        bar["values"] = Value::Null;
+        bar["total"] = Value::Null;
+    }
+    data
+}
+
+fn follows<P: AtHour>(registration: Registered, mut request: Value, live: bool) {
+    let load = LoadContext { content: None };
+    let source = recording(&[1, 2]);
+    let mut seeds = Vec::new();
+    for branch in [1, 2] {
+        request["branchId"] = branch.to_string().into();
+        let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
+        let mut original = frame_panel::<P>(&source, &load, &request).unwrap();
+        let exact = panel.exact().unwrap();
+        for hour in [100, 107, 114, 100] {
+            let read = (exact.advance)(hour, true, &false.into(), None);
+            assert!(read.fresh || read.value.is_err());
+            assert_eq!(*read.value, materialized_frame(&mut *original, source.replay_ref(), branch, hour), "{} branch {branch} at {hour}", P::KEY);
+            if live && hour != 114 {
+                let values: Vec<_> = read.value.as_ref().as_ref().unwrap()["live"]["groups"].as_array().unwrap().iter()
+                    .flat_map(|group| group["values"].as_array().unwrap()).collect();
+                assert!(!values.is_empty());
+                seeds.push(serde_json::to_value(values).unwrap());
+            }
+        }
+    }
+    if live {
+        assert_eq!(seeds[0], seeds[2], "seek restores the first seed");
+        assert_ne!(seeds[0], seeds[1], "seek seeds the new hour");
+        assert_ne!(seeds[2], seeds[3], "the other branch seeds its own values");
+    }
+    let source = recording(&[1]);
+    request["branchId"] = "1".into();
+    let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
+    let mut original = frame_panel::<P>(&source, &load, &request).unwrap();
+    let mut previous = None;
+    for read in played(source.replay_ref(), panel.exact().unwrap(), 100, 120) {
+        let expected = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
+        assert_eq!(played_structure(P::KEY, &read.value, read.fresh), played_structure(P::KEY, &expected, read.fresh), "{} at {}", P::KEY, read.hour);
+        if P::KEY == "army-losses" && let Ok(reply) = &expected
+            && let Some(values) = reply.pointer("/live/groups/0/values").and_then(Value::as_array)
+        {
+            let bar = &reply["rollup"]["months"][0];
+            let resolved: Vec<_> = values.iter().map(|v| v.as_i64().unwrap()).collect();
+            assert_eq!(bar["values"], json!(resolved.iter().map(ToString::to_string).collect::<Vec<_>>()));
+            assert_eq!(bar["total"], resolved.iter().sum::<i64>().to_string());
+        }
+        let structure = played_structure(P::KEY, &expected, false);
+        if read.hour > 100 && let Some(previous) = &previous {
+            assert_eq!(read.product_calls, u64::from(previous != &structure), "{} calls at {}", P::KEY, read.hour);
+        }
+        previous = Some(structure);
+    }
+}
+
+#[test]
+fn army_losses_follows_the_selected_country_and_seeds_live_losses_on_seek_or_branch_change() {
+    follows::<crate::products::army_losses::ArmyLosses>(ARMY_LOSSES_ARMYLOSSES, json!({"country":"GER", "view":{"kind":"manpower"}}), true);
+}
+
+#[test]
+fn leader_experience_seeds_the_selected_hour_and_branch() {
+    follows::<crate::products::leaders::career::LeaderHour>(LEADERS_CAREER_LEADERHOUR, json!({"reference":"4294967296"}), true);
+}
+
+#[test]
+fn division_templates_follows_the_selected_countrys_template_fields() {
+    follows::<crate::products::divisions::templates::DivisionTemplates>(DIVISIONS_TEMPLATES_DIVISIONTEMPLATES, json!({"country":"GER", "countFor":"owner"}), false);
+}

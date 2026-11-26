@@ -147,7 +147,7 @@ impl AtHour for DivisionEquipment {
     const KEY: &'static str = "division-equipment";
     const TITLE: &'static str = "Division equipment";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DivisionEquipmentParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor, view];
     type Reply = DivisionEquipmentReply;
@@ -214,6 +214,13 @@ impl AtHour for DivisionEquipment {
             },
             _ => Vec::new(),
         }
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> { super::naming_columns(table) }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), &at.context.content)
+            .min(crate::products::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

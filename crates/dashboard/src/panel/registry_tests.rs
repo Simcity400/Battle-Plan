@@ -144,9 +144,9 @@ fn each_ui_panel_key_has_one_registered_reader() {
 #[test]
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
-        "army-losses", "autonomy-levels", "casualty-matrix",
-        "country-faction-goals", "country-fuel", "country-stability-breakdown", "decorated-divisions",
-        "decryption", "division-equipment", "division-templates", "doctrine-rewards",
+        "autonomy-levels", "casualty-matrix",
+        "country-faction-goals", "country-fuel", "country-stability-breakdown",
+        "decryption", "doctrine-rewards",
         "faction-details", "factory-parts",
         "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
         "production-licences", "resource-balance", "special-project-details", "special-project-effects",

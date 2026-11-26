@@ -335,6 +335,7 @@ struct Stream {
     plans: Vec<(Vec<Read>, i32)>,
     frame: Box<DecodedFrame>,
     run: u32,
+    context_revision: u64,
     identity_through: i32,
     reply_through: i32,
     live: Arc<Live>,
@@ -432,7 +433,7 @@ where P::Context: Sync, P::Params: Sync {
             let owner = holder::<P>(&holders, &params, hour)?;
             let seed = held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
-                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
+                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
             }
             let state = held.as_mut().expect("seeded");
             let previous_hour = state.frame.hour;
@@ -487,7 +488,8 @@ where P::Context: Sync, P::Params: Sync {
             });
             let cells = Cells::default();
             let at = At { owner, holders: &holders, context: &*context, cancelled, hour, live: &cells };
-            let expired = hour > state.reply_through;
+            let revision = P::context_revision(&context);
+            let expired = hour > state.reply_through || revision != state.context_revision;
             if !state.rebuild && !identity_changed {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !expired && !P::clock_dependent(&state.plans, &context) {
@@ -528,6 +530,7 @@ where P::Context: Sync, P::Params: Sync {
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
             state.extra.set(&live, |g| state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
                 .is_some_and(|r| covers(r, g) && projected(g.table).is_none_or(|fields| g.columns.iter().all(|column| fields.contains(column)))));
+            state.context_revision = revision;
             state.reply_through = reply_through;
             if !seed && !state.rebuild && state.data.is_ok() && *state.live == live
                 && state.reply.as_ref().and_then(|last| last.downcast_ref::<P::Reply>()).is_some_and(|last| *last == reply) {

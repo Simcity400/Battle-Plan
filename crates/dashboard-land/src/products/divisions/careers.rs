@@ -225,6 +225,12 @@ impl AtHour for DecoratedDivisions {
         TABLES.to_vec()
     }
 
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at)
+            .min(super::names_through(frame, reply.templates.iter().map(|t| t.template.as_str()), &at.context.content))
+            .min(crate::products::warnings_through(frame.hour, reply.missing.iter().chain(&reply.warnings).map(String::as_str)))
+    }
+
     fn columns(table: TableId) -> Option<Vec<usize>> {
         let fields = match table {
             TableId::Countries => mask::<CountryRow>(&["canonical_slot", "tag"]),
@@ -233,7 +239,7 @@ impl AtHour for DecoratedDivisions {
             TableId::DivisionStatus => mask::<DivisionStatusRow>(&["experience", "career_counter", "name", "naming", "country_ordinal"]),
             TableId::DivisionLandInputs => mask::<DivisionLandInputsRow>(&["manpower"]),
             TableId::DivisionKills => mask::<DivisionKillsRow>(&["killed_raw", "incomplete_from"]),
-            _ => return None,
+            _ => return super::naming_columns(table),
         };
         Some((0..64).filter(|column| fields & 1 << column != 0).collect())
     }
