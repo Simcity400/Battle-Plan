@@ -1,3 +1,4 @@
+import { artTooltipItem } from '../../families/art/adapters.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type BarsModel, type BarsOppositeRow, type BarsPickRow, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
@@ -44,9 +45,11 @@ function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure:
       ...(typeof member !== 'string' ? { tooltip: {
         title: who.labelMissing ? notRecordedLabel('Name') : who.label, hour,
         get items() {
+          const flag = artTooltipItem('Flag', who.media.art);
           return [
             { label: 'Recorded amount', value: formatScalar(BigInt(member.value), { decimals: 5 }) },
             value.kind === 'notRecorded' ? { label: 'Share', missingReason: value.reason } : { label: 'Share', value: formatShare(numeric!) },
+            ...(flag ? [flag] : []),
           ];
         },
         ...(member.partial ? { note: UNATTRIBUTED } : {}),

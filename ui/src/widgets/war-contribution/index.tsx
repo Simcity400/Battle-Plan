@@ -11,9 +11,8 @@ import { FamilyWidget } from '../../families/host/registry';
 import { useIdentity, useIdentityScope } from '../../families/identity/react.ts';
 import { countryTagKey } from '../../families/identity/types.ts';
 import { useHeadHour } from '../army-size/headHour';
-import { labelObservationAt } from '../wars/warsData';
 import { MEASURE_VIEW } from './measureProjection.ts';
-import { chosenWar } from './warContributionData.ts';
+import { warChipAt } from './warContributionData.ts';
 import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
@@ -36,16 +35,8 @@ function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'activ
   const wars = useWars(widget, runtime, active);
   const saved = storedWar(options);
   const shownHour = useCallback((clockHour: number) => (track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null), [track, widget, runtime.tracks]);
-  const atClock = (clockHour: number) => {
-    const at = shownHour(clockHour);
-    const war = wars && at !== null ? chosenWar(wars, saved, at) : null;
-    const observation = war && at !== null ? labelObservationAt(war, at) : null;
-    return { at, war, observation };
-  };
-  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
-    const { war, observation } = atClock(clockHour);
-    return `${war?.id ?? ''}:${observation?.firstHour ?? ''}`;
-  });
+  const atClock = (clockHour: number) => warChipAt(wars, saved, shownHour(clockHour));
+  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => atClock(clockHour).key);
   return { track, ...atClock(hour) };
 }
 

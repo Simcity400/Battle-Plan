@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionGroup, WarMeasureSide, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { chosenWar, readHourFor } from './warContributionData.ts';
+import { chosenWar, readHourFor, warChipAt } from './warContributionData.ts';
+import { heldAt } from '../army-size/headHour.ts';
 
 const observation = (first: number, last: number, viewpointSide: string[], opposingSide: string[], name = 'Synthetic war'): WarObservation => ({
   firstHour: first, lastHour: last, viewpointTag: viewpointSide[0], viewpointSide, opposingSide, attackersAreViewpoint: true, representative: null,
@@ -30,6 +31,12 @@ test('the saved war wins while it exists, else the war with most participants go
     { viewpointSide: ['A'], opposingSide: ['C', 'D'], participants: [], measures: [], reason: null },
     { viewpointSide: ['A', 'C'], opposingSide: ['B'], participants: [], measures: [], reason: null }];
   assert.equal(warContributions(groups, joined), groups[0]);
+  const changing = { ...reply, wars: [{ ...reply.wars[0]!, observations: [
+    observation(0, 49, ['A'], ['B']), { ...observation(50, 100, ['A'], ['B']), attackersAreViewpoint: false },
+  ] }] };
+  const before = heldAt(null, warChipAt(changing, '1', 49).key, 49);
+  const after = heldAt(before, warChipAt(changing, '1', 50).key, 50);
+  assert.equal(warChipAt(changing, '1', after.hour).observation?.attackersAreViewpoint, false, 'the chip changes sides while the same war keeps playing');
 });
 
 const knownValueOf = (value: number) => ({ kind: 'known' as const, value });
@@ -82,7 +89,9 @@ test('the Sides view draws the product’s shares in two panes: share of the war
   assert.deepEqual(bars[0]!.value?.value, { kind: 'partial', value: 0.59, reason: 'Part of this side’s casualties contribution is not attributed to a country' });
   assert.equal(bars[0]!.rightSide?.key, 'viewpoint:BBB');
   assert.deepEqual(bars[0]!.rightSide?.value.value, { kind: 'known', value: 0.41 }, 'every figure is a share of all of the measure in this war');
-  assert.deepEqual(bars[0]!.rightSide?.tooltip?.items, [{ label: 'Recorded amount', value: '5' }, { label: 'Share', value: '41%' }]);
+  assert.deepEqual(bars[0]!.rightSide?.tooltip?.items, [
+    { label: 'Recorded amount', value: '5' }, { label: 'Share', value: '41%' }, { label: 'Flag', missingReason: 'Loading' },
+  ]);
   assert.equal(bars[1]!.value?.value.kind, 'zero');
   assert.equal(bars[1]!.rightSide, undefined, 'a shorter side leaves its half empty');
   assert.deepEqual(measured.pickList?.rows.map(row => [row.key, row.left.fraction, row.right.fraction, row.divided === true]), [['casualties', 0.59, 0.41, false], ['participation', null, null, true]],
