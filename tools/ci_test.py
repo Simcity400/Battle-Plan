@@ -747,7 +747,11 @@ class Pipeline(unittest.TestCase):
         job = next(job for job in pipeline.jobs if job.name == "rust-test")
         with tempfile.TemporaryDirectory() as folder, patch.object(ci.sys, "platform", "win32"):
             runner = ci.Runner(Path(folder), {}, workspace)
-            with patch.object(ci, "stage_shader_compiler", return_value=0) as stage, patch.object(runner, "execute", return_value=0):
+            def ran(command, log):
+                Path(log).touch()
+                return 0
+
+            with patch.object(ci, "stage_shader_compiler", return_value=0) as stage, patch.object(runner, "execute", side_effect=ran):
                 for shard, expected in [(["shader-pipeline"], True), (["other", "fixture"], True), (["consumer"], False)]:
                     with self.subTest(shard=shard):
                         stage.reset_mock()
