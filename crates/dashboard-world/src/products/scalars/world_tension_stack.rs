@@ -90,7 +90,6 @@ pub struct TensionStackOther {
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackEvent {
     pub hour: i32,
-    #[doc = " The recorded primary country, kept where no slot resolves it."]
     pub country: u32,
     pub slot: Option<u32>,
     pub second_country: u32,

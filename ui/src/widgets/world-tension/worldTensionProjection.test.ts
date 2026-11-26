@@ -446,6 +446,10 @@ describe('world-tension projections', () => {
       identity: makeIdentity(),
     }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
     assert.ok(reducedStack.stack?.bands.every(band => band.exact === undefined), 'a reduced stack claims no exact figure for its bins');
+    const dipLayout = layoutTimeChart(dipping, 720, 260, 'Segoe UI', measure);
+    assert.ok(dipLayout.yDomain[0] <= -4, `the axis reaches the bin's low: ${dipLayout.yDomain}`);
+    const between = deriveTimeChartTooltip(reducedStack, layoutTimeChart(reducedStack, 720, 260, 'Segoe UI', measure), `plot:${hoverHour - 5}`);
+    assert.ok(!(between?.payload?.items ?? []).some(item => item.value !== undefined), `inside a grouped span no figure is shown as the hour's: ${JSON.stringify(between?.payload?.items)}`);
 
     const { subpaths } = buildLineSubpaths(lineModel.series[0]!, layout, H1941);
     const ys = subpaths.flat().map(p => p[1]);

@@ -434,6 +434,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       },
       series: [],
       stack: {
+        ...(reply.downsampled ? { reduced: true } : {}),
         hours: reply.hours,
         bands: orderedBands,
         bandFormat: 'signedPercent',
