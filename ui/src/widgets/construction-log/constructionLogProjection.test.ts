@@ -52,6 +52,8 @@ function sampleReply(rows: ConstructionLogRow[], overrides: Partial<Construction
     counts: [{ key: 'active', total: String(liveCount) }],
     buildingTypes: [],
     repairIcon: null,
+    factoryCap: 15,
+    factoryCapMissing: null,
     costScale: 100_000,
     rows,
     missing: [],
@@ -174,7 +176,7 @@ test('construction projection formats levels, railway routes, live factories, st
   assert.equal(rail.cells.place?.value.kind === 'known' ? rail.cells.place.value.value : null, 'Illinois – Indiana');
   assert.equal(rail.cells.levels?.value.kind === 'known' ? rail.cells.levels.value.value : null, '8 / 9');
   assert.equal(rail.cells.levels?.unitSuffix, 'levels');
-  assert.equal(rail.cells.factories?.value.kind === 'known' ? rail.cells.factories.value.value : null, '15');
+  assert.equal(rail.cells.factories?.value.kind === 'known' ? rail.cells.factories.value.value : null, '15 / 15');
   assert.equal(rail.cells.status?.statusKind, 'running');
 
   const waiting = model.rows[1]!;
@@ -215,4 +217,33 @@ test('constructionLogDeclaration sends filters, work kind, queue toggle, order, 
       countries: [{ slot: 7 }],
     });
   }
+});
+
+test('a line shows its factories of the recorded most a line takes, and the count alone when that most is not recorded', () => {
+  const row = sampleRow({ key: '1', hour: 100, live: true, factories: 3, status: 'building' });
+  const asked: unknown[] = [];
+  const project = (overrides: Partial<ConstructionLogTailReply>, artwork = false, line = row) => {
+    const source = buildRowSourceFromHead('test:construction:cap', sampleReply([line], overrides), undefined, 150)!;
+    const model = constructionLogProjection.project(createBoundedReadView({ hour: 150, rows: new Map([['main', source]]), onArtDemand: handle => { asked.push(handle); } }), { artwork, selected: [] });
+    return model.rows[0]!;
+  };
+  const capped = project({ factoryCap: 20, factoryCapMissing: null }, true);
+  assert.deepEqual([capped.cells.factories?.value, capped.cells.factories?.unitSuffix], [{ kind: 'known', value: '3 / 20' }, 'factories'], 'the cap the recording holds, a mod’s included');
+  assert.equal(capped.cells.factories?.unitArt !== undefined, true, 'the civilian factory icon comes with the figure');
+  assert.ok(asked.some(handle => JSON.stringify(handle) === JSON.stringify({ kind: 'sprite', key: 'GFX_civ_factory', frame: 0 })), 'the game’s civilian factory icon, by its sprite');
+  const reason = 'The most factories a construction line takes is not recorded: no recorded content';
+  const uncapped = project({ factoryCap: null, factoryCapMissing: reason });
+  assert.deepEqual([uncapped.cells.factories?.value, uncapped.cells.factories?.unitSuffix, uncapped.cells.factories?.unitArt], [{ kind: 'known', value: '3' }, 'factories', undefined], 'never a guessed cap');
+  const tooltip = (typeof uncapped.tooltipExtra === 'function' ? uncapped.tooltipExtra() : uncapped.tooltipExtra) ?? [];
+  assert.deepEqual(tooltip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason });
+  const unread = project({ factoryCap: null, factoryCapMissing: reason }, false, sampleRow({ key: '2', hour: 100, live: true, factories: null, factoriesMissing: 'Assigned factories not recorded: line is known from output only', status: 'building' }));
+  const unreadTip = (typeof unread.tooltipExtra === 'function' ? unread.tooltipExtra() : unread.tooltipExtra) ?? [];
+  assert.deepEqual(unreadTip.find(entry => entry.label === 'Most factories')?.value, { kind: 'notRecorded', reason }, 'the missing cap is told even when the count is missing too');
+  const railway = (factories: number) => project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '3', hour: 100, live: true, kind: 'railway', factories, status: 'building' }));
+  assert.deepEqual(railway(4).cells.factories?.value, { kind: 'known', value: '4 / 15' }, 'a railway line working with factories is not in a state that takes none');
+  const idle = railway(0);
+  assert.deepEqual(idle.cells.factories?.value, { kind: 'known', value: '0' }, 'a railway line with none may be in a state that takes none: no most is guessed');
+  const idleTip = (typeof idle.tooltipExtra === 'function' ? idle.tooltipExtra() : idle.tooltipExtra) ?? [];
+  assert.equal(idleTip.find(entry => entry.label === 'Most factories')?.value.kind, 'notRecorded');
+  assert.deepEqual(project({ factoryCap: 15, factoryCapMissing: null }, false, sampleRow({ key: '4', hour: 100, live: true, kind: 'building', factories: 0, status: 'waiting' })).cells.factories?.value, { kind: 'known', value: '0 / 15' }, 'a building line always takes the define');
 });

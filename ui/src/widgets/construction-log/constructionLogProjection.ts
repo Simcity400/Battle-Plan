@@ -174,7 +174,21 @@ function levelsCell(row: ConstructionLogRow): { readonly cell: TableCell; readon
   };
 }
 
-function factoriesCell(row: ConstructionLogRow): TableCell {
+export interface FactoryCap {
+  readonly cap: number | null;
+  readonly missing: string | null;
+}
+
+const LINE_CAP_UNKNOWN = 'The recording does not establish the most factories this line takes while it has none';
+
+function lineCap(row: ConstructionLogRow, cap: FactoryCap): FactoryCap {
+  return row.kind !== 'building' && row.factories === 0 && cap.cap !== null ? { cap: null, missing: LINE_CAP_UNKNOWN } : cap;
+}
+
+const factoriesText = (count: number, cap: FactoryCap) =>
+  cap.cap === null ? formatScalar(count, 'integer') : `${formatScalar(count, 'integer')} / ${formatScalar(cap.cap, 'integer')}`;
+
+function factoriesCell(readView: BoundedReadView, row: ConstructionLogRow, cap: FactoryCap, artwork: boolean): TableCell {
   if (!row.live) {
     return { value: notApplicable('No longer in queue'), blank: true };
   }
@@ -184,10 +198,10 @@ function factoriesCell(row: ConstructionLogRow): TableCell {
       missingFigure: 'Factories',
     };
   }
-  const valueText = formatScalar(row.factories, 'integer');
   return {
-    value: knownValue(valueText),
-    unitSuffix: row.factories === 1 ? 'factory' : 'factories',
+    value: knownValue(factoriesText(row.factories, cap)),
+    unitSuffix: (cap.cap ?? row.factories) === 1 ? 'factory' : 'factories',
+    ...(artwork ? { unitArt: readView.art({ kind: 'sprite', key: 'GFX_civ_factory', frame: 0 }) } : {}),
   };
 }
 
@@ -212,6 +226,7 @@ function buildConstructionRow(
   row: ConstructionLogRow,
   artwork: boolean,
   costScale: number,
+  cap: FactoryCap,
   boundary: ReturnType<typeof newIdentityBoundary>,
 ): TableRow {
   const countryCell = logCountryCell(
@@ -254,7 +269,8 @@ function buildConstructionRow(
 
   const place = resolvePlace(readView, row);
   const levels = levelsCell(row);
-  const factories = factoriesCell(row);
+  const rowCap = lineCap(row, cap);
+  const factories = factoriesCell(readView, row, rowCap, artwork);
   const status = buildStatusCell(row);
 
   const tooltipExtra = (): TooltipExtraRow[] => {
@@ -265,8 +281,9 @@ function buildConstructionRow(
     else if (row.placeMissing) out.push({ label: 'Place', value: notRecorded(row.placeMissing) });
     if (levels.text) out.push({ label: 'Levels', value: knownValue(levels.text) });
     else if (row.levelsMissing) out.push({ label: 'Levels', value: notRecorded(row.levelsMissing) });
+    if (row.live && rowCap.missing !== null) out.push({ label: 'Most factories', value: notRecorded(rowCap.missing) });
     if (row.live && row.factories !== null) {
-      out.push({ label: 'Factories', value: knownValue(formatScalar(row.factories, 'integer')) });
+      out.push({ label: 'Factories', value: knownValue(factoriesText(row.factories, rowCap)) });
     } else if (!row.live && row.lastFactories !== null) {
       out.push({ label: 'Factories at last read', value: knownValue(formatScalar(row.lastFactories, 'integer')) });
     }
@@ -341,18 +358,23 @@ export const constructionLogProjection: TableProjection<ConstructionLogProjectio
     }
     const rawHead = source.rawHead as {
       readonly costScale?: number;
+      readonly factoryCap?: number | null;
+      readonly factoryCapMissing?: string | null;
       readonly unavailable?: string | null;
       readonly warnings?: readonly string[];
       readonly buildingTypes?: readonly ConstructionTypeChip[];
     } | undefined;
     const items = constructionTypeFilterItems(rawHead?.buildingTypes ?? [], options.selected, Math.min(hour, source.at ?? hour));
     const costScale = typeof rawHead?.costScale === 'number' && rawHead.costScale > 0 ? rawHead.costScale : 100_000;
+    const cap: FactoryCap = Number.isSafeInteger(rawHead?.factoryCap) && rawHead!.factoryCap! > 0
+      ? { cap: rawHead!.factoryCap!, missing: null }
+      : { cap: null, missing: rawHead?.factoryCapMissing ?? 'The most factories a construction line takes is not recorded' };
     const boundary = newIdentityBoundary();
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
-      rawRow => buildConstructionRow(readView, rawRow, options.artwork, costScale, boundary),
+      rawRow => buildConstructionRow(readView, rawRow, options.artwork, costScale, cap, boundary),
     );
     const warnings = rawHead?.warnings?.length ? [...rawHead.warnings] : undefined;
     const unavailable = typeof rawHead?.unavailable === 'string' && rawHead.unavailable.length > 0
