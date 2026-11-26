@@ -624,7 +624,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         readNow: () => readNow ??= sceneReadView(input, binding, drawn, readers),
       };
 
-      const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.index, keep.artProvider, keep.artRevision, width, height];
+      const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
       if (keep.motion || input.now >= keep.expiry || !sameKey(keep.drawKey, drawKey)) {
         const shown = [...family.visibleArt(frame)];
         const shownKey = shown.join('\u0000');
