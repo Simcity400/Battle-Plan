@@ -30,7 +30,7 @@ const sameDated = (a: BoundDated | null, b: BoundDated | null) => a === b || (!!
 export class StaticSupply {
   private readonly send: (change: SupplyChange) => void;
   private held: FamilyStaticSources | null | undefined = undefined;
-  private tiled: object | undefined = undefined;
+  private fields: Readonly<Record<string, object | undefined>> = {};
   private dated: BoundDated | null = null;
 
   constructor(send: (change: SupplyChange) => void) {
@@ -43,18 +43,21 @@ export class StaticSupply {
     this.send({ ...this.payload(), dated });
   }
 
-  tiles(tiledBySource: object | undefined): void {
-    if (tiledBySource === this.tiled) return;
-    this.tiled = tiledBySource;
+  data(fields: Readonly<Record<string, object | undefined>>): void {
+    const was = this.fields;
+    const names = new Set([...Object.keys(was), ...Object.keys(fields)]);
+    if ([...names].every(name => was[name] === fields[name])) return;
+    this.fields = fields;
     if (this.held !== undefined) this.send(this.payload());
   }
 
   private payload(): SupplyChange {
-    const sources = this.held ?? null, tiled = this.tiled;
+    const sources = this.held ?? null;
+    const data = Object.fromEntries(Object.entries(this.fields).filter(([, value]) => value !== undefined));
     return {
       ...sources ? { stamp: revisionOf(sources.stamp) } : {},
-      statics: sources || tiled
-        ? { ...sources ? { staticPanels: sources.panels, staticAnswers: sources.answers, ...(sources.shifts ? { staticShifts: sources.shifts } : {}) } : {}, ...tiled ? { tiledBySource: tiled } : {} }
+      statics: sources || Object.keys(data).length
+        ? { ...sources ? { staticPanels: sources.panels, staticAnswers: sources.answers, ...(sources.shifts ? { staticShifts: sources.shifts } : {}) } : {}, ...data }
         : null,
     };
   }

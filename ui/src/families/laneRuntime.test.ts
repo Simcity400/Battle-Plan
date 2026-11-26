@@ -351,7 +351,7 @@ test('across the worker boundary a scroll, a focus change and an art arrival cos
     const steps: [string, Binding, number][] = [
       ['a scroll', bound({ viewport: { ...viewport, scrollTop: 40 } }), 0],
       ['a focus change', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), 0],
-      ['an art arrival', bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B', artResolutions: { 'sprite:x': { status: 'noArtExpected' } } }), 1],
+      ['an art arrival', { ...bound({ viewport: { ...viewport, scrollTop: 40 }, focusedKey: 'B' }), artResolutions: { 'sprite:x': { status: 'noArtExpected' } } }, 1],
     ];
     let payloads = sent;
     for (const [label, binding, crossed] of steps) {

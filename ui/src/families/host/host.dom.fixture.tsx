@@ -29,6 +29,8 @@ import type { FamilyPlanContext, SourcePlan } from '../contract.ts';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyStaticSources } from './adapter.ts';
 import type { TiledLine } from '../../dashboard/tiles/view.ts';
+import type { PagedRows } from '../table/rowSource.ts';
+import type { ArtResolutions } from '../art/provider.ts';
 import '../../styles.css';
 
 const NATIVE = 9;
@@ -225,7 +227,7 @@ let commits = 0;
 let bindCount = 0;
 let boundIds: number[] = [];
 let staticCommits = 0;
-let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string }[] = [];
+let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string; readonly hoverHour?: number; readonly paged?: unknown; readonly art?: unknown }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
 let currentState = {
@@ -238,6 +240,8 @@ let currentState = {
   genericBodyFocus: false,
   statics: null as FamilyStaticSources | null,
   tiled: undefined as Readonly<Record<string, ReadonlyMap<string, TiledLine>>> | undefined,
+  hovers: undefined as Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> | undefined,
+  paged: undefined as PagedRows | undefined,
   spanMounted: false,
 };
 
@@ -251,13 +255,24 @@ pipeline.bind = ((...args: Parameters<typeof pipeline.bind>) => {
 
 const origSupply = pipeline.supply.bind(pipeline);
 pipeline.supply = ((...args: Parameters<typeof pipeline.supply>) => {
-  const tiledHead = (args[1].statics as { tiledBySource?: { main?: { GER?: { head?: string } } } } | null | undefined)?.tiledBySource?.main?.GER?.head;
-  staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined, ...(tiledHead !== undefined ? { tiledHead } : {}) });
+  const statics = args[1].statics as { tiledBySource?: { main?: { GER?: { head?: string } } }; hovers?: { hover?: { hour?: number } }; pagedRows?: { log?: { mark?: unknown } }; artResolutions?: { mark?: unknown } } | null | undefined;
+  const tiledHead = statics?.tiledBySource?.main?.GER?.head, hoverHour = statics?.hovers?.hover?.hour, paged = statics?.pagedRows?.log?.mark, art = statics?.artResolutions?.mark;
+  staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined, ...(tiledHead !== undefined ? { tiledHead } : {}), ...(hoverHour !== undefined ? { hoverHour } : {}), ...(paged !== undefined ? { paged } : {}), ...(art !== undefined ? { art } : {}) });
   return origSupply(...args);
 }) as typeof pipeline.supply;
 
 const perf = new PerfRecorder();
 measureWith(perf);
+
+const staticArt = (() => {
+  const listeners = new Set<() => void>();
+  let resolutions: ArtResolutions | undefined;
+  return {
+    get resolutions() { return resolutions; },
+    subscribe(changed: () => void) { listeners.add(changed); return () => { listeners.delete(changed); }; },
+    land(next: ArtResolutions) { resolutions = next; for (const listener of listeners) listener(); },
+  };
+})();
 
 const NO_EXACT = async () => null;
 const NO_SUBSCRIPTIONS: ReturnType<typeof makeSubs> = [];
@@ -444,6 +459,9 @@ function renderApp() {
                   subscriptions={NO_SUBSCRIPTIONS}
                   staticSources={currentState.statics}
                   {...currentState.tiled ? { tiledSeries: currentState.tiled } : {}}
+                  {...currentState.hovers ? { hovers: currentState.hovers } : {}}
+                  {...currentState.paged ? { pagedRows: currentState.paged } : {}}
+                  laneArt={staticArt}
                   identitySnapshot={identity}
                   offset={0}
                   pin={null}
@@ -828,7 +846,7 @@ window.hostDom = {
     return result;
   },
 
-  async testTilesSupplied() {
+  async testDataSupplied() {
     const frames = async (count: number) => {
       for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     };
@@ -848,17 +866,29 @@ window.hostDom = {
     staticSupplies = [];
     const rounds = 10;
     for (let round = 1; round <= rounds; round++) {
-      currentState = { ...currentState, tiled: { main: new Map([['GER', tiledLine(round)]]) } };
+      currentState = {
+        ...currentState,
+        tiled: { main: new Map([['GER', tiledLine(round)]]) },
+        hovers: { hover: { hour: round, data: { round } } },
+        paged: { log: { mark: round } } as unknown as PagedRows,
+      };
       renderApp();
       await frames(2);
+      staticArt.land({ mark: round } as unknown as ArtResolutions);
+      await frames(2);
     }
+    const ours = staticSupplies.filter(item => item.id === pipeS && item.statics);
     const result = {
       rounds,
       binds: bindCount,
-      tilesSupplied: staticSupplies.filter(item => item.id === pipeS && item.statics).map(item => item.tiledHead ?? null),
+      supplies: ours.length,
+      tilesSupplied: [...new Set(ours.map(item => item.tiledHead ?? null))],
+      hoursSupplied: [...new Set(ours.map(item => item.hoverHour ?? null))],
+      pagesSupplied: [...new Set(ours.map(item => item.paged ?? null))],
+      artSupplied: [...new Set(ours.map(item => item.art ?? null))].filter(mark => mark !== null),
       generationKept: pipeline.binding(pipeS) === generation,
     };
-    currentState = { ...currentState, statics: null, tiled: undefined };
+    currentState = { ...currentState, statics: null, tiled: undefined, hovers: undefined, paged: undefined };
     renderApp();
     return result;
   },

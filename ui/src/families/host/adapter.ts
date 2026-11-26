@@ -16,7 +16,6 @@ import type { OptionValue } from '../../dashboard/options';
 import type { IdentitySnapshot } from '../identity/types.ts';
 import type { FamilyPlanContext } from '../plan.ts';
 import { normalizeView } from '../manifest.ts';
-import type { PagedRows } from '../table/rowSource.ts';
 import type { FamilyNavTuple } from './keyboard.ts';
 import { parseDefaultRowHit } from './pointer.ts';
 
@@ -200,9 +199,6 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly options: TOptions;
   readonly settings: TSettings | undefined;
   readonly sources: Readonly<Record<string, number>>;
-  readonly pagedRows?: PagedRows;
-  readonly hovers?: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
-  readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly extent: readonly [number, number] | null;
   readonly plan: SourcePlan | null;
   readonly viewport: FamilyViewportState;
@@ -303,7 +299,6 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     scrollTop: ctx.viewport.scrollTop,
     scrollLeft: ctx.viewport.scrollLeft,
     theme: ctx.theme,
-    ...(ctx.artResolutions ? { artResolutions: ctx.artResolutions } : {}),
     selectedKey: ctx.selectedKey,
     focusedKey: ctx.focusedKey,
     audit: ctx.audit,

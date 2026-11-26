@@ -50,7 +50,7 @@ const NO_PAYLOADS: ReadonlySet<number> = new Set();
 
 export interface SupplyChange {
   readonly stamp?: number;
-  readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown; readonly tiledBySource?: unknown } | null;
+  readonly statics?: { readonly staticPanels?: unknown; readonly staticAnswers?: unknown; readonly staticShifts?: unknown; readonly tiledBySource?: unknown; readonly hovers?: unknown; readonly pagedRows?: unknown; readonly artResolutions?: unknown } | null;
   readonly identity?: object | null;
   readonly dated?: Dated | null;
 }
