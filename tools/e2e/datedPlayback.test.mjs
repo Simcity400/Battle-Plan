@@ -120,7 +120,7 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     { t: 'workerFrame', at: 0, playing: true, changed: 1, workMs: 0.1 }, { t: 'workerFrame', at: 10, playing: true, changed: 1, workMs: 0.1 },
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
@@ -128,6 +128,11 @@ test('review 6 D: a lane that served twice and then stalled for the rest of the 
   assert.equal(datedPlaybackVerdict([window], records).pass, false);
   const served = [...records.filter(r => r.t !== 'workerFrame'), ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 }))];
   assert.equal(datedPlaybackVerdict([window], served).pass, true, 'the same window passes when the lane serves every frame');
+  const unpictured = served.map(r => r.t === 'frame' ? { ...r, pictures: 0, expired: ['w'] } : r);
+  const result = datedPlaybackVerdict([window], unpictured);
+  assert.equal(result.pass, false, '60 main-thread frames with no new widget picture are not 60 frames the user sees');
+  assert.ok(result.reasons.includes('frames with a new picture/s 0'));
+  assert.deepEqual([Math.round(result.metrics[0].mainFrames), result.metrics[0].pictureFrames, result.metrics[0].expiredShare, Math.round(result.metrics[0].expiredByWidget.w)], [60, 0, 1, 1]);
 });
 
 test('a scrub that presents an empty remount frame judges the held placement', () => {
@@ -208,7 +213,7 @@ test('Research requires five visible dated widgets, a full playing window and sa
       ...widgets.flatMap(w => w.surfaces.map(surface => ({ t: 'picture', at, head: hour, hour, eligibleHour: hour, widget: w.id, surface,
         renderer: 'page', placement: surface, follow: 7, readHour: hour }))),
       ...(i === 0 || Math.floor(i * .6) > Math.floor((i - 1) * .6) ? [{ t: 'workerFrame', at, head: hour, playing: true, changed: 1, workMs: 0.2 }] : []),
-      { t: 'frame', at, playing: true, commits: 0 }];
+      { t: 'frame', at, playing: true, pictures: 1, commits: 0 }];
   }).flat();
   window.inputs = { actions: ['rewind','scrub','pin','speed','scroll','pause'].map((kind,i) => ({ kind, at: 1100 + i*100, pinWidget: kind === 'pin' ? 'active-research' : undefined })),
     to: 1700, presented: [1110,1210,1310,1410,1510,1610], visibility: [{ at: 1100, shown: [['research', null, 'research']] },
@@ -303,7 +308,7 @@ test('placement visibility keeps a hidden surface out of the held-frame gate unt
     ...presented.filter(at => at < 500).map(at => hidden(at)),
     ...presented.filter(at => at >= 500).map(at => shown(at)),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }],
@@ -320,7 +325,7 @@ test('the dated verdict rejects a stale pinned picture after it has settled', ()
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'w', placement: 'p', hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
     { t: 'tick', at: 1100, hour: 10, playing: false, seek: 1 },
     { t: 'picture', at: 1100, widget: 'w', surface: 'w', placement: 'p', hour: 10, seek: 1, fixedHour: 10, since: 10, through: 10 },
     { t: 'picture', at: 1210, widget: 'w', surface: 'w', placement: 'p', hour: 9, seek: 1, fixedHour: 10, since: 10, through: 10 },
@@ -342,7 +347,7 @@ test('displayed age p95 fails even when every late frame crosses a verified stru
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 's', placement: 1,
       hour: Math.floor(target(at) - 109), head: Math.floor(target(at)), eligibleHour: Math.floor(target(at)), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map((at, index) => ({ t: 'frame', at, playing: true, commits: index === 0 ? 1 : 0, commitSequence: 1 })),
+    ...presented.map((at, index) => ({ t: 'frame', at, playing: true, pictures: 1, commits: index === 0 ? 1 : 0, commitSequence: 1 })),
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 's', hour: 100000,
       previousHour: 0, before: ['a'], after: ['b'], verified: true }] },
   ];
@@ -365,7 +370,7 @@ test('an unmatched or ambiguous commit source fails instead of being assigned by
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...picture('one', 1), ...picture('two', 2),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map((at, index) => ({ t: 'frame', at, playing: true, commits: index === 0 ? 1 : 0, commitSequence: 1 })),
+    ...presented.map((at, index) => ({ t: 'frame', at, playing: true, pictures: 1, commits: index === 0 ? 1 : 0, commitSequence: 1 })),
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 'missing-source', hour: 100,
       previousHour: 0, before: ['a'], after: ['b'], verified: true }] },
   ];
@@ -434,7 +439,7 @@ test('an unsettled scrub is reported as a verdict failure with each widget reaso
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const verdict = datedPlaybackVerdict([window], records);
   assert.equal(verdict.pass, false);
@@ -454,7 +459,7 @@ test('an unsettled rewind is reported as a verdict failure with its wait time', 
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const verdict = datedPlaybackVerdict([window], records);
   assert.equal(verdict.pass, false);
@@ -486,7 +491,7 @@ test('a visible two-surface widget fails exact coverage when one surface reports
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'one', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const window = { complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['one', 'two'] }],
@@ -525,7 +530,7 @@ test('review 7 F: every lane is held to both rate bounds', () => {
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 0.1 })),
     ...presented.flatMap(at => [at, at + 8].map(when => ({ t: 'workerFrame', at: when, lane: 1, lanes: 2, playing: true, changed: 1, workMs: 0.1 }))).filter(r => r.at <= 1000),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, at: 500, error: null }],
@@ -559,7 +564,7 @@ test('review 9: a table placement passes exact content only on its own renderer\
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const window = owner => ({ page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['table'] }], audit: [{ widget: 'w', surface: 'table', placement: 1, owner, at: 500, error: null }],
@@ -579,7 +584,7 @@ test('review 9: a table placement passes exact content only on its own renderer\
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'table', placement: 1, owner: -1, mode: 'picture', hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const sparseAuditWin = window(-1);
   const sparseVerdict = datedPlaybackVerdict([sparseAuditWin], paintedRecords);
@@ -599,7 +604,7 @@ test('a window with overlapping lost perf records, a refused widget, or a failed
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const baseWindow = { page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
     widgets: [{ id: 'w', kind: 'ok-kind', title: 'Ok', visible: true, surfaces: ['surface'] }],
@@ -794,7 +799,7 @@ test('dated playback fails on playbackReasons, fails every placement on playing-
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true, session },
     ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', session })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1, session })),
-    ...presented.map((at, i) => ({ t: 'frame', at, playing: true, commits: i === 0 ? 1 : 0, commitSequence: 1, session })),
+    ...presented.map((at, i) => ({ t: 'frame', at, playing: true, pictures: 1, commits: i === 0 ? 1 : 0, commitSequence: 1, session })),
     { t: 'commit', at: 0, serial: 1, widgets: ['w'], changes: [{ widget: 'w', source: 'surface', hour: 10, previousHour: 0, before: ['a'], after: ['b'], verified: true }], session },
   ];
   const baseWindow = session => ({ session, page: 'Heaviest', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
@@ -838,7 +843,7 @@ test('S20: per-picture audit coverage checks every painted picture including own
       hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page', mode: 'picture',
     })),
     ...presented.map(at => ({ t: 'workerFrame', at, playing: true, changed: 1, workMs: 0.1 })),
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0, commitSequence: 0 })),
   ];
   const baseAudit = presented.slice(1).map(at => ({ widget: 'w', surface: 'table', placement: 1, owner: -1, generation: 1, at, error: null }));
   const window = {
@@ -872,7 +877,7 @@ test('S20: per-picture audit coverage checks every painted picture including own
     { t: 'tick', at: 3000, hour: 1440, speed: 1440, playing: true },
     { t: 'tick', at: 5000, hour: 0, speed: 1440, playing: true },
     { t: 'tick', at: 6000, hour: 1440, speed: 1440, playing: true },
-    ...presented.map(at => ({ t: 'frame', at, playing: true, main: 2, dt: 16, commits: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, main: 2, dt: 16, commits: 0 })),
     ...presented.map(at => ({ t: 'frame', at: 2000 + at, playing: true, main: 2, dt: 16, commits: 0 })),
     ...presented.map(at => ({ t: 'frame', at: 5000 + at, playing: true, main: 3, dt: 16, commits: 0 })),
     ...presented.map(at => ({ t: 'workerFrame', at: 5000 + at, playing: true, changed: 1, workMs: 1 })),
@@ -905,7 +910,7 @@ test('cancelled workerFrame is excluded from worker presentation rate, workerGap
   const records = [
     { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
     { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
-    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0 })),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, pictures: 1, commits: 0 })),
     ...presented.map((at, i) => cancelledIndices.has(i)
       ? { t: 'workerFrame', at, playing: true, changed: 0, cancelled: true, workMs: 80 }
       : { t: 'workerFrame', at, playing: true, changed: 0, workMs: 0.2 }),
