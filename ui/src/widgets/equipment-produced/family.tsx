@@ -12,7 +12,7 @@ import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
 import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
 import type { ProducedAtReply, ProducedCount, ProducedMeasure } from '../../generated/dashboard';
-import type { EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import { UNKNOWN_WORDS, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function validateProducedAt(data: unknown): ProducedAtReply {
   const reply = data as Partial<ProducedAtReply> | null;
@@ -22,8 +22,8 @@ function validateProducedAt(data: unknown): ProducedAtReply {
   return reply as ProducedAtReply;
 }
 
-function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits, fromHour }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
-  readonly tag: string;
+function ProducedDetails({ widget, runtime, active, country, hour, count, measure, refits, fromHour }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
+  readonly country: string;
   readonly hour: GatedHour;
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
@@ -35,7 +35,7 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
     sourceId: track.source.id,
     revision: track.source.revision,
     product: 'equipment-produced-at',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits, ...(fromHour !== null ? { fromHour } : {}) },
+    params: { branchId: track.branch.id, country: countryFromKey(country), hour, measure, refits, ...(fromHour !== null ? { fromHour } : {}) },
   }) : null;
   const reply = useProduct<ProducedAtReply>(runtime.client, request, active, validateProducedAt, track?.source);
   if (reply.error) {
@@ -44,8 +44,9 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
   if (!reply.data) {
     return <div className="detail-empty">Loading production detail…</div>;
   }
+  const window = reply.data.icTotal.reason === 'windowIncomplete' || reply.data.icTotal.reason === 'observationRestarted' ? reply.data.icTotal.reason : null;
   if (!reply.data.models.length) {
-    return <div className="detail-empty">Nothing delivered at {formatDateOnly(hour)}.</div>;
+    return <div className="detail-empty">{window ? UNKNOWN_WORDS[window] : `Nothing delivered at ${formatDateOnly(hour)}.`}</div>;
   }
   const decimals = count === 'ic' ? 5 : 0;
   const fmt = count === 'ic' ? { decimals: 0, maxDecimals: 2 } : { decimals: 0 };
@@ -117,7 +118,7 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
             widget={widget}
             runtime={runtime}
             active={active}
-            tag={detail.tag}
+            country={detail.key}
             hour={detail.hour}
             count={count}
             measure={measure}

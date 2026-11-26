@@ -520,10 +520,15 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
     let now = DesignsAt::read(query, stretch.run, read, id)?;
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
     let counted = series.measure(produced_measure(ProducedCount::Units, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
-    let opening = tiles::range_baseline(&dashboard_query::series::Line::new(query, series, counted)?, query, params.measure, params.from_hour)?;
+    let line = dashboard_query::series::Line::new(query, series, counted)?;
+    let opening = tiles::range_baseline(&line, query, params.measure, params.from_hour)?;
+    let restarted = match opening {
+        tiles::Baseline::Opening(start) => line.clock_at(hour)?.since != Some(start),
+        _ => false,
+    };
     let whole = match opening {
         tiles::Baseline::Unrestricted => true,
-        tiles::Baseline::Opening(start) => now.observation.0 == Some(start),
+        tiles::Baseline::Opening(_) => !restarted,
         tiles::Baseline::From(_) | tiles::Baseline::Unavailable(_) => false,
     };
     let ranged = if matches!(opening, tiles::Baseline::Unrestricted) { None } else { params.from_hour };
@@ -534,6 +539,7 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
     };
     let at = |held: &DesignsAt, key: DesignKey, choice: Choice| held.amount(key, held.hour, choice);
     let windowed = |key: DesignKey, choice: Choice| match (params.measure, whole) {
+        _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
         (ProducedMeasure::Total, true) => at(&now, key, choice).0,
         _ => measure::difference(at(&now, key, choice), before.as_ref().map(|before| at(before, key, choice))),
     };
@@ -575,6 +581,7 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         Amount::Known(0)
     };
     reply.ic_total = amount_of(country(&now).plus(match (params.measure, whole) {
+        _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
         (ProducedMeasure::Total, true) => Amount::Known(0),
         _ => before.as_ref().map_or(Amount::Unknown(ProducedUnknown::WindowIncomplete), country),
     }).plus(total));

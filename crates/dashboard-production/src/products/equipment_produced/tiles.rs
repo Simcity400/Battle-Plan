@@ -591,6 +591,9 @@ mod tests {
         assert_eq!(after.missing.as_deref(), Some(unknown_reason(Gap::Restarted)), "a range from the first hour is not known after counting restarted: {:?}", after.rows);
         assert!(ranged_top(&restarted, FIRST + 100, FIRST).missing.is_none(), "and is known before");
         let restarted_query = dashboard_base::queries::query(&restarted, 1).unwrap();
+        let restarted_detail = crate::products::equipment_produced::at_reply(&restarted, &restarted_query, &crate::products::equipment_produced::ProducedAtParams { branch_id: "1".into(), country: Country::Slot(7), hour: LAST, measure: ProducedMeasure::Total, refits: false, from_hour: Some(FIRST) }, &load).unwrap();
+        assert!(restarted_detail.models.iter().all(|model| model.units.value.is_none()), "the detail of a Range from the opening is not known after counting restarted, as the race says: {:?}", restarted_detail.models);
+        assert_eq!(restarted_detail.ic_total.reason, Some(crate::products::equipment_produced::ProducedUnknown::ObservationRestarted));
         let restart_tile = tile(
             &restarted,
             &restarted_query,
