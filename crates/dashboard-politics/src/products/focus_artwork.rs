@@ -4,11 +4,12 @@ use dashboard_core::dto::{Artwork, FocusDatabase};
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
+use dashboard_text::triggers::inputs::{Resolution, TableRead};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -294,16 +295,84 @@ pub(crate) fn load(
     check_cancel(cancelled)?;
     let query = dashboard_base::queries::query(source, branch)?;
     let tag = query.holders.name(&params.country, params.hour);
-    let mut reply = present_decoded(art, params, &tag, &decoded, cancelled)?;
-    if !needs_frame && let Some(block) = replay.block_at(branch, params.hour) {
+    let (reply, inputs) = dashboard_text::triggers::inputs::capture(&decoded, || present_decoded(art, params, &tag, &decoded, cancelled));
+    let mut reply = reply?;
+    if let Some(block) = replay.block_at(branch, params.hour) {
         let through = block.last_hour.min(query.holders.interval(params.hour).1);
-        if let Ok(campaign) = replay_lanes::lanes::history(replay.recording(), block.run, TableId::Campaign, &[0], replay_lanes::lanes::Keys::All, params.hour, through) {
-            let edges = campaign.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour))
-                .chain(campaign.statuses.iter().map(|status| status.first));
-            reply.valid_through = edges.filter(|&edge| edge > params.hour).min().map_or(through, |edge| edge - 1);
+        let through = if needs_frame { through.min(params.hour.saturating_add(LOOKAHEAD)) } else { through };
+        let reads: Option<Vec<TableRead>> = if needs_frame {
+            inputs.footprint().map(<[TableRead]>::to_vec)
+        } else {
+            Some(vec![TableRead { fields: 1, ..TableRead::keys(TableId::Campaign) }])
+        };
+        if let Some(reads) = reads {
+            reply.valid_through = reads_through(&replay, block.run, &reads, params.hour, through, cancelled)?;
         }
     }
     Ok(reply)
+}
+
+const LOOKAHEAD: i32 = 24;
+
+fn reads_through(replay: &Replay, run: u32, reads: &[TableRead], hour: i32, through: i32, cancelled: &AtomicBool) -> io::Result<i32> {
+    let mut tables: BTreeMap<TableId, (u64, Option<Vec<(u128, u128)>>)> = BTreeMap::new();
+    let mut merge = |read: &TableRead| {
+        let held = tables.entry(read.table).or_insert((0, Some(Vec::new())));
+        held.0 |= read.fields;
+        match (read.rows, read.owner, held.1.as_mut()) {
+            (Some(rows), None, Some(ranges)) => ranges.push(rows),
+            _ => held.1 = None,
+        }
+    };
+    for read in reads {
+        merge(read);
+        if let Some(owner) = read.owner {
+            merge(&match owner.by {
+                Resolution::Links => TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+                Resolution::Countries => TableRead::fields(TableId::Countries, &["canonical_slot"]),
+            });
+        }
+    }
+    let mut next = through.saturating_add(1);
+    for (table, (fields, ranges)) in tables {
+        check_cancel(cancelled)?;
+        let mut columns: Vec<usize> = (0..64).filter(|bit| fields & (1_u64 << bit) != 0).collect();
+        if columns.is_empty() {
+            columns.push(0);
+        }
+        let ranges = ranges.map(|mut ranges| {
+            ranges.sort_unstable();
+            let mut merged: Vec<(u128, u128)> = Vec::with_capacity(ranges.len());
+            for (first, last) in ranges {
+                match merged.last_mut() {
+                    Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+                    _ => merged.push((first, last)),
+                }
+            }
+            merged
+        });
+        let keys = match &ranges {
+            Some(ranges) => replay_lanes::lanes::Keys::Ranges(ranges),
+            None => replay_lanes::lanes::Keys::All,
+        };
+        if table == TableId::LexicalTokens {
+            let Ok(statuses) = replay_lanes::lanes::statuses(replay.recording(), run, table, hour, next.saturating_sub(1)) else {
+                return Ok(hour);
+            };
+            if let Some(edge) = statuses.iter().map(|status| status.first).filter(|&edge| edge > hour).min() {
+                next = next.min(edge);
+            }
+            continue;
+        }
+        let Ok(history) = replay_lanes::lanes::history(replay.recording(), run, table, &columns, keys, hour, next.saturating_sub(1)) else {
+            return Ok(hour);
+        };
+        let edges = history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)).chain(history.statuses.iter().map(|status| status.first));
+        if let Some(edge) = edges.filter(|&edge| edge > hour).min() {
+            next = next.min(edge);
+        }
+    }
+    Ok(next.saturating_sub(1).max(hour))
 }
 
 pub(crate) fn present_decoded(
@@ -787,10 +856,10 @@ mod tests {
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
         use dashboard_base::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
-        let mut frames: Vec<_> = (100..103)
+        let mut frames: Vec<_> = (100..104)
             .map(|hour| focus_scale_frame(hour, 24, 12, &["conditional"]))
             .collect();
-        for (frame, ruling_id) in frames.iter_mut().zip([20, 30]) {
+        for (frame, ruling_id) in frames.iter_mut().zip([20, 30, 30]) {
             frame.tables[TableId::PoliticalParties.index()] =
                 TableView::Complete(TableRows::PoliticalParties(
                     [(20, "mod_group"), (30, "other_group")]
@@ -806,14 +875,14 @@ mod tests {
                 ))
                 .into();
         }
-        frames[2].tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
+        frames[3].tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
             reason: "synthetic party read failed".into(),
         }
         .into();
         let (source, context, _folders) = icon_product_source(frames);
         let cancelled = AtomicBool::new(false);
         let shared = shared_frames(&source);
-        for hour in 100..103 {
+        for hour in 100..104 {
             let basic = read_frame(source.replay_ref(), 1, hour, false, &cancelled).unwrap();
             shared.lock().unwrap().retain(basic, false, &cancelled).unwrap();
         }
@@ -825,7 +894,7 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.scoped)
         );
-        for (hour, pixel) in [(100, Some(47)), (101, Some(23)), (102, None)] {
+        for (hour, pixel, through) in [(100, Some(47), 100), (101, Some(23), 102), (102, Some(23), 102), (103, None, 103)] {
             let params = FocusArtworkParams {
                 branch_id: "1".into(),
                 hour,
@@ -837,6 +906,7 @@ mod tests {
                 icons_only: Some(true),
             };
             let reply = load(&source, &params, &context, &cancelled).unwrap();
+            assert_eq!(reply.valid_through, through, "hour {hour}: a scripted icon holds until an input it read changes, not one hour");
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
             assert_eq!(item.artwork.base_duration_days, Some(10.0));
@@ -873,7 +943,7 @@ mod tests {
                 24
             );
         }
-        assert_eq!(shared.lock().unwrap().reads, 3);
+        assert_eq!(shared.lock().unwrap().reads, 4);
     }
 
     #[test]
