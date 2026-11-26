@@ -4,7 +4,8 @@ use content_reader_image::native::Decode;
 #[cfg(test)]
 use content_reader_image::bmp;
 use std::{io, sync::Arc};
-use crate::scene_content::{LoadMasks, MapAssets, SceneSources};
+use crate::scene_content::{LoadMasks, MapAssets, SceneSources, TerrainReader, TerrainSources};
+use content_reader_image::IndexedImage;
 use viewer_runtime::errors::invalid;
 use viewer_gpu::{
     camera::MapSize,
@@ -33,7 +34,6 @@ pub fn load_with_products(
         viewer_scene_base::shader_sources::check(stack, &mut lines).map(|()| lines)
     })?);
     warnings.push("Selected arrow routes use viewer-local selection and animation; particle retained state follows the viewer's submitted world, arrows, labels and meshes.".into());
-    let read = |path: &[u8]| layers.read_path(path);
     let defines_for = |stack: &ResolvedLayers| {
         if stack.shows_visual_mods() {
             art_defines
@@ -45,36 +45,12 @@ pub fn load_with_products(
     let shader = |name: &str, load: fn(&ResolvedLayers, [u32; 2], Decode) -> io::Result<_>| {
         layers.artwork(name, |stack| load(stack, size, decode))
     };
-    let mut texture_warnings = Vec::new();
-    let mut texture_with_status = |name: &str, space: ColorSpace| {
-        let path = format!("map/terrain/{name}");
-        layers.artwork(&path, |stack| {
-            if stack.shows_visual_mods() {
-                load_uploadable(&path, &|request| stack.read_path(request), decode, space).map(
-                    |texture| MapTexture {
-                        texture,
-                        unbound: false,
-                    },
-                )
-            } else {
-                load_map_texture(
-                    &path,
-                    &|request| stack.read_path(request),
-                    decode,
-                    space,
-                    &mut texture_warnings,
-                )
-            }
-        })
-    };
-    let terrain = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.terrain))?;
+    let terrain_path = format!("map/{}", default_map.terrain);
+    let terrain = content_reader_map::terrain_images::read_indexed_image(layers, &terrain_path)?;
     let heightmap = match products {
         Some(products) => products.heightmap(default_map)?,
         None => content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.heightmap))?,
     };
-    let height_texture =
-        sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, &heightmap);
-    let world_normal = world_normal(layers, decode)?;
     let rivers = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.rivers))?;
     let trees = content_reader_map::terrain_images::read_indexed_image(layers, &format!("map/{}", default_map.tree_definition))?;
     expect_size(
@@ -98,21 +74,14 @@ pub fn load_with_products(
         rivers.height,
         [map.width, map.height],
     )?;
-    let atlas_of_palette = atlas_lookup(definitions, &terrain, warnings);
-    let terrain_ids = terrain_id_map(
-        terrain.width,
-        terrain.height,
-        &terrain.indices,
-        &atlas_of_palette,
-    )?;
-    let reflection = texture_with_status("reflection.dds", ColorSpace::Srgb)?;
-    if !reflection.unbound && reflection.texture.faces == 1 {
-        warnings.push("1 2D reflection texture (map/terrain/reflection.dds): cube samples reproduce the native hardware GPU's zero result; native D3D11 software-driver results are device-dependent.".into());
-    }
-    let reflection = reflection.texture;
-    let mut texture = |name: &str, space: ColorSpace| {
-        texture_with_status(name, space).map(|loaded| loaded.texture)
+    let reader = TerrainReader {
+        layers: Arc::new(layers.clone()),
+        terrain: terrain_path,
+        atlas_of_palette: atlas_lookup(definitions, &terrain, warnings),
+        quality,
+        decode,
     };
+    let terrain_sources = read_terrain_sources(&reader, &terrain, &heightmap, warnings)?;
     let (arrow_shader, movement_arrows, order_label_shader) =
         layers.artwork("map arrows", |stack| {
             Ok((
@@ -133,6 +102,94 @@ pub fn load_with_products(
             ))
         })?;
     let sources = SceneSources {
+        terrain: terrain_sources,
+        reader,
+        icon_images: Vec::new(),
+    };
+    let assets = MapAssets {
+        map,
+        mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
+            viewer_scene_base::mesh_budget::Budget::read(defines)
+        })?,
+        terrain_shader: shader("terrain shader", viewer_terrain::terrain_shader::load)?,
+        water_shader: shader("water shader", viewer_terrain::water_shader::load)?,
+        sky_shader: shader("sky shader", viewer_terrain::sky_shader::load)?,
+        name_shader: shader("map name shader", viewer_map_text::name_shader::load)?,
+        arrow_shader,
+        movement_arrows,
+        order_label_shader,
+        tree_shader: shader("tree shadow shader", viewer_scene_base::tree_caster::load)?,
+        heightmap: Arc::new(heightmap),
+        post: layers.artwork("post-processing", |stack| {
+            PostAssets::load(stack, defines_for(stack), map, decode)
+        })?,
+        shadow_blur: shader("shadow blur shader", viewer_scene_base::shadow_blur::load)?,
+        perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
+        spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
+            kind.spawn_city
+        })),
+        sight: Default::default(),
+    };
+    Ok((assets, sources, LoadMasks { rivers, trees }))
+}
+
+impl TerrainReader {
+    pub fn read(&self, heightmap: &IndexedImage) -> io::Result<TerrainSources> {
+        let terrain = content_reader_map::terrain_images::read_indexed_image(&self.layers, &self.terrain)?;
+        expect_size(&self.terrain, terrain.width, terrain.height, [heightmap.width, heightmap.height])?;
+        read_terrain_sources(self, &terrain, heightmap, &mut Vec::new())
+    }
+}
+
+fn read_terrain_sources(
+    reader: &TerrainReader,
+    terrain: &IndexedImage,
+    heightmap: &IndexedImage,
+    warnings: &mut Vec<String>,
+) -> io::Result<TerrainSources> {
+    let TerrainReader { layers, quality, decode, .. } = reader;
+    let (quality, decode) = (*quality, *decode);
+    let read = |path: &[u8]| layers.read_path(path);
+    let mut texture_warnings = Vec::new();
+    let mut texture_with_status = |name: &str, space: ColorSpace| {
+        let path = format!("map/terrain/{name}");
+        layers.artwork(&path, |stack| {
+            if stack.shows_visual_mods() {
+                load_uploadable(&path, &|request| stack.read_path(request), decode, space).map(
+                    |texture| MapTexture {
+                        texture,
+                        unbound: false,
+                    },
+                )
+            } else {
+                load_map_texture(
+                    &path,
+                    &|request| stack.read_path(request),
+                    decode,
+                    space,
+                    &mut texture_warnings,
+                )
+            }
+        })
+    };
+    let padded_heights =
+        sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, heightmap);
+    let world_normal = world_normal(layers, decode)?;
+    let terrain_ids = terrain_id_map(
+        terrain.width,
+        terrain.height,
+        &terrain.indices,
+        &reader.atlas_of_palette,
+    )?;
+    let reflection = texture_with_status("reflection.dds", ColorSpace::Srgb)?;
+    if !reflection.unbound && reflection.texture.faces == 1 {
+        warnings.push("1 2D reflection texture (map/terrain/reflection.dds): cube samples reproduce the native hardware GPU's zero result; native D3D11 software-driver results are device-dependent.".into());
+    }
+    let reflection = reflection.texture;
+    let mut texture = |name: &str, space: ColorSpace| {
+        texture_with_status(name, space).map(|loaded| loaded.texture)
+    };
+    let sources = TerrainSources {
         atlas: texture(&format!("atlas{quality}.dds"), ColorSpace::Srgb)?,
         atlas_normal: texture(&format!("atlas_normal{quality}.dds"), ColorSpace::Linear)?,
         colormap: texture("colormap_rgb_cityemissivemask_a.dds", ColorSpace::Srgb)?,
@@ -164,35 +221,10 @@ pub fn load_with_products(
         fow_noise: texture(&format!("fow_noise_{quality}.dds"), ColorSpace::Linear)?,
         world_normal,
         terrain_ids,
-        padded_heights: height_texture,
-        icon_images: Vec::new(),
-    };
-    let assets = MapAssets {
-        map,
-        mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
-            viewer_scene_base::mesh_budget::Budget::read(defines)
-        })?,
-        terrain_shader: shader("terrain shader", viewer_terrain::terrain_shader::load)?,
-        water_shader: shader("water shader", viewer_terrain::water_shader::load)?,
-        sky_shader: shader("sky shader", viewer_terrain::sky_shader::load)?,
-        name_shader: shader("map name shader", viewer_map_text::name_shader::load)?,
-        arrow_shader,
-        movement_arrows,
-        order_label_shader,
-        tree_shader: shader("tree shadow shader", viewer_scene_base::tree_caster::load)?,
-        heightmap: Arc::new(heightmap),
-        post: layers.artwork("post-processing", |stack| {
-            PostAssets::load(stack, defines_for(stack), map, decode)
-        })?,
-        shadow_blur: shader("shadow blur shader", viewer_scene_base::shadow_blur::load)?,
-        perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
-        spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
-            kind.spawn_city
-        })),
-        sight: Default::default(),
+        padded_heights,
     };
     warnings.extend(texture_warnings);
-    Ok((assets, sources, LoadMasks { rivers, trees }))
+    Ok(sources)
 }
 
 fn world_normal(

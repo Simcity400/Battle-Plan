@@ -252,6 +252,10 @@ impl DashboardMaps {
         }
     }
 
+    pub(crate) fn holds_views(&self) -> bool {
+        !self.views.is_empty()
+    }
+
     pub fn holds_export(&self) -> bool {
         self.views.values().any(|view| view.viewer.holds_export())
     }
