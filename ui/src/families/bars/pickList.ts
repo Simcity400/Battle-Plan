@@ -133,7 +133,7 @@ export function pickNav(list: BarsPickList): readonly (readonly [string, string,
 export function pickTooltip(list: BarsPickList, key: string, hour: number): FamilyTooltipPayload | null {
   const row = list.rows.find(item => item.key === key);
   if (!row) return null;
-  return row.tooltip ? { ...row.tooltip, hour } : { title: row.label, fullText: row.label, hour };
+  return row.tooltip ? (row.tooltip.hour !== undefined ? row.tooltip : { ...row.tooltip, hour }) : { title: row.label, fullText: row.label, hour };
 }
 
 export function pickAudit(list: BarsPickList): FamilyAuditRow[] {

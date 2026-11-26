@@ -111,12 +111,13 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     const target = focus ? { key } : inspected(key);
     if (!target) return null;
     const picked = pickedKey(target.key);
+    const tipHour = frame.model.dataHours?.length === 1 ? frame.model.dataHours[0]! : frame.model.hour;
     if (picked !== null) {
-      const tip = frame.model.pickList ? pickTooltip(frame.model.pickList, picked, frame.model.hour) : null;
-      return tip ? { rowKey: target.key, payload: tip } : null;
+      const tip = frame.model.pickList ? pickTooltip(frame.model.pickList, picked, tipHour) : null;
+      return tip ? { rowKey: target.key, payload: tip, ...(tip.hour !== undefined && tip.hour !== frame.model.hour ? { hour: tip.hour } : {}) } : null;
     }
     const payload = deriveBarsTooltip(frame.model, target.key, target.side);
-    return payload ? { rowKey: target.key, payload } : null;
+    return payload ? { rowKey: target.key, payload, ...(payload.hour !== undefined && payload.hour !== frame.model.hour ? { hour: payload.hour } : {}) } : null;
   },
   structure({ model, layout }) {
     const regions = barsRegionRows(model, layout);

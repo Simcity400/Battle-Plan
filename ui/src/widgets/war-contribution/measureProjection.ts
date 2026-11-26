@@ -4,7 +4,7 @@ import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type Ba
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
+import { formatDateOnly, formatScalar, formatShare, notRecordedLabel } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarsReply } from '../../generated/dashboard';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
 import { chosenGroup, leadOf, savedWar, sideCountries, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
@@ -106,6 +106,7 @@ export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = 
     const measure = group.measures.find(item => item.key === options.measure) ?? group.measures.find(item => item.key === DEFAULT_MEASURE) ?? group.measures[0];
     if (!measure) return { form: 'two-sided', twoSidedLayout: 'split-sides', hour, rows: [], empty: 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
     const listed = MEASURE_LIST.find(item => item.key === measure.key)!;
+    const heldFromEarlier = reply.hour !== hour;
     const caption = measure.key === 'participation'
       ? `${listed.label} · Each country’s share of its side’s participation`
       : `${listed.label} · Each country’s share of all ${listed.whole} in this war`;
@@ -114,6 +115,7 @@ export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = 
       twoSidedLayout: 'split-sides',
       hour,
       dataHours: [reply.hour],
+      ...(heldFromEarlier ? { summaryText: `As of ${formatDateOnly(reply.hour)}` } : {}),
       rows: rowsOf(readView, group, measure, sides, reply.hour),
       rowHeight: 26,
       barHeight: 12,
