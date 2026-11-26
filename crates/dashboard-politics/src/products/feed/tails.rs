@@ -556,6 +556,11 @@ fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
         if let Some(cause) = row.cause.as_mut() {
             cause.notes.clear();
         }
+        if row.cause.as_ref().is_some_and(|cause| {
+            cause.how.is_none() && cause.within.is_none() && cause.conference.is_none() && cause.state.is_none() && cause.ally.is_none() && cause.reason.is_none() && cause.selected_option.is_none() && !cause.target_recorded
+        }) {
+            row.cause = None;
+        }
         if !description && let Some(item) = row.item.as_mut() {
             item.description = None;
         }
@@ -583,7 +588,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     let (chips, keys) = chips(list);
     let window = Window { from: params.from, to: params.to, selection: prepared.selection.as_ref(), search: params.search.as_deref(), sort: params.sort.as_ref(), offset: params.offset.as_deref(), limit: params.limit };
     let mut answer = answer(&prepared.index, query, &window, hour, kinds.as_deref(), states.as_deref(), true, &chips)?;
-    let opened = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
+    let opened_row = only_row(&prepared.scanned, &prepared.index, params.row.as_deref(), &mut answer, hour);
     let read = index::read_events(query, &locators(&prepared.index, &answer, hour))?;
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
@@ -601,7 +606,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         spans.push((first, events.len(), opened));
     }
     let mut presented = present_all(query, &prepared.scanned, &events, &names, &presenter, &mut notices, cancelled)?;
-    if !opened {
+    if !opened_row {
         listed(&mut presented, list == List::Decisions, list == List::Decisions);
     }
     let mut rows = Vec::with_capacity(answer.rows.len());
@@ -611,7 +616,16 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
         if list == List::Decisions {
             super::decision_state::enforce_same_incarnation(&events[first..end], &mut card);
         }
-        let edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
+        let mut edges: Vec<ScriptEdge> = events[first..end].iter().zip(card).filter_map(|(event, row)| row.map(|row| edge(event, row))).collect();
+        if !opened_row {
+            let mut named = false;
+            for edge in &mut edges {
+                if named {
+                    edge.row.item = None;
+                }
+                named |= edge.row.item.is_some();
+            }
+        }
         let Item::Log { head, .. } = &occurrence.payload else { return Err(invalid("A card holds no feed rows")) };
         let id = read.get(&head.key).map(FeedEvent::id).ok_or_else(|| invalid("A card's head was not read back"))?;
         rows.push(ScriptPageRow {

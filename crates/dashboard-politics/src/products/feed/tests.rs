@@ -763,8 +763,8 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(notes(&cards_b1), 0, "list rows leave the notes to the opened row");
     let reopened: usize = cards_b1.rows.iter().map(|row| notes(&DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some(row.key.clone()), ..cards_at(101) }, &context, &cancel).unwrap())).sum();
     assert!(reopened > 0, "opened rows carry them");
-    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map(|cause| (cause.selected_option, cause.target_recorded));
-    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map(|cause| (cause.selected_option, cause.target_recorded))), "a list row keeps the facts its notes carried");
+    let cause = |reply: &super::ScriptOccurrenceTailReply| reply.rows[0].occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone()).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded));
+    assert_eq!(cause(&opened), cards_b1.rows.iter().find(|row| row.key == key).and_then(|row| row.occurrence.as_ref().and_then(|occurrence| occurrence.edges[0].row.cause.clone())).map_or((None, false), |cause| (cause.selected_option, cause.target_recorded)), "a list row keeps the facts its notes carried");
     assert!(DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:9:9".into()), ..cards_at(101) }, &context, &cancel).unwrap().rows.is_empty(), "a row not in the log at the hour is no row");
     assert_eq!(card_end_state(&cards_b1, "native:1:1"), Some(DecisionLifecycleState::Completed));
     assert_eq!(card_end_state(&cards_b1, "native:1:2"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
