@@ -95,18 +95,6 @@ pub fn civil_war<F: Tables + ?Sized>(frame: &F, slot: u32) -> Result<bool, Strin
     CivilWars::new(frame)?.holds(slot)
 }
 
-pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
-    use crate::triggers::inputs::TableRead;
-    vec![
-        TableRead::fields(TableId::Countries, &["canonical_slot"]),
-        TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
-        TableRead::fields(TableId::CountryCivilWars, &["target"]),
-        TableRead::fields(TableId::CountryCounterInputs, &["owned_state_count"]),
-        TableRead::fields(TableId::CountryWars, &["enemies_read", "enemies"]),
-        TableRead::fields(TableId::WarRelations, &["start_hour", "end_hour"]).ending(),
-    ]
-}
-
 const SLOT: u64 = mask::<CountryRow>(&["canonical_slot"]);
 const LINK: u64 = mask::<CountryLinkRow>(&["canonical_slot"]);
 const TARGET: u64 = mask::<CountryCivilWarRow>(&["target"]);
@@ -408,20 +396,6 @@ impl NamingCountry {
             look: appearance
                 .filter(|appearance| appearance.country == row.id)
                 .and_then(|appearance| Look::read_with_appearance(frame, row, appearance)),
-        }
-    }
-
-    pub fn read_with_civil_war<F: Tables + ?Sized>(
-        frame: &F,
-        row: &CountryRow,
-        appearance: Option<&CountryAppearanceRow>,
-        civil_war: &dyn Fn(u32) -> Result<bool, String>,
-    ) -> Self {
-        Self {
-            slot: row.canonical_slot,
-            look: appearance
-                .filter(|appearance| appearance.country == row.id)
-                .and_then(|appearance| Look::read_with(frame, row, appearance, civil_war)),
         }
     }
 

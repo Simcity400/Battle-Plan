@@ -1,18 +1,10 @@
 
 use super::politics_content::PoliticsContent;
-use crate::{catalogue, metadata::validate_campaign};
+use crate::catalogue;
 use content_reader_localisation::localisation::Argument;
-use replay::campaign::Replay;
-use replay_data::{
-    rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::TableId, rows::tables,
-};
-use replay_frame::{frame::SharedView, frame::TableView};
+use replay_data::rows::{LexicalTokenRow, ModifierDefinitionRow};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::collections::{BTreeMap, BTreeSet};
 use ts_rs::TS;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -50,70 +42,6 @@ pub struct LocalisedText {
     pub text: Option<String>,
 }
 
-pub(crate) fn recorded(
-    replay: &Replay,
-    branch: u64,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<BTreeMap<String, ModifierDefinitionRow>>> {
-    let selected = [
-        TableId::Campaign,
-        TableId::ModifierDefinitions,
-        TableId::LexicalTokens,
-    ];
-    for block in replay
-        .index
-        .iter()
-        .rev()
-        .filter(|block| block.branch == branch)
-    {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Idea request cancelled",
-            ));
-        }
-        let mut last: Option<(SharedView, SharedView)> = None;
-        let read = replay.visit_blocks(
-            &[block],
-            &selected,
-            |_, _, decoded| {
-                if validate_campaign(decoded, replay).is_err() {
-                    return Ok(false);
-                }
-                if decoded.complete::<tables::ModifierDefinitions>().is_ok()
-                    && decoded.complete::<tables::LexicalTokens>().is_ok()
-                {
-                    last = Some((
-                        decoded.tables[TableId::ModifierDefinitions.index()].clone(),
-                        decoded.tables[TableId::LexicalTokens.index()].clone(),
-                    ));
-                }
-                Ok(true)
-            },
-            || Ok(()),
-        );
-        if read.is_err() && last.is_none() {
-            continue;
-        }
-        let Some((definitions, lexical)) = last else {
-            continue;
-        };
-        let (TableView::Complete(definitions), TableView::Complete(lexical)) =
-            (&*definitions, &*lexical)
-        else {
-            continue;
-        };
-        let (Some(rows), Some(lexical)) = (
-            definitions.rows::<tables::ModifierDefinitions>(),
-            lexical.rows::<tables::LexicalTokens>(),
-        ) else {
-            continue;
-        };
-        return Ok(Some(index_recorded(rows, lexical)));
-    }
-    Ok(None)
-}
-
 pub fn index_recorded(
     rows: &[ModifierDefinitionRow],
     lexical: &[LexicalTokenRow],
@@ -129,25 +57,6 @@ pub fn index_recorded(
             Some((key, row.clone()))
         })
         .collect()
-}
-
-pub fn index_rowsets(
-    rows: replay_frame::frame::Rowset<'_, ModifierDefinitionRow>,
-    lexical: replay_frame::frame::Rowset<'_, LexicalTokenRow>,
-) -> io::Result<BTreeMap<String, ModifierDefinitionRow>> {
-    let literal = replay_data::rows::column::<LexicalTokenRow>("literal");
-    let mut index = BTreeMap::new();
-    for row in rows.iter() {
-        let row = row?;
-        let Some(spelling) = lexical.text(u128::from(row.token), |row| &row.literal, literal)? else {
-            continue;
-        };
-        let Ok(key) = std::str::from_utf8(spelling) else {
-            continue;
-        };
-        index.insert(key.to_ascii_lowercase(), row.into_owned());
-    }
-    Ok(index)
 }
 
 fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
@@ -178,39 +87,6 @@ pub(crate) fn content_format(content: &PoliticsContent, key: &str) -> Option<Mod
         precision: definition.precision,
         source: "content".into(),
     })
-}
-
-pub fn content_formats(
-    content: &PoliticsContent,
-    keys: &BTreeSet<String>,
-) -> Vec<crate::findings::Finding> {
-    use crate::findings::{Finding, Kind};
-    let mut findings = Vec::new();
-    for key in keys {
-        if content_format(content, key).is_none() {
-            findings.push(Finding::new(Kind::Offline, format!("modifier {key}"), "the modifier's display definition needs the recorded modifier definitions table; unavailable offline"));
-        }
-    }
-    findings
-}
-
-pub fn modifier_formats(
-    replay: &Replay,
-    branch: u64,
-    keys: &BTreeSet<String>,
-    content: &PoliticsContent,
-    cancelled: &AtomicBool,
-) -> io::Result<(Vec<ModifierFormat>, Vec<String>)> {
-    let recorded = if keys.is_empty() {
-        None
-    } else {
-        recorded(replay, branch, cancelled)?
-    };
-    Ok(modifier_formats_from_recorded(
-        recorded.as_ref(),
-        keys,
-        content,
-    ))
 }
 
 pub fn modifier_formats_from_recorded(

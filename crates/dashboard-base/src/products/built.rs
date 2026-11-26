@@ -412,14 +412,6 @@ fn value<'p>(
     Ok(())
 }
 
-pub fn root_close(text: &str) -> io::Result<Option<(usize, bool)>> {
-    if !text.trim_start().starts_with('{') {
-        return Ok(None);
-    }
-    let (fields, close) = root_fields(text)?;
-    Ok(Some((close, !fields.is_empty())))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

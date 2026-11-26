@@ -225,13 +225,6 @@ impl ArtResolution {
         }
     }
 
-    pub fn into_url(self) -> Option<String> {
-        match self {
-            Self::Ready { url, .. } => Some(url),
-            _ => None,
-        }
-    }
-
     pub fn reason(&self) -> Option<&str> {
         match self {
             Self::ConfirmedMissing { reason, .. }
