@@ -293,6 +293,7 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
     const VARIANT: u64 = 77;
     const TAGGED: u64 = 78;
     const ALIASED: u64 = 79;
+    const GENERIC: u64 = 80;
     let frames: Vec<_> = (100..=110)
         .map(|hour| {
             let mut frame = base_frame(1, hour, Some(1));
@@ -315,7 +316,7 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
                 TableView::Complete(TableRows::CountryAppearance(vec![replay_data::rows::CountryAppearanceRow { country: 9001, name_tag: if hour < 108 { b"GER".to_vec() } else { b"DEU".to_vec() }, ..Default::default() }]))
             };
             frame.metrics.table_ns[TableId::CountryAppearance.index()] = 1;
-            let mut rows = vec![VariantDefinitionRow { id: TAGGED, creator_link: 9001, ..VariantDefinitionRow::default() }, VariantDefinitionRow { id: ALIASED, creator_link: 11, ..VariantDefinitionRow::default() }];
+            let mut rows = vec![VariantDefinitionRow { id: TAGGED, creator_link: 9001, ..VariantDefinitionRow::default() }, VariantDefinitionRow { id: ALIASED, creator_link: 11, ..VariantDefinitionRow::default() }, VariantDefinitionRow { id: GENERIC, ..VariantDefinitionRow::default() }];
             if hour < 109 {
                 rows.insert(0, VariantDefinitionRow { id: VARIANT, creator_link: 9001, display_name: if hour < 105 { b"Old".to_vec() } else { b"New".to_vec() }, ..VariantDefinitionRow::default() });
             }
@@ -330,11 +331,12 @@ fn a_design_is_named_at_each_hour_its_recorded_name_changed_and_not_known_once_i
     let run = query.timeline.stretches[0].run;
     let content = super::Content { catalogue: None, units: None };
     let mut notes = BTreeSet::new();
-    let named = super::designs(&query, &Span { run, first: 100, last: 110, id: 9001, breaks: false }, &BTreeMap::from([(VARIANT, 0), (TAGGED, 0), (ALIASED, 0)]), &content, &mut notes).unwrap();
+    let named = super::designs(&query, &Span { run, first: 100, last: 110, id: 9001, breaks: false }, &BTreeMap::from([(VARIANT, 0), (TAGGED, 0), (ALIASED, 0), (GENERIC, 0)]), &content, &mut notes).unwrap();
     let tagged: Vec<i32> = named[&TAGGED].names.iter().map(|entry| entry.first_hour).collect();
     assert!(tagged.contains(&103), "a name taken from the creator's tag is dated again when that country changes tag: {tagged:?}");
     assert!(tagged.contains(&106) && tagged.contains(&107), "a gap in the creator's appearance dates the name before, during and after it: {tagged:?}");
     let aliased: Vec<i32> = named[&ALIASED].names.iter().map(|entry| entry.first_hour).collect();
+    assert_eq!(named[&GENERIC].names.iter().map(|entry| (entry.first_hour, entry.known)).collect::<Vec<_>>(), [(100, true)], "a design named by no country is never dated by country changes");
     assert!(aliased.contains(&108), "a creator link whose slot's appearance row is another country id is dated when that row's name tag changes: {aliased:?}");
     let names: Vec<(i32, bool)> = named[&VARIANT].names.iter().map(|entry| (entry.first_hour, entry.known)).collect();
     assert_eq!(names, [(100, true), (105, true), (109, false)], "a name per recorded change, not known once the definition is gone");

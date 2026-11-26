@@ -506,6 +506,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     let texts = content.catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
     let base = |variant: u64| definitions.get(&variant).cloned().unwrap_or_else(|| VariantDefinitionRow { id: variant, ..VariantDefinitionRow::default() });
     let naming_link = |fields: &NameFields| if (fields.origin_link as i32) >= 1 { fields.origin_link } else { fields.creator_link };
+    let country_named = |fields: &NameFields| fields.display_name.is_empty() && naming_link(fields) != 0;
+    let created = |fields: &NameFields| country_named(fields) && (fields.origin_link as i32) < 1;
     let mut entries: HashMap<u64, Vec<(i32, Option<NameFields>)>> = variants
         .keys()
         .filter_map(|&variant| {
@@ -521,7 +523,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         .values()
         .flatten()
         .filter_map(|(_, fields)| fields.as_ref())
-        .filter(|fields| fields.display_name.is_empty())
+        .filter(|fields| country_named(fields))
         .map(|fields| u128::from(naming_link(fields)))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -533,7 +535,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     if !wanted.is_empty() {
         let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
         let looks = [dashboard_declare::field(TableId::CountryAppearance, "name_tag")?, dashboard_declare::field(TableId::CountryAppearance, "original_tag")?];
-        let creators = entries.values().flatten().filter_map(|(_, fields)| fields.as_ref()).any(|fields| fields.display_name.is_empty() && (fields.origin_link as i32) < 1);
+        let creators = entries.values().flatten().filter_map(|(_, fields)| fields.as_ref()).any(created);
         let links_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], if creators { Keys::All } else { Keys::These(&wanted) }, span.first, span.last)) {
             Ok(history) => Some(history),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
@@ -583,8 +585,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     for why in [&links_unread, &looks_unread].into_iter().flatten() {
         notes.insert(why.clone());
     }
-    let created = |fields: &NameFields| (fields.origin_link as i32) < 1;
-    let withheld = |fields: &NameFields| fields.display_name.is_empty() && (links_unread.is_some() || (looks_unread.is_some() && created(fields)));
+    let withheld = |fields: &NameFields| country_named(fields) && (links_unread.is_some() || (looks_unread.is_some() && created(fields)));
     for held in entries.values_mut() {
         for entry in held.iter_mut() {
             if entry.1.as_ref().is_some_and(withheld) {
@@ -593,7 +594,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         }
         let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
         for (at, (hour, fields)) in held.iter().enumerate() {
-            let Some(fields) = fields.as_ref().filter(|fields| fields.display_name.is_empty()) else { continue };
+            let Some(fields) = fields.as_ref().filter(|fields| country_named(fields)) else { continue };
             let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
             let mut edges: BTreeSet<i32> = BTreeSet::new();
             if created(fields) {
