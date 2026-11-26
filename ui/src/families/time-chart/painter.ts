@@ -77,7 +77,7 @@ function legendFitKey(model: TimeChartModel, layout: TimeChartLayout, theme: Fam
     const flag = item.flag
       ? (item.flag.art.status === 'noArtExpected' ? '0' : `${item.flag.art.status}:${item.flag.tag ?? item.flag.label ?? ''}`)
       : '';
-    key += `\u0001${item.label}\u0002${item.color ?? ''}\u0002${dash}\u0002${item.hatch ? 1 : 0}\u0002${flag}`;
+    key += `\u0001${item.label}\u0002${item.color ?? ink}\u0002${dash}\u0002${item.hatch ? 1 : 0}\u0002${flag}`;
   }
   return key;
 }

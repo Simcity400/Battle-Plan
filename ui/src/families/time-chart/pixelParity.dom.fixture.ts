@@ -9,6 +9,7 @@ import { boundTiledSeries, BoundedSeriesCursor, displayedHour } from '../bounded
 import type { ArtHandle, FamilyTheme, IdentityResult } from '../contract.ts';
 import { projectScene } from '../scene.ts';
 import { knownValue } from '../value.ts';
+import { drawTimeAxis, resolveKitTokens } from '../../draw/kit.ts';
 import { DEFAULT_SEEDS, deriveColors, type ThemeMode } from '../../shell/appearance/themes.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { chartNavStops } from './laneView.ts';
@@ -422,6 +423,85 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   } finally {
     timeChartCacheState.enabled = prevEnabled;
   }
+
+  const dpr = 1.25;
+  const sw = 320;
+  const sh = 180;
+  const sbw = Math.round(sw * dpr);
+  const sbh = Math.round(sh * dpr);
+  const strokeTicks = Array.from({ length: 16 }, (_, i) => ({ hour: H0 + i * 24, label: '' }));
+  const prodAxisCanvas = new OffscreenCanvas(sbw, sbh);
+  const prodAxisCtx = prodAxisCanvas.getContext('2d', { willReadFrequently: true })!;
+  prodAxisCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawTimeAxis(prodAxisCtx, strokeTicks, {
+    plotLeft: 30,
+    plotRight: 62,
+    startHour: H0,
+    endHour: H0 + 15 * 24,
+    axisTop: 80,
+    playhead: null,
+    playheadLabel: '',
+    hairline: 'none',
+    tickColor: resolveKitTokens(darkTheme).zeroLine,
+    theme: darkTheme,
+  });
+  const refAxisCanvas = new OffscreenCanvas(sbw, sbh);
+  const refAxisCtx = refAxisCanvas.getContext('2d', { willReadFrequently: true })!;
+  refAxisCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  refAxisCtx.strokeStyle = resolveKitTokens(darkTheme).zeroLine;
+  refAxisCtx.lineWidth = 1;
+  for (const tick of strokeTicks) {
+    const x = Math.floor(30 + ((tick.hour - H0) / (15 * 24)) * 32) + 0.5;
+    refAxisCtx.beginPath();
+    refAxisCtx.moveTo(x, 80);
+    refAxisCtx.lineTo(x, 85);
+    refAxisCtx.stroke();
+  }
+  const prodAxisPx = prodAxisCtx.getImageData(0, 0, sbw, sbh).data;
+  const refAxisPx = refAxisCtx.getImageData(0, 0, sbw, sbh).data;
+  let axisDiff = 0;
+  for (let i = 0; i < prodAxisPx.length; i++) if (prodAxisPx[i] !== refAxisPx[i]) axisDiff++;
+  if (axisDiff > 0) failures.push({ label: 'per-stroke-x-ticks-dpr-125', diffBytes: axisDiff, firstDiff: null, navEqual: true, looksEqual: true });
+
+  const denseGridModel: TimeChartModel = {
+    kind: 'dense-grid',
+    measureTitle: 'Grid',
+    mode: 'lines',
+    hour: H0 + 24,
+    extent: [H0, H0 + 24],
+    yAxis: { format: 'number', fixed: [0, 10], ticks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] },
+    series: [],
+  };
+  const denseLay = layoutTimeChart(denseGridModel, 200, 60, darkTheme.font, cachedMeasure);
+  const prodGridCanvas = new OffscreenCanvas(Math.round(200 * dpr), Math.round(60 * dpr));
+  const prodGridCtx = prodGridCanvas.getContext('2d', { willReadFrequently: true })!;
+  drawTimeChart(prodGridCtx, denseGridModel, denseLay, darkTheme, null, dpr, null);
+  const refGridCanvas = new OffscreenCanvas(Math.round(200 * dpr), Math.round(60 * dpr));
+  const refGridCtx = refGridCanvas.getContext('2d', { willReadFrequently: true })!;
+  refGridCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const tokens = resolveKitTokens(darkTheme);
+  for (const v of denseLay.yTicks) {
+    const y = Math.round(denseLay.toY(v)) + 0.5;
+    if (y < denseLay.top - 2 || y > denseLay.baseY + 2) continue;
+    refGridCtx.save();
+    refGridCtx.strokeStyle = v === 0 && denseLay.yDomain[0] < 0 ? tokens.zeroLine : tokens.gridLine;
+    refGridCtx.lineWidth = 1;
+    refGridCtx.beginPath();
+    refGridCtx.moveTo(denseLay.left, y);
+    refGridCtx.lineTo(denseLay.left + denseLay.plotWidth, y);
+    refGridCtx.stroke();
+    refGridCtx.restore();
+  }
+  const sampleX = Math.round((denseLay.left + 4) * dpr);
+  const sampleY = Math.round((denseLay.top + 1) * dpr);
+  const sampleW = Math.round(20 * dpr);
+  const sampleH = Math.round((denseLay.plotHeight - 3) * dpr);
+  const prodGridPx = prodGridCtx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
+  const refGridPx = refGridCtx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
+  let gridDiff = 0;
+  for (let i = 0; i < prodGridPx.length; i++) if (prodGridPx[i] !== refGridPx[i]) gridDiff++;
+  if (gridDiff > 0) failures.push({ label: 'per-stroke-y-grid-dpr-125', diffBytes: gridDiff, firstDiff: null, navEqual: true, looksEqual: true });
+
   return { checked: steps.length, failures };
 }
 

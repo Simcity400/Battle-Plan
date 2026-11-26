@@ -2566,6 +2566,24 @@ describe('time-chart PR 1 fixed-work caches', () => {
     assert.deepEqual(fitDashed.shown.length, fitDashedUncached.shown.length);
     assert.ok(fitPlain.shown.length >= fitDashed.shown.length);
 
+    const omittedColorModel: TimeChartModel = {
+      ...baseModel,
+      legend: [{ id: 'a', label: 'AlphaLong' }, { id: 'b', label: 'BetaLong' }],
+    };
+    const emptyColorModel: TimeChartModel = {
+      ...baseModel,
+      legend: [{ id: 'a', label: 'AlphaLong', color: '' }, { id: 'b', label: 'BetaLong', color: '' }],
+    };
+    const narrowLay = layoutTimeChart(omittedColorModel, 130, 200, FONT, measure);
+    fitTimeChartLegend(omittedColorModel, narrowLay, LANE_THEME, measure);
+    const fitEmptyCached = fitTimeChartLegend(emptyColorModel, narrowLay, LANE_THEME, measure)!;
+    timeChartCacheState.enabled = false;
+    const fitEmptyUncached = (() => {
+      try { return fitTimeChartLegend(emptyColorModel, narrowLay, LANE_THEME, measure)!; }
+      finally { timeChartCacheState.enabled = true; }
+    })();
+    assert.deepEqual(fitEmptyCached, fitEmptyUncached, 'legend cache distinguishes omitted color from explicit empty color');
+
     let outerCaptured: ReturnType<NonNullable<ReturnType<typeof sceneReadRecorder>>['capture']>['reads'] | null = null;
     const firstProj = projectScene(
       scene,
