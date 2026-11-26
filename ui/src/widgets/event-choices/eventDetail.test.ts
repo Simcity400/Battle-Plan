@@ -19,7 +19,7 @@ test('an opened event row brings its full text, and a row not in the log at its 
   assert.match(gone.missing ?? '', /not in the log/);
 });
 
-test('a hovered row is read once, at the hour the pointer reached it, and playback asks nothing more', () => {
+test('a row reached by the pointer makes one distinct keyed request, fixed at the hour it was reached, which played hours do not change', () => {
   const track = { id: 't', source: { id: 's', revision: 'r1' }, branch: { id: '1', firstHour: 0, lastHour: 500 }, axisOffset: 24 } as never;
   let hour = 100;
   const clock = { getHour: () => hour };
@@ -29,7 +29,7 @@ test('a hovered row is read once, at the hour the pointer reached it, and playba
   const ger = hoverSubject(track, clock, true, isEvent, 'native:1:7');
   assert.equal(ger?.hour, 124, 'the read hour is the displayed recording hour when the pointer arrived');
   for (; hour < 110; hour++) ask(ger);
-  assert.equal(asked.size, 1, 'ten played hours under a resting pointer ask one read');
+  assert.equal(asked.size, 1, 'ten played hours under a resting pointer leave one distinct request');
   ask(hoverSubject(track, clock, true, isEvent, 'native:1:8'));
   assert.equal(asked.size, 2, 'the next row is one more read');
   assert.equal(hoverSubject(track, clock, true, isEvent, 'fold:native:1:7'), null, 'a folded group names no event and is not read');
