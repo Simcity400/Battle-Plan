@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, PoisonError, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -271,8 +271,18 @@ fn ordered(types: &BTreeMap<u32, BTreeMap<u32, Typed>>) -> Vec<Typed> {
     out
 }
 
-fn reads_in(query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
+fn reads_in(source: &Source, query: &Query<'_>, run: u32, first: i32, last: i32) -> io::Result<Vec<i32>> {
     let span = Span { run, first, last, id: 0, breaks: false };
+    type Reads = dashboard_base::queries::RunCache<EquipmentProducedAt, Vec<i32>>;
+    if let Ok(reads) = Reads::held(&source.state::<Reads>(), run, || {
+        let held = query.replay.recording().run(run)?;
+        spending::reads_of(query, &Span { first: held.first_hour, last: held.last_hour(), ..span }, TableId::ProductionLineOutput)
+    }) {
+        let within = &reads[reads.partition_point(|&at| at < first)..reads.partition_point(|&at| at <= last)];
+        if !within.is_empty() {
+            return Ok(within.to_vec());
+        }
+    }
     let reads = spending::reads_of(query, &span, TableId::ProductionLineOutput)?;
     if !reads.is_empty() {
         return Ok(reads);
@@ -428,40 +438,38 @@ struct DesignsAt {
 }
 
 impl DesignsAt {
-    fn read(query: &Query<'_>, run: u32, hour: i32, id: u32) -> io::Result<Self> {
-        let owner = u128::from(id);
-        let country = snapshot(query, run, TableId::ProductionCountryTotals, hour, &COUNTRY_COLUMNS, Keys::These(&[owner]))?.is_some_and(|rows| rows.contains_key(&owner));
-        let keys = coverage_keys(id);
-        let cover = snapshot(query, run, TableId::ProductionCoverage, hour, &COVERAGE_COLUMNS, Keys::These(&keys))?.unwrap_or_default();
-        let [own, lines, rocket_run] = keys.map(|key| cover.get(&key).map(|cells| coverage(|at| cells[at])));
-        let mut designs: BTreeMap<DesignKey, Vec<DesignRow>> = BTreeMap::new();
-        let mut archetypes = BTreeMap::new();
-        let rows = snapshot(query, run, TableId::ProductionTotals, hour, &DESIGN_COLUMNS, Keys::Range(owner << 72, owner << 72 | ((1u128 << 72) - 1)))?.unwrap_or_default();
-        for (key, cells) in &rows {
+    fn read(query: &Query<'_>, run: u32, hour: i32, ids: &[u32]) -> io::Result<BTreeMap<u32, Self>> {
+        let owners: Vec<_> = ids.iter().copied().map(u128::from).collect();
+        let countries = snapshot(query, run, TableId::ProductionCountryTotals, hour, &COUNTRY_COLUMNS, Keys::These(&owners))?.unwrap_or_default();
+        let coverage_ids: BTreeSet<_> = ids.iter().copied().flat_map(coverage_keys).collect();
+        let cover = snapshot(query, run, TableId::ProductionCoverage, hour, &COVERAGE_COLUMNS, Keys::These(&coverage_ids.into_iter().collect::<Vec<_>>()))?.unwrap_or_default();
+        let rocket_ranges: Vec<_> = std::iter::once((0, 0)).chain(ids.iter().copied().map(rocket_designs)).collect();
+        let rockets = snapshot(query, run, TableId::RocketProductionOutput, hour, &ROCKET_COLUMNS, Keys::Ranges(&rocket_ranges))?.unwrap_or_default();
+        let world = rockets.contains_key(&0);
+        let mut out: BTreeMap<_, _> = ids.iter().map(|&id| {
+            let [own, lines, rocket_run] = coverage_keys(id).map(|key| cover.get(&key).map(|cells| coverage(|at| cells[at])));
+            (id, Self {
+                hour, country: countries.contains_key(&u128::from(id)), lines, rocket: [own, rocket_run], world,
+                observation: (lines.and_then(|row| row.observation), rocket_run.and_then(|row| row.observation)),
+                designs: BTreeMap::new(), rockets: BTreeMap::new(), archetypes: BTreeMap::new(),
+            })
+        }).collect();
+        for (key, cells) in rockets {
+            if key != 0 && let Some(owner) = out.get_mut(&((key >> 64) as u32)) {
+                owner.rockets.insert(key as u64, rocket_row(|at| cells[at]));
+            }
+        }
+        let ranges: Vec<_> = owners.iter().map(|owner| (owner << 72, owner << 72 | ((1u128 << 72) - 1))).collect();
+        let rows = snapshot(query, run, TableId::ProductionTotals, hour, &DESIGN_COLUMNS, Keys::Ranges(&ranges))?.unwrap_or_default();
+        for (key, cells) in rows {
+            let owner = out.get_mut(&((key >> 72) as u32)).expect("requested country");
             let variant = (key >> 8) as u64;
-            designs.entry((false, variant)).or_default().push(design_row(*key as u8, |at| cells[at]));
+            owner.designs.entry((false, variant)).or_default().push(design_row(key as u8, |at| cells[at]));
             let token = cells[4].filter(|&token| token > 0).map_or(0, |token| token as u32);
-            let held = archetypes.entry(variant).or_insert(0);
+            let held = owner.archetypes.entry(variant).or_insert(0);
             *held = (*held).max(token);
         }
-        let world = snapshot(query, run, TableId::RocketProductionOutput, hour, &["spent_raw"], Keys::These(&[0]))?.is_some_and(|rows| rows.contains_key(&0));
-        let (low, high) = rocket_designs(id);
-        let rockets: BTreeMap<u64, RocketRow> = snapshot(query, run, TableId::RocketProductionOutput, hour, &ROCKET_COLUMNS, Keys::Range(low, high))?
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, cells)| (key as u64, rocket_row(|at| cells[at])))
-            .collect();
-        Ok(Self {
-            hour,
-            country,
-            lines,
-            rocket: [own, rocket_run],
-            world,
-            observation: (lines.and_then(|row| row.observation), rocket_run.and_then(|row| row.observation)),
-            designs,
-            rockets,
-            archetypes,
-        })
+        Ok(out)
     }
 
     fn amount(&self, key: DesignKey, hour: i32, choice: Choice) -> measure::Counted {
@@ -486,38 +494,85 @@ fn amount_of(amount: Amount) -> ProducedAmount {
     }
 }
 
+#[derive(Clone, Copy)]
+struct DetailWindow<'a> {
+    branch_id: &'a str,
+    hour: i32,
+    measure: ProducedMeasure,
+    refits: bool,
+    from_hour: Option<i32>,
+}
+
+struct ModelSnapshot {
+    run: u32,
+    hour: i32,
+    countries: BTreeMap<u32, DesignsAt>,
+}
+
+#[derive(Default)]
+struct ModelSnapshots(Vec<Arc<ModelSnapshot>>);
+
+fn model_snapshot(source: &Source, query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>) -> io::Result<Arc<ModelSnapshot>> {
+    let cache = source.state::<ModelSnapshots>();
+    if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).0.iter().find(|s| s.run == run && s.hour == hour && ids.iter().all(|id| s.countries.contains_key(id))) {
+        return Ok(Arc::clone(hit));
+    }
+    let countries = DesignsAt::read(query, run, hour, &ids.iter().copied().collect::<Vec<_>>())?;
+    let made = Arc::new(ModelSnapshot { run, hour, countries });
+    let mut held = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    held.0.retain(|s| (s.run, s.hour) != (run, hour));
+    held.0.truncate(1);
+    held.0.insert(0, Arc::clone(&made));
+    Ok(made)
+}
+
+struct DatedDesigns {
+    run: u32,
+    hour: i32,
+    catalogue: Option<Arc<dashboard_base::catalogue::Catalogue>>,
+    variants: BTreeSet<(u64, u32)>,
+    designs: HashMap<(u64, u32), spending::Design>,
+    notes: BTreeSet<String>,
+}
+
+impl DatedDesigns {
+    fn read(source: &Source, query: &Query<'_>, span: &Span, variants: BTreeSet<(u64, u32)>, content: &Content) -> io::Result<Arc<Self>> {
+        let cache = source.state::<Option<Arc<Self>>>();
+        if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+            && (hit.run, hit.hour) == (span.run, span.last) && hit.variants == variants
+            && match (&hit.catalogue, &content.catalogue) { (Some(a), Some(b)) => Arc::ptr_eq(a, b), (None, None) => true, _ => false }
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let mut notes = BTreeSet::new();
+        let mut designs = HashMap::new();
+        let mut pending = variants.clone();
+        while !pending.is_empty() {
+            let batch: BTreeMap<_, _> = pending.iter().copied().collect();
+            for (variant, design) in spending::designs(query, span, &batch, content, &mut notes)? {
+                designs.insert((variant, batch[&variant]), design);
+            }
+            for entry in batch { pending.remove(&entry); }
+        }
+        let made = Arc::new(Self { run: span.run, hour: span.last, catalogue: content.catalogue.clone(), variants, designs, notes });
+        *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&made));
+        Ok(made)
+    }
+}
+
 fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, context: &LoadContext) -> io::Result<ProducedAtReply> {
-    let mut warnings = Vec::new();
-    let mut reply = ProducedAtReply {
-        branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, params.hour),
-        asked: params.country.clone(),
-        hour: params.hour,
-        measure: params.measure,
-        recorded: false,
-        models: Vec::new(),
-        ic_total: ProducedAmount { value: None, reason: Some(ProducedUnknown::NotRecorded) },
-        observation: None,
-        read: None,
-        warnings: Vec::new(),
-    };
+    let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
+    Ok(details_at(source, query, window, std::slice::from_ref(&params.country), context)?.pop().expect("one asked country"))
+}
+
+fn details_at(source: &Source, query: &Query<'_>, params: DetailWindow<'_>, countries: &[Country], context: &LoadContext) -> io::Result<Vec<ProducedAtReply>> {
     let hour = params.hour;
-    let (Some(stretch), Some(run)) = (query.timeline.at(hour).copied(), query.holders.at(&params.country, hour).copied()) else {
-        return Ok(reply);
-    };
-    let Holder::Found { id, .. } = run.holder else {
-        return match query.holders.not_known(&params.country, hour) {
-            Some(reason) => Err(dashboard_core::refused(reason)),
-            None => Ok(reply),
-        };
-    };
-    let first = stretch.first.max(run.first);
-    let reads = reads_in(query, stretch.run, first, hour)?;
-    let Some(read) = measure::read_at(&reads, hour) else {
-        reply.recorded = false;
-        return Ok(reply);
-    };
-    let now = DesignsAt::read(query, stretch.run, read, id)?;
+    let mut replies: Vec<_> = countries.iter().map(|country| ProducedAtReply {
+        branch_id: params.branch_id.to_owned(), tag: query.holders.name(country, hour), asked: country.clone(), hour, measure: params.measure,
+        recorded: false, models: Vec::new(), ic_total: amount_of(Amount::Unknown(ProducedUnknown::NotRecorded)),
+        observation: None, read: None, warnings: Vec::new(),
+    }).collect();
+    let Some(stretch) = query.timeline.at(hour).copied() else { return Ok(replies) };
     let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
     let counted = series.measure(produced_measure(ProducedCount::Units, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
     let line = dashboard_query::series::Line::new(query, series, counted)?;
@@ -526,34 +581,67 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         tiles::Baseline::Opening(start) => line.clock_at(hour)?.since != Some(start),
         _ => false,
     };
-    let whole = match opening {
-        tiles::Baseline::Unrestricted => true,
-        tiles::Baseline::Opening(_) => !restarted,
-        tiles::Baseline::From(_) | tiles::Baseline::Unavailable(_) => false,
-    };
+    let whole = matches!(opening, tiles::Baseline::Unrestricted | tiles::Baseline::Opening(_)) && !restarted;
     let ranged = if matches!(opening, tiles::Baseline::Unrestricted) { None } else { params.from_hour };
-    let before = match (opening.hour(), ranged, measure::back(params.measure, read)) {
-        (Some(base), _, _) => (base >= first && reads.binary_search(&base).is_ok()).then(|| DesignsAt::read(query, stretch.run, base, id)).transpose()?,
-        (None, None, Some(start)) if start >= first && reads.binary_search(&start).is_ok() => Some(DesignsAt::read(query, stretch.run, start, id)?),
-        _ => None,
-    };
+    let mut needed: BTreeMap<i32, BTreeSet<u32>> = BTreeMap::new();
+    let mut windows = BTreeMap::new();
+    let mut by_start = HashMap::new();
+    for (index, country) in countries.iter().enumerate() {
+        let Some(run) = query.holders.at(country, hour) else { continue };
+        let Holder::Found { id, .. } = run.holder else {
+            if let Some(why) = query.holders.not_known(country, hour) { return Err(dashboard_core::refused(why)); }
+            continue;
+        };
+        let first = stretch.first.max(run.first);
+        let reads = match by_start.entry(first) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(reads_in(source, query, stretch.run, first, hour)?),
+        };
+        let Some(read) = measure::read_at(reads, hour) else { continue };
+        let before = opening.hour().or_else(|| ranged.is_none().then(|| measure::back(params.measure, read)).flatten())
+            .filter(|base| reads.binary_search(base).is_ok());
+        needed.entry(read).or_default().insert(id);
+        if let Some(base) = before { needed.entry(base).or_default().insert(id); }
+        windows.entry(read).or_insert_with(Vec::new).push((index, id, before));
+    }
+    let snapshots = needed.into_iter().map(|(hour, ids)| {
+        Ok((hour, model_snapshot(source, query, stretch.run, hour, &ids)?))
+    }).collect::<io::Result<BTreeMap<_, _>>>()?;
+    let mut warnings = Vec::new();
+    let content = Content::read(source, context, &mut warnings);
+    for (read, rows) in windows {
+        let mut named = BTreeSet::new();
+        for &(_, id, before) in &rows {
+            let now = &snapshots[&read].countries[&id];
+            for (_, variant) in now.keys().chain(before.into_iter().flat_map(|base| snapshots[&base].countries[&id].keys())) {
+                named.insert((variant, now.archetypes.get(&variant).copied().unwrap_or(0)));
+            }
+        }
+        let span = Span { run: stretch.run, first: read, last: read, id: 0, breaks: false };
+        let found = DatedDesigns::read(source, query, &span, named, &content)?;
+        for (index, id, before) in rows {
+            let reply = &mut replies[index];
+            let now = &snapshots[&read].countries[&id];
+            let before = before.map(|base| &snapshots[&base].countries[&id]);
+            fill_models(reply, now, before, &found.designs, params, whole, restarted);
+            reply.observation = ranged.or(now.observation.0);
+            reply.read = Some(read);
+            reply.warnings.extend(warnings.iter().chain(&found.notes).cloned());
+        }
+    }
+    Ok(replies)
+}
+
+fn fill_models(reply: &mut ProducedAtReply, now: &DesignsAt, before: Option<&DesignsAt>, found: &HashMap<(u64, u32), spending::Design>, params: DetailWindow<'_>, whole: bool, restarted: bool) {
     let at = |held: &DesignsAt, key: DesignKey, choice: Choice| held.amount(key, held.hour, choice);
     let windowed = |key: DesignKey, choice: Choice| match (params.measure, whole) {
         _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
-        (ProducedMeasure::Total, true) => at(&now, key, choice).0,
-        _ => measure::difference(at(&now, key, choice), before.as_ref().map(|before| at(before, key, choice))),
+        (ProducedMeasure::Total, true) => at(now, key, choice).0,
+        _ => measure::difference(at(now, key, choice), before.map(|before| at(before, key, choice))),
     };
     let units = Choice { count: ProducedCount::Units, refits: params.refits };
     let ic = Choice { count: ProducedCount::Ic, refits: params.refits };
-    let keys: BTreeSet<DesignKey> = now.keys().chain(before.iter().flat_map(DesignsAt::keys)).collect();
-    let span = Span { run: stretch.run, first: read, last: read, id, breaks: false };
-    let mut named: BTreeMap<u64, u32> = now.archetypes.clone();
-    for key in &keys {
-        named.entry(key.1).or_insert(0);
-    }
-    let content = Content::read(source, context, &mut warnings);
-    let mut notes = BTreeSet::new();
-    let found = spending::designs(query, &span, &named, &content, &mut notes)?;
+    let keys: BTreeSet<DesignKey> = now.keys().chain(before.into_iter().flat_map(DesignsAt::keys)).collect();
     let mut total = Amount::Known(0);
     for key in keys {
         let (units, ic) = (windowed(key, units), windowed(key, ic));
@@ -561,14 +649,18 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         if units == Amount::Known(0) && ic == Amount::Known(0) {
             continue;
         }
-        let design = found.get(&key.1).cloned().unwrap_or_else(|| unnamed(key));
+        let fallback;
+        let design = match found.get(&(key.1, now.archetypes.get(&key.1).copied().unwrap_or(0))) {
+            Some(design) => design,
+            None => { fallback = unnamed(key); &fallback }
+        };
         reply.models.push(ProducedModelAt {
             variant: key.1.to_string(),
             rocket: key.0,
-            type_recorded: type_recorded(&design),
+            type_recorded: type_recorded(design),
             name: design.names.first().and_then(|names| names.name.clone()),
-            type_key: design.type_key,
-            type_name: design.name,
+            type_key: design.type_key.clone(),
+            type_name: design.name.clone(),
             domain: design.domain,
             units: amount_of(units),
             ic: amount_of(ic),
@@ -580,17 +672,12 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         }
         Amount::Known(0)
     };
-    reply.ic_total = amount_of(country(&now).plus(match (params.measure, whole) {
+    reply.ic_total = amount_of(country(now).plus(match (params.measure, whole) {
         _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
         (ProducedMeasure::Total, true) => Amount::Known(0),
-        _ => before.as_ref().map_or(Amount::Unknown(ProducedUnknown::WindowIncomplete), country),
+        _ => before.map_or(Amount::Unknown(ProducedUnknown::WindowIncomplete), country),
     }).plus(total));
     reply.recorded = now.country;
-    reply.observation = ranged.or(now.observation.0);
-    reply.read = Some(read);
-    warnings.extend(notes);
-    reply.warnings = warnings;
-    Ok(reply)
 }
 
 fn branch(text: &str) -> io::Result<u64> {
@@ -669,6 +756,9 @@ pub struct EquipmentProducedRaceParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub from_hour: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub models: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -682,6 +772,74 @@ pub struct EquipmentProducedRaceRow {
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub value: Option<i64>,
     pub unknown: Option<ProducedUnknown>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub breakdown: Option<ProducedBreakdown>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+pub struct ProducedModelAmount {
+    name: String,
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+    value: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(untagged)]
+pub enum ProducedBreakdown {
+    Models {
+        models: Vec<ProducedModelAmount>,
+        more: usize,
+        #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
+        remainder: i64,
+    },
+    Missing { reason: ProducedUnknown },
+    Unavailable { unavailable: String },
+}
+
+impl ProducedBreakdown {
+    fn from_detail(detail: ProducedAtReply, count: ProducedCount, types: &[String], total: i64) -> Self {
+        if !detail.recorded {
+            return Self::Missing { reason: ProducedUnknown::NotRecorded };
+        }
+        if let Some(reason) = detail.ic_total.reason
+            && (detail.models.is_empty() || matches!(reason, ProducedUnknown::WindowIncomplete | ProducedUnknown::ObservationRestarted))
+        {
+            return Self::Missing { reason };
+        }
+        let mut models = Vec::new();
+        for model in detail.models {
+            let key = if model.type_recorded { &model.type_key } else { UNRECORDED_TYPE };
+            if !types.is_empty() && !types.iter().any(|asked| asked == key) {
+                continue;
+            }
+            let amount = match count { ProducedCount::Units => model.units, ProducedCount::Ic => model.ic };
+            let Some(value) = amount.value else {
+                return Self::Missing { reason: amount.reason.unwrap_or(ProducedUnknown::NotRecorded) };
+            };
+            if value != 0 {
+                models.push(ProducedModelAmount { name: model.name.unwrap_or_else(|| format!("Design {}", model.variant)), value });
+            }
+        }
+        if models.iter().map(|model| i128::from(model.value)).sum::<i128>() != i128::from(total) {
+            return Self::Missing { reason: ProducedUnknown::NotRecorded };
+        }
+        const MODEL_ROWS: usize = 9;
+        models.sort_by(|a, b| b.value.cmp(&a.value));
+        let (mut more, mut remainder) = (0, 0);
+        if models.len() > MODEL_ROWS {
+            let rest = models.drain(MODEL_ROWS - 1..);
+            more = rest.len();
+            let sum = rest.map(|model| i128::from(model.value)).sum::<i128>();
+            if sum.abs() > MAX_EXACT {
+                return Self::Missing { reason: ProducedUnknown::OutOfRange };
+            }
+            remainder = sum as i64;
+        }
+        Self::Models { models, more, remainder }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -878,7 +1036,7 @@ fn race_reply(
             Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
             Amount::Unknown(reason) => (None, Some(reason)),
         };
-        rows.push(EquipmentProducedRaceRow { country, counted, tag, value, unknown });
+        rows.push(EquipmentProducedRaceRow { country, counted, tag, value, unknown, breakdown: None });
     }
     if is_population {
         (first_hour, last_hour) = population_bounds(query, hour, first_hour, last_hour);
@@ -918,7 +1076,7 @@ impl Product for EquipmentProducedRace {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = EquipmentProducedRaceParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, fromHour: Start, "countries[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, countries, group, top, count, measure, types, refits, fromHour: Start, "countries[]", models];
     type Reply = EquipmentProducedRaceReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -933,6 +1091,9 @@ impl Product for EquipmentProducedRace {
         if params.top == Some(0) {
             return Err("top must be at least 1");
         }
+        if params.models == Some(true) && params.countries.is_empty() {
+            return Err("Model breakdowns require the displayed countries");
+        }
         Ok(())
     }
 
@@ -943,6 +1104,8 @@ impl Product for EquipmentProducedRace {
             ProducedMeasure::decl(),
             ProducedUnknown::decl(),
             EquipmentProducedRaceParams::decl(),
+            ProducedModelAmount::decl(),
+            ProducedBreakdown::decl(),
             EquipmentProducedRaceRow::decl(),
             EquipmentProducedRaceReply::decl(),
         ]
@@ -951,7 +1114,25 @@ impl Product for EquipmentProducedRace {
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
-        race_reply(source, &query, params, context, cancelled)
+        let mut reply = race_reply(source, &query, params, context, cancelled)?;
+        if params.models == Some(true) {
+            let countries: Vec<_> = reply.rows.iter().filter(|row| row.value.is_some()).map(|row| row.counted.clone()).collect();
+            if !countries.is_empty() {
+                let window = DetailWindow { branch_id: &params.branch_id, hour: params.hour, measure: params.measure, refits: params.refits, from_hour: params.from_hour };
+                let rows = reply.rows.iter_mut().filter_map(|row| row.value.map(|total| (row, total)));
+                match details_at(source, &query, window, &countries, context) {
+                    Ok(details) => for ((row, total), detail) in rows.zip(details) {
+                        row.breakdown = Some(ProducedBreakdown::from_detail(detail, params.count, &params.types, total));
+                    },
+                    Err(error) if replay_recording::columnar_frames::Damage::of(&error).is_some() => for (row, _) in rows {
+                        row.breakdown = Some(ProducedBreakdown::Unavailable { unavailable: error.to_string() });
+                    },
+                    Err(error) => return Err(error),
+                }
+            }
+            dashboard_base::products::check_reply_budget(&reply)?;
+        }
+        Ok(reply)
     }
 }
 
@@ -963,6 +1144,46 @@ pub(super) mod tests {
     use replay_data::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, Recorded, RocketProductionOutputRow, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
+
+    #[test]
+    fn hover_counts_the_same_country_and_window_as_the_line() {
+        let src = two_producers_read_from("produced-hover", 1000, 1300, 1000, true, Some(1200), None);
+        let ask = |models: bool| {
+            let params = serde_json::from_value(serde_json::json!({
+                "branchId": "1", "countries": [7, "DEU"], "hour": 1300, "count": "units",
+                "measure": "total", "fromHour": 1120, "types": [], "refits": false, "models": models,
+            })).unwrap();
+            EquipmentProducedRace::load(&src, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+        };
+        let head = ask(false);
+        assert!(head.rows.iter().all(|row| !serde_json::to_value(row).unwrap().as_object().unwrap().contains_key("breakdown")));
+        let hover = ask(true);
+        let slot = hover.rows.iter().find(|row| row.counted == Country::Slot(7)).unwrap();
+        assert_eq!(slot.value, Some(8));
+        let Some(ProducedBreakdown::Models { models, more: 0, remainder: 0 }) = &slot.breakdown else { panic!("missing models: {slot:?}") };
+        assert_eq!(models.iter().map(|model| model.value).collect::<Vec<_>>(), [8]);
+        let tag = hover.rows.iter().find(|row| row.counted == Country::Tag("DEU".into())).unwrap();
+        assert_eq!(tag.unknown, Some(ProducedUnknown::WindowIncomplete));
+        assert!(tag.breakdown.is_none());
+    }
+
+    #[test]
+    fn hover_lists_the_largest_models_of_the_selected_type_and_accounts_for_the_rest() {
+        let model = |variant: i64, kind: &str| ProducedModelAt {
+            variant: variant.to_string(), type_key: kind.into(), name: None, type_name: None, type_recorded: true,
+            domain: None, rocket: false, ic: amount_of(Amount::Unknown(ProducedUnknown::SpendingUnavailable)),
+            units: amount_of(Amount::Known(i128::from(variant))),
+        };
+        let detail = ProducedAtReply {
+            branch_id: "1".into(), tag: "GER".into(), asked: Country::Slot(7), hour: 1, measure: ProducedMeasure::Total,
+            recorded: true, models: (1..=10).map(|i| model(i, "truck")).chain([model(20, "tank")]).collect(),
+            ic_total: amount_of(Amount::Unknown(ProducedUnknown::SpendingUnavailable)), observation: Some(1), read: Some(1), warnings: vec![],
+        };
+        let ProducedBreakdown::Models { models, more, remainder } = ProducedBreakdown::from_detail(detail, ProducedCount::Units, &["truck".into()], 55)
+            else { panic!("the unit counts are recorded") };
+        assert_eq!(models.iter().map(|model| model.value).collect::<Vec<_>>(), (3..=10).rev().collect::<Vec<_>>());
+        assert_eq!((more, remainder), (2, 3));
+    }
 
     pub(super) fn two_producers(name: &str, first: i32, last: i32) -> Source {
         two_producers_read_from(name, first, last, first, true, None, None)
