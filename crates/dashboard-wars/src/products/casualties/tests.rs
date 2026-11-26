@@ -209,13 +209,14 @@ fn coverage_gaps_holder_unknowns_truncation_missing_ended_and_unread_totals_neve
     assert!(unlinked_slot.breakdown.total.reason.as_deref().is_some_and(|r| r.contains(TAG_UNLINKED)));
 
     let missing_end = index.at(106);
-    assert_eq!(missing_end.breakdown.total.state, BreakdownState::AtLeast, "missing ended counter is NotRecorded, making total AtLeast");
+    assert_eq!((missing_end.breakdown.total.state, missing_end.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "a recorded casualty counter can be negative: a missing one leaves the total unproven");
+    assert!(missing_end.breakdown.parts[0].children.iter().any(|part| part.key == "slot:1" && part.amount == figure("10")), "the witnessed enemy amount stays inspectable");
     let war = &missing_end.breakdown.parts[0];
     let ended_part = war.children.iter().find(|part| part.key == "slot:2").expect("missing ended enemy kept");
     assert_eq!(ended_part.state, BreakdownState::NotRecorded);
 
     let truncated = index.at(115);
-    assert_eq!(truncated.breakdown.total.state, BreakdownState::AtLeast, "truncated lifetimes add an Unread war relations leaf");
+    assert_eq!((truncated.breakdown.total.state, truncated.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "truncated relations may hold a negative counter: the witnessed sum is no lower bound");
     assert!(truncated.breakdown.parts.iter().any(|part| part.key == "~unread" && part.other && part.state == BreakdownState::NotRecorded));
     assert!(truncated.breakdown.parts.iter().all(|part| part.share.is_none()));
 
@@ -245,8 +246,38 @@ fn coverage_gaps_holder_unknowns_truncation_missing_ended_and_unread_totals_neve
         Vec::new(),
     );
     let reply = unread_totals_empty.at(135);
-    assert_eq!(reply.breakdown.total.state, BreakdownState::Partial, "unread CasualtyTotals never asserts a complete zero");
+    assert_eq!((reply.breakdown.total.state, reply.breakdown.total.amount.clone()), (BreakdownState::NotRecorded, None), "unread totals with no witnessed relation are unknown, never \"no casualties\"");
     assert!(reply.breakdown.total.reason.is_some());
+}
+
+#[test]
+fn only_the_chosen_sides_counter_moves_the_answer_and_a_war_is_named_once_at_the_hour() {
+    let mine = key(THREE, ONE, 100);
+    let lifetimes = complete_history(100, 140, vec![0, 1], vec![(mine, vec![step(100, &[10, 1]), step(101, &[10, 2]), step(102, &[10, 3]), step(120, &[11, 3])])]);
+    let totals = complete_history(100, 140, vec![0], vec![(holder_key(THREE), vec![step(100, &[0])])]);
+    let index = finalize_index(
+        0,
+        100,
+        140,
+        "THREE".into(),
+        Vec::new(),
+        Vec::new(),
+        vec![HolderRun { first: 100, last: 140, holder: Holder::Found { slot: THREE.0, id: THREE.1 }, starts_segment: true }],
+        vec![StretchData {
+            first: 100,
+            last: 140,
+            taken_a_pos: 0,
+            taken_b_pos: 1,
+            partial_pos: 0,
+            lifetimes,
+            totals,
+            lives: vec![TrackedLife { key: mine, country: THREE, enemy: ONE, is_a: true, born: 100, gone: 140, ended_value: None, groupings: Vec::new() }],
+        }],
+        HashMap::from([(ONE.0, vec![(100, 140, "ONE".into())])]),
+        HashMap::new(),
+        Vec::new(),
+    );
+    assert_eq!(index.at(101).through, 119, "the enemy's own counter rising each hour does not change this side's breakdown");
 }
 
 #[test]
@@ -317,4 +348,40 @@ fn slot_viewpoint_preserves_ended_war_grouping_after_tag_change() {
     assert_ne!(by_slot.breakdown.parts[0].key, "~war:none", "asking by recorded slot preserves the ended war grouping across AAA -> BBB: {:?}", by_slot.breakdown.parts);
     let enemies: Vec<&str> = by_slot.breakdown.parts[0].children.iter().map(|child| child.key.as_str()).collect();
     assert_eq!(enemies, ["slot:2", "slot:3"]);
+}
+
+#[test]
+fn a_renamed_war_reads_its_name_at_the_hour_whichever_relation_came_first() {
+    let ended = key(THREE, TWO, 100);
+    let live = key(THREE, ONE, 100);
+    let lifetimes = complete_history(100, 140, vec![0, 1], vec![(live, vec![step(100, &[7, 0])])]);
+    let totals = complete_history(100, 140, vec![0], vec![(holder_key(THREE), vec![step(100, &[0])])]);
+    let war = |first: i32, last: i32| vec![Grouping { first, last, war: Some("w1".into()), ambiguous: false }];
+    let index = finalize_index(
+        0,
+        100,
+        140,
+        "THREE".into(),
+        Vec::new(),
+        Vec::new(),
+        vec![HolderRun { first: 100, last: 140, holder: Holder::Found { slot: THREE.0, id: THREE.1 }, starts_segment: true }],
+        vec![StretchData {
+            first: 100,
+            last: 140,
+            taken_a_pos: 0,
+            taken_b_pos: 1,
+            partial_pos: 0,
+            lifetimes,
+            totals,
+            lives: vec![
+                TrackedLife { key: ended, country: THREE, enemy: TWO, is_a: true, born: 100, gone: 110, ended_value: Some(5), groupings: war(100, 110) },
+                TrackedLife { key: live, country: THREE, enemy: ONE, is_a: true, born: 100, gone: 140, ended_value: None, groupings: war(100, 140) },
+            ],
+        }],
+        HashMap::from([(ONE.0, vec![(100, 140, "ONE".into())]), (TWO.0, vec![(100, 140, "TWO".into())])]),
+        HashMap::from([("w1".to_owned(), WarEntry { ordinal: 0, names: vec![(100, 115, war_name("Old name")), (116, 140, war_name("New name"))] })]),
+        Vec::new(),
+    );
+    let reply = index.at(130);
+    assert_eq!(reply.breakdown.parts.iter().map(|part| part.name.as_str()).collect::<Vec<_>>(), ["New name"], "one war, named as it is at the displayed hour");
 }

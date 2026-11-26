@@ -2,6 +2,7 @@
 use super::group_members::GroupsAt;
 use dashboard_base::products::{Country, LoadContext, validate_country};
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{at_hour::{At, AtHour}, breakdown::{self, Amount, Breakdown, Exact, Leaf, Node, Unrecorded}}};
+use dashboard_query::coverage::witnessed_rows;
 use dashboard_query::identity::{Holder, Holders};
 use dashboard_query::series::ranked::GroupSelection;
 use replay_data::rows::{Recorded, TableId, TerritoryRegionTotalRow, TerritoryTotalRow, tables};
@@ -77,6 +78,8 @@ fn branch(text: &str) -> Result<(), &'static str> {
 pub struct TerritoryShare;
 
 const REST_OF_WORLD: &str = "~rest";
+const UNNAMED: &str = "Country not named at this hour";
+const NO_TAG: &str = "No tag names this country at this hour";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -89,6 +92,14 @@ pub struct TerritoryShareParams {
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
+    #[doc = " The chosen countries: a tag is its holder at the hour, a slot is that recorded slot. Their shares of the"]
+    #[doc = " world, the rest of it as one part."]
+    #[serde(default)]
+    pub countries: Vec<Country>,
+    #[doc = " A group: its members at the hour (or every member so far), resolved in Rust; replaces `countries`."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub group: Option<GroupSelection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -103,17 +114,28 @@ pub struct TerritoryShareReply {
 
 dashboard_base::reply_warnings!(TerritoryShareReply);
 
-fn share_country(slot: u32, tags: &HashMap<u32, (&str, u32)>) -> Node {
+pub struct ShareAsk<'a> {
+    pub at: usize,
+    pub top: Option<u32>,
+    pub chosen: Option<&'a HashSet<u32>>,
+    pub unnamed: Option<&'a str>,
+}
+
+fn share_country(slot: u32, tags: &HashMap<u32, (&str, u32)>, unnamed: Option<&str>) -> Node {
     match tags.get(&slot) {
         Some(&(tag, _)) => Node::new(format!("slot:{slot}"), tag, slot),
-        None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other(),
+        None => Node::new(format!("slot:{slot}"), UNNAMED, slot).other().name_missing(Some(unnamed.unwrap_or(NO_TAG).to_owned())),
     }
 }
 
-pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: usize, top: Option<u32>, hour: i32) -> TerritoryShareReply {
+fn known(value: i128) -> Amount {
+    Amount::Known(Exact::whole(value))
+}
+
+pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, ask: &ShareAsk<'_>, hour: i32) -> TerritoryShareReply {
+    let at = ask.at;
     let mut world = None;
-    let mut named: Vec<(i64, u32, &str)> = Vec::new();
-    let mut unnamed: Vec<(i64, u32)> = Vec::new();
+    let mut held: Vec<(i64, u32)> = Vec::new();
     let mut unread: Vec<Leaf> = Vec::new();
     let mut known_sum: i128 = 0;
     for row in rows {
@@ -121,78 +143,78 @@ pub fn share(rows: &[TerritoryTotalRow], tags: &HashMap<u32, (&str, u32)>, at: u
             world = Some(cell(row, at));
             continue;
         }
+        if ask.chosen.is_some_and(|chosen| !chosen.contains(&row.slot)) {
+            continue;
+        }
         match cell(row, at) {
             Some(0) => {}
             Some(value) => {
                 known_sum += i128::from(value);
-                match tags.get(&row.slot) {
-                    Some(&(tag, _)) => named.push((value, row.slot, tag)),
-                    None => unnamed.push((value, row.slot)),
-                }
+                held.push((value, row.slot));
             }
             None => unread.push(Leaf {
-                path: vec![share_country(row.slot, tags)],
+                path: vec![share_country(row.slot, tags, ask.unnamed)],
                 amount: Amount::NotRecorded(format!("{} is not recorded for this country at this hour", MEASURES[at])),
                 count: None,
                 last: None,
             }),
         }
     }
-    let Some(world) = world else {
-        return TerritoryShareReply {
-            hour,
-            measure: MEASURES[at].to_owned(),
-            breakdown: not_recorded("The world's territory is not recorded at this hour".to_owned()),
-            warnings: Vec::new(),
-        };
+    let world = match world {
+        None => Err("The world's territory is not recorded at this hour".to_owned()),
+        Some(None) => Err(format!("The world's {} is not recorded at this hour", MEASURES[at])),
+        Some(Some(world)) => Ok(i128::from(world)),
     };
-    let Some(world) = world else {
-        return TerritoryShareReply {
-            hour,
-            measure: MEASURES[at].to_owned(),
-            breakdown: not_recorded(format!("The world's {} is not recorded at this hour", MEASURES[at])),
-            warnings: Vec::new(),
-        };
-    };
-    named.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    unnamed.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    held.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let leaf = |node: Node, value: i128| Leaf { path: vec![node], amount: known(value), count: None, last: None };
+    let rest = |value: i128| leaf(Node::new(REST_OF_WORLD, "Rest of the world", u32::MAX).other(), value);
     let mut leaves = Vec::new();
     let mut warnings = Vec::new();
-    let any_unread = !unread.is_empty();
-    if let Some(limit) = top {
-        let mut shown_sum: i128 = 0;
-        for &(value, slot, tag) in named.iter().take(limit as usize) {
-            shown_sum += i128::from(value);
-            leaves.push(Leaf { path: vec![Node::new(format!("slot:{slot}"), tag, slot)], amount: Amount::Known(Exact::whole(i128::from(value))), count: None, last: None });
+    match (ask.top, ask.chosen) {
+        (Some(limit), None) => {
+            let mut shown_sum: i128 = 0;
+            for &(value, slot) in held.iter().filter(|(_, slot)| tags.contains_key(slot)).take(limit as usize) {
+                shown_sum += i128::from(value);
+                leaves.push(leaf(share_country(slot, tags, ask.unnamed), i128::from(value)));
+            }
+            match &world {
+                Ok(world) if *world > shown_sum => leaves.push(rest(world - shown_sum)),
+                Ok(_) => {}
+                Err(_) => leaves.append(&mut unread),
+            }
+            if held.iter().any(|(_, slot)| !tags.contains_key(slot)) {
+                warnings.push("Some territory is held by countries no tag names at this hour; it counts in the rest of the world.".to_owned());
+            }
+            if !unread.is_empty() {
+                warnings.push(format!(
+                    "The top {limit} is not proven: {} countries' {} are not recorded at this hour; they count in the rest of the world.",
+                    unread.len(),
+                    MEASURES[at]
+                ));
+                unread.clear();
+            }
         }
-        let rest = if any_unread { known_sum - shown_sum } else { i128::from(world) - shown_sum };
-        if rest > 0 {
-            leaves.push(Leaf { path: vec![Node::new(REST_OF_WORLD, "Rest of the world", u32::MAX).other()], amount: Amount::Known(Exact::whole(rest)), count: None, last: None });
-        }
-        if !unnamed.is_empty() {
-            warnings.push("Some territory is held by countries no tag names at this hour; it counts in the rest of the world.".to_owned());
-        }
-    } else {
-        for (value, slot, tag) in named {
-            leaves.push(Leaf { path: vec![Node::new(format!("slot:{slot}"), tag, slot)], amount: Amount::Known(Exact::whole(i128::from(value))), count: None, last: None });
-        }
-        for (value, slot) in unnamed {
-            leaves.push(Leaf {
-                path: vec![Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other()],
-                amount: Amount::Known(Exact::whole(i128::from(value))),
-                count: None,
-                last: None,
-            });
-        }
-        if !any_unread {
-            let unheld = i128::from(world) - known_sum;
-            if unheld > 0 {
-                leaves.push(Leaf { path: vec![Node::new(NOT_HELD, "Held by no country", u32::MAX).other()], amount: Amount::Known(Exact::whole(unheld)), count: None, last: None });
+        _ => {
+            for &(value, slot) in &held {
+                leaves.push(leaf(share_country(slot, tags, ask.unnamed), i128::from(value)));
+            }
+            if let (Ok(world), true) = (&world, unread.is_empty()) {
+                let left = world - known_sum;
+                if left > 0 {
+                    leaves.push(match ask.chosen {
+                        Some(_) => rest(left),
+                        None => leaf(Node::new(NOT_HELD, "Held by no country", u32::MAX).other(), left),
+                    });
+                }
             }
         }
     }
-    leaves.extend(unread);
-    TerritoryShareReply { hour, measure: MEASURES[at].to_owned(), breakdown: breakdown::breakdown(&leaves, &Unrecorded::default()), warnings }
+    leaves.append(&mut unread);
+    let total = match world {
+        Ok(world) => known(world),
+        Err(reason) => Amount::NotRecorded(reason),
+    };
+    TerritoryShareReply { hour, measure: MEASURES[at].to_owned(), breakdown: breakdown::breakdown_of(&leaves, &total), warnings }
 }
 
 impl AtHour for TerritoryShare {
@@ -200,9 +222,9 @@ impl AtHour for TerritoryShare {
     const TITLE: &'static str = "Territory share";
     const CONTENT_DEPENDENT: bool = false;
     type Params = TerritoryShareParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, top];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, measure, top, countries, "countries[]", group];
     type Reply = TerritoryShareReply;
-    type Context = ();
+    type Context = GroupsAt;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
@@ -211,6 +233,10 @@ impl AtHour for TerritoryShare {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
+        params.countries.iter().try_for_each(validate_country)?;
+        if params.top.is_some() && (params.group.is_some() || !params.countries.is_empty()) {
+            return Err("Ask a top or chosen countries, never both");
+        }
         MEASURES.contains(&params.measure.as_str()).then_some(()).ok_or("Unknown territory measure")
     }
 
@@ -224,22 +250,35 @@ impl AtHour for TerritoryShare {
         vec![TableId::TerritoryTotals]
     }
 
-    fn context(_source: &Source, _load: &LoadContext) -> io::Result<()> {
-        Ok(())
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(GroupsAt::default())
     }
 
-    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, ()>) -> io::Result<Self::Reply> {
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())
+    }
+
+    fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        at.context.valid_through(params.group.as_ref(), at.hour).min(unknown_through(&at.holders.unknown, at.hour))
+    }
+
+    fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let measure = MEASURES.iter().position(|name| *name == params.measure).ok_or_else(|| dashboard_core::invalid("Unknown territory measure"))?;
-        if let Some((_, _, reason)) = at.holders.unknown.iter().find(|(first, last, _)| *first <= frame.hour && frame.hour <= *last) {
-            return Ok(TerritoryShareReply {
-                hour: frame.hour,
-                measure: params.measure.clone(),
-                breakdown: not_recorded(format!("Country tags are not known at this hour: {reason}")),
-                warnings: Vec::new(),
-            });
-        }
+        let unnamed = at
+            .holders
+            .unknown
+            .iter()
+            .find(|(first, last, _)| *first <= frame.hour && frame.hour <= *last)
+            .map(|(_, _, reason)| format!("Country tags are not known at this hour: {reason}"));
+        let chosen = match at.context.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)? {
+            Ok(chosen) => chosen,
+            Err(refused) => return Ok(TerritoryShareReply { hour: frame.hour, measure: params.measure.clone(), breakdown: not_recorded(refused), warnings: Vec::new() }),
+        };
         let reply = match frame.complete::<tables::TerritoryTotals>() {
-            Ok(rows) => share(rows, &slot_tags(at.holders, frame.hour), measure, params.top, frame.hour),
+            Ok(rows) => {
+                let ask = ShareAsk { at: measure, top: params.top, chosen: chosen.as_ref(), unnamed: unnamed.as_deref() };
+                share(rows, &slot_tags(at.holders, frame.hour), &ask, frame.hour)
+            }
             Err(error) => TerritoryShareReply {
                 hour: frame.hour,
                 measure: params.measure.clone(),
@@ -252,6 +291,10 @@ impl AtHour for TerritoryShare {
     }
 }
 
+fn unknown_through(unknown: &[(i32, i32, String)], hour: i32) -> i32 {
+    unknown.iter().flat_map(|&(first, last, _)| [Some(first), last.checked_add(1)]).flatten().filter(|&edge| edge > hour).min().map_or(i32::MAX, |edge| edge - 1)
+}
+
 pub struct TerritoryBreakdown;
 
 pub const BREAKDOWN_MEASURES: [(&str, usize); 4] = [("states", 3), ("provinces", 0), ("victoryPoints", 1), ("area", 2)];
@@ -260,6 +303,7 @@ const RULE_COLUMNS: usize = 5;
 const STATES: usize = 3;
 const REGION_UNKNOWN: &str = "~region";
 const NOT_HELD: &str = "~unheld";
+const UNREAD_ROWS: &str = "~unread";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -294,29 +338,8 @@ pub struct TerritoryBreakdownReply {
 
 dashboard_base::reply_warnings!(TerritoryBreakdownReply);
 
-#[derive(Default)]
-struct HeldAreas(Option<Result<Arc<Vec<i64>>, String>>);
-
-fn province_areas(source: &Source) -> Result<Arc<Vec<i64>>, String> {
-    let held = source.state::<HeldAreas>();
-    let mut held = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    held.0
-        .get_or_insert_with(|| {
-            let pack = source.facts().map_err(|reason| format!("the recording carries no game facts: {reason}"))?;
-            let options = content_reader_layers::content::ResolveOptions { game_dir: Default::default(), user_dir: Default::default(), cache_dir: Default::default() };
-            let content = content_reader_layers::content::playback(&source.replay_ref().identity, Ok(pack), &options)
-                .map_err(|error| format!("the recording's game facts cannot be mounted: {error}"))?;
-            source
-                .in_scope(|| content_reader_province_area::province_area::ProvinceAreas::read(&content.layers))
-                .map(|areas| Arc::new(areas.land))
-                .map_err(|error| format!("the province areas cannot be read from the recording's game facts: {error}"))
-        })
-        .clone()
-}
-
 pub struct BreakdownContent {
     regions: Result<RegionNames, String>,
-    area_reason: Option<String>,
     groups: GroupsAt,
 }
 
@@ -392,15 +415,22 @@ fn amount(row: &TerritoryRegionTotalRow, column: usize) -> Amount {
     }
 }
 
+const UNSUMMED: &str = "This country's regional amounts cannot be added exactly, so its recorded total is shown whole";
+
 fn territory_breakdown(
     rows: &[TerritoryRegionTotalRow],
     tags: &HashMap<u32, (&str, u32)>,
     params: &TerritoryBreakdownParams,
     chosen: Option<&HashSet<u32>>,
-    regions: Option<&RegionNames>,
+    regions: Result<&RegionNames, &str>,
+    unread: Option<(&str, &CountryTotals, bool)>,
 ) -> Breakdown {
     let column = breakdown_column(params).expect("validated measure and rule");
     let mut leaves = Vec::new();
+    let mut witnessed: HashMap<u32, Option<Exact>> = HashMap::new();
+    let totalled = |slot: u32| unread.is_some_and(|(_, totals, _)| totals.countries.get(&slot).is_some_and(Option::is_some));
+    let mut unread_holders: HashSet<u32> = HashSet::new();
+    let mut unread_unheld = false;
     for row in rows {
         let held = (row.holder != TerritoryRegionTotalRow::NO_COUNTRY).then_some(row.holder);
         if let Some(chosen) = chosen
@@ -411,24 +441,108 @@ fn territory_breakdown(
         let country = match held {
             Some(slot) => match tags.get(&slot) {
                 Some(&(tag, _)) => Node::new(format!("slot:{slot}"), tag, slot),
-                None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other(),
+                None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other().name_missing(Some("No tag names this country at this hour".to_owned())),
             },
             None => Node::new(NOT_HELD, "Held by no country", u32::MAX).other(),
         };
         let region = match (row.region != TerritoryRegionTotalRow::NO_REGION).then_some(row.region) {
-            Some(id) => match regions.and_then(|regions| regions.names.get(&id)) {
-                Some(Ok(name)) => Node::new(id.to_string(), name.clone(), id),
-                _ => Node::new(id.to_string(), format!("Region {id}"), id),
+            Some(id) => match regions.map(|regions| regions.names.get(&id)) {
+                Ok(Some(Ok(name))) => Node::new(id.to_string(), name.clone(), id),
+                Ok(Some(Err(reason))) => Node::new(id.to_string(), format!("Region {id}"), id).name_missing(Some(reason.clone())),
+                Ok(None) => Node::new(id.to_string(), format!("Region {id}"), id).name_missing(Some(format!("Strategic region {id} is not in the recorded content"))),
+                Err(reason) => Node::new(id.to_string(), format!("Region {id}"), id).name_missing(Some(format!("Strategic region names are unavailable: {reason}"))),
             },
             None => Node::new(REGION_UNKNOWN, "Region not recorded", u32::MAX).other(),
         };
         let amount = amount(row, column);
-        if matches!(amount, Amount::Known(known) if known.numerator() == 0) {
+        if let (Some(slot), Amount::Known(known)) = (held, &amount) {
+            let entry = witnessed.entry(slot).or_insert(Some(Exact::ZERO));
+            *entry = entry.and_then(|sum| sum.plus(*known));
+        }
+        if matches!(amount, Amount::NotRecorded(_)) {
+            match held {
+                Some(slot) => {
+                    unread_holders.insert(slot);
+                }
+                None => unread_unheld = true,
+            }
+        }
+        if matches!(amount, Amount::Known(known) if known.numerator() == 0) || (matches!(amount, Amount::NotRecorded(_)) && held.is_some_and(totalled)) {
             continue;
         }
         leaves.push(Leaf { path: vec![country, region], amount, count: None, last: None });
     }
-    breakdown::breakdown(&leaves, &Unrecorded::default())
+    let Some((reason, totals, truncated)) = unread else { return breakdown::breakdown(&leaves, &Unrecorded::default()) };
+    let overflowed: HashSet<u32> = witnessed.iter().filter(|(_, sum)| sum.is_none()).map(|(&slot, _)| slot).collect();
+    if !truncated && !unread_unheld && unread_holders.is_empty() && overflowed.is_empty() {
+        return breakdown::breakdown(&leaves, &Unrecorded::default());
+    }
+    let rest = || Node::new(UNREAD_ROWS, "Regions not read", u32::MAX).other().name_missing(Some(reason.to_owned()));
+    for (&slot, total) in &totals.countries {
+        if chosen.is_some_and(|chosen| !chosen.contains(&slot)) || !(truncated || unread_holders.contains(&slot) || overflowed.contains(&slot)) {
+            continue;
+        }
+        let country = match tags.get(&slot) {
+            Some(&(tag, _)) => Node::new(format!("slot:{slot}"), tag, slot),
+            None => Node::new(format!("slot:{slot}"), "Country not named at this hour", slot).other().name_missing(Some("No tag names this country at this hour".to_owned())),
+        };
+        let seen = witnessed.get(&slot).copied().unwrap_or(Some(Exact::ZERO));
+        let amount = match total {
+            Some(total) => match seen.and_then(|seen| Exact::whole(i128::from(*total)).minus(seen)) {
+                Some(left) if left.numerator() > 0 => Amount::Known(left),
+                Some(_) => continue,
+                None => {
+                    let key = format!("slot:{slot}");
+                    leaves.retain(|leaf| leaf.path.first().is_none_or(|node| node.key != key));
+                    let summed = Node::new(UNREAD_ROWS, "Regions not added up", u32::MAX).other().name_missing(Some(UNSUMMED.to_owned()));
+                    leaves.push(Leaf { path: vec![country, summed], amount: Amount::Known(Exact::whole(i128::from(*total))), count: None, last: None });
+                    continue;
+                }
+            },
+            None => Amount::NotRecorded(format!("{reason}; this country's total was not read either")),
+        };
+        leaves.push(Leaf { path: vec![country, rest()], amount, count: None, last: None });
+    }
+    if truncated
+        && let Some(missing) = &totals.missing
+        && chosen.is_none_or(|chosen| chosen.iter().any(|slot| !totals.countries.contains_key(slot)))
+    {
+        leaves.push(Leaf { path: vec![Node::new(UNREAD_ROWS, "Territory not read", u32::MAX).other()], amount: Amount::NotRecorded(missing.clone()), count: None, last: None });
+    }
+    match (chosen, totals.world) {
+        (None, Some(world)) => breakdown::breakdown_of(&leaves, &Amount::Known(Exact::whole(i128::from(world)))),
+        _ => breakdown::breakdown(&leaves, &Unrecorded::default()),
+    }
+}
+
+#[derive(Default)]
+pub struct CountryTotals {
+    countries: HashMap<u32, Option<i64>>,
+    world: Option<i64>,
+    missing: Option<String>,
+}
+
+fn country_totals(frame: &DecodedFrame, params: &TerritoryBreakdownParams) -> CountryTotals {
+    let Some(at) = totals_column(params) else { return CountryTotals::default() };
+    let read = witnessed_rows::<tables::TerritoryTotals>(frame);
+    let mut out = CountryTotals { missing: read.missing.map(|reason| format!("Country territory totals were not read whole at this hour: {reason}")), ..CountryTotals::default() };
+    for row in read.rows {
+        if row.slot == WORLD {
+            out.world = cell(row, at);
+        } else {
+            out.countries.insert(row.slot, cell(row, at));
+        }
+    }
+    out
+}
+
+fn totals_column(params: &TerritoryBreakdownParams) -> Option<usize> {
+    let mut measure = params.measure.clone();
+    if let Some(first) = measure.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    let name = format!("{}{measure}", params.rule);
+    MEASURES.iter().position(|known| *known == name)
 }
 
 fn not_recorded(reason: String) -> Breakdown {
@@ -457,19 +571,24 @@ impl AtHour for TerritoryBreakdown {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        vec![TableId::TerritoryRegionTotals]
+        vec![TableId::TerritoryRegionTotals, TableId::TerritoryTotals]
+    }
+
+    fn projection(params: &Self::Params, table: TableId, _plan: &[(Vec<dashboard_base::products::at_hour::Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        match table {
+            TableId::TerritoryRegionTotals => breakdown_column(params).map(|column| if column % RULE_COLUMNS == STATES { vec![column, column + 1] } else { vec![column] }),
+            TableId::TerritoryTotals => totals_column(params).map(|column| vec![column]),
+            _ => None,
+        }
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(Arc::new(BreakdownContent { regions: RegionNames::load(source, load), area_reason: None, groups: GroupsAt::default() }))
+        Ok(Arc::new(BreakdownContent { regions: RegionNames::load(source, load), groups: GroupsAt::default() }))
     }
 
     fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
-        let area_reason = (params.measure == "area")
-            .then(|| province_areas(source).err().map(|reason| format!("Area by strategic region is not known: {reason}")))
-            .flatten();
         let groups = GroupsAt::load(source, load, &params.branch_id, params.group.as_ref())?;
-        Ok(Arc::new(BreakdownContent { regions: RegionNames::load(source, load), area_reason, groups }))
+        Ok(Arc::new(BreakdownContent { regions: RegionNames::load(source, load), groups }))
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
@@ -478,15 +597,23 @@ impl AtHour for TerritoryBreakdown {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let (regions, mut warnings) = match &at.context.regions {
-            Ok(regions) => (Some(regions), regions.warnings.clone()),
-            Err(reason) => (None, vec![format!("Strategic region names are unavailable: {reason}")]),
+            Ok(regions) => (Ok(regions), regions.warnings.clone()),
+            Err(reason) => (Err(reason.as_str()), vec![format!("Strategic region names are unavailable: {reason}")]),
         };
         let chosen = at.context.groups.chosen_slots(params.group.as_ref(), &params.countries, at.holders, at.hour)?;
-        let breakdown = match (&at.context.area_reason, frame.complete::<tables::TerritoryRegionTotals>(), chosen) {
-            (_, _, Err(refused)) => not_recorded(refused),
-            (Some(reason), _, _) => not_recorded(reason.clone()),
-            (None, Err(error), _) => not_recorded(format!("Territory by strategic region is not known at this hour: {error}")),
-            (None, Ok(rows), Ok(chosen)) => territory_breakdown(rows, &slot_tags(at.holders, frame.hour), params, chosen.as_ref(), regions),
+        let read = witnessed_rows::<tables::TerritoryRegionTotals>(frame);
+        breakdown_column(params).ok_or_else(|| dashboard_core::invalid("Unknown territory measure or rule"))?;
+        let breakdown = match (read.missing, chosen) {
+            (_, Err(refused)) => not_recorded(refused),
+            (missing, Ok(chosen)) => {
+                let truncated = missing.is_some();
+                let reason = match missing {
+                    Some(reason) => format!("Territory by strategic region was not read whole at this hour: {reason}"),
+                    None => "Territory was not recorded in some strategic regions at this hour".to_owned(),
+                };
+                let totals = country_totals(frame, params);
+                territory_breakdown(read.rows, &slot_tags(at.holders, frame.hour), params, chosen.as_ref(), regions, Some((reason.as_str(), &totals, truncated)))
+            }
         };
         warnings.dedup();
         let reply = TerritoryBreakdownReply { hour: frame.hour, breakdown, warnings };
@@ -500,8 +627,18 @@ mod tests {
     use super::*;
     use dashboard_base::products::breakdown::BreakdownAmount;
 
+    fn ask(at: usize, top: Option<u32>) -> ShareAsk<'static> {
+        ShareAsk { at, top, chosen: None, unnamed: None }
+    }
+
     fn total(slot: u32, owned_states: Recorded<i64>, controlled_states: i64) -> TerritoryTotalRow {
         TerritoryTotalRow { slot, owned_states, controlled_states: Recorded::Value(controlled_states), ..TerritoryTotalRow::default() }
+    }
+
+    #[test]
+    fn a_share_holds_only_until_the_next_unknown_holder_interval_begins_or_ends() {
+        let unknown = [(100, 109, "first".to_owned()), (110, 119, "second".to_owned())];
+        assert_eq!((unknown_through(&unknown, 90), unknown_through(&unknown, 105), unknown_through(&unknown, 115), unknown_through(&unknown, 200)), (99, 109, 119, i32::MAX), "adjacent intervals with different reasons each end the reply");
     }
 
     #[test]
@@ -509,7 +646,7 @@ mod tests {
         use dashboard_base::products::breakdown::BreakdownState;
         let tags: HashMap<u32, (&str, u32)> = [(1, ("GER", 10)), (2, ("ITA", 20))].into();
         let rows = [total(1, Recorded::Value(5), 6), total(2, Recorded::Value(3), 1), total(3, Recorded::Value(2), 0), total(WORLD, Recorded::Value(12), 12)];
-        let owned = share(&rows, &tags, 0, Some(1), 500);
+        let owned = share(&rows, &tags, &ask(0, Some(1)), 500);
         assert_eq!(owned.hour, 500);
         assert_eq!(owned.breakdown.total.state, BreakdownState::Known);
         assert_eq!(owned.breakdown.total.amount, Some(BreakdownAmount { numerator: "12".into(), denominator: "1".into() }));
@@ -519,25 +656,54 @@ mod tests {
         assert_eq!(owned.breakdown.parts[1].amount, Some(BreakdownAmount { numerator: "7".into(), denominator: "1".into() }));
         assert_eq!(owned.warnings.len(), 1, "unnamed territory folded into rest of the world is reported");
 
-        let all = share(&rows, &tags, 0, None, 500);
+        let all = share(&rows, &tags, &ask(0, None), 500);
         let all_keys: Vec<(&str, bool)> = all.breakdown.parts.iter().map(|part| (part.key.as_str(), part.other)).collect();
         assert_eq!(all_keys, [("slot:1", false), ("slot:2", false), ("slot:3", true), (NOT_HELD, true)], "without top, unnamed slots and unheld land keep separate parts");
         assert!(all.warnings.is_empty());
 
-        let controlled = share(&rows, &tags, 1, Some(10), 500);
+        let controlled = share(&rows, &tags, &ask(1, Some(10)), 500);
         assert_eq!(controlled.breakdown.parts.len(), 3, "two named countries plus unheld land in rest of world");
         assert!(controlled.warnings.is_empty(), "a slot no tag names holding none is not land in the rest");
 
         let unread_world = [total(1, Recorded::Value(5), 6), total(WORLD, Recorded::NotRecorded, 7)];
-        let missing_world = share(&unread_world, &tags, 0, Some(10), 500);
+        let missing_world = share(&unread_world, &tags, &ask(0, Some(10)), 500);
         assert_eq!(missing_world.breakdown.total.state, BreakdownState::NotRecorded, "the world not recorded leaves the whole unknown, never a smaller sum");
-        assert_eq!(share(&unread_world[..1], &tags, 1, Some(10), 500).breakdown.total.state, BreakdownState::NotRecorded, "no world row, no whole");
+        assert_eq!(share(&unread_world[..1], &tags, &ask(1, Some(10)), 500).breakdown.total.state, BreakdownState::NotRecorded, "no world row, no whole");
 
         let unread_country = [total(1, Recorded::Value(5), 6), total(2, Recorded::NotRecorded, 1), total(WORLD, Recorded::Value(12), 12)];
-        let partial = share(&unread_country, &tags, 0, Some(10), 500);
-        assert_eq!(partial.breakdown.total.state, BreakdownState::AtLeast, "an unread country row withholds shares and never invents rest of the world");
-        assert!(partial.breakdown.parts.iter().all(|part| part.share.is_none()));
-        assert_eq!(partial.breakdown.parts.last().map(|part| (part.key.as_str(), part.state)), Some(("slot:2", BreakdownState::NotRecorded)));
+        let partial = share(&unread_country, &tags, &ask(0, Some(10)), 500);
+        assert_eq!(partial.breakdown.total.amount, Some(BreakdownAmount { numerator: "12".into(), denominator: "1".into() }), "the recorded world stays the whole");
+        assert_eq!(partial.breakdown.parts.iter().map(|part| part.key.as_str()).collect::<Vec<_>>(), ["slot:1", REST_OF_WORLD], "the rest of the world is the world less the named, exactly, the unread country inside it");
+        assert!(partial.warnings.iter().any(|warning| warning.contains("top 10 is not proven")), "a top with an unread contender says it is not proven");
+
+        let every = share(&unread_country, &tags, &ask(0, None), 500);
+        assert_eq!(every.breakdown.total.state, BreakdownState::Known);
+        assert_eq!(every.breakdown.parts[0].share, Some(5.0 / 12.0), "a known country's share of the recorded world");
+        assert_eq!(every.breakdown.parts.iter().map(|part| (part.key.as_str(), part.state)).collect::<Vec<_>>(), [("slot:1", BreakdownState::Known), ("slot:2", BreakdownState::NotRecorded)], "no land is claimed unheld while a country is unread");
+    }
+
+    #[test]
+    fn an_unread_world_keeps_each_recorded_country_and_an_unnamed_holder_says_why() {
+        use dashboard_base::products::breakdown::BreakdownState;
+        let tags: HashMap<u32, (&str, u32)> = [(1, ("GER", 10))].into();
+        let rows = [total(1, Recorded::Value(5), 6), total(3, Recorded::Value(2), 0), total(WORLD, Recorded::NotRecorded, 7)];
+        let why = "Country tags are not known at this hour: links not read";
+        let out = share(&rows, &tags, &ShareAsk { at: 0, top: None, chosen: None, unnamed: Some(why) }, 500);
+        assert_eq!(out.breakdown.total.state, BreakdownState::NotRecorded);
+        assert_eq!(out.breakdown.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "GER's recorded 5 is not lost with the world");
+        assert_eq!(out.breakdown.parts[1].name_missing.as_deref(), Some(why), "a country whose tag is unknown keeps its amount and the reason it has no name");
+    }
+
+    #[test]
+    fn chosen_countries_are_their_shares_of_the_world_and_the_rest_is_one_part() {
+        let tags: HashMap<u32, (&str, u32)> = [(1, ("GER", 10)), (2, ("ITA", 20))].into();
+        let rows = [total(1, Recorded::Value(5), 6), total(2, Recorded::Value(3), 1), total(WORLD, Recorded::Value(12), 12)];
+        let chosen: HashSet<u32> = [2].into();
+        let out = share(&rows, &tags, &ShareAsk { at: 0, top: None, chosen: Some(&chosen), unnamed: None }, 500);
+        let got: Vec<(&str, Option<BreakdownAmount>)> = out.breakdown.parts.iter().map(|part| (part.key.as_str(), part.amount.clone())).collect();
+        let n = |value: &str| Some(BreakdownAmount { numerator: value.into(), denominator: "1".into() });
+        assert_eq!(got, [("slot:2", n("3")), (REST_OF_WORLD, n("9"))], "a chosen small country keeps its part, never replaced by the world top ten");
+        assert_eq!(out.breakdown.parts[0].share, Some(0.25));
     }
 
     #[test]
@@ -563,7 +729,7 @@ mod tests {
         ];
         let regions = RegionNames { names: [(7, Ok("Northern Sea".to_owned())), (8, Err("missing".to_owned()))].into(), warnings: Vec::new() };
         let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), countries: Vec::new(), group: None };
-        let out = territory_breakdown(&rows, &tags, &params, None, Some(&regions));
+        let out = territory_breakdown(&rows, &tags, &params, None, Ok(&regions), None);
         let keys: Vec<&str> = out.parts.iter().map(|part| part.key.as_str()).collect();
         assert_eq!(keys, ["slot:1", "slot:2", NOT_HELD], "keyed by recorded slot, the largest first, a country holding none has no part, then other");
         let names: Vec<(&str, bool)> = out.parts.iter().map(|part| (part.name.as_str(), part.other)).collect();
@@ -572,15 +738,47 @@ mod tests {
         assert_eq!(out.parts[0].amount, thirds("13"), "7/3 + 2 states, exactly");
         let children: Vec<(&str, &str)> = out.parts[0].children.iter().map(|part| (part.key.as_str(), part.name.as_str())).collect();
         assert_eq!(children, [("7", "Northern Sea"), ("8", "Region 8")], "a region without a name is named by its id, never a guess");
+        assert_eq!(out.parts[0].children[1].name_missing.as_deref(), Some("missing"), "and keeps the recorded reason it has no name");
         assert!(out.parts[1].other && out.parts[2].other);
         assert_eq!(out.parts[2].children[0].key, REGION_UNKNOWN);
         assert_eq!(out.total.amount, Some(BreakdownAmount { numerator: "35".into(), denominator: "6".into() }), "13/3 + 1 + 1/2");
+        let totals = CountryTotals { countries: [(1, Some(5)), (3, None)].into(), world: Some(9), missing: None };
+        let truncated = territory_breakdown(&rows[..1], &tags, &params, None, Ok(&regions), Some(("read only in part", &totals, true)));
+        assert_eq!(truncated.total.amount, Some(BreakdownAmount { numerator: "9".into(), denominator: "1".into() }), "the recorded world stays the whole");
+        assert_eq!(truncated.parts[0].key, "slot:1");
+        assert_eq!(truncated.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "the country's recorded total, its unread regions as one part");
+        assert!(truncated.parts[0].children.iter().any(|child| child.key == UNREAD_ROWS && child.amount == Some(BreakdownAmount { numerator: "8".into(), denominator: "3".into() })));
+        assert!(truncated.parts.iter().any(|part| part.key == "slot:3" && part.state == BreakdownState::NotRecorded), "a country whose total is unread is not recorded, never zero");
+        let cells = [held(1, 7, Recorded::NotRecorded, 3), held(1, 8, Recorded::Value(2), 1)];
+        let filled = territory_breakdown(&cells, &tags, &params, None, Ok(&regions), Some(("cells not read", &totals, false)));
+        let only_a: HashSet<u32> = [1].into();
+        let unread_b = [held(1, 7, Recorded::Value(5), 1), held(3, 8, Recorded::NotRecorded, 1)];
+        let no_totals = CountryTotals { countries: HashMap::new(), world: None, missing: Some("totals unavailable".into()) };
+        let exact_a = territory_breakdown(&unread_b, &tags, &params, Some(&only_a), Ok(&regions), Some(("cells not read", &no_totals, false)));
+        assert_eq!((exact_a.total.state, exact_a.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() })), "another country's unread cell leaves a chosen country exact");
+        let a_total_unread = CountryTotals { countries: [(1, None), (3, Some(4))].into(), world: Some(20), missing: None };
+        let still_a = territory_breakdown(&unread_b, &tags, &params, Some(&only_a), Ok(&regions), Some(("cells not read", &a_total_unread, false)));
+        assert_eq!(still_a.total.state, BreakdownState::Known, "a chosen country with every regional cell read stays exact though its own total cell is unread");
+        let whole = territory_breakdown(&rows, &tags, &params, None, Ok(&regions), Some(("", &a_total_unread, false)));
+        assert_eq!(whole.total.amount, territory_breakdown(&rows, &tags, &params, None, Ok(&regions), None).total.amount, "a complete table with nothing unread and nothing overflowing is its own sum");
+        let primes = [9_223_372_036_854_775_783_i64, 9_223_372_036_854_775_643, 9_223_372_036_854_775_549];
+        let huge: Vec<TerritoryRegionTotalRow> = primes.iter().enumerate().map(|(at, &of)| held(1, 7 + at as u32, Recorded::Value(1), of)).collect();
+        let five = CountryTotals { countries: [(1, Some(5))].into(), world: None, missing: None };
+        let summed = territory_breakdown(&huge, &tags, &params, None, Ok(&regions), Some(("", &five, false)));
+        let unheld = [held(1, 7, Recorded::Value(8), 1), held(NO_COUNTRY, 8, Recorded::NotRecorded, 1)];
+        let ten = CountryTotals { countries: [(1, Some(8))].into(), world: Some(10), missing: None };
+        let world = territory_breakdown(&unheld, &tags, &params, None, Ok(&regions), Some(("cells not read", &ten, false)));
+        assert_eq!(world.total.amount, Some(BreakdownAmount { numerator: "10".into(), denominator: "1".into() }), "an unread cell no country holds keeps the recorded world as the whole");
+        assert_eq!(summed.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "a country whose regions cannot be added exactly keeps its recorded total");
+        assert_eq!(filled.parts[0].amount, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() }), "an unread cell in a complete table takes the country's recorded total");
+        assert!(filled.parts[0].children.iter().any(|child| child.key == UNREAD_ROWS && child.amount == Some(BreakdownAmount { numerator: "3".into(), denominator: "1".into() })), "its unread regions are one known remainder");
+        assert!(!filled.parts[0].children.iter().any(|child| child.key == "7"), "the unread cell is not shown beside the remainder that holds it");
         let unread = [held(1, 7, Recorded::NotRecorded, 3), held(3, 8, Recorded::Value(2), 1)];
-        let partly = territory_breakdown(&unread, &tags, &params, None, None);
+        let partly = territory_breakdown(&unread, &tags, &params, None, Err("names not read"), None);
         assert_eq!(partly.total.state, BreakdownState::AtLeast, "a region not recorded is never zero");
         assert_eq!(partly.parts.last().map(|part| part.state), Some(BreakdownState::NotRecorded));
         let provinces = TerritoryBreakdownParams { measure: "provinces".into(), ..params };
-        assert_eq!(territory_breakdown(&rows, &tags, &provinces, None, None).total.amount, Some(BreakdownAmount { numerator: "8".into(), denominator: "1".into() }), "provinces are whole");
+        assert_eq!(territory_breakdown(&rows, &tags, &provinces, None, Err("names not read"), None).total.amount, Some(BreakdownAmount { numerator: "8".into(), denominator: "1".into() }), "provinces are whole");
         assert!(breakdown_column(&TerritoryBreakdownParams { rule: "occupied".into(), ..provinces }).is_none(), "the breakdown's rules are controlled and owned");
     }
 
@@ -596,7 +794,7 @@ mod tests {
         };
         let rows = [third(1, 7, 1, 3), third(1, 8, 1, 3), third(1, 9, 1, 3), third(2, 7, 1, 300)];
         let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), countries: Vec::new(), group: None };
-        let out = territory_breakdown(&rows, &tags, &params, None, None);
+        let out = territory_breakdown(&rows, &tags, &params, None, Err("names not read"), None);
         assert_eq!(out.parts[0].amount, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() }), "three thirds of one state are one state");
         assert_eq!(out.parts.len(), 2, "a three-hundredth of a state is held, never rounded away");
     }
@@ -621,7 +819,7 @@ mod tests {
         let parts = |countries: Vec<Country>, hour: i32| {
             let params = TerritoryBreakdownParams { branch_id: "1".into(), measure: "states".into(), rule: "controlled".into(), countries, group: None };
             let chosen = groups.chosen_slots(None, &params.countries, &holders, hour).unwrap().unwrap();
-            let out = territory_breakdown(&rows, &slot_tags(&holders, hour), &params, chosen.as_ref(), None);
+            let out = territory_breakdown(&rows, &slot_tags(&holders, hour), &params, chosen.as_ref(), Err("names not read"), None);
             out.parts.iter().map(|part| (part.key.clone(), part.name.clone())).collect::<Vec<_>>()
         };
         let one = |key: &str, name: &str| vec![(key.to_owned(), name.to_owned())];

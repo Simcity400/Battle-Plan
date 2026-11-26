@@ -5,7 +5,7 @@ use dashboard_base::catalogue::{self, Catalogue};
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_lanes::lanes::{self, Cell, History, Keys, Step};
-use replay_data::rows::{DockyardRepairRateRow, OutputPurpose, ProductionCoverageRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables};
+use replay_data::rows::{DockyardRepairRateRow, LexicalTokenRow, OutputPurpose, ProductionCoverageRow, TableId, VariantDefinitionRow, VariantModuleRow, VariantUpgradeRow, tables};
 use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -52,6 +52,10 @@ pub struct ProductionSpendingParams {
     pub scope: ProductionSpendingScope,
     #[serde(default)]
     pub include_refits: bool,
+    #[doc = " The first hour of a chosen range: spending from it through `hour`; from the observation start when absent."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from_hour: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -219,13 +223,16 @@ pub(crate) struct SpanRead {
     country: Vec<Piece<Option<(Option<i64>, Option<i64>)>>>,
     pub(crate) rows: BTreeMap<LeafKey, Vec<Piece<Option<Row>>>>,
     pub(crate) archetypes: BTreeMap<u64, u32>,
+    pub(crate) archetype_since: BTreeMap<u64, i32>,
     pub(crate) equipment_observations: BTreeSet<i32>,
+    pub(crate) rocket_observations: BTreeSet<i32>,
     pub(crate) repairs: Option<RepairRead>,
 }
 
 pub(crate) struct RepairRead {
     pub(super) total: Vec<Piece<Option<(Option<i64>, bool)>>>,
     pub(crate) parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>,
+    pub(super) index: breakdown::RepairIndex,
 }
 
 const RUN: u128 = ProductionCoverageRow::RUN as u128;
@@ -251,6 +258,8 @@ impl SpanRead {
         let [own_rocket, run_lines, run_rocket] = coverage_keys.map(|key| coverage.pieces(key, &span, cells));
         let observations = |rows: &[Piece<Option<Coverage>>]| rows.iter().filter_map(|piece| piece.2.and_then(|row| row.observation)).collect::<BTreeSet<_>>();
         let equipment_observations = observations(&run_lines);
+        let mut rocket_observations = observations(&run_rocket);
+        rocket_observations.extend(observations(&own_rocket));
 
         let shown: Vec<Piece<bool>> = country.iter().map(|&(first, last, row)| (first, last, row.is_some())).collect();
         let lines = zip(&shown, &unknown_pieces(&run_lines), |&shown, why| Context::of(shown, *why));
@@ -258,10 +267,15 @@ impl SpanRead {
         let totals = Read::of(query, &span, TableId::ProductionTotals, &["spent", "spent_reason", "unproven", "archetype"], Keys::Range(id << 72, id << 72 | ((1u128 << 72) - 1)))?;
         let mut rows = BTreeMap::new();
         let mut archetypes = BTreeMap::new();
+        let mut archetype_since: BTreeMap<u64, i32> = BTreeMap::new();
         for (key, steps) in &totals.history.keys {
             let variant = (key >> 8) as u64;
             if let Some(archetype) = steps.iter().rev().filter_map(|step| step.cells.as_deref()).filter_map(|cells| totals.number(cells, 3)).find(|&token| token > 0) {
                 archetypes.insert(variant, archetype as u32);
+            }
+            if let Some(first) = steps.iter().find(|step| step.cells.as_deref().and_then(|cells| totals.number(cells, 3)).is_some_and(|token| token > 0)) {
+                let first = first.hour.max(span.first);
+                archetype_since.entry(variant).and_modify(|held| *held = (*held).min(first)).or_insert(first);
             }
             let row = totals.pieces(*key, &span, |read, cells| Row { spent: read.number(cells, 0), reason: read.number(cells, 1).map_or(0, |code| code as u8), unproven: read.number(cells, 2) });
             rows.insert((false, variant, Some(*key as u8)), row);
@@ -277,7 +291,7 @@ impl SpanRead {
         }
 
         let repairs = repairs.then(|| RepairRead::read(query, &span)).transpose()?;
-        Ok(Self { lines, rocket, country, rows, archetypes, equipment_observations, repairs, span })
+        Ok(Self { lines, rocket, country, rows, archetypes, archetype_since, equipment_observations, rocket_observations, repairs, span })
     }
 
     fn context(&self, rocket: bool) -> &[Piece<Context>] {
@@ -324,7 +338,13 @@ impl RepairRead {
             parts.insert(design, rates.pieces(*key, span, |read, cells| read.number(cells, 0)));
         }
         parts.entry(None).or_insert_with(|| vec![(span.first, span.last, None)]);
-        Ok(Self { total, parts })
+        Ok(Self::new(total, parts))
+    }
+
+    pub(crate) fn new(total: Vec<Piece<Option<(Option<i64>, bool)>>>, parts: BTreeMap<Option<u64>, Vec<Piece<Option<Option<i64>>>>>) -> Self {
+        let mut read = Self { total, parts, index: breakdown::RepairIndex::default() };
+        read.index = breakdown::RepairIndex::of(&read);
+        read
     }
 
     fn span(&self) -> [Piece<()>; 1] {
@@ -360,6 +380,7 @@ pub(crate) struct Design {
     pub(crate) name: Option<String>,
     pub(crate) domain: Option<Domain>,
     pub(crate) names: Vec<StockVariantName>,
+    pub(crate) typed_since: Option<i32>,
 }
 
 pub(crate) struct Content {
@@ -432,11 +453,8 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         .complete::<tables::VariantDefinitions>()
         .map(|rows| rows.iter().map(|row| (row.id, row.clone())).collect())
         .unwrap_or_default();
-    let since: HashMap<u64, i32> = cost::storage(|| lanes::history(recording, span.run, TableId::VariantDefinitions, &[0], Keys::These(&keys), span.first, span.last))?
-        .keys
-        .iter()
-        .filter_map(|(key, steps)| steps.iter().find(|step| step.cells.is_some()).map(|step| (*key as u64, step.hour.max(span.first))))
-        .collect();
+    let history = cost::storage(|| lanes::history(recording, span.run, TableId::VariantDefinitions, &DEFINITION_COLUMNS, Keys::These(&keys), span.first, span.last))?;
+    let dated: HashMap<u64, DefinitionDates> = history.keys.iter().filter_map(|(key, steps)| definition_dates(&history, steps, span.first).map(|dates| (*key as u64, dates))).collect();
     let modules: Option<Vec<VariantModuleRow>> = frame.complete::<tables::VariantModules>().ok().map(|rows| rows.to_vec());
     let upgrades: Option<Vec<VariantUpgradeRow>> = frame.complete::<tables::VariantUpgrades>().ok().map(|rows| rows.to_vec());
     let mut tokens: BTreeSet<u128> = BTreeSet::new();
@@ -450,6 +468,7 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
         tokens.extend([u128::from(row.slot), u128::from(row.definition_token)].into_iter().filter(|&token| token > 0));
     }
     tokens.extend(upgrades.iter().flatten().filter_map(|row| u32::try_from(row.definition_token).ok()).filter(|&token| token > 0).map(u128::from));
+    tokens.extend(dated.values().flat_map(|dates| dates.names.iter().filter_map(|(_, fields)| fields.as_ref())).map(|fields| u128::from(fields.equipment_token)).filter(|&token| token > 0));
     let tokens: Vec<u128> = tokens.into_iter().collect();
     let named = cost::storage(|| {
         replay_lanes::at::frame(
@@ -485,6 +504,181 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
     }
     let empty = Tags::new(&[], &[], None);
     let texts = content.catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+    let base = |variant: u64| definitions.get(&variant).cloned().unwrap_or_else(|| VariantDefinitionRow { id: variant, ..VariantDefinitionRow::default() });
+    let naming_link = |fields: &NameFields| if (fields.origin_link as i32) >= 1 { fields.origin_link } else { fields.creator_link };
+    let country_named = |fields: &NameFields| fields.display_name.is_empty() && naming_link(fields) != 0;
+    let created = |fields: &NameFields| country_named(fields) && (fields.origin_link as i32) < 1;
+    let mut entries: HashMap<u64, Vec<(i32, Option<NameFields>)>> = variants
+        .keys()
+        .filter_map(|&variant| {
+            let held = match (dated.get(&variant).filter(|dates| !dates.names.is_empty()), definitions.get(&variant)) {
+                (Some(dates), _) => dates.names.clone(),
+                (None, Some(definition)) => vec![(span.last, Some(NameFields::from(definition)))],
+                (None, None) => return None,
+            };
+            Some((variant, held))
+        })
+        .collect();
+    let wanted: Vec<u128> = entries
+        .values()
+        .flatten()
+        .filter_map(|(_, fields)| fields.as_ref())
+        .filter(|fields| country_named(fields))
+        .map(|fields| u128::from(naming_link(fields)))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut mapped: HashMap<u32, Vec<(i32, i32, Option<u32>)>> = HashMap::new();
+    let mut appearance: HashMap<u32, Vec<i32>> = HashMap::new();
+    let mut appearance_coverage: Vec<i32> = Vec::new();
+    let (mut links_unread, mut looks_unread): (Option<String>, Option<String>) = (None, None);
+    if !wanted.is_empty() {
+        let column = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
+        let looks = [dashboard_declare::field(TableId::CountryAppearance, "name_tag")?, dashboard_declare::field(TableId::CountryAppearance, "original_tag")?];
+        let creators = entries.values().flatten().filter_map(|(_, fields)| fields.as_ref()).any(created);
+        let links_history = match cost::storage(|| lanes::history(recording, span.run, TableId::CountryLinks, &[column], if creators { Keys::All } else { Keys::These(&wanted) }, span.first, span.last)) {
+            Ok(history) => Some(history),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                links_unread = Some(format!("Country links were not read for design names: {error}"));
+                None
+            }
+        };
+        let looks_history = match creators.then(|| cost::storage(|| lanes::history(recording, span.run, TableId::CountryAppearance, &looks, Keys::All, span.first, span.last))) {
+            None => None,
+            Some(Ok(history)) => Some(history),
+            Some(Err(error)) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Some(Err(error)) => {
+                looks_unread = Some(format!("Country appearance was not read for design names: {error}"));
+                None
+            }
+        };
+        let history = links_history.unwrap_or_default();
+        for (key, steps) in &history.keys {
+            let pieces = steps
+                .iter()
+                .enumerate()
+                .map(|(at, step)| {
+                    let last = steps.get(at + 1).map_or(history.to, |next| next.hour - 1);
+                    let slot = step.cells.as_deref().and_then(|cells| match cells.first() {
+                        Some(Cell::Number(value)) => u32::try_from(*value).ok(),
+                        _ => None,
+                    });
+                    (step.hour, last, slot)
+                })
+                .collect();
+            mapped.insert(*key as u32, pieces);
+        }
+        if let Some(looks) = &looks_history {
+            for (key, steps) in &looks.keys {
+                let pieces = mapped.get(&(*key as u32)).map_or(&[][..], Vec::as_slice);
+                for step in steps {
+                    let held = pieces.get(pieces.partition_point(|piece| piece.1 < step.hour)).filter(|piece| piece.0 <= step.hour).and_then(|piece| piece.2);
+                    if let Some(slot) = held {
+                        appearance.entry(slot).or_default().push(step.hour);
+                    }
+                }
+            }
+            appearance_coverage.extend(looks.statuses.iter().map(|status| status.first));
+        }
+    }
+    for why in [&links_unread, &looks_unread].into_iter().flatten() {
+        notes.insert(why.clone());
+    }
+    let withheld = |fields: &NameFields| country_named(fields) && (links_unread.is_some() || (looks_unread.is_some() && created(fields)));
+    for held in entries.values_mut() {
+        for entry in held.iter_mut() {
+            if entry.1.as_ref().is_some_and(withheld) {
+                entry.1 = None;
+            }
+        }
+        let mut retagged: Vec<(i32, Option<NameFields>)> = Vec::new();
+        for (at, (hour, fields)) in held.iter().enumerate() {
+            let Some(fields) = fields.as_ref().filter(|fields| country_named(fields)) else { continue };
+            let until = held.get(at + 1).map_or(span.last, |next| next.0 - 1);
+            let mut edges: BTreeSet<i32> = BTreeSet::new();
+            if created(fields) {
+                edges.extend(appearance_coverage.iter().copied().filter(|&edge| edge > *hour && edge <= until));
+            }
+            for &(from, to, slot) in mapped.get(&naming_link(fields)).map_or(&[][..], Vec::as_slice) {
+                let (low, high) = (from.max(*hour), to.min(until));
+                if low > high {
+                    continue;
+                }
+                if from > *hour {
+                    edges.insert(from);
+                }
+                if let Some(slot) = slot {
+                    for (first, last) in query.holders.naming_spans(&Country::Slot(slot)) {
+                        edges.extend([first, last.saturating_add(1)].into_iter().filter(|&edge| edge > low && edge <= high));
+                    }
+                    if created(fields) {
+                        edges.extend(appearance.get(&slot).into_iter().flatten().copied().filter(|&edge| edge > low && edge <= high));
+                    }
+                }
+            }
+            retagged.extend(edges.into_iter().map(|edge| (edge, Some(fields.clone()))));
+        }
+        held.extend(retagged);
+        held.sort_by_key(|entry| entry.0);
+        held.dedup_by_key(|entry| entry.0);
+    }
+    let mut by_hour: BTreeMap<i32, Vec<(u64, usize)>> = BTreeMap::new();
+    for (&variant, held) in &entries {
+        for (at, (hour, fields)) in held.iter().enumerate() {
+            if fields.is_some() {
+                by_hour.entry(*hour).or_default().push((variant, at));
+            }
+        }
+    }
+    let mut dated_names: HashMap<(u64, usize), StockVariantName> = HashMap::new();
+    for (hour, asked) in by_hour {
+        let resolve = |row: &VariantDefinitionRow, shown: &Tags, lexical: &[LexicalTokenRow]| {
+            let mut raw = variant_names::raw_variant(row, hour, shown, lexical);
+            let own = of_variant(modules.as_deref(), row.id, |row: &VariantModuleRow| row.variant);
+            let upgraded = of_variant(upgrades.as_deref(), row.id, |row: &VariantUpgradeRow| row.variant);
+            if let (Some(own), Some(upgraded)) = (own, upgraded) {
+                let own: Vec<&VariantModuleRow> = own.iter().collect();
+                let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
+                variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
+            }
+            let (name, _) = variant_names::variant_names(&raw, texts);
+            StockVariantName { first_hour: hour, name, known: true, design: raw.design }
+        };
+        let unknown = StockVariantName { first_hour: hour, name: None, known: false, design: None };
+        let fields_of = |variant: u64, at: usize| entries[&variant][at].1.clone().unwrap_or_default();
+        if hour == span.last {
+            for (variant, at) in asked {
+                let fields = fields_of(variant, at);
+                let name = match &tags {
+                    Ok(tags) => resolve(&fields.applied(&base(variant)), tags, lexical),
+                    Err(_) if !country_named(&fields) => resolve(&fields.applied(&base(variant)), &empty, lexical),
+                    Err(_) => unknown.clone(),
+                };
+                dated_names.insert((variant, at), name);
+            }
+            continue;
+        }
+        let wanted: Vec<u128> = asked.iter().map(|&(variant, at)| u128::from(fields_of(variant, at).equipment_token)).filter(|&token| token > 0).collect::<BTreeSet<_>>().into_iter().collect();
+        let read = [
+            replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: Keys::These(&wanted) },
+            replay_lanes::at::Read { table: TableId::Countries, columns: None, keys: Keys::All },
+            replay_lanes::at::Read { table: TableId::CountryLinks, columns: None, keys: Keys::All },
+            replay_lanes::at::Read { table: TableId::CountryAppearance, columns: None, keys: Keys::All },
+        ];
+        let then = cost::storage(|| replay_lanes::at::frame(recording, span.run, hour, &read)).ok();
+        let then_tags = then.as_ref().map(|frame| Tags::from_tables(HourFrame::from(frame), true).or_else(|_| Tags::from_tables(HourFrame::from(frame), false)));
+        let then_lexical = then.as_ref().and_then(|frame| frame.complete::<tables::LexicalTokens>().ok()).unwrap_or(&[]);
+        for (variant, at) in asked {
+            let fields = fields_of(variant, at);
+            let name = match &then_tags {
+                Some(Ok(tags)) => resolve(&fields.applied(&base(variant)), tags, then_lexical),
+                _ if !country_named(&fields) => resolve(&fields.applied(&base(variant)), &empty, then_lexical),
+                _ => unknown.clone(),
+            };
+            dated_names.insert((variant, at), name);
+        }
+    }
     let mut out = HashMap::new();
     for (&variant, &archetype) in variants {
         let definition = definitions.get(&variant);
@@ -504,27 +698,116 @@ pub(crate) fn designs(query: &Query<'_>, span: &Span, variants: &BTreeMap<u64, u
                 (format!("{UNRESOLVED_MARK}variant/{variant}"), None, None)
             }
         };
-        let names = match definition {
-            Some(definition) => {
-                let mut raw = match &tags {
-                    Ok(tags) => variant_names::raw_variant(definition, span.last, tags, lexical),
-                    Err(_) => variant_names::raw_variant(definition, span.last, &empty, lexical),
-                };
-                let own = of_variant(modules.as_deref(), variant, |row: &VariantModuleRow| row.variant);
-                let upgraded = of_variant(upgrades.as_deref(), variant, |row: &VariantUpgradeRow| row.variant);
-                if let (Some(own), Some(upgraded)) = (own, upgraded) {
-                    let own: Vec<&VariantModuleRow> = own.iter().collect();
-                    let upgraded: Vec<&VariantUpgradeRow> = upgraded.iter().collect();
-                    variant_names::with_design(&mut raw, &own, &upgraded, &known_spelling);
-                }
-                let (name, _) = variant_names::variant_names(&raw, texts);
-                StockVariantName { first_hour: since.get(&variant).copied().unwrap_or(span.last), name, known: true, design: raw.design }
-            }
-            None => StockVariantName { first_hour: span.first, name: None, known: false, design: None },
+        let names = match entries.get(&variant) {
+            None => vec![StockVariantName { first_hour: span.first, name: None, known: false, design: None }],
+            Some(held) => held
+                .iter()
+                .enumerate()
+                .map(|(at, (hour, _))| dated_names.remove(&(variant, at)).unwrap_or(StockVariantName { first_hour: *hour, name: None, known: false, design: None }))
+                .collect(),
         };
-        out.insert(variant, Design { type_key, name, domain, names: vec![names] });
+        let typed_since = definition.filter(|definition| definition.archetype_token > 0).and_then(|_| dated.get(&variant)).and_then(|dates| dates.typed);
+        out.insert(variant, Design { type_key, name, domain, names, typed_since });
     }
     Ok(out)
+}
+
+const DEFINITION_COLUMNS: [usize; 8] = [0, 1, 2, 3, 7, 8, 9, 10];
+const ARCHETYPE_AT: usize = 7;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DefinitionDates {
+    pub(crate) since: i32,
+    pub(crate) typed: Option<i32>,
+    pub(crate) names: Vec<(i32, Option<NameFields>)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NameFields {
+    pub(crate) equipment_token: u32,
+    pub(crate) creator_link: u32,
+    pub(crate) origin_link: u32,
+    pub(crate) append_variant_name: u8,
+    pub(crate) display_name: Vec<u8>,
+    pub(crate) variant_name: Vec<u8>,
+    pub(crate) explicit_entity: Vec<u8>,
+}
+
+impl From<&VariantDefinitionRow> for NameFields {
+    fn from(row: &VariantDefinitionRow) -> Self {
+        Self {
+            equipment_token: row.equipment_token,
+            creator_link: row.creator_link,
+            origin_link: row.origin_link,
+            append_variant_name: row.append_variant_name,
+            display_name: row.display_name.clone(),
+            variant_name: row.variant_name.clone(),
+            explicit_entity: row.explicit_entity.clone(),
+        }
+    }
+}
+
+impl NameFields {
+    fn of(history: &History, cells: &[Cell]) -> Self {
+        let number = |at: usize| match cells.get(at) {
+            Some(Cell::Number(value)) => *value,
+            _ => 0,
+        };
+        let text = |at: usize| cells.get(at).and_then(|cell| history.text(*cell)).map(<[u8]>::to_vec).unwrap_or_default();
+        Self {
+            equipment_token: u32::try_from(number(0)).unwrap_or(0),
+            creator_link: u32::try_from(number(1)).unwrap_or(0),
+            origin_link: u32::try_from(number(2)).unwrap_or(0),
+            append_variant_name: u8::try_from(number(3)).unwrap_or(0),
+            display_name: text(4),
+            variant_name: text(5),
+            explicit_entity: text(6),
+        }
+    }
+
+    fn applied(&self, definition: &VariantDefinitionRow) -> VariantDefinitionRow {
+        VariantDefinitionRow {
+            equipment_token: self.equipment_token,
+            creator_link: self.creator_link,
+            origin_link: self.origin_link,
+            append_variant_name: self.append_variant_name,
+            display_name: self.display_name.clone(),
+            variant_name: self.variant_name.clone(),
+            explicit_entity: self.explicit_entity.clone(),
+            ..definition.clone()
+        }
+    }
+}
+
+pub(crate) fn definition_dates(history: &History, steps: &[Step], floor: i32) -> Option<DefinitionDates> {
+    let same = |a: &[Cell], b: &[Cell]| {
+        a[..ARCHETYPE_AT].iter().zip(&b[..ARCHETYPE_AT]).all(|(&x, &y)| match (x, y) {
+            (Cell::Text(_), Cell::Text(_)) => history.text(x) == history.text(y),
+            _ => x == y,
+        })
+    };
+    let mut dates: Option<DefinitionDates> = None;
+    let mut last: Option<&[Cell]> = None;
+    for step in steps {
+        let hour = step.hour.max(floor);
+        let Some(cells) = step.cells.as_deref() else {
+            if let Some(held) = dates.as_mut().filter(|_| last.is_some()) {
+                held.names.push((hour, None));
+            }
+            last = None;
+            continue;
+        };
+        let typed = matches!(cells.get(ARCHETYPE_AT), Some(Cell::Number(token)) if *token > 0);
+        let held = dates.get_or_insert_with(|| DefinitionDates { since: hour, typed: None, names: Vec::new() });
+        if typed && held.typed.is_none() {
+            held.typed = Some(hour);
+        }
+        if last.is_none_or(|before| !same(before, cells)) {
+            held.names.push((hour, Some(NameFields::of(history, cells))));
+        }
+        last = Some(cells);
+    }
+    dates
 }
 
 fn of_variant<T>(rows: Option<&[T]>, variant: u64, key: impl Fn(&T) -> u64) -> Option<&[T]> {
@@ -568,7 +851,7 @@ impl Product for ProductionSpending {
     const KEY: &'static str = "production-spending";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionSpendingParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: End, scope, includeRefits];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, fromHour: Start, hour: End, scope, includeRefits];
     type Reply = ProductionSpendingReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

@@ -35,7 +35,7 @@ function drawnArtOf(frame: BreakdownFrameLayout): readonly string[] {
   let urls = drawnArt.get(frame);
   if (!urls) {
     const { layout } = frame;
-    urls = layout.view === 'parts' ? collectArtUrls(layout.rows.filter(row => row.depth === 0).map(row => row.part.flagArt)) : [];
+    urls = layout.view === 'parts' ? collectArtUrls(layout.rows.filter(row => row.depth < 2).map(row => row.part.flagArt)) : [];
     drawnArt.set(frame, urls);
   }
   return urls;
