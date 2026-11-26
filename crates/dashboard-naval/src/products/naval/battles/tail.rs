@@ -75,6 +75,8 @@ pub struct NavalBattleLogRow {
     pub hour: i32,
     pub detail_id: String,
     pub detail_hour: Option<i32>,
+    pub last_live_hour: Option<i32>,
+    pub end_seen: bool,
     pub province: Option<u32>,
     pub countries: [Vec<u32>; 2],
     pub countries_hour: [i32; 2],
@@ -144,6 +146,8 @@ struct Snapshot {
     result: NavalBattleStatus,
     result_id: Option<u64>,
     detail_hour: Option<i32>,
+    live_last: Option<i32>,
+    end_seen: bool,
 }
 
 #[derive(Default)]
@@ -154,13 +158,15 @@ struct Line {
 }
 
 impl Line {
-    fn end_live(&mut self, hour: i32) {
+    fn end_live(&mut self, hour: i32, seen: bool) {
         if let Some((_, previous)) = self.reads.last()
             && previous.result == NavalBattleStatus::Ongoing
         {
             let mut ended = previous.clone();
             ended.result = NavalBattleStatus::Unknown;
             ended.detail_hour = Some(hour - 1);
+            ended.live_last = Some(hour - 1);
+            ended.end_seen = seen;
             push(&mut self.reads, hour, ended);
         }
     }
@@ -350,11 +356,13 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                         result: NavalBattleStatus::Ongoing,
                         result_id: None,
                         detail_hour: None,
+                        live_last: None,
+                        end_seen: false,
                     },
                 );
             }
             if last < last_hour && !next_battle.and_then(|s| s.cells.as_deref()).is_some_and(|c| number(c, 0) == Some(i64::from(first_hour))) {
-                line.end_live(last + 1);
+                line.end_live(last + 1, last < span.last);
             }
         }
     }
@@ -432,6 +440,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                 let sunk = [count(obs, 6), count(obs, 10)];
                 let convoys_sunk = [count(obs, 7), count(obs, 11)];
                 let observed = number(obs, 3).and_then(|h| i32::try_from(h).ok()).and_then(|end| line.reads.iter().rev().find(|(at, _)| *at <= end));
+                let (live_last, end_seen) = line.reads.iter().rev().find_map(|(_, read)| read.live_last.map(|last| (Some(last), read.end_seen))).unwrap_or((None, false));
                 let ic = std::array::from_fn(|i| observed.filter(|(_, prior)| prior.sunk[i] == sunk[i]).and_then(|(_, prior)| prior.ic[i]));
                 let status = match number(cells, 2) {
                     Some(1) => NavalBattleStatus::AttackerWon,
@@ -453,6 +462,8 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         result: status,
                         result_id: Some(*key as u64),
                         detail_hour: Some(hour),
+                        live_last,
+                        end_seen,
                     },
                 );
             }
@@ -637,6 +648,8 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
                 result,
                 detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
                 detail_hour: read.detail_hour,
+                last_live_hour: read.live_last,
+                end_seen: read.end_seen,
                 ships_sunk: read.sunk,
                 convoys_sunk: read.convoys_sunk,
                 ic_lost: read.ic.map(|raw| raw.map(|raw| raw as f64 / 100_000.0)),
@@ -747,6 +760,12 @@ mod tests {
             (10, NavalBattleStatus::Ongoing), (15, NavalBattleStatus::Ongoing), (20, NavalBattleStatus::Unknown),
         ]);
         assert_eq!(reads.last().unwrap().1.detail_hour, Some(19));
+        assert_eq!((reads.last().unwrap().1.live_last, reads.last().unwrap().1.end_seen), (Some(19), true), "a removal inside the stretch is recorded");
+        let stretch = Stretch { run: 1, first: 10, last: 17, join: dashboard_query::timeline::Join::Start };
+        let mut lines = BTreeMap::new();
+        live_lines(&mut lines, stretch, 40, &RunLinks::default(), &battles, &History::default(), &History::default(), &Prices::default());
+        let (hour, read) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
+        assert_eq!((*hour, read.result, read.live_last, read.end_seen), (18, NavalBattleStatus::Unknown, Some(17), false), "a battle still live at a stretch's last hour has no recorded removal");
     }
 
     fn step(hour: i32, cells: Option<&[i64]>) -> Step {
@@ -798,6 +817,8 @@ mod tests {
             result: NavalBattleStatus::Ongoing,
             result_id: None,
             detail_hour: None,
+            live_last: None,
+            end_seen: false,
         };
         let mut lines = BTreeMap::new();
         lines.insert(Battle::Live(7, 10), Line { reads: vec![(10, read([1, 0], [Some(5), Some(0)])), (12, read([2, 0], [None, Some(0)]))], ..Line::default() });

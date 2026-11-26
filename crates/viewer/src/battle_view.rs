@@ -439,7 +439,7 @@ impl Held {
                 ctx.request_repaint_after(ANIMATION_FRAME);
             }
             if !self.window.is_open() {
-                self.closed = self.at.map(|at| at.hour);
+                self.closed = self.at.filter(|at| at.seek == self.epoch).map(|at| at.hour);
             }
             if self.picture.is_some() {
                 self.shown = self.at;

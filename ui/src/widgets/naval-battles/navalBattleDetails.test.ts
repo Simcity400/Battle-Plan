@@ -48,7 +48,7 @@ test('all recorded fleet and ship names remain in tooltip content without a chos
 
 test('the followed naval table shows the supplying read, partial sinkings and IC lost, unrecorded sides and an ended battle without its winner', () => {
   const live: NavalBattleLogRow = { key: 'combat:9:10', hour: 10, province: null, countries: [[], []], countriesHour: [10, 10],
-    readHour: 15, detailId: 'combat:9:10', detailHour: null, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
+    readHour: 15, detailId: 'combat:9:10', detailHour: null, lastLiveHour: null, endSeen: false, shipsSunk: [2, null], convoysSunk: [0, 0], icLost: [1992.5, null], ships: [3, 0], convoys: [0, 0], result: 'ongoing' };
   const head: NavalBattlesTailReply = { branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null,
     rows: [live, { ...live, key: 'combat:8:9', hour: 9, detailId: 'combat:8:9', result: 'unknown' }, { ...live, key: 'result:4', hour: 8, detailId: 'result:4', result: 'attackerWon' }] };
   const source = buildRowSourceFromHead('branch', head, undefined, 18)!;
@@ -88,17 +88,17 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
 test('convoy-only sides show convoy counts and live zero sinkings stay qualified as partial lower bounds', () => {
   const raid: NavalBattleLogRow = {
     key: 'combat:12:20', hour: 20, province: null, countries: [[], []], countriesHour: [20, 20],
-    readHour: 22, detailId: 'combat:12:20', detailHour: null,
+    readHour: 22, detailId: 'combat:12:20', detailHour: null, lastLiveHour: null, endSeen: false,
     ships: [6, 0], convoys: [0, 4], shipsSunk: [0, 0], convoysSunk: [0, 2], icLost: [0, 0], result: 'ongoing',
   };
   const escorted: NavalBattleLogRow = {
     key: 'result:42', hour: 15, province: null, countries: [[], []], countriesHour: [15, 15],
-    readHour: 18, detailId: 'result:42', detailHour: 18,
+    readHour: 18, detailId: 'result:42', detailHour: 18, lastLiveHour: null, endSeen: false,
     ships: [4, 2], convoys: [0, 5], shipsSunk: [0, 0], convoysSunk: [0, 0], icLost: [0, 0], result: 'attackerWon',
   };
   const depletedConvoys: NavalBattleLogRow = {
     key: 'combat:13:19', hour: 19, province: null, countries: [[], []], countriesHour: [19, 19],
-    readHour: 22, detailId: 'combat:13:19', detailHour: null,
+    readHour: 22, detailId: 'combat:13:19', detailHour: null, lastLiveHour: null, endSeen: false,
     ships: [4, 0], convoys: [0, 0], shipsSunk: [0, null], convoysSunk: [0, 2], icLost: [0, null], result: 'ongoing',
   };
   const depletedWithShipLoss: NavalBattleLogRow = {
