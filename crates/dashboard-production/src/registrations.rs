@@ -1,32 +1,22 @@
+use dashboard_base::products::at_hour::at_hour;
+
 dashboard_base::register_products! {
     PRODUCTION_PRODUCTIONLINEBREAKDOWN => crate::products::production::ProductionLineBreakdown,
-    PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending,
+    PRODUCTION_SPENDING_PRODUCTIONSPENDING => crate::products::production_spending::ProductionSpending; interval(at_hour, |r| r.through),
     PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS => crate::products::production_spending_months::ProductionSpendingMonths,
-    CONSTRUCTION_TAIL_CONSTRUCTIONLOGTAIL => crate::products::construction::tail::ConstructionLogTail,
-    CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown,
+    CONSTRUCTION_TAIL_CONSTRUCTIONLOGTAIL => crate::products::construction::tail::ConstructionLogTail; LogTail(crate::products::construction::tail::dated_panel),
+    CONSTRUCTION_BREAKDOWN_CONSTRUCTIONBREAKDOWN => crate::products::construction::breakdown::ConstructionBreakdown; interval(at_hour, |r| r.through),
     STOCKPILE_EQUIPMENTSTOCKPILETYPES => crate::products::stockpile::EquipmentStockpileTypes,
     STOCKPILE_EQUIPMENTSTOCKPILELINES => crate::products::stockpile::EquipmentStockpileLines,
-    EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses,
+    EQUIPMENT_LOSSES_EQUIPMENTLOSSES => crate::products::equipment_losses::EquipmentLosses; interval(at_hour, |r| r.through),
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDTYPES => crate::products::equipment_produced::EquipmentProducedTypes,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT => crate::products::equipment_produced::EquipmentProducedAt,
     EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDRACE => crate::products::equipment_produced::EquipmentProducedRace,
+
+    @hourly
+    PRODUCTION_PRODUCTIONLINESAT => exact<crate::products::production::ProductionLinesAt>,
+    PRODUCTION_PRODUCTIONLICENCES => whole_frame<crate::products::production::ProductionLicences>,
+    PRODUCTION_INDUSTRIALORGANISATIONS => exact<crate::products::production::IndustrialOrganisations>,
+    PRODUCTION_EQUIPMENTDESIGNS => exact<crate::products::production::EquipmentDesigns>,
+    STOCKPILE_STOCKPILEARTWORK => whole_frame<crate::products::stockpile::StockpileArtwork>,
 }
-
-dashboard_base::register_hourly_products! {
-    PRODUCTION_PRODUCTIONLINESAT => crate::products::production::ProductionLinesAt,
-    PRODUCTION_PRODUCTIONLICENCES => crate::products::production::ProductionLicences,
-    PRODUCTION_INDUSTRIALORGANISATIONS => crate::products::production::IndustrialOrganisations,
-    PRODUCTION_EQUIPMENTDESIGNS => crate::products::production::EquipmentDesigns,
-    STOCKPILE_STOCKPILEARTWORK => crate::products::stockpile::StockpileArtwork,
-}
-
-use dashboard_base::{Source, products::at_hour::exact_panel};
-use dashboard_core::config::LoadContext;
-use dashboard_follow::panel::Panel;
-use serde_json::Value;
-
-type ExactPanel = fn(&Source, &LoadContext, &Value) -> Result<Box<dyn Panel>, String>;
-
-pub const EXACT_PRODUCTIONLINESAT: ExactPanel = exact_panel::<crate::products::production::ProductionLinesAt>;
-pub const EXACT_EQUIPMENTDESIGNS: ExactPanel = exact_panel::<crate::products::production::EquipmentDesigns>;
-pub const EXACT_INDUSTRIALORGANISATIONS: ExactPanel = exact_panel::<crate::products::production::IndustrialOrganisations>;

@@ -14,7 +14,7 @@ fn recording() -> Source {
 }
 
 fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::QueryError> {
-    let text = (entry::<TechnologyEffectsAt>().registered.load)(source, "lease", request, &LoadContext { content: None }, &AtomicBool::new(false))?;
+    let text = (entry::<TechnologyEffectsAt>().load)(source, "lease", request, &LoadContext { content: None }, &AtomicBool::new(false))?;
     let mut reply: Value = serde_json::from_str(&text).unwrap();
     Ok(reply["data"].take())
 }

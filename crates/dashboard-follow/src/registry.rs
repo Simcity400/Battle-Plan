@@ -69,7 +69,7 @@ enum Made {
     Query(Query),
 }
 
-pub type PanelOf<'a> = dyn FnOnce(&Value) -> Option<Result<Box<dyn Panel>, String>> + 'a;
+pub type PanelOf<'a> = dyn FnOnce(&Value) -> Result<Box<dyn Panel>, String> + 'a;
 
 pub struct Registry {
     playheads: Option<Arc<dyn Playheads>>,
@@ -142,9 +142,8 @@ impl Registry {
                 }
                 let made = if asked.get("panel").is_some() {
                     match panel(asked) {
-                        None => return Ok(unavailable(format!("No panel {}", asked.get("panel").map(Value::to_string).unwrap_or_default()))),
-                        Some(Err(reason)) => return Ok(unavailable(reason)),
-                        Some(Ok(shown)) => Made::Panel(shown),
+                        Err(reason) => return Ok(unavailable(reason)),
+                        Ok(shown) => Made::Panel(shown),
                     }
                 } else {
                     let query: Query = match head(asked) {

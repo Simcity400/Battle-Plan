@@ -483,15 +483,48 @@ fn top_general_follows_recorded_faction_membership() {
     }).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let cancelled = AtomicBool::new(false);
-    let source = Source::from_replay(SourceKey { source_id: "faction-career".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "faction-career".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap());
     let load = LoadContext { content: None };
     let home = super::handle(&home).to_string();
     let visitor = super::handle(&visitor).to_string();
+    let register = crate::registrations::LEADERS_CAREER_LEADERHOUR.panel.unwrap().open;
+    for mut params in [
+        json!({"reference": home}),
+        json!({"selection":{"kind":"all"}}),
+        json!({"selection":{"kind":"countries","countries":["GER"]}}),
+        json!({"selection":{"kind":"group","group":{"type":"faction","id":"9","membership":"hour"}}}),
+    ] {
+        assert_eq!(register(&source, &load, &params).err().unwrap(), "Invalid unit-leader-hour panel: missing field branchId");
+        params["branchId"] = json!("1");
+        let registered = register(&source, &load, &params).unwrap();
+        let exact = registered.exact().unwrap();
+        if params.pointer("/selection/kind") == Some(&json!("group")) {
+            let prior = dashboard_base::products::at_hour::exact_panel::<super::career::LeaderHour>(&source, &load, &params).unwrap();
+            for hour in [150, 200, 225, 232, 251, 253, 254] {
+                assert_eq!((exact.cold)(hour, &cancelled), (prior.exact().unwrap().cold)(hour, &cancelled));
+            }
+        } else {
+            let mut previous = dashboard_base::products::at_hour::frame_panel::<super::career::LeaderHour>(&source, &load, &params).unwrap();
+            for hour in [150, 175, 200, 225, 232, 251, 253, 254, 150] {
+                let replay::campaign::SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(previous.tables())).unwrap() else { panic!("missing fixture hour {hour}") };
+                let expected = previous.data(&frame).map(|mut data| {
+                    if let Some(live) = previous.live() {
+                        let values: Vec<_> = live.values(&frame).into_iter().map(dashboard_follow::live::GroupState::Values).collect();
+                        data["live"] = live.json(&values);
+                    }
+                    data
+                });
+                assert_eq!((exact.cold)(hour, &cancelled), expected, "{params} at {hour}");
+                let advanced = (exact.advance)(hour, true, &cancelled, None);
+                assert_eq!(*advanced.value, expected, "{params} at {hour}");
+            }
+        }
+    }
     let unknown = Some(dashboard_world::products::group_members::UNKNOWN);
     for membership in ["hour", "ever"] {
         let selection = json!({"kind":"group","group":{"type":"faction","id":"9","membership":membership}});
         let params = json!({"branchId":"1","selection":selection});
-        let panel = crate::registrations::EXACT_LEADERHOUR(&source, &load, &params).unwrap();
+        let panel = register(&source, &load, &params).unwrap();
         let selection: LeaderSelection = serde_json::from_value(selection).unwrap();
         let ever = membership == "ever";
         let exact = panel.exact().unwrap();

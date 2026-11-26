@@ -12,10 +12,8 @@ import { auditing, noteFrame, recordPicture } from '../pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
-import type { GatedParams } from '../regionTime';
+import type { FollowRequest, GatedParams } from '../regionTime';
 import { asFailure, RefusedError, type Failure } from '../queryError.ts';
-
-export type FollowQuery = Readonly<Record<string, unknown>>;
 
 export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<FromLane>) => void) | null; onerror?: ((event: ErrorEvent) => void) | null }
 
@@ -531,7 +529,7 @@ export class Pipeline {
     return route;
   }
 
-  subscribe(widgetId: number, token: object, source: DashboardSource, branch: string, offset: number, query: FollowQuery, channel: Channel, product?: string) {
+  subscribe(widgetId: number, token: object, source: DashboardSource, branch: string, offset: number, query: FollowRequest, channel: Channel, product?: string) {
     if (this.closed) return;
     const widget = this.widgets.get(widgetId);
     if (!widget) return;
@@ -750,7 +748,7 @@ export class Pipeline {
       signal).then(reply => reply.data);
   }
 
-  private register(sub: SubState, query: FollowQuery, product?: string) {
+  private register(sub: SubState, query: FollowRequest, product?: string) {
     if (this.closed) return;
     this.host.lanes[sub.lane]!.postMessage({ type: 'follow', sub: sub.id, channel: sub.channel, ...product !== undefined ? { product } : {} });
     if (sub.channel === 'pinned') { sub.status = 'followed'; return; }

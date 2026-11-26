@@ -1,3 +1,4 @@
+import type { FollowRequest } from '../../dashboard/regionTime';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
@@ -226,7 +227,7 @@ export function logCountryCell(
   return roles.length ? { value, flags, tooltipRows: roles } : { value, flags };
 }
 
-export function tailFollowParams(query: LogTailQuery): Record<string, unknown> {
+export function tailFollowParams(query: LogTailQuery): FollowRequest {
   return {
     panel: query.product,
     branchId: query.branchId,

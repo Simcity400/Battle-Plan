@@ -5,12 +5,11 @@ import type { DashboardSource } from '../dashboard/client';
 import type { Channel } from '../dashboard/follow/facts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { FailureOrigin } from '../dashboard/follow/page';
-import type { FollowQuery } from '../dashboard/follow/pipeline';
 import type { BoundTrack, WidgetSpec } from '../dashboard/model';
 import type { OptionValue } from '../dashboard/options';
 import type { Failure } from '../dashboard/queryError';
 import type { CountryHolder } from '../dashboard/reachedCountry';
-import type { BoundWindow, GatedHour, Outside } from '../dashboard/regionTime';
+import type { BoundWindow, FollowRequest, GatedHour, Outside } from '../dashboard/regionTime';
 import type { DeclaredProduct } from '../dashboard/request';
 import type {
   ArtFrame as GeneratedArtFrame,
@@ -40,7 +39,7 @@ export interface PointSourceRead {
   readonly channel: 'panel' | 'followed';
   readonly coverage: SourceCoverage;
   readonly product: DeclaredProduct;
-  readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly followQuery: FollowRequest | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly hourParam?: string;
@@ -73,7 +72,7 @@ export interface BranchToHourSourceRead {
   readonly shape: 'branch-to-hour';
   readonly coverage: SourceCoverage;
   readonly product: DeclaredProduct;
-  readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly followQuery: FollowRequest | null;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
@@ -89,7 +88,7 @@ export interface TrailingWindowSourceRead {
   readonly coverage: SourceCoverage;
   readonly product: DeclaredProduct;
   readonly windowHours: number;
-  readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly followQuery: FollowRequest | null;
   readonly params: Readonly<Record<string, unknown>> | null;
   readonly provenInterval?: (data: unknown, requested: readonly [number, number], hour: number) => readonly [number, number] | null;
   readonly buildSpanParams?: (
@@ -108,7 +107,7 @@ export interface PixelBinnedSourceRead {
   readonly keys?: readonly { readonly tag: string; readonly part: string }[];
   readonly partBits?: number;
   readonly within?: ReadonlyMap<string, readonly HourSpan[]>;
-  readonly headQuery?: Readonly<Record<string, unknown>> | null;
+  readonly headQuery?: FollowRequest | null;
   readonly exactProduct?: DeclaredProduct;
   readonly params?: Readonly<Record<string, unknown>> | null;
   readonly top?: { readonly n: number; readonly least?: boolean; readonly by?: string };
@@ -131,7 +130,7 @@ export interface PagedRowsSourceRead {
   readonly shape: 'paged-rows';
   readonly tailQuery: LogTailQuery;
   readonly pageSize?: number;
-  readonly followQuery: Readonly<Record<string, unknown>> | null;
+  readonly followQuery: FollowRequest | null;
   readonly validate?: (raw: unknown, readAt?: number) => TailReply<DatedLogRow>;
 }
 
@@ -167,7 +166,7 @@ export interface CompiledFollowSubscription {
   readonly source: DashboardSource;
   readonly branch: string;
   readonly offset: number;
-  readonly query: FollowQuery;
+  readonly query: FollowRequest;
   readonly channel: Channel;
   readonly product?: string;
 }

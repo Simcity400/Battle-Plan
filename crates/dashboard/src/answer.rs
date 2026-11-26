@@ -125,12 +125,7 @@ pub fn answers(product: &str, params: &Value) -> bool {
                 || (product == dashboard_query::tile::PRODUCT && dashboard_world::products::autonomy_lines::SERIES == kind)
         });
     }
-    crate::products::MOVED.contains(&product)
-}
-
-pub fn panel(source: &Arc<Source>, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
-    use crate::panel::{dated_panel_of, panel_of};
-    dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
+    crate::products::in_viewer(product)
 }
 
 pub fn follows(product: &str) -> bool {
@@ -148,7 +143,7 @@ pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &Loa
                 let query = query(source, branch)?;
                 Ok(dashboard_follow::Identity { holders: Arc::clone(&query.holders), timeline: Arc::clone(&query.timeline) })
             },
-            Box::new(|asked| panel(source, context, asked)),
+            Box::new(|asked| crate::panel::open(source, context, asked)),
             Box::new(|asked| dashboard_players::products::player_apm::head::head_of(source, asked)),
         );
     }
@@ -214,9 +209,7 @@ pub fn answer(source: &Arc<Source>, product: &str, params: &Value, context: &Loa
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("No declared series answers {product}")));
     }
     let registered = crate::products::find(product).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("Unknown data product: {product}")))?;
-    let text = (registered.load)(source, "answer", params.clone(), context, cancelled).map_err(io::Error::other)?;
-    let mut reply: Value = serde_json::from_str(&text)?;
-    Ok(reply.get_mut("data").map(Value::take).unwrap_or(Value::Null))
+    registered.answer(source, params.clone(), context, cancelled)
 }
 
 #[cfg(test)]

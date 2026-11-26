@@ -49,8 +49,6 @@ export const REQUEST_PATHS = {
   "crate-product": {},
 };
 `,
-    'crates/dashboard/src/products/mod.rs': 'const OWN: &[Registered] = &[dashboard_world::registrations::LIVE];',
-    'crates/dashboard-world/src/registrations.rs': 'dashboard_base::register_products! { LIVE => crate::Live, }',
     'tools/helper.mjs': 'export const used = "tool-product";',
     'crates/desktop/src/lib.rs': 'pub const USED: &str = "crate-product";',
     'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
@@ -74,7 +72,6 @@ test('passes on a clean graph with static, dynamic, type, worker, CSS, tool, and
     assert.deepEqual(result.ui.deadTests, []);
     assert.deepEqual(result.ui.deadFixturesAndSupport, []);
     assert.deepEqual(result.rust.deadProducts, []);
-    assert.deepEqual(result.rust.unwiredRegistrations, []);
   });
 });
 
@@ -96,7 +93,7 @@ test('flags dead UI modules, modules only imported by tests, those tests, and or
   });
 });
 
-test('flags dead Rust products, products only called by dead/test UI, series-kind name collisions, and unwired registrations', async () => {
+test('flags dead Rust products, products only called by dead/test UI, and series-kind name collisions', async () => {
   await withRepo(baseFiles({
     'ui/src/generated/dashboard.ts': `
 export const REQUEST_PATHS = {
@@ -111,16 +108,12 @@ export const REQUEST_PATHS = {
 `,
     'ui/src/lazy.ts': 'export const value = 1; export const family = { kind: "kind-collision" };',
     'ui/src/orphan.ts': 'export const p = "only-in-dead-ui";',
-    'crates/dashboard-world/src/registrations.rs': 'dashboard_base::register_products! { LIVE => crate::Live, UNWIRED => crate::Unwired, }',
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.rust.deadProducts, [
       { product: 'dead-product', onlyIn: [] },
       { product: 'kind-collision', onlyIn: [] },
       { product: 'only-in-dead-ui', onlyIn: ['ui/src/orphan.ts'] },
-    ]);
-    assert.deepEqual(result.rust.unwiredRegistrations, [
-      'crates/dashboard-world/src/registrations.rs: UNWIRED',
     ]);
   });
 });

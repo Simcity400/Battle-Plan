@@ -35,8 +35,7 @@ impl RosterLine {
         let context = dashboard_core::config::LoadContext {
             content: Some(dashboard_core::config::ContentOptions { options: content.clone(), allow_unverified: false, presentation: Default::default() }),
         };
-        let panel = dashboard::answer::panel(&source, &context, &json!({ "panel": "template-roster", "branchId": branch.to_string(), "tag": tag }))
-            .ok_or_else(|| io::Error::other("The service shows no template roster panel"))?
+        let panel = dashboard::panel::open(&source, &context, &json!({ "panel": "template-roster", "branchId": branch.to_string(), "tag": tag }))
             .map_err(io::Error::other)?;
         let reader = views.reader_at("proof roster", &panel.tables().iter().copied().map(Need::every).collect::<Vec<Need>>(), pace);
         Ok(Self { tag: tag.to_owned(), branch, source, context, panel, reader, last: None, data: None, evaluations: Vec::new(), pushed: Vec::new() })

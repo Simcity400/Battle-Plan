@@ -724,20 +724,20 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
     let held = paper();
     let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&held))])))));
     let path = std::path::Path::new("a");
-    let reply = registry.answer(path, "follow", &follow_request(1, "country-stability", "stability"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    let reply = registry.answer(path, "follow", &follow_request(1, "country-stability", "stability"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(reply["available"], false);
     assert_eq!(reply["reason"], "CountryStability is not in this playhead's files (a derived table, until format 12)");
     assert!(held.follow.declared().unwrap().is_empty(), "no reader made");
-    let none = registry.answer(std::path::Path::new("b"), "follow", &follow_request(2, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    let none = registry.answer(std::path::Path::new("b"), "follow", &follow_request(2, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!((none["available"].clone(), none["reason"].clone()), (serde_json::json!(false), serde_json::json!("No playhead for this recording")));
-    let alone = crate::registry::Registry::new(None).answer(path, "follow", &follow_request(3, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    let alone = crate::registry::Registry::new(None).answer(path, "follow", &follow_request(3, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(alone["available"], false, "a process with no playheads follows nothing");
     let mut elsewhere = follow_request(5, "country-measure", "politicalPower");
     elsewhere["query"] = serde_json::json!({ "head": "campaign-clock", "params": { "branchId": "2", "firstHour": 200, "lastHour": 209 } });
     let refused = registry.answer(path, "follow", &elsewhere, |_| Ok(nobody()), Box::new(|_| panic!("a head naming another branch is never built"))).unwrap();
     assert_eq!((refused["available"].clone(), refused["reason"].clone()),
         (serde_json::json!(false), serde_json::json!("The followed query names branch 2, not the followed branch 1")));
-    let followed = registry.answer(path, "follow", &follow_request(4, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    let followed = registry.answer(path, "follow", &follow_request(4, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(followed["available"], true);
     assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: false, hourly: false }]);
     assert_eq!(registry.followed(), 1);
@@ -749,14 +749,14 @@ fn two_tracks_of_one_timeline_at_different_anchors_each_follow_their_own_hours()
     let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&calendar)), ("a@1000".to_owned(), Arc::clone(&anchored))])))));
     let path = std::path::Path::new("a");
     let mut asked = follow_request(1, "country-measure", "politicalPower");
-    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     asked["id"] = 2.into();
     asked["clock"] = 1000.into();
-    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!((calendar.follow.declared().unwrap().len(), anchored.follow.declared().unwrap().len()), (1, 1), "each mapping's playhead reads its own follow");
     let anchor = |clock: i32, hour: i32| serde_json::json!({ "branchId": "1", "clock": clock, "seek": 12, "frameRate": 120, "hour": hour, "playing": false, "speed": 24.0, "sought": true });
-    registry.answer(path, "follow-clock", &anchor(0, 10), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
-    registry.answer(path, "follow-clock", &anchor(1000, 1010), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    registry.answer(path, "follow-clock", &anchor(0, 10), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
+    registry.answer(path, "follow-clock", &anchor(1000, 1010), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(calendar.anchors.lock().unwrap()[0].seek, 12);
     assert_eq!(calendar.anchors.lock().unwrap()[0].frame_rate, 120.0);
     let hours = |paper: &Paper| paper.anchors.lock().unwrap().iter().map(|anchor| anchor.hour).collect::<Vec<_>>();
@@ -847,7 +847,7 @@ fn closing_a_recording_drops_its_follows() {
     let (a, b) = (paper(), paper());
     let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), Arc::clone(&a)), ("b".to_owned(), Arc::clone(&b))])))));
     for (id, path) in [(1, "a"), (2, "a"), (3, "b")] {
-        assert_eq!(registry.answer(std::path::Path::new(path), "follow", &follow_request(id, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap()["available"], true);
+        assert_eq!(registry.answer(std::path::Path::new(path), "follow", &follow_request(id, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap()["available"], true);
     }
     registry.close(std::path::Path::new("a"));
     assert_eq!(registry.followed(), 1);
@@ -1735,7 +1735,7 @@ fn pressure_never_merges_ahead_of_the_clock() {
 #[test]
 fn a_follow_names_lanes_its_id_belongs_to() {
     let registry = crate::registry::Registry::new(None);
-    let ask = |params: serde_json::Value| registry.answer(std::path::Path::new("x"), "follow", &params, |_| Ok(nobody()), Box::new(|_| None));
+    let ask = |params: serde_json::Value| registry.answer(std::path::Path::new("x"), "follow", &params, |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel")));
     let wrong = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 0, "lanes": 3 }));
     assert!(wrong.unwrap_err().to_string().contains("not of lane 0 among 3"));
     let right = ask(serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "lane": 1, "lanes": 3 })).unwrap();
@@ -1755,7 +1755,7 @@ fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
     let registry = crate::registry::Registry::new(None);
     registry.restart("new page");
     let ask = |session: &str| registry.answer(std::path::Path::new("x"), "follow", &serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "session": session }),
-        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+        |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(ask("old page")["reason"], "This page was replaced by a newer one; its follows ended with it", "a follow of the retired page changes nothing");
     assert_ne!(ask("new page")["reason"], ask("old page")["reason"], "the current page's follow goes on");
 
@@ -1793,13 +1793,13 @@ fn review_8_one_session_token_binds_every_page_command_and_every_packet() {
     registry.restart("page 1");
     let mut asked = follow_request(1, "country-measure", "politicalPower");
     asked["session"] = "page 1".into();
-    assert_eq!(registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap()["available"], true);
+    assert_eq!(registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap()["available"], true);
     registry.restart("page 2");
     let clock = |session: &str| registry.answer(path, "follow-clock", &serde_json::json!({ "branchId": "1", "clock": 0, "frameRate": 60.0, "seek": 1, "hour": 5.0, "speed": 1.0, "session": session }),
-        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+        |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     asked["session"] = "page 2".into();
     asked["id"] = 2.into();
-    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| unreachable!("these requests carry no panel"))).unwrap();
     assert_eq!(clock("page 1")["reason"], "This page was replaced by a newer one; its follows ended with it", "a retired page's clock never anchors the new page's host");
     assert!(held.anchors.lock().unwrap().is_empty());
     assert_eq!(clock("page 2")["available"], true);

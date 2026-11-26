@@ -113,7 +113,7 @@ fn load() -> LoadContext {
 }
 
 fn asked<P: AtHour>(source: &Source, request: Value) -> Result<Value, dashboard_core::QueryError> {
-    let text = (entry::<P>().registered.load)(source, "lease", request, &load(), &AtomicBool::new(false))?;
+    let text = (entry::<P>().load)(source, "lease", request, &load(), &AtomicBool::new(false))?;
     let mut reply: Value = serde_json::from_str(&text).unwrap();
     Ok(reply["data"].take())
 }
@@ -292,7 +292,7 @@ fn a_value_with_no_read_in_the_day_or_since_the_holder_took_the_tag_is_not_read_
 #[test]
 fn the_panel_over_whole_tables_answers_as_the_keyed_request() {
     let source = recording();
-    let mut panel = (entry::<SpecialProjectDetailsAt>().panel)(&source, &load(), &json!({ "panel": "special-project-details", "branchId": "1", "country": "GER" })).unwrap();
+    let mut panel = dashboard_base::products::at_hour::frame_panel::<SpecialProjectDetailsAt>(&source, &load(), &json!({ "panel": "special-project-details", "branchId": "1", "country": "GER" })).unwrap();
     for hour in [25, 40, UNHELD + 2, 53] {
         let tables = panel.tables().to_vec();
         let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is recorded") };
@@ -540,7 +540,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     let load = LoadContext { content: Some(options) };
     let iteration = |ordinal: u32, hour: i32| {
         let request = json!({ "branchId": "1", "country": "HOM", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": LISTED });
-        let text = (entry::<SpecialProjectIterationAt>().registered.load)(&source, "lease", request, &load, &AtomicBool::new(false)).unwrap();
+        let text = (entry::<SpecialProjectIterationAt>().load)(&source, "lease", request, &load, &AtomicBool::new(false)).unwrap();
         let mut reply: Value = serde_json::from_str(&text).unwrap();
         reply["data"].take()
     };

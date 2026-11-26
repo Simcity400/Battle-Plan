@@ -1,5 +1,5 @@
+import type { PanelKey } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
-import type { DeclaredProduct } from '../../dashboard/request';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
@@ -43,7 +43,7 @@ export function forceSelection(ctx: FamilyPlanContext): ForceSelection {
 export function forceAtSources(
   ctx: FamilyPlanContext,
   owner: string,
-  product: DeclaredProduct,
+  product: PanelKey,
   extra: Readonly<Record<string, unknown>>,
   validate: (value: unknown) => unknown = validateForceAtReply,
 ): SourcePlan {
