@@ -9,6 +9,8 @@ import type { LaneView } from '../../draw/lane';
 import { installedEntry } from './store.ts';
 import { classifyFailure, ShownError } from '../queryError.ts';
 import { followFailure } from './useFollow.ts';
+import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './pipeline.ts';
+import { PlaybackController } from '../playback.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
@@ -1043,3 +1045,36 @@ test('replacing a mounted PageSurface with a new equal-size PageSurface installs
   }
 });
 
+
+test('the lanes of every pipeline on a clock are asked for what the dashboard needs, a restarted pipeline is asked again, and a lane whose worker never started counts as answered', async () => {
+  const clock = new PlaybackController();
+  const asked: string[] = [];
+  const lanes: (LaneWorker & { onerror: ((event: ErrorEvent) => void) | null })[] = [];
+  const lane = (index: number): LaneWorker & { onerror: ((event: ErrorEvent) => void) | null } => {
+    const worker = { onmessage: null, onerror: null, postMessage(m: { type: string; ask?: number; families?: readonly string[]; port?: MessagePort }) {
+      if (m.type === 'init') m.port!.close();
+      if (m.type === 'prepare') asked.push(`${index}:${m.ask}:${m.families!.join(',')}`);
+    } } as LaneWorker & { onerror: ((event: ErrorEvent) => void) | null };
+    lanes.push(worker);
+    return worker;
+  };
+  const host = () => { const first = lanes.length; return { lanes: [lane(first), lane(first + 1)], open: () => new Promise<never>(() => {}), channel: () => new MessageChannel(), frameRate: () => 60, rate: () => 1 }; };
+  prepareLanes(clock, { families: ['table', 'bars'], projections: [['table', 'kind', 'main']] });
+  const pipeline = pipelineFor(clock, { available: true, product: () => new Promise(() => {}) } as never, host as never);
+  assert.deepEqual(asked, ['0:1:table,bars', '1:1:table,bars'], 'a pipeline made after the dashboard said what it needs is asked as it is made');
+  assert.equal(pipeline.prepared(), false);
+  lanes[0]!.onmessage!({ data: { type: 'prepared', lane: 0, ask: 1 } } as MessageEvent);
+  assert.equal(pipeline.prepared(), false, 'one lane of two has answered');
+  lanes[0]!.onerror!({ message: 'late' } as ErrorEvent);
+  assert.equal(pipeline.prepared(), false, 'an error from a lane that has answered is its own failure, not a missing start');
+  const ready = pipeline.whenPrepared();
+  lanes[1]!.onerror!({ message: 'chunk missing' } as ErrorEvent);
+  await ready;
+  assert.equal(pipeline.prepared(), true, 'a lane whose worker never started counts as answered, so nothing waits on it');
+  prepareLanes(clock, { families: ['card'], projections: [] });
+  assert.deepEqual(asked.slice(2), ['0:2:card', '1:2:card'], 'a change in what the dashboard needs asks the current pipeline');
+  const next = restartPipeline(pipeline)!;
+  assert.deepEqual(asked.slice(4), ['2:1:card', '3:1:card'], 'the restarted pipeline is asked for what the dashboard needs now');
+  next.close();
+  assert.equal(next.prepared(), true);
+});

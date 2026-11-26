@@ -162,6 +162,7 @@ Object.assign(window, { timeSweep: {
   async mount(ids: string[], replies: Replies, axis: number, prepared = true) {
     const runtime = makeRuntime(replies);
     root?.unmount();
+    pipeline?.close();
     document.body.replaceChildren();
     shown.clear(); crashes.clear();
     clock.seek(axis);

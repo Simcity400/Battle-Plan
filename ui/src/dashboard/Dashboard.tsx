@@ -26,7 +26,8 @@ import { widgetDefinition } from './definitions';
 import '../widgets';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { laneModules } from '../widgets/manifest';
-import { usePipeline } from './follow/useFollowed.ts';
+import { prepareLanes } from './follow/pipeline.ts';
+import { pageClock } from './widgetClock.ts';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
 import type { CountryChoice } from './mapPicker';
@@ -613,8 +614,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
 
   const laneKinds = [...new Set(preparedPages.flatMap(entry => entry.template.widgets.map(widget => widget.kind)))].sort().join(' ');
   const laneNeeds = useMemo(() => laneModules(laneKinds.split(' ')), [laneKinds]);
-  const pipeline = usePipeline(laneNeeds.families.length ? clock : null, client);
-  useEffect(() => { pipeline?.prepare(laneNeeds.families, laneNeeds.projections); }, [pipeline, laneNeeds]);
+  useEffect(() => { prepareLanes(pageClock(clock), laneNeeds); }, [clock, laneNeeds]);
 
   const [discarding, setDiscarding] = useState(false);
   const openSave = () => {
