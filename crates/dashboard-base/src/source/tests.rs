@@ -46,8 +46,7 @@ fn air_superiority_inherited_state_is_independent_between_revisions() {
 
 #[test]
 fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_fixtures::game::enter();
     let root =
         std::env::temp_dir().join(format!("hoi4-source-own-content-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -90,8 +89,7 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
 
 #[test]
 fn the_recordings_own_presentation_is_mounted_once_per_content() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_fixtures::game::enter();
     let root =
         std::env::temp_dir().join(format!("hoi4-source-recorded-mount-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

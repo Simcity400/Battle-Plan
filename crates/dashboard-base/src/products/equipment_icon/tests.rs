@@ -231,8 +231,6 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
 
 #[test]
 fn equipment_icons_follow_the_production_rows_rule() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use content_reader_military::technology::{Enabler, Enablers};
     use content_reader_equipment_graphics::equipment_graphics;

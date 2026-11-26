@@ -1603,7 +1603,6 @@ mod tests {
         replace_paths: &[&str],
         unmounted: Option<&str>,
     ) -> (Catalogue, [crate::catalogue::tests::Folder; 2]) {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, base) = folder_catalogue(&[]);
         let (_, addon) = folder_catalogue(&[]);
         if base_files.iter().chain(mod_files).any(|(path, _)| path.ends_with(".gfx")) {
@@ -1952,7 +1951,7 @@ mod tests {
 
     #[test]
     fn a_visual_mod_sprite_that_cannot_draw_falls_back_whole_never_its_metadata_over_recorded_pixels() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_fixtures::game::enter();
         let (_, base) = crate::catalogue::tests::localisation_catalogue(&[]);
         let (_, visual) = crate::catalogue::tests::localisation_catalogue(&[]);
         crate::catalogue::texture_tests::write_sprite_program(&base.0);
@@ -1980,7 +1979,6 @@ mod tests {
 
     #[test]
     fn scope_keys_separate_stack_order_replace_paths_dlc_and_language() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, a) = folder_catalogue(&[]);
         let (_, b) = folder_catalogue(&[]);
         let ab = ResolvedLayers::from_folders(&[(&a.0, &[][..]), (&b.0, &[][..])]).unwrap();

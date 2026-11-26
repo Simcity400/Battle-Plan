@@ -377,7 +377,6 @@ mod tests {
 
     #[test]
     fn sprite_artwork_uses_layered_exact_sprite_keys_and_replace_path() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, base) = folder_catalogue(&[(
             "interface/base.gfx",
             "spriteTypes={spriteType={name=GFX_Hidden textureFile=gfx/hidden.png}}",
@@ -486,7 +485,6 @@ mod tests {
     }
 
     fn shortened_strip() -> (Catalogue, String, Box<dyn std::any::Any>) {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (_, base) = folder_catalogue(&[(
             "interface/base.gfx",
             "spriteTypes={spriteType={name=GFX_Mod textureFile=absent.png noOfFrames=4}}",
@@ -561,7 +559,6 @@ mod tests {
 
     #[test]
     fn s4_sprite_artwork_past_strip_keeps_named_counted_effect_refusals() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (catalogue, folder) = folder_catalogue(&[
             (
                 "interface/mod.gfx",
@@ -610,7 +607,6 @@ mod tests {
 
     #[test]
     fn sprite_artwork_keeps_named_refusals_when_decode_settings_are_unknown() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let (mut catalogue, _folder) = folder_catalogue(&[(
             "interface/mod.gfx",
             "spriteTypes={spriteType={name=GFX_Mod textureFile=gfx/mod.png} spriteType={name=GFX_No_Texture}}",

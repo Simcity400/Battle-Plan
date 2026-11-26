@@ -33,6 +33,12 @@ pub fn declare_languages(root: &std::path::Path) {
     }
 }
 
+fn recorded_tables() -> engine_executable::executable_tables::Tables {
+    use engine_executable::executable_tables::Tables;
+    static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| game::executable().executable(b"test").build())
+}
+
 pub fn content_identity(
     root: &std::path::Path,
 ) -> (
@@ -57,15 +63,12 @@ pub fn content_identity(
         dlc_order: Some(Vec::new()),
     })
     .unwrap();
+    let executable = recorded_tables().identity();
     let identity = gathered
         .identity(
             "test".into(),
-            [
-                0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5, 0x5a,
-                0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d, 0x6c, 0x15,
-                0xb0, 0xf0, 0x0a, 0x08,
-            ],
-            4,
+            executable.sha256,
+            executable.size,
             "test".into(),
             [1; 32],
         )
@@ -92,7 +95,7 @@ pub fn write_with_facts(
             withheld: Default::default(),
         },
         identity,
-        Err("a test carries no executable tables".to_owned()),
+        Ok(engine_executable::executable_tables::recorded::encode(recorded_tables())),
         &options.options.cache_dir,
         &|| false,
         content_reader_key_names::equipment_facts::gather,

@@ -5,8 +5,6 @@ use content_reader_key_names::equipment::Database;
 use std::sync::Arc;
 
 fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut files = vec![
         (
             "map/default.map",

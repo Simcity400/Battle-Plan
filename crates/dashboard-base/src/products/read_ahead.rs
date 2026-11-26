@@ -79,7 +79,6 @@ mod tests {
     fn opened_with(
         files: &[(&str, &str)],
     ) -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut all = vec![
             (
                 "common/defines/work.lua",
