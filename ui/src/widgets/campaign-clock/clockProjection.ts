@@ -17,7 +17,7 @@ const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
 
 export const CLOCK_COLUMNS: readonly DeclarativeColumnSpec<ClockRow, CampaignClockProjectionOptions>[] = [
   { key: 'clock', label: 'Clock', as: 'plain', offered: OFFERED.text, priority: 0, text: true, sortable: false, hideable: false, widest: ['Total recorded time'], path: 'label' },
-  { key: 'time', label: 'Real time (h:mm:ss)', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'clockSeconds', sortable: false, hideable: false, widest: ['99:59:59', 'Gaps excluded'], value: row => row.value },
+  { key: 'time', label: 'Real time (h:mm:ss)', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'clockSeconds', sortable: false, hideable: false, widest: ['99:59:59', 'Incomplete coverage'], value: row => row.value },
 ];
 
 export const CLOCK_TABLE_BASE: TableBase = { density: 'normal', barsBehind: 'off', showRank: false, sort: { column: 'clock', direction: 'ascending' } };
@@ -80,7 +80,7 @@ function buildClockSummary(parsed: ParsedClock, hour: number, firstHour?: number
     playingPct: playingFraction !== null ? formatShare(playingFraction) : null,
     pausedPct: pausedFraction !== null ? formatShare(pausedFraction) : null,
     complete: parsed.complete,
-    coverageLabel: parsed.complete ? 'Every hour recorded' : 'Gaps excluded',
+    coverageLabel: parsed.complete ? 'Every hour recorded' : 'Incomplete coverage',
     spanText,
   };
 }
@@ -101,7 +101,7 @@ export const campaignClockProjection: TableProjection<CampaignClockProjectionOpt
           { id: 'total', label: 'Total recorded time', value: parsed.recorded, note },
           { id: 'playing', label: 'Playing time', value: parsed.playing, note },
           { id: 'paused', label: 'Paused time', value: parsed.paused, note },
-          { id: 'coverage', label: 'Coverage', value: knownValue(parsed.complete ? 'Complete' : 'Gaps excluded'), note },
+          { id: 'coverage', label: 'Coverage', value: knownValue(parsed.complete ? 'Complete' : 'Incomplete coverage'), note },
         ],
         clockSummary: buildClockSummary(parsed, hour, options?.firstHour),
         warnings: parsed.warnings,
@@ -142,5 +142,9 @@ export const campaignClockDeclaration: TableWidgetDeclaration<CampaignClockProje
   projection: campaignClockProjection,
   columns: CLOCK_COLUMNS,
   settings: { kind: 'fixed', base: CLOCK_TABLE_BASE },
-  projectionOptions: ctx => ({ firstHour: ctx.branch.firstHour }),
+  projectionOptions: ctx => ({
+    firstHour: ctx.widget.time.mode === 'range' && ctx.staticSpan
+      ? Math.max(ctx.branch.firstHour, Math.floor(ctx.staticSpan[0]))
+      : ctx.branch.firstHour,
+  }),
 };

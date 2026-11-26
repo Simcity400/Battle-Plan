@@ -478,6 +478,7 @@ fn unknown_rate(value: &ApmValue) -> String {
 
 pub struct ClockHead {
     index: Arc<Index>,
+    coverage: Arc<campaign_clock::RecordedCoverage>,
     branch_id: String,
     first: i32,
     last: i32,
@@ -493,24 +494,50 @@ pub struct ClockHeadParams {
 
 pub const CLOCK_COLUMNS: [&str; 4] = ["recordedSeconds", "playingSeconds", "pausedSeconds", "complete"];
 
-impl HeadValue for ClockHead {
-    fn columns(&self) -> usize {
-        CLOCK_COLUMNS.len()
+impl ClockHead {
+    pub(crate) fn from_source(source: &Source, params: ClockHeadParams, cancelled: &AtomicBool) -> io::Result<Self> {
+        let branch = params
+            .branch_id
+            .parse()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
+        Ok(Self {
+            index: index(source, branch, cancelled)?,
+            coverage: campaign_clock::RecordedCoverage::for_branch(source, branch, cancelled)?,
+            branch_id: params.branch_id,
+            first: params.first_hour,
+            last: params.last_hour,
+        })
     }
 
-    fn answer(&mut self, hour: Hour, _reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+    pub(crate) fn reply_at(&self, hour: Hour) -> Result<campaign_clock::CampaignClockReply, String> {
         let last = hour.min(self.last);
         if last < self.first {
             return Err("This time is outside the recording.".into());
         }
-        let params = campaign_clock::CampaignClockParams { branch_id: self.branch_id.clone(), first_hour: self.first, last_hour: last };
-        let reply = campaign_clock::query(&self.index, &params, &AtomicBool::new(false)).map_err(|error| error.to_string())?;
+        let params = campaign_clock::CampaignClockParams {
+            branch_id: self.branch_id.clone(),
+            first_hour: self.first,
+            last_hour: last,
+        };
+        let reply = campaign_clock::query(&self.index, &self.coverage, &params, &AtomicBool::new(false))
+            .map_err(|error| error.to_string())?;
         if !reply.available {
             return Err("Playing and paused time were not recorded in this campaign.".into());
         }
         if reply.recorded_seconds.is_none() {
             return Err(campaign_clock::OVERLAP_REASON.into());
         }
+        Ok(reply)
+    }
+}
+
+impl HeadValue for ClockHead {
+    fn columns(&self) -> usize {
+        CLOCK_COLUMNS.len()
+    }
+
+    fn answer(&mut self, hour: Hour, _reset: bool, rows: &mut HeadRows<'_>) -> Result<(), String> {
+        let reply = self.reply_at(hour)?;
         rows.row(0, "clock");
         rows.float(reply.recorded_seconds);
         rows.float(reply.playing_seconds);
@@ -533,8 +560,7 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
             }
             "campaign-clock" => {
                 let params: ClockHeadParams = dashboard_query::named::named(&params)?;
-                let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
-                Ok(Head::new(ClockHead { index: index(source, branch, &cancelled)?, branch_id: params.branch_id, first: params.first_hour, last: params.last_hour }))
+                Ok(Head::new(ClockHead::from_source(source, params, &cancelled)?))
             }
             other => Err(io::Error::new(io::ErrorKind::InvalidInput, format!("No head value {other}"))),
         }
