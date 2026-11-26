@@ -339,23 +339,15 @@ impl AtHour for FactoryMix {
         if stage > 0 {
             return (Vec::new(), i32::MAX);
         }
-        let valid = at.context.members.valid_through(params.group.as_ref(), at.hour);
         if let Some(group) = &params.group {
-            let Ok(members) = at.context.members.members(group, at.hour) else {
-                return (Vec::new(), valid);
-            };
-            if members.refused.is_some() || members.tags.is_empty() {
-                return (Vec::new(), valid);
-            }
-            let keys: Vec<u128> = members
-                .tags
-                .iter()
-                .filter_map(|tag| match at.holders.at(&Country::Tag(tag.clone()), at.hour).map(|run| run.holder) {
-                    Some(Holder::Found { id, .. }) => Some(u128::from(id)),
-                    _ => None,
-                })
-                .collect();
-            return (vec![Read::these(TableId::CountryFactories, keys)], valid);
+            let Ok(members) = at.context.members.slots_at(group, at.holders, at.hour) else { return (Vec::new(), at.hour) };
+            let Ok(slots) = &members.slots else { return (Vec::new(), members.until) };
+            if slots.is_empty() { return (Vec::new(), members.until); }
+            let keys = slots.iter().filter_map(|&slot| match at.holders.at(&Country::Slot(slot), at.hour)?.holder {
+                Holder::Found { id, .. } => Some(u128::from(id)),
+                _ => None,
+            });
+            return (vec![Read::these(TableId::CountryFactories, keys)], members.until);
         }
         if !params.countries.is_empty() {
             let keys: Vec<u128> = params
@@ -372,7 +364,7 @@ impl AtHour for FactoryMix {
     }
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.members.valid_through(params.group.as_ref(), at.hour)
+        at.context.members.slots_until(params.group.as_ref(), at.holders, at.hour)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
@@ -398,18 +390,18 @@ impl AtHour for FactoryMix {
         }
 
         let explicit: Option<Vec<Country>> = if let Some(group) = &params.group {
-            let members = at.context.members.members(group, frame.hour)?;
-            if let Some(refused) = members.refused {
+            let members = at.context.members.slots_at(group, at.holders, frame.hour)?;
+            let Ok(slots) = &members.slots else {
                 return Ok(FactoryMixReply {
                     hour: frame.hour,
                     mode: params.mode.clone(),
                     parts,
                     rows: Vec::new(),
-                    missing: Some(refused),
+                    missing: members.slots.as_ref().err().cloned(),
                     warnings,
                 });
-            }
-            Some(members.tags.into_iter().map(Country::Tag).collect())
+            };
+            Some(slots.iter().copied().map(Country::Slot).collect())
         } else if !params.countries.is_empty() {
             Some(params.countries.clone())
         } else {

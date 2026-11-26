@@ -330,7 +330,7 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
 
     let group = serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "hour": T2 + 1, "group": { "type": "faction", "id": "42" } });
     let members = |refused: Option<&'static str>| {
-        move |_: &ranked::GroupSelection, _: i32| Ok(ranked::Members { tags: vec!["GER".into(), "ITA".into()], refused: refused.map(str::to_owned), from: T2 + 1, until: T2 + 2 })
+        move |_: &ranked::GroupSelection, _: i32| Ok(Arc::new(ranked::MemberSlots { slots: refused.map_or(Ok(Arc::from([7, 8])), |reason| Err(reason.to_owned())), from: T2 + 1, until: T2 + 2 }))
     };
     let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve).unwrap().unwrap()).unwrap() };
     let known = grouped(&members(None));

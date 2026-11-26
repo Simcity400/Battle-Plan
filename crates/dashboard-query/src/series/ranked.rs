@@ -2,7 +2,7 @@
 use super::{Line, NavigationKey, SeriesRead, SeriesState, hour_of, invalid};
 use crate::identity::Country;
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::{io, sync::Arc};
 use ts_rs::TS;
 
 pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<usize>> {
@@ -53,7 +53,7 @@ pub struct SeriesRankReply {
     pub until: i32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum GroupKind {
     Humans,
@@ -61,7 +61,7 @@ pub enum GroupKind {
     War,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum GroupMembership {
     #[default]
@@ -69,7 +69,7 @@ pub enum GroupMembership {
     Ever,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupSelection {
     #[serde(rename = "type")]
@@ -95,7 +95,14 @@ pub struct Members {
     pub until: i32,
 }
 
-pub type Resolve<'r> = &'r dyn Fn(&GroupSelection, i32) -> io::Result<Members>;
+#[derive(Debug, PartialEq, Eq)]
+pub struct MemberSlots {
+    pub slots: Result<Arc<[u32]>, String>,
+    pub from: i32,
+    pub until: i32,
+}
+
+pub type Resolve<'r> = &'r dyn Fn(&GroupSelection, i32) -> io::Result<Arc<MemberSlots>>;
 
 pub struct Ask<'a> {
     pub hour: Option<f64>,
@@ -128,27 +135,21 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
     line.owners_only("a rank")?;
     let hour = hour_of(ask.hour, "hour")?;
     let mut held = line.query.holders.interval(hour);
-    let named: Vec<Country> = match ask.group {
+    let countries: Vec<Country> = match ask.group {
         None => ask.countries.to_vec(),
         Some(_) if ask.top.is_some() || !ask.countries.is_empty() => return Err(invalid("A rank names a group, a top or countries, one of them")),
         Some((group, resolve)) => {
             let members = resolve(group, hour)?;
             held = (held.0.max(members.from.min(hour)), held.1.min(members.until.max(hour)));
-            if members.refused.is_some() || members.tags.is_empty() {
+            if let Ok(slots) = &members.slots && !slots.is_empty() {
+                slots.iter().map(|&slot| line.query.holders.slot_tag(slot, hour).map_or(Country::Slot(slot), Country::from)).collect()
+            } else {
                 let mut measures = vec![SeriesRankMeasure { name: line.measure_name().to_owned(), decimals: line.decimals() }];
                 measures.extend(details.iter().map(|detail| SeriesRankMeasure { name: detail.measure_name().to_owned(), decimals: detail.decimals() }));
-                let (from, until) = if members.refused.is_some() { (hour, hour) } else { held };
-                return Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows: Vec::new(), refused: members.refused, from, until });
+                return Ok(SeriesRankReply { branch_id: branch_id.to_owned(), hour, measures, rows: Vec::new(), refused: members.slots.as_ref().err().cloned(), from: held.0, until: held.1 });
             }
-            members.tags.into_iter().map(Country::from).collect()
         }
     };
-    let mut countries: Vec<Country> = Vec::with_capacity(named.len());
-    for country in named {
-        if !countries.contains(&country) {
-            countries.push(country);
-        }
-    }
     let (asked, mut refused, top) = match (ask.top, countries.is_empty()) {
         (Some(_), false) => return Err(invalid("A rank names a top or countries, not both")),
         (None, true) => return Err(invalid("A rank names a top or countries")),
@@ -159,14 +160,14 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
         },
         (None, false) => (countries, None, None),
     };
-    let mut held_slots = std::collections::HashSet::new();
+    let mut distinct = std::collections::HashSet::new();
     let asked: Vec<(Country, Option<u32>)> = asked
         .into_iter()
         .map(|country| {
             let slot = line.query.holders.slot_at(&country, hour);
             (country, slot)
         })
-        .filter(|(_, slot)| slot.is_none_or(|slot| held_slots.insert(slot)))
+        .filter(|(country, slot)| distinct.insert(slot.map_or_else(|| country.clone(), Country::Slot)))
         .collect();
     let (asked, slots): (Vec<Country>, Vec<Option<u32>>) = asked.into_iter().unzip();
     let reads: Vec<SeriesRead> = asked.iter().map(|country| SeriesRead { country: country.clone(), hour, part: None }).collect();
@@ -202,6 +203,7 @@ pub(super) fn rank(line: &Line<'_, '_>, details: &[Line<'_, '_>], branch_id: &st
             (Some(x), Some(y)) => (if ask.least { x.cmp(&y) } else { y.cmp(&x) }).then_with(|| asked[a].cmp(&asked[b])),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) if ask.group.is_some() => asked[a].cmp(&asked[b]),
             (None, None) => a.cmp(&b),
         });
         refused = order.iter().find(|&&at| value(at).is_none()).map(|&at| columns[0][at].missing.clone().unwrap_or_else(|| super::board::measure_unrecorded(&asked[at].to_string(), line.measure.name)));

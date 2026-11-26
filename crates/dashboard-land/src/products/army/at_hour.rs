@@ -142,8 +142,12 @@ impl AtHour for ArmyAt {
         }
     }
 
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        (Self::reads_in(params, owner, stage, held, at), at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour))
+    }
+
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
-        at.context.groups.valid_through(params.group.as_ref(), at.hour)
+        at.context.groups.slots_until(params.group.as_ref(), at.holders, at.hour)
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -152,7 +156,7 @@ impl AtHour for ArmyAt {
             ArmyAttribution::Owner => recorded_value(row.owner_battalions),
             ArmyAttribution::Host => recorded_value(row.host_battalions),
         };
-        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, frame.hour)? {
+        let selected = match chosen(&params.countries, params.group.as_ref(), &at.context.groups, at.holders, frame.hour)? {
             Chosen::Refused(reason) => return Ok(ForceAtReply { parts: Vec::new(), ordinals: Vec::new(), rows: Vec::new(), missing: Some(reason), warnings }),
             Chosen::Population => {
                 let totals = match population::<tables::ArmyTotals>(frame, &Keys::All) {
