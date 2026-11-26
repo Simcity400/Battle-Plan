@@ -55,6 +55,7 @@ import type { Latest } from '../shell/latest.ts';
 import { unsavedDrafts } from './layoutDrafts.ts';
 import { useExportVideo, type SurfaceExportContextSnapshot, type SurfaceExportMapWidget } from '../export/ExportVideoContext';
 import type { RecordedStretch, UnheldGap } from '../export/videoExportApi';
+import { widgetShowsRankMarkers } from '../export/videoExportModel';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
@@ -691,14 +692,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         'ships-sunk',
       ]);
       const hasPagedRowsWidgets = widgetsToCheck.some(w => pagedKinds.has(w.kind));
-      const hasRankMarkerTables = widgetsToCheck.some(w => {
-        const def = widgetDefinition(w.kind);
-        const field = def?.options?.find(item => item.key === 'rankMarkers');
-        if (!field) return false;
-        const opts = w.options ?? {};
-        if (field.visibleWhen && !field.visibleWhen(opts)) return false;
-        return opts.rankMarkers !== false;
-      });
+      const hasRankMarkerTables = widgetsToCheck.some(w =>
+        widgetShowsRankMarkers(widgetDefinition(w.kind)?.options, w.options, w.countries, w.time.mode),
+      );
       const scrollEl = viewport.current;
       return {
         campaigns: campaignsRef.current

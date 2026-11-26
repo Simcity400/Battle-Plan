@@ -16,9 +16,13 @@ import {
   snapEven,
   summarizeRange,
   validateDimensions,
+  widgetShowsRankMarkers,
 } from './videoExportModel.ts';
 import { easeBarFraction } from '../families/bars/painter.ts';
 import { glideDurationForSpeed } from '../families/table/painter.ts';
+import { encodeTableSettings, TABLE_SETTINGS_KEY, tableDefaults } from '../families/table/settings.ts';
+import { definition as GAME_SCORE_DEF, TABLE_BASE as GAME_SCORE_TABLE_BASE } from '../widgets/game-score/definition.ts';
+import { definition as SCOREBOARD_DEF, TABLE_BASE as SCOREBOARD_TABLE_BASE } from '../widgets/scoreboard/definition.ts';
 
 test('snapEven and validateDimensions enforce even bounds and GPU texture limits', () => {
   assert.equal(snapEven(1921), 1920);
@@ -154,4 +158,22 @@ test('readabilityHint flags small rendered text and steep page downscaling', () 
   assert.ok(readabilityHint(7.2, 0.8)?.includes('7.2 px'));
   assert.ok(readabilityHint(11.5, 0.4)?.includes('40%'));
   assert.equal(readabilityHint(12, 0.9), null);
+});
+
+test('widgetShowsRankMarkers gates extended preview history on effective rank-column visibility', () => {
+  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, undefined), false);
+  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, {}), false);
+
+  const scoreboardWithRanks = {
+    [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...tableDefaults([], SCOREBOARD_TABLE_BASE), showRank: true }),
+  };
+  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, scoreboardWithRanks), true);
+  assert.equal(widgetShowsRankMarkers(SCOREBOARD_DEF.options, { ...scoreboardWithRanks, rankMarkers: false }), false);
+
+  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, undefined), false);
+  const gameScoreWithRanks = {
+    [TABLE_SETTINGS_KEY]: encodeTableSettings({ ...tableDefaults([], GAME_SCORE_TABLE_BASE), showRank: true }),
+  };
+  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, gameScoreWithRanks), true);
+  assert.equal(widgetShowsRankMarkers(GAME_SCORE_DEF.options, { ...gameScoreWithRanks, view: 'race' }), false);
 });

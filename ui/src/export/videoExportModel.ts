@@ -1,3 +1,6 @@
+import type { CountrySelection, WidgetTime } from '../dashboard/model';
+import { resolveOptions, type OptionField, type WidgetOptions } from '../dashboard/options.ts';
+import { tableSettingsOf } from '../families/table/settings.ts';
 import type { CropRect, RecordedStretch, UnheldGap } from './videoExportApi';
 
 export interface DimensionPreset {
@@ -364,4 +367,22 @@ export function formatExportDuration(seconds: number): string {
   }
   if (mins > 0) return `${mins}m ${secs}s`;
   return `${secs}s`;
+}
+
+export function widgetShowsRankMarkers(
+  fields: readonly OptionField[] | undefined,
+  options: WidgetOptions | undefined,
+  countries?: CountrySelection,
+  timeMode?: WidgetTime['mode'],
+): boolean {
+  if (!fields || fields.length === 0) return false;
+  const rankField = fields.find(item => item.key === 'rankMarkers');
+  if (!rankField) return false;
+  const resolved = resolveOptions(fields, options);
+  if (rankField.visibleWhen && !rankField.visibleWhen(resolved, countries, timeMode)) return false;
+  if (resolved.rankMarkers !== true) return false;
+  const tableField = fields.find(item => item.kind === 'table');
+  if (!tableField) return true;
+  if (tableField.visibleWhen && !tableField.visibleWhen(resolved, countries, timeMode)) return false;
+  return tableSettingsOf(resolved[tableField.key], tableField.columns, tableField.base).showRank;
 }
