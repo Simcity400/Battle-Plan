@@ -24,6 +24,7 @@ const EXTENT: [f32; 2] = [1920.0, 1080.0];
 const SETTLED: f32 = 10.0;
 const STEPS_BEFORE_SEEK: Hour = 32;
 const KEYS_KEPT: usize = 32;
+const ANIMATION_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
@@ -99,6 +100,7 @@ struct Held {
     close_requests: u32,
     placed: Option<(egui::Rect, f32)>,
     hovered: Option<[f32; 2]>,
+    animated: Option<Instant>,
     opened: Instant,
 }
 
@@ -359,6 +361,7 @@ impl Held {
             close_requests: 0,
             placed: None,
             hovered: None,
+            animated: None,
             opened: Instant::now(),
         })
     }
@@ -406,18 +409,26 @@ impl Held {
             .map_err(|error| format!("Could not read the battle at this hour: {error}"))?;
         let version = self.document.icons.lazy.version();
         let extent = [body.width(), body.height()].map(|side| (side * ctx.pixels_per_point()).round() as u32);
+        let animating = self.window.gui_active();
+        let since = self.animated.map(|at| at.elapsed());
+        let why = [matches!(prepared, Prepared::Read(_)), self.drew != Some((extent, version)), input.is_some(), animating && since.is_none_or(|since| since >= ANIMATION_FRAME)];
         let redraw = match prepared {
             Prepared::Read(_) => true,
-            Prepared::Kept => self.drew != Some((extent, version)) || input.is_some() || self.window.gui_active(),
+            Prepared::Kept => why[1] || why[2] || why[3],
             Prepared::Loading | Prepared::Closed => false,
         };
         if redraw {
             let started = Instant::now();
-            let modifiers = ctx.input(|input| input.modifiers);
+            let (modifiers, held) = ctx.input(|input| (input.modifiers, input.pointer.primary_down()));
+            let settling = || viewer_native_gui::native_gui::pointer::Input { place: self.hovered.map(viewer_native_gui::native_gui::pointer::Place::new), buttons: Vec::new(), held };
+            let input = input.or_else(|| animating.then(settling));
             let (missing, clicked) = self.draw(prepared, body, ctx.pixels_per_point(), frame, gpu, input, modifiers)?;
             self.drew = (!clicked).then_some((extent, version));
-            if self.drew.is_none() || self.window.gui_active() {
+            self.animated = self.window.gui_active().then(Instant::now);
+            if self.drew.is_none() {
                 ctx.request_repaint();
+            } else if self.animated.is_some() {
+                ctx.request_repaint_after(ANIMATION_FRAME);
             }
             if !self.window.is_open() {
                 self.closed = self.at.map(|at| at.hour);
@@ -429,7 +440,7 @@ impl Held {
                 self.notes = self.window.warnings(&self.document.icons.combat.warnings);
                 self.notes.extend(self.pass.native_refusals.iter().map(|(reason, count)| format!("{reason} ({count} times)")));
                 if let Some(at) = self.at.filter(|_| crate::perf_log::enabled()) {
-                    crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes()}));
+                    crate::perf_log::mark("battle_drawn", serde_json::json!({"hour": at.hour, "step_ms": self.read_ms[0], "read_ms": self.read_ms[1], "draw_ms": started.elapsed().as_secs_f64() * 1e3, "tables": self.tables.len(), "art_bytes": self.document.icons.lazy.resident_bytes(), "why": why}));
                 }
             } else if let Some(at) = self.at {
                 let why = match missing {
@@ -439,6 +450,8 @@ impl Held {
                 self.refused = Some((at.hour, why));
                 self.answered_sequence = self.at_sequence;
             }
+        } else if animating {
+            ctx.request_repaint_after(ANIMATION_FRAME.saturating_sub(since.unwrap_or_default()));
         }
         if let Some(retired) = self.window.take_retired() {
             pool.dropper().drop_later(retired);
@@ -778,7 +791,7 @@ impl Held {
         let place = hover.filter(|pos| rect.contains(*pos)).map(local);
         let moved = place != self.hovered;
         self.hovered = place;
-        (!buttons.is_empty() || moved || self.window.gui_active()).then(|| Input { place: place.map(Place::new), buttons, held })
+        (!buttons.is_empty() || moved).then(|| Input { place: place.map(Place::new), buttons, held })
     }
 
     fn paint(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
