@@ -153,6 +153,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       foldedArrived: boolean;
       foldedBindSettled: boolean;
       foldedActive: { key: string | null; rowIndex: string | null };
+      foldedUpSettled: boolean;
+      foldedUpActive: { key: string | null; rowIndex: string | null };
       playCommits: number;
       playBinds: number;
       playPaints: number;
@@ -177,6 +179,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.deepEqual(deep.pageDownActive, { key: `R${deep.expectedPageDown}`, rowIndex: String(deep.expectedPageDown + 2) }, 'PageDown lands a full viewport down');
     assert.deepEqual([deep.foldedLoaded, deep.foldedArrived, deep.foldedBindSettled], [true, true, true], 'End on a final window with a long folded run settles and survives the subsequent bind');
     assert.equal(deep.foldedActive.key, 'R1999', 'End keeps focus on the final row R1999 after revealing it above the viewport');
+    assert.equal(deep.foldedUpSettled, true, 'ArrowUp from the folded final row settles its bind');
+    assert.equal(deep.foldedUpActive.key, 'R1998', 'ArrowUp inside the anchored folded window retains focus on R1998');
     assert.ok(deep.playPaints > 0, 'playback repaints the deep log in the lane');
     assert.deepEqual([deep.playCommits, deep.playBinds], [0, 0], 'played hours cause no React render and no rebind');
   }));

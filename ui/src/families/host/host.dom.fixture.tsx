@@ -1249,7 +1249,7 @@ window.hostDom = {
     await scrollToRow(610);
     rowEl(610)!.focus();
     await frames(2);
-    deepLogFoldRun = [DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 2];
+    deepLogFoldRun = [DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 3];
     deepLogHeldRanges = [[DEEP_LOG_TOTAL - 30, DEEP_LOG_TOTAL - 1]];
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
     const foldedLoaded = await until(() => bodyD.scrollTop > 610 * ROW_HEIGHT.normal && !!container!.querySelector(`[data-slot="deep-log"] table tbody tr[data-row-key="loading:${DEEP_LOG_TOTAL - 1}"]`), 2000);
@@ -1263,6 +1263,15 @@ window.hostDom = {
     }, 2000);
     await frames(4);
     const foldedActive = activeInfo();
+    const foldedUpGenBefore = pipeline.binding(pipeD);
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const foldedUpSettled = await until(() => {
+      const gen = pipeline.binding(pipeD);
+      const view = pipeline.view(pipeD);
+      return gen > foldedUpGenBefore && view?.installedBinding === gen;
+    }, 2000);
+    await frames(4);
+    const foldedUpActive = activeInfo();
     deepLogFoldRun = null;
 
     await scrollToRow(610);
@@ -1320,6 +1329,8 @@ window.hostDom = {
       foldedArrived,
       foldedBindSettled,
       foldedActive,
+      foldedUpSettled,
+      foldedUpActive,
       playCommits,
       playBinds,
       playPaints,

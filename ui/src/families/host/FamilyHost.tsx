@@ -55,6 +55,7 @@ import { boundDated, ownProof, StaticSupply } from './dated.ts';
 import { serializeTiledBySource } from '../sceneTiles.ts';
 import { renderFamilyBodyState } from './FamilyBodyState.tsx';
 import {
+  anchoredRowWindow,
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
@@ -332,7 +333,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const [targets, setTargets] = useState<FamilyChromeTargets>(NO_TARGETS);
   const windowRef = useRef<ReportedRowWindow | null>(null);
   const requestedWindowRef = useRef<FamilyRowWindow | null>(null);
-  const anchoredWindowRef = useRef<FamilyRowWindow | null>(null);
+  const anchoredWindowRef = useRef<{ readonly first: number; readonly count: number } | null>(null);
   const [chromeState, setChromeState] = useState<unknown>(undefined);
   const chromeStateRef = useRef<unknown>(undefined);
   const [chromeWidth, setChromeWidth] = useState(0);
@@ -611,7 +612,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       scrollTop: physicalToLogicalTop(vp.scrollTop, scrollGeometryRef.current),
       zoomWindow: vp.zoomWindow,
     };
-    const asked = anchoredWindowRef.current ?? requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fieldsNow());
+    const anchor = anchoredWindowRef.current;
+    const fields = fieldsNow();
+    const asked = anchor
+      ? anchoredRowWindow(anchor, fields.table as TableOrdinalMetrics | undefined)
+      : requestedRowWindow(curAdapter, cur.plan, viewport, cur.settings, fields);
     const held = requestedWindowRef.current;
     const rowWindow = sameRowWindow(held, asked) ? held : asked;
 
@@ -787,11 +792,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     return moved;
   }, []);
 
-  const focusRowByKey = useCallback((key: string, keepAnchor = false) => {
+  const focusRowByKey = useCallback((key: string) => {
     const entry = navNow().find(item => item[0] === key);
     if (!entry) return;
     pendingOrdinalRef.current = null;
-    if (!keepAnchor) anchoredWindowRef.current = null;
     focusedKeyRef.current = key;
     revealRow(entry);
     if ((latestRef.current.adapter.mirrorFocus ?? 'body') === 'rows') {
@@ -823,10 +827,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       record.picture.actionKeys,
     );
     if (entry) {
-      const keepAnchor = entry[2] < target && requestedWindowRef.current !== null;
-      anchoredWindowRef.current = keepAnchor ? requestedWindowRef.current : null;
+      if (!anchoredWindowRef.current && entry[2] < target && requestedWindowRef.current) {
+        anchoredWindowRef.current = { first: requestedWindowRef.current.first, count: requestedWindowRef.current.count };
+      }
       pendingOrdinalRef.current = null;
-      focusRowByKey(entry[0], keepAnchor);
+      focusRowByKey(entry[0]);
       return;
     }
     anchoredWindowRef.current = null;
@@ -1053,12 +1058,16 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       };
       const anchored = anchoredWindowRef.current;
       if (anchored) {
-        requestedWindowRef.current = anchored;
-        const report = nextReportedRowWindow(windowRef.current, anchored, installed.hour, cur.plan);
+        const nextWindow = anchoredRowWindow(anchored, fields.table as TableOrdinalMetrics | undefined);
+        const changed = !sameRowWindow(requestedWindowRef.current, nextWindow);
+        const requested = changed ? nextWindow : requestedWindowRef.current;
+        requestedWindowRef.current = requested;
+        const report = nextReportedRowWindow(windowRef.current, requested, installed.hour, cur.plan);
         if (report) {
           windowRef.current = report;
           cur.onWindowChange?.(report.window, report.hour);
         }
+        if (changed) queueMicrotask(() => showViewRef.current());
       } else {
         const installedUpdate = reconcileInstalledRowWindow(
           windowRef.current,
@@ -1114,7 +1123,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
           );
           if (entry) {
             if (entry[2] < pendingOrdinal && requestedWindowRef.current) {
-              anchoredWindowRef.current = requestedWindowRef.current;
+              anchoredWindowRef.current = { first: requestedWindowRef.current.first, count: requestedWindowRef.current.count };
             }
             pendingOrdinalRef.current = null;
             focusedKeyRef.current = entry[0];

@@ -1,6 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { MirrorModel } from '../contract.ts';
 import { extentTop, type RowExtents } from '../table/layout.ts';
+import { displayWindowToData } from '../table/rowSource.ts';
 import type { FamilyRowWindow } from './adapter.ts';
 
 export const TYPEAHEAD_RESET_MS = 700;
@@ -105,6 +106,16 @@ export function tablePageSteps(
     else hiUp = mid;
   }
   return { down: Math.max(1, loDown - at), up: Math.max(1, at - loUp) };
+}
+
+export function anchoredRowWindow(
+  anchor: { readonly first: number; readonly count: number },
+  table: TableOrdinalMetrics | undefined,
+): FamilyRowWindow {
+  const gapBefore = table?.gapBefore;
+  if (!gapBefore?.length) return anchor;
+  const data = displayWindowToData(anchor, gapBefore, table ? Math.max(0, table.count - gapBefore.length) : undefined);
+  return { ...anchor, dataFirst: data.first, dataCount: data.count };
 }
 
 export function resolveInstalledOrdinal(

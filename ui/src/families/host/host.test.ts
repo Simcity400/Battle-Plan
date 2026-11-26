@@ -28,6 +28,7 @@ import { createBoundAuditReader, createPlanAuditVerifier, type BoundAuditEntry, 
 import { boundDated } from './dated.ts';
 import { NO_EXPANSION, toggleExpansion } from './expansion.ts';
 import {
+  anchoredRowWindow,
   handleFamilyGridKeyDown,
   handleFamilyKeyDown,
   handleFamilyPointsKeyDown,
@@ -1892,6 +1893,16 @@ test('R4-S3 host: ordinal bounds, gap skipping, key directions and held mirror f
     resolveInstalledOrdinal(foldedNav, 1999, pageTable, endWindow, { first: 1990, total: 2000, rows: foldedNav.map(e => rowOf(e[0], e[2])) }, foldedKeys)?.[0],
     'R1994',
     'a settled endpoint window with a folded run resolves End onto its last navigable row',
+  );
+  assert.deepEqual(
+    anchoredRowWindow({ first: 1984, count: 16 }, { count: 2001, totalHeight: 2001 * 36, gapBefore: [1990] }),
+    { first: 1984, count: 16, dataFirst: 1984, dataCount: 15 },
+    'an anchored display window recomputes its data range from the installed gaps',
+  );
+  assert.deepEqual(
+    anchoredRowWindow({ first: 1984, count: 16 }, { count: 2001, totalHeight: 2001 * 36, gapBefore: [1980] }),
+    { first: 1984, count: 16, dataFirst: 1983, dataCount: 16 },
+    'moving a gap across the anchored window boundary updates dataFirst and dataCount',
   );
 
   const prevDoc = (globalThis as { document?: unknown }).document;
