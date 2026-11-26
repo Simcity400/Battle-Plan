@@ -764,6 +764,31 @@ fn two_tracks_of_one_timeline_at_different_anchors_each_follow_their_own_hours()
 }
 
 #[test]
+fn unfollow_during_preparation_cannot_reinstall_a_removed_registration() {
+    let host = paper();
+    let registry = crate::registry::Registry::new(Some(Arc::new(Papers(BTreeMap::from([("a".to_owned(), host)])))));
+    let path = std::path::Path::new("a");
+    let power = |id| follow_request(id, "country-measure", "politicalPower");
+    let (entered, started) = mpsc::channel();
+    let (open, gate) = mpsc::channel();
+    std::thread::scope(|threads| {
+        let registry = &registry;
+        let slow = threads.spawn(move || registry.answer(path, "follow", &power(1), |_| {
+            entered.send(()).unwrap();
+            gate.recv().unwrap();
+            Ok(nobody())
+        }, Box::new(|_| unreachable!())).unwrap());
+        started.recv().unwrap();
+        registry.answer(path, "unfollow", &serde_json::json!({ "id": 1 }), |_| unreachable!(), Box::new(|_| unreachable!())).unwrap();
+        let fast = registry.answer(path, "follow", &power(2), |_| Ok(nobody()), Box::new(|_| unreachable!())).unwrap();
+        assert_eq!(fast["available"], true);
+        open.send(()).unwrap();
+        assert_eq!(slow.join().unwrap()["available"], false);
+    });
+    assert_eq!(registry.followed(), 1);
+}
+
+#[test]
 fn the_requests_a_widget_sends_parse_into_its_query() {
     match crate::parse(&follow_request(0, "country-measure", "commandPower")["query"], &nobody()).unwrap() {
         Query::Series { series, measure, countries, mode: SeriesMode::Keyed(CoverageScope::Table), .. } => assert_eq!((series.kind, measure.name, countries), ("country-measure", "commandPower", vec!["GER".into(), "SOV".into()])),
@@ -1995,13 +2020,12 @@ fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming()
     host.show_panels(Arc::new(NoRows), Arc::clone(&push));
 
     let ready = Arc::new(AtomicBool::new(false));
-    let wake_slot: Arc<Mutex<Option<Wake>>> = Arc::new(Mutex::new(None));
+    let (wake_reader, wakes) = mpsc::channel::<Wake>();
     let ready_reader = Arc::clone(&ready);
-    let wake_reader = Arc::clone(&wake_slot);
     let advance: ProductReader = Arc::new(move |hour, _values, _cancelled, step| {
-        if step.is_some() && !ready_reader.load(Ordering::Acquire) {
+        if !ready_reader.load(Ordering::Acquire) {
             if let Some(wake) = step.and_then(|s| s.wake.cloned()) {
-                *wake_reader.lock().unwrap() = Some(wake);
+                wake_reader.send(wake).unwrap();
             }
             return ProductRead { value: Arc::new(Err(String::new())), rows: 0, fresh: false, pending: true, live: None, lanes: Vec::new() };
         }
@@ -2009,7 +2033,7 @@ fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming()
     });
     let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
     let panel = Box::new(AtHour { read: Arc::clone(&cold), cold, advance });
-    host.panel(8, panel, 4).unwrap();
+    host.prepare_panel(panel).unwrap()(8, 4).unwrap();
     host.anchor(Anchor { seek: 4, frame_rate: 60.0, hour: 50, position: 50.0, timestamps: None, playing: false, speed: 1.0, sought: true });
 
     let mut led_past = false;
@@ -2024,7 +2048,7 @@ fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming()
             }
         }
     }
-    let wake = wake_slot.lock().unwrap().take().expect("wake callback captured while pending");
+    let wake = wakes.recv().expect("wake callback captured while pending");
     ready.store(true, Ordering::Release);
     wake();
 
@@ -2092,7 +2116,7 @@ fn a_new_page_seek_while_paused_reads_again_a_product_whose_read_it_cancelled() 
         ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() }
     });
     let cold: ExactReader = Arc::new(|hour, _: &AtomicBool| Ok(serde_json::json!({ "hour": hour })));
-    host.panel(8, Box::new(AtHour { read: Arc::clone(&cold), cold, advance }), 4).unwrap();
+    host.prepare_panel(Box::new(AtHour { read: Arc::clone(&cold), cold, advance })).unwrap()(8, 4).unwrap();
     wait_started.recv().unwrap();
 
     let hour: Hour = 0;
@@ -2110,6 +2134,137 @@ fn a_new_page_seek_while_paused_reads_again_a_product_whose_read_it_cancelled() 
         }
     }
     drop(host);
+}
+
+#[test]
+fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
+    use crate::{
+        host::PlayheadHost,
+        panel::{AtHour, ExactReader, PanelRows, ProductRead, ProductReader, dated},
+        push::{PANEL, Push},
+        registry::{Anchor, Hosted},
+    };
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+
+    struct NoRows;
+    impl PanelRows for NoRows {
+        fn reader(&self, _tables: &[TableId]) -> io::Result<Box<dyn crate::panel::PanelReader>> {
+            unreachable!("exact panels supply their own rows")
+        }
+    }
+    fn product(advance: ProductReader) -> Box<AtHour> {
+        let cold: ExactReader = Arc::new(|_, _| unreachable!("the incremental reader supplies the seed"));
+        Box::new(AtHour { read: cold.clone(), cold, advance })
+    }
+    let pages = record(quiet);
+    let follow = Follow::new(0);
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 16, ring: 8, speed: 1.0, rate: 60.0, ..Settings::default() };
+    let gate_from = Arc::new(AtomicI32::new(i32::MAX));
+    let threshold = gate_from.clone();
+    let (arrived, clock_steps) = mpsc::channel();
+    let mut hook = follow.hook(Box::new(|_, _| {}));
+    let hook: playhead::Hook = Box::new(move |step, lanes| {
+        if step.first() <= step.last() && step.first() >= threshold.load(Ordering::Acquire) {
+            let (advance, permit) = mpsc::channel();
+            if arrived.send((step.first(), step.last(), advance)).is_ok() { let _ = permit.recv(); }
+        }
+        hook(step, lanes);
+    });
+    let playhead = Arc::new(Playhead::new(pages.clone(), Timeline::whole(&*pages).unwrap(), settings, Some(hook)).unwrap());
+    let host = PlayheadHost::new(playhead, |p| p, |p, a| { if a.sought { p.seek(a.hour); } }, follow, vec![true; TABLE + 1]).unwrap();
+    let steps = clock_steps;
+    let push = Arc::new(Push::default());
+    host.show_panels(Arc::new(NoRows), push.clone());
+    let reading = |hour| ProductRead { value: Arc::new(Ok(serde_json::json!({ "hour": hour }))), rows: 1, fresh: true, pending: false, live: None, lanes: Vec::new() };
+    let first_data = |id| {
+        host.prepare_panel(product(Arc::new(move |hour, _, _, _| reading(hour)))).unwrap()(id, 1).unwrap();
+        loop {
+            let (kind, bytes, _, offered) = push.take_kind().unwrap();
+            if kind == PANEL {
+                let records = dated::records(&bytes).unwrap();
+                for r in &records {
+                    assert!(r.id != 2 || r.kind == dated::WAITING, "the removed slow reader never publishes a value");
+                    if r.id == id && r.kind != dated::WAITING {
+                        assert_eq!(r.kind, dated::DATA);
+                        assert!(!r.stepped(), "this subscription receives its seed before its steps");
+                        assert!(records.iter().any(|next| next.id == id && next.kind == dated::WAITING && next.hour == r.hour + 1),
+                            "a route completion cannot extend the seed over hours its reader has yet to visit");
+                        return offered;
+                    }
+                }
+            }
+        }
+    };
+    first_data(1);
+    host.unpanel(1);
+    let (entered, started) = mpsc::channel();
+    let (open, gate) = mpsc::channel();
+    let (finished, done) = mpsc::channel();
+    let gate = Mutex::new(gate);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    host.prepare_panel(product(Arc::new(move |hour, _, cancelled: &AtomicBool, _| {
+        counted.fetch_add(1, Ordering::Relaxed);
+        entered.send(()).unwrap();
+        gate.lock().unwrap().recv().unwrap();
+        finished.send(cancelled.load(Ordering::Acquire)).unwrap();
+        reading(hour)
+    }))).unwrap()(2, 1).unwrap();
+    started.recv().unwrap();
+    first_data(3);
+    host.anchor(Anchor { seek: 5, hour: 50, position: 50.0, playing: false, sought: true, frame_rate: 60.0, speed: 1.0, timestamps: None });
+    host.unpanel(2);
+    open.send(()).unwrap();
+    assert!(done.recv().unwrap());
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let anchored_at = first_data(4);
+    host.unpanel(3);
+    host.unpanel(4);
+
+    let (started, seed_hour) = mpsc::channel();
+    let (resume, gate) = mpsc::channel();
+    let gate = Mutex::new(gate);
+    let (reader, catching_up) = mpsc::channel();
+    let first = AtomicBool::new(true);
+    let worker = Arc::new(Mutex::new(None));
+    let reading_on = worker.clone();
+    host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        if step.is_none() { *reading_on.lock().unwrap() = Some(std::thread::current().id()); }
+        if first.swap(false, Ordering::Relaxed) {
+            started.send(hour).unwrap();
+            gate.lock().unwrap().recv().unwrap();
+        } else {
+            let _ = reader.send((hour, step.is_some(), std::thread::current().id()));
+        }
+        reading(hour)
+    }))).unwrap()(6, 1).unwrap();
+    let start = seed_hour.recv().unwrap();
+    let quantum = 6;
+    gate_from.store(start + 3 * quantum, Ordering::Release);
+    host.playhead().pace(60.0 * f64::from(quantum));
+    host.playhead().anchor(f64::from(start + 6 * quantum), true, 0.0, anchored_at, false);
+    let (_, through, advance) = steps.recv().unwrap();
+    let (returned, handoffs) = mpsc::channel();
+    let _watch = host.playhead().watch_control(Arc::new(move || {
+        if worker.lock().unwrap().take_if(|id| *id == std::thread::current().id()).is_some() { let _ = returned.send(()); }
+    }));
+    resume.send(()).unwrap();
+    handoffs.recv().unwrap();
+    host.playhead().anchor(f64::from(through + quantum), true, 0.0, anchored_at, false);
+    advance.send(()).unwrap();
+    let (next, last, advance) = steps.recv().unwrap();
+    handoffs.recv().unwrap();
+    let cold: Vec<_> = catching_up.try_iter().collect();
+    assert_eq!(cold.first().map(|r| r.0), Some(start + quantum));
+    assert_eq!(cold.last().map(|r| r.0), Some(through), "catch-up covers the scheduling step");
+    assert!(cold.iter().all(|r| !r.1));
+    assert_eq!(next, through + 1);
+    advance.send(()).unwrap();
+    drop(steps);
+    let (hour, stepped, hook) = catching_up.recv().unwrap();
+    assert!(stepped, "the next playing step rejoins the product");
+    assert_eq!(hour, last);
+    assert_ne!(cold[0].2, hook, "the playhead keeps stepping on a different thread");
 }
 
 #[test]
