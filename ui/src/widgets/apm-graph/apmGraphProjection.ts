@@ -76,11 +76,10 @@ function runIndexAt(runs: readonly { firstHour: number }[], hour: number): numbe
 type PlayerRuns = Pick<ApmPlayer, 'id' | 'runs'>;
 type NameChanges = Map<string, { firstHour: number; labels: Map<string, string> }[]>;
 type PlayerRoster = Map<string, { runs: ApmPlayer['runs']; names: NameChanges }>;
-const recordedNames = new WeakMap<readonly PlayerRuns[], NameChanges>();
+const recordedRosters = new WeakMap<readonly ApmPlayer[], PlayerRoster>();
+const noPlayers: readonly ApmPlayer[] = [];
 
 function nameChangesFor(players: readonly PlayerRuns[]): NameChanges {
-  const cached = recordedNames.get(players);
-  if (cached) return cached;
   const byName = new Map<string, { hour: number; id: string; starts: boolean }[]>();
   for (const { id, runs } of players) {
     runs?.forEach((run, i) => {
@@ -110,7 +109,6 @@ function nameChangesFor(players: readonly PlayerRuns[]): NameChanges {
     }
     if (dates.length) index.set(name, dates);
   }
-  recordedNames.set(players, index);
   return index;
 }
 
@@ -126,17 +124,24 @@ function playerLabel(player: string | null | undefined, country?: string): strin
   return country ? `${name} \u00b7 ${country}` : name;
 }
 
-function playerRoster(players: readonly ApmPlayer[], entries: readonly SeriesEntry[]): PlayerRoster {
+function recordedRoster(players: readonly ApmPlayer[]): PlayerRoster {
+  const cached = recordedRosters.get(players);
+  if (cached) return cached;
   const names = nameChangesFor(players);
   const roster: PlayerRoster = new Map(players.map(player => [player.id, { runs: player.runs, names }]));
-  if (entries.some(entry => !roster.get(entry.id)?.runs?.length)) {
-    const observations = entries.map(({ id, obsHour, tag, name }) => ({
-      id, runs: [{ firstHour: obsHour, lastHour: obsHour, tag: tag ?? '', name, nameMissing: null }],
-    }));
-    const observedNames = nameChangesFor(observations);
-    for (const { id, runs } of observations) {
-      if (!roster.get(id)?.runs?.length) roster.set(id, { runs, names: observedNames });
-    }
+  recordedRosters.set(players, roster);
+  return roster;
+}
+
+function withObservations(recorded: PlayerRoster, entries: readonly SeriesEntry[]): PlayerRoster {
+  if (entries.every(entry => recorded.get(entry.id)?.runs?.length)) return recorded;
+  const roster = new Map(recorded);
+  const observations = entries.map(({ id, obsHour, tag, name }) => ({
+    id, runs: [{ firstHour: obsHour, lastHour: obsHour, tag: tag ?? '', name, nameMissing: null }],
+  }));
+  const observedNames = nameChangesFor(observations);
+  for (const { id, runs } of observations) {
+    if (!roster.get(id)?.runs?.length) roster.set(id, { runs, names: observedNames });
   }
   return roster;
 }
@@ -181,6 +186,36 @@ function apmSeriesLooks(
   }));
 }
 
+function exactPlayerNames(roster: PlayerRoster, rows: readonly ApmSeries[], hour: number): Map<string, string> {
+  const labels = new Map<string, string>();
+  const unmatched: { id: string; name: string }[] = [];
+  for (const { id, name } of rows) {
+    if (!name) continue;
+    const player = roster.get(id);
+    const run = player?.runs?.[runIndexAt(player.runs, hour)];
+    if (player && run && hour <= run.lastHour && run.name === name) {
+      labels.set(id, datedName(player.names, id, name, hour).name ?? name);
+    } else {
+      unmatched.push({ id, name });
+    }
+  }
+  if (!unmatched.length) return labels;
+  const fromReply = playerNames(rows);
+  const used = new Set(labels.values());
+  const next = new Map<string, number>();
+  for (const { id, name } of unmatched) {
+    let label = fromReply.get(id) ?? name;
+    while (used.has(label)) {
+      const suffix = next.get(name) ?? 1;
+      label = `${name} (${suffix})`;
+      next.set(name, suffix + 1);
+    }
+    used.add(label);
+    labels.set(id, label);
+  }
+  return labels;
+}
+
 function buildHoverDetail(
   readView: BoundedReadView,
   seriesById: ReadonlyMap<string, TimeChartSeriesModel>,
@@ -192,24 +227,16 @@ function buildHoverDetail(
   const reply = hover.data;
   if (!reply.available) return null;
   const items: TooltipListItem[] = [];
-  let exactNames: Map<string, string> | undefined;
+  const names = roster && exactPlayerNames(roster, reply.series, hover.hour);
   let anyGaps = false;
   for (const row of reply.series) {
     if (row.summary.gaps) anyGaps = true;
     const identity = row.tag ? readView.who('country', row.tag, hover.hour) : null;
     const flagChoice = identity?.flagChoice?.status === 'ready' ? identity.flagChoice.value : null;
     const flagRes = flagChoice ? readView.art(flagArtHandle(flagChoice, 'small')) : null;
-    let label: string;
-    if (roster) {
-      const player = roster.get(row.id);
-      const run = player?.runs?.[runIndexAt(player.runs, hover.hour)];
-      const name = player && run && hover.hour <= run.lastHour && run.name === row.name
-        ? datedName(player.names, row.id, row.name, hover.hour).name
-        : (exactNames ??= playerNames(reply.series)).get(row.id) ?? row.name;
-      label = playerLabel(name, identity?.name.status === 'ready' ? identity.name.value : undefined);
-    } else {
-      label = row.tag ? identityName(readView, 'country', row.tag, hover.hour) : row.id;
-    }
+    const label = names
+      ? playerLabel(names.get(row.id) ?? row.name, identity?.name.status === 'ready' ? identity.name.value : undefined)
+      : (row.tag ? identityName(readView, 'country', row.tag, hover.hour) : row.id);
     const series = seriesById.get(row.id);
     const swatch = series && seriesLookAt(series, hover.hour).color;
     const rateText = formatApmRate(row.summary, 0);
@@ -287,7 +314,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       };
     }
     const tiled = readView.series('apm');
-    const registryById = new Map<string, ApmPlayer>((options.players ?? []).map(p => [p.id, p]));
+    const recorded = options.group === 'player' ? recordedRoster(options.players ?? noPlayers) : null;
     const entries: SeriesEntry[] = [];
     const seen = new Set<string>();
     for (const row of rows) {
@@ -310,7 +337,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       for (const id of historicalIds) {
         const bounded = tiled.get(id) ?? null;
         if (!hasRecordedByHour(bounded, hour)) continue;
-        const reg = options.group === 'player' ? registryById.get(id) : undefined;
+        const reg = recorded?.get(id);
         const lastHour = bounded?.buckets.length
           ? Math.min(bounded.buckets.at(bounded.buckets.length - 1)?.lastHour ?? hour, hour)
           : hour;
@@ -342,7 +369,7 @@ export const apmGraphProjection: TimeChartProjection<ApmGraphOptions> = register
       };
     }
     const disambiguated = options.group === 'player' ? playerNames(entries) : null;
-    const roster = disambiguated ? playerRoster(options.players ?? [], entries) : null;
+    const roster = recorded && withObservations(recorded, entries);
     const looks = apmSeriesLooks(entries, roster, readView, options);
     const headTexts = new Map<string, string>();
     const series: TimeChartSeriesModel[] = entries.map((entry, rank) => {
@@ -427,16 +454,19 @@ function headParamsOf(ctx: FamilyPlanContext<ApmReply>) {
   };
 }
 
+function selectedPlayers(ctx: FamilyPlanContext<ApmReply>): readonly ApmPlayer[] {
+  const players = ctx.aux?.players ?? noPlayers;
+  const wantedPlayers = new Set(contentSet(ctx.options.players).map(contentKey));
+  if (ctx.countries.all && !wantedPlayers.size) return players;
+  const tags = ctx.countries.all ? null : new Set(ctx.countries.tags);
+  return players.filter(p => (!wantedPlayers.size || wantedPlayers.has(p.id)) && (!tags || p.tags.some(t => tags.has(t))));
+}
+
 function candidateSeriesIds(ctx: FamilyPlanContext<ApmReply>, group: 'country' | 'player'): string[] {
   const registry = ctx.aux;
   if (!registry || !registry.available) return [];
+  if (group === 'player') return selectedPlayers(ctx).map(p => p.id);
   const wantedTags = ctx.countries.all ? null : new Set(ctx.countries.tags);
-  const wantedPlayers = new Set(contentSet(ctx.options.players).map(contentKey));
-  if (group === 'player') {
-    return registry.players
-      .filter(p => (wantedPlayers.size === 0 || wantedPlayers.has(p.id)) && (!wantedTags || p.tags.some(t => wantedTags.has(t))))
-      .map(p => p.id);
-  }
   const tags = new Set<string>();
   for (const p of registry.players) {
     for (const t of p.tags) {
@@ -554,7 +584,7 @@ export const apmGraphDeclaration: TimeChartWidgetDeclaration<ApmGraphOptions, Ap
       yMin,
       yMax,
       available: ctx.aux ? ctx.aux.available : null,
-      ...(ctx.aux ? { players: ctx.aux.players } : {}),
+      ...(ctx.aux && group === 'player' ? { players: selectedPlayers(ctx) } : {}),
     };
   },
 };
