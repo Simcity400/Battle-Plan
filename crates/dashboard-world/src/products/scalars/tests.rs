@@ -455,6 +455,9 @@ fn world_tension_stack_states_the_recorded_world_scalar_and_each_missing_reason_
     let other = one.other.expect("the selected country and the remaining contributions have separate bands");
     assert_eq!(other.count, 2);
     assert_eq!(other.end_raw.as_deref(), Some("10500000"));
+    let held = StackInput { aggregates_complete: &[(10, 19)], ..input };
+    let after = compute_stack(&held, 10, 21, 5, TensionValueMode::Recorded, Some(&japan), None, None, 200, tag_of, no_change);
+    assert_eq!(after.other.unwrap().count, 1, "Other counts nonzero contributors at the witnessed ranking hour");
 
     let gap = compute_stack(&input, 10, 17, 5, TensionValueMode::Recorded, None, None, None, 200, tag_of, no_change);
     assert_eq!(gap.end_missing.as_deref(), Some("World tension withheld"), "the world end states why it is not known");

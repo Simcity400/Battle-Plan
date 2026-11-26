@@ -86,7 +86,7 @@ describe('world-tension projections', () => {
     const base = sampleStack();
     const main = { ...base, bands: [base.bands[0]!], other: { ...base.other!, count: 1 } };
     const data = {
-      values: 'share', tensionScale: 1000, contributionScale: 100000, contributions: [
+      tensionScale: 1000, contributionScale: 100000, contributions: [
         { slot: 1, tag: 'GER', remembered: false, reading: { Ok: '8000000' } },
       ], sources: [], warnings: [], missing: null,
       live: {
@@ -120,7 +120,7 @@ describe('world-tension projections', () => {
     assert.deepEqual(hoverAsks(plan, at, () => [])[0]?.request.params,
       { branchId: '1', values: 'share', group: null, countries: [], hour: at });
     const reason = 'Not a member of the selected group at this hour.';
-    const lines = worldTensionLinesProjection.project(view({ ...data, values: 'recorded', contributions: [
+    const lines = worldTensionLinesProjection.project(view({ ...data, contributions: [
       { slot: 1, tag: 'GER', remembered: false, reading: { Err: reason } },
     ] }, { ...main, other: null }), opts);
     const group = { type: 'humans', membership: 'hour' };
