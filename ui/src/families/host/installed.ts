@@ -13,6 +13,19 @@ export interface InstalledRecord {
   readonly selectedKey: string | null;
 }
 
+export type DrawnKeys = Readonly<Record<string, readonly string[]>>;
+
+export function displayedHoverKeys(
+  name: string,
+  drawn: DrawnKeys | undefined,
+  tiled: Readonly<Record<string, ReadonlyMap<string, unknown>>> | undefined,
+): readonly string[] | undefined {
+  const keys = drawn?.[name];
+  if (keys !== undefined) return keys;
+  const series = tiled?.[name];
+  return series ? [...series.keys()] : undefined;
+}
+
 const RECORDS = new WeakMap<InstalledPicture, InstalledRecord>();
 const EMPTY_NAV: readonly FamilyNavTuple[] = [];
 

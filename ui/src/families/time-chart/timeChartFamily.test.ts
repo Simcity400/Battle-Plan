@@ -563,6 +563,7 @@ describe('time-chart laneView integration', () => {
     }, state, () => `c${seq++}`);
 
     assert.equal(painted.surfaces.length, 1);
+    assert.deepEqual(painted.fields.drawnKeys?.value, { main: ['GER'] });
     assert.ok(painted.fields.audit);
     assert.deepEqual(painted.fields.artDemands?.value, [{ kind: 'sprite', key: 'GFX_pol_power', frame: 0, recorded: 'recorded-sprite', text: true }],
       'the full sprite handle goes to the art request');
@@ -1341,6 +1342,9 @@ describe('several countries, one measure', () => {
     assert.deepEqual(rows(shown), ['A09=9,000', 'A03=3,000']);
     assert.deepEqual(rows(shown), rows(exact));
     assert.deepEqual(shown.series.map(s => s.id), ['A09', 'A03'], 'the lines of the top at the displayed hour, in its order');
+    const baseLayout = layoutTimeChart(shown, 600, 240, FONT, measure);
+    const fields = timeChartLane.structure({ layout: { model: shown, base: baseLayout } } as Parameters<typeof timeChartLane.structure>[0]);
+    assert.deepEqual(fields.drawnKeys, { main: ['A09', 'A03'] });
     assert.ok(shown.series.find(s => s.id === 'A03')!.bounded, 'a ranked country keeps its drawn history');
   });
 
