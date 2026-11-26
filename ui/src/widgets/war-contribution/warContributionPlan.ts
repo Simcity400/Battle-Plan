@@ -4,7 +4,7 @@ import type { BoundedReadView } from '../../families/contract.ts';
 import type { AuxProductSpec, CountryPolicy, FamilyPlanContext, SourceEntry, SourcePlan } from '../../families/plan.ts';
 import type { WarContributionGroup, WarContributionsReply, WarObservation, WarsReply, WarTimeline } from '../../generated/dashboard';
 import { observationAt, validateWarContributions, validateWarsReply, warContributions } from '../wars/warsData.ts';
-import { WAR_NOT_STARTED, chosenWar, readHourFor, warChipStateAt } from './warContributionData.ts';
+import { WAR_NOT_STARTED, chosenWar, readHourFor, warChipStateAt, warEligibilityAt } from './warContributionData.ts';
 
 export type WarSide = 'viewpoint' | 'opposing';
 
@@ -96,7 +96,7 @@ export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): Sourc
   const saved = savedWar(ctx.options);
   const owner = `war-contribution:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${viewpoint ?? ''}:${saved ?? ''}`;
   if (!ctx.aux || !ctx.aux.available || !ctx.aux.wars.length) {
-    return { owner, entries: [], allowEmptyFollow: true };
+    return { owner, entries: [], allowEmptyFollow: true, valid: [-Infinity, Infinity] };
   }
   const entry = (name: string, read: SourceEntry['read']): SourceEntry => ({ name, source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset, read });
   const live = entry('live', {
@@ -114,13 +114,11 @@ export function warContributionSources(ctx: FamilyPlanContext<WarsReply>): Sourc
     preserveDisplayHour: true,
     validate: validateWarContributions,
   });
-  if (!ctx.following) {
-    const at = staticHour(ctx);
-    if (at !== null) {
-      const war = chosenWar(ctx.aux, saved, at);
-      if (!war || !observationAt(war, readHourFor(war, at))) return { owner, entries: [], allowEmptyFollow: true };
-      return { owner, entries: [observationAt(war, at) !== null ? live : ended] };
-    }
+  const at = ctx.following ? (ctx.planHour ?? null) : staticHour(ctx);
+  if (at !== null) {
+    const eligibility = warEligibilityAt(ctx.aux, saved, at);
+    if (eligibility.mode === 'none') return { owner, entries: [], allowEmptyFollow: true, valid: eligibility.valid };
+    return { owner, entries: [eligibility.mode === 'live' ? live : ended], valid: eligibility.valid };
   }
   return { owner, entries: [live, ended] };
 }

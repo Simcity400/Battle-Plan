@@ -45,7 +45,7 @@ import {
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
-import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
+import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, watchPlanValid } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -488,6 +488,13 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     [track, widget.time.mode, window],
   );
 
+  const trackOffset = track?.axisOffset ?? 0;
+  const [planCrossings, setPlanCrossings] = useState(0);
+  const planHour = useMemo(
+    () => (following ? Math.floor(runtime.clock.getHour()) + trackOffset : moment),
+    [following, runtime.clock, trackOffset, moment, planCrossings, auxResult.data, countryTag, options],
+  );
+
   const baseCtx = useMemo<Omit<FamilyPlanContext<TAux>, 'staticSpan'> | null>(() => {
     if (!track) return null;
     return {
@@ -503,8 +510,9 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       countryName,
       countries: countriesState,
       gateSpan: gate.span,
+      planHour,
     };
-  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span]);
+  }, [track, lastRecorded, widget, options, following, auxResult.data, countryTag, countrySubject, countryName, countriesState, gate.span, planHour]);
 
   const inputsReady = !!baseCtx
     && (!isSingle || (gate.open && countryTag !== null))
@@ -540,6 +548,14 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     stablePlanRef.current = { sig, plan: rawPlan };
   }
   const plan = stablePlanRef.current.plan;
+  const planLo = rawPlan?.valid?.[0];
+  const planHi = rawPlan?.valid?.[1];
+  useEffect(() => {
+    if (!following || !active || planLo === undefined || planHi === undefined) return;
+    return watchPlanValid(runtime.clock, trackOffset, [planLo, planHi], () => {
+      setPlanCrossings(value => value + 1);
+    });
+  }, [following, active, runtime.clock, trackOffset, planLo, planHi]);
 
   const compiledFollow = useMemo(() => {
     if (!following || !active || !plan) {
@@ -816,7 +832,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
 
   const currentTiled = tiledState.key === pixelBinnedKey ? tiledState : null;
-  const trackOffset = track?.axisOffset ?? 0;
 
   const [tileCrossings, setTileCrossings] = useState(0);
   const tileSeenHour = useMemo(

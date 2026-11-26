@@ -1,6 +1,6 @@
 import { entryAt } from '../../dashboard/reads.ts';
 import type { WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { labelObservationAt } from '../wars/warsData.ts';
+import { labelObservationAt, observationAt } from '../wars/warsData.ts';
 
 export const WAR_NOT_STARTED = 'The selected war has not started at this date.';
 
@@ -41,6 +41,74 @@ const PENDING_CHIP: WarChipState = Object.freeze({
   valid: [-Infinity, Infinity] as const,
 });
 
+function sortedUnique(raw: number[]): readonly number[] {
+  raw.sort((a, b) => a - b);
+  const unique: number[] = [];
+  for (const value of raw) if (unique[unique.length - 1] !== value) unique.push(value);
+  return unique;
+}
+
+function upperEdgeIndex(edges: readonly number[], hour: number): number {
+  let low = 0;
+  let high = edges.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (edges[mid]! <= hour) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function spanFromEdges(edges: readonly number[], hour: number): readonly [number, number] {
+  if (!edges.length) return [-Infinity, Infinity];
+  const idx = upperEdgeIndex(edges, hour);
+  return [idx > 0 ? edges[idx - 1]! : -Infinity, idx < edges.length ? edges[idx]! - 1 : Infinity];
+}
+
+const warEdgesCache = new WeakMap<WarTimeline, readonly number[]>();
+const chipEdgesCache = new WeakMap<WarsReply, readonly number[]>();
+const menuStartsCache = new WeakMap<WarsReply, readonly number[]>();
+
+function warEdgesOf(war: WarTimeline): readonly number[] {
+  let edges = warEdgesCache.get(war);
+  if (!edges) {
+    const raw: number[] = [war.firstHour, war.lastHour + 1];
+    for (const obs of war.observations) {
+      raw.push(obs.firstHour, obs.lastHour + 1);
+    }
+    edges = sortedUnique(raw);
+    warEdgesCache.set(war, edges);
+  }
+  return edges;
+}
+
+function chipEdgesOf(wars: WarsReply): readonly number[] {
+  let edges = chipEdgesCache.get(wars);
+  if (!edges) {
+    const raw: number[] = [];
+    for (const item of wars.wars) {
+      raw.push(item.lastHour + 1);
+      for (const obs of item.observations) {
+        raw.push(obs.firstHour, obs.lastHour + 1);
+      }
+    }
+    edges = sortedUnique(raw);
+    chipEdgesCache.set(wars, edges);
+  }
+  return edges;
+}
+
+function menuStartsOf(wars: WarsReply): readonly number[] {
+  let starts = menuStartsCache.get(wars);
+  if (!starts) {
+    const raw: number[] = [];
+    for (const war of wars.wars) for (const obs of war.observations) raw.push(obs.firstHour);
+    starts = sortedUnique(raw);
+    menuStartsCache.set(wars, starts);
+  }
+  return starts;
+}
+
 export function warChipStateAt(wars: WarsReply | undefined, saved: string | null, at: number | null): WarChipState {
   if (!wars || at === null || !Number.isFinite(at)) return PENDING_CHIP;
   const hour = Math.floor(at);
@@ -50,59 +118,61 @@ export function warChipStateAt(wars: WarsReply | undefined, saved: string | null
       return { at: hour, war: null, observation: null, prestart: true, valid: [-Infinity, explicit.firstHour - 1] };
     }
     if (hour > explicit.lastHour) {
-      const observation = explicit.observations.at(-1) ?? null;
       return {
         at: hour,
         war: explicit,
-        observation,
+        observation: explicit.observations.at(-1) ?? null,
         prestart: false,
         valid: [explicit.lastHour + 1, Infinity],
       };
     }
-    const observation = labelObservationAt(explicit, hour);
-    let lo = explicit.firstHour;
-    let hi = explicit.lastHour;
-    if (observation) {
-      lo = observation.firstHour;
-      hi = observation.lastHour;
-    } else {
-      for (const item of explicit.observations) {
-        if (item.lastHour < hour) lo = Math.max(lo, item.lastHour + 1);
-        else if (item.firstHour > hour) hi = Math.min(hi, item.firstHour - 1);
-      }
-    }
     return {
       at: hour,
       war: explicit,
-      observation,
+      observation: labelObservationAt(explicit, hour),
       prestart: false,
-      valid: [lo, hi],
+      valid: spanFromEdges(warEdgesOf(explicit), hour),
     };
   }
   const war = chosenWar(wars, null, hour);
-  const observation = war ? labelObservationAt(war, hour) : null;
-  let lo = -Infinity;
-  let hi = Infinity;
-  const bound = (edge: number) => {
-    if (edge <= hour) {
-      if (edge > lo) lo = edge;
-    } else if (edge - 1 < hi) {
-      hi = edge - 1;
-    }
-  };
-  for (const item of wars.wars) {
-    bound(item.lastHour + 1);
-    for (const obs of item.observations) {
-      bound(obs.firstHour);
-      bound(obs.lastHour + 1);
-    }
-  }
   return {
     at: hour,
     war,
-    observation,
+    observation: war ? labelObservationAt(war, hour) : null,
     prestart: false,
-    valid: [lo, hi],
+    valid: spanFromEdges(chipEdgesOf(wars), hour),
+  };
+}
+
+export type WarEligibilityMode = 'none' | 'live' | 'ended';
+
+export function warEligibilityAt(
+  wars: WarsReply | undefined,
+  saved: string | null,
+  at: number,
+): { readonly mode: WarEligibilityMode; readonly valid: readonly [number, number] } {
+  if (!wars || !wars.available || !wars.wars.length || !Number.isFinite(at)) {
+    return { mode: 'none', valid: [-Infinity, Infinity] };
+  }
+  const hour = Math.floor(at);
+  const explicit = saved ? wars.wars.find(item => item.id === saved) ?? null : null;
+  const edges = explicit ? warEdgesOf(explicit) : chipEdgesOf(wars);
+  const classify = (h: number): string => {
+    const war = chosenWar(wars, saved, h);
+    if (!war) return 'none';
+    if (observationAt(war, h) !== null) return 'live';
+    return observationAt(war, readHourFor(war, h)) !== null ? `ended:${war.id}` : 'none';
+  };
+  const idx = upperEdgeIndex(edges, hour);
+  const tag = classify(hour);
+  let left = idx;
+  while (left > 0 && classify(edges[left - 1]! - 1) === tag) left--;
+  let right = idx;
+  while (right < edges.length && classify(edges[right]!) === tag) right++;
+  const mode: WarEligibilityMode = tag === 'live' ? 'live' : tag.startsWith('ended:') ? 'ended' : 'none';
+  return {
+    mode,
+    valid: [left > 0 ? edges[left - 1]! : -Infinity, right < edges.length ? edges[right]! - 1 : Infinity],
   };
 }
 
@@ -141,35 +211,9 @@ export function warChipLeaderHour(
   return shown === null || !Number.isFinite(shown) ? null : Math.min(Math.floor(shown), observation.lastHour);
 }
 
-const menuStartsCache = new WeakMap<WarsReply, readonly number[]>();
-
-function menuStartsOf(wars: WarsReply): readonly number[] {
-  let starts = menuStartsCache.get(wars);
-  if (!starts) {
-    const raw: number[] = [];
-    for (const war of wars.wars) for (const obs of war.observations) raw.push(obs.firstHour);
-    raw.sort((a, b) => a - b);
-    const unique: number[] = [];
-    for (const hour of raw) if (unique[unique.length - 1] !== hour) unique.push(hour);
-    starts = unique;
-    menuStartsCache.set(wars, starts);
-  }
-  return starts;
-}
-
 export function warMenuSpanAt(wars: WarsReply | undefined, at: number): readonly [number, number] {
   if (!wars || !Number.isFinite(at)) return [-Infinity, Infinity];
-  const starts = menuStartsOf(wars);
-  if (!starts.length) return [-Infinity, Infinity];
-  const hour = Math.floor(at);
-  let low = 0;
-  let high = starts.length;
-  while (low < high) {
-    const mid = (low + high) >> 1;
-    if (starts[mid]! <= hour) low = mid + 1;
-    else high = mid;
-  }
-  return [low > 0 ? starts[low - 1]! : -Infinity, low < starts.length ? starts[low]! - 1 : Infinity];
+  return spanFromEdges(menuStartsOf(wars), Math.floor(at));
 }
 
 export function createWarMenuTracker(

@@ -1,4 +1,6 @@
 import type { WidgetSpec } from '../../dashboard/model';
+import type { PlaybackController } from '../../dashboard/playback';
+import { watchBoundary } from '../../dashboard/widgetTime.ts';
 import { planSignature } from '../broker.ts';
 import type { CountryPolicy, FamilyPlanContext, FamilyViewportRequest, SourcePlan } from '../plan.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -52,4 +54,21 @@ export function planFamilySources<TAux>(
       })
     : null;
   return { ctx, rangeSpan, plan, sig: plannedSignature(plan, rangeSpan) };
+}
+
+export function watchPlanValid(
+  clock: PlaybackController,
+  trackOffset: number,
+  valid: readonly [number, number] | undefined,
+  onCross: () => void,
+): (() => void) | undefined {
+  if (!valid) return undefined;
+  const [lo, hi] = valid;
+  const now = Math.floor(clock.getHour()) + trackOffset;
+  if (now < lo || now > hi) {
+    onCross();
+    return undefined;
+  }
+  if (lo === -Infinity && hi === Infinity) return undefined;
+  return watchBoundary(clock, () => [lo - trackOffset, hi + 1 - trackOffset], onCross);
 }

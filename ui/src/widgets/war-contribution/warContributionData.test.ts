@@ -341,6 +341,104 @@ test('warContributionSources plans no contribution reads when no eligible war ex
     if (group.kind === 'blank') assert.equal(group.empty, expectedEmpty);
   }
   assert.equal(exactFetches, 0, 'allowed empty exact reads fetch no contribution products');
+
+  const { PlaybackController } = await import('../../dashboard/playback.ts');
+  const { watchPlanValid } = await import('../../families/host/planSources.ts');
+  const splitWar = {
+    ...war('1', 100, 200, [['AAA'], ['BBB']]),
+    observations: [observation(100, 125, ['AAA'], ['BBB']), observation(175, 200, ['AAA'], ['BBB'])],
+  } as unknown as WarTimeline;
+  const splitWars = { available: true, wars: [splitWar] } as unknown as WarsReply;
+  const followClock = new PlaybackController();
+  followClock.setBounds({ firstHour: 0, lastHour: 300 }, true);
+  followClock.seek(50);
+
+  let replans = 0;
+  let stopWatch: (() => void) | undefined;
+  let activePlan = warContributionSources({ ...makeCtx(splitWars, true, '1'), planHour: followClock.getHour() });
+  const arm = () => {
+    stopWatch?.();
+    stopWatch = watchPlanValid(followClock, 0, activePlan.valid, () => {
+      replans++;
+      activePlan = warContributionSources({ ...makeCtx(splitWars, true, '1'), planHour: followClock.getHour() });
+      arm();
+    });
+  };
+  arm();
+
+  assert.deepEqual(activePlan.entries.map(e => e.name), [], 'prestart follow mode subscribes nothing');
+  assert.deepEqual(activePlan.valid, [-Infinity, 99]);
+  const askedHours: number[] = [];
+  const trackingClient = {
+    product: async (req: { params: { hour?: number } }) => {
+      askedHours.push(req.params.hour ?? -1);
+      return { data: { ...endedReply, hour: req.params.hour ?? 0 } };
+    },
+  } as unknown as Parameters<typeof readPlanExact>[2]['client'];
+  const exactOpts = (at: number) => ({
+    client: trackingClient,
+    following: true,
+    timeMode: 'follow' as const,
+    branch: { firstHour: 0, lastHour: 300 },
+    window: null,
+    staticSpan: null,
+    gate,
+    ...(at >= 0 ? {} : {}),
+  });
+  assert.ok(await readPlanExact(activePlan, 50, exactOpts(50)));
+  assert.deepEqual(askedHours, [], 'prestart follow exact read fetches no contributions');
+
+  followClock.seek(99);
+  assert.equal(replans, 0);
+  followClock.step(1);
+  assert.equal(replans, 1, 'wakes at war start (100) without remount');
+  assert.deepEqual(activePlan.entries.map(e => e.name), ['live']);
+  assert.deepEqual(activePlan.valid, [100, 125]);
+
+  followClock.seek(150);
+  assert.equal(replans, 2, 'wakes when entering observation gap (126..174)');
+  assert.deepEqual(activePlan.entries.map(e => e.name), [], 'observation gap unsubscribes live');
+  assert.deepEqual(activePlan.valid, [126, 174]);
+  assert.ok(await readPlanExact(activePlan, 150, exactOpts(150)));
+  assert.deepEqual(askedHours, [], 'gap follow exact read fetches no contributions');
+
+  followClock.seek(175);
+  assert.equal(replans, 3, 'wakes when war resumes observation (175..200)');
+  assert.deepEqual(activePlan.entries.map(e => e.name), ['live']);
+  assert.deepEqual(activePlan.valid, [175, 200]);
+
+  followClock.seek(250);
+  assert.equal(replans, 4, 'wakes after war ends (201..Infinity)');
+  assert.deepEqual(activePlan.entries.map(e => e.name), ['ended'], 'ended war drops live subscription and plans only ended');
+  assert.deepEqual(activePlan.valid, [201, Infinity]);
+  const endedExact = await readPlanExact(activePlan, 250, exactOpts(250));
+  assert.equal(endedExact?.hour, 250);
+  assert.deepEqual(askedHours, [200], 'ended follow exact read fetches only hour 200, never 250');
+
+  followClock.seek(50);
+  assert.equal(replans, 5, 'seeking back before start returns to empty plan');
+  assert.deepEqual(activePlan.entries.map(e => e.name), []);
+  stopWatch?.();
+
+  let obsReads = 0;
+  const manyObs = Array.from({ length: 2000 }, (_, i) => observation(i, i, ['AAA'], [`B${i}`]));
+  const countingObs = new Proxy(manyObs, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) obsReads++;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const hourlyWars = {
+    available: true,
+    wars: [{ ...war('1', 0, 1999, [['AAA'], ['B0']]), observations: countingObs } as unknown as WarTimeline],
+  } as unknown as WarsReply;
+  warChipStateAt(hourlyWars, null, 0);
+  obsReads = 0;
+  for (let h = 1; h <= 100; h++) {
+    const state = warChipStateAt(hourlyWars, null, h);
+    assert.deepEqual(state.valid, [h, h]);
+  }
+  assert.ok(obsReads < 4000, `cached edge index avoids rescanning all 2,000 observations per boundary (reads=${obsReads})`);
 });
 
 test('war chip and menu watchers stay quiet across 100 played hours and wake only on observation or lead-identity changes', async () => {
