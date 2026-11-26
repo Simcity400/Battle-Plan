@@ -1,6 +1,8 @@
 
+use super::{fleet_fields, raws, under};
+use dashboard_base::products::at_hour::field_columns;
 use dashboard_base::products::{Country, validate_country};
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}};
+use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Edits, Held, Owner, Read, ReadsAt}};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_text::{
@@ -104,9 +106,6 @@ fn fixed(raw: i64) -> String {
     format!("{}{}.{:05}", if raw < 0 { "-" } else { "" }, magnitude / 100_000, magnitude % 100_000)
 }
 
-fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
-    held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
-}
 
 struct Owned {
     tasks: BTreeSet<u64>,
@@ -122,19 +121,24 @@ fn owned(held: &DecodedFrame, raws: &BTreeSet<u32>) -> Owned {
     }
 }
 
-fn ships(held: &DecodedFrame, owned: &Owned) -> BTreeSet<u64> {
-    let mut ships: BTreeSet<u64> = held.complete::<tables::Ships>().unwrap_or_default().iter().filter(|row| owned.tasks.contains(&row.task_force)).map(|row| row.id).collect();
-    ships.extend(held.complete::<tables::NavalRepairQueue>().unwrap_or_default().iter().filter(|row| owned.ports.contains(&row.province)).map(|row| row.ship));
-    ships
-}
-
-fn under(table: TableId, owners: &BTreeSet<u64>, shift: u32) -> Read {
-    let low = |owner: u64| u128::from(owner) << shift;
-    Read { table, keys: Keys::Ranges(owners.iter().map(|&owner| (low(owner), low(owner) | ((1u128 << shift) - 1))).collect()) }
-}
-
 fn these<T: Copy + Into<u128>>(table: TableId, keys: impl IntoIterator<Item = T>) -> Read {
     Read::these(table, keys.into_iter().map(Into::into))
+}
+
+fn changed_ships(edits: &Edits) -> Option<&std::collections::BTreeMap<u128, u64>> {
+    (edits.replaced.is_empty() && edits.tables.len() == 1).then(|| edits.tables.get(&TableId::Ships)).flatten()
+}
+
+fn fleet_membership_changed(frame: &DecodedFrame, edits: &Edits, ship: u128) -> bool {
+    let tasks = frame.tables[TableId::TaskForceCounterInputs.index()].keys();
+    let task = |table: &replay_frame::frame::SharedView| {
+        let replay_frame::frame::TableView::Complete(rows) = table.held() else { return None };
+        let ships = rows.rows::<tables::Ships>()?;
+        let at = ships.binary_search_by_key(&(ship as u64), |row| row.id).ok()?;
+        let id = ships[at].task_force;
+        tasks.contains(u128::from(id)).then_some(id)
+    };
+    edits.previous.get(&TableId::Ships).is_none_or(|previous| task(previous) != task(&frame.tables[TableId::Ships.index()]))
 }
 
 impl AtHour for NavalManagement {
@@ -171,6 +175,35 @@ impl AtHour for NavalManagement {
         TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::Ships => &["task_force", "strength"],
+            TableId::Fleets => &["owner", "home_base", "name"],
+            TableId::TaskForces => &["roster_owner"],
+            TableId::ShipModels => &["counter"],
+            _ => fleet_fields(table)?,
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::warnings_through(frame.hour, &reply.warnings)
+    }
+
+    fn compares_previous(table: TableId) -> bool { table == TableId::Ships }
+
+    fn plan_changes(_stage: usize, edits: &Edits, frame: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        match changed_ships(edits) {
+            Some(changed) => changed.keys().any(|&ship| fleet_membership_changed(frame, edits, ship)),
+            None => !edits.tables.is_empty() || !edits.replaced.is_empty(),
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, _data: &mut Held<'_>) -> io::Result<bool> {
+        let queued = frame.tables[TableId::ShipModels.index()].keys();
+        Ok(changed_ships(edits).is_some_and(|changes| changes.keys().all(|&ship| !queued.contains(ship) && !fleet_membership_changed(frame, edits, ship))))
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let raws = || raws(held, owner.slot);
@@ -182,9 +215,6 @@ impl AtHour for NavalManagement {
                 TableId::Fleets,
                 TableId::TaskForces,
                 TableId::NavalBases,
-                TableId::NavalRepairQueue,
-                TableId::NavalRefitShips,
-                TableId::NavalRefitProgress,
             ]
             .map(Read::all)
             .into(),
@@ -197,24 +227,29 @@ impl AtHour for NavalManagement {
                     these(TableId::NavalRepairTaskForces, owned.tasks.iter().copied()),
                     these(TableId::TaskForceCounterInputs, owned.tasks.iter().copied()),
                     these(TableId::NavalRepairBases, owned.ports.iter().copied()),
-                    under(TableId::NavalTaskForceComposition, &owned.tasks, 40),
-                    under(TableId::NavalRepairChildren, &owned.tasks, 32),
+                    under(TableId::NavalTaskForceComposition, owned.tasks.iter().copied(), 40),
+                    under(TableId::NavalRepairChildren, owned.tasks.iter().copied(), 32),
+                    under(TableId::NavalRepairQueue, owned.ports.iter().copied(), 32),
                     Read::all(TableId::Ships),
                 ]
             }
             2 => {
-                let ships = ships(held, &owned(held, &raws()));
-                let refits = held.complete::<tables::NavalRefitShips>().unwrap_or_default();
-                let lines: BTreeSet<u64> = refits.iter().filter(|row| ships.contains(&row.ship)).map(|row| row.line).collect();
-                vec![these(TableId::ShipModels, ships.iter().copied()), these(TableId::ProductionLines, lines)]
+                let tasks = held.tables[TableId::TaskForceCounterInputs.index()].keys();
+                let ships = held.complete::<tables::Ships>().unwrap_or_default().iter().filter(|ship| tasks.contains(u128::from(ship.task_force))).map(|ship| ship.id);
+                let queued = held.complete::<tables::NavalRepairQueue>().unwrap_or_default().iter().map(|entry| entry.ship);
+                vec![these(TableId::ShipModels, queued), these(TableId::NavalRefitShips, ships)]
             }
             3 => {
+                let lines: BTreeSet<u64> = held.complete::<tables::NavalRefitShips>().unwrap_or_default().iter().map(|row| row.line).filter(|&line| line != 0).collect();
+                vec![these(TableId::ProductionLines, lines.iter().copied()), these(TableId::NavalRefitProgress, lines)]
+            }
+            4 => {
                 let mut variants: BTreeSet<u64> = held.complete::<tables::NavalRepairTaskForces>().unwrap_or_default().iter().flat_map(|row| [row.refit_variant, row.refit_after_repair]).collect();
                 variants.extend(held.complete::<tables::ProductionLines>().unwrap_or_default().iter().map(|row| row.variant));
                 variants.remove(&0);
                 vec![these(TableId::VariantDefinitions, variants)]
             }
-            4 => {
+            5 => {
                 let mut tokens: BTreeSet<u32> = held.complete::<tables::VariantDefinitions>().unwrap_or_default().iter().map(|row| row.equipment_token).collect();
                 tokens.extend(held.complete::<tables::NavalRepairTaskForces>().unwrap_or_default().iter().map(|row| row.composition_token));
                 vec![these(TableId::LexicalTokens, tokens)]

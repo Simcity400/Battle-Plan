@@ -506,7 +506,21 @@ where P::Context: Sync, P::Params: Sync {
             let mut own = OwnRefusals::default();
             #[cfg(any(test, feature = "test-support"))]
             crate::test_fixtures::product_called();
-            let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)))?;
+            let result = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)));
+            let mut reply = match result {
+                Ok(reply) => reply,
+                Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame) => {
+                    state.data = Arc::new(Err(error.to_string()));
+                    state.live = Arc::default();
+                    state.extra = Supplemental::default();
+                    state.reply = None;
+                    state.reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_through(&state.frame, &params, &at));
+                    state.rebuild = false;
+                    state.values_at = Some(hour);
+                    return Ok(state.data.clone());
+                }
+                Err(error) => return Err(error),
+            };
             let partial = selected.iter().any(|table| matches!(state.frame.tables[table.index()].held(), TableView::Truncated { .. }));
             let reply_through = sampling(&state.frame, &mut state.sampled, || P::valid_reply_through(&state.frame, &params, &at, &reply, partial));
             finish(reply.warnings_mut(), &own, &warnings);

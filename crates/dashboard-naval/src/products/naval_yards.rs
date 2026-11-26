@@ -134,8 +134,16 @@ fn validate(params: &NavalYardsParams) -> Result<(), &'static str> {
     validate_country(&params.country)
 }
 
-fn raws(held: &DecodedFrame, slot: u32) -> BTreeSet<u32> {
-    held.complete::<tables::CountryLinks>().map(|rows| rows.iter().filter(|row| row.canonical_slot == slot).map(|row| row.id).collect()).unwrap_or_default()
+use super::{fleet_fields, raws, under};
+use dashboard_base::products::at_hour::field_columns;
+
+fn yard_fields(table: TableId) -> Option<&'static [&'static str]> {
+    Some(match table {
+        TableId::Ships => &["task_force", "name", "naming", "class_id", "strength"],
+        TableId::ShipModels => &["variant", "subunit_index", "counter"],
+        TableId::NavalRepairTaskForces => &["repair_mode"],
+        _ => return fleet_fields(table),
+    })
 }
 
 fn ship_reads(ships: &BTreeSet<u64>) -> Vec<Read> {
@@ -464,14 +472,34 @@ impl AtHour for NavalRepairs {
         REPAIR_TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::CountryAppearance => &["name_tag", "original_tag", "original_tag_reference"],
+            TableId::ReservedCountryNaming => &["tag", "original_tag", "original_tag_reference"],
+            TableId::Provinces => &["state"],
+            TableId::NavalRepairCountries => &["num_used_dockyards", "max_allowed_dockyards_to_repair"],
+            _ => yard_fields(table)?,
+        };
+        Some(field_columns(table, fields))
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        super::warnings_through(frame.hour, &reply.warnings)
+    }
+
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
+        !complete(frame, TableId::NavalBases)
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         match step {
-            0 => [TableId::NavalBases, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance, TableId::ReservedCountryNaming, TableId::NavalRepairQueue].map(Read::all).into(),
+            0 => [TableId::NavalBases, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance, TableId::ReservedCountryNaming].map(Read::all).into(),
             1 => {
                 let raws = raws(held, owner.slot);
                 let ports = owned_ports(held, &raws);
                 vec![
+                    under(TableId::NavalRepairQueue, ports.iter().copied(), 32),
                     Read::these(TableId::NavalRepairBases, ports.iter().map(|&id| u128::from(id))),
                     Read::these(TableId::NavalRepairCountries, raws.iter().map(|&id| u128::from(id))),
                     Read::these(TableId::Provinces, ports.iter().map(|&id| u128::from(id))),
@@ -503,7 +531,9 @@ impl AtHour for NavalRepairs {
         let raws = raws(frame, owner.slot);
         let ports = owned_ports(frame, &raws);
         let queues = queues(frame, &ports);
-        let queue_missing = witnessed_rows::<tables::NavalRepairQueue>(frame).missing;
+        let selection = frame.tables[TableId::NavalRepairQueue.index()].keys();
+        let asked = if *selection == replay_frame::frame::Keys::All { selection.clone() } else { under(TableId::NavalRepairQueue, ports.iter().copied(), 32).keys };
+        let queue_missing = dashboard_query::coverage::population::<tables::NavalRepairQueue>(frame, &asked).err();
         let places = Places::new(frame);
         let mut yard = Yard::new(frame, &at.context.cat, at.live);
         let bases = frame.complete::<tables::NavalRepairBases>().unwrap_or_default();
@@ -562,8 +592,12 @@ fn finite(raw: i64) -> bool {
     raw != i64::MAX && raw != i64::MIN && raw != i64::MIN + 1
 }
 
+fn owned_handles(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeSet<u64> {
+    held.complete::<tables::ProductionLines>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.handle).collect()).unwrap_or_default()
+}
+
 fn owned_lines(held: &DecodedFrame, raws: &BTreeSet<u32>) -> BTreeMap<u64, Vec<u64>> {
-    let owned: BTreeSet<u64> = held.complete::<tables::ProductionLines>().map(|rows| rows.iter().filter(|row| raws.contains(&row.country)).map(|row| row.handle).collect()).unwrap_or_default();
+    let owned = owned_handles(held, raws);
     let mut out: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for row in held.complete::<tables::NavalRefitProgress>().unwrap_or_default().iter().filter(|row| owned.contains(&row.line)) {
         out.insert(row.line, Vec::new());
@@ -618,13 +652,18 @@ impl AtHour for NavalRefits {
         REFIT_TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        yard_fields(table).map(|fields| field_columns(table, fields))
+    }
+
     fn reads(_params: &Self::Params, owner: Option<Owner>, step: usize, held: &DecodedFrame) -> Vec<Read> {
         let Some(owner) = owner else { return Vec::new() };
         let lines = || owned_lines(held, &raws(held, owner.slot));
         match step {
-            0 => [TableId::NavalRefitProgress, TableId::NavalRefitShips, TableId::ProductionLines, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].map(Read::all).into(),
-            1 => ship_reads(&lines().into_values().flatten().collect()),
-            2 => {
+            0 => [TableId::ProductionLines, TableId::CountryLinks, TableId::Countries, TableId::CountryAppearance].map(Read::all).into(),
+            1 => vec![Read::all(TableId::NavalRefitShips), Read::these(TableId::NavalRefitProgress, owned_handles(held, &raws(held, owner.slot)).into_iter().map(u128::from))],
+            2 => ship_reads(&lines().into_values().flatten().collect()),
+            3 => {
                 let targets: Vec<u64> = held
                     .complete::<tables::ProductionLines>()
                     .map(|rows| {
@@ -634,7 +673,7 @@ impl AtHour for NavalRefits {
                     .unwrap_or_default();
                 named_reads(held, targets)
             }
-            3 => token_reads(held),
+            4 => token_reads(held),
             _ => Vec::new(),
         }
     }
@@ -644,6 +683,10 @@ impl AtHour for NavalRefits {
             Some(read) if read > frame.hour => read - 1,
             _ => i32::MAX,
         }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
+        Self::valid_through(frame, params, at).min(super::warnings_through(frame.hour, &reply.warnings))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

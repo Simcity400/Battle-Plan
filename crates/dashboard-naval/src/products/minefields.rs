@@ -1,6 +1,6 @@
 
 use dashboard_base::products::{Country, regions::{ActiveRegions, NoRegions}};
-use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour}}, queries::country_ids::Names};
+use dashboard_base::{products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}, queries::country_ids::Names};
 use dashboard_world::products::{place_names, sea_regions::{self, SeaContent}};
 use dashboard_base::{Source, catalogue::Refusals};
 use dashboard_follow::live::Source as LiveSource;
@@ -275,6 +275,21 @@ impl AtHour for Minefields {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         vec![TableId::NavalRegionalMines, TableId::CountryLinks]
+    }
+
+    fn reads(_params: &Self::Params, _owner: Option<Owner>, stage: usize, frame: &DecodedFrame) -> Vec<Read> {
+        match stage {
+            0 => vec![Read::all(TableId::NavalRegionalMines)],
+            1 => {
+                let rows = dashboard_query::coverage::witnessed_rows::<tables::NavalRegionalMines>(frame);
+                vec![Read::these(TableId::CountryLinks, rows.rows.iter().map(|row| u128::from(row.country)))]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn holds_refusal(frame: &DecodedFrame) -> bool {
+        matches!(frame.tables[TableId::NavalRegionalMines.index()].held(), TableView::Unavailable { .. } | TableView::NotRecorded { .. })
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
