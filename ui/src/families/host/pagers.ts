@@ -57,6 +57,6 @@ export function pagerWindow(held: PagerSet, entry: PagedEntry, window: FamilyRow
   const frozen = held.frozen.get(entry.name);
   const hour = frozen && installedHour !== null && Number.isFinite(installedHour) ? Math.min(frozen.hour, installedHour) : installedHour;
   const step = pager.window(window, hour);
-  if (frozen && (pager.hour !== null || atHead(window, entry.read.tailQuery.limit))) held.frozen.delete(entry.name);
+  if (frozen && atHead(window, entry.read.tailQuery.limit)) held.frozen.delete(entry.name);
   return { pager, step };
 }
