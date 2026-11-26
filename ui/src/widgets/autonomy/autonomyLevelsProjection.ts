@@ -13,6 +13,7 @@ import type { ArtResult } from '../../families/contract.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { AutonomyLevelsReply, AutonomySubject, SubjectLevel } from '../../generated/dashboard';
 import { identityName } from '../../families/table/identityCell.ts';
+import { ALL_POPULATION_TOP } from '../../families/time-chart/seriesHelpers.ts';
 
 export interface AutonomyLevelsOptions {
   readonly filter: DeclaredCountryFilter;
@@ -65,32 +66,37 @@ export function overlordKeyOf(item: Pick<AutonomySubject, 'overlordSlot' | 'over
 
 export function sampleSparkline(series: BoundedSeries | undefined, hour: number, points = 16): readonly (number | null)[] | undefined {
   if (!series || series.buckets.length === 0) return undefined;
-  const values: { readonly hour: number; readonly value: number }[] = [];
+  const pieces: { readonly first: number; readonly last: number; readonly firstValue: number; readonly lastValue: number; readonly starts: boolean; readonly broken: boolean }[] = [];
   for (const bucket of series.buckets) {
     if (!bucket) continue;
     if (bucket.firstHour > hour) break;
-    const clampedHour = Math.min(bucket.lastHour, hour);
-    values.push({ hour: bucket.firstHour, value: bucket.firstValue });
-    if (clampedHour > bucket.firstHour) {
-      values.push({ hour: clampedHour, value: bucket.lastValue });
-    }
+    pieces.push({ first: bucket.firstHour, last: Math.min(bucket.lastHour, hour), firstValue: bucket.firstValue, lastValue: bucket.lastValue, starts: bucket.firstBreak, broken: bucket.hasBreak });
   }
-  if (values.length < 2) return undefined;
-  const first = values[0]!.hour;
-  const last = values[values.length - 1]!.hour;
+  if (!pieces.length) return undefined;
+  const first = pieces[0]!.first;
+  const last = pieces[pieces.length - 1]!.last;
   if (last <= first) return undefined;
+  const missing = [...series.missing];
+  const unreadBetween = (from: number, to: number) => missing.some(span => span.firstHour <= to && from <= span.lastHour);
   const out: (number | null)[] = [];
   let cursor = 0;
   let known = 0;
+  let previous: { readonly hour: number; readonly piece: number } | null = null;
   for (let i = 0; i < points; i++) {
     const target = first + ((last - first) * i) / (points - 1);
-    while (cursor + 1 < values.length && values[cursor + 1]!.hour <= target) cursor++;
-    const hit = values[cursor];
-    if (hit) {
-      out.push(hit.value);
+    while (cursor < pieces.length && pieces[cursor]!.last + 1 <= target && cursor + 1 < pieces.length) cursor++;
+    const piece = pieces[cursor]!;
+    const at = Math.floor(target);
+    const inside = piece.first <= target && target < piece.last + 1 && !unreadBetween(at, at) && !piece.broken;
+    const broken = previous !== null && (unreadBetween(previous.hour + 1, at)
+      || pieces.slice(previous.piece + 1, cursor + 1).some((held, k) => held.starts || held.broken || pieces[previous!.piece + k]!.last + 1 < held.first));
+    if (inside && !broken) {
+      out.push(target >= piece.last ? piece.lastValue : piece.firstValue);
       known++;
+      previous = { hour: at, piece: cursor };
     } else {
       out.push(null);
+      previous = inside ? { hour: at, piece: cursor } : null;
     }
   }
   return known >= 2 ? out : undefined;
@@ -247,7 +253,7 @@ export const autonomyLevelsDeclaration: MeterWidgetDeclaration<AutonomyLevelsOpt
           coverage: { mode: 'population', form: 'all' },
           family: { kind: 'autonomy-lines' },
           tags: [],
-          top: { n: 1500 },
+          top: { n: Math.max(ALL_POPULATION_TOP, ctx.countries.every.length) },
           headQuery: null,
         },
       },

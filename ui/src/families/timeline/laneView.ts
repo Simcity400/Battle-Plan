@@ -4,7 +4,7 @@ import type { ArtResult, BoundedReadView, FamilyTheme, MirrorModel } from '../co
 import type { FamilyNavTuple } from '../host/keyboard.ts';
 import type { FamilyTooltipPayload } from '../host/tooltips.ts';
 import type { LaneBinding, LaneFamily } from '../laneRuntime.ts';
-import { AXIS_HEIGHT, frameTimeline, placeTimeline, visibleRange, type TimelineLayout, type TimelinePlacement } from './layout.ts';
+import { frameTimeline, placeTimeline, visibleRange, type TimelineLayout, type TimelinePlacement } from './layout.ts';
 import { resolutionFor, type TimelineResolution } from './resolution.ts';
 import { decodeTimelineHit, deriveTimelineAudit, encodeTimelineHit, laneByKey, spanAt, type TimelineHit, type TimelineLane, type TimelineModel, type TimelineProjection } from './model.ts';
 import { drawTimeline, hitTimeline } from './painter.ts';
@@ -177,7 +177,7 @@ export const timelineLane: LaneFamily<FamilyTimelineBinding, TimelineModel, Time
         notes: model.notes ?? [],
         warnings: model.warnings,
       },
-      extent: { height: layout.frame.bodyTop + layout.frame.contentHeight + AXIS_HEIGHT } satisfies TimelineExtentField,
+      extent: { height: layout.frame.height - layout.frame.bodyHeight + layout.frame.contentHeight } satisfies TimelineExtentField,
       nav: navOf(layout.frame),
     };
   },

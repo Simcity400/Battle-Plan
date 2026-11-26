@@ -8,6 +8,7 @@ export interface TimelineResolution {
   readonly bucket: number;
   readonly minHours: number;
   readonly lanes: Map<string, readonly TimelineSpan[]>;
+  readonly members: Map<TimelineSpan, readonly TimelineSpan[]>;
   gaps: readonly HourSpan[] | null;
 }
 
@@ -21,11 +22,20 @@ export function resolutionFor(previous: TimelineResolution | null, model: Timeli
   const plotWidth = layout.plotRight - layout.plotLeft;
   const bucket = Math.floor(Math.log2(Math.max(1e-6, hoursPerPixel(layout))));
   if (previous && previous.model === model && previous.plotWidth === plotWidth && previous.bucket === bucket) return previous;
-  return { model, plotWidth, bucket, minHours: 2 ** bucket, lanes: new Map(), gaps: null };
+  return { model, plotWidth, bucket, minHours: 2 ** bucket, lanes: new Map(), members: new Map(), gaps: null };
 }
 
 function spanEnd(span: TimelineSpan): number {
   return span.open ? Infinity : span.lastHour + 1;
+}
+
+function artKey(art: TimelineSpan['icon']): string {
+  return art === undefined ? '' : art.status === 'ready' ? art.url : art.status;
+}
+
+function interchangeable(a: TimelineSpan, b: TimelineSpan): boolean {
+  return a.color === b.color && a.label === b.label && artKey(a.icon) === artKey(b.icon)
+    && !a.diamond && !b.diamond && !a.histogram && !b.histogram && !a.halves && !b.halves && !a.marks?.length && !b.marks?.length;
 }
 
 export function coalescedSpans(resolution: TimelineResolution, lane: TimelineLane): readonly TimelineSpan[] {
@@ -36,8 +46,11 @@ export function coalescedSpans(resolution: TimelineResolution, lane: TimelineLan
   for (const span of lane.spans) {
     const prev = out.at(-1);
     const tiny = spanEnd(span) - span.firstHour < min;
-    if (prev && tiny && !prev.open && span.firstHour - spanEnd(prev) < min && prev.color === span.color) {
-      out[out.length - 1] = { ...prev, lastHour: span.lastHour, open: span.open, endUnseen: span.endUnseen };
+    if (prev && tiny && !prev.open && span.firstHour - spanEnd(prev) < min && interchangeable(prev, span)) {
+      const merged = { ...prev, lastHour: span.lastHour, open: span.open, endUnseen: span.endUnseen };
+      resolution.members.set(merged, [...(resolution.members.get(prev) ?? [prev]), span]);
+      resolution.members.delete(prev);
+      out[out.length - 1] = merged;
       continue;
     }
     out.push(span);
@@ -60,6 +73,21 @@ export function coalescedGaps(resolution: TimelineResolution): readonly HourSpan
   }
   resolution.gaps = out;
   return out;
+}
+
+export function spanUnder(resolution: TimelineResolution, painted: TimelineSpan, hour: number): TimelineSpan {
+  const members = resolution.members.get(painted);
+  if (!members) return painted;
+  let best = members[0]!;
+  let distance = Infinity;
+  for (const span of members) {
+    const gap = hour < span.firstHour ? span.firstHour - hour : span.open || hour <= span.lastHour ? 0 : hour - span.lastHour;
+    if (gap < distance) {
+      best = span;
+      distance = gap;
+    }
+  }
+  return best;
 }
 
 export function paintedSpans(resolution: TimelineResolution, lane: TimelineLane, layout: TimelineLayout): PaintedSpan[] {

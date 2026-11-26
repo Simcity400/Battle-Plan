@@ -17,6 +17,7 @@ import type { CivilWar, CivilWarSide, CivilWarsReply, SideExit } from '../../gen
 export interface CivilWarsProjectionOptions {
   readonly showEnded: boolean;
   readonly firstHour: number;
+  readonly branchFirstHour: number;
   readonly surface: string;
   readonly selected: readonly string[] | null;
   readonly holders: Readonly<Record<string, readonly HolderRun[]>> | null;
@@ -125,6 +126,10 @@ export function sideTree(sides: readonly CivilWarSide[]): { index: number; depth
     for (let at = below.length - 1; at >= 0; at--) stack.push({ index: below[at]!, depth: next.depth + 1 });
   }
   return order;
+}
+
+function fightingEnd(war: CivilWar): number {
+  return war.atWar.at(-1)?.lastHour ?? war.lastHour;
 }
 
 function namedSide(war: CivilWar): number {
@@ -265,7 +270,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
     }
     if (!reply) return timelineModel(base);
     const nextChangeAt = reply.nextChange ?? Infinity;
-    const unread = unknownHours([], reply.known, opt.firstHour, reply.hour);
+    const unread = unknownHours([], reply.known, opt.branchFirstHour, reply.hour);
     const notes: string[] = [];
 
     if (!reply.known.length && !reply.wars.length) {
@@ -293,6 +298,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       }
       const state = runState(war.atWar, reply.hour, unread);
       const ongoing = state.kind === 'held' || state.kind === 'unknown';
+      if ((ongoing ? hour : fightingEnd(war)) < opt.firstHour) continue;
       matchedTotal++;
       if (ongoing) ongoingCount++;
       if (!ongoing && !opt.showEnded) continue;
@@ -370,16 +376,16 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       const topColor = pair ? pair[0].colour : (sides[0]?.colour ?? colour(opt.surface, 0));
       let bottomColor = pair ? pair[1].colour : colour(opt.surface, 1);
       if (bottomColor === topColor) bottomColor = colour(opt.surface, 1);
-      const endHour = ongoing ? hour : Math.min(war.lastHour, hour);
+      const endHour = ongoing ? hour : Math.min(fightingEnd(war), hour);
       const span: TimelineSpan = {
         id: 'war',
         firstHour: war.firstHour,
         lastHour: endHour,
         color: topColor,
         halves: [topColor, bottomColor],
-        endCap: !ongoing,
+        endCap: !ongoing && war.atWar.length > 0,
         open: ongoing,
-        startBy: startUnseen(war.firstHour, opt.firstHour, unread),
+        startBy: startUnseen(war.firstHour, opt.branchFirstHour, unread),
         endUnseen: !ongoing && state.kind === 'ended' && state.lastSeen !== null,
       };
       const outcome = war.outcome && winnerName
@@ -434,7 +440,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
             lastHour: sideOpen ? hour : Math.min(side.side.lastHour, hour),
             color: side.colour,
             open: sideOpen,
-            startBy: startUnseen(side.side.firstHour, opt.firstHour, unread),
+            startBy: startUnseen(side.side.firstHour, opt.branchFirstHour, unread),
             endUnseen: !sideOpen && side.state.kind === 'ended' && side.state.lastSeen !== null,
           }],
           auditValue: `${side.tag ?? `slot:${side.side.slot}`}|${aside}`,
@@ -490,7 +496,7 @@ export const civilWarsProjection: TimelineProjection<CivilWarsProjectionOptions>
       }
       return {
         title: lane.label,
-        subtitle: `${formatDateOnly(war.firstHour)} – ${lane.outcome?.mark === 'ongoing' ? 'ongoing' : formatDateOnly(war.lastHour)}`,
+        subtitle: `${formatDateOnly(war.firstHour)} – ${lane.outcome?.mark === 'ongoing' ? 'ongoing' : formatDateOnly(fightingEnd(war))}`,
         hour: at,
         items,
       };
@@ -565,6 +571,7 @@ export const civilWarsDeclaration: TimelineWidgetDeclaration<CivilWarsProjection
   projectionOptions: (ctx, extra) => ({
     showEnded: ctx.options.ended !== 'hidden',
     firstHour: extra.extent[0],
+    branchFirstHour: ctx.branch.firstHour,
     surface: extra.surface,
     selected: ctx.countries.all ? null : ctx.countries.tags,
     holders: ctx.countries.holders,

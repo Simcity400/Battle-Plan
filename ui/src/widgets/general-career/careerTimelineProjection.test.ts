@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
-import { engineHour } from '../../dashboard/calendar.ts';
+import { engineHour, firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { assertQuietFrames, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
@@ -147,4 +148,100 @@ test('leader career reply validates causality, proves quiet stretches up to next
     assert.deepEqual(leaderCareerProof(data, [FIRST, h], h), [AT, AT + 499]);
   }
   assert.equal(careerTimelineDeclaration.kind, 'general-career');
+});
+
+const projectAt = (hour: LeaderHourReply | undefined, career: LeaderCareerReply) => careerTimelineProjection.project(createBoundedReadView({
+  hour: career.hour,
+  identity: datedIdentity({ JAP: [{ from: FIRST, name: 'Imperial Japan' }] }),
+  panels: new Map<string, unknown>([...(hour ? [['hour', hour] as const] : []), ['career', validateLeaderCareer(career)]]),
+}), OPTIONS);
+
+test('a general no longer serving keeps the battles the career recorded, not the hour reply’s empty counters', () => {
+  const retired = H(1939, 1, 1);
+  const career = { ...careerReply(), runs: [{ firstHour: FIRST, lastHour: retired, role, skill: 6, components: [5, 5, 5, 4] as [number, number, number, number] }] };
+  const notServing: LeaderHourReply = { ...hourReply(), missing: 'This leader is not serving at this hour', role: null, skill: null, fought: 0, won: 0, lost: 0, progress: null, traits: null };
+  const model = projectAt(notServing, career);
+  assert.deepEqual(model.header?.kpis?.map(k => [k.value, k.label]), [['2', 'won'], ['1', 'lost'], ['0', 'unresolved'], ['3', 'fought'], ['67%', 'won']]);
+  assert.equal(model.header?.subtitle, 'General · ★ 6 / 9', 'rank and skill as last recorded in service');
+  assert.ok(model.notes?.includes('This leader is not serving at this hour'), 'why the hour reply holds no counters is said');
+  assert.equal(model.meters, undefined, 'no training is claimed for a leader not serving');
+});
+
+test('a month of battles is drawn only over recorded hours in service, and its count is qualified when part of the month was not recorded', () => {
+  const left = H(1938, 1, 20);
+  const career: LeaderCareerReply = {
+    ...careerReply(),
+    runs: [{ firstHour: FIRST, lastHour: left, role, skill: 7, components: [6, 5, 5, 4] }],
+    observed: [[FIRST, H(1938, 1, 12)], [H(1938, 1, 18), AT]],
+  };
+  const model = projectAt(undefined, career);
+  const month = model.lanes.find(lane => lane.key === 'battles')!.spans;
+  const january = firstHourOfMonth(monthIndex(gameDate(H(1938, 1, 5))!));
+  assert.deepEqual(month.map(span => [span.firstHour, span.lastHour]), [[january, H(1938, 1, 12)], [H(1938, 1, 18), left]],
+    'the bar stops at the gap and where service ended');
+  assert.deepEqual(model.unobserved, [{ firstHour: H(1938, 1, 12) + 1, lastHour: H(1938, 1, 18) - 1 }], 'the unrecorded stretch is hatched');
+  const tip = careerTimelineProjection.tooltip!(model, { kind: 'span', laneKey: 'battles', spanId: month[0]!.id, hour: H(1938, 1, 6) }, createBoundedReadView({ hour: AT }), OPTIONS);
+  assert.ok(JSON.stringify(tip).includes('not recorded'), 'the month count says part of the month was not recorded');
+});
+
+test('traits gained at the same hour are one marker that names each of them', () => {
+  const both = H(1939, 5, 1);
+  const career: LeaderCareerReply = {
+    ...careerReply(),
+    traitGains: [[FIRST, 0, 0], [both, 1, 1], [both, 2, 1]],
+    traits: [...careerReply().traits, { token: 'skilled_staffer', name: 'Skilled Staffer', icon: null, missing: null }],
+  };
+  const model = projectAt(undefined, career);
+  const traits = model.lanes.find(lane => lane.key === 'traits')!.spans;
+  assert.equal(traits.length, 2);
+  const tip = careerTimelineProjection.tooltip!(model, { kind: 'span', laneKey: 'traits', spanId: traits[1]!.id, hour: both }, createBoundedReadView({ hour: AT }), OPTIONS);
+  const text = JSON.stringify(tip);
+  assert.ok(text.includes('Infantry Leader') && text.includes('Skilled Staffer'), text);
+});
+
+test('a career reply shown after its read hour runs its service and coverage on to the shown hour', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }],
+    battles: careerReply().battles.slice(0, 2) };
+  const shown = H(1938, 1, 20);
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: shown, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  assert.deepEqual(model.unobserved, [], 'nothing is hatched inside the proven interval');
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  assert.equal(bar.lastHour, shown, 'the month bar advances to the shown hour');
+});
+
+test('a battle dated in a month with no recorded hour in service draws no bar but still counts', () => {
+  const career: LeaderCareerReply = { ...careerReply(), observed: [[FIRST, H(1937, 12, 31)], [H(1938, 2, 1), AT]] };
+  const model = projectAt(undefined, career);
+  assert.deepEqual(model.lanes.find(lane => lane.key === 'battles')!.spans, [], 'January 1938 was not recorded');
+  assert.equal(model.header?.kpis?.find(kpi => kpi.label === 'fought')?.value, '3');
+});
+
+test('with a Range, trait gains before it are not piled onto its first hour', () => {
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: AT, panels: new Map<string, unknown>([['career', validateLeaderCareer(careerReply())]]) }),
+    { ...OPTIONS, firstHour: H(1938, 1, 1) });
+  const traits = model.lanes.find(lane => lane.key === 'traits')!.spans;
+  assert.deepEqual(traits.map(span => span.firstHour), [H(1938, 4, 1)], 'the gain held before 1936 lies outside the Range');
+});
+
+test('the month of battles still running is an open bar that follows the playhead to the month end', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  assert.equal(bar.open, true, 'painted to the playhead on each day redraw');
+  assert.equal(model.nextChangeAt, firstHourOfMonth(monthIndex(gameDate(read)!) + 1), 'projected again when the month ends');
+});
+
+test('the open month bar names the displayed hour as its end in its tooltip', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  const later = H(1938, 1, 20);
+  const tip = careerTimelineProjection.tooltip!(model, { kind: 'span', laneKey: 'battles', spanId: bar.id, hour: later }, createBoundedReadView({ hour: later }), OPTIONS);
+  assert.match(String(tip?.subtitle), new RegExp(`${formatDateOnly(later)}$`));
 });

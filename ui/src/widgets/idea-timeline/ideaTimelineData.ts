@@ -39,11 +39,18 @@ export function lanesFor(reply: IdeaHistoryReply, category: CategoryInfo): IdeaL
     const look = lookOf(reply, holding);
     return { id: `${holding.token}:${holding.firstHour}`, holding, label: holdingLabel(look, holding), artwork: look.artwork };
   };
-  const lanes: IdeaLane[] = [];
+  const slots = new Map<string, { readonly slot: CategoryInfo['slots'][number]; seats: number }>();
   for (const slot of category.slots) {
+    const seats = slot.character ? Math.max(1, slot.seats) : 1;
+    const held = slots.get(slot.token);
+    if (held) held.seats += seats;
+    else slots.set(slot.token, { slot, seats });
+  }
+  const lanes: IdeaLane[] = [];
+  for (const { slot, seats: count } of slots.values()) {
     const label = contentTitle(slot.name, slot.token, 'Slot name unavailable');
     const held = bySlot.get(slot.token) ?? [];
-    const seats: Seat[] = Array.from({ length: slot.character ? Math.max(1, slot.seats) : 1 }, () => ({ spans: [], last: null }));
+    const seats: Seat[] = Array.from({ length: count }, () => ({ spans: [], last: null }));
     const endings = new Set(held.flatMap(other => other.character ? [`${other.character.id}#${other.lastHour + 1}`] : []));
     const continues = (item: IdeaHolding) => item.character != null && endings.has(`${item.character.id}#${item.firstHour}`);
     const order = held.map(item => ({ item, first: continues(item) ? 0 : 1 }))

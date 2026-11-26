@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FactionGroup, GroupCount } from '../../generated/dashboard';
 import { rankedCounts } from '../../dashboard/groupCounts.ts';
-import { LEADER_GLYPH, UNNAMED, factionChangeHours, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, tagAt } from './factionsData.ts';
+import { LEADER_GLYPH, UNNAMED, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, tagAt } from './factionsData.ts';
+import { factionsProjection } from './factionsProjection.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
@@ -215,15 +217,6 @@ test('hours the rosters were not recorded after a faction was last seen are not 
   assert.deepEqual(lanes, ['Last recorded day 9', 'Last recorded day 9'], 'neither the faction dissolved nor its member left at 10');
 });
 
-test('the widget renders only when the head passes a faction, name, roster, leader or gap edge', () => {
-  const hours = factionChangeHours(reply, views);
-  assert.deepEqual(hours, [...hours].sort((a, b) => a - b), 'sorted');
-  assert.equal(new Set(hours).size, hours.length, 'each once');
-  for (const hour of [100, 120, 150, 250, 300, 350, 351, 401, 200, 220, 260, 270]) assert.ok(hours.includes(hour), `${hour} is a change`);
-  for (const hour of [101, 175, 330]) assert.ok(!hours.includes(hour), `${hour} changes nothing`);
-  const between = (hour: number) => factionLanes(views, hour, options, text, factionGaps(reply), 0).lanes.map(lane => `${lane.id}|${lane.label}`);
-  assert.deepEqual(between(160), between(175), 'between two changes the lanes are the same');
-});
 
 test('a same-tag native replacement starts its own membership without a rename event', () => {
   const replaced: CountryGroupReply = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
@@ -328,4 +321,38 @@ test('member lanes retain native flag refusals while faction headings stay flagl
     if (lane.depth === 1) assert.equal(lane.identity?.countryFlag?.flagReason, `Recorded refusal for ${lane.identity?.label}`);
     else assert.equal(lane.identity?.countryFlag, undefined);
   }
+});
+
+test('with a Range, a membership that began inside the recording is joined, not held before, and only one held at the recording start is', () => {
+  const at = 400;
+  const readView = createBoundedReadView({ hour: at, panels: new Map([['main', { hour: at, nextChange: null, groups: reply }]]) });
+  const model = factionsProjection.project(readView, {
+    order: 'founded', members: 'joined', showEnded: true, firstHour: 300, branchFirstHour: 100, surface: '#161616',
+    selected: null, styles: {}, shared: {}, membership: null,
+  });
+  const member = (tag: string) => model.lanes.find(lane => lane.kind === 'item' && lane.flagTag === tag)!;
+  assert.equal(member('HUN').spans[0]!.firstHour, 120);
+  assert.equal(member('HUN').spans[0]!.heldBefore, undefined, 'joined at 120, after the recording began at 100');
+  assert.match(member('HUN').subtitle!, /Joined/);
+  assert.equal(member('D01').spans[0]!.heldBefore, true, 'a member at the first recorded hour is held before it');
+});
+
+test('a followed reply shown after its read hour, inside its proven interval, keeps what was held then held at the shown hour', () => {
+  const read = 300;
+  const cut = <T extends { firstHour: number; lastHour: number }>(spans: T[]) => spans.filter(span => span.firstHour <= read).map(span => ({ ...span, lastHour: Math.min(span.lastHour, read) }));
+  const atRead: CountryGroupReply = {
+    ...reply,
+    factions: [{ ...factions[0], lastHour: read, names: cut(factions[0].names), members: cut(factions[0].members), leaders: cut(factions[0].leaders), incomplete: [] }],
+    countryIdentities: reply.countryIdentities.map(history => ({ ...history, identities: cut(history.identities) })),
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+  };
+  const project = (hour: number) => factionsProjection.project(
+    createBoundedReadView({ hour, panels: new Map([['main', { hour: read, nextChange: 400, groups: atRead }]]) }),
+    { order: 'founded', members: 'joined', showEnded: true, firstHour: 100, branchFirstHour: 100, surface: '#161616', selected: null, styles: {}, shared: {}, membership: null },
+  );
+  const atReadHour = project(read);
+  const later = project(read + 50);
+  assert.deepEqual(later.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]), atReadHour.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]),
+    'nothing left, dissolved or lost its country between the read and the shown hour');
+  assert.ok(later.lanes.every(lane => lane.spans.at(-1)?.open), 'every run held at the read hour runs on to the shown hour');
 });

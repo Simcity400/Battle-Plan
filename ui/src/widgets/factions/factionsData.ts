@@ -52,20 +52,6 @@ export function factionGaps(reply: CountryGroupReply): HourSpan[] {
   return reply.unobserved.factions;
 }
 
-export function factionChangeHours(reply: CountryGroupReply, views: readonly FactionView[]): number[] {
-  const hours = new Set<number>();
-  const edges = (spans: readonly { firstHour: number; lastHour: number }[]) => {
-    for (const span of spans) { hours.add(span.firstHour); hours.add(span.lastHour + 1); }
-  };
-  edges(factionGaps(reply));
-  for (const faction of reply.factions) edges(faction.names);
-  for (const view of views) {
-    edges(view.existence); edges(view.lifetime); edges(view.leaders); edges(view.counts); edges(view.unknown);
-    for (const member of view.members) { edges(member.runs); edges(member.stretches); }
-  }
-  return [...hours].sort((a, b) => a - b);
-}
-
 export function factionViews(reply: CountryGroupReply, name: (faction: FactionGroup, hour?: number) => FactionName, colour: (id: string) => string): FactionView[] {
   const identities = countryIdentityIndex(reply.countryIdentities);
   const gaps = factionGaps(reply);

@@ -242,14 +242,3 @@ export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<
   }
   return [...tags];
 }
-
-export function changeHours(reply: Pick<SubjectReply, 'runs' | 'unobserved'>, identityChanges: readonly { hour: number }[] = []): number[] {
-  const hours = new Set<number>();
-  for (const run of reply.runs) {
-    hours.add(run.firstHour); hours.add(run.lastHour + 1);
-    for (const step of run.steps) hours.add(step.firstHour);
-  }
-  for (const span of reply.unobserved) { hours.add(span.firstHour); hours.add(span.lastHour + 1); }
-  for (const change of identityChanges) hours.add(change.hour);
-  return [...hours].sort((a, b) => a - b);
-}

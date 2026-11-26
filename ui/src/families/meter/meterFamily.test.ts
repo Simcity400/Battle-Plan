@@ -21,7 +21,7 @@ import { drawMeterModel, hitMeterModel, layoutMeterModel } from './painter.ts';
 import type { DecryptionReply, DoctrineMasteryReply, ResearchSlotsReply } from '../../generated/dashboard';
 import type { ResearchData } from '../../widgets/research/types';
 import { matrixCellAt } from '../heat/matrixModel.ts';
-import { autonomyLevelsProjection } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
+import { autonomyLevelsDeclaration, autonomyLevelsProjection, sampleSparkline } from '../../widgets/autonomy/autonomyLevelsProjection.ts';
 import type { AutonomyLevelsReply } from '../../generated/dashboard';
 import { createLaneView } from '../laneRuntime.ts';
 
@@ -657,4 +657,70 @@ test('autonomyLevelsProjection keeps the product order, lists an unread subject 
 test('bounded readView throws FutureDataError on future who() lookups', () => {
   const view = createBoundedReadView({ hour: 100 });
   assert.throws(() => view.who('country', 'GER', 101), FutureDataError);
+});
+
+test('an autonomy sparkline breaks over hours not recorded instead of carrying the earlier value across them', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number, firstBreak: boolean) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak, hasBreak: false });
+  const tile = {
+    tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice([bucket(hour - 300, hour - 201, 0.2, true), null, bucket(hour - 99, hour, 0.8, true)], 3),
+    missing: createBoundedSlice([{ firstHour: hour - 200, lastHour: hour - 100, reason: 'Subjects not read' }], 1),
+    validInterval: [hour - 300, hour] as const,
+  };
+  const line = sampleSparkline(tile as never, hour)!;
+  const gapAt = (h: number) => Math.round(((h - (hour - 300)) / 300) * 15);
+  assert.equal(line[0], 0.2);
+  assert.equal(line[15], 0.8);
+  assert.equal(line[gapAt(hour - 150)], null, 'a sample inside the unread stretch is a break, not 20%');
+});
+
+test('autonomy meters ask for every subject the recording names, with no fixed cap', () => {
+  const topOf = (count: number) => {
+    const ctx = { track: { source: { id: 's', revision: 1 }, axisOffset: 0 }, branch: { id: '1' }, countries: { every: Array.from({ length: count }, (_, i) => `T${i}`) } };
+    const trend = autonomyLevelsDeclaration.sources(ctx as never, {} as never).entries.find(entry => entry.name === 'trend')!;
+    return trend.read.shape === 'pixel-binned' ? trend.read.top?.n : null;
+  };
+  assert.ok(topOf(0)! > 1500, 'more than 1,500 subjects get a trend before the population is known');
+  assert.equal(topOf(20_001), 20_001, 'a larger population is asked whole');
+});
+
+test('an autonomy sparkline breaks across a short unread stretch that falls between two samples', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak: false, hasBreak: false });
+  const tile = {
+    tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice([bucket(hour - 300, hour - 152, 0.2), null, bucket(hour - 148, hour, 0.8)], 3),
+    missing: createBoundedSlice([{ firstHour: hour - 151, lastHour: hour - 149, reason: 'Subjects not read' }], 1),
+    validInterval: [hour - 300, hour] as const,
+  };
+  const line = sampleSparkline(tile as never, hour)!;
+  const joins = line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value);
+  assert.ok(!joins, `no stroke joins 20% to 80% across the gap: ${JSON.stringify(line)}`);
+});
+
+test('an autonomy sparkline honours the breaks its buckets record', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number, firstBreak: boolean, hasBreak = false) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak, hasBreak });
+  const tile = (buckets: unknown[]) => ({ tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice(buckets as never, buckets.length), missing: createBoundedSlice([], 0), validInterval: [hour - 300, hour] as const });
+  const joins = (line: readonly (number | null)[]) => line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value);
+  const restarted = sampleSparkline(tile([bucket(hour - 300, hour - 151, 0.2, true), bucket(hour - 150, hour, 0.8, true)]) as never, hour)!;
+  assert.ok(!joins(restarted), `a bucket that starts a new stroke is not joined to the one before: ${JSON.stringify(restarted)}`);
+  const inner = sampleSparkline(tile([bucket(hour - 300, hour - 201, 0.2, true), bucket(hour - 200, hour - 101, 0.5, false, true), bucket(hour - 100, hour, 0.8, true)]) as never, hour)!;
+  assert.ok(!joins(inner), `nothing is drawn through a bucket with a break inside it: ${JSON.stringify(inner)}`);
+});
+
+test('an autonomy sparkline breaks over a narrow bucket with a break inside it that falls between two samples', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number, firstBreak: boolean, hasBreak = false) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak, hasBreak });
+  const buckets = [bucket(hour - 300, hour - 152, 0.2, true), bucket(hour - 151, hour - 150, 0.5, false, true), bucket(hour - 149, hour, 0.8, false)];
+  const tile = { tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice(buckets as never, buckets.length), missing: createBoundedSlice([], 0), validInterval: [hour - 300, hour] as const };
+  const line = sampleSparkline(tile as never, hour)!;
+  assert.ok(!line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value), JSON.stringify(line));
 });

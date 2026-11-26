@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { assertQuietFrames, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
@@ -53,6 +54,7 @@ const reply = (
 const OPTIONS: CivilWarsProjectionOptions = {
   showEnded: true,
   firstHour: 0,
+  branchFirstHour: 0,
   surface: '#161616',
   selected: null,
   holders: null,
@@ -128,6 +130,37 @@ test('slot and holder country filters narrow civil wars across tag renames witho
   assert.deepEqual(byAlias.lanes.filter(l => l.expandable).map(l => l.key), ['cw:a']);
 });
 
+test('a Range counts and draws only the civil wars that overlap it, and an earlier start inside the recording is not "held before"', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const pair = (id: string, first: number, last: number) =>
+    war(id, first, last, [side(1, tags([0, 'SPA']), first, last, null, true), side(2, tags([first, 'SPR']), first, last, 0)]);
+  const data = validateCivilWarsReply(reply(260, [pair('early', 50, 150), pair('late', 180, 260)]));
+  const ranged = { ...OPTIONS, firstHour: 200, branchFirstHour: 0 };
+  const model = civilWarsProjection.project(createBoundedReadView({ hour: 260, identity, panels: new Map([['main', data]]) }), ranged);
+  assert.equal(model.summaryText, '1 civil war · 1 ongoing', 'a war that ended before the Range is not counted');
+  assert.deepEqual(model.lanes.filter(lane => lane.expandable).map(lane => lane.key), ['cw:late']);
+  const bar = model.lanes[0]!.spans[0]!;
+  assert.equal(bar.startBy, false, 'the war began at 180, inside the recording: a plain start, not a cut one');
+  const none = civilWarsProjection.project(
+    createBoundedReadView({ hour: 260, identity, panels: new Map([['main', validateCivilWarsReply(reply(260, [pair('early', 50, 150)]))]]) }),
+    ranged,
+  );
+  assert.equal(none.summaryText, '0 civil wars · 0 ongoing');
+});
+
+test('the war bar ends where the civil-war predicate ends, whatever hour the reply was read at', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const at = (hour: number) => {
+    const sides = [side(1, tags([0, 'SPA']), 100, Math.min(120, hour), null, true), side(2, tags([100, 'SPR']), 100, Math.min(120, hour), 0)];
+    const data = validateCivilWarsReply(reply(hour, [war('w', 100, Math.min(120, hour), sides, null, [{ firstHour: 100, lastHour: 115 }])]));
+    return civilWarsProjection.project(createBoundedReadView({ hour, identity, panels: new Map([['main', data]]) }), OPTIONS).lanes[0]!.spans[0]!;
+  };
+  for (const hour of [116, 118, 120, 200]) {
+    const bar = at(hour);
+    assert.deepEqual([bar.open, bar.lastHour], [false, 115], `read at ${hour}`);
+  }
+});
+
 test('a civil wars reply holds nothing after its hour, proves up to nextChange, and rejects malformed replies', () => {
   const ok = reply(200, [war('w1', 100, 200, [side(1, tags([0, 'SPA']), 100, 200, null, true), side(2, tags([100, 'SPR']), 100, 200, 0)])], { nextChange: 250 });
   assert.equal(validateCivilWarsReply(ok), ok);
@@ -173,4 +206,34 @@ test('a quiet stretch of played hours makes no extra civil-wars requests and pai
     assert.deepEqual(civilWarsProof(quietReply, [0, h], h), [400, 899]);
   }
   assert.equal(civilWarsDeclaration.kind, 'civil-wars');
+});
+
+test('the war ends where its fighting ends for the Range, the bar and the tooltip alike, and a war never fought has no dated end cap', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 120, null, true), side(2, tags([100, 'SPR']), 100, 120, 0)];
+  const data = validateCivilWarsReply(reply(200, [war('w', 100, 120, sides, null, [{ firstHour: 100, lastHour: 115 }])]));
+  const view = createBoundedReadView({ hour: 200, identity, panels: new Map([['main', data]]) });
+  assert.equal(civilWarsProjection.project(view, { ...OPTIONS, firstHour: 116 }).summaryText, '0 civil wars · 0 ongoing', 'fighting ended at 115, before the Range');
+  const model = civilWarsProjection.project(view, OPTIONS);
+  const tip = civilWarsProjection.tooltip!(model, { kind: 'span', laneKey: 'cw:w', spanId: 'war', hour: 110 }, view, OPTIONS);
+  assert.match(String(tip?.subtitle), new RegExp(`${formatDateOnly(115)}$`), 'the tooltip names the same end as the bar');
+  const unfought = validateCivilWarsReply(reply(200, [war('u', 100, 120, sides, null, [])]));
+  const bar = civilWarsProjection.project(createBoundedReadView({ hour: 200, identity, panels: new Map([['main', unfought]]) }), OPTIONS).lanes[0]!.spans[0]!;
+  assert.equal(bar.endCap, false, 'no observed end to mark');
+});
+
+test('a gap before the Range start still makes a war first seen after it a cut start', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 150, null, true), side(2, tags([100, 'SPR']), 100, 150, 0)];
+  const data = validateCivilWarsReply(reply(150, [war('w', 100, 150, sides)], { known: [{ firstHour: 0, lastHour: 89 }, { firstHour: 100, lastHour: 150 }] }));
+  const model = civilWarsProjection.project(createBoundedReadView({ hour: 150, identity, panels: new Map([['main', data]]) }), { ...OPTIONS, firstHour: 100 });
+  assert.equal(model.lanes[0]!.spans[0]!.startBy, true, 'hours 90-99 were not read: the start is not definite');
+});
+
+test('a war the reply proves ongoing is kept by a Range that starts after the reply was read', () => {
+  const identity = datedIdentity({ SPA: [{ from: 0, name: 'Spain' }], SPR: [{ from: 0, name: 'Republic' }] });
+  const sides = [side(1, tags([0, 'SPA']), 100, 200, null, true), side(2, tags([100, 'SPR']), 100, 200, 0)];
+  const data = validateCivilWarsReply(reply(200, [war('w', 100, 200, sides)], { nextChange: 250 }));
+  const model = civilWarsProjection.project(createBoundedReadView({ hour: 230, identity, panels: new Map([['main', data]]) }), { ...OPTIONS, firstHour: 210 });
+  assert.equal(model.summaryText, '1 civil war · 1 ongoing');
 });

@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
 import { rankedCounts } from '../../dashboard/groupCounts.ts';
-import { changeHours, laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
+import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
 import { worldFilter } from '../../dashboard/groups.ts';
-import { nextBoundaryAfter } from '../../families/timeline/helpers.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { subjectsProjection } from './subjectsProjection.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 
 const levels: SubjectLevel[] = [
   { token: 'autonomy_mod_march', name: 'March', ordered: true },
@@ -334,12 +335,19 @@ test('overlord and subject lanes reserve native flags without an available URL',
   }
 });
 
-test('the timeline renders only where a relation, a level, a stretch not recorded or an identity changes', () => {
-  const hours = changeHours(reply, [{ hour: 120 }]);
-  assert.ok(hours.every((hour, index) => index === 0 || hours[index - 1] < hour), 'ascending and distinct');
-  for (const hour of [100, 120, 150, 200, 300, 310]) assert.ok(hours.includes(hour), `${hour} is a change`);
-  assert.equal(nextBoundaryAfter(hours, 101), 120);
-  assert.equal(nextBoundaryAfter(hours, 119), 120);
-  assert.equal(nextBoundaryAfter(hours, 120), 150);
-  assert.equal(nextBoundaryAfter(hours, 1_000_000), Infinity);
+
+test('a followed subjects reply shown after its read hour keeps the relations held at the read hour', () => {
+  const read = 350;
+  const cut = <T extends { firstHour: number; lastHour: number }>(spans: T[]) => spans.filter(span => span.firstHour <= read).map(span => ({ ...span, lastHour: Math.min(span.lastHour, read) }));
+  const atRead: SubjectReply = { ...reply, runs: cut(reply.runs).map(run => ({ ...run, steps: cut(run.steps) })), unobserved: cut(reply.unobserved) };
+  const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    countryIdentities: ['D01', 'MY TAG', 'A:B', 'ENG', 'CAN'].map((tag, slot) => ({ tag, identities: [{ slot, countryId: slot, firstHour: 0, lastHour: read }] })),
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [] };
+  const project = (hour: number) => subjectsProjection.project(createBoundedReadView({ hour, panels: new Map<string, unknown>([
+    ['main', { hour: read, nextChange: 400, subjects: atRead, warnings: [] }],
+    ['groups', { hour: read, nextChange: 400, groups, warnings: [] }],
+  ]) }), { order: 'first', subjects: 'since', showEnded: true, levelNames: true, firstHour: 0, branchFirstHour: 0, surface: '#161616', selected: null });
+  const atReadHour = project(read);
+  const later = project(read + 30);
+  assert.deepEqual(later.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]), atReadHour.lanes.map(lane => [lane.key, lane.subtitle, lane.flagTag]));
 });
