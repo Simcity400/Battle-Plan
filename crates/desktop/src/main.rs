@@ -6,6 +6,7 @@ mod game_windows;
 mod leaving;
 mod pull;
 mod native;
+mod page_memory;
 mod perf;
 mod popout;
 mod recorder;
@@ -443,7 +444,8 @@ fn shut(window: &impl Shut) {
 
 fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
-    let main = MainWindow { window: window.clone(), hwnd: window.hwnd()?.0 as isize };
+    let hwnd = window.hwnd()?.0 as isize;
+    let main = MainWindow { window: window.clone(), hwnd };
     app.state::<Leaving>().follow(
         stop_page(window.clone()),
         Arc::new(move || shut(&main)),
@@ -514,6 +516,7 @@ fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
         let mut token = 0_i64;
         let watched = unsafe {
             webview.controller().CoreWebView2().and_then(|page| {
+                page_memory::watch(hwnd, &page);
                 page.add_ProcessFailed(&failed, &raw mut token)?;
                 page.add_NavigationStarting(&starting, &raw mut token)?;
                 page.add_ContentLoading(&loading, &raw mut token)?;

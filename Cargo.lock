@@ -12063,6 +12063,7 @@ dependencies = [
  "viewer-runtime",
  "viewer-scene-base",
  "webview2-com",
+ "windows-core 0.61.2",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
 ]
