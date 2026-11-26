@@ -319,6 +319,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       from: options.extent[0],
       surface: options.surface,
       withFlag: true,
+      colouredCount: orderedKeys.length,
       tailColor: tailColour(options.surface),
     });
 
@@ -379,7 +380,7 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
         id: key,
         key,
         name: look.name,
-        color: tailColour(options.surface),
+        color: look.color,
         role: 'tail',
         step: true,
         bounded: tile,

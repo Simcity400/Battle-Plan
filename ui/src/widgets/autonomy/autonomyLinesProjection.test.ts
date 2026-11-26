@@ -301,7 +301,8 @@ test('the exact hover lists a former subject beside a current subject and its pe
   const tile = { ...emptyTile, buckets: createBoundedSlice([bucket], 1) };
   const model = historyModel(tile, [makeSubject({ subject: 'BBB', subjectId: 42, overlord: 'CCC' })]);
   assert.ok(model.hoverDetail?.items?.some(item => item.value === '50%'));
-  assert.ok(model.hoverDetail?.items.some(item => item.label === 'Alpha' && item.swatch && item.missingReason === 'Not a subject at this date'));
+  const former = model.series.find(series => series.key === 'AAA')!;
+  assert.ok(model.hoverDetail?.items.some(item => item.label === 'Alpha' && item.swatch === former.color && item.missingReason === 'Not a subject at this date'));
   assert.deepEqual(model.yAxis.fixed, [0, 150]);
   assert.equal(historyModel(tile, [], 110).hoverDetail, null, 'the first relationship is still in the future at the hovered hour');
   const selectedAgain = historyModel(tile, [makeSubject({ subject: 'AAA', subjectId: 41, overlord: 'CCC' })], 250,

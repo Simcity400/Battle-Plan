@@ -73,7 +73,7 @@ export class TileView {
   private wanted: Wanted | null = null;
   private lines: ReadonlyMap<string, TiledLine> | null = null;
   private told: { readonly failure: unknown; readonly refused: string | null } = { failure: null, refused: null };
-  private readonly made = new WeakMap<TiledLine, { readonly head: string; readonly tiles: readonly Tile[]; readonly from: number; readonly to: number; readonly width: number; readonly cell: number | null }>();
+  private readonly made = new WeakMap<TiledLine, { readonly tiles: readonly Tile[]; readonly from: number; readonly to: number; readonly width: number; readonly cell: number | null }>();
   private assembled: Assembled | null = null;
   private failure: unknown = null;
   private closed = false;
@@ -262,13 +262,13 @@ export class TileView {
     const lines = new Map<string, TiledLine>();
     let same = this.lines !== null && previous.length === this.tags.length;
     this.tags.forEach((tag, at) => {
-      const head = tileHead(this.lane.key, tag), held = this.lines?.get(tag);
+      const held = this.lines?.get(tag);
       const made = held ? this.made.get(held) : undefined;
-      const kept = made && made.head === head && made.from === from && made.to === to && made.width === wanted.width && made.cell === cell
+      const kept = made && made.from === from && made.to === to && made.width === wanted.width && made.cell === cell
         && made.tiles.length === tiles[at].length && made.tiles.every((tile, index) => tile === tiles[at][index]) ? held! : null;
       if (!kept || previous[at] !== tag) same = false;
-      const built = kept ?? line(tag, head, tiles[at], from, to, wanted.width, cell);
-      if (!kept) this.made.set(built, { head, tiles: tiles[at], from, to, width: wanted.width, cell });
+      const built = kept ?? line(tag, held?.head ?? tileHead(this.lane.key, tag), tiles[at], from, to, wanted.width, cell);
+      if (!kept) this.made.set(built, { tiles: tiles[at], from, to, width: wanted.width, cell });
       lines.set(tag, built);
     });
     this.assembled = { binHours: wanted.binHours, first: wanted.first, last: wanted.last, width: wanted.width, cell: wanted.cell };

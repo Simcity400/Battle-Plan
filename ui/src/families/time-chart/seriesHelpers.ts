@@ -262,6 +262,7 @@ export interface CountrySeriesLooksInput {
   readonly from: number;
   readonly surface: string;
   readonly withFlag: boolean;
+  readonly colouredCount?: number;
   readonly singleColor?: string;
   readonly tailColor?: string;
 }
@@ -332,7 +333,7 @@ export function countrySeriesLooks(
 ): ReadonlyMap<string, CountrySeriesLook> {
   const hour = readView.hour;
   const stretches = ordered.map(tag => identityStretches(tag, input.holders?.[tag], readView, input.from, hour, input.withFlag));
-  const coloured = stretches.slice(0, COLOURED_SERIES);
+  const coloured = stretches.slice(0, Math.min(COLOURED_SERIES, Math.max(0, input.colouredCount ?? COLOURED_SERIES)));
   const keys = ordered.slice(0, coloured.length).map(countryFromKey);
   const positions = coloured.map(() => 0);
   const runs = coloured.map((): ChartIdentityRun[] => []);

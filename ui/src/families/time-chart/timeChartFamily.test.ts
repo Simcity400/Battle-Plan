@@ -29,7 +29,7 @@ import { buildLineSubpaths, collectVisibleChartArt, fitTimeChartLegend, lineOf }
 import { pathCalls, type RecordedPath2D } from './path2d.fixture.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
-import { buildBoundedStack, headReading, headValueOf } from './seriesHelpers.ts';
+import { buildBoundedStack, countrySeriesLooks, headReading, headValueOf } from './seriesHelpers.ts';
 import { timeAxisLabels } from '../../draw/kit.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
@@ -132,6 +132,19 @@ function laneOn(created: { readonly ctx: Canvas2D }) {
 }
 
 describe('time-chart BoundedSeries & Foundation C integration', () => {
+  it('keeps a tail line in the tail colour through every change of identity', () => {
+    const view = createBoundedReadView({ hour: displayedHour(200) });
+    const tail = 'var(--tail)';
+    const looks = countrySeriesLooks(['AAA', 'BBB'], view, {
+      holders: { BBB: [{ tag: 'OLD', firstHour: 100, lastHour: 149 }, { tag: 'NEW', firstHour: 150, lastHour: 200 }] },
+      from: 100, surface: '#111111', withFlag: false, colouredCount: 1, tailColor: tail,
+    });
+    assert.notEqual(looks.get('AAA')!.color, tail);
+    const former = looks.get('BBB')!;
+    assert.equal(former.color, tail);
+    assert.deepEqual(former.identities.map(run => [run.firstHour, run.color]), [[100, tail], [150, tail]]);
+  });
+
   it('consumes already-cut BoundedSeries without reading future buckets and joins ramps without staircase treads', () => {
     const base = Math.floor(H1936 / 96) * 96;
     const line: TiledLine = {
