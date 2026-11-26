@@ -2,11 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
+import type { TiledLine } from '../../dashboard/tiles/view.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { hoverAsks, readPlanExact } from '../../families/broker.ts';
-import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
+import type { ArtHandle, ArtProvider, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
+import { buildTooltipContent } from '../../families/host/tooltips.ts';
+import { SceneTiles, serializeTiledBySource } from '../../families/sceneTiles.ts';
 import { ReadTarget, type TargetClock, type TargetConfig } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
+import { deriveTimeChartTooltip, sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
+import { layoutTimeChart } from '../../families/time-chart/layout.ts';
+import { buildLineSubpaths, collectVisibleChartArt } from '../../families/time-chart/painter.ts';
 import { DEFAULT_LINE_SETTINGS } from '../../families/time-chart/settings.ts';
 import type { MilitaryAirAtReply } from '../../generated/dashboard';
 import {
@@ -336,4 +342,112 @@ test('a quiet stretch of played hours makes no extra military-air-at request', a
   }
   assert.equal(requests, 1, 'no requests during the proven quiet stretch 100..250');
   target.dispose();
+});
+
+test('partial tile spans keep drawing the witnessed subtotal and report partial state on hover, and air end labels demand and collect flag art', () => {
+  const k1 = countryKey(1);
+  const reason = "Some events since the totals' start have no recorded country";
+  const line: TiledLine = {
+    tag: k1,
+    head: 'test',
+    decimals: 5,
+    summary: {
+      from: 0,
+      to: 200,
+      width: 200,
+      buckets: [],
+      runs: [
+        { firstHour: 0, lastHour: 49, value: 100 },
+        { firstHour: 50, lastHour: 100, value: 200 },
+      ],
+    },
+    missing: [],
+    partial: [{ firstHour: 50, lastHour: 100, reason }],
+    parts: [],
+    marks: null,
+  };
+  const serialized = structuredClone(serializeTiledBySource({
+    taken: new Map([[k1, line]]),
+    dealt: new Map([[k1, line]]),
+  }));
+  const hydratedSeries = new SceneTiles().series(
+    { hour: 100, seek: 0, speed: 0, answers: new Map() } as never,
+    { sources: {} },
+    { tiledBySource: serialized },
+    100,
+  )!;
+  const demandedFlags: ArtHandle[] = [];
+  const flagUrl = 'asset://flags/ger-panel.png';
+  const identity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      return {
+        kind,
+        key,
+        atHour,
+        holder: { status: 'ready', value: key },
+        tag: { status: 'ready', value: 'GER' },
+        name: { status: 'ready', value: 'German Reich' },
+        colour: { status: 'ready', value: '#6d7874' },
+        flagChoice: { status: 'ready', value: '[["GER",null,null],[null,null,null]]' },
+        validInterval: [0, 1000],
+        nextChangeAt: Infinity,
+      };
+    },
+  };
+  const art: ArtProvider = {
+    resolve(handle) {
+      if (handle.kind === 'flag') demandedFlags.push(handle);
+      return {
+        status: 'ready',
+        url: flagUrl,
+        assetId: 'ger',
+        file: 'ger.tga',
+        origin: { kind: 'baseGame' },
+        provenance: { fromCurrentInstall: true, label: 'Current installation', scopeKey: 'current' },
+        frame: { frameIndex: 0, frameCount: 1, frameWidth: 18, frameHeight: 12, textureWidth: 18, textureHeight: 12, outputWidth: 18, outputHeight: 12 },
+      };
+    },
+  };
+  const readView = createBoundedReadView({
+    hour: displayedHour(100),
+    panels: new Map([['head', airReply({
+      rows: [{ ...airReply().rows[0]!, complete: false, partial: reason, ratioHundredths: null }],
+    })]]),
+    series: hydratedSeries,
+    identity,
+    art,
+  });
+  const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
+  const taken = model.series.find(s => s.id === `${k1}\u0000taken`)!;
+  assert.ok(taken.partialSpans?.length === 1);
+  assert.equal(sampleSeriesValueAt(taken, 75, 100)?.value, 200, 'partial span still samples the witnessed subtotal');
+  const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', text => text.length * 6);
+  const { subpaths } = buildLineSubpaths(taken, layout, 100);
+  assert.ok(subpaths.flat().length >= 2, 'line still draws through partial spans');
+  const tip = deriveTimeChartTooltip(model, layout, 'plot:75');
+  assert.ok(tip?.payload);
+  const content = buildTooltipContent(tip!.payload!);
+  const row = content.rows.find(r => r.label === 'German Reich · Own losses');
+  assert.deepEqual(row?.valueState, { kind: 'partial', text: '200', reason }, 'hover inside partial span reports witnessed subtotal with partial reason');
+  assert.ok(demandedFlags.some(h => h.kind === 'flag' && h.size === 'panel'), 'air series demands panel flag handles');
+  assert.ok(collectVisibleChartArt(model, layout, null).includes(flagUrl), 'visible chart art collects air end-label flag URLs');
+
+  const exactView = createBoundedReadView({
+    hour: displayedHour(100),
+    panels: new Map([['head', airReply()]]),
+    hovers: new Map([['hover', {
+      hour: 75,
+      data: airReply({
+        hour: 75,
+        rows: [{ ...airReply().rows[0]!, complete: false, partial: reason, ratioHundredths: null }],
+      }),
+    }]]),
+    identity,
+    art,
+  });
+  const exactModel = airKillsLossesLinesProjection.project(exactView, makeOptions({ rankMetric: 'taken' }));
+  const exactTip = deriveTimeChartTooltip(exactModel, layoutTimeChart(exactModel, 720, 260, 'Segoe UI', text => text.length * 6), 'plot:75');
+  const exactContent = buildTooltipContent(exactTip!.payload!);
+  const exactRow = exactContent.rows.find(r => r.label === 'Own losses');
+  assert.deepEqual(exactRow?.valueState, { kind: 'partial', text: '200', reason }, 'exact hover preserves partial state and reason');
 });

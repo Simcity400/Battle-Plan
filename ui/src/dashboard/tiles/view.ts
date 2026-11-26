@@ -45,7 +45,7 @@ export interface TileRanked {
 
 export interface SpannedLine { summary: Pick<ChartSummary, 'from' | 'to'>; missing: readonly MissingSpan[] }
 
-export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
+export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; partial?: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
 
 interface Wanted { binHours: number; first: number; last: number; width: number; cell: number; keys: string[] }
 interface Assembled { binHours: number; first: number; last: number; width: number; cell: number }
@@ -354,7 +354,7 @@ export function cellClusters(drops: readonly (readonly [number, number, bigint])
 
 function line(tag: string, head: string, tiles: readonly Tile[], from: number, to: number, width: number, cell: number | null): TiledLine {
   let buckets: (ChartBucket | null)[] = [];
-  const missing: MissingSpan[] = [], parts: TilePart[] = [], seen = new Set<string>(), runs: Run[] = [], drops: [number, number, bigint][] = [];
+  const missing: MissingSpan[] = [], partial: MissingSpan[] = [], parts: TilePart[] = [], seen = new Set<string>(), runs: Run[] = [], drops: [number, number, bigint][] = [];
   const hourly = tiles[0].hourly;
   for (const tile of tiles) {
     if (hourly) tileRuns(tile, runs); else tileBuckets(tile, buckets);
@@ -363,6 +363,11 @@ function line(tag: string, head: string, tiles: readonly Tile[], from: number, t
       const held = missing.at(-1);
       if (held && held.reason === span.reason && held.lastHour + 1 === span.firstHour) held.lastHour = span.lastHour;
       else missing.push({ ...span });
+    }
+    for (const span of tile.partial) {
+      const held = partial.at(-1);
+      if (held && held.reason === span.reason && held.lastHour + 1 === span.firstHour) held.lastHour = span.lastHour;
+      else partial.push({ ...span });
     }
     for (const part of tile.parts) {
       const key = `${part.firstHour}:${part.lastHour}:${part.slot}:${part.countryId}`;
@@ -373,7 +378,7 @@ function line(tag: string, head: string, tiles: readonly Tile[], from: number, t
   if (hourly) buckets = hourlyBuckets(runs, from, to);
   const summary: ChartSummary = { from, to, width, buckets, ...(hourly ? { runs } : {}),
     tiles: { binHours, valueAt: hour => valueAtHead(head, summary, binHours, hour) } };
-  return { tag, head, decimals: tiles[0].decimals, summary, missing, parts, marks: cell !== null ? { from, to, width, clusters: cellClusters(drops, binHours, cell), tiles: true } : null };
+  return { tag, head, decimals: tiles[0].decimals, summary, missing, ...(partial.length ? { partial } : {}), parts, marks: cell !== null ? { from, to, width, clusters: cellClusters(drops, binHours, cell), tiles: true } : null };
 }
 
 export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | readonly SpannedLine[] | null | undefined): string | null {

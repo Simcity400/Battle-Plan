@@ -8,6 +8,7 @@ use content_reader_script::{key_names::{KeyNames, Point}, modifiers::{self, Equi
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -946,6 +947,38 @@ impl IdeaContent {
     }
 }
 
+pub struct IdeaCatalogue {
+    pub ideas: Arc<IdeaContent>,
+    pub advisors: Arc<Characters>,
+    pub warnings: Vec<content_reader_parser::Diagnostic>,
+}
+
+pub struct CharacterCatalogue {
+    pub characters: Arc<Characters>,
+    pub warnings: Vec<content_reader_parser::Diagnostic>,
+}
+
+fn officer_key(officers: &[String]) -> Vec<u8> {
+    let mut key = Vec::new();
+    content_reader_layers::kept::put_texts(&mut key, officers);
+    key
+}
+
+pub fn catalogue(layers: &ResolvedLayers, officers: &[String]) -> io::Result<Arc<IdeaCatalogue>> {
+    layers.retained_product("political ideas and advisor templates", 1, &officer_key(officers), |layers| {
+        let (ideas, advisors, warnings) = read(layers, officers)?;
+        Ok(IdeaCatalogue { ideas: Arc::new(ideas), advisors: Arc::new(advisors), warnings })
+    })
+}
+
+pub fn characters(layers: &ResolvedLayers, officers: &[String]) -> io::Result<Arc<CharacterCatalogue>> {
+    layers.retained_product("characters with political advisor templates", 1, &officer_key(officers), |layers| {
+        let ideas = catalogue(layers, officers)?;
+        let (characters, warnings) = characters::read(layers, (*ideas.advisors).clone())?;
+        Ok(CharacterCatalogue { characters: Arc::new(characters), warnings })
+    })
+}
+
 pub fn read(
     layers: &ResolvedLayers,
     officers: &[String],
@@ -1620,7 +1653,15 @@ mod tests {
             "ideas = { country = { redone = { } late = { } } }",
         );
         let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let (content, advisors, warnings) = read(&layers, &["theorist".to_owned()]).unwrap();
+        let officers = ["theorist".to_owned(), "another_slot".to_owned()];
+        let catalogue = self::catalogue(&layers, &officers).unwrap();
+        let same = self::catalogue(&layers, &officers).unwrap();
+        assert!(Arc::ptr_eq(&catalogue, &same));
+        let reversed = [officers[1].clone(), officers[0].clone()];
+        assert!(!Arc::ptr_eq(&catalogue, &self::catalogue(&layers, &reversed).unwrap()));
+        let merged = characters(&layers, &officers).unwrap();
+        assert!(Arc::ptr_eq(&merged, &characters(&layers, &officers).unwrap()));
+        let (content, advisors, warnings) = (&catalogue.ideas, &catalogue.advisors, &catalogue.warnings);
         let gap = content.idea("early").unwrap_err();
         assert_eq!(gap.path, "common/ideas/b.txt");
         assert!(

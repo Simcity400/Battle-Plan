@@ -340,7 +340,7 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
             }
         };
         drawn_lines.push(pieces);
-        tile_lines.push(TileLine { country: Country::Tag(key.clone()), part: None, missing, parts: Vec::new(), marks: None });
+        tile_lines.push(TileLine { country: Country::Tag(key.clone()), part: None, missing, partial: Vec::new(), parts: Vec::new(), marks: None });
     }
     let scale = 10_f64.powi(i32::from(chosen.shown.decimals()));
     let (bins, raw_values, hour_bytes) = match ask.bin_hours {

@@ -527,25 +527,26 @@ pub fn tile(source: &Source, query: &Query<'_>, params: &Value, load: &LoadConte
                     pieces[at].break_before = false;
                 }
             }
-            let mut missing = clip_missing(&missing_all, family.from_hour, within);
+            let missing = clip_missing(&missing_all, family.from_hour, within);
+            let mut partial_spans = Vec::new();
             if !partial.is_empty() {
                 for piece in &pieces {
                     for &(lo, hi, reason) in &partial {
                         let (a, b) = (piece.first.max(lo), piece.last.min(hi));
                         if a <= b {
-                            push_missing(&mut missing, a, b, reason);
+                            push_missing(&mut partial_spans, a, b, reason);
                         }
                     }
                 }
-                missing.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
+                partial_spans.sort_by_key(|gap| (gap.first_hour, gap.last_hour));
             }
             drawn_lines.push(pieces);
-            tile_lines.push(TileLine { country: key.clone(), part: None, missing, parts: Vec::new(), marks: None });
+            tile_lines.push(TileLine { country: key.clone(), part: None, missing, partial: partial_spans, parts: Vec::new(), marks: None });
         }
     } else {
         for key in &keys {
             drawn_lines.push(Vec::new());
-            tile_lines.push(TileLine { country: key.clone(), part: None, missing: Vec::new(), parts: Vec::new(), marks: None });
+            tile_lines.push(TileLine { country: key.clone(), part: None, missing: Vec::new(), partial: Vec::new(), parts: Vec::new(), marks: None });
         }
     }
 
@@ -642,11 +643,13 @@ mod tests {
         let params = serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "taken" }, "binHours": 1, "index": 0, "countries": [7] });
         let reply = tile(&src, &q, &params, &LoadContext { content: None }, &cancelled).unwrap();
         let bytes = unbase64(&reply.bins);
-        let reasons_at = |hour: i32| reply.lines[0].missing.iter().filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour).map(|gap| gap.reason.as_str()).collect::<Vec<_>>();
-        assert_eq!((bytes[10] & tile::PRESENT, reasons_at(10)), (tile::PRESENT, vec![]), "before the unplaced loss the total is whole");
-        assert_eq!((bytes[18] & tile::PRESENT, reasons_at(18)), (tile::PRESENT, vec![UNATTRIBUTED]), "after it the line keeps its recorded subtotal and says it is one");
+        let missing_at = |hour: i32| reply.lines[0].missing.iter().filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour).map(|gap| gap.reason.as_str()).collect::<Vec<_>>();
+        let partial_at = |hour: i32| reply.lines[0].partial.iter().filter(|gap| gap.first_hour <= hour && hour <= gap.last_hour).map(|gap| gap.reason.as_str()).collect::<Vec<_>>();
+        assert_eq!((bytes[10] & tile::PRESENT, missing_at(10), partial_at(10)), (tile::PRESENT, vec![], vec![]), "before the unplaced loss the total is whole");
+        assert_eq!((bytes[18] & tile::PRESENT, missing_at(18), partial_at(18)), (tile::PRESENT, vec![], vec![UNATTRIBUTED]), "after it the line keeps its recorded subtotal as partial rather than masking it as missing");
         let dealt = tile(&src, &q, &serde_json::json!({ "branchId": "1", "family": { "kind": "air-losses", "side": "dealt" }, "binHours": 1, "index": 0, "countries": [7] }), &LoadContext { content: None }, &cancelled).unwrap();
-        assert!(dealt.lines[0].missing.iter().any(|gap| gap.first_hour <= 18 && 18 <= gap.last_hour && gap.reason == UNATTRIBUTED), "an unplaced loss on one side leaves both of a country's totals open, as the head says: {:?}", dealt.lines[0].missing);
+        assert!(dealt.lines[0].missing.iter().all(|gap| !(gap.first_hour <= 18 && 18 <= gap.last_hour)), "partial subtotals stay out of missing so the line still draws");
+        assert!(dealt.lines[0].partial.iter().any(|gap| gap.first_hour <= 18 && 18 <= gap.last_hour && gap.reason == UNATTRIBUTED), "an unplaced loss on one side leaves both of a country's totals open, as the head says: {:?}", dealt.lines[0].partial);
 
         let gapped: Vec<DecodedFrame> = (0..=30)
             .filter(|hour| !(10..=19).contains(hour))
@@ -661,7 +664,11 @@ mod tests {
         let gap_src = Source::from_replay(SourceKey { source_id: "air-recording-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(rep), &cancelled).unwrap();
         let gap_query = query(&gap_src, 1).unwrap();
         let after = tile(&gap_src, &gap_query, &params, &LoadContext { content: None }, &cancelled).unwrap();
-        assert!(after.lines[0].missing.iter().any(|gap| gap.first_hour <= 20 && 20 <= gap.last_hour && gap.reason == SUBTOTAL_UNREAD), "hours unrecorded since the totals' start leave the later total a subtotal: {:?}", after.lines[0].missing);
+        let gap_bytes = unbase64(&after.bins);
+        assert_eq!(gap_bytes[15] & tile::PRESENT, 0, "the recording gap itself has no drawn value");
+        assert_eq!(gap_bytes[20] & tile::PRESENT, tile::PRESENT, "hours after the gap keep their witnessed subtotal");
+        assert!(after.lines[0].missing.iter().all(|gap| !(gap.first_hour <= 20 && 20 <= gap.last_hour)), "hours after the gap are not masked as missing");
+        assert!(after.lines[0].partial.iter().any(|gap| gap.first_hour <= 20 && 20 <= gap.last_hour && gap.reason == SUBTOTAL_UNREAD), "hours unrecorded since the totals' start leave the later total a partial subtotal: {:?}", after.lines[0].partial);
     }
 
     #[test]
@@ -801,10 +808,11 @@ mod tests {
         assert_eq!(ranking.until, 11);
         assert_eq!(
             top_reply.lines[0].missing,
-            vec![
-                MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() },
-                MissingSpan { first_hour: 18, last_hour: 20, reason: SUBTOTAL_UNREAD.to_owned() },
-            ],
+            vec![MissingSpan { first_hour: 15, last_hour: 17, reason: LINKS_NOT_RECORDED.to_owned() }],
+        );
+        assert_eq!(
+            top_reply.lines[0].partial,
+            vec![MissingSpan { first_hour: 18, last_hour: 20, reason: SUBTOTAL_UNREAD.to_owned() }],
             "after hours whose losses could not be credited, the line is the recorded subtotal, never an exact total"
         );
 

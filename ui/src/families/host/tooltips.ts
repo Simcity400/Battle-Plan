@@ -15,6 +15,7 @@ export interface TooltipListItem {
   readonly strong?: boolean;
   readonly divider?: boolean;
   readonly missingReason?: string;
+  readonly partialReason?: string;
 }
 
 export interface FamilyTooltipPayload {
@@ -62,7 +63,9 @@ export function buildTooltipContent(payload: FamilyTooltipPayload): TooltipConte
         label: item.label,
         ...(item.missingReason
           ? { valueState: { kind: 'missing', reason: item.missingReason }, detail: item.missingReason }
-          : item.value !== undefined ? { value: item.value } : {}),
+          : item.partialReason && item.value !== undefined
+            ? { valueState: { kind: 'partial', text: item.value, reason: item.partialReason }, detail: item.partialReason }
+            : item.value !== undefined ? { value: item.value } : {}),
         ...(item.swatch ? { swatch: item.swatch } : {}),
         ...(item.icon ? { icon: item.icon } : {}),
         ...(item.countryFlag ? { countryFlag: item.countryFlag } : {}),

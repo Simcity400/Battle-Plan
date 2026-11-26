@@ -7,6 +7,7 @@ import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import type { FamilyViewProps } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import type { Holder } from '../../dashboard/regionGate';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { perfLog } from '../../shell/perf.ts';
 import { useArtHandleResolutions } from '../art/react.ts';
@@ -86,7 +87,8 @@ export interface DeclaredFamilyWidgetProps<
   readonly declaration: DeclaredFamilyWidgetDeclaration<TModel, TProjectionOptions, TAux>;
   readonly view?: string;
   readonly selectedKey?: string | null;
-  readonly onActivate?: (action: InstalledAction) => void;
+  readonly onActivate?: (action: InstalledAction, countryHolder?: Holder | null) => void;
+  readonly onCountryHolder?: (holder: Holder | null) => void;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly contextMenuItems?: (hit: FamilyContextHit) => MenuItem[];
   readonly onViewportChange?: (viewport: FamilyViewportChange) => void;
@@ -117,6 +119,7 @@ export default function DeclaredFamilyWidget<
   filterSlot,
   selectedKey = null,
   onActivate,
+  onCountryHolder,
   onToggle,
   contextMenuItems: customContextMenuItems,
   onViewportChange: externalViewportChange,
@@ -151,6 +154,19 @@ export default function DeclaredFamilyWidget<
     active,
     setOption,
   });
+  const countryHolderRef = useRef<Holder | null>(plan.countryHolder);
+  countryHolderRef.current = plan.countryHolder;
+  useEffect(() => {
+    onCountryHolder?.(plan.countryHolder);
+  }, [onCountryHolder, plan.countryHolder?.tag, plan.countryHolder?.origin]);
+  const handleActivate = useMemo(
+    () => onActivate
+      ? (action: InstalledAction) => {
+          onActivate(action, countryHolderRef.current);
+        }
+      : undefined,
+    [onActivate],
+  );
   const reportHover = plan.onHoverHour;
   const handleHoverHour = useCallback((hour: number | null, keys?: DrawnKeys) => {
     reportHover(hour, keys);
@@ -358,7 +374,7 @@ export default function DeclaredFamilyWidget<
       onHoverHour={handleHoverHour}
       onTooltipRow={onTooltipRow}
       selectedKey={selectedKey}
-      onActivate={onActivate}
+      onActivate={handleActivate}
       onToggle={onToggle}
       {...(regionsEditable ? { onRegions, emptyAction } : {})}
       contextMenuItems={resolvedContextMenuItems}

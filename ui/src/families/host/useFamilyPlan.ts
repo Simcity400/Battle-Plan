@@ -17,7 +17,7 @@ import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
-import { useGate } from '../../dashboard/regionGate';
+import { useGate, type Holder } from '../../dashboard/regionGate';
 import { axisAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
@@ -182,6 +182,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly ctx: FamilyPlanContext<TAux> | null;
   readonly displayedCtx: FamilyPlanContext<TAux> | null;
   readonly recorded: ReturnType<typeof useGate>['recorded'];
+  readonly countryHolder: Holder | null;
   readonly displayedExtra: TExtra | undefined;
   readonly plan: SourcePlan | null;
   readonly subscriptions: readonly CompiledFollowSubscription[];
@@ -1213,6 +1214,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     ctx: ctxWithStaticSpan,
     displayedCtx,
     recorded: gate.recorded,
+    countryHolder: isSingle ? singleCountry?.holder ?? null : null,
     displayedExtra,
     plan: displayedPlan,
     subscriptions: compiledFollow.subscriptions,

@@ -28,6 +28,7 @@ import {
   countrySeriesLooks,
   memberAt,
   missingSpansOf,
+  partialSpansOf,
   rowsBySelectedKey,
   withinMapOf,
   chartTopOf,
@@ -360,6 +361,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         flag: look.flag,
         identities: look.identities.map(run => ({ ...run, name: `${run.name} · Enemy losses` })),
         missingSpans: missingSpansOf(dealtBounded),
+        partialSpans: partialSpansOf(dealtBounded),
         endLabel: dealtEndLabel,
       });
 
@@ -377,6 +379,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         flag: look.flag,
         identities: look.identities.map(run => ({ ...run, name: `${run.name} · Own losses` })),
         missingSpans: missingSpansOf(takenBounded),
+        partialSpans: partialSpansOf(takenBounded),
         endLabel: takenEndLabel,
       });
     });
