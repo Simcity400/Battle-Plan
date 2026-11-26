@@ -509,8 +509,12 @@ pub(crate) fn forget(source: &Source) {
 
 fn model_snapshot(source: &Source, query: &Query<'_>, run: u32, hour: i32, ids: &BTreeSet<u32>) -> io::Result<Arc<ModelSnapshot>> {
     let cache = source.state::<ModelSnapshots>();
-    if let Some(hit) = cache.lock().unwrap_or_else(PoisonError::into_inner).0.iter().find(|s| s.run == run && s.hour == hour && ids.iter().all(|id| s.countries.contains_key(id))) {
-        return Ok(Arc::clone(hit));
+    {
+        let mut held = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = held.0.iter().position(|s| s.run == run && s.hour == hour && ids.iter().all(|id| s.countries.contains_key(id))) {
+            held.0.swap(0, at);
+            return Ok(Arc::clone(&held.0[0]));
+        }
     }
     let countries = DesignsAt::read(query, run, hour, &ids.iter().copied().collect::<Vec<_>>())?;
     let made = Arc::new(ModelSnapshot { run, hour, countries });
@@ -1143,16 +1147,19 @@ pub(super) mod tests {
     #[test]
     fn hover_counts_the_same_country_and_window_as_the_line() {
         let src = two_producers_read_from("produced-hover", 1000, 1300, 1000, true, Some(1200), None);
-        let ask = |models: bool| {
+        let ask = |hour: i32, models: bool| {
             let params = serde_json::from_value(serde_json::json!({
-                "branchId": "1", "countries": [7, "DEU"], "hour": 1300, "count": "units",
+                "branchId": "1", "countries": [7, "DEU"], "hour": hour, "count": "units",
                 "measure": "total", "fromHour": 1120, "types": [], "refits": false, "models": models,
             })).unwrap();
             EquipmentProducedRace::load(&src, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
         };
-        let head = ask(false);
+        let head = ask(1300, false);
         assert!(head.rows.iter().all(|row| !serde_json::to_value(row).unwrap().as_object().unwrap().contains_key("breakdown")));
-        let hover = ask(true);
+        ask(1250, true);
+        let snapshots = src.state::<ModelSnapshots>();
+        let opening = snapshots.lock().unwrap().0.iter().min_by_key(|s| s.hour).unwrap().clone();
+        let hover = ask(1300, true);
         let slot = hover.rows.iter().find(|row| row.counted == Country::Slot(7)).unwrap();
         assert_eq!(slot.value, Some(8));
         let Some(ProducedBreakdown::Models { models, more: 0, remainder: 0 }) = &slot.breakdown else { panic!("missing models: {slot:?}") };
@@ -1160,9 +1167,8 @@ pub(super) mod tests {
         let tag = hover.rows.iter().find(|row| row.counted == Country::Tag("DEU".into())).unwrap();
         assert_eq!(tag.unknown, Some(ProducedUnknown::WindowIncomplete));
         assert!(tag.breakdown.is_none());
-        let snapshots = src.state::<ModelSnapshots>();
         let names = src.state::<Option<Arc<DatedDesigns>>>();
-        assert!(!snapshots.lock().unwrap().0.is_empty());
+        assert!(snapshots.lock().unwrap().0.iter().any(|s| Arc::ptr_eq(s, &opening)), "a Range keeps its opening snapshot when the inspected hour advances");
         assert!(names.lock().unwrap().is_some());
         crate::forget(&src);
         assert!(snapshots.lock().unwrap().0.is_empty());
