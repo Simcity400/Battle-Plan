@@ -66,7 +66,6 @@ interface TableShape {
   readonly windowOffset: number;
   readonly totalCount: number;
   readonly totalHeight: number;
-  readonly heightMemory: ReadonlyMap<number, MeasuredRow>;
   readonly extents: RowExtents | null;
   readonly maxima: Map<string, number>;
   readonly maximaCols: string;
@@ -178,8 +177,10 @@ interface HeightBasis {
   readonly totalCount: number;
 }
 
+const heightMemories = new WeakMap<object, { readonly basis: HeightBasis; readonly rows: ReadonlyMap<number, MeasuredRow> }>();
+
 function rememberHeights(
-  prev: TableShape | null,
+  owner: object,
   basis: HeightBasis,
   rows: readonly FlatTableRow[],
   rowGeom: RowLayoutGeometry | null,
@@ -187,16 +188,16 @@ function rememberHeights(
 ): Map<number, MeasuredRow> {
   const memory = new Map<number, MeasuredRow>();
   const end = windowOffset + rows.length;
-  const comparable = prev !== null && !prev.panes && prev.options === basis.options && prev.settings === basis.settings && prev.expanded === basis.expanded
-    && prev.width === basis.width && prev.theme === basis.theme && prev.rowHeight === basis.rowHeight && prev.totalCount === basis.totalCount;
-  if (comparable && [...prev.heightMemory].every(([ordinal, row]) => ordinal < windowOffset || ordinal >= end || rows[ordinal - windowOffset]!.key === row.key)) {
-    for (const [ordinal, row] of prev.heightMemory) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
+  const held = heightMemories.get(owner);
+  const same = held !== undefined && (Object.keys(basis) as (keyof HeightBasis)[]).every(key => held.basis[key] === basis[key]);
+  if (same && [...held.rows].every(([ordinal, row]) => ordinal < windowOffset || ordinal >= end || rows[ordinal - windowOffset]!.key === row.key)) {
+    for (const [ordinal, row] of held.rows) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
   }
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!;
     const height = rowGeom ? rowGeom.heights[i]! : basis.rowHeight;
-    if (height !== basis.rowHeight && row.kind !== 'loading') memory.set(windowOffset + i, { key: row.key, height });
+    if (height !== basis.rowHeight) memory.set(windowOffset + i, { key: rows[i]!.key, height });
   }
+  heightMemories.set(owner, { basis, rows: memory });
   return memory;
 }
 
@@ -256,7 +257,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
   const localTotal = panes ? panesHeight(panes) : rowGeom ? rowGeom.totalHeight : flatRows.length * rowHeight;
   const windowOffset = panes ? 0 : (model.windowOffset ?? 0);
   const totalCount = panes ? flatRows.length : Math.max(windowOffset + flatRows.length, model.totalRows ?? flatRows.length);
-  const heightMemory = panes ? new Map<number, MeasuredRow>() : rememberHeights(prev, { options: binding.options, settings, expanded, width, theme, rowHeight, totalCount }, flatRows, rowGeom, windowOffset);
+  const heightMemory = panes ? new Map<number, MeasuredRow>() : rememberHeights(measure, { options: binding.options, settings, expanded, width, theme, rowHeight, totalCount }, flatRows, rowGeom, windowOffset);
   const extents = rowExtents(rowHeight, [...heightMemory].map(([ordinal, row]) => [ordinal, row.height] as const));
   const totalHeight = panes ? localTotal : extentTop(extents, rowHeight, totalCount) + (model.endNote ? END_NOTE_HEIGHT : 0);
   let maximaCols = '';
@@ -273,7 +274,7 @@ function shapeOf(model: TableModel, binding: FamilyTableBinding, theme: FamilyTh
     hasTree: inc === null && flatRows.some(item => item.kind === 'data' && item.isTreeGroup),
     panes, paneGeom, rankShown, rankMarkersOn, rankWidth,
     widthKey, fixedWidths, allLayouts, columns, rowHeightMode, rowHeight, rowGeom,
-    windowOffset, totalCount, totalHeight, heightMemory, extents, maxima, maximaCols,
+    windowOffset, totalCount, totalHeight, extents, maxima, maximaCols,
     rowAuditCache: inc && prev ? prev.rowAuditCache : new WeakMap(),
     sortSig, orderKeys: dataKeys,
   };
@@ -594,6 +595,7 @@ function visibleCellArtItems(
       const col = columns[c]!;
       const cell = item.row.cells[col.key];
       if (!cell) continue;
+      if (cell.heading) items.push(cell.heading.flag.art);
       if (cell.flags) for (const fl of cell.flags) items.push(fl.art);
       if (cell.icons) for (const ic of cell.icons) items.push(ic.art);
       items.push(cell.art, cell.unitArt);

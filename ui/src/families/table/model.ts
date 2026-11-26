@@ -227,6 +227,7 @@ export interface TableRow {
   readonly pageGroup?: { readonly members: number; readonly open: boolean };
   readonly pageParent?: string;
   readonly detailColumn?: string;
+  readonly detailEnd?: boolean;
   readonly children?: readonly TableRow[];
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
@@ -1121,6 +1122,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
         ...painted,
         artKey: cell?.artKey ?? null,
         flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true, ...(flag.label ? [flag.label] : [])]) ?? null,
+        ...(cell?.heading ? { heading: [cell.heading.flag.tag, cell.heading.flag.artKey ?? null, cell.heading.note ?? null] } : {}),
       })));
     }
     const { countryFlag: _flagStatus, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
@@ -1232,6 +1234,7 @@ function artStatuses(cell: TableCell, inTitle: boolean): { readonly label: strin
     const text = art ? artHoverText(art) : null;
     if (text) out.push({ label, text });
   };
+  if (cell.heading) note(`${cell.heading.flag.tag} flag`, cell.heading.flag.art);
   for (const flag of cell.flags ?? []) note(`${flag.tag} flag`, flag.art);
   if (!inTitle) note(cell.artName ?? 'Art', cell.art);
   note(cell.unitSuffix ?? 'Icon', cell.unitArt);

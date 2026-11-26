@@ -11,9 +11,9 @@ test('a treaty counts once when expanded, its transfers show the former owner at
     branchId: '1', total: '3', offset: '0', missing: [], warnings: [], nextChange: null, counts: [{ key: 'treaties', total: '1' }],
     rows: [
       { key, hour: 32, parent: null, detail: { kind: 'treaty', winner: 'BBB', loser: 'AAA', whitePeace: false, bounded: true, derived: true,
-        members: 2, terms: [{ kind: 'state', count: 1 }], limitations: [] } },
-      { key: 'recipient', hour: 32, parent: key, detail: { kind: 'recipient', tag: 'BBB', terms: [{ kind: 'state', count: 1 }], items: [{ kind: 'state', state: 7, tag: 'AAA', at: 28 }] } },
-      { key: 'more', hour: 32, parent: key, detail: { kind: 'more', terms: 12, hidden: 11 } },
+        members: 2, terms: [{ kind: 'state', count: 1 }], limitations: [] }, last: false },
+      { key: 'recipient', hour: 32, parent: key, detail: { kind: 'recipient', tag: 'BBB', terms: [{ kind: 'state', count: 1 }], items: [{ kind: 'state', state: 7, tag: 'AAA', at: 28 }] }, last: false },
+      { key: 'more', hour: 32, parent: key, detail: { kind: 'more', terms: 12, hidden: 11, recipients: 1, hiddenRecipients: 0 }, last: true },
     ],
   };
   const source = buildRowSourceFromHead('branch', head, undefined, 40)!;
@@ -32,7 +32,9 @@ test('a treaty counts once when expanded, its transfers show the former owner at
   assert.equal(model.rows[0]?.cells.country?.flags?.[1]?.dimmed, true);
   assert.equal(model.rows[1]?.cells.terms?.heading?.note, '1 state', 'the recipient heads its own terms');
   assert.equal(model.rows[1]?.cells.terms?.flags?.[0]?.label, 'state 7');
+  assert.equal(model.rows[1]?.detailEnd, undefined, 'a block continues past a row the product does not mark last');
   assert.equal(model.rows[2]?.key, `all:${key}`);
+  assert.equal(model.rows[2]?.detailEnd, true, 'the row the product marks last closes the block');
   assert.equal(model.rows[2]?.name, 'Show all 12 terms · 11 more');
   assert.equal(model.rows[2]?.cells.terms?.value.kind === 'known' && model.rows[2].cells.terms.value.value, model.rows[2]?.name);
   assert.ok(reads.includes('country AAA at 28'));

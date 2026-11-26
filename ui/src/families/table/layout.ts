@@ -346,7 +346,6 @@ export function layoutFamilyTable(
 const GROUP_HEADER_HEIGHT = 30;
 const GAP_ROW_HEIGHT = 30;
 const REFUSED_ROW_HEIGHT = 32;
-const LOADING_ROW_HEIGHT = 32;
 export const LIVE_END_GAP = 9;
 export const END_NOTE_HEIGHT = 44;
 
@@ -389,20 +388,22 @@ function detailChipWidth(flag: TableCellFlag, measure: MeasureText, font: string
   return DETAIL_FLAG.width + DETAIL_FLAG.gap + label + note;
 }
 
-function sameBlock(row: FlatTableRow | undefined, parent: string | undefined): boolean {
-  return row?.kind === 'data' && row.row.detailColumn !== undefined && row.row.pageParent === parent;
+function detailIndent(columns: readonly FamilyColumnLayout[]): number {
+  const date = columns.findIndex(col => col.cellKind === 'date');
+  if (date < 0) return ROW_MARGIN_X + CELL_INSET;
+  let x = 0;
+  for (let at = 0; at <= date; at++) x += columns[at]!.width;
+  return x + CELL_INSET + (columns[date + 1]?.leadInset ?? 0);
 }
 
 function detailRowLayout(
-  rows: readonly FlatTableRow[],
-  index: number,
   row: Extract<FlatTableRow, { kind: 'data' }>,
   detail: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
 ): DetailRowLayout {
-  const indent = (detail.columns[0]?.width ?? 0) + CELL_INSET + (detail.columns[1]?.leadInset ?? 0);
+  const indent = detailIndent(detail.columns);
   const left = indent + 1 + DETAIL_RULE_GAP;
   const width = Math.max(0, detail.width - ROW_MARGIN_X - CELL_INSET - left);
-  const last = !sameBlock(rows[index + 1], row.row.pageParent);
+  const last = row.row.detailEnd === true;
   const cell = row.row.cells[row.row.detailColumn!];
   const heading = cell?.heading !== undefined;
   const flags = cell?.flags ?? [];
@@ -433,7 +434,7 @@ export function rowHeightOf(
   if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
   if (item.kind === 'gap') return GAP_ROW_HEIGHT;
   if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
-  if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
+  if (item.kind === 'loading') return mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density];
   const base = item.level > 1 && !item.row.pageParent ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
   return item.isLiveEnd ? base + LIVE_END_GAP : base;
 }
@@ -452,7 +453,7 @@ export function computeRowLayout(
     const row = rows[i]!;
     let h = rowHeightOf(row, density, mode);
     if (detail && row.kind === 'data' && row.row.detailColumn) {
-      const layout = detailRowLayout(rows, i, row, detail);
+      const layout = detailRowLayout(row, detail);
       detailRows.set(i, layout);
       h = detailRowHeight(layout);
     }

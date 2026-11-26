@@ -3193,41 +3193,48 @@ test('buildDeclarativeRow resolves country identity and flag art once per row ac
   assert.equal(artCalls, 1, 'flag art is resolved only for the country column, never numeric columns or rowName');
 });
 
-test('a tall row near the window edge keeps its neighbours on screen while scrolling: the host window and the lane place rows from measured heights', () => {
-  const columns: TableColumnSpec[] = [{ key: 'item', label: 'Item', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' }];
+test('a tall row near the window edge keeps its neighbours on screen while scrolling a paused table: the host window and the lane place rows from measured heights', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'date', minWidth: 70, maxWidth: 70 },
+    { key: 'item', label: 'Item', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
   const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'item', direction: 'descending' } });
-  const plain = (key: string): TableRow => ({ key, name: key, cells: { item: { value: knownValue(key) } } });
+  const plain = (key: string): TableRow => ({ key, name: key, cells: { date: { value: knownValue(10) }, item: { value: knownValue(key) } } });
   const chips = Array.from({ length: 60 }, (_, at) => ({ tag: 'AAA', art: readyArt(`art://${at}`), label: `Province ${at}` }));
   const all: TableRow[] = [
     plain('r0'),
     { ...plain('group'), pageGroup: { members: 1, open: true } },
-    { key: 'terms', name: 'terms', pageParent: 'group', detailColumn: 'item', cells: { item: { value: knownValue('terms'), flags: chips } } },
+    { key: 'terms', name: 'terms', pageParent: 'group', detailColumn: 'item', detailEnd: true, cells: { date: { value: knownValue(10) }, item: { value: knownValue('terms'), flags: chips } } },
     ...Array.from({ length: 40 }, (_, at) => plain(`r${at + 3}`)),
   ];
   const height = 200;
   const width = 640;
-  const measure = instrumentedContext().ctx as unknown as OffscreenCanvasRenderingContext2D;
   const binding = (scrollTop: number) => ({ family: 'table', settings, width, height, scrollLeft: 0, scrollTop, options: NO_OPTIONS }) as never;
-  const lay = (model: TableModel, scrollTop: number, previous: unknown) =>
-    tableLane.layout(model, binding(scrollTop), { width, height, dpr: 1 } as never, TEST_THEME, measure, 10, { previous, now: 0, speed: 0 } as never);
-  const slotted = (rows: TableRow[]) => ({ rows, slots: rows.map(row => ({ kind: 'data' as const, row })) });
-  const full = lay({ columns, ...slotted(all), hour: 10, unsorted: true, totalRows: all.length }, 0, null);
-  const tall = full.heights(2);
-  assert.ok(tall > ROW_HEIGHT.normal * 3, `the detail row wraps to several lines (${tall}px)`);
-  const topOf = (ordinal: number) => full.tops(ordinal);
-  let previous: unknown = { layout: full };
-  for (let scrollTop = topOf(2) - 40; scrollTop <= topOf(8) + 40; scrollTop += 24) {
-    const fields = tableLane.structure({ layout: (previous as { layout: typeof full }).layout, binding: binding(scrollTop) } as never);
-    const window = tableHostAdapter.rowWindow!({ width, height, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings, fields)!;
+  const lay = (rows: TableRow[], windowOffset: number, scrollTop: number, measure: object) =>
+    tableLane.layout({ columns, rows, slots: rows.map(row => ({ kind: 'data' as const, row })), hour: 10, unsorted: true, windowOffset, totalRows: all.length },
+      binding(scrollTop), { width, height, dpr: 1 } as never, TEST_THEME, measure as OffscreenCanvasRenderingContext2D, 10, { previous: null, now: 0, speed: 0 } as never);
+  const reference = lay(all, 0, 0, instrumentedContext().ctx);
+  const tall = reference.heights(2);
+  assert.ok(tall > ROW_HEIGHT.normal * 3, `the detail row wraps its terms to several lines (${tall}px)`);
+  const hostWindow = (scrollTop: number, fields: Readonly<Record<string, unknown>>) =>
+    tableHostAdapter.rowWindow!({ width, height, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings, fields)!;
+  const fieldsOf = (layout: typeof reference, scrollTop: number) => tableLane.structure({ layout, binding: binding(scrollTop) } as never);
+  const measure = instrumentedContext().ctx;
+  const shown = (window: { first: number; count: number }, scrollTop: number) => lay(all.slice(window.first, window.first + window.count), window.first, scrollTop, measure);
+  let layout = shown(hostWindow(0, {}), 0);
+  for (let scrollTop = 0; scrollTop <= reference.tops(8) + 40; scrollTop += 24) {
+    const window = hostWindow(scrollTop, fieldsOf(layout, scrollTop));
     for (let ordinal = 0; ordinal < all.length; ordinal++) {
-      const onScreen = topOf(ordinal) < scrollTop + height && topOf(ordinal) + full.heights(ordinal) > scrollTop;
+      const onScreen = reference.tops(ordinal) < scrollTop + height && reference.tops(ordinal) + reference.heights(ordinal) > scrollTop;
       if (onScreen) assert.ok(ordinal >= window.first && ordinal < window.first + window.count, `row ${ordinal} is on screen at ${scrollTop}px and inside the window ${window.first}+${window.count}`);
     }
-    const shown = lay({ columns, ...slotted(all.slice(window.first, window.first + window.count)), hour: 10, unsorted: true, windowOffset: window.first, totalRows: all.length }, scrollTop, previous);
-    for (let index = 0; index < window.count; index++) {
-      assert.equal(shown.tops(index), topOf(window.first + index), `row ${window.first + index} keeps its place at ${scrollTop}px when the window starts at ${window.first}`);
+    layout = shown(window, scrollTop);
+    const settled = hostWindow(scrollTop, fieldsOf(layout, scrollTop));
+    if (settled.first !== window.first || settled.count !== window.count) layout = shown(settled, scrollTop);
+    const offset = layout.shape.windowOffset;
+    for (let index = 0; index < layout.shape.flatRows.length; index++) {
+      assert.equal(layout.tops(index), reference.tops(offset + index), `row ${offset + index} keeps its place at ${scrollTop}px when the window starts at ${offset}`);
     }
-    assert.equal(shown.shape.totalHeight, full.shape.totalHeight, 'the scroll extent does not change as the window moves');
-    previous = { layout: shown };
+    assert.equal(layout.shape.totalHeight, reference.shape.totalHeight, `the scroll extent stays put at ${scrollTop}px`);
   }
 });

@@ -85,7 +85,7 @@ pub enum PeaceLine {
     Treaty { winner: Option<String>, loser: Option<String>, terms: Vec<PeaceTermCount>, white_peace: bool, members: usize, bounded: bool, derived: bool, limitations: Vec<String> },
     Recipient { tag: Option<String>, terms: Vec<PeaceTermCount>, items: Vec<PeaceTerm> },
     Terms { items: Vec<PeaceTerm> },
-    More { terms: usize, hidden: usize },
+    More { terms: usize, hidden: usize, recipients: usize, hidden_recipients: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -106,6 +106,7 @@ pub struct PeaceDealsRow {
     pub parent: Option<String>,
     pub hour: i32,
     pub detail: PeaceLine,
+    pub last: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -245,6 +246,7 @@ struct Line {
     row: PeaceDealsRow,
     ordinal: usize,
     place: usize,
+    recipient: usize,
 }
 
 const TERM_LINES: usize = 8;
@@ -255,20 +257,28 @@ const OTHER_WIDTH: usize = 5;
 struct Lines {
     total: usize,
     shown: usize,
+    recipients: usize,
+    heads: usize,
+}
+
+impl Lines {
+    fn capped(&self) -> bool {
+        self.shown < self.total || self.heads < self.recipients
+    }
 }
 
 fn lines(recipients: &[Vec<usize>], per_line: usize) -> Lines {
-    let (mut lines, mut total, mut shown) = (0, 0, None);
-    for widths in recipients {
+    let (mut lines, mut total, mut cut) = (0, 0, None);
+    for (at, widths) in recipients.iter().enumerate() {
         if lines == TERM_LINES {
-            shown.get_or_insert(total);
+            cut.get_or_insert((total, at));
         }
         lines += 1;
         let mut used = per_line;
-        for &width in widths {
+        for (place, &width) in widths.iter().enumerate() {
             if used + width > per_line {
                 if lines == TERM_LINES {
-                    shown.get_or_insert(total);
+                    cut.get_or_insert((total, if place == 0 { at } else { at + 1 }));
                 }
                 lines += 1;
                 used = 0;
@@ -277,7 +287,8 @@ fn lines(recipients: &[Vec<usize>], per_line: usize) -> Lines {
             total += 1;
         }
     }
-    Lines { shown: shown.unwrap_or(total), total }
+    let (shown, heads) = cut.unwrap_or((total, recipients.len()));
+    Lines { total, shown, recipients: recipients.len(), heads }
 }
 
 fn group(line: &Line) -> &str {
@@ -349,7 +360,7 @@ impl Tail {
                     .collect();
             roles.sort_unstable_by_key(|role| (role.slot, role.at));
             roles.dedup();
-            let mut push = |parent: Option<String>, detail, ordinal, place| {
+            let mut push = |parent: Option<String>, detail, ordinal, place, recipient| {
                 let key = if parent.is_none() { group.clone() } else { format!("{group}:{}", entries.len()) };
                 entries.push(Occurrence {
                     id: u128::MAX - entries.len() as u128,
@@ -361,7 +372,7 @@ impl Tail {
                     states: Box::default(),
                     sort_keys: Box::default(),
                     text: Box::default(),
-                    payload: Line { row: PeaceDealsRow { key, parent, hour, detail }, ordinal, place },
+                    payload: Line { row: PeaceDealsRow { key, parent, hour, detail, last: false }, ordinal, place, recipient },
                 });
             };
             let terms = counts(groups.values().flatten().map(|term| term.kind));
@@ -386,6 +397,7 @@ impl Tail {
                 },
                 0,
                 0,
+                0,
             );
             let winner_order: BTreeMap<_, _> = deal.winners.iter().enumerate().map(|(i, tag)| (tag, i)).collect();
             let mut recipients: Vec<_> = groups.into_iter().collect();
@@ -400,14 +412,15 @@ impl Tail {
                 group.clone(),
                 recipients.iter().map(|(_, terms)| terms.iter().map(|term| if term.kind == PeaceTermKind::State { STATE_WIDTH } else { OTHER_WIDTH }).collect()).collect(),
             );
-            for (tag, terms) in recipients {
-                push(Some(group.clone()), PeaceLine::Recipient { tag, terms: counts(terms.iter().map(|t| t.kind)), items: Vec::new() }, ordinal, 0);
+            let heads = recipients.len();
+            for (recipient, (tag, terms)) in recipients.into_iter().enumerate() {
+                push(Some(group.clone()), PeaceLine::Recipient { tag, terms: counts(terms.iter().map(|t| t.kind)), items: Vec::new() }, ordinal, 0, recipient);
                 for (place, term) in terms.into_iter().enumerate() {
-                    push(Some(group.clone()), PeaceLine::Terms { items: vec![term] }, ordinal, place);
+                    push(Some(group.clone()), PeaceLine::Terms { items: vec![term] }, ordinal, place, recipient);
                     ordinal += 1;
                 }
             }
-            push(Some(group.clone()), PeaceLine::More { terms: ordinal, hidden: 0 }, ordinal, 0);
+            push(Some(group.clone()), PeaceLine::More { terms: ordinal, hidden: 0, recipients: heads, hidden_recipients: 0 }, ordinal, 0, heads);
         }
         let mut unread = assembled.unobserved.settlements;
         unread.extend(assembled.unobserved.ownership);
@@ -455,12 +468,12 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &PeaceDealsTailParams, 
     let per_line = params.terms_per_line.map_or(1, |n| n as usize) * STATE_WIDTH;
     let open: HashMap<&str, Lines> =
         prepared.expanded.iter().filter_map(|group| Some((group.as_str(), lines(prepared.tail.treaties.get(group)?, per_line)))).collect();
-    let capped = |line: &Line| open.get(group(line)).is_some_and(|lines| lines.shown < lines.total);
+    let capped = |line: &Line| open.get(group(line)).is_some_and(Lines::capped);
     let full = |line: &Line| prepared.full.contains(group(line));
     let within = |line: &Line| full(line) || !capped(line) || line.ordinal < open[group(line)].shown;
     let starts = |line: &Line| match line.row.detail {
         PeaceLine::Treaty { .. } => true,
-        PeaceLine::Recipient { .. } => within(line),
+        PeaceLine::Recipient { .. } => full(line) || !capped(line) || line.recipient < open[group(line)].heads,
         PeaceLine::Terms { .. } => within(line) && line.place > 0 && line.place % TERMS_PER_ROW == 0,
         PeaceLine::More { .. } => capped(line),
     };
@@ -501,8 +514,17 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &PeaceDealsTailParams, 
                         items.extend_from_slice(more);
                     }
                 }
-                PeaceLine::More { terms, hidden } if !full(line) => *hidden = *terms - open[group(line)].shown,
+                PeaceLine::More { terms, hidden, recipients, hidden_recipients } if !full(line) => {
+                    *hidden = *terms - open[group(line)].shown;
+                    *hidden_recipients = *recipients - open[group(line)].heads;
+                }
                 _ => {}
+            }
+            if line.row.parent.is_some() {
+                row.last = (shown.at as usize + 1..index.len())
+                    .map(|at| &index.get(at as u32).payload)
+                    .take_while(|next| group(next) == group(line))
+                    .all(|next| !starts(next));
             }
             row
         })
@@ -646,7 +668,8 @@ mod tests {
         assert!(matches!(&capped.rows[0].detail, PeaceLine::Treaty { members: 14, white_peace: false, .. }));
         assert_eq!(recipient(&capped.rows[1]), "BBB");
         assert_eq!(terms(&capped.rows[1]), numbered(1..=7), "a recipient's terms flow in its own row");
-        assert_eq!(capped.rows[2].detail, PeaceLine::More { terms: 12, hidden: 5 });
+        assert_eq!(capped.rows[2].detail, PeaceLine::More { terms: 12, hidden: 5, recipients: 2, hidden_recipients: 1 });
+        assert_eq!(capped.rows.iter().map(|row| row.last).collect::<Vec<_>>(), [false, false, true], "only the row that closes the treaty ends its block");
         assert_eq!(capped.next_change, None);
         params.offset = Some("2".into());
         assert_eq!(reply(&prepared, &holders, &params, 43).unwrap().rows, capped.rows[2..]);
@@ -657,16 +680,36 @@ mod tests {
         assert_eq!(open.rows.len(), 4);
         assert_eq!(terms(&open.rows[1]), [numbered(1..=10), vec!["CCC".to_owned()]].concat());
         assert_eq!((recipient(&open.rows[2]), terms(&open.rows[2])), ("DDD".to_owned(), vec!["EEE".to_owned()]));
-        assert_eq!(open.rows[3].detail, PeaceLine::More { terms: 12, hidden: 0 }, "the same row collapses back");
+        assert_eq!(open.rows[3].detail, PeaceLine::More { terms: 12, hidden: 0, recipients: 2, hidden_recipients: 0 }, "the same row collapses back");
         prepared.full.clear();
         let header = reply(&prepared, &holders, &params, 43).unwrap();
         assert_eq!(header.rows.len(), 3, "a recipient whose only term would be the ninth estimated line waits behind the row that opens the rest");
         assert_eq!(terms(&header.rows[1]).len(), 11, "five lines of two states, then the puppet, which is two and a half states wide");
-        assert_eq!(header.rows[2].detail, PeaceLine::More { terms: 12, hidden: 1 });
+        assert_eq!(header.rows[2].detail, PeaceLine::More { terms: 12, hidden: 1, recipients: 2, hidden_recipients: 1 });
         params.terms_per_line = Some(3);
         let whole = reply(&prepared, &holders, &params, 43).unwrap();
         assert_eq!(whole.rows.len(), 3, "a treaty within eight estimated lines shows everything and no row to open the rest");
         assert_eq!(recipient(&whole.rows[2]), "DDD");
+        assert!(whole.rows[2].last, "without a row that opens the rest, the last recipient ends the block");
+    }
+
+    #[test]
+    fn a_white_peace_with_nine_winners_shows_eight_and_a_row_that_opens_the_rest() {
+        let winners: Vec<u32> = (21..30).collect();
+        let row = PeaceSettlementRow { sequence: 6, conference: Some(10), hour: Some(40), winners: winners.clone(), losers: vec![11], ..Default::default() };
+        let mut raw: HashMap<_, _> = winners.iter().map(|&id| ((id, 40), ((id, id), format!("W{id}")))).collect();
+        raw.insert((11, 40), ((1, 11), "AAA".into()));
+        let (deals, warnings) = fold(&[], &[], &[Settled { publication_hour: 41, row }], &Joins { raw, ..Default::default() });
+        let holders = Holders::new(BTreeMap::new(), vec![]);
+        let tail = Arc::new(Tail::new(Assembled { deals, warnings, unobserved: PeaceUnobserved::default() }, &holders).unwrap());
+        let group = "group:captured:10:6".to_owned();
+        let mut prepared = Prepared { tail, selection: None, expanded: BTreeSet::from([group.clone()]), full: BTreeSet::new() };
+        let params: PeaceDealsTailParams = serde_json::from_value(serde_json::json!({"branchId":"1","limit":64,"termsPerLine":10})).unwrap();
+        let capped = reply(&prepared, &holders, &params, 41).unwrap();
+        assert_eq!(capped.rows.len(), 10, "the treaty, eight winners and the row that opens the rest");
+        assert_eq!(capped.rows[9].detail, PeaceLine::More { terms: 0, hidden: 0, recipients: 9, hidden_recipients: 1 });
+        prepared.full.insert(group);
+        assert_eq!(reply(&prepared, &holders, &params, 41).unwrap().rows.len(), 11);
     }
 
     #[test]

@@ -57,9 +57,11 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     };
   }
   if (d.kind === 'more') {
-    const name = d.hidden ? `Show all ${formatScalar(d.terms)} terms · ${formatScalar(d.hidden)} more` : 'Show fewer terms';
+    const name = d.hidden ? `Show all ${formatScalar(d.terms)} terms · ${formatScalar(d.hidden)} more`
+      : d.hiddenRecipients ? `Show all ${formatScalar(d.recipients)} winners · ${formatScalar(d.hiddenRecipients)} more`
+        : d.terms ? 'Show fewer terms' : 'Show fewer winners';
     const cell: TableCell = { value: knownValue(name) };
-    return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms',
+    return { ...common, key: `all:${row.parent}`, name, muted: true, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),
       cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank } };
   }
   const flags = d.items.map(term => {
@@ -85,7 +87,7 @@ function peaceRow(view: BoundedReadView, row: PeaceDealsRow, boundary: IdentityB
     cell = { value: knownValue(list.join(', ')), flags };
   }
   return {
-    ...common, key: `child:${row.key}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms',
+    ...common, key: `child:${row.key}`, name, pageParent: row.parent ?? undefined, detailColumn: 'terms', ...(row.last ? { detailEnd: true } : {}),
     cells: { date: blank, kind: blank, country: blank, terms: cell, action: blank },
   };
 }

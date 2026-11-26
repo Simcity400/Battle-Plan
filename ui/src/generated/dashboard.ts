@@ -2137,9 +2137,9 @@ export type CasualtyBreakdownReply = { from: number, hour: number, through: numb
 export type PeaceDealsTailParams = { branchId: string, hour?: number, from?: number, to?: number, countries?: Array<CountryRef>, group?: GroupSelection, offset?: string, expanded?: Array<string>, full?: Array<string>, termsPerLine?: number, limit: number, };
 export type PeaceTermKind = "state" | "puppet" | "government" | "release" | "ship" | "other";
 export type PeaceTermCount = { kind: PeaceTermKind, count: number, };
-export type PeaceLine = { "kind": "treaty", winner: string | null, loser: string | null, terms: Array<PeaceTermCount>, whitePeace: boolean, members: number, bounded: boolean, derived: boolean, limitations: Array<string>, } | { "kind": "recipient", tag: string | null, terms: Array<PeaceTermCount>, items: Array<PeaceTerm>, } | { "kind": "terms", items: Array<PeaceTerm>, } | { "kind": "more", terms: number, hidden: number, };
+export type PeaceLine = { "kind": "treaty", winner: string | null, loser: string | null, terms: Array<PeaceTermCount>, whitePeace: boolean, members: number, bounded: boolean, derived: boolean, limitations: Array<string>, } | { "kind": "recipient", tag: string | null, terms: Array<PeaceTermCount>, items: Array<PeaceTerm>, } | { "kind": "terms", items: Array<PeaceTerm>, } | { "kind": "more", terms: number, hidden: number, recipients: number, hiddenRecipients: number, };
 export type PeaceTerm = { kind: PeaceTermKind, state: number | null, tag: string | null, at: number, };
-export type PeaceDealsRow = { key: string, parent: string | null, hour: number, detail: PeaceLine, };
+export type PeaceDealsRow = { key: string, parent: string | null, hour: number, detail: PeaceLine, last: boolean, };
 export type PeaceDealsTailReply = { branchId: string, total: string, offset: string, counts: Array<OccurrenceCount>, rows: Array<PeaceDealsRow>, missing: Array<OccurrenceGap>, nextChange: number | null, warnings: Array<string>, };
 export type TerritoryTransfersParams = { branchId: string,
 /**
