@@ -5082,7 +5082,7 @@ struct SizingShared {
     capacities: engine_allocation::SharedBox<collector_capture::frame_capacities::Capacities>,
     capacities_version: AtomicU64,
     idle_growth_requested: AtomicBool,
-    home_accounted: Mutex<[usize; 4]>,
+    home_accounted: Mutex<[usize; 3]>,
     pass_requested: AtomicBool,
     hint_demand: AtomicBool,
     settled_world: AtomicU64,
@@ -5112,7 +5112,6 @@ impl SizingShared {
             home_accounted: Mutex::new([
                 // SAFETY: Sizing and the test use only the home associated with these session frames.
                 unsafe { shared.country_intel() }.allocated_bytes(),
-                0,
                 0,
                 0,
             ]),
@@ -5193,10 +5192,6 @@ impl SizingShared {
             collector_naval_details::naval_combat_sources::home_allocated_bytes(
                 // SAFETY: The sizing pass uses its session's live shared storage.
                 unsafe { shared.naval_combat_home() },
-            ),
-            collector_projects::projects::runtime_home_allocated_bytes(
-                // SAFETY: The sizing pass uses its session's live shared storage.
-                unsafe { shared.project_runtime_home() },
             ),
         ];
         for (slot, bytes) in accounted.iter_mut().zip(current) {
@@ -7969,10 +7964,6 @@ mod tests {
                 + collector_naval_details::naval_combat_sources::home_allocated_bytes(
                     // SAFETY: The sizing pass uses its session's live shared storage.
                     unsafe { shared.naval_combat_home() },
-                )
-                + collector_projects::projects::runtime_home_allocated_bytes(
-                    // SAFETY: The sizing pass uses its session's live shared storage.
-                    unsafe { shared.project_runtime_home() },
                 )
         };
         let returning =

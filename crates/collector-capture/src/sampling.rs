@@ -939,7 +939,6 @@ pub struct Shared {
     pub(crate) country_intel: collector_intel::daily_intel::Home,
     pub(crate) template_home: collector_division_templates::extended::division_templates::Home,
     pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
-    pub(crate) project_runtime_home: collector_projects::projects::RuntimeHome,
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
     retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
@@ -1115,13 +1114,6 @@ impl Shared {
     }
 
     /// # Safety
-    /// Use this home only for the originating session's sizing and capture, with no competing
-    /// teardown.
-    pub unsafe fn project_runtime_home(&self) -> &collector_projects::projects::RuntimeHome {
-        &self.project_runtime_home
-    }
-
-    /// # Safety
     /// Only the native callback may advance this counter. The status writer may read it, and
     /// isolated fixtures may seed it before publication.
     pub unsafe fn native_tick_calls(&self) -> &AtomicU64 {
@@ -1257,7 +1249,6 @@ impl Shared {
             country_intel,
             templates: template_home,
             naval_combat: naval_combat_home,
-            projects: project_runtime_home,
         } = extended::Homes::new(&sizing.extended)?;
         let air = &sizing.extended.air;
         let mut raid_air_scores =
@@ -1531,7 +1522,6 @@ impl Shared {
             country_intel,
             template_home,
             naval_combat_home,
-            project_runtime_home,
             weather_temperature: Mutex::new(Default::default()),
             parked_packs: Mutex::new(Vec::new()),
             retired_parked: Mutex::new(Vec::new()),
@@ -1668,9 +1658,6 @@ impl Shared {
         if !parked {
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
-            frame
-                .extended
-                .share_project_runtime_home(&self.project_runtime_home);
         }
         frame
             .extended
@@ -2109,9 +2096,6 @@ impl Shared {
             frame.extended.hydrate_parked_packs(&capacities.extended);
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
-            frame
-                .extended
-                .share_project_runtime_home(&self.project_runtime_home);
             if !frame.extended.is_parked() {
                 self.unparked_frames.fetch_add(1, Ordering::AcqRel);
                 self.frames.set_parked(index, false);

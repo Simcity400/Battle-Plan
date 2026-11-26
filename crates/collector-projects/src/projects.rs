@@ -237,32 +237,6 @@ pub const ACQUISITION_PHASE_NAMES: [&str; 5] = [
     "cold_join",
 ];
 
-#[derive(Default)]
-pub struct RuntimeShelf {
-    runtime: Option<runtime::Runtime>,
-    bytes: usize,
-}
-
-pub type RuntimeHome = engine_allocation::SharedBox<std::sync::Mutex<RuntimeShelf>>;
-
-pub fn new_runtime_home() -> std::io::Result<RuntimeHome> {
-    engine_allocation::shared(std::sync::Mutex::default())
-}
-
-pub fn runtime_home_allocated_bytes(home: &RuntimeHome) -> usize {
-    home.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .bytes
-}
-
-struct RuntimeSnapshot {
-    owner: u32,
-    local_id: u32,
-    pointer: usize,
-    serial: u64,
-    value: rows::Recorded<rows::ProjectRuntime>,
-}
-
 pub struct Captured {
     profile_acquisition: bool,
     acquisition_phases: [u64; 5],
@@ -307,9 +281,6 @@ pub struct Captured {
     project_owners: Vec<(u32, u32)>,
     project_read: Vec<(u32, u32)>,
     project_runtime: runtime::Runtime,
-    runtime_home: Option<RuntimeHome>,
-    runtime_checked_out: bool,
-    runtime_values: Vec<RuntimeSnapshot>,
     cold_parts: Vec<cold_parts::ProjectPart>,
     scientist_injury_read: bool,
     rest_lent: bool,
@@ -317,8 +288,6 @@ pub struct Captured {
 
 impl Captured {
     pub fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
-        self.discard_runtime();
-        self.runtime_values.clear();
         let outcomes = TABLES.map(|table| super::failed_capture(table, hour, force_full, reason));
         if !self.raw_mode {
             self.programs.fail(outcomes[0]);
@@ -404,62 +373,11 @@ impl Captured {
             project_owners: Vec::new(),
             project_read: Vec::new(),
             project_runtime: runtime::Runtime::default(),
-            runtime_home: None,
-            runtime_checked_out: false,
-            runtime_values: Vec::new(),
             cold_parts: Vec::new(),
             profile_acquisition: false,
             acquisition_phases: [0; 5],
             scientist_injury_read: false,
             rest_lent: false,
-        }
-    }
-
-    pub fn share_runtime_home(&mut self, home: &RuntimeHome) {
-        self.runtime_home = Some(home.clone());
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn runtime_home(&self) -> Option<RuntimeHome> {
-        self.runtime_home.clone()
-    }
-
-    fn discard_runtime(&mut self) {
-        if self.runtime_checked_out {
-            self.project_runtime.clear();
-            self.runtime_checked_out = false;
-        }
-    }
-
-    fn settle_runtime_home(&mut self) {
-        if !self.runtime_checked_out {
-            return;
-        }
-        self.runtime_values.clear();
-        let len = self.projects.outcome.len().min(self.projects.rows.len());
-        let reserved = !collector_memory::terminal::failed()
-            && engine_allocation::reserve(&mut self.runtime_values, len).is_ok();
-        if reserved {
-            for row in &self.projects.rows[..len] {
-                self.runtime_values.push(RuntimeSnapshot {
-                    owner: row.owner,
-                    local_id: row.local_id,
-                    pointer: row.source_pointer,
-                    serial: self.project_runtime.runtime_serial(row),
-                    value: self.project_runtime.value(row),
-                });
-            }
-            if let Some(home) = &self.runtime_home {
-                let bytes = self.project_runtime.allocated_bytes();
-                let mut shelf = home
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                shelf.bytes = shelf.bytes.max(bytes);
-                shelf.runtime = Some(std::mem::take(&mut self.project_runtime));
-            }
-            self.runtime_checked_out = false;
-        } else {
-            self.discard_runtime();
         }
     }
 
@@ -484,8 +402,6 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
-        self.discard_runtime();
-        self.runtime_values.clear();
         self.programs.reset();
         self.facilities.reset();
         self.raid_intel.reset();
@@ -523,7 +439,6 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.project_runtime.allocated_bytes()
-            + self.runtime_values.capacity() * size_of::<RuntimeSnapshot>()
             + self.facilities.allocated_bytes()
             + self.raid_intel.allocated_bytes()
             + self.agency_defense.capacity() * size_of::<Option<super::agency_defense::Tree>>()
@@ -720,9 +635,6 @@ impl Captured {
 
     pub fn decode_owned(&mut self) {
         self.project_runtime.decode();
-        if self.runtime_checked_out {
-            self.settle_runtime_home();
-        }
     }
 
     #[expect(
@@ -884,49 +796,7 @@ impl Captured {
         Ok(owners)
     }
 
-    fn runtime_serial_at(&self, index: usize, r: &nproject_cproject::Row) -> u64 {
-        if let Some(snap) = self.runtime_values.get(index).filter(|snap| {
-            snap.owner == r.owner && snap.local_id == r.local_id && snap.pointer == r.source_pointer
-        }) {
-            return snap.serial;
-        }
-        self.project_runtime.runtime_serial(r)
-    }
-
-    fn runtime_value_at(
-        &self,
-        index: usize,
-        r: &nproject_cproject::Row,
-    ) -> rows::Recorded<rows::ProjectRuntime> {
-        if let Some(snap) = self.runtime_values.get(index).filter(|snap| {
-            snap.owner == r.owner && snap.local_id == r.local_id && snap.pointer == r.source_pointer
-        }) {
-            return snap.value.clone();
-        }
-        self.project_runtime.value(r)
-    }
-
-    fn project_row(
-        &self,
-        r: &nproject_cproject::Row,
-        skip_runtime: bool,
-    ) -> rows::ProjectRow {
-        let ptr = std::ptr::from_ref(r);
-        let index = if self.projects.rows.as_ptr_range().contains(&ptr) {
-            (ptr as usize - self.projects.rows.as_ptr() as usize)
-                / size_of::<nproject_cproject::Row>()
-        } else {
-            usize::MAX
-        };
-        self.project_row_at(index, r, skip_runtime)
-    }
-
-    fn project_row_at(
-        &self,
-        index: usize,
-        r: &nproject_cproject::Row,
-        skip_runtime: bool,
-    ) -> rows::ProjectRow {
+    fn project_row(&self, r: &nproject_cproject::Row, skip_runtime: bool) -> rows::ProjectRow {
         rows::ProjectRow {
             owner: r.owner,
             local_id: r.local_id,
@@ -946,7 +816,7 @@ impl Captured {
             runtime: if skip_runtime {
                 rows::Recorded::Value(rows::ProjectRuntime::default())
             } else {
-                self.runtime_value_at(index, r)
+                self.project_runtime.value(r)
             },
         }
     }
@@ -1049,10 +919,10 @@ impl Captured {
             scratch: Vec<(u32, ProjectFixed)>,
         }
         let full_view = || {
-            TableInput::Sampled(table_iter::<tables::Projects, _>(
+            TableInput::Sampled(table::<tables::Projects, _>(
                 outcome,
-                self.projects.rows.iter().take(outcome.len()).enumerate(),
-                |(index, r)| self.project_row_at(index, r, false),
+                &self.projects.rows,
+                |r| self.project_row(r, false),
             ))
         };
         let Some(projection) = projection else {
@@ -1086,7 +956,6 @@ impl Captured {
                     };
                     ledger.by_owner.clear();
                     let mut ok = true;
-                    let mut row_index = 0_usize;
                     for chunk in fresh.chunk_by(|a, b| a.owner == b.owner) {
                         let owner = chunk[0].owner;
                         let Ok(mut bucket) = engine_allocation::vec(chunk.len()) else {
@@ -1096,9 +965,8 @@ impl Captured {
                         for r in chunk {
                             bucket.push((
                                 r.local_id,
-                                ProjectFixed::from_row(r, self.runtime_serial_at(row_index, r)),
+                                ProjectFixed::from_row(r, self.project_runtime.runtime_serial(r)),
                             ));
-                            row_index += 1;
                         }
                         if ledger.by_owner.len() == ledger.by_owner.capacity()
                             && engine_allocation::reserve(&mut ledger.by_owner, 1).is_err()
@@ -1158,7 +1026,6 @@ impl Captured {
             }
             let mut old_iter = by_owner.drain(..).peekable();
             let mut fresh_iter = fresh.chunk_by(|a, b| a.owner == b.owner).peekable();
-            let mut chunk_start = 0_usize;
             enum OwnerStep {
                 Both(u32),
                 Old(u32),
@@ -1190,12 +1057,11 @@ impl Captured {
                         while oi < old_rows.len() || fi < chunk.len() {
                             match (old_rows.get(oi).copied(), chunk.get(fi)) {
                                 (Some((ok, of)), Some(r)) if ok == r.local_id => {
-                                    let row_index = chunk_start + fi;
                                     oi += 1;
                                     fi += 1;
                                     let cf = ProjectFixed::from_row(
                                         r,
-                                        self.runtime_serial_at(row_index, r),
+                                        self.project_runtime.runtime_serial(r),
                                     );
                                     scratch.push((r.local_id, cf));
                                     if emit_masked && !(of == cf && cf.runtime_serial != 0) {
@@ -1213,20 +1079,15 @@ impl Captured {
                                         }
                                         any_kept |= kept != 0;
                                         keys.push(key_of(r));
-                                        rows.push(self.project_row_at(
-                                            row_index,
-                                            r,
-                                            kept & (1 << 14) != 0,
-                                        ));
+                                        rows.push(self.project_row(r, kept & (1 << 14) != 0));
                                         kept_masks.push(kept);
                                     }
                                 }
                                 (Some((ok, _)), Some(r)) if r.local_id < ok => {
-                                    let row_index = chunk_start + fi;
                                     fi += 1;
                                     let cf = ProjectFixed::from_row(
                                         r,
-                                        self.runtime_serial_at(row_index, r),
+                                        self.project_runtime.runtime_serial(r),
                                     );
                                     scratch.push((r.local_id, cf));
                                     if emit_masked {
@@ -1242,16 +1103,15 @@ impl Captured {
                                                 .into();
                                         }
                                         keys.push(key_of(r));
-                                        rows.push(self.project_row_at(row_index, r, false));
+                                        rows.push(self.project_row(r, false));
                                         kept_masks.push(0);
                                     }
                                 }
                                 (None, Some(r)) => {
-                                    let row_index = chunk_start + fi;
                                     fi += 1;
                                     let cf = ProjectFixed::from_row(
                                         r,
-                                        self.runtime_serial_at(row_index, r),
+                                        self.project_runtime.runtime_serial(r),
                                     );
                                     scratch.push((r.local_id, cf));
                                     if emit_masked {
@@ -1267,7 +1127,7 @@ impl Captured {
                                                 .into();
                                         }
                                         keys.push(key_of(r));
-                                        rows.push(self.project_row_at(row_index, r, false));
+                                        rows.push(self.project_row(r, false));
                                         kept_masks.push(0);
                                     }
                                 }
@@ -1286,7 +1146,6 @@ impl Captured {
                                 (None, None) => break,
                             }
                         }
-                        chunk_start += chunk.len();
                         std::mem::swap(&mut old_rows, scratch);
                         if next_owners.len() == next_owners.capacity()
                             && engine_allocation::reserve(next_owners, 1).is_err()
@@ -1329,20 +1188,18 @@ impl Captured {
                         {
                             return unavailable("collector allocation failed").into();
                         }
-                        for (offset, r) in chunk.iter().enumerate() {
-                            let row_index = chunk_start + offset;
+                        for r in chunk {
                             let cf = ProjectFixed::from_row(
                                 r,
-                                self.runtime_serial_at(row_index, r),
+                                self.project_runtime.runtime_serial(r),
                             );
                             bucket.push((r.local_id, cf));
                             if emit_masked {
                                 keys.push(key_of(r));
-                                rows.push(self.project_row_at(row_index, r, false));
+                                rows.push(self.project_row(r, false));
                                 kept_masks.push(0);
                             }
                         }
-                        chunk_start += chunk.len();
                         if next_owners.len() == next_owners.capacity()
                             && engine_allocation::reserve(next_owners, 1).is_err()
                         {
@@ -1901,25 +1758,6 @@ impl Captured {
                     store.finish_scan();
                     self.project_selection.finish_census(store);
                 }
-                let quiet_empty = census
-                    && found_country
-                    && self.project_read.is_empty()
-                    && !force_full
-                    && hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) != 0;
-                if !quiet_empty
-                    && let Some(home) = &self.runtime_home
-                {
-                    self.project_runtime = home
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .runtime
-                        .take()
-                        .unwrap_or_default();
-                    self.runtime_checked_out = true;
-                    if force_full {
-                        self.project_runtime.clear();
-                    }
-                }
                 let selection = &self.project_selection;
                 let native_started = self.profile_acquisition.then(qpc);
                 let mut runtime_acquired = false;
@@ -1968,14 +1806,13 @@ impl Captured {
                 }
                 self.projects.outcome = bounded(projects, self.projects.rows.len());
                 self.history.outcome = bounded(histories, self.history.rows.len());
-                let read = if defer_runtime && !self.runtime_checked_out {
+                let read = if defer_runtime {
                     runtime::Runtime::acquire
                 } else {
                     runtime::Runtime::read
                 };
                 let runtime_started = self.profile_acquisition.then(qpc);
-                if quiet_empty {
-                } else if !runtime_acquired {
+                if !runtime_acquired {
                     read(
                         &mut self.project_runtime,
                         memory,
@@ -1993,12 +1830,6 @@ impl Captured {
                         &self.projects.rows[..self.projects.outcome.len()],
                         Some(&self.project_selection),
                     );
-                }
-                if self.runtime_checked_out {
-                    if !self.project_runtime.pending_is_empty() {
-                        self.project_runtime.decode();
-                    }
-                    self.settle_runtime_home();
                 }
                 if let Some(started) = runtime_started {
                     self.acquisition_phases[2] = elapsed(started);

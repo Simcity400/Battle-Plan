@@ -210,6 +210,132 @@ pub(super) fn remove(pointer: usize) {
 }
 pub(super) fn release() {
     drop(witnesses().take());
+    super::snapshots::speculative::release();
+}
+
+fn normalize(
+    spans: &[(usize, u32, bool)],
+    bytes: &[u8],
+) -> Option<(Vec<(usize, u32, bool)>, Vec<u8>)> {
+    let mut ok_spans: Vec<(usize, u32, usize)> = Vec::new();
+    let mut other_spans: Vec<(usize, u32, bool, usize)> = Vec::new();
+    engine_allocation::reserve(&mut ok_spans, spans.len()).ok()?;
+    let mut at = 0_usize;
+    for &(address, len, ok) in spans {
+        let len_usize = len as usize;
+        if ok {
+            if at.checked_add(len_usize).is_none_or(|end| end > bytes.len()) {
+                return None;
+            }
+            if address != 0 && len != 0 && address.checked_add(len_usize).is_some() {
+                ok_spans.push((address, len, at));
+            } else {
+                engine_allocation::reserve(&mut other_spans, 1).ok()?;
+                other_spans.push((address, len, true, at));
+            }
+            at += len_usize;
+        } else {
+            engine_allocation::reserve(&mut other_spans, 1).ok()?;
+            other_spans.push((address, len, false, 0));
+        }
+    }
+    if at != bytes.len() {
+        return None;
+    }
+    ok_spans.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+    let mut out_spans: Vec<(usize, u32, bool)> = Vec::new();
+    let mut out_bytes: Vec<u8> = Vec::new();
+    engine_allocation::reserve(&mut out_spans, ok_spans.len() + other_spans.len()).ok()?;
+    engine_allocation::reserve(&mut out_bytes, bytes.len()).ok()?;
+    let mut prev_byte_start = 0_usize;
+    for (address, len, byte_off) in ok_spans {
+        let len_usize = len as usize;
+        let data = &bytes[byte_off..byte_off + len_usize];
+        if let Some(last) = out_spans.last_mut() {
+            let prev_start = last.0;
+            let prev_len = last.1 as usize;
+            let prev_end = prev_start.checked_add(prev_len)?;
+            if address < prev_end {
+                let overlap_off = address - prev_start;
+                let overlap_len = (prev_end - address).min(len_usize);
+                if out_bytes[prev_byte_start + overlap_off
+                    ..prev_byte_start + overlap_off + overlap_len]
+                    != data[..overlap_len]
+                {
+                    return None;
+                }
+                if len_usize <= overlap_len {
+                    continue;
+                }
+                let tail = &data[overlap_len..];
+                if prev_len.saturating_add(tail.len()) <= MAX_COALESCED_SPAN {
+                    last.1 += tail.len() as u32;
+                    out_bytes.extend_from_slice(tail);
+                } else {
+                    prev_byte_start = out_bytes.len();
+                    out_spans.push((prev_end, tail.len() as u32, true));
+                    out_bytes.extend_from_slice(tail);
+                }
+                continue;
+            }
+            if address == prev_end && prev_len.saturating_add(len_usize) <= MAX_COALESCED_SPAN {
+                last.1 += len;
+                out_bytes.extend_from_slice(data);
+                continue;
+            }
+        }
+        prev_byte_start = out_bytes.len();
+        out_spans.push((address, len, true));
+        out_bytes.extend_from_slice(data);
+    }
+    for (address, len, ok, byte_off) in other_spans {
+        if ok {
+            out_bytes.extend_from_slice(&bytes[byte_off..byte_off + len as usize]);
+        }
+        out_spans.push((address, len, ok));
+    }
+    Some((out_spans, out_bytes))
+}
+
+fn build_witness(
+    spans: &[(usize, u32, bool)],
+    bytes: &[u8],
+    id: u64,
+    team: (u64, bool),
+) -> Option<Witness> {
+    let normalized = engine_allocation::advisory(|| normalize(spans, bytes));
+    let (copied_spans, copied_bytes) = if let Some((norm_spans, norm_bytes)) = normalized {
+        let copied_spans =
+            engine_allocation::advisory(|| engine_allocation::boxed_slice(norm_spans)).ok()?;
+        let copied_bytes =
+            engine_allocation::advisory(|| engine_allocation::boxed_slice(norm_bytes)).ok()?;
+        (copied_spans, copied_bytes)
+    } else {
+        let copied_spans = engine_allocation::advisory(|| {
+            let copy = engine_allocation::copy_vec(spans)?;
+            engine_allocation::boxed_slice(copy)
+        })
+        .ok()?;
+        let copied_bytes = engine_allocation::advisory(|| {
+            let copy = engine_allocation::copy_vec(bytes)?;
+            engine_allocation::boxed_slice(copy)
+        })
+        .ok()?;
+        (copied_spans, copied_bytes)
+    };
+    let longest = copied_spans
+        .iter()
+        .map(|&(_, len, _)| len as usize)
+        .max()
+        .unwrap_or(0);
+    Some(Witness {
+        id,
+        spans: copied_spans,
+        bytes: copied_bytes,
+        longest,
+        team,
+        stamp: 0,
+    })
 }
 
 pub(super) struct Recording<'a, M> {
@@ -260,27 +386,7 @@ impl<'a, M> Recording<'a, M> {
         if self.refused.get() {
             return (None, spans, bytes);
         }
-        let longest = spans.iter().map(|&(_, len, _)| len as usize).max().unwrap_or(0);
-        let witness = (|| {
-            let copied_spans = engine_allocation::advisory(|| {
-                let copy = engine_allocation::copy_vec(&spans)?;
-                engine_allocation::boxed_slice(copy)
-            })
-            .ok()?;
-            let copied_bytes = engine_allocation::advisory(|| {
-                let copy = engine_allocation::copy_vec(&bytes)?;
-                engine_allocation::boxed_slice(copy)
-            })
-            .ok()?;
-            Some(Witness {
-                id,
-                spans: copied_spans,
-                bytes: copied_bytes,
-                longest,
-                team,
-                stamp: 0,
-            })
-        })();
+        let witness = build_witness(&spans, &bytes, id, team);
         (witness, spans, bytes)
     }
     #[cfg(test)]
@@ -290,17 +396,7 @@ impl<'a, M> Recording<'a, M> {
         }
         let spans = self.spans.into_inner();
         let bytes = self.bytes.into_inner();
-        let longest = spans.iter().map(|&(_, len, _)| len as usize).max().unwrap_or(0);
-        let spans = engine_allocation::advisory(|| engine_allocation::boxed_slice(spans)).ok()?;
-        let bytes = engine_allocation::advisory(|| engine_allocation::boxed_slice(bytes)).ok()?;
-        Some(Witness {
-            id,
-            spans,
-            bytes,
-            longest,
-            team,
-            stamp: 0,
-        })
+        build_witness(&spans, &bytes, id, team)
     }
     fn record_span(
         spans: &mut Vec<(usize, u32, bool)>,
@@ -665,5 +761,25 @@ mod tests {
         assert!(held.unchanged(&counted.world, &mut scratch));
         counted.world.0.borrow_mut().resize(1_010, 0);
         assert!(!held.unchanged(&counted.world, &mut scratch));
+    }
+    #[test]
+    fn witness_normalizes_out_of_order_duplicate_and_overlapping_spans() {
+        let world = World(std::cell::RefCell::new((0u8..64).collect()));
+        let recording = Recording::new(&world, (0, 0));
+        let mut a = [0u8; 8];
+        let mut b = [0u8; 8];
+        let mut c = [0u8; 12];
+        assert!(recording.copy(16, &mut a));
+        assert!(recording.copy(8, &mut b));
+        assert!(recording.copy(12, &mut c));
+        assert!(recording.copy(8, &mut b));
+        let held = recording.witness(15, (0, false)).unwrap();
+        assert_eq!(held.size(), (1, 16));
+        let mut scratch = Vec::new();
+        assert!(held.unchanged(&world, &mut scratch));
+        world.0.borrow_mut()[20] ^= 0xff;
+        assert!(!held.unchanged(&world, &mut scratch));
+        world.0.borrow_mut()[20] ^= 0xff;
+        assert!(held.unchanged(&world, &mut scratch));
     }
 }

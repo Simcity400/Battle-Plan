@@ -172,3 +172,36 @@ fn live_identity_mismatch_is_a_cached_fault_and_null_raw_needs_no_registry() {
     );
 }
 
+#[test]
+fn generation_wrap_invalidates_prior_slots_and_matching_global_skips_duplicate_header_read() {
+    let mut memory = Fixture::new();
+    memory.qword(ENTRIES + 8, DEFINITION as u64);
+    let mut scratch = Scratch::with_capacity(2).unwrap();
+    let mut row = super::super::Row::default();
+    Pass::new(0, 2, &mut scratch).capture(&memory, WING, POOL, &mut row);
+    assert_eq!(row.pool_subunit, Some(1));
+    assert_eq!(
+        row.raid_reference,
+        Some(RaidReference {
+            raw: HANDLE,
+            resolves: true,
+        })
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(address, len)| address == DEFINITION && len == 17)
+            .count(),
+        1
+    );
+    scratch.generation = u32::MAX;
+    memory.dword(DEFINITION + definition::AIR_FLAGS, 0);
+    row = Default::default();
+    Pass::new(0, 2, &mut scratch).capture(&memory, WING, POOL, &mut row);
+    assert_eq!(row.pool_subunit, Some(1));
+    assert_eq!(row.raid_reference, None);
+    assert_eq!(scratch.generation, 1);
+}
+

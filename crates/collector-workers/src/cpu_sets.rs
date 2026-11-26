@@ -159,6 +159,10 @@ pub fn prepare() {
     let _ = cores();
 }
 
+pub fn physical_cores() -> Option<usize> {
+    cores().map(|cores| cores.physical_cores)
+}
+
 pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))

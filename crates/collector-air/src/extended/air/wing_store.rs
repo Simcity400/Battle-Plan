@@ -16,6 +16,7 @@ pub struct Certificate {
 #[derive(Clone, Debug)]
 struct Entry {
     certificate: Certificate,
+    slot: usize,
     rows: Range<usize>,
     fresh: bool,
 }
@@ -32,13 +33,19 @@ impl Held {
         self.rows.clear();
     }
 
-    fn find(&self, certificate: &Certificate) -> Option<Range<usize>> {
+    fn find_by_wing(&self, wing: usize, cursor: &mut usize) -> Option<&Entry> {
+        if let Some(entry) = self.entries.get(*cursor)
+            && entry.certificate.wing == wing
+        {
+            *cursor += 1;
+            return Some(entry);
+        }
         let index = self
             .entries
-            .binary_search_by_key(&certificate.wing, |entry| entry.certificate.wing)
+            .binary_search_by_key(&wing, |entry| entry.certificate.wing)
             .ok()?;
-        let entry = &self.entries[index];
-        (entry.certificate == *certificate).then(|| entry.rows.clone())
+        *cursor = index + 1;
+        Some(&self.entries[index])
     }
 
     fn measure(&self) -> usize {
@@ -51,6 +58,7 @@ impl Held {
 pub struct WingStore {
     current: Held,
     previous: Held,
+    cursor: usize,
     counts: Counts,
     wings: usize,
     bytes: usize,
@@ -88,6 +96,7 @@ impl WingStore {
         }
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.clear();
+        self.cursor = 0;
         self.counts = Counts::default();
         self.wings = 0;
         self.fresh.clear();
@@ -149,17 +158,18 @@ impl WingStore {
         self.measure();
     }
 
-    fn hold_carried(&mut self, certificate: Certificate, rows: Range<usize>) {
+    fn hold_carried(&mut self, certificate: Certificate, slot: usize, rows: Range<usize>) {
         if allocation::advisory(|| allocation::reserve(&mut self.current.entries, 1)).is_ok() {
             self.current.entries.push(Entry {
                 certificate,
+                slot,
                 rows,
                 fresh: false,
             });
         }
     }
 
-    fn hold_read(&mut self, certificate: Certificate, rows: &[WingEquipmentRow]) {
+    fn hold_read(&mut self, certificate: Certificate, slot: usize, rows: &[WingEquipmentRow]) {
         let stored = allocation::advisory(|| {
             allocation::reserve(&mut self.current.entries, 1)?;
             allocation::reserve(&mut self.fresh, rows.len())
@@ -169,6 +179,7 @@ impl WingStore {
             self.fresh.extend_from_slice(rows);
             self.current.entries.push(Entry {
                 certificate,
+                slot,
                 rows: start..self.fresh.len(),
                 fresh: true,
             });
@@ -196,6 +207,7 @@ impl WingStore {
 #[derive(Clone, Debug)]
 pub struct Plan {
     certificate: Option<Certificate>,
+    slot: usize,
     held: Option<Range<usize>>,
 }
 
@@ -218,17 +230,36 @@ impl<'a> WingReuse<'a> {
 
     pub fn plan(&mut self, wing: usize, id: u64) -> Plan {
         self.store.wings += 1;
-        let certificate =
-            self.changes
-                .sequence(wing.wrapping_add(POOL))
-                .map(|(epoch, sequence)| Certificate {
+        let found = self
+            .store
+            .previous
+            .find_by_wing(wing, &mut self.store.cursor);
+        let held_slot = found.map_or(usize::MAX, |entry| entry.slot);
+        let (certificate, slot) = match self
+            .changes
+            .sequence_at(wing.wrapping_add(POOL), held_slot)
+        {
+            Some(((epoch, sequence), slot)) => (
+                Some(Certificate {
                     epoch,
                     sequence,
                     wing,
                     id,
-                });
-        let held = certificate.and_then(|certificate| self.store.previous.find(&certificate));
-        Plan { certificate, held }
+                }),
+                slot,
+            ),
+            None => (None, usize::MAX),
+        };
+        let held = certificate.and_then(|certificate| {
+            found
+                .filter(|entry| entry.certificate == certificate)
+                .map(|entry| entry.rows.clone())
+        });
+        Plan {
+            certificate,
+            slot,
+            held,
+        }
     }
 
     pub fn carry(&mut self, plan: &Plan) -> &[WingEquipmentRow] {
@@ -237,7 +268,7 @@ impl<'a> WingReuse<'a> {
         };
         self.store.counts.reused += 1;
         self.store.counts.reused_rows += range.len() as u64;
-        self.store.hold_carried(certificate, range.clone());
+        self.store.hold_carried(certificate, plan.slot, range.clone());
         &self.store.previous.rows[range]
     }
 
@@ -246,7 +277,7 @@ impl<'a> WingReuse<'a> {
         store.counts.read += 1;
         store.counts.read_rows += rows.len() as u64;
         if let (Some(certificate), Outcome::Rows { .. }) = (plan.certificate, outcome) {
-            store.hold_read(certificate, rows);
+            store.hold_read(certificate, plan.slot, rows);
         }
     }
 

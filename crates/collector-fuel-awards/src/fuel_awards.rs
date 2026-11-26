@@ -7,7 +7,7 @@ use engine_fuel::fuel_awards as native;
 use engine_native_memory::{Memory, memory::LiveMemory};
 use engine_sites::Rva;
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{RefCell, UnsafeCell},
     ops::Range,
     sync::{
         Mutex, MutexGuard, OnceLock, PoisonError,
@@ -718,10 +718,15 @@ impl PendingBatch {
     }
 }
 
+#[derive(Default)]
+struct ThreadState {
+    pending: Option<Pending>,
+    batch: PendingBatch,
+    registry: native::Registry,
+}
+
 thread_local! {
-    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
-    static PENDING_BATCH: RefCell<PendingBatch> = RefCell::new(PendingBatch::default());
-    static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
+    static THREAD_STATE: RefCell<ThreadState> = RefCell::new(ThreadState::default());
 }
 
 fn stop_admission_and_drained() -> bool {
@@ -1604,13 +1609,15 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     let base = BASE.load(Ordering::Relaxed);
     if tag == 9 {
         let status = registers.rsi;
-        if let Some(mut pending) = PENDING.get()
-            && pending.started.status == status
-        {
-            pending.refused = true;
-            pending.cause.get_or_insert(1);
-            PENDING.set(Some(pending));
-        }
+        THREAD_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if let Some(pending) = state.pending.as_mut()
+                && pending.started.status == status
+            {
+                pending.refused = true;
+                pending.cause.get_or_insert(1);
+            }
+        });
         if status == 0
             || !append(
                 &call,
@@ -1639,8 +1646,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     if tag == 0 {
         match native::start_held(&memory, base, registers.rsi, None) {
             Ok((started, located, _)) => {
-                REGISTRY.with(|registry| *registry.borrow_mut() = native::Registry::default());
-                let old = PENDING.replace(Some(Pending {
+                let next = Pending {
                     root: ROOT.fetch_add(1, Ordering::Relaxed),
                     epoch: LOG.epoch.load(Ordering::Acquire),
                     started,
@@ -1649,122 +1655,119 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     received: [0; 3],
                     refused: false,
                     cause: None,
-                }));
-                if let Some(prev) = old {
-                    PENDING_BATCH.with(|batch| {
+                };
+                THREAD_STATE.with(|state| {
+                    let state = &mut *state.borrow_mut();
+                    state.registry = native::Registry::default();
+                    let old = state.pending.replace(next);
+                    if let Some(prev) = old {
                         flush_batch_orphans(
                             &call,
-                            &mut batch.borrow_mut(),
+                            &mut state.batch,
                             prev.root,
                             prev.started.country,
-                        )
-                    });
-                    COUNTERS[0].fetch_add(1, Ordering::Relaxed);
-                    PENDING.with(|pending| {
-                        if let Some(mut p) = pending.get() {
-                            p.refused = true;
-                            p.cause.get_or_insert(5);
-                            pending.set(Some(p));
+                        );
+                        COUNTERS[0].fetch_add(1, Ordering::Relaxed);
+                        if let Some(pending) = state.pending.as_mut() {
+                            pending.refused = true;
+                            pending.cause.get_or_insert(5);
                         }
-                    });
-                } else {
-                    PENDING_BATCH.with(|batch| batch.borrow_mut().clear());
-                }
+                    } else {
+                        state.batch.clear();
+                    }
+                });
             }
             Err(reason) => {
                 REFUSAL.record(reason);
-                if let Some(prev) = PENDING.replace(None) {
-                    PENDING_BATCH.with(|batch| {
+                THREAD_STATE.with(|state| {
+                    let state = &mut *state.borrow_mut();
+                    if let Some(prev) = state.pending.take() {
                         flush_batch_orphans(
                             &call,
-                            &mut batch.borrow_mut(),
+                            &mut state.batch,
                             prev.root,
                             prev.started.country,
-                        )
-                    });
-                } else {
-                    PENDING_BATCH.with(|batch| batch.borrow_mut().clear());
-                }
+                        );
+                    } else {
+                        state.batch.clear();
+                    }
+                });
                 COUNTERS[0].fetch_add(1, Ordering::Relaxed);
             }
         }
         return;
     }
-    let Some(mut pending) = PENDING.get() else {
-        COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-        return;
-    };
-    let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
-    if !epoch_current {
-        pending.refused = true;
-        pending.cause.get_or_insert(0);
-    }
-    let located = held_for(&pending, epoch_current);
-    if tag == 1 {
-        PENDING.set(None);
-        let settled = native::settle_held(
-            &memory,
-            base,
-            pending.started,
-            registers.rbx,
-            located.as_ref(),
-        )
-        .map(|(settled, taken)| {
-            if taken {
-                HELD.increment(0);
-            }
-            settled
-        });
-        if let Err(reason) = &settled {
-            pending.cause.get_or_insert(6);
-            REFUSAL.record(reason);
-        }
-        if !settled
-            .as_ref()
-            .is_ok_and(|s| s.received == pending.received)
-        {
+    THREAD_STATE.with(|state| {
+        let state = &mut *state.borrow_mut();
+        let Some(pending) = state.pending.as_mut() else {
+            COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+        if !epoch_current {
             pending.refused = true;
-            pending.cause.get_or_insert(4);
+            pending.cause.get_or_insert(0);
         }
-        if pending.refused {
-            REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
-        }
-        PENDING_BATCH.with(|batch| {
+        let located = held_for(pending, epoch_current);
+        if tag == 1 {
+            let mut pending = state.pending.take().unwrap();
+            let settled = native::settle_held(
+                &memory,
+                base,
+                pending.started,
+                registers.rbx,
+                located.as_ref(),
+            )
+            .map(|(settled, taken)| {
+                if taken {
+                    HELD.increment(0);
+                }
+                settled
+            });
+            if let Err(reason) = &settled {
+                pending.cause.get_or_insert(6);
+                REFUSAL.record(reason);
+            }
+            if !settled
+                .as_ref()
+                .is_ok_and(|s| s.received == pending.received)
+            {
+                pending.refused = true;
+                pending.cause.get_or_insert(4);
+            }
+            if pending.refused {
+                REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
+            }
             append_batch(
                 &call,
-                &mut batch.borrow_mut(),
+                &mut state.batch,
                 pending,
                 settled.unwrap_or_default(),
                 &memory,
             );
-        });
-        return;
-    }
-    let (kind, pointer, host_ptr, amount) = match tag {
-        2..=6 => (0, registers.rax, 0, registers.rdx as i64),
-        7 => (2, registers.rcx, 0, registers.rdx as i64),
-        8 => (1, registers.rdi, registers.rdx, registers.rbx as i64),
-        _ => {
-            pending.refused = true;
-            pending.cause.get_or_insert(7);
-            PENDING.set(Some(pending));
             return;
         }
-    };
-    pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
-    let coalesced =
-        PENDING_BATCH.with(|batch| batch.borrow_mut().try_coalesce(kind, pointer, host_ptr, amount));
-    if coalesced == Some(true) {
-        if located.is_some() {
-            HELD.increment(if kind == 1 { 1 } else { 2 });
+        let (kind, pointer, host_ptr, amount) = match tag {
+            2..=6 => (0, registers.rax, 0, registers.rdx as i64),
+            7 => (2, registers.rcx, 0, registers.rdx as i64),
+            8 => (1, registers.rdi, registers.rdx, registers.rbx as i64),
+            _ => {
+                pending.refused = true;
+                pending.cause.get_or_insert(7);
+                return;
+            }
+        };
+        pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
+        let coalesced = state.batch.try_coalesce(kind, pointer, host_ptr, amount);
+        if coalesced == Some(true) {
+            if located.is_some() {
+                HELD.increment(if kind == 1 { 1 } else { 2 });
+            }
+            return;
         }
-        PENDING.set(Some(pending));
-        return;
-    }
-    let insert_in_table = coalesced.is_none();
-    let recipient_and_name = if kind == 1 {
-        if let Some(located) = located.as_ref() {
-            REGISTRY.with(|registry| {
+        let insert_in_table = coalesced.is_none();
+        let recipient_and_name = if kind == 1 {
+            if let Some(located) = located.as_ref() {
                 native::air_held_with(
                     &memory,
                     base,
@@ -1772,41 +1775,37 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     registers.rdx,
                     pending.started.country,
                     Some(&located.country),
-                    Some(&mut registry.borrow_mut()),
+                    Some(&mut state.registry),
                 )
-            })
-        } else {
-            native::air_held(
-                &memory,
-                base,
-                pointer,
-                registers.rdx,
-                pending.started.country,
-                None,
-            )
-        }
-        .map(|(recipient, taken)| (recipient, None, taken))
-    } else if located.is_some() {
-        REGISTRY.with(|registry| {
-            native::unit_with_name(&memory, base, pointer, kind, Some(&mut registry.borrow_mut()))
-        })
-        .map(|(recipient, name, taken)| (recipient, Some(name), taken))
-    } else {
-        native::unit_with_name(&memory, base, pointer, kind, None)
-            .map(|(recipient, name, taken)| (recipient, Some(name), taken))
-    };
-    match recipient_and_name {
-        Ok((recipient, name, taken)) => {
-            if taken {
-                HELD.increment(if kind == 1 { 1 } else { 2 });
+            } else {
+                native::air_held(
+                    &memory,
+                    base,
+                    pointer,
+                    registers.rdx,
+                    pending.started.country,
+                    None,
+                )
             }
-            let (name, name_reason) = match name {
-                Some(Ok(n)) => (Some(n), None),
-                Some(Err(reason)) => (None, Some(reason)),
-                None => (None, None),
-            };
-            let buffered = PENDING_BATCH.with(|batch| {
-                batch.borrow_mut().push(
+            .map(|(recipient, taken)| (recipient, None, taken))
+        } else if located.is_some() {
+            native::unit_with_name(&memory, base, pointer, kind, Some(&mut state.registry))
+                .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+        } else {
+            native::unit_with_name(&memory, base, pointer, kind, None)
+                .map(|(recipient, name, taken)| (recipient, Some(name), taken))
+        };
+        match recipient_and_name {
+            Ok((recipient, name, taken)) => {
+                if taken {
+                    HELD.increment(if kind == 1 { 1 } else { 2 });
+                }
+                let (name, name_reason) = match name {
+                    Some(Ok(n)) => (Some(n), None),
+                    Some(Err(reason)) => (None, Some(reason)),
+                    None => (None, None),
+                };
+                let buffered = state.batch.push(
                     kind,
                     pointer,
                     host_ptr,
@@ -1816,35 +1815,34 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                     name_reason,
                     insert_in_table,
                     &memory,
-                )
-            });
-            if !buffered
-                && !append(
-                    &call,
-                    Entry {
-                        root: pending.root,
-                        country: pending.started.country,
-                        recipient: Some(recipient),
-                        amount,
-                        name_reason,
-                        ..Default::default()
-                    },
-                    name,
-                    &memory,
-                )
-            {
+                );
+                if !buffered
+                    && !append(
+                        &call,
+                        Entry {
+                            root: pending.root,
+                            country: pending.started.country,
+                            recipient: Some(recipient),
+                            amount,
+                            name_reason,
+                            ..Default::default()
+                        },
+                        name,
+                        &memory,
+                    )
+                {
+                    pending.refused = true;
+                    pending.cause.get_or_insert(3);
+                }
+            }
+            Err(reason) => {
+                REFUSAL.record(reason);
                 pending.refused = true;
-                pending.cause.get_or_insert(3);
+                pending.cause.get_or_insert(2);
+                COUNTERS[3].fetch_add(1, Ordering::Relaxed);
             }
         }
-        Err(reason) => {
-            REFUSAL.record(reason);
-            pending.refused = true;
-            pending.cause.get_or_insert(2);
-            COUNTERS[3].fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    PENDING.set(Some(pending));
+    });
 }
 
 pub fn drain(

@@ -14,9 +14,14 @@ use windows_sys::Win32::System::Threading::{
 };
 
 pub(crate) fn beside_readers() -> usize {
-    collector_workers::acquisition::usable_cpus()
+    let logical = collector_workers::acquisition::usable_cpus()
         .saturating_mul(5)
-        .div_ceil(8)
+        .div_ceil(8);
+    let physical = collector_workers::cpu_sets::physical_cores()
+        .map(|cores| cores.saturating_sub(2))
+        .unwrap_or(logical);
+    logical
+        .min(physical)
         .clamp(3, collector_workers::acquisition::MAX_WORKERS)
 }
 

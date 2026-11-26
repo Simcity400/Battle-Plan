@@ -19,6 +19,35 @@ pub(in super::super) enum Read {
     Refused,
 }
 
+struct PartScratch {
+    scratch: Vec<u8>,
+    walk: super::super::RawWalk,
+    largest: (usize, usize),
+    rec_spans: Vec<(usize, u32, bool)>,
+    rec_bytes: Vec<u8>,
+}
+
+impl PartScratch {
+    fn vacant() -> Self {
+        Self {
+            scratch: Vec::new(),
+            walk: super::super::RawWalk::vacant(),
+            largest: (0, 0),
+            rec_spans: Vec::new(),
+            rec_bytes: Vec::new(),
+        }
+    }
+}
+
+static SCRATCH_POOL: Mutex<Vec<PartScratch>> = Mutex::new(Vec::new());
+
+pub(in super::super) fn release() {
+    SCRATCH_POOL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
 pub struct Part {
     base: usize,
     hour: i32,
@@ -39,11 +68,18 @@ impl Part {
         // the game is held, or every writer of the design data these lanes read waits at the
         // capture gate.
         let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
-        let mut scratch = Vec::new();
-        let mut walk = super::super::RawWalk::vacant();
-        let mut largest = (0, 0);
-        let mut rec_spans = Vec::new();
-        let mut rec_bytes = Vec::new();
+        let mut pooled = SCRATCH_POOL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or_else(PartScratch::vacant);
+        let PartScratch {
+            ref mut scratch,
+            ref mut walk,
+            ref mut largest,
+            ref mut rec_spans,
+            ref mut rec_bytes,
+        } = pooled;
         let mut recorded_bytes = 0usize;
         for (pointer, id, read) in &mut self.marked {
             let Read::Pending(witness) = std::mem::replace(read, Read::Refused) else {
@@ -55,9 +91,9 @@ impl Part {
                 receiver: *pointer,
                 consumed: std::cell::Cell::new(false),
             };
-            let size = witness.as_ref().map_or(largest, Witness::size);
+            let size = witness.as_ref().map_or(*largest, Witness::size);
             if let Some(witness) = witness
-                && witness.unchanged(&guard, &mut scratch)
+                && witness.unchanged(&guard, scratch)
                 && !guard.consumed.get()
             {
                 recorded_bytes = recorded_bytes.saturating_add(witness.retained_bytes());
@@ -70,33 +106,33 @@ impl Part {
                 let recorded = if recorded_bytes < self.witness_budget {
                     let recording = Recording::with_scratch(
                         &guard,
-                        std::mem::take(&mut rec_spans),
-                        std::mem::take(&mut rec_bytes),
+                        std::mem::take(rec_spans),
+                        std::mem::take(rec_bytes),
                         size,
                     );
                     let walked =
-                        super::super::walk_snapshot(&recording, base, hour, *pointer, &mut walk)
+                        super::super::walk_snapshot(&recording, base, hour, *pointer, walk)
                             .is_ok();
                     let (recorded, spans_back, bytes_back) = recording.finish(*id, (0, false));
-                    rec_spans = spans_back;
-                    rec_bytes = bytes_back;
+                    *rec_spans = spans_back;
+                    *rec_bytes = bytes_back;
                     if !walked {
                         return None;
                     }
                     if let Some(recorded) = &recorded {
                         let size = recorded.size();
-                        largest = (largest.0.max(size.0), largest.1.max(size.1));
+                        *largest = (largest.0.max(size.0), largest.1.max(size.1));
                         recorded_bytes = recorded_bytes.saturating_add(recorded.retained_bytes());
                     }
                     recorded
                 } else {
-                    super::super::walk_snapshot(&guard, base, hour, *pointer, &mut walk).ok()?;
+                    super::super::walk_snapshot(&guard, base, hour, *pointer, walk).ok()?;
                     None
                 };
                 if guard.consumed.get() || !walk.complete() {
                     return None;
                 }
-                let decoded = Box::new(super::super::decode_walk(&mut walk).ok()?);
+                let decoded = Box::new(super::super::decode_walk(walk).ok()?);
                 let modules = engine_allocation::copy_vec(
                     &walk.modules.rows[..walk.modules.outcome.len()],
                 )
@@ -112,6 +148,14 @@ impl Part {
                 Some(Read::Walked(summary, decoded, recorded))
             })
             .unwrap_or(Read::Refused);
+        }
+        let mut pool = SCRATCH_POOL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pool.len() < 32
+            && engine_allocation::advisory(|| engine_allocation::reserve(&mut *pool, 1)).is_ok()
+        {
+            pool.push(pooled);
         }
     }
 }

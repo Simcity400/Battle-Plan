@@ -1211,9 +1211,11 @@ fn walk_projected(
 fn hint_wing(memory: &impl Memory, wing: usize) {
     for (offset, len) in [
         (0, MISSION + air_mission::REGION + 8),
+        (EXPERIENCE, 8),
         (ACE_REFERENCE, 8),
         (BASE_RANGE, 8),
-        (NAME, COUNTRY_OVERRIDE + 4 - NAME),
+        (BASE_FUEL, 8),
+        (NAME, replacement::SETTING + 1 - NAME),
     ] {
         memory.prefetch(wing.wrapping_add(offset), len);
     }

@@ -126,30 +126,14 @@ pub fn start_held(
     }
     let expected = engine_sites::at(base, fuel::VTABLE_RVA).ok_or(MISMATCH)?;
     let singleton = engine_sites::at(base, cgame_state::SINGLETON_RVA);
-    let mut raw = [[0_u8; 8]; 12];
-    let status_ok = (|| -> Option<()> {
-        let addresses = [
-            status,
-            status.checked_add(fuel::COUNTRY)?,
-            status.checked_add(0x68)?,
-            status.checked_add(0x70)?,
-            status.checked_add(0x90)?,
-            status.checked_add(fuel::GAIN)?,
-            status.checked_add(fuel::GAIN_FROM_STATES)?,
-            status.checked_add(fuel::COST)?,
-            status.checked_add(fuel::LEND_LEASE_GAIN)?,
-            status.checked_add(fuel::HISTORY_INDEX)?,
-            status.checked_add(fuel::REMAINING_HOURS)?,
-            singleton?,
-        ];
-        let widths = [8, 8, 8, 8, 8, 8, 8, 8, 8, 4, 4, 8];
-        let mut widths = widths.into_iter();
-        let mut destinations = raw
-            .each_mut()
-            .map(|value| &mut value[..widths.next().unwrap_or(0)]);
-        (memory.copy_scattered(addresses, &mut destinations) == 12).then_some(())
-    })()
-    .is_some();
+    let mut status_block = [0_u8; fuel::COUNTRY + 8];
+    let mut singleton_bytes = [0_u8; 8];
+    let status_ok = singleton.is_some_and(|singleton| {
+        memory.copy_scattered(
+            [status, singleton],
+            &mut [&mut status_block[..], &mut singleton_bytes[..]],
+        ) == 2
+    });
     if !status_ok {
         auth(memory, base, status, fuel::VTABLE_RVA)?;
         let game_state = global::<u64>(memory, base, cgame_state::SINGLETON_RVA)? as usize;
@@ -166,11 +150,14 @@ pub fn start_held(
         let started = payload(memory, status, country.id, country_instance)?;
         return Ok((started, Located { owner, country }, taken));
     }
-    if u64::from_le_bytes(raw[0]) != expected as u64 {
+    let u64_at = |offset: usize| u64::from_le_bytes(status_block[offset..offset + 8].try_into().unwrap());
+    let i64_at = |offset: usize| i64::from_le_bytes(status_block[offset..offset + 8].try_into().unwrap());
+    let i32_at = |offset: usize| i32::from_le_bytes(status_block[offset..offset + 4].try_into().unwrap());
+    if u64_at(0) != expected as u64 {
         return Err(MISMATCH);
     }
-    let owner = u64::from_le_bytes(raw[1]) as usize;
-    let game_state = u64::from_le_bytes(raw[11]) as usize;
+    let owner = u64_at(fuel::COUNTRY) as usize;
+    let game_state = u64::from_le_bytes(singleton_bytes) as usize;
     let expected_country = engine_sites::at(base, ccountry::VTABLE_RVA).map(|at| at as u64);
     let mut owner_vtable = [0_u8; 8];
     let mut backlink = [0_u8; 8];
@@ -244,20 +231,19 @@ pub fn start_held(
         let country_instance = value(memory, owner, ccountry::SURRENDER_TARGET).map_err(|_| UNREADABLE)?;
         (country, taken, country_instance)
     };
-    let half = |bytes: [u8; 8]| i32::from_le_bytes(bytes[..4].try_into().unwrap());
     let started = Started {
         status,
         country: country.id,
         country_instance,
-        pending_gain: i64::from_le_bytes(raw[2]),
-        pending_consumed: i64::from_le_bytes(raw[3]),
-        pending_other: i64::from_le_bytes(raw[4]),
-        base: i64::from_le_bytes(raw[5]),
-        states: i64::from_le_bytes(raw[6]),
-        cost: i64::from_le_bytes(raw[7]),
-        lend_lease_in: i64::from_le_bytes(raw[8]),
-        history_index: half(raw[9]),
-        remaining_hours: half(raw[10]),
+        pending_gain: i64_at(0x68),
+        pending_consumed: i64_at(0x70),
+        pending_other: i64_at(0x90),
+        base: i64_at(fuel::GAIN),
+        states: i64_at(fuel::GAIN_FROM_STATES),
+        cost: i64_at(fuel::COST),
+        lend_lease_in: i64_at(fuel::LEND_LEASE_GAIN),
+        history_index: i32_at(fuel::HISTORY_INDEX),
+        remaining_hours: i32_at(fuel::REMAINING_HOURS),
     };
     Ok((started, Located { owner, country }, taken))
 }
@@ -324,54 +310,34 @@ pub fn settle_held(
     status: usize,
     held: Option<&Located>,
 ) -> Result<(Settled, bool), &'static str> {
-    if held.is_some() && status == begun.status {
-        if let Ok([
-            pending_gain,
-            pending_consumed,
-            pending_other,
-            gain,
-            states,
-            cost,
-            lend_lease_in,
-            history_index,
-            remaining_hours,
-            outgoing,
-            consumers_lo,
-            consumers_hi,
-            current,
-        ]) = fields(
-            memory,
-            status,
-            [
-                (0x68, 8),
-                (0x70, 8),
-                (0x90, 8),
-                (fuel::GAIN, 8),
-                (fuel::GAIN_FROM_STATES, 8),
-                (fuel::COST, 8),
-                (fuel::LEND_LEASE_GAIN, 8),
-                (fuel::HISTORY_INDEX, 4),
-                (fuel::REMAINING_HOURS, 4),
-                (fuel::LEND_LEASE_CONSUMPTION, 8),
-                (fuel::CONSUMERS, 8),
-                (fuel::CONSUMERS + 8, 8),
-                (fuel::CURRENT, 8),
-            ],
-        ) {
-            let half = |bytes: [u8; 8]| i32::from_le_bytes(bytes[..4].try_into().unwrap());
+    const SETTLE_SPAN: usize = fuel::REMAINING_HOURS + 4 - fuel::CURRENT;
+    if held.is_some()
+        && status == begun.status
+        && let Some(start_addr) = status.checked_add(fuel::CURRENT)
+    {
+        let mut block = [0_u8; SETTLE_SPAN];
+        if engine_native_memory::read_slice(memory, start_addr, &mut block) {
+            let i64_at = |offset: usize| {
+                let at = offset - fuel::CURRENT;
+                i64::from_le_bytes(block[at..at + 8].try_into().unwrap())
+            };
+            let i32_at = |offset: usize| {
+                let at = offset - fuel::CURRENT;
+                i32::from_le_bytes(block[at..at + 4].try_into().unwrap())
+            };
             let now = Started {
                 status,
                 country: begun.country,
                 country_instance: begun.country_instance,
-                pending_gain: i64::from_le_bytes(pending_gain),
-                pending_consumed: i64::from_le_bytes(pending_consumed),
-                pending_other: i64::from_le_bytes(pending_other),
-                base: i64::from_le_bytes(gain),
-                states: i64::from_le_bytes(states),
-                cost: i64::from_le_bytes(cost),
-                lend_lease_in: i64::from_le_bytes(lend_lease_in),
-                history_index: half(history_index),
-                remaining_hours: half(remaining_hours),
+                pending_gain: i64_at(0x68),
+                pending_consumed: i64_at(0x70),
+                pending_other: i64_at(0x90),
+                base: i64_at(fuel::GAIN),
+                states: i64_at(fuel::GAIN_FROM_STATES),
+                cost: i64_at(fuel::COST),
+                lend_lease_in: i64_at(fuel::LEND_LEASE_GAIN),
+                history_index: i32_at(fuel::HISTORY_INDEX),
+                remaining_hours: i32_at(fuel::REMAINING_HOURS),
             };
             if now.history_index != begun.history_index
                 || now.remaining_hours != begun.remaining_hours
@@ -391,21 +357,13 @@ pub fn settle_held(
                 .wrapping_sub(begun.states)
                 .wrapping_sub(cost_gain);
             let other = now.pending_other.wrapping_sub(begun.pending_other);
-            let outgoing = i64::from_le_bytes(outgoing);
-            let mut header = [0_u8; 16];
-            header[..8].copy_from_slice(&consumers_lo);
-            header[8..].copy_from_slice(&consumers_hi);
+            let outgoing = i64_at(fuel::LEND_LEASE_CONSUMPTION);
+            let consumers_at = fuel::CONSUMERS - fuel::CURRENT;
+            let header: [u8; 16] = block[consumers_at..consumers_at + 16].try_into().unwrap();
             let consumers = Array::from_header(header, crate::fuel_consumer_data::STRIDE)
                 .filter(|a| a.count == fuel::MAX_CONSUMERS)
                 .ok_or("fuel award consumers unreadable or invalid")?;
-            let receipt = |index: usize| {
-                (
-                    index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
-                    8,
-                )
-            };
-            let received = fields(memory, consumers.data, [receipt(0), receipt(1), receipt(2)])?
-                .map(i64::from_le_bytes);
+            let received = read_consumer_receipts(memory, consumers.data)?;
             let settled = Settled {
                 gains: [begun.base, begun.states, oil, cost_gain],
                 own_gain,
@@ -417,7 +375,7 @@ pub fn settle_held(
                 ],
                 consumed: now.pending_consumed.wrapping_sub(begun.pending_consumed),
                 received,
-                current: i64::from_le_bytes(current),
+                current: i64_at(fuel::CURRENT),
             };
             return Ok((settled, true));
         }
@@ -462,14 +420,7 @@ pub fn settle_held(
     )
     .filter(|a| a.count == fuel::MAX_CONSUMERS)
     .ok_or("fuel award consumers unreadable or invalid")?;
-    let receipt = |index: usize| {
-        (
-            index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
-            8,
-        )
-    };
-    let received = fields(memory, consumers.data, [receipt(0), receipt(1), receipt(2)])?
-        .map(i64::from_le_bytes);
+    let received = read_consumer_receipts(memory, consumers.data)?;
     let settled = Settled {
         gains: [begun.base, begun.states, oil, cost_gain],
         own_gain,
@@ -484,6 +435,23 @@ pub fn settle_held(
         current: value(memory, status, fuel::CURRENT)?,
     };
     Ok((settled, taken))
+}
+
+fn read_consumer_receipts(memory: &impl Memory, data: usize) -> Result<[i64; 3], &'static str> {
+    let mut block = [0_u8; 3 * crate::fuel_consumer_data::STRIDE];
+    if engine_native_memory::read_slice(memory, data, &mut block) {
+        return Ok(std::array::from_fn(|index| {
+            let at = index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED;
+            i64::from_le_bytes(block[at..at + 8].try_into().unwrap())
+        }));
+    }
+    let receipt = |index: usize| {
+        (
+            index * crate::fuel_consumer_data::STRIDE + crate::fuel_consumer_data::RECEIVED,
+            8,
+        )
+    };
+    Ok(fields(memory, data, [receipt(0), receipt(1), receipt(2)])?.map(i64::from_le_bytes))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -637,16 +605,18 @@ pub fn unit_with_name(
             }
             let name = if kind == 0 {
                 match gathered_name {
-                    Some((at, desc)) => {
-                        msvc_string::Descriptor::from_header(memory, at, desc).map(StoredName)
-                    }
+                    Some((at, desc)) => StoredName::from_header_eager(memory, at, desc),
                     None => name_ptr
                         .checked_add(engine_native::cname_group_member::CACHED_NAME)
                         .ok_or("fuel recipient name address overflow")
-                        .and_then(|at| msvc_string::Descriptor::read(memory, at).map(StoredName)),
+                        .and_then(|at| {
+                            read::<[u8; msvc_string::STRIDE]>(memory, at)
+                                .ok_or("string header unreadable")
+                                .and_then(|desc| StoredName::from_header_eager(memory, at, desc))
+                        }),
                 }
             } else {
-                msvc_string::Descriptor::from_header(memory, name_ptr, name_header).map(StoredName)
+                StoredName::from_header_eager(memory, name_ptr, name_header)
             };
             return Ok((
                 Recipient {
@@ -854,13 +824,51 @@ pub struct Demand {
     pub name_stride: usize,
 }
 
-pub struct StoredName(msvc_string::Descriptor);
+const EAGER_NAME_BYTES: usize = 128;
+
+pub enum StoredName {
+    Deferred(msvc_string::Descriptor),
+    Loaded {
+        bytes: [u8; EAGER_NAME_BYTES],
+        len: usize,
+    },
+}
+
 impl StoredName {
     pub fn byte_len(&self) -> usize {
-        self.0.len
+        match self {
+            Self::Deferred(desc) => desc.len,
+            Self::Loaded { len, .. } => *len,
+        }
     }
     pub fn copy(&self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
-        self.0.copy(memory, output)
+        match self {
+            Self::Deferred(desc) => desc.copy(memory, output),
+            Self::Loaded { bytes, len } => {
+                let output = output.get_mut(..*len).ok_or("string output too short")?;
+                output.copy_from_slice(&bytes[..*len]);
+                Ok(())
+            }
+        }
+    }
+    fn from_header_eager(
+        memory: &impl Memory,
+        address: usize,
+        header: [u8; msvc_string::STRIDE],
+    ) -> Result<Self, &'static str> {
+        if let Some((source, span)) = msvc_string::heap_span(&header)
+            && span <= EAGER_NAME_BYTES
+        {
+            let len = span - 1;
+            let mut bytes = [0_u8; EAGER_NAME_BYTES];
+            if engine_native_memory::read_slice(memory, source, &mut bytes[..span]) {
+                if bytes[len] != 0 {
+                    return Err("string terminator unreadable or invalid");
+                }
+                return Ok(Self::Loaded { bytes, len });
+            }
+        }
+        msvc_string::Descriptor::from_header(memory, address, header).map(Self::Deferred)
     }
 }
 const TASK_FORCE_NAME: usize = 0x258;
@@ -883,7 +891,7 @@ pub fn stored_name(
             .ok_or("fuel recipient name address overflow")?,
         _ => return Err("fuel recipient has no native unit name"),
     };
-    msvc_string::Descriptor::read(memory, address).map(StoredName)
+    msvc_string::Descriptor::read(memory, address).map(StoredName::Deferred)
 }
 
 pub fn demand(

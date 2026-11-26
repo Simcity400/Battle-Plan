@@ -12,8 +12,9 @@ struct Entry {
     pointer: usize,
     wing: u64,
     certificate: Option<(u64, u64)>,
+    slot: usize,
     raw: Option<u64>,
-    lifetime: Option<(usize, (u64, u64))>,
+    lifetime: Option<(usize, (u64, u64), usize)>,
     value: Option<bool>,
 }
 #[derive(Default, Debug)]
@@ -85,10 +86,10 @@ impl Store {
         if !demanded(row) {
             return None;
         }
-        self.capture_with(
+        self.capture_with_at(
             pointer,
             row.id,
-            collector_observers::wing_changes::map_sequence,
+            collector_observers::wing_changes::map_sequence_at,
             collector_observers::wing_changes::map_quiet,
             || {
                 if let Some(observed) = row.raid_reference {
@@ -118,11 +119,30 @@ impl Store {
             },
         )
     }
+    #[cfg(test)]
     fn capture_with(
         &mut self,
         pointer: usize,
         wing: u64,
         mut sequence: impl FnMut(usize) -> Option<(u64, u64)>,
+        quiet: impl FnMut() -> Option<(u64, u64)>,
+        read: impl FnOnce() -> Option<u64>,
+        resolve: impl FnOnce(u64) -> Option<Option<usize>>,
+    ) -> Option<bool> {
+        self.capture_with_at(
+            pointer,
+            wing,
+            |at, _| sequence(at).map(|c| (c, usize::MAX)),
+            quiet,
+            read,
+            resolve,
+        )
+    }
+    fn capture_with_at(
+        &mut self,
+        pointer: usize,
+        wing: u64,
+        mut sequence: impl FnMut(usize, usize) -> Option<((u64, u64), usize)>,
         mut quiet: impl FnMut() -> Option<(u64, u64)>,
         read: impl FnOnce() -> Option<u64>,
         resolve: impl FnOnce(u64) -> Option<Option<usize>>,
@@ -131,30 +151,39 @@ impl Store {
             return None;
         }
         let receiver = pointer.checked_add(sites::RAID_REFERENCE)?;
-        let certificate = sequence(receiver);
+        let found = if let Some(entry) = self.previous.get(self.cursor)
+            && entry.pointer == pointer
+        {
+            self.cursor += 1;
+            Some(*entry)
+        } else {
+            self.previous
+                .binary_search_by_key(&pointer, |row| row.pointer)
+                .ok()
+                .map(|at| {
+                    self.cursor = at + 1;
+                    self.previous[at]
+                })
+        };
+        let held_slot = found.map_or(usize::MAX, |row| row.slot);
+        let (certificate, slot) = match sequence(receiver, held_slot) {
+            Some((certificate, slot)) => (Some(certificate), slot),
+            None => (None, usize::MAX),
+        };
         let held = certificate.and_then(|certificate| {
-            let found = if let Some(entry) = self.previous.get(self.cursor)
-                && entry.pointer == pointer
-            {
-                self.cursor += 1;
-                Some(*entry)
-            } else {
-                self.previous
-                    .binary_search_by_key(&pointer, |row| row.pointer)
-                    .ok()
-                    .map(|at| {
-                        self.cursor = at + 1;
-                        self.previous[at]
-                    })
-            };
             found.filter(|row| row.wing == wing && row.certificate == Some(certificate))
         });
-        if let Some(held) = held {
+        if let Some(mut held) = held {
             let same = match held.lifetime {
                 None => true,
-                Some((key, held)) => sequence(key).map(|now| now == held)? && sequence(receiver) == certificate,
+                Some((key, expected, key_slot)) => {
+                    let (now, next_slot) = sequence(key, key_slot)?;
+                    held.lifetime = Some((key, expected, next_slot));
+                    now == expected && sequence(receiver, slot).map(|(c, _)| c) == certificate
+                }
             };
             if same {
+                held.slot = slot;
                 self.current.push(held);
                 return held.value;
             }
@@ -173,16 +202,19 @@ impl Store {
                 Some(Some(_)) if certificate.is_none() => (Some(true), None),
                 Some(Some(pointer)) => match pointer
                     .checked_add(sites::RAID_LIFETIME_KEY)
-                    .and_then(|key| sequence(key).map(|certificate| (key, certificate)))
-                {
+                    .and_then(|key| {
+                        sequence(key, usize::MAX)
+                            .map(|(certificate, key_slot)| (key, certificate, key_slot))
+                    }) {
                     None => (None, None),
                     Some(lifetime) => (Some(true), Some(lifetime)),
                 },
             },
         };
-        if sequence(receiver) != certificate
+        if sequence(receiver, slot).map(|(c, _)| c) != certificate
             || quiet() != Some(token)
-            || lifetime.is_some_and(|(key, held)| sequence(key) != Some(held))
+            || lifetime
+                .is_some_and(|(key, held, key_slot)| sequence(key, key_slot).map(|(c, _)| c) != Some(held))
         {
             return None;
         }
@@ -190,6 +222,7 @@ impl Store {
             pointer,
             wing,
             certificate,
+            slot,
             raw,
             lifetime,
             value,
