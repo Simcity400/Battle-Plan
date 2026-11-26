@@ -2,6 +2,7 @@
 pub(crate) use viewer_playback::presentation::MAP_LINES_LOADING;
 use crate::map_views::CounterView;
 use dashboard_core::protocol::CameraMode;
+use job_priority::SpawnCarried as _;
 use std::path::Path;
 use std::sync::OnceLock;
 use viewer_combat as combat;
@@ -556,7 +557,6 @@ pub(crate) struct VisualStale {
 
 struct LoadedReplay {
     document: Document,
-    scene: Scene,
     revision: Option<String>,
     source: Option<Arc<dashboard_base::Source>>,
     config: Config,
@@ -707,6 +707,7 @@ pub struct Viewer {
     scene: Option<Scene>,
     window_layout: Option<viewer_native_gui::native_windows::NativeWindows>,
     scene_build: Option<residency::SceneBuild>,
+    scene_error: Option<String>,
     scene_target: Presented,
     map_error: Option<String>,
     camera: Option<Placement>,
@@ -1364,6 +1365,7 @@ impl Viewer {
             scene: None,
             window_layout: None,
             scene_build: None,
+            scene_error: None,
             scene_target: Presented::default(),
             map_error: None,
             playing: false,
@@ -1774,6 +1776,9 @@ impl Viewer {
         settings: &dashboard_core::protocol::ResolvedMapSettings,
     ) {
         let graphics = settings.graphics;
+        if self.graphics.samples != graphics.samples {
+            self.scene_error = None;
+        }
         self.graphics = graphics;
         self.host_graphics = true;
         if self.counter_filter != settings.counters {
@@ -1826,6 +1831,8 @@ impl Viewer {
     }
 
     pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
+        self.cancel_scene_build();
+        self.scene_error = None;
         self.free_scene_target(frame);
         if !self.dashboard_map
             && let Some(scene) = &mut self.scene
@@ -1889,6 +1896,7 @@ impl Viewer {
 
     pub(crate) fn retry_map(&mut self) {
         self.error = None;
+        self.scene_error = None;
         self.map_error = None;
     }
 
@@ -1911,6 +1919,9 @@ impl Viewer {
             return false;
         }
         self.options.replay = None;
+        self.cancel_scene_build();
+        self.scene_error = None;
+        self.close_playhead();
         self.hover_rows = Default::default();
         self.combat_rows = Default::default();
         self.tooltip_refused.clear();
@@ -2709,11 +2720,18 @@ impl Viewer {
         Some((continuity, restart))
     }
 
+    pub(super) fn reported_error(&self) -> Option<&str> {
+        self.error
+            .as_deref()
+            .or(self.scene_error.as_deref())
+            .or(self.map_error.as_deref())
+    }
+
     pub(crate) fn map_state(
         &self,
         target: &dashboard_core::protocol::DashboardMapView,
     ) -> dashboard_core::protocol::DashboardMapState {
-        let error = self.error.clone().or_else(|| self.map_error.clone());
+        let error = self.reported_error().map(str::to_owned);
         let clock = target.branch_id.parse().ok().map(|branch| {
             let requested = Playhead {
                 branch,
@@ -2976,10 +2994,10 @@ impl Viewer {
                 return;
             }
         };
-        let Some((device, queue)) = self.gpu.clone() else {
+        if self.gpu.is_none() {
             self.failed_load("WGPU renderer is unavailable".to_owned(), ctx);
             return;
-        };
+        }
         let held_clock = self
             .held_view
             .take()
@@ -2990,7 +3008,6 @@ impl Viewer {
         let options = self.options.clone();
         let service = self.service();
         let verify_revision = service.is_some();
-        let shared_pool = self.shared_pool.clone();
         let config = self.config.clone();
         let mut content = self
             .dashboard
@@ -3009,64 +3026,65 @@ impl Viewer {
         }
         let fallbacks = Arc::clone(&self.visual_fallbacks);
         let (sender, receiver) = mpsc::channel();
-        let ctx = ctx.clone();
+        let wake = ctx.clone();
         let startup_content = self.startup_content.take();
         let video_preload = self.video_preload.take();
-        job_priority::spawn(move || {
-            viewer_runtime::worker_priority::background_priority();
-            let _stage = viewer_runtime::load_record::stage("load");
-            let _generation = startup_content.as_ref().map_or_else(
-                content_reader_layers::content::Generation::enter,
-                content_reader_layers::content::Loading::enter_generation,
-            );
-            drop(startup_content);
-            let initial = InitialHour {
-                branch: options.branch,
-                hour: options.hour,
-                hour_fraction: options.hour_fraction,
-            };
-            let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
-                let revision = if verify_revision {
-                    let _stage = viewer_runtime::load_record::stage("load.replay_revision");
-                    let revision = dashboard_core::protocol::replay_revision(&path)
-                        .map_err(|error| error.to_string())?;
-                    if expected_revision
-                        .as_ref()
-                        .is_some_and(|expected| *expected != revision)
-                    {
-                        return Err("Recording changed since it was selected; reopen it in Analytics before viewing this snapshot".into());
-                    }
-                    Some(revision)
-                } else {
-                    None
+        let spawned = std::thread::Builder::new()
+            .name("native map content".into())
+            .spawn_carried(move || {
+                viewer_runtime::worker_priority::background_priority();
+                let _stage = viewer_runtime::load_record::stage("load");
+                let _generation = startup_content.as_ref().map_or_else(
+                    content_reader_layers::content::Generation::enter,
+                    content_reader_layers::content::Loading::enter_generation,
+                );
+                drop(startup_content);
+                let initial = InitialHour {
+                    branch: options.branch,
+                    hour: options.hour,
+                    hour_fraction: options.hour_fraction,
                 };
-                let source = {
-                    let _stage = viewer_runtime::load_record::stage("load.open_map");
-                    service
-                        .as_ref()
-                        .map(|service| service.open_map(&path, revision.as_deref()))
-                        .transpose()?
-                };
-                let preferences = source
-                    .as_ref()
-                    .and_then(|source| {
+                let load = std::panic::AssertUnwindSafe(|| -> Result<LoadedReplay, String> {
+                    let revision = if verify_revision {
+                        let _stage = viewer_runtime::load_record::stage("load.replay_revision");
+                        let revision = dashboard_core::protocol::replay_revision(&path)
+                            .map_err(|error| error.to_string())?;
+                        if expected_revision
+                            .as_ref()
+                            .is_some_and(|expected| *expected != revision)
+                        {
+                            return Err("Recording changed since it was selected; reopen it in Analytics before viewing this snapshot".into());
+                        }
+                        Some(revision)
+                    } else {
+                        None
+                    };
+                    let source = {
+                        let _stage = viewer_runtime::load_record::stage("load.open_map");
                         service
                             .as_ref()
-                            .map(|service| service.map_settings(&source.replay()))
-                    })
-                    .or_else(|| {
-                        video_preload
-                            .as_ref()
-                            .and_then(|(_, _, settings)| settings.clone())
-                    })
-                    .unwrap_or_default();
-                let recording = source.as_ref().map(|source| {
-                    crate::visual_fallback::recording(
-                        &source.key().source_id,
-                        &source.key().revision,
-                    )
-                });
-                let (document, scene) = loop {
+                            .map(|service| service.open_map(&path, revision.as_deref()))
+                            .transpose()?
+                    };
+                    let preferences = source
+                        .as_ref()
+                        .and_then(|source| {
+                            service
+                                .as_ref()
+                                .map(|service| service.map_settings(&source.replay()))
+                        })
+                        .or_else(|| {
+                            video_preload
+                                .as_ref()
+                                .and_then(|(_, _, settings)| settings.clone())
+                        })
+                        .unwrap_or_default();
+                    let recording = source.as_ref().map(|source| {
+                        crate::visual_fallback::recording(
+                            &source.key().source_id,
+                            &source.key().revision,
+                        )
+                    });
                     let decisions = recording.as_ref().map(|recording| {
                         crate::visual_fallback::lock(&fallbacks).decisions(recording)
                     });
@@ -3098,7 +3116,7 @@ impl Viewer {
                                 preferences.visual_mods.as_deref(),
                                 preferences.graphics.texture_quality,
                                 recording.as_deref().zip(decisions.as_ref()),
-                                crate::document::LoadTarget::Scene,
+                                crate::document::LoadTarget::Content,
                             ),
                         },
                         None => match &video_preload {
@@ -3134,50 +3152,30 @@ impl Viewer {
                     if let Some(source) = &source {
                         document.bind_source(source);
                     }
-                    let workers = shared_pool
-                        .as_ref()
-                        .map_or_else(Default::default, |pool| pool.workers());
-                    let scene_stage = viewer_runtime::load_record::stage("load.scene");
-                    let scene = load_scene(&device, &queue, &document, preferences.graphics, &workers);
-                    drop(scene_stage);
-                    match scene {
-                        Ok(scene) => break (document, scene),
-                        Err(error) => match &document.content.fallback {
-                            Some(crate::visual_fallback::Built {
-                                key,
-                                under: crate::visual_fallback::Under::Mods { excused },
-                            }) => crate::visual_fallback::lock(&fallbacks).adopt(
-                                key.clone(),
-                                crate::visual_fallback::Decision::Probing {
-                                    failures: [format!("scene: {error}")].into(),
-                                    excused: excused.clone(),
-                                    frames_needed: 0,
-                                    frames_seen: 0,
-                                },
-                            ),
-                            _ => return Err(error.to_string()),
-                        },
-                    }
-                };
-                Ok(LoadedReplay {
-                    document,
-                    scene,
-                    revision,
-                    source,
-                    config,
-                })
+                    Ok(LoadedReplay {
+                        document,
+                        revision,
+                        source,
+                        config,
+                    })
+                });
+                let result = std::panic::catch_unwind(load).unwrap_or_else(|stopped| {
+                    Err(stopped
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| stopped.downcast_ref::<&str>().map(|said| (*said).to_owned()))
+                        .unwrap_or_else(|| "Replay loader stopped before returning a result".into()))
+                });
+                let _ = sender.send(result);
+                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
             });
-            let result = std::panic::catch_unwind(load).unwrap_or_else(|stopped| {
-                Err(stopped
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| stopped.downcast_ref::<&str>().map(|said| (*said).to_owned()))
-                    .unwrap_or_else(|| "Replay loader stopped before returning a result".into()))
-            });
-            let _ = sender.send(result);
-            ctx.request_repaint();
-        });
-        self.loading = Some(receiver);
+        match spawned {
+            Ok(_) => self.loading = Some(receiver),
+            Err(error) => {
+                self.failed_load(error.to_string(), ctx);
+                return;
+            }
+        }
         self.opened = Some(Instant::now());
         self.combat.close();
         drop(self.replace_document(None));
@@ -3195,7 +3193,12 @@ impl Viewer {
         {
             crate::perf_log::gpu_times(scene.retire_gpu_frame_times());
         }
-        self.scene = None;
+        if let Some(scene) = self.scene.take() {
+            self.retire(scene);
+        }
+        self.cancel_scene_build();
+        self.scene_error = None;
+        self.close_playhead();
         self.playhead = None;
         self.seek_owed = false;
         self.last_view = None;
@@ -3326,12 +3329,14 @@ impl Viewer {
                 .is_some_and(|result| !matches!(result, Err(mpsc::TryRecvError::Empty)))
         {
             self.loading = None;
+            if let Some(Ok(Ok(loaded))) = result {
+                self.retire(loaded);
+            }
             return;
         }
         match result {
             Some(Ok(Ok(LoadedReplay {
                 document,
-                scene,
                 revision,
                 source,
                 config,
@@ -3396,21 +3401,14 @@ impl Viewer {
                         *pinned_cam = Some(cropped);
                     }
                 }
+                self.close_playhead();
+                self.scene_error = None;
                 drop(self.replace_document(Some(document)));
-                self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
                 self.loading = None;
                 if let (Some(service), Some(source)) = (self.service(), &self.source) {
                     let settings = service.map_settings(&source.replay());
                     self.set_embedded_graphics(&settings);
-                }
-                if let Some(opened) = self.opened
-                    && profiling()
-                {
-                    profile_print(format!(
-                        "PROFILE open document_and_scene {:.1} ms",
-                        opened.elapsed().as_secs_f64() * 1000.0
-                    ));
                 }
             }
             Some(Ok(Err(error))) => {
@@ -7412,7 +7410,11 @@ impl eframe::App for Viewer {
         engine_executable::executable_tables::scope(self.tables(), || {
             self.embedded_logic(ctx, frame)
         });
-        self.follow_shown_maps(ctx, frame);
+        if self.embedded.is_none() {
+            let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));
+            self.poll(ctx);
+        }
+        self.follow_shown_maps(ctx, Some(frame));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -7534,6 +7536,7 @@ impl Viewer {
             let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));
             self.poll(ui.ctx());
         }
+        self.follow_shown_maps(ui.ctx(), Some(frame));
         self.lap("poll");
         let central_panel = egui::CentralPanel::default().frame(egui::Frame::NONE);
         if !profiling() || self.capture.is_none() {
@@ -7643,12 +7646,20 @@ impl Viewer {
         } else {
             self.release_audio();
             central_panel.show(ui, |ui| {
-                if self.loading.is_some() || self.building_scene() {
+                if self.loading.is_some() {
                     ui.vertical_centered(|ui| {
                         ui.add_space(100.0);
                         ui.spinner();
                         ui.heading("Opening replay");
                         ui.label("Verifying content and loading the map...");
+                    });
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                } else if self.building_scene() || !self.document_fallback_current() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(100.0);
+                        ui.spinner();
+                        ui.heading("Loading map");
+                        ui.label("Building the map scene...");
                     });
                     ui.ctx().request_repaint_after(Duration::from_millis(100));
                 }
