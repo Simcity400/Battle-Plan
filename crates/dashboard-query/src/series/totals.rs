@@ -75,6 +75,33 @@ pub const TOTALS_NOT_READ: &str = "Production was not read whole by this hour";
 pub const TOTALS_WINDOW_UNRECORDED: &str = "The count at the window's start was not recorded, so what was delivered in it is not known";
 pub const TOTALS_VALUE_UNKNOWN: &str = "A country's amount is not known at this hour, so the ranking cannot be proved";
 
+pub type RankedCells<'a> = &'a dyn Fn(u128) -> Option<Option<i64>>;
+
+pub fn ranked_total(
+    keys: impl Clone + Iterator<Item = u128>, rest: Option<u128>, now: RankedCells<'_>,
+    before: Option<RankedCells<'_>>, keep: &dyn Fn(i64) -> bool,
+) -> Result<Option<i64>, &'static str> {
+    let sum = |cell: RankedCells<'_>| {
+        let mut total = 0_i128;
+        for key in keys.clone() {
+            let Some(value) = cell(key).or_else(|| rest.and_then(cell)) else { return Ok(None) };
+            total += i128::from(value.ok_or(TOTALS_VALUE_UNKNOWN)?);
+        }
+        Ok(Some(total))
+    };
+    let Some(at) = sum(now)? else { return Ok(None) };
+    let value = match before {
+        None => at,
+        Some(before) => match sum(before)? {
+            Some(before) => at - before,
+            None if i64::try_from(at).is_ok_and(|value| !keep(value)) => return Ok(None),
+            None => return Err(TOTALS_WINDOW_UNRECORDED),
+        },
+    };
+    let value = i64::try_from(value).map_err(|_| TOTALS_VALUE_UNKNOWN)?;
+    Ok(keep(value).then_some(value))
+}
+
 impl<'q, 'a> Line<'q, 'a> {
     fn running(&self) -> io::Result<&'static RunningTotal> {
         dashboard_declare::running_total(self.series.kind).ok_or_else(|| invalid(format!("{} is no running total", self.series.kind)))
@@ -275,38 +302,18 @@ impl<'q, 'a> Line<'q, 'a> {
             }
         };
         let set = parts(stretch.run);
-        let value_of = |rows: &HashMap<u128, Vec<Option<i64>>>, keys: &[(u128, u128)], rest: Option<u128>| -> Result<Option<i128>, &'static str> {
-            let mut sum: i128 = 0;
-            for &(_, key) in keys {
-                let Some(cells) = rows.get(&key).or_else(|| rest.and_then(|rest| rows.get(&rest))) else { return Ok(None) };
-                sum += i128::from(cells[0].ok_or(TOTALS_VALUE_UNKNOWN)?);
-            }
-            Ok(Some(sum))
-        };
+        let now_value = |key| now.get(&key).map(|cells| cells[0]);
+        let before_value = |key| start.as_ref()?.1.get(&key).map(|cells| cells[0]);
+        let before = start.as_ref().map(|_| &before_value as RankedCells<'_>);
         let mut scored: Vec<(i128, &str)> = Vec::new();
         for (tag, runs) in &self.query.holders.tags {
             let Some(run) = runs.iter().find(|run| run.first <= hour && hour <= run.last) else { continue };
             let Holder::Found { slot, id } = run.holder else { continue };
             let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &set)?;
-            let at = match value_of(&now, &keys, rest) {
-                Ok(Some(at)) => at,
-                Ok(None) => continue,
+            match ranked_total(keys.iter().map(|&(_, key)| key), rest, &now_value, before, keep) {
+                Ok(Some(value)) => scored.push((i128::from(value), tag.as_str())),
+                Ok(None) => {}
                 Err(reason) => return Ok(Err(reason.to_owned())),
-            };
-            let value = match &start {
-                None => at,
-                Some((_, before)) => {
-                    match value_of(before, &keys, rest) {
-                        Ok(Some(before)) => at - before,
-                        Ok(None) if i64::try_from(at).is_ok_and(|value| !keep(value)) => continue,
-                        Ok(None) => return Ok(Err(TOTALS_WINDOW_UNRECORDED.to_owned())),
-                        Err(reason) => return Ok(Err(reason.to_owned())),
-                    }
-                }
-            };
-            let Ok(value) = i64::try_from(value) else { return Ok(Err(TOTALS_VALUE_UNKNOWN.to_owned())) };
-            if keep(value) {
-                scored.push((i128::from(value), tag.as_str()));
             }
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
@@ -383,6 +390,52 @@ fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranked_total_uses_the_races_fallback_window_and_refusal_order() {
+        use crate::{identity::{HolderRun, Holders}, timeline::{Join, Stretch, Timeline}};
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+
+        let (first, last) = (100, 103);
+        let key = |part| ProducedValueRow::key_of(7, part);
+        let keys = [key(1), key(2)];
+        let rest = ProducedValueRow::REST;
+        let cell = |hour, k| match (hour, k) {
+            (101, k) if k == key(1) => Some(Some(5)),
+            (102, k) if k == key(1) => Some(None),
+            (103, k) if k == key(1) => Some(Some(i64::MAX)),
+            (101..=103, k) if k == key(rest) => Some(Some(2)),
+            _ => None,
+        };
+        let replay = crate::fixture::bare(first, last, |frame, hour| {
+            let mut rows = vec![ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(first), as_of: Some(hour), ..Default::default() }];
+            for part in [1, rest] {
+                if let Some(value) = cell(hour, key(part)) {
+                    rows.push(ProducedValueRow { country: 7, archetype: part, units: value.map_or(Recorded::NotRecorded, Recorded::Value), ..Default::default() });
+                }
+            }
+            frame.table(TableId::ProducedValues, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+        }).unwrap();
+        let holder = HolderRun { first, last, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true };
+        let timeline = Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() };
+        let query = crate::Query { replay: &replay, timeline: timeline.into(), holders: Holders::new([("AAA".into(), vec![holder])].into(), Vec::new()).into() };
+        let series = dashboard_declare::series("produced-values").unwrap();
+        let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+        for (at, from, expected) in [
+            (101, None, Ok(Some(7))),
+            (101, Some(100), Err(TOTALS_WINDOW_UNRECORDED)),
+            (103, None, Err(TOTALS_VALUE_UNKNOWN)),
+            (102, Some(100), Err(TOTALS_VALUE_UNKNOWN)),
+        ] {
+            let opening = |k| cell(from.unwrap(), k);
+            let keep = |v| v > 0;
+            assert_eq!(ranked_total(keys.into_iter(), Some(key(rest)), &|k| cell(at, k), from.map(|_| &opening as RankedCells<'_>), &keep), expected);
+            let back = |_| from;
+            assert_eq!(line.totals_ranked(at, 1, &|_| vec![1, 2], from.map(|_| &back as &dyn Fn(_) -> _), &keep).unwrap(),
+                expected.map(|_| vec!["AAA".to_owned()]).map_err(str::to_owned));
+        }
+    }
 
     #[test]
     fn a_contender_without_an_opening_row_refuses_a_window_it_delivered_in_and_is_skipped_where_it_delivered_nothing() {
