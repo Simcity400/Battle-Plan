@@ -221,7 +221,7 @@ fn pieces_of(shape: &Shape, hours: &[Hour], first: i32, block: usize) -> Vec<Vec
     let mut out = Vec::new();
     for (start, chunk) in hours.chunks(block).enumerate() {
         let first_hour = first + (start * block) as i32;
-        let mut builder = Builder::open(shape, state.table(0).unwrap(), state.status(0).unwrap(), first_hour);
+        let mut builder = Builder::open(shape, state.table(0).unwrap(), state.status(0).unwrap(), state.truncated_view(0), first_hour);
         for (at, hour) in chunk.iter().enumerate() {
             let game = first_hour + at as i32;
             apply(&mut state, game, hour);
@@ -411,7 +411,7 @@ fn a_log_counts_its_inserts_per_bucket() {
     let mut state = State::new(vec![KINDS.to_vec()]).unwrap();
     let first = 1_000_003;
     let hours = hours(100);
-    let mut builder = Builder::open(&shape, state.table(0).unwrap(), Status::NotRecorded, first);
+    let mut builder = Builder::open(&shape, state.table(0).unwrap(), Status::NotRecorded, None, first);
     for (at, hour) in hours.iter().enumerate() {
         apply(&mut state, first + at as i32, hour);
         builder.hour(first + at as i32, state.table(0).unwrap(), &hour_log(state.changes(0).unwrap()), state.status(0).unwrap(), None);
@@ -495,7 +495,7 @@ fn a_grids_piece_holds_each_rows_value_at_every_bucket() {
     const WIDTH: usize = 3;
     let first = 1_000_003;
     let mut grid = Grid { width: WIDTH, values: (0..KEYS as usize * WIDTH).map(|at| at as i64 * 17).collect() };
-    let mut builder = Builder::open(&grid_shape(WIDTH), &grid, Status::Complete, first);
+    let mut builder = Builder::open(&grid_shape(WIDTH), &grid, Status::Complete, None, first);
     let mut history = vec![grid.values.clone()];
     for at in 0..720 {
         let log = grid_log(KEYS, WIDTH, at);

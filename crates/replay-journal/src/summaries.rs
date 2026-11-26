@@ -78,7 +78,7 @@ impl Summaries {
                 let _label = self.label(at);
                 let (table, shape) = &self.registry[at];
                 let view = store.view(*table);
-                summary::Builder::open(shape, &view, view.status(), hour)
+                summary::Builder::open(shape, &view, view.status(), view.view(), hour)
             })
             .collect();
         self.ns += clock.elapsed().as_nanos() as u64;

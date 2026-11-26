@@ -1128,6 +1128,36 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
 }
 
 #[test]
+fn a_block_summary_counts_only_changes_from_rows_read_at_the_previous_hour() {
+    use replay_data::rows::CountryRow;
+    use replay_journal::synthetic::{Input, Sample};
+
+    let table = TableId::Countries;
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"truncated boundary", &[(1, 0, 2)], &[table], |synthetic, _, ordinal| {
+        let rows = [1, 2, 3].map(|id| CountryRow {
+            id,
+            political_power_raw: Some(if ordinal < 720 || id == 3 { 100 } else { 50 }),
+            ..Default::default()
+        });
+        let (rows, partial) = if ordinal == 719 { (&rows[..1], Some(2)) } else { (&rows[..], None) };
+        synthetic.table(table, Input::Snapshot { rows, partial, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let recording = Recording::open(bytes).unwrap();
+    let source = summary::Source::Cell(field(table, "political_power_raw")).id();
+    let chart = |level| chart_at(&recording, 0, table, source, None, 720, 725, level, 6).unwrap();
+    let walked = chart(WALKED);
+    let summed = chart(0);
+
+    assert_eq!((summed.pieces, summed.walked), (1, 0));
+    assert_eq!(walked.keys, [1, 2, 3]);
+    assert_eq!(summed.keys, walked.keys);
+    let counts = |bin: &Totals| (bin.changes, bin.falls);
+    assert_eq!(walked.totals.iter().map(counts).collect::<Vec<_>>(), [(1, 1), (0, 0), (0, 0)]);
+    assert_eq!(summed.values, walked.values);
+    assert_eq!(summed.totals, walked.totals);
+}
+
+#[test]
 fn a_coarse_piece_ending_inside_a_bucket_does_not_reach_past_its_last_hour() {
     use replay_journal::synthetic::{Input, Sample};
     use replay_data::rows::CountryRow;
