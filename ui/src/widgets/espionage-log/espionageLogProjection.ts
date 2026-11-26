@@ -316,13 +316,14 @@ export const espionageLogProjection: TableProjection<EspionageLogProjectionOptio
     }
     const boundary = newIdentityBoundary();
     let nextProgressChange = Infinity;
+    const readAt = source.at ?? hour;
     const { slots, rows, windowOffset, totalRows, gapBefore } = projectPagedSlots(
       source,
       hour,
       readView.rowWindow,
       rawRow => {
-        const built = buildEspionageRow(readView, rawRow, hour, options.artwork, boundary);
-        if (built.nextChangeAt > hour && built.nextChangeAt < nextProgressChange) nextProgressChange = built.nextChangeAt;
+        const built = buildEspionageRow(readView, rawRow, readAt, options.artwork, boundary);
+        if (!source.frozen && built.nextChangeAt > hour && built.nextChangeAt < nextProgressChange) nextProgressChange = built.nextChangeAt;
         return built.row;
       },
     );
