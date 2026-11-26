@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMarketReply } from '../../dashboard/market.ts';
+import { FIXED5, FUEL_QUANTITY, fixedText, validateMarketReply } from '../../dashboard/market.ts';
 import type { MarketAt } from '../../dashboard/market';
-import { contractRows, marketDetail, offerRows } from './marketData.ts';
+import { cic, contractRows, marketDetail, offerRows, units } from './marketData.ts';
 import { internationalMarketProjection } from './internationalMarketProjection.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import { liveKey } from '../../charts/live.ts';
@@ -103,4 +103,22 @@ test('a contract of several equipment labels each variant\'s agreed price with i
 test('the market offers no option its detail window does not read', async () => {
   const { definition } = await import('./definition.ts');
   assert.deepEqual(definition.options.map(field => field.key), ['view']);
+});
+
+test('fixedText and market formatters preserve positive, negative, zero, and mixed fuel and fixed5 amounts', () => {
+  assert.equal(fixedText(1n, FUEL_QUANTITY), '0.000030517578125');
+  assert.equal(fixedText(-1n, FUEL_QUANTITY), '-0.000030517578125');
+  assert.equal(fixedText(0n, FUEL_QUANTITY), '0');
+  assert.equal(fixedText(FUEL_QUANTITY * 3n + 4096n, FUEL_QUANTITY), '3.125');
+  assert.equal(fixedText(-(FUEL_QUANTITY * 2n + 1n), FUEL_QUANTITY), '-2.000030517578125');
+  assert.equal(units(1n), '0.00001');
+  assert.equal(units(-1n), '-0.00001');
+  assert.equal(units(0n), '0');
+  assert.equal(units(FIXED5 * 2n + 50_000n), '2.5');
+  assert.equal(cic(-FIXED5 - 1n), '-1.00001 CIC');
+  assert.equal(fixedText(1n, 3n), '0.3');
+  assert.equal(fixedText(-1n, 30n), '-0.03');
+  assert.equal(fixedText(1n, 300n), '0.003');
+  assert.equal(fixedText(1n, 7n), '0.1');
+  assert.equal(fixedText(-1n, 999n), '-0.001');
 });

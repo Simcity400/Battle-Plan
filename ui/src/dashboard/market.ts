@@ -30,11 +30,32 @@ export function validateMarketReply(value: unknown): MarketLendLeaseReply {
   return value as unknown as MarketLendLeaseReply;
 }
 
+function terminatingDecimalPlaces(denominator: bigint): number | null {
+  if (denominator <= 0n) throw new RangeError(`fixedText: denominator must be positive, got ${denominator}`);
+  let rest = denominator;
+  let twos = 0;
+  let fives = 0;
+  while (rest % 2n === 0n) {
+    rest /= 2n;
+    twos++;
+  }
+  while (rest % 5n === 0n) {
+    rest /= 5n;
+    fives++;
+  }
+  return rest === 1n ? Math.max(twos, fives) : null;
+}
+
 export function fixedText(raw: bigint, denominator = FIXED5): string {
-  const negative = raw < 0n, magnitude = negative ? -raw : raw;
-  const places = denominator.toString().length - 1;
+  const exactPlaces = terminatingDecimalPlaces(denominator);
+  if (raw === 0n) return '0';
+  const negative = raw < 0n;
+  const magnitude = negative ? -raw : raw;
+  const places = exactPlaces ?? denominator.toString().length;
   const whole = magnitude / denominator;
-  const fraction = ((magnitude % denominator) * 10n ** BigInt(places) / denominator).toString().padStart(places, '0').replace(/0+$/, '');
+  const remainder = magnitude % denominator;
+  const scaled = (remainder * 10n ** BigInt(places)) / denominator;
+  const fraction = scaled.toString().padStart(places, '0').replace(/0+$/, '');
   return `${negative ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`;
 }
 
