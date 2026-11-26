@@ -86,6 +86,17 @@ export function branchDrillDetailSubject(
   return drillTag;
 }
 
+export function actionCountryHolder(meta: unknown): Holder | null {
+  if (typeof meta !== 'object' || meta === null) return null;
+  const value = (meta as { readonly countryHolder?: unknown }).countryHolder;
+  if (typeof value !== 'object' || value === null) return null;
+  const holder = value as { readonly tag?: unknown; readonly origin?: unknown };
+  if (typeof holder.tag !== 'string' || !holder.tag || typeof holder.origin !== 'number' || !Number.isFinite(holder.origin)) {
+    return null;
+  }
+  return { tag: holder.tag, origin: holder.origin };
+}
+
 export function branchDrillCanFollow(
   playbackCovered: boolean,
   drillHolder: Holder | null | undefined,

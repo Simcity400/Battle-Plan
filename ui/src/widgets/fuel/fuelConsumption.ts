@@ -90,3 +90,13 @@ export function demandGeometry(runs: readonly { firstHour: number; lastHour: num
   return runs.flatMap((run, i) => run.amountRaw === null ? [] : [{ firstHour: run.firstHour, lastHour: run.lastHour,
     value: Math.max(0, Number(run.amountRaw) / scale), breakBefore: run.startsSegment || i === 0 || runs[i - 1].amountRaw === null || runs[i - 1].lastHour + 1 !== run.firstHour }]);
 }
+
+export function demandHistoryRange(
+  extent: readonly [number, number],
+  anchorHour: number | null | undefined,
+  detailHours: number,
+): readonly [number, number] {
+  const end = Math.max(extent[0], Math.min(extent[1], anchorHour ?? extent[1]));
+  const start = Math.max(extent[0], end - detailHours + 1);
+  return [start, end];
+}

@@ -7,6 +7,7 @@ import { countryDrillTagAt } from '../../dashboard/countryIdentity.ts';
 import { datedCountrySpans } from '../../dashboard/datedCountry.ts';
 import { keyId } from '../../dashboard/keyedSeriesData.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { setOption } from '../../dashboard/options.ts';
 import { PlaybackController } from '../../dashboard/playback.ts';
 import { holderSelection, type Gate } from '../../dashboard/regionGate.ts';
 import { axisAt, FOLLOW, regionOutside, recordedHour } from '../../dashboard/regionTime.ts';
@@ -16,8 +17,12 @@ import { parseTimeChartHit } from '../../families/time-chart/hostAdapter.ts';
 import { layoutTimeChart } from '../../families/time-chart/layout.ts';
 import type { TimeChartModel } from '../../families/time-chart/model.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
-import { FAMILY_VIEW_UI } from '../manifest.ts';
+import { demandHistoryRange } from '../fuel/fuelConsumption.ts';
+import { detailWindows } from '../fuel/fuelDrill.ts';
+import { FAMILY_VIEW_UI, familyViewOptionFields } from '../manifest.ts';
+import { OPTIONS as FUEL_BRANCHES_OPTIONS } from './definition.ts';
 import {
+  actionCountryHolder,
   branchDrillCanFollow,
   branchDrillDetailSubject,
   branchDrillSelectionKey,
@@ -56,10 +61,17 @@ const TRACK = {
   },
 } as unknown as BoundTrack;
 
-test('fuel-branches registers a view UI wrapper for both bars and over-time views', () => {
+test('fuel-branches registers a view UI wrapper and declares the reached country option for both bars and over-time views', () => {
   const entry = FAMILY_VIEW_UI['fuel-branches'];
   assert.ok(entry, 'fuel-branches must be registered in FAMILY_VIEW_UI');
   assert.equal(entry.views, undefined, 'wrapper applies to both bars and time views');
+  const token = JSON.stringify({ campaign: 'camp', branch: 'b0', tag: 'GER', originOffset: 50 });
+  assert.ok(setOption(FUEL_BRANCHES_OPTIONS, {}, 'country', token), 'definition accepts the persisted country holder option');
+  for (const view of ['default', 'time']) {
+    const fields = familyViewOptionFields('fuel-branches', view);
+    const written = setOption(fields, {}, 'country', token);
+    assert.ok(written, `${view} view persists a chosen holder through the country option`);
+  }
 });
 
 test('parseBranchFamily resolves standard military branches from bars keys and time-chart keyIds while leaving plot, gap and modded indices unfiltered', () => {
@@ -78,6 +90,8 @@ test('parseBranchFamily resolves standard military branches from bars keys and t
 test('dated holder preserves the original country across rename and tag reuse in both bars and over-time views', () => {
   const originalHolder = { tag: 'GER', origin: H1936 + 50 };
   const clickHour = H1936 + 300;
+  assert.deepEqual(actionCountryHolder({ countryHolder: originalHolder }), originalHolder);
+  assert.equal(actionCountryHolder(undefined), null);
   const barsOpen = resolveBranchDrillOpen({
     active: true,
     holder: originalHolder,
@@ -184,6 +198,20 @@ test('clicking a recording gap carries the clicked gap hour and opens pinned on 
   assert.equal(branchDrillDetailSubject(null, opened!.holder, false), null);
 });
 
+test('followed consumer history anchors to the displayed fuel reply hour rather than the end of the recording', () => {
+  const extent: readonly [number, number] = [H1936, H1936 + 5000];
+  const pausedHour = H1936 + 200;
+  const [start, end] = demandHistoryRange(extent, pausedHour, 720);
+  assert.deepEqual([start, end], [H1936, pausedHour]);
+  const windows = detailWindows(extent, [start, end], pausedHour, 720);
+  assert.deepEqual(
+    windows,
+    [Math.floor(pausedHour / 720)],
+    'followed consumer history requests the window at the paused reply hour, not the end of the recording',
+  );
+  assert.notEqual(windows[0], Math.floor(extent[1] / 720));
+});
+
 test('paused seek from a recording gap into coverage wakes the coverage watch and enables Follow', () => {
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: H1936, lastHour: H1936 + 500 });
@@ -208,21 +236,22 @@ test('paused seek from a recording gap into coverage wakes the coverage watch an
   }
 });
 
-test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and failed stages, passes the dated holder on both views, and updates Follow on paused seek', async () => {
+test('FuelBranchesWidget keeps the detail window mounted across refusals, uses the chart activation holder, keeps pinned playhead independent of parent seeks, and updates Follow', async () => {
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: H1936, lastHour: H1936 + 500 });
   clock.seek(H1936 + 230);
 
   const holder = { tag: 'GER', origin: H1936 + 50 };
   const shownCalls: Array<{ breakdown: string; hour: number; country: { tag: string; origin: number } | null | undefined }> = [];
-  let capturedActivate: ((action: { hour: number; subject?: string }) => void) | undefined;
+  let capturedActivate: ((action: { hour: number; subject?: string; meta?: Readonly<Record<string, unknown>> }) => void) | undefined;
+  let breakdownProps: { playhead: number | null; hour: number | null } | null = null;
   let breakdownMounts = 0;
 
-  const makeGate = (stage: Gate['stage'], tag: string | null): Gate => ({
+  const makeGate = (stage: Gate['stage'], tag: string | null, gatedHour = H1936 + 300): Gate => ({
     region: { widget: {} as WidgetSpec, action: FOLLOW },
     track: TRACK,
     active: true,
-    hour: stage.stage === 'open' ? (H1936 + 300) as never : null,
+    hour: stage.stage === 'open' ? gatedHour as never : null,
     lastRecorded: (H1936 + 500) as never,
     window: null,
     outside: stage.stage === 'outside' ? stage.outside : null,
@@ -259,7 +288,6 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
   });
 
   const harness = {
-    parentGate: makeGate({ stage: 'open' }, 'DEU'),
     drillGate: makeGate({
       stage: 'outside',
       outside: {
@@ -280,11 +308,12 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
     onShow(breakdown: string, hour: number, country?: { tag: string; origin: number } | null) {
       shownCalls.push({ breakdown, hour, country });
     },
-    onActivateRef(fn: (action: { hour: number; subject?: string }) => void) {
+    onActivateRef(fn: (action: { hour: number; subject?: string; meta?: Readonly<Record<string, unknown>> }) => void) {
       capturedActivate = fn;
     },
-    onBreakdownMount() {
+    onBreakdownMount(props: { playhead: number | null; hour: number | null }) {
       breakdownMounts++;
+      breakdownProps = props;
     },
   };
 
@@ -303,7 +332,6 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
         if (norm.endsWith('/widgets/fuel-branches/FuelBranchesWidget.tsx')) {
           return code
             .replace("from '../../charts/drill/useDrill'", "from 'fb-test-useDrill'")
-            .replace("from '../../dashboard/regionGate'", "from 'fb-test-regionGate'")
             .replace("from '../../families/host/registry.tsx'", "from 'fb-test-familyWidget'")
             .replace("from '../fuel/FuelConsumptionBreakdown'", "from 'fb-test-breakdown'")
             .replace("from '../../components/ContextMenu'", "from 'fb-test-contextMenu'");
@@ -333,13 +361,10 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
         }
         if (id === '\0fb-test-breakdown') {
           return `import { createElement } from 'react';
-            export default function StubBreakdown() {
-              globalThis.__fuelBranchesHarness.onBreakdownMount();
+            export default function StubBreakdown(props) {
+              globalThis.__fuelBranchesHarness.onBreakdownMount({ playhead: props.playhead, hour: props.hour });
               return createElement('div', { 'data-breakdown': 'mounted' });
             }`;
-        }
-        if (id === '\0fb-test-regionGate') {
-          return `export const useGate = () => globalThis.__fuelBranchesHarness.parentGate;`;
         }
         if (id === '\0fb-test-useDrill') {
           return `export const useDrill = (_runtime, parent) => {
@@ -410,17 +435,17 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
     assert.equal(breakdownMounts, 0, 'no fuel consumption breakdown mounts in a recording gap');
     assert.doesNotMatch(gapHtml, /aria-label="Follow playback"/, 'Follow is hidden while playback is paused in a gap');
 
-    capturedActivate!({ hour: H1936 + 300, subject: keyId({ tag: 'slot:1', part: '2' }) });
-    capturedActivate!({ hour: H1936 + 230, subject: `gap:0@${H1936 + 230}` });
+    capturedActivate!({ hour: H1936 + 300, subject: keyId({ tag: 'slot:1', part: '2' }), meta: { countryHolder: holder } });
+    capturedActivate!({ hour: H1936 + 230, subject: `gap:0@${H1936 + 230}`, meta: { countryHolder: holder } });
 
     renderWithFamily('bars');
-    capturedActivate!({ hour: H1936 + 300, subject: '1' });
+    capturedActivate!({ hour: H1936 + 300, subject: '1', meta: { countryHolder: holder } });
 
     assert.deepEqual(shownCalls, [
       { breakdown: 'consumption', hour: H1936 + 300, country: holder },
       { breakdown: 'consumption', hour: H1936 + 230, country: holder },
       { breakdown: 'consumption', hour: H1936 + 300, country: holder },
-    ], 'both over-time (including gap clicks) and bars views pass the chart dated holder into the drill');
+    ], 'both over-time (including gap clicks) and bars views pass the chart activation holder into the drill');
 
     harness.drillGate = makeGate({ stage: 'absent', reason: null }, null);
     const absentHtml = renderWithFamily('bars');
@@ -437,10 +462,16 @@ test('FuelBranchesWidget keeps the detail window mounted across gap, absent, and
     assert.match(failedHtml, /Country identities could not be read\./);
     assert.match(failedHtml, /Retry/);
 
-    clock.seek(H1936 + 300);
-    harness.drillGate = makeGate({ stage: 'open' }, 'DEU');
-    const coveredHtml = renderWithFamily('bars');
-    assert.match(coveredHtml, /aria-label="Follow playback"/, 'paused seek from a gap into coverage exposes Follow');
+    clock.seek(H1936 + 150);
+    harness.drillState = { breakdown: 'consumption', spec: false, follow: false, hour: H1936 + 300, country: holder };
+    harness.drillGate = makeGate({ stage: 'open' }, 'DEU', H1936 + 300);
+    const pinnedHtml = renderWithFamily('bars');
+    assert.match(pinnedHtml, /aria-label="Follow playback"/, 'paused seek from a gap into coverage exposes Follow');
+    assert.deepEqual(
+      breakdownProps,
+      { playhead: H1936 + 300, hour: H1936 + 300 },
+      'pinned drill chart clips to the drill gated hour even when the following parent seeks earlier',
+    );
   } finally {
     delete host.__fuelBranchesHarness;
     await vite.close();

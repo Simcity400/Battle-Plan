@@ -18,7 +18,7 @@ import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { FAMILY_MEASURES, FUEL_DEMAND_TOTALS, formatFuelPart, scaledSummary, summaryRuns } from './fuelData';
-import { consumptionLevelAvailable, consumptionParts, demandBasis, demandGeometry, levelComplete, siteLevel, validateFuelDemand,
+import { consumptionLevelAvailable, consumptionParts, demandBasis, demandGeometry, demandHistoryRange, levelComplete, siteLevel, validateFuelDemand,
   validateFuelDemandHistory } from './fuelConsumption';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsumption';
 import { detailWindows, fuelRecipientFor, joinedRuns } from './fuelDrill';
@@ -104,7 +104,7 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
       {part?.reason && <p className="drill-empty">Consumption unavailable: {part.reason}</p>}
       {data && !part && <p className="drill-empty">Consumer unavailable at this time.</p>}
       <DemandHistory runtime={runtime} gate={gate} track={track} basis={chosen.basis} keys={[chosen.key]} names={new Map([[chosen.key, part?.recordedName ?? chosen.name]])}
-        colors={new Map([[chosen.key, tokens.accent]])} hour={hour} detailHours={detailHours} within={within} chart={chart}
+        colors={new Map([[chosen.key, tokens.accent]])} hour={hour} anchorHour={hour ?? demandHour ?? chosen.basis.hour} detailHours={detailHours} within={within} chart={chart}
         label="Individual current consumption required per day" />
     </> : <>
       {demandHour === null ? <p className="drill-empty">{follows ? 'Individual consumers are listed for the day shown once playback stops.' : 'Individual consumption was not recorded for this moment.'}</p>
@@ -119,7 +119,7 @@ export default function FuelConsumptionBreakdown({ runtime, gate, widget, track,
       {data && <ConsumptionTopology data={data} active={chart.active} onLevel={chooseLevel} />}
       {basis && data && available && displayed.length > 0 && <DemandHistory runtime={runtime} gate={gate} track={track} basis={basis} keys={displayed.map(row => row.key)}
         names={new Map(displayed.map(row => [row.key, row.recordedName]))} colors={new Map(displayed.map(row => [row.key, tokens.categories[row.kind % tokens.categories.length]]))}
-        hour={hour} detailHours={detailHours} within={within} chart={chart} label="Displayed individual current consumption required per day" />}
+        hour={hour} anchorHour={hour ?? demandHour ?? basis.hour} detailHours={detailHours} within={within} chart={chart} label="Displayed individual current consumption required per day" />}
       <details><summary>By military branch</summary>
         {byBranch.error && <WidgetState kind="error" what="consumption history" failure={byBranch.error} onRetry={byBranch.retry} />}
         <BreakdownChart {...chart} within={within} onSummaryView={byBranch.onSummaryView} series={branchSeries.map(item => item.series)}
@@ -144,15 +144,15 @@ function ConsumptionTopology({ data, active, onLevel }: { data: FuelDemandReply;
   </details>;
 }
 
-function DemandHistory({ runtime, gate, track, basis, keys, names, colors, hour, detailHours, within, chart, label }: {
+function DemandHistory({ runtime, gate, track, basis, keys, names, colors, hour, anchorHour, detailHours, within, chart, label }: {
   runtime: WidgetRuntime; gate: Gate; track: BoundTrack; basis: FuelBasis; keys: readonly string[]; names: ReadonlyMap<string, string | null>;
-  colors: ReadonlyMap<string, string>; hour: number | null; detailHours: number; within: readonly Span[] | null | undefined; chart: HistoryChart; label: string;
+  colors: ReadonlyMap<string, string>; hour: number | null; anchorHour: number | null; detailHours: number; within: readonly Span[] | null | undefined; chart: HistoryChart; label: string;
 }) {
   const height = useViewportHeight();
-  const end = Math.max(chart.extent[0], Math.min(chart.extent[1], hour ?? chart.extent[1]));
-  const start = Math.max(chart.extent[0], end - detailHours + 1);
+  const anchor = anchorHour ?? hour ?? basis.hour;
+  const [start, end] = demandHistoryRange(chart.extent, anchor, detailHours);
   const [visible, onViewChange] = useDetailView(start, end, detailHours);
-  const wanted = detailWindows(chart.extent, visible, hour, detailHours);
+  const wanted = detailWindows(chart.extent, visible, anchor, detailHours);
   const basisAt = gate.recorded(basis.hour);
   const windows = useProductWindows<FuelDemandHistoryReply>(runtime.client, basisAt === null ? null : JSON.stringify([track.source.id, track.source.revision, basis, keys]),
     window => (productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-demand-history',

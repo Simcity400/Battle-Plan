@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel } from '../../charts/draw';
@@ -16,15 +16,17 @@ import type { FamilyViewProps } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackMotion } from '../../dashboard/playback';
-import { useGate } from '../../dashboard/regionGate';
-import { FOLLOW, recordedHour, SPEC } from '../../dashboard/regionTime.ts';
+import type { Holder } from '../../dashboard/regionGate';
+import { FOLLOW, recordedHour } from '../../dashboard/regionTime.ts';
 import { coverageOf, useRegion, useRegionOutside } from '../../dashboard/widgetTime.ts';
+import type { InstalledAction } from '../../families/contract.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import FuelConsumptionBreakdown from '../fuel/FuelConsumptionBreakdown';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from '../fuel/fuelConsumption';
 import { fuelDecimals } from './fuelBranchesData';
 import {
+  actionCountryHolder,
   branchDrillCanFollow,
   branchDrillDetailSubject,
   branchDrillSelectionKey,
@@ -43,11 +45,12 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const storedDrill = drillControl.state;
   const dispatch = drillControl.dispatch;
   const [drillOwner, setDrillOwner] = useState<object>();
+  const [chartHolder, setChartHolder] = useState<Holder | null>(null);
+  const handleCountryHolder = useCallback((next: Holder | null) => {
+    setChartHolder(prev => prev?.tag === next?.tag && prev?.origin === next?.origin ? prev : next);
+  }, []);
   const digits = fuelDecimals(options);
-  const parentCountryNeed = useMemo(() => ({ country: { stored: options.country } }), [options.country]);
-  const parentGate = useGate(runtime, widget, SPEC, active, parentCountryNeed);
-  const track = parentGate.track;
-  const following = widget.time.mode === 'follow';
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const drillOpen = storedDrill.breakdown !== null;
   const followRegion = useRegion(widget, FOLLOW);
   const playbackOutside = useRegionOutside(runtime, followRegion, active && drillOpen);
@@ -55,7 +58,6 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const playing = usePlaybackMotion(runtime.clock, active && drillOpen) !== undefined;
   const clockHour = usePlaybackHour(runtime.clock, active && drillOpen && drillControl.following);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
-  const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const menu = useContextMenu('Fuel by branch actions');
@@ -67,7 +69,6 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
     const parsed = readDatedCountry(options.country, track.source.metadata.campaignKey, track.branch.id);
     return parsed?.tag === chosen ? parsed : null;
   }, [track, chosen, options.country]);
-  const chartHolder = parentGate.country?.holder ?? null;
   const pickScope = branchDrillSelectionKey({
     sourceId: track?.source.id,
     revision: track?.source.revision,
@@ -102,9 +103,10 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
     setInitialLevel(null);
   }, [pickOwner]);
 
-  const open = (hour: number, subject?: string) => {
+  const open = (action: InstalledAction) => {
     if (!track) return;
-    const resolved = resolveBranchDrillOpen({ active, holder: chartHolder, extent, hour, subject });
+    const holder = actionCountryHolder(action.meta) ?? chartHolder;
+    const resolved = resolveBranchDrillOpen({ active, holder, extent, hour: action.hour, subject: action.subject });
     if (!resolved) return;
     setConsumption(null);
     setLevel(null);
@@ -124,7 +126,7 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
     pickOwner,
     extent,
     branchStart: track.branch.firstHour,
-    playhead: drillFollows ? actualHour : playhead,
+    playhead: drillFollows ? actualHour : at,
     playback,
     liveHead: drillFollows ? { read: () => runtime.clock.getSnapshot().position + track.axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     afterPlayhead: options.afterPlayhead === true,
@@ -165,7 +167,7 @@ export default function FuelBranchesWidget(props: FamilyViewProps) {
   const closeDetail = () => { setInitialLevel(null); dispatch({ type: 'close' }); };
   return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>
     {props.manifestDeclaration
-      ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={action => open(action.hour, action.subject)} />
+      ? <FamilyWidget {...props} family={props.manifestDeclaration.family} declaration={props.manifestDeclaration} onActivate={open} onCountryHolder={handleCountryHolder} />
       : null}
     <DetailWindowHost open={drill.breakdown !== null} subject={detailSubject} hour={at} title={DETAIL_TITLE} day={detailDay} anchor={anchor} onClose={closeDetail}>
       <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} title={DETAIL_TITLE}
