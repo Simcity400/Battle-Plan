@@ -467,7 +467,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     const RIVAL_OWNER: u32 = 9003;
     let root = std::env::temp_dir().join(format!("special-project-iteration-{}-{:?}", std::process::id(), std::thread::current().id()));
     for (path, text) in [
-        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}"),
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7}}"),
         ("common/country_tags/fixture.txt", "HOM=countries/home.txt ALT=countries/other.txt"),
         ("common/special_projects/specialization/test.txt", "mod_science={}"),
         (

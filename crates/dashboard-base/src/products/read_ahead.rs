@@ -83,7 +83,7 @@ mod tests {
             (
                 "common/defines/work.lua",
                 "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},\
-                 NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                 NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             ("common/ideas/work.txt", "ideas={country={mod_a={}}}"),
         ];

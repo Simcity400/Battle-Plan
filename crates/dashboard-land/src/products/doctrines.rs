@@ -774,7 +774,7 @@ mod tests {
         let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
             ),
             (
                 "common/doctrines/tracks/test.txt",

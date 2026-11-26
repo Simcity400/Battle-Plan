@@ -435,7 +435,7 @@ mod tests {
                 ),
                 (
                     "common/defines/synthetic.lua",
-                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NFocus={FOCUS_POINT_DAYS=5}}",
                 ),
                 (
                     "common/ideologies/synthetic.txt",
@@ -530,7 +530,7 @@ mod tests {
         );
         let item = &reply.items[0];
         assert_eq!(item.artwork.token, "static");
-        assert_eq!(item.artwork.base_duration_days, Some(14.0));
+        assert_eq!(item.artwork.base_duration_days, Some(10.0));
         assert_eq!(
             from_url(item.artwork.icon.as_deref().unwrap()).pixels[0],
             23
@@ -625,7 +625,7 @@ mod tests {
             ),
             (
                 "common/defines/synthetic.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NFocus={FOCUS_POINT_DAYS=5}}",
             ),
             (
                 "localisation/synthetic_l_english.yml",
@@ -692,7 +692,7 @@ mod tests {
                 }
                 assert_eq!(
                     item(&national, "shared").artwork.base_duration_days,
-                    Some(14.0)
+                    Some(10.0)
                 );
                 let continuous = load(FocusDatabase::Continuous, text_only);
                 assert_eq!(continuous.database, FocusDatabase::Continuous);
@@ -761,7 +761,7 @@ mod tests {
                 [(
                     "shared".to_owned(),
                     Some("National title".to_owned()),
-                    Some(14.0)
+                    Some(10.0)
                 )]
             );
             assert_eq!(
@@ -770,7 +770,7 @@ mod tests {
                     .iter()
                     .map(|item| (item.token.as_str(), item.base_duration_days))
                     .collect::<Vec<_>>(),
-                [("shared", Some(14.0))]
+                [("shared", Some(10.0))]
             );
             assert_eq!(
                 texts(&reply.continuous_static_text),
@@ -839,7 +839,7 @@ mod tests {
             let reply = load(&source, &params, &context, &cancelled).unwrap();
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
-            assert_eq!(item.artwork.base_duration_days, Some(14.0));
+            assert_eq!(item.artwork.base_duration_days, Some(10.0));
             assert!(item.artwork.name.is_none());
             assert!(item.artwork.description.is_none());
             if let Some(pixel) = pixel {

@@ -423,7 +423,7 @@ fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stret
 fn balance_scripted_names_respect_scopes_causality_staged_reads_and_named_refusals() {
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         ("common/country_tags/synthetic.txt", "GER=\"countries/ger.txt\" ENG=\"countries/eng.txt\""),
-        ("common/defines/test.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }"),
+        ("common/defines/test.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 } }"),
         ("common/units/synthetic.txt", "sub_units={syn_unit={}}"),
         ("common/ideologies/synthetic.txt", "ideologies = { democratic = {} fascism = {} }"),
         (

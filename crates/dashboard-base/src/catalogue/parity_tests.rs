@@ -14,7 +14,7 @@ fn equipment_catalogue(equipment: &[(&str, &str)]) -> (Arc<Catalogue>, Folder) {
         ("map/continent.txt", "continents={synthetic_continent}"),
         (
             "common/defines/synthetic.lua",
-            "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+            "NDefines={NBuildings={MAX_BUILDING_LEVELS=13}}",
         ),
     ];
     files.extend_from_slice(equipment);

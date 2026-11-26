@@ -22,7 +22,7 @@ fn frame(rows: Vec<TableRows>) -> DecodedFrame {
 
 fn content() -> Context {
     let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
-        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
         ("common/doctrines/subdoctrines/test.txt", "mod_sub={rewards={tier1={mastery=2 effect={add_political_power=2}} tier2={}}}"),
         (
             "localisation/test_l_english.yml",

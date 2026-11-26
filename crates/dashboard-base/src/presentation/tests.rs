@@ -71,7 +71,7 @@ fn machine(name: &str) -> (Machine, Source, ContentOptions) {
     write(
         &root,
         "common/defines/00_fixture.lua",
-        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, \
           NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
     );
     let art = mods.join("art");
