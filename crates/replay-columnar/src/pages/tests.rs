@@ -94,4 +94,23 @@ fn a_run_directory_round_trips_and_refuses_what_does_not_cover_it() {
     let short = RunDirectory { open: vec![page(16, UNIT_ORDINALS)], ..directory };
     assert!(short.write(0).is_err());
     assert!(RunDirectory::read(&bytes, &Extent { run: 1, ..extent }, 1).is_err());
+    let late = |first_hour: i32, hours: u32| RunDirectory {
+        branch: 7,
+        epoch: 1,
+        first_hour,
+        hours,
+        chain: [5; 32],
+        spans: Vec::new(),
+        open: (hours > 0).then(|| page(0, hours.min(UNIT_ORDINALS))).into_iter().collect(),
+        tail: Vec::new(),
+    };
+    let fits = late(i32::MAX - UNIT_ORDINALS as i32, 5);
+    assert_eq!(RunDirectory::read(&fits.write(0).unwrap(), &extent, 0).unwrap(), fits, "a run whose blocks end on the last hour that fits is read");
+    for (first_hour, hours) in [(i32::MAX - 10, 5), (i32::MIN, 5), (i32::MAX, 0), (-2_000_000_000, 3_000_000_000)] {
+        let past = late(first_hour, hours);
+        assert!(past.write(0).is_err(), "{first_hour}+{hours}: a run past the hour range is never written");
+        let error = RunDirectory::read(&past.encode().unwrap(), &extent, 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("pass the hour range"), "{first_hour}+{hours}: a run past the hour range is read as damaged for that reason: {error}");
+    }
 }
