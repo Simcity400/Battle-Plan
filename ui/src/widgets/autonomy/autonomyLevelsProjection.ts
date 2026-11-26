@@ -88,7 +88,7 @@ export function sampleSparkline(series: BoundedSeries | undefined, hour: number,
     const at = Math.floor(target);
     const inside = piece.first <= target && target < piece.last + 1 && !unreadBetween(at, at) && !piece.broken;
     const broken = previous !== null && (unreadBetween(previous.hour + 1, at)
-      || pieces.slice(previous.piece + 1, cursor + 1).some((held, k) => held.starts || pieces[previous!.piece + k]!.last + 1 < held.first));
+      || pieces.slice(previous.piece + 1, cursor + 1).some((held, k) => held.starts || held.broken || pieces[previous!.piece + k]!.last + 1 < held.first));
     if (inside && !broken) {
       out.push(target >= piece.last ? piece.lastValue : piece.firstValue);
       known++;

@@ -711,3 +711,14 @@ test('an autonomy sparkline honours the breaks its buckets record', () => {
   const inner = sampleSparkline(tile([bucket(hour - 300, hour - 201, 0.2, true), bucket(hour - 200, hour - 101, 0.5, false, true), bucket(hour - 100, hour, 0.8, true)]) as never, hour)!;
   assert.ok(!joins(inner), `nothing is drawn through a bucket with a break inside it: ${JSON.stringify(inner)}`);
 });
+
+test('an autonomy sparkline breaks over a narrow bucket with a break inside it that falls between two samples', () => {
+  const hour = 61320100;
+  const bucket = (first: number, last: number, value: number, firstBreak: boolean, hasBreak = false) =>
+    ({ firstHour: first, lastHour: last, firstValue: value, lastValue: value, lastValueHour: last, minValue: value, minHour: first, maxValue: value, maxHour: first, firstBreak, hasBreak });
+  const buckets = [bucket(hour - 300, hour - 152, 0.2, true), bucket(hour - 151, hour - 150, 0.5, false, true), bucket(hour - 149, hour, 0.8, false)];
+  const tile = { tag: 'RAJ', from: hour - 300, binHours: 1, decimals: 5, straddling: 'none' as const,
+    buckets: createBoundedSlice(buckets as never, buckets.length), missing: createBoundedSlice([], 0), validInterval: [hour - 300, hour] as const };
+  const line = sampleSparkline(tile as never, hour)!;
+  assert.ok(!line.slice(1).some((value, i) => value !== null && line[i] !== null && line[i] !== value), JSON.stringify(line));
+});

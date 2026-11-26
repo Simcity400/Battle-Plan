@@ -373,7 +373,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     });
   },
 
-  tooltip(model, hit) {
+  tooltip(model, hit, readView) {
     const lane = laneByKey(model, hit.laneKey);
     if (!lane) return null;
     const at = hit.hour ?? model.hour;
@@ -393,7 +393,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
     if (meta?.kind === 'battle') {
       return {
         title: `${formatScalar(Number(meta.count), { decimals: 0 })} battles`,
-        subtitle: `${formatDateOnly(Number(meta.first))} – ${formatDateOnly(Number(meta.last))}`,
+        subtitle: `${formatDateOnly(Number(meta.first))} – ${formatDateOnly(span?.open ? Math.min(readView.hour, Number(meta.monthLast)) : Number(meta.last))}`,
         hour: at,
         items: [
           { label: 'Won', value: formatScalar(Number(meta.won), { decimals: 0 }) },

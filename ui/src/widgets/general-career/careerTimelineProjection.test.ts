@@ -3,6 +3,7 @@ import test from 'node:test';
 import { liveKey } from '../../charts/live.ts';
 import { engineHour, firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { formatDateOnly } from '../../families/valueFormat.ts';
 import { datedIdentity } from '../../families/identity/dated.fixture.ts';
 import { assertQuietFrames, LANE_THEME } from '../../families/laneRuntime.fixture.ts';
 import { createLaneView } from '../../families/laneRuntime.ts';
@@ -232,4 +233,15 @@ test('the month of battles still running is an open bar that follows the playhea
   const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
   assert.equal(bar.open, true, 'painted to the playhead on each day redraw');
   assert.equal(model.nextChangeAt, firstHourOfMonth(monthIndex(gameDate(read)!) + 1), 'projected again when the month ends');
+});
+
+test('the open month bar names the displayed hour as its end in its tooltip', () => {
+  const read = H(1938, 1, 10);
+  const career: LeaderCareerReply = { ...careerReply(read, H(1938, 3, 1)), observed: [[FIRST, read]],
+    runs: [{ firstHour: FIRST, lastHour: read, role, skill: 7, components: [6, 5, 5, 4] }], battles: careerReply().battles.slice(0, 2) };
+  const model = careerTimelineProjection.project(createBoundedReadView({ hour: read, panels: new Map<string, unknown>([['career', validateLeaderCareer(career)]]) }), OPTIONS);
+  const bar = model.lanes.find(lane => lane.key === 'battles')!.spans[0]!;
+  const later = H(1938, 1, 20);
+  const tip = careerTimelineProjection.tooltip!(model, { kind: 'span', laneKey: 'battles', spanId: bar.id, hour: later }, createBoundedReadView({ hour: later }), OPTIONS);
+  assert.match(String(tip?.subtitle), new RegExp(`${formatDateOnly(later)}$`));
 });
