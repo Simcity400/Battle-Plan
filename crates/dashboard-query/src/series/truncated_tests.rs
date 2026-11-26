@@ -304,7 +304,7 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     let rank = |params: serde_json::Value| -> ranked::SeriesRankReply {
         let mut request = serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "measures": ["free1"] });
         request.as_object_mut().unwrap().extend(params.as_object().unwrap().clone());
-        serde_json::from_value(answer(&query, ranked::PRODUCT, &request).unwrap().unwrap()).unwrap()
+        serde_json::from_value(answer(&query, ranked::PRODUCT, &request, &|| Ok(())).unwrap().unwrap()).unwrap()
     };
     let tags = |reply: &ranked::SeriesRankReply| reply.rows.iter().map(|row| row.country.to_string()).collect::<Vec<_>>();
     let missing = |row: &ranked::SeriesRankRow| row.readings.iter().map(|reading| reading.missing.clone()).collect::<Vec<_>>();
@@ -332,7 +332,7 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     let members = |refused: Option<&'static str>| {
         move |_: &ranked::GroupSelection, _: i32| Ok(Arc::new(ranked::MemberSlots { slots: refused.map_or(Ok(Arc::from([7, 8])), |reason| Err(reason.to_owned())), from: T2 + 1, until: T2 + 2 }))
     };
-    let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve).unwrap().unwrap()).unwrap() };
+    let grouped = |resolve: ranked::Resolve<'_>| -> ranked::SeriesRankReply { serde_json::from_value(answer_grouped(&query, ranked::PRODUCT, &group, resolve, &|| Ok(())).unwrap().unwrap()).unwrap() };
     let known = grouped(&members(None));
     assert_eq!(tags(&known), ["ITA", "GER"], "a group's members at the hour are ranked by the product");
     assert_eq!(known.rows.iter().map(|row| row.slot).collect::<Vec<_>>(), [Some(8), Some(7)], "each row names the recorded slot holding it at the hour");
@@ -341,11 +341,11 @@ fn a_rank_reply_keeps_every_asked_country_reads_every_measure_and_holds_only_whe
     assert_eq!((known.from, known.until), (T2 + 1, T2 + 2), "the reply holds only while the membership does");
     let unknown = grouped(&members(Some("Membership of this group is not recorded at this hour")));
     assert_eq!((unknown.rows.len(), unknown.refused.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is refused, never a union");
-    assert!(answer(&query, ranked::PRODUCT, &group).is_err(), "a group is only answered where its membership is read");
+    assert!(answer(&query, ranked::PRODUCT, &group, &|| Ok(())).is_err(), "a group is only answered where its membership is read");
 
     for (first, last) in [(UNAVAIL_FIRST, UNAVAIL_LAST), (NOTREC_FIRST, NOTREC_LAST)] {
         let params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-experience", "measure": "army" }, "countries": ["GER", "ITA"], "hour": last });
-        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &params).unwrap().unwrap()).unwrap();
+        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &params, &|| Ok(())).unwrap().unwrap()).unwrap();
         assert_eq!((reply.from, reply.until), (first, last));
         assert!(reply.rows.iter().all(|row| row.readings[0].missing.is_some()));
     }
@@ -984,27 +984,27 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     assert_eq!(nukes.rank_at(124, 5, false).unwrap(), Ok(vec![Country::from("USA")]), "count top shows only positive rows and fewer than N");
 
     let rank_top: ranked::SeriesRankReply = serde_json::from_value(
-        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "top": 5, "hour": 124 }))
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "top": 5, "hour": 124 }), &|| Ok(()))
             .unwrap()
             .unwrap(),
     )
     .unwrap();
     assert_eq!(rank_top.rows.iter().map(|row| (&row.country, row.slot)).collect::<Vec<_>>(), vec![(&Country::from("USA"), Some(9))]);
     assert_eq!(rank_top.refused, None);
-    let tiles_top = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 124 / BINS as i64, "top": 5, "hour": 124 })).unwrap();
+    let tiles_top = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 124 / BINS as i64, "top": 5, "hour": 124 }), &|| Ok(())).unwrap();
     assert_eq!(
         tiles_top.lines.iter().map(|line| line.country.clone()).collect::<Vec<_>>(),
         rank_top.rows.iter().map(|row| Country::Slot(row.slot.expect("the ranked country has a recorded slot"))).collect::<Vec<_>>(),
         "lines and race agree on the slots in the positive-only top"
     );
-    let tiles_empty = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 121 / BINS as i64, "top": 5, "hour": 121 })).unwrap();
+    let tiles_empty = tile::reply(&nukes, "1", &serde_json::json!({ "binHours": 1, "index": 121 / BINS as i64, "top": 5, "hour": 121 }), &|| Ok(())).unwrap();
     assert!(tiles_empty.lines.is_empty() && tiles_empty.ranking.unwrap().refused.is_none(), "all-zero count top yields an empty unproven-free tile reply");
     assert_eq!(nukes.rank_at(125, 1, false).unwrap(), Ok(vec![Country::from("USA")]), "only zero is dropped: a negative count is ranked");
     let summary_top: Vec<String> = nukes.ranked(120, 125, 1, 1).unwrap().into_iter().map(|line| line.tag).collect();
     assert_eq!(summary_top, vec!["USA".to_owned()], "a bin whose stored top holds only dropped zeros is ranked exactly, never drawn short");
 
     let chosen: ranked::SeriesRankReply = serde_json::from_value(
-        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "countries": ["USA", "ABK"], "hour": 124 }))
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-nuke-totals", "measure": "total" }, "countries": ["USA", "ABK"], "hour": 124 }), &|| Ok(()))
             .unwrap()
             .unwrap(),
     )
@@ -1025,7 +1025,7 @@ fn a_ranked_top_drops_zeros_for_counts_and_keeps_zeros_for_standings() {
     assert!(fac.rank_at(124, 5, false).unwrap().is_err(), "an unrecorded contender still refuses a positive-only count top");
 
     let keyed: ranked::SeriesRankReply = serde_json::from_value(
-        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "countries": ["GER", "USA"], "hour": 123 }))
+        answer(&query, ranked::PRODUCT, &serde_json::json!({ "branchId": "1", "family": { "kind": "country-factories", "measure": "built1" }, "countries": ["GER", "USA"], "hour": 123 }), &|| Ok(()))
             .unwrap()
             .unwrap(),
     )

@@ -2,11 +2,10 @@ import { SECONDARY_DASH, tailColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { OptionValue } from '../../dashboard/options';
-import { FutureDataError, type AuxProductSpec, type BoundedReadView, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
+import { FutureDataError, type AuxProductSpec, type BoundedReadView, type BoundedSeries, type FamilyPlanContext, type SourceEntry, type SourcePlan } from '../contract.ts';
 import type { HolderRun, HourRanges } from '../holders.ts';
 import { formatCompactRational, formatRational, formatRecordedPercent, formatScalar } from '../valueFormat.ts';
 import { type TimeChartProjection, type TimeChartWidgetDeclaration } from './declaration.ts';
-import { compareValues, notRecorded } from '../value.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { auditRow } from '../auditRow.ts';
 import { formatChartAxisValue } from './layout.ts';
@@ -103,7 +102,17 @@ function hoverHourOf(readView: BoundedReadView, name: string): number | null {
   }
 }
 const COLOURED = 8;
-const NO_HEAD = notRecorded('No reading at the displayed hour');
+
+function tileReadingAt(line: BoundedSeries, hour: number): KnownHeadReading | null {
+  for (const spans of [line.missing, line.partial, line.approximate]) {
+    const span = spans?.at(spans.length - 1);
+    if (span && span.firstHour <= hour && hour <= span.lastHour) return null;
+  }
+  const run = line.runs?.at(line.runs.length - 1);
+  if (run?.lastHour === hour) return { value: run.value };
+  const bucket = line.buckets.at(line.buckets.length - 1);
+  return bucket?.lastHour === hour ? { value: bucket.lastValue } : null;
+}
 
 const SECOND_SUFFIX = '\u0000second';
 
@@ -179,11 +188,15 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
       const view = chartWindow(settings, hour, options.extent[0]);
       const drawn = readView.series('main');
       const population = top ? rankedCountries(readView, 'main') : null;
-      const tags = top
-        ? population ? [...population.rows.keys()] : [...(drawn ?? [])]
-            .sort(([a, left], [b, right]) => compareValues(left.headValue ?? NO_HEAD, right.headValue ?? NO_HEAD, 'descending') || compareTags(a, b))
-            .map(([key]) => key)
-        : options.tags;
+      const tileHeads = top && !population && drawn
+        ? new Map([...drawn].map(([tag, line]) => [tag, tileReadingAt(line, hour)]))
+        : null;
+      const tags = tileHeads
+        ? [...tileHeads].sort(([a, left], [b, right]) => {
+            if (left && right) return right.value - left.value || compareTags(a, b);
+            return left ? -1 : right ? 1 : compareTags(a, b);
+          }).map(([tag]) => tag)
+        : top ? [...(population?.rows.keys() ?? [])] : options.tags;
       if (top && (drawn !== undefined || population !== null) && tags.length === 0) {
         return {
           kind: spec.kind,
@@ -220,7 +233,7 @@ export function buildCountryLinesView<TAux = unknown>(spec: CountryLinesSpec<TAu
         const isTail = rank >= COLOURED;
         const bounded = drawn?.get(tag) ?? null;
         const headKey = { tag, rankRow: population?.rows.get(tag) };
-        const reading = presentSet.has(tag) ? headReading(readView, 'main', headKey, options.decimals) : undefined;
+        const reading = presentSet.has(tag) ? headReading(readView, 'main', headKey, options.decimals) ?? tileHeads?.get(tag) ?? null : undefined;
         if (reading !== undefined) readings.push([tag, reading]);
         const headValue = headValueOf(reading);
         const exact = exactByCountry?.get(tag) ?? null;

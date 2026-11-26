@@ -593,7 +593,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
     let ask = |product: &str, extra: serde_json::Value| {
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        answer(&query, product, &params).unwrap().unwrap()
+        answer(&query, product, &params, &|| Ok(())).unwrap().unwrap()
     };
     for hour in HOURS[..6].iter().copied().chain([end, second + 17, last]) {
         let reply: ranked::SeriesRankReply = serde_json::from_value(ask(ranked::PRODUCT, serde_json::json!({ "top": 1, "hour": hour }))).unwrap();
@@ -639,7 +639,7 @@ fn a_request_naming_1500_countries_is_answered() {
     let ask = |product: &str, extra: serde_json::Value| {
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        answer(&query, product, &params).unwrap().unwrap()
+        answer(&query, product, &params, &|| Ok(())).unwrap().unwrap()
     };
     let tags: Vec<String> = TAGS.iter().map(|tag| (*tag).to_owned()).chain((0..1_498).map(|at| format!("X{at:04}"))).collect();
     let hour = ITA_FROM + 10;
@@ -799,7 +799,7 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
     let ask = |hour: i32, top: u32| serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" }, "hour": hour, "top": top });
     let mut ranked_both = 0;
     for hour in [FIRST, ITA_FROM + 40, FIRST + FIRST_HOURS - 1, SECOND + 3] {
-        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &ask(hour, 2)).unwrap().unwrap()).unwrap();
+        let reply: ranked::SeriesRankReply = serde_json::from_value(answer(&query, ranked::PRODUCT, &ask(hour, 2), &|| Ok(())).unwrap().unwrap()).unwrap();
         let present: Vec<u32> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).collect();
         let mut wanted: Vec<(i64, u32)> = present.iter().filter_map(|&id| Some((power(id, hour)?, id))).collect();
         if wanted.len() < present.len() {
@@ -813,7 +813,7 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
         assert_eq!(shown, wanted, "at {hour}");
     }
     assert!(ranked_both > 0);
-    assert!(answer(&query, ranked::PRODUCT, &ask(FIRST, 0)).is_err());
+    assert!(answer(&query, ranked::PRODUCT, &ask(FIRST, 0), &|| Ok(())).is_err());
 }
 
 #[test]
@@ -1996,9 +1996,9 @@ fn a_recorded_row_whose_holder_is_not_resolved_is_ranked_by_its_value_and_marked
     assert_eq!(unnamed.readings[0].run.as_ref().map(|run| run.value_raw.clone()), power(9002, hour).map(|value| value.to_string()), "its recorded value");
     assert_eq!(reply.rows[1].unnamed, None);
     assert_eq!(reply.rows[1].readings[0].run.as_ref().map(|run| run.value_raw.clone()), power(9001, hour).map(|value| value.to_string()));
-    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 2, "hour": hour })).unwrap();
+    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 2, "hour": hour }), &|| Ok(())).unwrap();
     assert!(tiles.lines.is_empty() && tiles.ranking.unwrap().refused.is_some_and(|reason| reason.ends_with("so its line cannot be drawn")), "a line of an unnamed row is refused by name");
-    let named = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(linked).div_euclid(BINS as i64), "top": 2, "hour": linked })).unwrap();
+    let named = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(linked).div_euclid(BINS as i64), "top": 2, "hour": linked }), &|| Ok(())).unwrap();
     let proof = named.ranking.unwrap();
     assert_eq!((proof.refused, proof.from), (None, linked), "a named ranking cannot extend into an hour whose winner was unnamed");
 }
@@ -2016,7 +2016,7 @@ fn territory_ranking_skips_world_summary_row() {
     let ranked = line.rank_at(hour, 10, false).unwrap().unwrap();
     assert!(!ranked.contains(&Country::Slot(replay_data::rows::TerritoryTotalRow::WORLD)));
     assert_eq!(ranked, vec![Country::from("GER"), Country::from("ITA")]);
-    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour })).unwrap();
+    let tiles = tile::reply(&line, "1", &serde_json::json!({ "binHours": 1, "index": i64::from(hour).div_euclid(BINS as i64), "top": 10, "hour": hour }), &|| Ok(())).unwrap();
     let ranking = tiles.ranking.unwrap();
     assert_eq!(ranking.refused, None);
     assert_eq!(line.rank_at(overtake, 10, false).unwrap().unwrap(), [Country::from("ITA"), Country::from("GER")]);

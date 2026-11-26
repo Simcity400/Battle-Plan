@@ -25,6 +25,7 @@ mod truncated_tests;
 
 pub mod board;
 pub mod ranked;
+mod rank_proof;
 pub mod totals;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -316,11 +317,11 @@ pub fn hour_of(value: Option<f64>, name: &str) -> io::Result<i32> {
     Ok(value.floor() as i32)
 }
 
-pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> io::Result<Option<serde_json::Value>> {
-    answer_grouped(query, product, params, &|_, _| Err(invalid("Group membership is not read for this request")))
+pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<Option<serde_json::Value>> {
+    answer_grouped(query, product, params, &|_, _| Err(invalid("Group membership is not read for this request")), check_cancel)
 }
 
-pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Value, resolve: ranked::Resolve<'_>) -> io::Result<Option<serde_json::Value>> {
+pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Value, resolve: ranked::Resolve<'_>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<Option<serde_json::Value>> {
     let Some(kind) = params.get("family").and_then(|family| family.get("kind")).and_then(serde_json::Value::as_str) else {
         return Ok(None);
     };
@@ -377,7 +378,7 @@ pub fn answer_grouped(query: &Query<'_>, product: &str, params: &serde_json::Val
             let part_bits = series.parts.ok_or_else(|| invalid(format!("{} has no parts", series.kind)))?.bits;
             serde_json::to_value(SeriesPartsReply { branch_id: params.branch_id.clone(), part_bits, owners: line.part_lives(&params.countries, from, to)? })?
         }
-        crate::tile::PRODUCT => serde_json::to_value(crate::tile::reply(&line, &params.branch_id, value)?)?,
+        crate::tile::PRODUCT => serde_json::to_value(crate::tile::reply(&line, &params.branch_id, value, check_cancel)?)?,
         _ => return Err(invalid(format!("{} does not answer {product}", series.kind))),
     };
     Ok(Some(value))
@@ -507,6 +508,13 @@ pub(crate) enum RankProof<'a> {
 }
 
 impl RankProof<'_> {
+    fn neighbor<T>(&self, result: io::Result<T>) -> io::Result<Option<T>> {
+        match result {
+            Err(error) if matches!(self, Self::Slots(_)) && error.kind() == io::ErrorKind::InvalidData => Ok(None),
+            result => result.map(Some),
+        }
+    }
+
     fn holds(&self, ranked: &mut RankRows<'_>) -> bool {
         let rows = &ranked.values;
         match self {
@@ -813,7 +821,7 @@ impl<'q, 'a> Line<'q, 'a> {
             .collect())
     }
 
-    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), proof: RankProof<'_>) -> io::Result<(i32, i32)> {
+    pub(crate) fn rank_holds(&self, hour: i32, n: usize, least: bool, within: (i32, i32), proof: RankProof<'_>, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<(i32, i32)> {
         let timeline = &self.query.timeline;
         let lo = within.0.max(timeline.first);
         let hi = within.1.min(timeline.last);
@@ -829,7 +837,7 @@ impl<'q, 'a> Line<'q, 'a> {
             let Some(stretch) = timeline.at(at) else { return Ok(false) };
             if self.withheld_at(stretch.run, at).is_some() { return Ok(false); }
             let ordinal = read::ordinal(recording, stretch.run, at)?;
-            let fresh = prior != at.checked_sub(1) || ordinal % UNIT_ORDINALS == 0 || reader.as_ref().is_none_or(|reader| reader.run() != stretch.run);
+            let fresh = prior != at.checked_sub(1) || reader.as_ref().is_none_or(|reader| reader.run() != stretch.run);
             let changed = crate::cost::storage(|| -> io::Result<bool> {
                 if fresh {
                     let mut next = TableReader::new(recording, stretch.run, self.series.table, Some(&columns))?;
@@ -857,18 +865,27 @@ impl<'q, 'a> Line<'q, 'a> {
             previous = Some(at);
             Ok(matched)
         };
-        let mut holds = |at| match holds(at) {
-            Err(_) if matches!(proof, RankProof::Slots(_)) => Ok(false),
-            result => result,
+        let mut holds = |at| proof.neighbor(holds(at)).map(|matched| matched == Some(true));
+        let summarize = |at, limit| match &proof {
+            RankProof::Slots(winners) => self.summarized_winners(at, limit, n, least, winners, check_cancel),
+            RankProof::Order(_) => Ok((at, None)),
         };
         let mut from = hour;
+        let mut before = hour.saturating_sub(UNIT_ORDINALS as i32);
         while from > lo {
             let end = from - 1;
             let Some(stretch) = timeline.at(end) else { break };
-            let ordinal = read::ordinal(recording, stretch.run, end)?;
+            check_cancel()?;
+            if end < before {
+                let (edge, proven) = proof.neighbor(summarize(end, lo))?.unwrap_or((end, None));
+                before = edge;
+                if let Some(first) = proven { from = first; continue; }
+            }
+            let Some(ordinal) = proof.neighbor(read::ordinal(recording, stretch.run, end))? else { break };
             let first = (end - (ordinal % UNIT_ORDINALS) as i32).max(stretch.first).max(lo);
             let mut suffix = Ok(first);
             for at in first..=end {
+                check_cancel()?;
                 match holds(at) {
                     Ok(false) => suffix = Ok(at + 1),
                     Err(error) => suffix = Err(error),
@@ -879,7 +896,15 @@ impl<'q, 'a> Line<'q, 'a> {
             if from != first { break; }
         }
         let mut until = hour;
-        while until < hi && holds(until + 1)? {
+        let mut after = hour.saturating_add(UNIT_ORDINALS as i32);
+        while until < hi {
+            check_cancel()?;
+            if until + 1 > after {
+                let (edge, proven) = proof.neighbor(summarize(until + 1, hi))?.unwrap_or((until + 1, None));
+                after = edge;
+                if let Some(last) = proven { until = last; continue; }
+            }
+            if !holds(until + 1)? { break; }
             until += 1;
         }
         Ok((from, until))

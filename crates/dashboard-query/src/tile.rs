@@ -159,7 +159,8 @@ pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>)
     (last < timeline_last, (first <= timeline_last).then(|| last.min(timeline_last)))
 }
 
-pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -> io::Result<SeriesTileReply> {
+pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value, check_cancel: &dyn Fn() -> io::Result<()>) -> io::Result<SeriesTileReply> {
+    check_cancel()?;
     let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
     let Some(top) = params.top else {
         let asks = line.asks(&params.countries, &params.lines)?;
@@ -188,11 +189,12 @@ pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -
         Ok(slots) => {
             let mut winners = slots.clone();
             winners.sort_unstable();
-            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), crate::series::RankProof::Slots(&winners))?;
+            let (from, until) = ranker.rank_holds(hour, n, params.least, (i32::MIN, i32::MAX), crate::series::RankProof::Slots(&winners), check_cancel)?;
             let asks = slots.into_iter().map(|slot| Ask::whole(Country::Slot(slot))).collect();
             (asks, TileRanking { hour, from, until, refused: None })
         }
     };
+    check_cancel()?;
     let mut reply = tile(line, branch_id, &asks, None, params.bin_hours, params.index, params.with_marks)?;
     reply.ranking = Some(ranking);
     Ok(reply)
