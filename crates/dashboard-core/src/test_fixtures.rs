@@ -13,6 +13,32 @@ use replay_frame::{
 
 pub const CAMPAIGN: &[u8] = b"analytics-test";
 
+pub mod game {
+    use engine_executable::executable_tables::{self, Tables};
+    use std::sync::OnceLock;
+
+    pub fn executable() -> synthetic_game::Executable {
+        content_reader_script::test_game::executable().words(["language", "force_pow2_textures"])
+    }
+
+    pub fn enter() -> Tables {
+        static TABLES: OnceLock<Tables> = OnceLock::new();
+        let tables = *TABLES.get_or_init(|| executable().build());
+        executable_tables::enter(Some(tables));
+        tables
+    }
+
+    #[test]
+    fn the_content_fixture_can_choose_its_language_and_texture_settings() {
+        enter();
+        let settings = content_reader_settings::settings::SettingsKeys::read(
+            b"language=l_fixture force_pow2_textures=yes",
+        );
+        assert_eq!(settings.language().as_deref(), Some("l_fixture"));
+        assert!(settings.force_pow2_textures());
+    }
+}
+
 pub fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =
