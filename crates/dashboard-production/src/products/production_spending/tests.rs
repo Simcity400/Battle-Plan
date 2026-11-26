@@ -411,6 +411,24 @@ fn a_counter_restarted_inside_a_holding_dates_itself_from_the_restart_and_a_rang
     };
     let zeroed_index = SpendingIndex { spans: vec![IndexedSpan::new(zeroed_read, HashMap::from([(2, design("fighter", Domain::Air))]), Vec::new())], from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), rocket_source: None, warnings: Vec::new() };
     assert_eq!(zeroed_index.between(30, 80, ProductionSpendingScope::Military, false).breakdown.total.state, BreakdownState::NotRecorded, "a rocket restart is checked even when the rocket counter reads zero at the end");
+    let mut unread_start = BTreeMap::new();
+    unread_start.insert((false, 1, Some(OutputPurpose::New.raw())), vec![(0, 100, row(Some(1_000_000)))]);
+    unread_start.insert((true, 9, None), vec![(0, 100, row(Some(0)))]);
+    let unread_read = SpanRead {
+        span: span(0, 100, false),
+        lines: vec![(0, 49, Context::Unknown(Why::SpendingUnavailable)), (50, 100, Context::Known)],
+        rocket: vec![(0, 100, Context::Known)],
+        country: vec![(0, 49, None), (50, 100, Some((Some(1_000_000), Some(1_000_000))))],
+        rows: unread_start,
+        archetypes: BTreeMap::new(),
+        archetype_since: BTreeMap::from([(1, 0)]),
+        equipment_observations: BTreeSet::from([50]),
+        rocket_observations: BTreeSet::from([0]),
+        repairs: None,
+    };
+    let unread_index = SpendingIndex { spans: vec![IndexedSpan::new(unread_read, HashMap::from([(1, design("infantry_equipment", Domain::Land))]), Vec::new())], from: 0, to: 100, country_label: "GER".into(), unknown: Vec::new(), unresolved: Vec::new(), rocket_source: None, warnings: Vec::new() };
+    let unread_at = unread_index.at(80, ProductionSpendingScope::Military, false);
+    assert_eq!((unread_at.from, unread_at.breakdown.total.state), (50, BreakdownState::Known), "only the rocket baseline is needed, and a recorded zero is one, though equipment was unread before its restart");
     let index = rocket_index;
     let quiet = index.between(60, 80, ProductionSpendingScope::Military, false);
     assert_eq!((quiet.breakdown.total.state, quiet.breakdown.total.amount), (BreakdownState::Known, Some(BreakdownAmount { numerator: "0".into(), denominator: "1".into() })), "nothing spent inside the range is exactly zero");

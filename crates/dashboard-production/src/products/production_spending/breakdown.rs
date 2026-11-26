@@ -926,7 +926,7 @@ impl SpendingIndex {
         };
         let through = end.through;
         let refused = |reason: &str| ProductionSpendingReply { from, hour, through, breakdown: not_recorded(reason), warnings: end.warnings.clone() };
-        let rocket = |leaf: &Leaf| leaf.path.iter().any(|node| node.key == "rocket" || node.key.starts_with("rocket:"));
+        let rocket = |leaf: &Leaf| leaf.path.first().is_some_and(|node| node.key == "rocket");
         let rockets = scope == ProductionSpendingScope::Military;
         let counters = [Some(end.from), rockets.then_some(end.rocket_from)];
         if counters.into_iter().flatten().any(|since| since > from && self.counted_before(from, since)) {
@@ -939,6 +939,9 @@ impl SpendingIndex {
         let mut start = match self.build(from - 1, scope, include_refits, None) {
             Ok(start) if start.span == end.span && (!equipment_baseline || start.from == end.from) && (!rocket_baseline || start.rocket_from == end.rocket_from) => start,
             Ok(_) => return refused(unknown_reason(ProductionSpendingUnknown::ObservationRestarted)),
+            Err(_) if !equipment_baseline && piece_at(&self.spans[end.span].read.rocket_total(), from - 1).is_some_and(|piece| matches!(piece.2, RunAmount::Known(0))) => {
+                Built { span: end.span, from: end.from, rocket_from: end.rocket_from, leaves: Vec::new(), reasons: Vec::new(), unassigned: false, through: end.through, warnings: Vec::new() }
+            }
             Err(reply) => return refused(reply.breakdown.total.reason.as_deref().unwrap_or(unknown_reason(ProductionSpendingUnknown::NotRecorded))),
         };
         start.leaves.retain(|leaf| if rocket(leaf) { rocket_baseline } else { equipment_baseline });
