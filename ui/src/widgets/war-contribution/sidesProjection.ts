@@ -1,4 +1,3 @@
-import { formatAmount } from '../../charts/valueAxis.ts';
 import { flagArtHandle, flagChoiceArt } from '../../families/art/provider.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import type { TableWidgetDeclaration } from '../../families/table/declaration.ts';
@@ -28,7 +27,7 @@ const UNATTRIBUTED = 'Part of this side’s casualties contribution is not attri
 const NOT_A_MEMBER = 'This country has no recorded part in this measure';
 const PARTICIPATION_IS_A_SHARE = 'Participation is already each country’s share of its side';
 const NO_SHARE = 'No part of this measure was recorded for either side';
-const SCALE = 5;
+const RAW_AMOUNT = { decimals: 5 } as const;
 
 export type SidesOptions = WarChoiceOptions;
 
@@ -53,27 +52,27 @@ function columnsOf(measures: readonly WarMeasure[] | null): TableColumnSpec[] {
 
 const ZERO = { decimals: 0 } as const;
 
-function shareValue(permyriad: number | null, raw: string, partial: boolean, missing: string): Value<number> {
+function shareValue(permyriad: number | null, raw: string | null, partial: boolean, missing: string): Value<number> {
   if (permyriad === null) return notRecorded(missing);
   const share = permyriad / 10000;
   if (partial) return partialValue(share, UNATTRIBUTED);
   return raw === '0' ? zeroValue() : knownValue(share);
 }
 
-function memberCell(member: WarMeasureMember | undefined, colour: string | undefined): TableCell {
-  const value = member ? shareValue(member.shareOfSide, member.value, member.partial, NO_SHARE) : notRecorded(NOT_A_MEMBER);
+function memberCell(member: WarMeasureMember | undefined, colour: string | undefined, missing: string): TableCell {
+  const value = member ? shareValue(member.shareOfSide, member.value, member.partial, NO_SHARE) : notRecorded(missing);
   return {
     value,
     format: value.kind === 'zero' ? ZERO : 'share',
-    bar: { fraction: member && member.shareOfSide !== null ? knownValue(member.shareOfSide / 10000) : notRecorded(NOT_A_MEMBER) },
+    bar: { fraction: member && member.shareOfSide !== null ? knownValue(member.shareOfSide / 10000) : value },
     ...(colour ? { countryColor: colour } : {}),
     ...(member?.shareOfSide != null ? { sortValue: knownValue(member.shareOfSide) } : {}),
   };
 }
 
-function totalCell(side: WarMeasureSide, measure: WarMeasureKey): TableCell {
+function totalCell(side: WarMeasureSide, measure: WarMeasureKey, missing: string): TableCell {
   if (measure === 'participation') return { value: notApplicable(PARTICIPATION_IS_A_SHARE), bar: null };
-  const value = shareValue(side.shareOfWar, side.total, side.partial, NO_SHARE);
+  const value = shareValue(side.shareOfWar, side.total, side.partial, missing);
   return { value, format: value.kind === 'zero' ? ZERO : 'share', bar: null };
 }
 
@@ -97,21 +96,11 @@ function who(readView: BoundedReadView, tag: string, hour: number): Who {
   };
 }
 
-function amountRows(group: WarContributionGroup, tag: string): readonly TooltipExtraRow[] {
-  const country = group.participants.find(participant => participant.tag === tag);
-  if (!country) return [];
-  const raw: Readonly<Record<WarMeasureKey, string>> = {
-    participation: country.participation, equipmentDamage: country.equipmentDamage, occupation: country.occupation, airDamage: country.airDamage,
-    shipDamage: country.shipDamage, casualties: country.casualties, strategicBombing: country.strategicBombing, convoyDamage: country.convoyDamage,
-    lendLeaseSent: country.lendLeaseSent, lendLeaseReceived: country.lendLeaseReceived,
-  };
-  return MEASURES.map(measure => ({ label: measure.hint, value: knownValue(formatAmount(BigInt(raw[measure.key]), SCALE, 2)) }));
-}
-
 function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: WarSide, lead: string, hour: number): TablePane {
   const measures = group.measures;
   const participation = measures.find(measure => measure.key === 'participation') ?? measures[0];
-  const order = participation ? participation[side].members.map(member => member.tag) : (side === 'viewpoint' ? group.viewpointSide : group.opposingSide);
+  const order = participation && participation[side].total !== null ? participation[side].members.map(member => member.tag) : (side === 'viewpoint' ? group.viewpointSide : group.opposingSide);
+  const missing = group.reason ?? NOT_A_MEMBER;
   const byMeasure = new Map(measures.map(measure => [measure.key, new Map(measure[side].members.map(member => [member.tag, member]))]));
   const rows: TableRow[] = order.map(tag => {
     const country = who(readView, tag, hour);
@@ -122,10 +111,16 @@ function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: Wa
       group: { key: 'side', label: 'Share of the side' },
       cells: {
         country: country.cell,
-        ...Object.fromEntries(measures.map(measure => [measure.key, memberCell(byMeasure.get(measure.key)!.get(tag), colour)])),
+        ...Object.fromEntries(measures.map(measure => [measure.key, memberCell(byMeasure.get(measure.key)!.get(tag), colour, missing)])),
       },
       tooltipTitle: country.name,
-      tooltipExtra: () => amountRows(group, tag),
+      tooltipExtra: (): TooltipExtraRow[] => MEASURES.flatMap(measure => {
+        const members = byMeasure.get(measure.key);
+        if (!members) return [];
+        const member = members.get(tag);
+        const value = !member ? notRecorded(missing) : member.partial ? partialValue(BigInt(member.value), UNATTRIBUTED) : knownValue(BigInt(member.value));
+        return [{ label: measure.hint, value, format: RAW_AMOUNT }];
+      }),
     };
   });
   return {
@@ -137,7 +132,7 @@ function paneOf(readView: BoundedReadView, group: WarContributionGroup, side: Wa
       name: 'Share of the war',
       cells: {
         country: { value: knownValue('Share of the war') },
-        ...Object.fromEntries(measures.map(measure => [measure.key, totalCell(measure[side], measure.key)])),
+        ...Object.fromEntries(measures.map(measure => [measure.key, totalCell(measure[side], measure.key, group.reason ?? NO_SHARE)])),
       },
     },
   };

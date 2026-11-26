@@ -1,9 +1,9 @@
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
-import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type BarsModel, type BarsPickRow, type BarsProjection } from '../../families/bars/model.ts';
+import { countryRowPresentation, type BarsCaptionSide, type BarsDataRow, type BarsModel, type BarsOppositeRow, type BarsPickRow, type BarsProjection } from '../../families/bars/model.ts';
 import type { BoundedReadView } from '../../families/contract.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { knownValue, notRecorded, partialValue, zeroValue, type Value } from '../../families/value.ts';
-import { formatShare } from '../../families/valueFormat.ts';
+import { formatScalar, formatShare } from '../../families/valueFormat.ts';
 import type { WarContributionGroup, WarMeasure, WarMeasureKey, WarMeasureMember, WarsReply } from '../../generated/dashboard';
 import { DEFAULT_MEASURE, MEASURE_LIST } from './definition.ts';
 import { chosenGroup, leadOf, savedWar, warContributionSources, warCountries, warsAux, type WarChoiceOptions, type WarSide } from './warContributionPlan.ts';
@@ -17,54 +17,45 @@ export interface MeasureOptions extends WarChoiceOptions {
   readonly measure: WarMeasureKey;
 }
 
-function shareOf(member: WarMeasureMember, participation: boolean): Value<number> {
+function shareOf(member: WarMeasureMember, participation: boolean, missing: string): Value<number> {
   const permyriad = participation ? member.shareOfSide : member.shareOfWar;
-  if (permyriad === null) return notRecorded(NO_SHARE);
-  if (member.value === '0') return zeroValue();
-  return member.partial ? partialValue(permyriad / 10000, UNATTRIBUTED) : knownValue(permyriad / 10000);
+  if (permyriad === null) return notRecorded(missing);
+  if (member.partial) return partialValue(permyriad / 10000, UNATTRIBUTED);
+  return member.value === '0' ? zeroValue() : knownValue(permyriad / 10000);
 }
 
 function numericOf(value: Value<number>): number | null {
   return value.kind === 'known' || value.kind === 'partial' ? Number(value.value) : value.kind === 'zero' ? 0 : null;
 }
 
-function rowsOf(readView: BoundedReadView, measure: WarMeasure, sides: readonly [WarSide, WarSide], hour: number): BarsDataRow[] {
+function rowsOf(readView: BoundedReadView, group: WarContributionGroup, measure: WarMeasure, sides: readonly [WarSide, WarSide], hour: number): BarsDataRow[] {
   const participation = measure.key === 'participation';
-  const [leftSide, rightSide] = sides;
-  const left = measure[leftSide].members;
-  const right = measure[rightSide].members;
-  const rows: BarsDataRow[] = [];
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const l = left[i];
-    const r = right[i];
-    const leftWho = l ? countryRowPresentation(readView, l.tag, undefined, false, hour) : null;
-    const leftValue = l ? shareOf(l, participation) : null;
-    const rightValue = r ? shareOf(r, participation) : null;
-    const rightWho = r ? countryRowPresentation(readView, r.tag, undefined, false, hour) : null;
-    rows.push({
-      kind: 'data',
-      key: l ? `${leftSide}:${l.tag}` : `${leftSide}:none:${i}`,
-      ...(l ? { subject: l.tag } : {}),
-      label: leftWho?.label ?? '',
-      ...(leftWho?.labelMissing ? { labelMissing: true } : {}),
-      ...(leftWho ? { media: leftWho.media } : {}),
-      ...(leftWho?.color ? { color: leftWho.color } : {}),
-      ...(leftValue ? { value: { value: leftValue, format: leftValue.kind === 'zero' ? { decimals: 0 } : 'share' }, numeric: numericOf(leftValue) } : {}),
-      ...(r && rightWho && rightValue ? {
-        rightSide: {
-          key: `${rightSide}:${r.tag}`,
-          subject: r.tag,
-          label: rightWho.label,
-          ...(rightWho.labelMissing ? { labelMissing: true } : {}),
-          media: rightWho.media,
-          ...(rightWho.color ? { color: rightWho.color } : {}),
-          value: { value: rightValue, format: rightValue.kind === 'zero' ? { decimals: 0 } : 'share' },
-          numeric: numericOf(rightValue),
-        },
-      } : {}),
-    });
-  }
-  return rows;
+  const missing = group.reason ?? NO_SHARE;
+  const membersOf = (side: WarSide) => measure[side].total === null
+    ? (side === 'viewpoint' ? group.viewpointSide : group.opposingSide) : measure[side].members;
+  const half = (side: WarSide, member: string | WarMeasureMember): BarsOppositeRow => {
+    const tag = typeof member === 'string' ? member : member.tag;
+    const who = countryRowPresentation(readView, tag, undefined, false, hour);
+    const value = typeof member === 'string' ? notRecorded(missing) : shareOf(member, participation, missing);
+    const numeric = numericOf(value);
+    return {
+      key: `${side}:${tag}`, subject: tag, label: who.label, labelMissing: who.labelMissing, labelLoading: who.labelLoading,
+      media: who.media, color: who.color, value: { value, format: value.kind === 'zero' ? { decimals: 0 } : 'share' }, numeric,
+      ...(typeof member !== 'string' && (value.kind === 'notRecorded' || member.partial) ? { tooltip: {
+        title: who.label, hour, items: [
+          { label: 'Recorded amount', value: formatScalar(BigInt(member.value), { decimals: 5 }) },
+          value.kind === 'notRecorded' ? { label: 'Share', missingReason: value.reason } : { label: 'Share', value: formatShare(numeric!) },
+        ], ...(member.partial ? { note: UNATTRIBUTED } : {}),
+      } } : {}),
+    };
+  };
+  const left = membersOf(sides[0]);
+  const right = membersOf(sides[1]);
+  return Array.from({ length: Math.max(left.length, right.length) }, (_, index) => ({
+    kind: 'data',
+    ...(left[index] !== undefined ? half(sides[0], left[index]!) : { key: `${sides[0]}:none:${index}`, label: '' }),
+    ...(right[index] !== undefined ? { rightSide: half(sides[1], right[index]!) } : {}),
+  }));
 }
 
 function pickRows(readView: BoundedReadView, group: WarContributionGroup, sides: readonly [WarSide, WarSide], hour: number): BarsPickRow[] {
@@ -81,6 +72,7 @@ function pickRows(readView: BoundedReadView, group: WarContributionGroup, sides:
       label: item.label,
       left: { fraction: fraction(sides[0]), ...(leftColour ? { color: leftColour } : {}) },
       right: { fraction: fraction(sides[1]), ...(rightColour ? { color: rightColour } : {}) },
+      ...(group.reason ? { tooltip: { title: item.label, hour, note: group.reason } } : {}),
       ...(item.key === 'participation' ? { divided: true } : {}),
     }];
   });
@@ -115,7 +107,7 @@ export const warContributionMeasureProjection: BarsProjection<MeasureOptions> = 
       twoSidedLayout: 'split-sides',
       hour,
       dataHours: [reply.hour],
-      rows: rowsOf(readView, measure, sides, reply.hour),
+      rows: rowsOf(readView, group, measure, sides, reply.hour),
       rowHeight: 26,
       barHeight: 12,
       caption,

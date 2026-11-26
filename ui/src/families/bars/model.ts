@@ -97,6 +97,7 @@ export interface BarsOppositeRow {
   readonly color?: string;
   readonly value: BarsValueField;
   readonly numeric: number | null;
+  readonly tooltip?: FamilyTooltipPayload;
 }
 
 export interface BarsReadout {
@@ -341,6 +342,7 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   const row = model.rows[barsRowIndex(model, rowKey)];
   if (row?.kind !== 'data') return null;
   if (side === 'right' && row.rightSide) {
+    if (row.rightSide.tooltip) return row.rightSide.tooltip;
     const formatted = formatBarsValueField(row.rightSide.value);
     return {
       title: row.rightSide.labelMissing ? notRecordedLabel('Name') : row.rightSide.label,

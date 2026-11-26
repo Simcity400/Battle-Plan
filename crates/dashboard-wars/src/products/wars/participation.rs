@@ -104,55 +104,43 @@ pub(crate) fn contributions(
                 measures: Vec::new(),
                 reason: None,
             };
-            let result = (|| -> Result<Vec<WarContributionCountry>, String> {
-                let (ledgers, histories, factors) = inputs.as_ref().map_err(Clone::clone)?;
-                let mut participants = Vec::new();
-                for (side, own, opponents) in [
-                    (WarSide::Viewpoint, &blob.first, &blob.second),
-                    (WarSide::Opponent, &blob.second, &blob.first),
-                ] {
-                    let mut scores = Vec::with_capacity(own.len());
-                    for &country in own {
-                        let mut directional = Vec::new();
-                        for &opponent in opponents {
-                            if active(country, opponent) {
-                                directional.push(
-                                    *ledgers
-                                        .get(&(country, opponent))
-                                        .ok_or("Directional participation ledger not recorded")?,
-                                );
-                            }
-                        }
-                        let mut deliveries = Vec::new();
-                        for &ally in own {
-                            if ally != country && !active(country, ally) {
-                                deliveries.push(
-                                    histories.get(&(country, ally)).copied().unwrap_or_default(),
-                                );
-                            }
-                        }
-                        scores.push(derive::breakdown(directional, deliveries, *factors));
-                    }
-                    for (&country, score) in own.iter().zip(&scores) {
-                        participants.push(country_view(
-                            tags[&country].clone(),
-                            side,
-                            *score,
-                            derive::share(
-                                score.total(false),
-                                scores.iter().map(|s| s.total(false)),
-                            ),
-                        ));
-                    }
+            let (ledgers, histories, factors) = match &inputs {
+                Ok(inputs) => inputs,
+                Err(reason) => {
+                    group.reason = Some(reason.clone());
+                    return group;
                 }
-                Ok(participants)
-            })();
-            match result {
-                Ok(participants) => {
-                    group.measures = super::measures::measures(&group.viewpoint_side, &group.opposing_side, &participants);
-                    group.participants = participants;
+            };
+            'sides: for (side, own, opponents) in [
+                (WarSide::Viewpoint, &blob.first, &blob.second),
+                (WarSide::Opponent, &blob.second, &blob.first),
+            ] {
+                let mut scores = Vec::with_capacity(own.len());
+                for &country in own {
+                    let mut directional = Vec::new();
+                    for &opponent in opponents {
+                        if active(country, opponent) {
+                            let Some(ledger) = ledgers.get(&(country, opponent)) else {
+                                group.reason = Some("Directional participation ledger not recorded".into());
+                                continue 'sides;
+                            };
+                            directional.push(*ledger);
+                        }
+                    }
+                    let deliveries = own.iter().filter_map(|&ally| {
+                        (ally != country && !active(country, ally)).then(|| histories.get(&(country, ally)).copied().unwrap_or_default())
+                    });
+                    scores.push(derive::breakdown(directional, deliveries, *factors));
                 }
-                Err(reason) => group.reason = Some(reason),
+                for (&country, score) in own.iter().zip(&scores) {
+                    group.participants.push(country_view(
+                        tags[&country].clone(), side, *score,
+                        derive::share(score.total(false), scores.iter().map(|s| s.total(false))),
+                    ));
+                }
+            }
+            if !group.participants.is_empty() {
+                group.measures = super::measures::measures(&group.viewpoint_side, &group.opposing_side, &group.participants);
             }
             group
         })
