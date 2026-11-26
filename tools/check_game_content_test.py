@@ -231,7 +231,16 @@ class Installation(unittest.TestCase):
         code, out = self.run_main(base_args)
         self.assertEqual(code, 1)
         self.assertTrue(any("unreadable index at " in line and "python tools/check-game-content.py" in line for line in notes(out)))
-        index_path.unlink()
+
+        real_is_file = Path.is_file
+        def deny_cache(path):
+            if path == index_path.resolve():
+                raise PermissionError("access denied")
+            return real_is_file(path)
+        with patch.object(Path, "is_file", deny_cache):
+            code, out = self.run_main(base_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("cache inaccessible at " in line and "python tools/check-game-content.py" in line for line in notes(out)))
 
         code, _ = self.run_main(["--game", str(game), "--user-dir", str(user), "--cache", str(cache)])
         self.assertEqual(code, 0)
@@ -263,6 +272,48 @@ class Installation(unittest.TestCase):
         self.assertTrue(any("for mod extra" in line and "python tools/check-game-content.py" in line for line in notes(out)))
         self.assertIn("index out of date for mod extra", out)
         self.assertIn("python tools/check-game-content.py", out)
+
+    @patch.object(cgc, "registry_value", return_value=None)
+    def test_mods_with_the_same_folder_name_are_indexed_and_checked_independently(self, _registry):
+        self.init_repo()
+        game = self.folder / "game"
+        user = self.folder / "user"
+        cache = self.folder / "cache"
+        first = self.folder / "mods_a" / "content"
+        second = self.folder / "mods_b" / "content"
+        self.write("game/trial.txt", "game_fixture = { value = 42 }")
+        self.write("mods_a/content/a.txt", "first_mod_script = { flag = teal }")
+        self.write("mods_b/content/b.txt", "second_mod_script = { flag = ochre }")
+        self.write("user/mod/first.mod", f'name="First"\npath="{first.as_posix()}"\n')
+        self.write("user/mod/second.mod", f'name="Second"\npath="{second.as_posix()}"\n')
+        build_args = ["--game", str(game), "--user-dir", str(user), "--cache", str(cache)]
+        push_args = ["--against", "HEAD", *build_args]
+
+        code, _ = self.run_main(build_args)
+        self.assertEqual(code, 0)
+        code, out = self.run_main(push_args)
+        self.assertEqual(code, 0)
+        self.assertIn("installation comparison: 3 game and mod folders", out)
+
+        updated = "first_mod_script = { flag = teal, extra = cobalt }"
+        self.write("mods_a/content/a.txt", updated)
+        self.write("repo/new.rs", updated)
+        code, out = self.run_main(push_args)
+        self.assertEqual(code, 1)
+        self.assertTrue(any(line.startswith("not run here: installation comparison for mod content (") for line in out.splitlines()))
+        self.assertIn("python tools/check-game-content.py", out)
+
+        code, _ = self.run_main(build_args)
+        self.assertEqual(code, 1)
+        code, out = self.run_main(push_args)
+        self.assertEqual(code, 1)
+        self.assertIn("copy equals mod content (", out)
+        self.assertIn("file a.txt", out)
+
+        self.write("repo/new.rs", "ours")
+        code, out = self.run_main(push_args)
+        self.assertEqual(code, 0)
+        self.assertNotIn("not run here:", out)
 
     def test_no_installation_is_reported_as_not_run(self):
         missing = SimpleNamespace(game=str(self.folder / "absent"), user_dir=None)
