@@ -83,6 +83,13 @@ pub fn approach(value: f32, target: f32, time: f32, dt: f32) -> f32 {
     value + (target - value) * (1.0 - (-dt / time).exp())
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Device {
+    #[default]
+    Keyboard,
+    Controller,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
     pub dt: f32,
@@ -93,11 +100,17 @@ pub struct Frame {
     pub modifiers: egui::Modifiers,
     pub look: [f32; 2],
     pub pad: Pad,
+    pub pad_connected: bool,
+    pub device: Device,
 }
 
 impl Frame {
     pub fn held(&self, key: egui::Key) -> bool {
         self.held.contains(&key)
+    }
+
+    pub fn pressed(&self, key: egui::Key) -> bool {
+        self.pressed.contains(&key)
     }
 
     pub fn double_tapped(&self, key: egui::Key) -> bool {
@@ -106,6 +119,27 @@ impl Frame {
 
     pub fn axis(&self, negative: egui::Key, positive: egui::Key) -> f32 {
         f32::from(i8::from(self.held(positive)) - i8::from(self.held(negative)))
+    }
+
+    pub fn moved_or_looked(&self) -> bool {
+        self.look != [0.0; 2]
+            || self.pad.left != [0.0; 2]
+            || self.pad.right != [0.0; 2]
+            || self.pad.triggers != [0.0; 2]
+            || self.modifiers.shift
+            || [
+                egui::Key::W,
+                egui::Key::A,
+                egui::Key::S,
+                egui::Key::D,
+                egui::Key::Space,
+                egui::Key::ArrowLeft,
+                egui::Key::ArrowRight,
+                egui::Key::ArrowUp,
+                egui::Key::ArrowDown,
+            ]
+            .into_iter()
+            .any(|key| self.held(key))
     }
 }
 
@@ -118,8 +152,10 @@ pub struct Input {
     pad: Option<GamepadState>,
     pad_buttons: u32,
     pad_pressed: u32,
+    pad_suppressed: u32,
     pad_owner: Option<GamepadOwner>,
     pad_taps: Vec<(u32, Instant)>,
+    device: Device,
     last: Option<Instant>,
 }
 
@@ -149,6 +185,10 @@ impl Input {
         self.pad_taps.clear();
     }
 
+    pub fn suppress_pad(&mut self, button: GamepadButton) {
+        self.pad_suppressed |= button.bit();
+    }
+
     pub fn gamepad(&mut self, message: GamepadMessage) {
         match message {
             GamepadMessage::Take { owner, state } => {
@@ -156,6 +196,7 @@ impl Input {
                 self.pad = Some(state);
                 self.pad_buttons = state.buttons;
                 self.pad_pressed = 0;
+                self.pad_suppressed = 0;
                 self.pad_taps.clear();
             }
             GamepadMessage::State {
@@ -173,7 +214,9 @@ impl Input {
                 self.pad = None;
                 self.pad_buttons = 0;
                 self.pad_pressed = 0;
+                self.pad_suppressed = 0;
                 self.pad_taps.clear();
+                self.device = Device::Keyboard;
             }
         }
     }
@@ -193,6 +236,7 @@ impl Input {
             ..Frame::default()
         };
         let mut lost = self.focused && !window.focused;
+        let mut kbm_activity = false;
         self.focused = window.focused;
         for event in window.events {
             match event {
@@ -206,6 +250,7 @@ impl Input {
                 } => {
                     let key = physical_key.unwrap_or(*key);
                     if *pressed {
+                        kbm_activity = true;
                         if key == egui::Key::Escape {
                             self.release();
                             continue;
@@ -229,8 +274,14 @@ impl Input {
                     }
                 }
                 egui::Event::MouseMoved(delta) if self.captured => {
+                    if delta.x != 0.0 || delta.y != 0.0 {
+                        kbm_activity = true;
+                    }
                     frame.look[0] += delta.x;
                     frame.look[1] += delta.y;
+                }
+                egui::Event::PointerButton { pressed: true, .. } => {
+                    kbm_activity = true;
                 }
                 _ => {}
             }
@@ -247,9 +298,12 @@ impl Input {
             frame.modifiers = window.modifiers;
         }
         if let Some(state) = &self.pad {
+            self.pad_suppressed &= state.buttons;
             frame.pad = Pad::from_state(state, self.pad_buttons);
             frame.pad.pressed |= std::mem::take(&mut self.pad_pressed);
             self.pad_buttons = state.buttons;
+            frame.pad.held &= !self.pad_suppressed;
+            frame.pad.pressed &= !self.pad_suppressed;
         }
         self.pad_taps
             .retain(|(_, at)| window.now.duration_since(*at).as_secs_f32() <= DOUBLE_TAP);
@@ -265,6 +319,13 @@ impl Input {
                 self.pad_taps.push((bit, window.now));
             }
         }
+        if frame.pad.active() || frame.pad.pressed != 0 {
+            self.device = Device::Controller;
+        } else if kbm_activity {
+            self.device = Device::Keyboard;
+        }
+        frame.pad_connected = self.pad.is_some();
+        frame.device = self.device;
         frame
     }
 }

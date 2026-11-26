@@ -123,6 +123,7 @@
   .header-workspace-tools .segmented > button { gap: 0; padding: 0 9px; font-size: 0; }
   .header-workspace-bar .header-workspace-tools .icon-button.aircraft-picker-trigger { width: 32px; padding: 0; justify-content: center; }
   .header-workspace-tools .aircraft-picker-trigger > span { display: none; }
+  .header-workspace-tools .aircraft-picker-trigger[data-state='ready']::after { display: block; background: var(--accent); }
 }
 @container (max-width: 760px) {
   .header-workspace-bar, [data-header-flag='large'] .header-workspace-bar { --header-flag-width: 40px; --header-flag-height: 26px; --header-flag-inset: 12px; }

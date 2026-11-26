@@ -346,4 +346,34 @@ fn a_focus_lost_and_regained_in_one_frame_keeps_a_newer_handoff() {
     let frame = input.frame(window(&events, true, now));
     assert!(frame.pad.active() && frame.pad.left[1] > 0.99);
     assert!(input.frame(window(&[], true, now)).pad.active());
+
+    let mut device_input = Input::default();
+    let initial = device_input.frame(window(&[], true, now));
+    assert_eq!(initial.device, Device::Keyboard);
+    assert!(!initial.pad_connected);
+    let south = GamepadButton::South.bit();
+    take(&mut device_input, OWNER, GamepadState::default());
+    update(
+        &mut device_input,
+        OWNER,
+        GamepadState {
+            buttons: south,
+            ..GamepadState::default()
+        },
+    );
+    let pad_frame = device_input.frame(window(&[], true, now));
+    assert!(pad_frame.pad_connected);
+    assert_eq!(pad_frame.device, Device::Controller);
+    assert!(pad_frame.pad.pressed(GamepadButton::South));
+    device_input.suppress_pad(GamepadButton::South);
+    assert!(!device_input.frame(window(&[], true, now)).pad.held(GamepadButton::South));
+    update(&mut device_input, OWNER, GamepadState::default());
+    assert!(!device_input.frame(window(&[], true, now)).pad.held(GamepadButton::South));
+    let kbm = device_input.frame(window(&[key(egui::Key::W, true)], true, now));
+    assert_eq!(kbm.device, Device::Keyboard);
+    assert!(kbm.moved_or_looked());
+    device_input.gamepad(GamepadMessage::Release);
+    let gone = device_input.frame(window(&[], true, now));
+    assert!(!gone.pad_connected);
+    assert_eq!(gone.device, Device::Keyboard);
 }

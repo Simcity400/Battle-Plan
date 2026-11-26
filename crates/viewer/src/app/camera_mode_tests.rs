@@ -89,11 +89,21 @@ fn every_camera_mode_choice_is_taken_from_every_other() {
                 ),
             }
             assert!(viewer.flight.is_none(), "{from:?} -> {to:?} keeps no flight");
+            assert!(
+                viewer.free_cam.is_none(),
+                "{from:?} -> {to:?} keeps no free camera"
+            );
             assert_eq!(
                 viewer.walk.standing(),
                 None,
                 "{from:?} -> {to:?} keeps no walker"
             );
+            if from == CameraMode::Walk && to == CameraMode::Fly {
+                assert!(
+                    viewer.mode_handover.is_some(),
+                    "Walk -> Fly preserves eye pose for handover"
+                );
+            }
         }
     }
 }

@@ -116,6 +116,7 @@ fn the_figure_turns_toward_where_it_walks() {
     let ground = |_: f32, _: f32| 20.0;
     let world = world(&ground);
     let mut walker = Walker::standing([10.0, 10.0], 0.0, 1.0, &world);
+    walker.set_view(View::Third);
     run(&mut walker, &frame(&[egui::Key::D]), 1.0, &world);
     assert!(close(walker.facing, std::f32::consts::FRAC_PI_2, 1e-3));
     assert!(walker.feet[0] > 10.0 && close(walker.feet[2], 10.0, 1e-4));
@@ -143,8 +144,6 @@ fn a_double_tap_flies_space_and_shift_rise_and_descend_and_another_falls_back() 
     let ground = |_: f32, _: f32| 20.0;
     let world = world(&ground);
     let mut walker = Walker::standing([10.0, 10.0], 0.0, 1.0, &world);
-    run(&mut walker, &frame(&[egui::Key::Space]), 0.5, &world);
-    assert_eq!((walker.gait, walker.feet[1]), (Gait::Ground, 20.0));
     walker.update(&double_tap(&[]), 0.0, FIGURE, &world);
     assert_eq!(walker.gait, Gait::Flying);
     run(&mut walker, &frame(&[]), 1.0, &world);
@@ -152,10 +151,10 @@ fn a_double_tap_flies_space_and_shift_rise_and_descend_and_another_falls_back() 
     run(&mut walker, &frame(&[egui::Key::Space]), 1.0, &world);
     let risen = walker.feet[1] - 20.0;
     assert!(
-        risen > FLY_PACE * FIGURE * (1.0 - 2.0 * EASE) && risen < FLY_PACE * FIGURE,
+        risen > FLY_PACE * FIGURE * (1.0 - 1.5 * FLY_EASE) && risen < FLY_PACE * FIGURE,
         "{risen}"
     );
-    run(&mut walker, &frame(&[]), 1.0, &world);
+    run(&mut walker, &frame(&[]), 1.5, &world);
     let (x, height) = (walker.feet[2], walker.feet[1]);
     run(&mut walker, &frame(&[egui::Key::W]), 1.0, &world);
     let moved = walker.feet[2] - x;
@@ -204,15 +203,19 @@ fn flying_rises_over_the_ground_and_stays_under_the_highest_camera() {
         ..frame(&[egui::Key::Space])
     };
     run(&mut walker, &boost, 30.0, &world);
-    let reach = 20.0 * FIGURE * (1.0 + walker.distance);
+    let body = 20.0 * FIGURE;
     assert!(
-        close(walker.feet[1], ceiling - reach, 1e-2),
+        close(walker.feet[1], ceiling - body, 1e-2),
         "{}",
         walker.feet[1]
     );
-    let camera = walker.camera(base(), FIGURE, &world);
-    assert!(camera.height <= ceiling);
-    camera.validate().unwrap();
+    let first_cam = walker.camera(base(), FIGURE, &world);
+    assert!(first_cam.height <= ceiling);
+    first_cam.validate().unwrap();
+    walker.set_view(View::Third);
+    let third_cam = walker.camera(base(), FIGURE, &world);
+    assert!(third_cam.height <= ceiling);
+    third_cam.validate().unwrap();
 }
 
 #[test]
@@ -293,6 +296,16 @@ fn a_controller_walks_flies_rises_descends_grows_and_turns_the_view() {
         &world,
     );
     assert!(close(walker.scale, 1.0, 1e-3), "{}", walker.scale);
+    walker.update(
+        &pad(Pad {
+            pressed: GamepadButton::North.bit(),
+            ..Pad::default()
+        }),
+        0.0,
+        FIGURE,
+        &world,
+    );
+    assert_eq!(walker.view, View::Third);
     run(
         &mut walker,
         &pad(Pad {
@@ -338,10 +351,22 @@ fn the_scale_grows_and_shrinks_the_figure_its_pace_and_its_view() {
     assert!(close(walker.scale, 2.0, 1e-3), "{}", walker.scale);
     run(&mut walker, &frame(&[egui::Key::Equals]), 1.0, &world);
     assert!(close(walker.scale, 4.0, 2e-3), "{}", walker.scale);
+    walker.update(
+        &Frame {
+            pressed: vec![egui::Key::Num0],
+            ..frame(&[])
+        },
+        0.0,
+        FIGURE,
+        &world,
+    );
+    assert_eq!(walker.scale, 1.0);
+    run(&mut walker, &frame(&[egui::Key::Plus]), 2.0, &world);
     run(&mut walker, &frame(&[egui::Key::Minus]), 2.0, &world);
     assert!(close(walker.scale, 1.0, 1e-3), "{}", walker.scale);
     let walk = |scale: f32| {
         let mut walker = Walker::standing([100.0, 100.0], 0.0, scale, &world);
+        walker.set_view(View::Third);
         run(&mut walker, &frame(&[egui::Key::W]), 1.0, &world);
         let camera = walker.camera(base(), FIGURE, &world);
         let eye = camera.eye();
@@ -370,7 +395,7 @@ fn the_scale_grows_and_shrinks_the_figure_its_pace_and_its_view() {
     let [smallest, largest] = scale_limits(FIGURE, MapDefines::test().heights[1]);
     assert!(close(smallest * FIGURE, HEIGHT_SCALE, 1e-6));
     assert!(close(
-        largest * FIGURE * (1.0 + VIEW_DISTANCE[1]),
+        largest * FIGURE,
         MapDefines::test().heights[1] - WATER_HEIGHT,
         1e-2
     ));
@@ -388,6 +413,7 @@ fn the_view_orbits_the_figure_looking_at_it_above_the_ground() {
     let ground = |x: f32, z: f32| field.surface_height(x, z);
     let world = world(&ground);
     let mut walker = Walker::standing([300.0, 160.0], 0.0, 1.0, &world);
+    walker.set_view(View::Third);
     let look = |dx: f32, dy: f32| Frame {
         look: [dx, dy],
         captured: true,
@@ -467,7 +493,8 @@ fn at_the_map_s_edge_the_view_rises_and_still_looks_at_the_figure() {
         ([100.0, 0.0], 0.0),
         ([100.0, MAP.y()], std::f32::consts::PI),
     ] {
-        let walker = Walker::standing(at, yaw, 1.0, &world);
+        let mut walker = Walker::standing(at, yaw, 1.0, &world);
+        walker.set_view(View::Third);
         let camera = walker.camera(base(), FIGURE, &world);
         camera.validate().unwrap();
         let eye = camera.eye();
@@ -485,7 +512,113 @@ fn at_the_map_s_edge_the_view_rises_and_still_looks_at_the_figure() {
         assert!(close(reach, VIEW_DISTANCE_START * FIGURE, 1e-3), "{reach}");
         assert!(eye[1] > target[1]);
     }
-    let walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
+    let mut walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
+    walker.set_view(View::Third);
     let camera = walker.camera(base(), FIGURE, &world);
     assert!(close(camera.free().unwrap().pitch, VIEW_PITCH_START, 1e-4));
+}
+
+#[test]
+fn jumping_keeps_relative_apex_across_scales_and_double_tap_mid_jump_flies() {
+    let ground = |_: f32, _: f32| 20.0;
+    let world = world(&ground);
+    let apex = |scale: f32| {
+        let mut walker = Walker::standing([100.0, 100.0], 0.0, scale, &world);
+        walker.update(&frame(&[egui::Key::Space]), 0.0, FIGURE, &world);
+        assert_eq!(walker.gait, Gait::Falling);
+        let mut top = walker.feet[1];
+        for _ in 0..120 {
+            walker.update(&frame(&[]), 0.0, FIGURE, &world);
+            top = top.max(walker.feet[1]);
+            if walker.gait == Gait::Ground {
+                break;
+            }
+        }
+        assert_eq!(walker.gait, Gait::Ground);
+        (top - 20.0) / (FIGURE * scale)
+    };
+    let small = apex(1.0);
+    let large = apex(4.0);
+    assert!(close(small, JUMP_HEIGHT, 0.06), "{small}");
+    assert!(close(small, large, 1e-3), "{small} {large}");
+
+    let mut walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
+    walker.update(&frame(&[egui::Key::Space]), 0.0, FIGURE, &world);
+    run(&mut walker, &frame(&[]), 0.1, &world);
+    assert!(walker.feet[1] > 20.0);
+    walker.update(&double_tap(&[]), 0.0, FIGURE, &world);
+    assert_eq!(walker.gait, Gait::Flying);
+    let altitude = walker.feet[1];
+    run(&mut walker, &frame(&[]), 0.5, &world);
+    assert!(close(walker.feet[1], altitude, 1e-3));
+}
+
+#[test]
+fn first_person_is_default_places_eye_at_head_height_and_toggles_with_v() {
+    let ground = |_: f32, _: f32| 20.0;
+    let world = world(&ground);
+    let mut walker = Walker::standing([100.0, 100.0], 0.0, 1.0, &world);
+    assert_eq!(walker.view, View::First);
+    let camera = walker.camera(base(), FIGURE, &world);
+    camera.validate().unwrap();
+    assert!(close(camera.height, 20.0 + EYE_HEIGHT * FIGURE, 1e-4));
+    let distance_before = walker.distance;
+    walker.update(&frame(&[]), 500.0, FIGURE, &world);
+    assert_eq!(walker.distance, distance_before);
+    walker.update(
+        &Frame {
+            look: [0.0, -1.0e5],
+            captured: true,
+            ..frame(&[])
+        },
+        0.0,
+        FIGURE,
+        &world,
+    );
+    assert_eq!(walker.view_pitch, FIRST_PITCH[1]);
+    walker.update(
+        &Frame {
+            pressed: vec![egui::Key::V],
+            ..frame(&[])
+        },
+        0.0,
+        FIGURE,
+        &world,
+    );
+    assert_eq!(walker.view, View::Third);
+    assert_eq!(walker.view_pitch, VIEW_PITCH[1]);
+}
+
+#[test]
+fn free_camera_hovers_never_lands_scales_speed_with_wheel_and_resets_with_zero() {
+    let ground = |_: f32, _: f32| 20.0;
+    let world = world(&ground);
+    let mut free = Walker::free_camera([100.0, 80.0, 100.0], 0.0, -0.2, 4.0, 4.0, &world);
+    assert!(free.free_camera && free.gait == Gait::Flying);
+    run(&mut free, &frame(&[]), 1.0, &world);
+    assert!(close(free.feet[1], 80.0, 1e-4));
+    free.update(&double_tap(&[]), 0.0, FALLBACK_FIGURE, &world);
+    assert_eq!(free.gait, Gait::Flying);
+    let shift = Frame {
+        modifiers: egui::Modifiers::SHIFT,
+        ..frame(&[])
+    };
+    run(&mut free, &shift, 10.0, &world);
+    assert_eq!(free.gait, Gait::Flying);
+    assert!(free.feet[1] >= 20.0 + MIN_FIRST_NEAR * CLEARANCE - 1e-4);
+    let before = free.scale;
+    free.update(&frame(&[]), 200.0, FALLBACK_FIGURE, &world);
+    assert!(free.scale > before);
+    free.update(
+        &Frame {
+            pressed: vec![egui::Key::Num0],
+            ..frame(&[])
+        },
+        0.0,
+        FALLBACK_FIGURE,
+        &world,
+    );
+    assert!(close(free.scale, 4.0, 1e-4));
+    let camera = free.camera(base(), FALLBACK_FIGURE, &world);
+    camera.validate().unwrap();
 }

@@ -87,13 +87,13 @@ test('a chosen source is the pressed tab, a DLC model counts as the base game, a
     assert.match(render(null), /<span class="spinner" role="status" aria-label="Loading"><\/span>/, 'a choice not yet answered is loading');
     const refused = render({ aircraft: chosen.name, state: { kind: 'refused', reason: 'its mesh did not load' } });
     assert.match(refused, /class="aircraft-row-state is-alert"/);
-    assert.match(refused, /role="alert" data-detail="its mesh did not load"><svg[^]*?<span>Spitfire can’t be flown\.<\/span>/);
+    assert.match(refused, /role="alert" data-detail="its mesh did not load"><svg[^]*?<span>Spitfire can’t be flown\. Flying as a free camera\.<\/span>/);
     const flagged = renderToStaticMarkup(createElement(module.AircraftCatalogueView, { ...view, pages,
       flag: (tag: string) => createElement('i', { className: 'stub-flag' }, tag) }));
     assert.match(flagged, /<span class="aircraft-tile has-flag" aria-hidden="true"><i class="stub-flag">ENG<\/i><\/span>/,
       'a row with a country shows the flag the rest of the app draws');
     const none = renderToStaticMarkup(createElement(module.AircraftCatalogueView, { ...view, pages }));
-    assert.match(none, /<p class="aircraft-picker-hint" role="status">No aircraft is chosen: Fly mode is a free camera until you choose one\.<\/p>/);
+    assert.match(none, /<p class="aircraft-picker-hint" role="status">Flying as a free camera\. Choose an aircraft to pilot it\.<\/p>/);
     const unsourced = new catalogue.AircraftPages('unsourced');
     unsourced.begin(0);
     unsourced.accept(0, { ...reply, origins: [] });
@@ -106,21 +106,26 @@ test('the status line follows the chosen aircraft only, and a picker without a c
   const { vite, module } = await picker();
   try {
     const { statusText } = module;
-    assert.deepEqual(statusText(null, { aircraft: null, state: { kind: 'ready' } }), { text: module.NO_AIRCRAFT, alert: false });
-    assert.match(module.NO_AIRCRAFT, /No aircraft is chosen/);
+    assert.deepEqual(statusText(null, { aircraft: null, state: { kind: 'ready' } }), { text: module.FREE_CAMERA, alert: false });
+    assert.match(module.FREE_CAMERA, /Flying as a free camera/);
     const fighter = { name: 'a_entity', title: 'Fighter I' };
     assert.equal(statusText(fighter, { aircraft: 'b_entity', state: { kind: 'ready' } }), null, 'another choice is still being answered');
-    assert.deepEqual(statusText(fighter, { aircraft: 'a_entity', state: { kind: 'loading' } }), { text: 'Loading Fighter I…', alert: false });
+    assert.deepEqual(statusText(fighter, { aircraft: 'a_entity', state: { kind: 'loading' } }),
+      { text: 'Loading Fighter I… The free camera flies until it’s ready.', alert: false });
     assert.deepEqual(statusText(fighter, { aircraft: 'a_entity', state: { kind: 'refused', reason: 'its mesh did not load' } }),
-      { text: 'Fighter I can’t be flown.', alert: true, detail: 'its mesh did not load' });
+      { text: 'Fighter I can’t be flown. Flying as a free camera.', alert: true, detail: 'its mesh did not load' });
     const trigger = renderToStaticMarkup(createElement(module.default, { client: {} as never, source: { id: 's', revision: '1' } as never,
       chosen: fighter, status: { aircraft: 'a_entity', state: { kind: 'ready' } }, onChoose: () => {}, host: null }));
-    assert.match(trigger, /aria-label="Aircraft: Fighter I" data-tooltip="Flying Fighter I"><svg[^]*<span>Fighter I<\/span><\/button>/);
+    assert.match(trigger, /data-state="ready" aria-expanded="false" disabled="" aria-label="Aircraft: Fighter I" data-tooltip="Flying Fighter I"><svg[^]*<span>Fighter I<\/span><\/button>/);
     assert.doesNotMatch(trigger, /a_entity/);
+    const freeTrigger = renderToStaticMarkup(createElement(module.default, { client: {} as never, source: { id: 's', revision: '1' } as never,
+      chosen: null, status: null, onChoose: () => {}, host: null }));
+    assert.match(freeTrigger, /data-state="free" aria-expanded="false" disabled="" aria-label="Aircraft: none, free camera" data-tooltip="Flying as a free camera\. Choose an aircraft to pilot it\."><svg[^]*<span>Free camera<\/span><\/button>/);
+    assert.doesNotMatch(freeTrigger, /aircraft-picker"/, 'entering Fly with no aircraft leaves the panel closed');
     const markup = renderToStaticMarkup(createElement(module.default, { client: {} as never, source: null, chosen: null, status: null, onChoose: () => {}, host: null }));
     assert.match(markup, /disabled=""/);
     assert.match(markup, /Open a campaign to choose an aircraft/);
-    assert.match(markup, /No aircraft chosen/);
+    assert.match(markup, /Free camera/);
   } finally { await vite.close(); }
 });
 

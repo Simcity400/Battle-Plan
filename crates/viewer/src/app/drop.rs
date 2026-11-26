@@ -22,12 +22,13 @@ pub(super) enum Choice {
 
 pub(super) fn choose(
     escape: bool,
+    east: bool,
     clicked: Option<[f32; 3]>,
     south: bool,
     centre: Option<[f32; 3]>,
     width: f32,
 ) -> Choice {
-    if escape {
+    if escape || east {
         return Choice::Cancel;
     }
     match clicked.or(centre.filter(|_| south)) {
@@ -386,11 +387,11 @@ mod tests {
     #[test]
     fn a_click_on_the_ground_starts_there_on_the_first_map_copy() {
         assert_eq!(
-            choose(false, Some([5700.0, 12.0, 900.0]), false, None, 5632.0),
+            choose(false, false, Some([5700.0, 12.0, 900.0]), false, None, 5632.0),
             Choice::Start([68.0, 900.0])
         );
         assert_eq!(
-            choose(false, Some([-32.0, 12.0, 900.0]), false, None, 5632.0),
+            choose(false, false, Some([-32.0, 12.0, 900.0]), false, None, 5632.0),
             Choice::Start([5600.0, 900.0])
         );
     }
@@ -399,22 +400,32 @@ mod tests {
     fn the_south_button_starts_over_the_middle_of_the_view_and_a_click_comes_first() {
         let centre = Some([3000.0, 10.0, 1500.0]);
         assert_eq!(
-            choose(false, None, true, centre, 5632.0),
+            choose(false, false, None, true, centre, 5632.0),
             Choice::Start([3000.0, 1500.0])
         );
-        assert_eq!(choose(false, None, false, centre, 5632.0), Choice::Wait);
         assert_eq!(
-            choose(false, Some([10.0, 10.0, 20.0]), true, centre, 5632.0),
+            choose(false, false, None, false, centre, 5632.0),
+            Choice::Wait
+        );
+        assert_eq!(
+            choose(false, false, Some([10.0, 10.0, 20.0]), true, centre, 5632.0),
             Choice::Start([10.0, 20.0])
         );
     }
 
     #[test]
-    fn escape_goes_back_to_the_map_and_missing_ground_waits() {
+    fn escape_or_east_goes_back_to_the_map_and_missing_ground_waits() {
         assert_eq!(
-            choose(true, Some([10.0, 10.0, 20.0]), true, None, 5632.0),
+            choose(true, false, Some([10.0, 10.0, 20.0]), true, None, 5632.0),
             Choice::Cancel
         );
-        assert_eq!(choose(false, None, true, None, 5632.0), Choice::Wait);
+        assert_eq!(
+            choose(false, true, Some([10.0, 10.0, 20.0]), true, None, 5632.0),
+            Choice::Cancel
+        );
+        assert_eq!(
+            choose(false, false, None, true, None, 5632.0),
+            Choice::Wait
+        );
     }
 }

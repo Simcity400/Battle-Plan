@@ -1,7 +1,11 @@
 .icon-button.aircraft-picker-trigger, .header-workspace-tools .icon-button.aircraft-picker-trigger { display: inline-flex; align-items: center; width: auto; min-width: 0; max-width: 220px; gap: 6px; padding: 0 10px; }
 .aircraft-picker-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; }
+.aircraft-picker-trigger { position: relative; }
 .aircraft-picker-trigger[aria-expanded='true'] { color: var(--accent-ink); }
-.aircraft-picker-trigger.is-unchosen { color: var(--accent-ink); }
+.aircraft-picker-trigger[data-state='free'] > svg { color: var(--muted); }
+.aircraft-picker-trigger::after { content: ''; display: none; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 2px var(--chrome); }
+.aircraft-picker-trigger[data-state='loading']::after { display: block; background: var(--muted); }
+.aircraft-picker-trigger[data-state='refused']::after { display: block; background: var(--error); }
 
 .aircraft-picker { --origin-mod: var(--glow); display: flex; flex-direction: column; width: 420px; min-height: 0; padding-top: 10px; font-size: 0.8125rem; }
 .aircraft-picker > .ui-popover-heading { flex: none; margin: 0 10px 4px 16px; }

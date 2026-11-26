@@ -1,9 +1,10 @@
 
 use super::Viewer;
 use crate::controls::flight::{self, Airframe, Flight, View};
+use crate::controls::walker::{FALLBACK_FIGURE, FLY_PACE, VIEW_PITCH_START, Walker, World, free_speed_limits};
 use crate::controls::{Frame, Pad};
 use crate::document::Document;
-use viewer_gpu::camera::Camera;
+use viewer_gpu::camera::{Camera, WATER_HEIGHT};
 use viewer_gpu::province_map::HeightField;
 use viewer_aircraft::aircraft::PlayerAircraft;
 use viewer_models::ModelInstance;
@@ -16,6 +17,7 @@ pub(crate) struct Scripted {
     pub position: [f32; 3],
     pub attitude: [f32; 3],
     pub view: View,
+    pub free: bool,
     pub steer: [f32; 3],
 }
 
@@ -46,6 +48,12 @@ pub(super) fn placed(
     sight: Option<ModelInstance>,
 ) -> Option<(usize, ModelInstance)> {
     aircraft.zip(sight)
+}
+
+pub(super) fn default_free_speed(height: f32, ground: f32, ceiling: f32) -> f32 {
+    let [smallest, largest] = free_speed_limits(ceiling);
+    let above = (height - ground).max(4.0);
+    (above * 0.25 / FLY_PACE).clamp(smallest, largest)
 }
 
 fn airframe(document: &Document, aircraft: Option<usize>) -> Airframe {
@@ -81,7 +89,7 @@ impl Viewer {
         let mut refusals = Vec::new();
         if let Some(reason) = self.fly_aircraft.refusal() {
             refusals.push(format!(
-                "The flying mode flies without an aircraft: {reason}"
+                "Fly flies the free camera instead of the chosen aircraft: {reason}"
             ));
         }
         if let Some(flight) = &self.flight
@@ -107,6 +115,7 @@ impl Viewer {
         document: &Document,
         map: Camera,
         start: Option<[f32; 2]>,
+        wheel: f32,
         controls: &Frame,
     ) -> Camera {
         let field = HeightField {
@@ -115,18 +124,82 @@ impl Viewer {
             values: document.assets.heightmap_texels(),
         };
         let floor = |x: f32, z: f32| field.surface_height(x, z);
-        let aircraft = self.fly_aircraft(document).map(|aircraft| aircraft.slot);
-        let airframe = airframe(document, aircraft);
         let scripted = self.options.fly;
+        let ready = self.fly_aircraft(document).map(|aircraft| aircraft.slot);
+        let pilot_aircraft = match scripted {
+            Some(scripted) => !scripted.free,
+            None => ready.is_some(),
+        };
+        if !pilot_aircraft {
+            self.flying = None;
+            let world = World::of(&map, &floor);
+            let free = self.free_cam.get_or_insert_with(|| {
+                if let Some(scripted) = scripted {
+                    let g = floor(scripted.position[0], scripted.position[2]).max(WATER_HEIGHT);
+                    let base = default_free_speed(scripted.position[1], g, world.ceiling);
+                    Walker::free_camera(
+                        scripted.position,
+                        scripted.attitude[0],
+                        scripted.attitude[1],
+                        base,
+                        base,
+                        &world,
+                    )
+                } else if let Some(flight) = self.flight.take() {
+                    let g = floor(flight.position[0], flight.position[2]).max(WATER_HEIGHT);
+                    let base = default_free_speed(flight.position[1], g, world.ceiling);
+                    let speed = self.free_cam_speed.unwrap_or(base);
+                    Walker::free_camera(flight.position, flight.yaw, 0.0, base, speed, &world)
+                } else if let Some((eye, yaw, pitch)) = self.mode_handover.take() {
+                    let g = floor(eye[0], eye[2]).max(WATER_HEIGHT);
+                    let base = default_free_speed(eye[1], g, world.ceiling);
+                    let speed = self.free_cam_speed.unwrap_or(base);
+                    Walker::free_camera(eye, yaw, pitch, base, speed, &world)
+                } else {
+                    let start_flight = Flight::from_map(
+                        &start.map_or(map, |center| Camera { center, ..map }),
+                        &floor,
+                        Airframe::NONE.size,
+                    );
+                    let g = floor(start_flight.position[0], start_flight.position[2])
+                        .max(WATER_HEIGHT);
+                    let base = default_free_speed(start_flight.position[1], g, world.ceiling);
+                    let speed = self.free_cam_speed.unwrap_or(base);
+                    Walker::free_camera(
+                        start_flight.position,
+                        start_flight.yaw,
+                        VIEW_PITCH_START,
+                        base,
+                        speed,
+                        &world,
+                    )
+                }
+            });
+            free.update(controls, wheel, FALLBACK_FIGURE, &world);
+            self.free_cam_speed = Some(free.scale);
+            return free.camera(map, FALLBACK_FIGURE, &world);
+        }
+        let airframe = airframe(document, ready);
+        let preferred_view = self.fly_view;
         let flight = self.flight.get_or_insert_with(|| match scripted {
             Some(scripted) => scripted.flight(),
-            None => Flight::from_map(
-                &start.map_or(map, |center| Camera { center, ..map }),
-                &floor,
-                airframe.size,
-            ),
+            None => {
+                let mut flight = if let Some(free) = self.free_cam.take() {
+                    Flight::new(free.feet, free.view_yaw, 0.0, 0.0)
+                } else if let Some((eye, yaw, _)) = self.mode_handover.take() {
+                    Flight::new(eye, yaw, 0.0, 0.0)
+                } else {
+                    Flight::from_map(
+                        &start.map_or(map, |center| Camera { center, ..map }),
+                        &floor,
+                        airframe.size,
+                    )
+                };
+                flight.view = preferred_view;
+                flight
+            }
         });
-        let played = aircraft.and_then(|slot| {
+        let played = ready.and_then(|slot| {
             self.scene
                 .as_ref()?
                 .player_play_position(flight.animation_key(slot))
@@ -139,8 +212,9 @@ impl Viewer {
             played,
             &mut self.fly_footprints,
         );
+        self.fly_view = flight.view;
         let sight = flight.sight(map, &floor, &airframe);
-        self.flying = placed(aircraft, sight.aircraft);
+        self.flying = placed(ready, sight.aircraft);
         sight.camera
     }
 
@@ -157,6 +231,16 @@ impl Viewer {
     }
 
     pub(super) fn flight_line(&self, document: &Document) -> Option<String> {
+        if let Some(free) = &self.free_cam {
+            let [x, y, z] = free.feet;
+            return Some(format!(
+                "Flight: free camera at {x:.3},{y:.3},{z:.3}, heading {:.2}, pitch {:.2} degrees, \
+                 speed x{:.2}",
+                free.view_yaw.to_degrees(),
+                free.view_pitch.to_degrees(),
+                free.speed_multiplier(),
+            ));
+        }
         let flight = self.flight.as_ref()?;
         let [x, y, z] = flight.position;
         Some(format!(
@@ -263,7 +347,7 @@ mod tests {
         assert!(viewer.flight.is_none(), "the flight waits for its start");
         assert!(viewer.start_pick.at().is_some(), "{:?}", viewer.start_pick);
         state = GamepadState {
-            sticks: [[1.0, 0.0], [0.0; 2]],
+            sticks: [[0.0, 1.0], [1.0, 0.0]],
             triggers: [0.0, 1.0],
             buttons: 0,
         };
@@ -273,7 +357,7 @@ mod tests {
             pressed: 0,
         });
         draw(&mut viewer);
-        let start = viewer.flight.clone().expect("the flying mode flies");
+        let start = viewer.free_cam.expect("the flying mode starts in the free camera");
         let begun = Instant::now();
         for _ in 0..10 {
             draw(&mut viewer);
@@ -281,25 +365,12 @@ mod tests {
         while begun.elapsed() < Duration::from_millis(600) {
             draw(&mut viewer);
         }
-        let flown = viewer.flight.clone().expect("still flying");
-        assert_eq!(flown.phase, flight::Phase::Flying);
-        let turned = (flown.yaw - start.yaw + std::f32::consts::PI)
+        let flown = viewer.free_cam.expect("still flying in the free camera");
+        let turned = (flown.view_yaw - start.view_yaw + std::f32::consts::PI)
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI;
-        assert!(turned > 0.05, "{} -> {}", start.yaw, flown.yaw);
-        assert!(flown.throttle > start.throttle, "{}", flown.throttle);
-        assert_eq!(flown.view, View::Chase);
-        state.buttons = GamepadButton::North.bit();
-        viewer.input.gamepad(GamepadMessage::State {
-            owner,
-            state,
-            pressed: 0,
-        });
-        draw(&mut viewer);
-        assert_eq!(
-            viewer.flight.as_ref().map(|flight| flight.view),
-            Some(View::Nose)
-        );
+        assert!(turned > 0.05, "{} -> {}", start.view_yaw, flown.view_yaw);
+        assert!(flown.feet[1] > start.feet[1], "{} -> {}", start.feet[1], flown.feet[1]);
         Ok(())
     }
 }
