@@ -13,6 +13,7 @@ use dashboard_query::{
 use dashboard_text::metadata::link_slot;
 use engine_stability::{cthreat_source, cworld_threat};
 use replay_columnar::{manifest::Status, summary::Source as ColumnSource};
+use replay_lanes::lanes::CoveredValue;
 use replay_data::rows::{TableId, TagHolderRow, ThreatEventRow, ThreatSourceRow, tables};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -356,8 +357,13 @@ fn push_runs(target: &mut Vec<(i32, i32, i64)>, runs: &[(i32, i32, Option<i64>)]
     }
 }
 
-fn push_opt_runs(target: &mut Vec<(i32, i32, Option<i64>)>, runs: &[(i32, i32, Option<i64>)], lo: i32, hi: i32) {
-    for &(first, last, value) in runs {
+fn push_slot_runs(target: &mut Vec<(i32, i32, Option<i64>)>, runs: &[(i32, i32, CoveredValue)], lo: i32, hi: i32) {
+    for &(first, last, covered) in runs {
+        let value = match covered {
+            CoveredValue::Value(value) => Some(value),
+            CoveredValue::Unvalued => None,
+            CoveredValue::Uncovered => continue,
+        };
         let (first, last) = (first.max(lo), last.min(hi));
         if first > last {
             continue;
@@ -497,10 +503,10 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
                     }),
                 }
             }
-            let held = read::runs(recording, stretch.run, TableId::ThreatCountryAggregates, ColumnSource::Cell(contrib_col), None, lo, hi)?;
+            let (held, _) = read::covered_runs(recording, stretch.run, TableId::ThreatCountryAggregates, ColumnSource::Cell(contrib_col), None, lo, hi)?;
             for (key, runs) in held {
                 if let Ok(slot) = u32::try_from(key) {
-                    push_opt_runs(slots.entry(slot).or_default(), &runs, lo, hi);
+                    push_slot_runs(slots.entry(slot).or_default(), &runs, lo, hi);
                 }
             }
         }

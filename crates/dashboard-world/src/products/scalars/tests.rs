@@ -578,7 +578,7 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
     use std::sync::{Arc, atomic::AtomicBool};
     use world_tension_stack::{WorldTensionStack, WorldTensionStackParams, TensionValueMode};
 
-    let frames = (100..=104).map(|hour| {
+    let frames = (100..=105).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
         if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
             links.push(CountryLinkRow { id: 9002, canonical_slot: 8 });
@@ -588,13 +588,13 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
                 ordinal: index as u32, country, date: 100, reason: b"fixture".to_vec(), final_raw: 4, ..Default::default()
             }).collect()
         ));
-        *frame.tables[TableId::ThreatCountryAggregates.index()] = if matches!(hour, 102 | 104) {
-            TableView::Unavailable { reason: "Fixture contributions unread".into() }
+        *frame.tables[TableId::ThreatCountryAggregates.index()] = if matches!(hour, 102 | 104 | 105) {
+            TableView::Unavailable { reason: if hour == 105 { "Fixture read interrupted" } else { "Fixture contributions unread" }.into() }
         } else {
             TableView::Complete(TableRows::ThreatCountryAggregates(
-                [(7, 3), (8, 6)].map(|(country_slot, peak)| ThreatCountryAggregateRow {
+                [(7, 3), (8, 6)].into_iter().filter(|&(slot, _)| hour != 101 || slot != 8).map(|(country_slot, peak)| ThreatCountryAggregateRow {
                     country_slot, total_raw: match hour { 100 => peak, 103 if country_slot == 7 => 2, _ => 0 },
-                }).to_vec()
+                }).collect()
             ))
         };
         frame
@@ -620,6 +620,8 @@ fn world_tension_top_matches_in_stack_lines_and_events_and_refuses_an_unknown_va
         assert_eq!(unread.refused.as_deref(), Some("Fixture contributions unread"));
         assert_eq!(unread.next_change_hour, Some(103));
         assert!(unread.bands.is_empty() && unread.events.is_empty());
+        assert_eq!(read(104, Some(1)).next_change_hour, Some(105));
+        assert_eq!(read(105, Some(1)).refused.as_deref(), Some("Fixture read interrupted"));
         if stack {
             let all = read(104, None);
             assert_eq!(all.bands[0].slot, 7, "the historical band remains the last witnessed leader through a gap");
