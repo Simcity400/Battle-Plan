@@ -5,15 +5,27 @@ import { countryIdentityIndex } from './countryIdentity.ts';
 import type { CountryIdentityIndex } from './countryIdentity.ts';
 import { PlaybackIntervals, spanChanges } from '../charts/playbackIntervals.ts';
 import { NO_MEMBERS } from './noMembers.ts';
+import { countryFromKey } from './countryKey.ts';
 
 export function groupRuns(reply: CountryGroupReply, group: CountryGroup): MembershipRun[] | null {
   switch (group.type) {
     case 'humans': return reply.humans;
     case 'faction': return reply.factions.find(faction => faction.id === group.id)?.members ?? null;
-    case 'war': return reply.wars.flatMap(pair => pair.first === group.tag ? [{ tag: pair.second, firstHour: pair.firstHour, lastHour: pair.lastHour }]
-      : pair.second === group.tag ? [{ tag: pair.first, firstHour: pair.firstHour, lastHour: pair.lastHour }] : []);
+    case 'war': return warEnemies(reply, group.tag);
     case 'top': return null;
   }
+}
+
+function warEnemies(reply: CountryGroupReply, chosen: string): MembershipRun[] {
+  const slot = countryFromKey(chosen);
+  const held = typeof slot === 'number'
+    ? reply.countryIdentities.flatMap(history => history.identities.filter(run => run.slot === slot).map(run => ({ tag: history.tag, firstHour: run.firstHour, lastHour: run.lastHour })))
+    : [{ tag: chosen, firstHour: -Infinity, lastHour: Infinity }];
+  return reply.wars.flatMap(pair => held.flatMap(own => {
+    const enemy = pair.first === own.tag ? pair.second : pair.second === own.tag ? pair.first : null;
+    const firstHour = Math.max(pair.firstHour, own.firstHour), lastHour = Math.min(pair.lastHour, own.lastHour);
+    return enemy !== null && firstHour <= lastHour ? [{ tag: enemy, firstHour, lastHour }] : [];
+  }));
 }
 
 export function groupUnobserved(reply: CountryGroupReply, group: CountryGroup): HourSpan[] {

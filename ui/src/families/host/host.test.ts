@@ -18,6 +18,7 @@ import { readPlanExact } from '../broker.ts';
 import type { SourcePlan } from '../contract.ts';
 import type { FrozenGate } from '../sources.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { cardHostAdapter } from '../card/hostAdapter.ts';
 import { pagedTailEntry } from '../table/logHelpers.ts';
 import { DEFAULT_TAIL_PAGE_SIZE, SnapshotPager } from '../table/rowSource.ts';
 import { ROW_HEIGHT, tableSettingsOf } from '../table/settings.ts';
@@ -47,10 +48,11 @@ import {
   type FamilyTooltipEntry,
 } from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
-import { planFamilySources } from './planSources.ts';
+import { gatedByCountry, planFamilySources } from './planSources.ts';
+import { factionPooledResourcesDeclaration } from '../../widgets/faction-pooled-strength/factionPooledStrengthProjection.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { withSoFarMembership } from './membership.ts';
-import { rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
+import { groupRuns, rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
 import { flagChoiceKey, type IdentityScope } from '../identity/types.ts';
@@ -1223,6 +1225,12 @@ test('class D: every action and published state comes from the installed picture
   assert.deepEqual(toggled?.kind === 'toggle' ? [toggled.action.installedId, toggled.expansion?.open, toggled.expansion?.next] : null, [20, true, { GER: true }], 'a tree toggle opens what the event picture showed closed, though the latest picture shows it open');
   assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(r2, true), options, grid), null, 'R3-S4: Enter on an expired picture does nothing, read at input time');
   assert.equal(resolveHostInput(adapter, 'activate', { key: 'ITA', hit: null, picture: p1 }, gate(recordInstalled(picture(22, [['ITA', -1]], 'owner-B'), {}, null)), options, grid), null, 'an input aimed at owner A never acts once owner B is installed');
+  const cardPicture = picture(23, [['GER', -1]]);
+  const cardRecord = recordInstalled(cardPicture, { nav: nav([['GER', -1]]), rowHours: { GER: 9 } }, 'GER');
+  const menu = resolveHostInput(cardHostAdapter, 'menu', { key: 'GER', hit: null, picture: cardPicture }, gate(cardRecord), options, grid);
+  assert.deepEqual(menu?.kind === 'menu' ? [menu.hit.hour, menu.hit.hitHour] : null, [9, 9], '#967 R2-S1: a keyboard menu on a dated card row acts at the hour of that row, not the hour of the installed picture');
+  const pointed = resolveHostInput(cardHostAdapter, 'menu', { key: 'GER', hit: { key: 'GER', hour: 5 }, picture: cardPicture }, gate(cardRecord), options, grid);
+  assert.deepEqual(pointed?.kind === 'menu' ? [pointed.hit.hour, pointed.hit.hitHour] : null, [5, 5], 'a pointer hit keeps the hour it carries');
 
   const selections = new BoundSelections();
   selections.bound(3, 'A');
@@ -1568,4 +1576,35 @@ test('every member so far masks each member from its first membership, follows i
   const atHour = { ...selection, membership: 'hour' as const };
   const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
   assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
+});
+
+test('a single-country widget that names its subject itself opens on branch coverage, not on a live country (#873 S14)', () => {
+  const policy = factionPooledResourcesDeclaration.countries;
+  assert.equal(gatedByCountry(policy, {}), true, 'with no faction named, the chosen country decides');
+  assert.equal(gatedByCountry(policy, { faction: '' }), true);
+  assert.equal(gatedByCountry(policy, { faction: 'axis' }), false, 'an explicit faction needs no live country');
+  assert.equal(gatedByCountry({ mode: 'single' }, { faction: 'axis' }), true, 'a widget without a subject option keeps its country gate');
+  assert.equal(gatedByCountry({ mode: 'multi' }, {}), false);
+});
+
+test('a war group chosen by recorded slot matches that slot under every tag it held, and not the later holder of its old tag (#932 R2-S15)', () => {
+  const reply = {
+    wars: [
+      { first: 'AAA', second: 'POL', firstHour: 10, lastHour: 60 },
+      { first: 'BBB', second: 'FRA', firstHour: 40, lastHour: 90 },
+      { first: 'AAA', second: 'ITA', firstHour: 70, lastHour: 80 },
+    ],
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ slot: 7, countryId: 707, firstHour: 0, lastHour: 49 }, { slot: 8, countryId: 808, firstHour: 65, lastHour: 100 }] },
+      { tag: 'BBB', identities: [{ slot: 7, countryId: 707, firstHour: 50, lastHour: 100 }] },
+    ],
+  } as unknown as CountryGroupReply;
+  assert.deepEqual(groupRuns(reply, { type: 'war', tag: countryKey(7) }), [
+    { tag: 'POL', firstHour: 10, lastHour: 49 },
+    { tag: 'FRA', firstHour: 50, lastHour: 90 },
+  ], 'slot 7 is at war with Poland while it is AAA and with France once it is BBB; the Italian war is slot 8, the later AAA');
+  assert.deepEqual(groupRuns(reply, { type: 'war', tag: 'AAA' }), [
+    { tag: 'POL', firstHour: 10, lastHour: 60 },
+    { tag: 'ITA', firstHour: 70, lastHour: 80 },
+  ], 'a war group chosen by tag keeps matching the tag');
 });

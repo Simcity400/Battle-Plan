@@ -387,7 +387,7 @@ export interface DeclaredCountryState {
 
 export type CountryPolicy =
   | { readonly mode: 'none' }
-  | { readonly mode: 'single'; readonly choose?: string }
+  | { readonly mode: 'single'; readonly choose?: string; readonly subjectOption?: string }
   | { readonly mode: 'filter' }
   | {
       readonly mode: 'multi';

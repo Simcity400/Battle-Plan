@@ -44,7 +44,7 @@ import {
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { withSoFarMembership } from './membership.ts';
-import { plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
+import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
 import { identityBrokerFor } from '../identity/broker.ts';
@@ -240,7 +240,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const isSingle = policy.mode === 'single';
+  const isSingle = gatedByCountry(policy, options);
   const isFilter = policy.mode === 'filter';
   const isMulti = policy.mode === 'multi';
 
@@ -1045,7 +1045,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         if (s.stage === 'outside') {
           return { kind: 'outside', outside: s.outside };
         }
-        if (s.stage === 'choose') return { kind: 'choose', message: policy.choose ?? `Choose a country to see its ${subject}.` };
+        if (s.stage === 'choose') return { kind: 'choose', message: (policy.mode === 'single' ? policy.choose : undefined) ?? `Choose a country to see its ${subject}.` };
         if (s.stage === 'holders') return { kind: 'holders', tag: singleCountry?.chosen ?? null, holders: s.holders, pick: s.pick };
         if (s.stage === 'absent') {
           const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;

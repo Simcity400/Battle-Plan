@@ -393,7 +393,7 @@ function makePoolView(pool: FactionPoolKind): {
     subject: 'faction pools',
     emptyCampaign: 'Load a campaign to see faction pools.',
     icon: 'layers',
-    countries: { mode: 'single', choose: 'Choose a country to see its faction’s pools.' },
+    countries: { mode: 'single', choose: 'Choose a country to see its faction’s pools.', subjectOption: 'faction' },
     sources: ctx => poolSources(ctx, pool),
     projection,
     projectionOptions: (_ctx, extra) => ({ pool, surface: extra.surface }),
