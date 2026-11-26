@@ -623,6 +623,7 @@ fn main() {
                 Arc::new(updates::Host(app.handle().clone())),
             )?;
             recorder::start_recorder();
+            export_settings::sweep_pending_stages();
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload, session| {

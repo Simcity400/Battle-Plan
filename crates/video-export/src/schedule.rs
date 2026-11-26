@@ -196,6 +196,7 @@ enum CursorPhase {
         local_idx: u64,
         total_steps: u64,
         last_emitted_hour: Option<i32>,
+        prev_sampled_hour: Option<i32>,
         prev_recorded_hour: Option<i32>,
         disclosed_gaps: Vec<i32>,
         endpoint_done: bool,
@@ -267,6 +268,7 @@ fn initial_phase(schedule: &FrameSchedule, step_hours: f64) -> CursorPhase {
             local_idx: 0,
             total_steps,
             last_emitted_hour: None,
+            prev_sampled_hour: None,
             prev_recorded_hour: None,
             disclosed_gaps: Vec::new(),
             endpoint_done: false,
@@ -289,11 +291,14 @@ fn emit_linear_sample(
     schedule: &FrameSchedule,
     whole: i32,
     fraction: f64,
+    prev_sampled_hour: &mut Option<i32>,
     prev_recorded_hour: &mut Option<i32>,
     disclosed_gaps: &mut Vec<i32>,
 ) -> FrameKind {
+    let prior_sample = *prev_sampled_hour;
+    *prev_sampled_hour = Some(whole);
     if stretch_at(&schedule.stretches, whole).is_some() {
-        let cut_banner = prev_recorded_hour
+        let cut_banner = prior_sample
             .and_then(|prev| traversed_gap_notice(&schedule.gaps, prev, whole, disclosed_gaps));
         let traversed_join = prev_recorded_hour
             .is_none_or(|prev| has_discontinuity(&schedule.stretches, prev, whole));
@@ -312,10 +317,10 @@ fn emit_linear_sample(
             schedule.summary.from_hour,
             schedule.summary.to_hour,
         );
-        let crossed_gap = prev_recorded_hour
+        let crossed_gap = prior_sample
             .and_then(|prev| traversed_gap_notice(&schedule.gaps, prev, gap_first, disclosed_gaps));
         if crossed_gap.is_some()
-            && let Some(prev) = *prev_recorded_hour
+            && let Some(prev) = prior_sample
         {
             for gap in &schedule.gaps {
                 if gap.first > prev && gap.last < gap_first && !disclosed_gaps.contains(&gap.first) {
@@ -428,6 +433,7 @@ fn advance_cursor(
                 local_idx,
                 total_steps,
                 last_emitted_hour,
+                prev_sampled_hour,
                 prev_recorded_hour,
                 disclosed_gaps,
                 endpoint_done,
@@ -441,7 +447,14 @@ fn advance_cursor(
                     let whole = pos.floor() as i32;
                     let fraction = (pos - f64::from(whole)).clamp(0.0, 1.0 - f64::EPSILON);
                     *last_emitted_hour = Some(whole);
-                    let kind = emit_linear_sample(schedule, whole, fraction, prev_recorded_hour, disclosed_gaps);
+                    let kind = emit_linear_sample(
+                        schedule,
+                        whole,
+                        fraction,
+                        prev_sampled_hour,
+                        prev_recorded_hour,
+                        disclosed_gaps,
+                    );
                     return Some(make_frame(frame_index, schedule.fps, kind));
                 }
                 if !*endpoint_done
@@ -450,7 +463,14 @@ fn advance_cursor(
                     *endpoint_done = true;
                     let whole = schedule.summary.to_hour;
                     *last_emitted_hour = Some(whole);
-                    let kind = emit_linear_sample(schedule, whole, 0.0, prev_recorded_hour, disclosed_gaps);
+                    let kind = emit_linear_sample(
+                        schedule,
+                        whole,
+                        0.0,
+                        prev_sampled_hour,
+                        prev_recorded_hour,
+                        disclosed_gaps,
+                    );
                     return Some(make_frame(frame_index, schedule.fps, kind));
                 }
                 *phase = CursorPhase::Done;
@@ -997,8 +1017,39 @@ mod tests {
         assert_eq!(terminal_frames.len(), 2);
         assert!(matches!(
             &terminal_frames[1].kind,
-            FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 111, crossed_gap: Some(cut), .. }
+            FrameKind::GapCard { hour: 110, gap_first: 109, gap_last: 110, crossed_gap: Some(cut), .. }
             if cut.omitted_hours == 2 && cut.from_hour == 101 && cut.to_hour == 104
+        ));
+
+        let leading_gap = build_schedule(
+            &[
+                RecordedStretch { first: 102, last: 103, join: StretchJoin::Start },
+                RecordedStretch { first: 106, last: 110, join: StretchJoin::Break },
+            ],
+            &[
+                UnheldGap { first: 100, last: 101, reason: "leading gap".into() },
+                UnheldGap { first: 104, last: 105, reason: "mid gap".into() },
+            ],
+            &ScheduleRequest {
+                from_hour: 100,
+                to_hour: 110,
+                fps: 1,
+                hours_per_second: 10.0,
+                skip_gaps: false,
+                cut_card_seconds: 0.0,
+            },
+        )
+        .unwrap();
+        let leading_frames = leading_gap.collect_frames();
+        assert_eq!(leading_frames.len(), 2);
+        assert!(matches!(
+            &leading_frames[0].kind,
+            FrameKind::GapCard { hour: 100, gap_first: 100, gap_last: 101, crossed_gap: None, .. }
+        ));
+        assert!(matches!(
+            &leading_frames[1].kind,
+            FrameKind::Recorded { hour: 110, reset_continuity: true, cut_banner: Some(cut), .. }
+            if cut.omitted_hours == 2 && cut.from_hour == 103 && cut.to_hour == 106
         ));
     }
 

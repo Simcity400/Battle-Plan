@@ -1573,7 +1573,7 @@ impl Document {
         )
     }
 
-    #[allow(clippy::too_many_arguments, reason = "mirrors Document::load with a pre-opened replay handle and verified revision")]
+    #[expect(clippy::too_many_arguments, reason = "mirrors Document::load with a pre-opened replay handle and verified revision")]
     pub fn load_replay(
         path: &Path,
         replay: Arc<Replay>,

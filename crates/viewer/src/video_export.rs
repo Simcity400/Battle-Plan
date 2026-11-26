@@ -1084,25 +1084,52 @@ impl VideoSession {
                 staged_path,
                 outcome,
             } => {
+                if self.cancel.load(Ordering::Acquire) {
+                    if let Some(sink) = sink.take() {
+                        sink.abort();
+                    }
+                    *outcome.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(MapVideoOutcome::Cancelled);
+                    return;
+                }
+                let mut cancelled = false;
                 let partial = if let Some(sink) = sink.take() {
                     let frames = sink.frames_written();
                     if frames > 0 {
                         match sink.finish_cancellable(&self.cancel) {
                             Ok(finished) => {
-                                let playable = video_export::mp4_boxes::inspect_mp4(&finished.path)
-                                    .is_ok_and(|summary| summary.has_avc1);
-                                if playable {
-                                    Some(PartialVideo {
-                                        staged_path: finished.path,
-                                        frames: finished.frames,
-                                        through_hour: last_recorded_hour.unwrap_or(from_hour),
-                                        duration_seconds: finished.frames as f64 / f64::from(fps),
-                                        backend: finished.backend,
-                                    })
-                                } else {
+                                if self.cancel.load(Ordering::Acquire) {
                                     let _ = std::fs::remove_file(&finished.path);
+                                    cancelled = true;
                                     None
+                                } else {
+                                    let playable = video_export::mp4_boxes::inspect_mp4(&finished.path)
+                                        .is_ok_and(|summary| summary.has_avc1);
+                                    if self.cancel.load(Ordering::Acquire) {
+                                        let _ = std::fs::remove_file(&finished.path);
+                                        cancelled = true;
+                                        None
+                                    } else if playable {
+                                        Some(PartialVideo {
+                                            staged_path: finished.path,
+                                            frames: finished.frames,
+                                            through_hour: last_recorded_hour.unwrap_or(from_hour),
+                                            duration_seconds: finished.frames as f64 / f64::from(fps),
+                                            backend: finished.backend,
+                                        })
+                                    } else {
+                                        let _ = std::fs::remove_file(&finished.path);
+                                        None
+                                    }
                                 }
+                            }
+                            Err(err)
+                                if err.kind() == io::ErrorKind::Interrupted
+                                    || self.cancel.load(Ordering::Acquire) =>
+                            {
+                                let _ = std::fs::remove_file(&*staged_path);
+                                cancelled = true;
+                                None
                             }
                             Err(_) => {
                                 let _ = std::fs::remove_file(&*staged_path);
@@ -1116,12 +1143,15 @@ impl VideoSession {
                 } else {
                     None
                 };
-                *outcome.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(MapVideoOutcome::Failed {
+                *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(if cancelled {
+                    MapVideoOutcome::Cancelled
+                } else {
+                    MapVideoOutcome::Failed {
                         error,
                         campaign_hour: last_recorded_hour,
                         partial,
-                    });
+                    }
+                });
             }
             VideoMode::Preview { png_out } => {
                 *png_out.lock().unwrap_or_else(|e| e.into_inner()) = Some(Err(error));

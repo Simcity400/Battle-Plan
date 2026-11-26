@@ -1084,7 +1084,7 @@ impl Viewer {
         Self::new_with_video_source(ctx, render_state, config, options, error, failure, embedded, None)
     }
 
-    #[allow(clippy::too_many_arguments, reason = "extends Viewer::new with verified video export replay and settings before initial load")]
+    #[expect(clippy::too_many_arguments, reason = "extends Viewer::new with verified video export replay and settings before initial load")]
     pub(crate) fn new_for_video_export(
         ctx: &egui::Context,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
@@ -1107,7 +1107,7 @@ impl Viewer {
         )
     }
 
-    #[allow(clippy::too_many_arguments, reason = "shared Viewer constructor installing optional video preload prior to initial open")]
+    #[expect(clippy::too_many_arguments, reason = "shared Viewer constructor installing optional video preload prior to initial open")]
     fn new_with_video_source(
         ctx: &egui::Context,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
