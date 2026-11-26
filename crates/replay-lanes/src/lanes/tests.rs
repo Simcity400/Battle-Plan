@@ -1073,10 +1073,10 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     let held = bare.run(0).unwrap();
     let (from, to) = (held.first_hour, held.last_hour());
     let shown = |chart: &Chart| chart.values.iter().map(|bin| (bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>();
-    for after in [from + 1, from + 7] {
+    for after in [from + 1, from + 2, from + 7] {
         let chart = chart_at(&bare, 0, TableId::Countries, source, None, after, to, 0, 6).unwrap();
         let summed = chart_at(&summarized, 0, TableId::Countries, source, None, after, to, 0, 6).unwrap();
-        assert_eq!((&chart.keys, shown(&chart), &chart.totals), (&summed.keys, shown(&summed), &summed.totals), "from {after}: a walk seeded by a truncated hour counts the change from what that hour read");
+        assert_eq!((&chart.keys, shown(&chart), &chart.totals), (&summed.keys, shown(&summed), &summed.totals), "from {after}: the walk reads the hours the summary folds, from what a truncated hour read");
     }
     for (level, bin_hours) in [(1, summary::bucket_hours(1) * 4), (2, summary::bucket_hours(2))] {
         let chart = chart_at(&bare, 0, TableId::Countries, source, None, from, to, level, bin_hours).unwrap();
@@ -1094,8 +1094,10 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
     }
     let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
     for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last), (2, 1, By::Last), (4, 2, By::Last)] {
-        let read = values(top(&bare, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap());
-        assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, from, to, width, n, by).unwrap()), "width {width} n {n} {by:?}");
+        for start in [from, from + 2] {
+            let read = values(top(&bare, 0, TableId::Countries, column as u32, start, to, width, n, by).unwrap());
+            assert_eq!(read, values(top(&summarized, 0, TableId::Countries, column as u32, start, to, width, n, by).unwrap()), "from {start} width {width} n {n} {by:?}");
+        }
     }
 }
 

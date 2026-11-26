@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateMarketReply } from '../../dashboard/market.ts';
+import { createBoundedReadView } from '../../families/boundedView.ts';
 import { knownValue, notRecorded, zeroValue } from '../../families/value.ts';
-import { emptyAgreements, fuelDelivered, fuelUnits, lastDelivery } from './agreementsProjection.ts';
+import { agreementsProjection, emptyAgreements, fuelDelivered, fuelUnits, lastDelivery } from './agreementsProjection.ts';
 
 const item = (amountRaw: string) => ({ variant: '6', name: null, amountRaw });
 const terms = (lastDelivery: number, delivered: string[], lastFuelDeliveredRaw = '0', sunk: string[] = []) => ({ lastDelivery, delivered: delivered.map(item), sunk: sunk.map(item), lastFuelDeliveredRaw });
@@ -42,4 +43,14 @@ test('a lease without the reasons its sides are unnamed is not a valid reply', (
   assert.doesNotThrow(() => validateMarketReply(reply([lease])));
   const { giverMissing: _, ...older } = lease;
   assert.throws(() => validateMarketReply(reply([older])));
+});
+
+test('an agreement whose terms list nothing still has its row and its delivery date', () => {
+  const lease = { key: '1', id: '9', giver: 'GER', giverMissing: null, receiver: 'FRA', receiverMissing: null, revision: '1', activeSince: 100, lastDelivery: 115,
+    monthly: [], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' };
+  const reply = { branchId: '1', offers: null, contracts: null, agreements: [lease], agreementsMissing: null, purchasesMissing: null, unattributed: 0, refused: null, variants: [], icons: [], warnings: [] };
+  const model = agreementsProjection.project(createBoundedReadView({ hour: 120, panels: new Map([['main', reply]]) }), { direction: 'sent' });
+  assert.equal(model.rows.length, 1);
+  assert.deepEqual(model.rows[0]!.cells.last!.value, { kind: 'known', value: 115 });
+  assert.equal(model.empty, undefined);
 });

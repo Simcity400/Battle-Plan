@@ -162,6 +162,24 @@ function agreementRows(
       meta,
     });
   }
+  if (rows.length === 0) {
+    const meta: AgreementMeta = { terms, variant: null };
+    rows.push({
+      key: `${terms.key}:terms`,
+      name: 'Agreement',
+      cells: {
+        country,
+        equipment: { value: notApplicable('Its terms list no equipment or fuel') },
+        monthly: { value: notApplicable('No schedule') },
+        delivered: { value: notApplicable('Nothing is listed to deliver') },
+        last,
+        since,
+      },
+      tooltipTitle: pair,
+      tooltipExtra: () => unnamed,
+      meta,
+    });
+  }
   return rows;
 }
 
