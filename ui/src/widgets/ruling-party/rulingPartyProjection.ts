@@ -35,6 +35,7 @@ import {
   POPULARITY_PART_BITS,
   rulingAt,
   validatePartyHistoryReply,
+  within,
   type Band,
 } from './partyData.ts';
 
@@ -110,6 +111,9 @@ function rulingHoverDetail(readView: BoundedReadView, history: PartyHistoryReply
   if (shown.ideology || partyLabel) {
     items.push({ label: 'Ideology · party', value: [shown.ideology ?? 'Not recorded', partyLabel ?? 'Not recorded'].join(' · ') });
   }
+  if (within(at, history.governmentUnobserved)) {
+    items.push({ label: 'Government changes', missingReason: 'Not recorded', tone: 'muted' });
+  }
   let first = true;
   for (const band of list) {
     const part = ownedPartAt(band, at);
@@ -136,9 +140,10 @@ function buildRulingMarkers(history: PartyHistoryReply, list: readonly Band[], o
   const byHour = new Map<number, ChartMarkerItem[]>();
   for (const badge of kept) {
     if (badge.hour < options.extent[0] || badge.hour > hour) continue;
+    const item: ChartMarkerItem = badge.detail === undefined ? { title: badge.label } : { title: badge.label, detail: badge.detail };
     const items = byHour.get(badge.hour);
-    if (items) items.push({ title: badge.label });
-    else byHour.set(badge.hour, [{ title: badge.label }]);
+    if (items) items.push(item);
+    else byHour.set(badge.hour, [item]);
   }
   return [...byHour].map(([at, items]) => ({ id: `rp-m:${at}`, hour: at, title: items[0]!.title, items }));
 }

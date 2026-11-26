@@ -4301,6 +4301,14 @@ ideologyTypes: Array<IdeologyTypeInfo>,
  */
 elections: Array<Election>,
 /**
+ * Each recorded change of government, in hour order.
+ */
+governmentChanges: Array<GovernmentChange>,
+/**
+ * Hours whose changes of government were not wholly recorded: a change in them may be missing.
+ */
+governmentUnobserved: Array<HourSpan>,
+/**
  * Every ideology group in content order, for colours, names and legend order.
  */
 ideologies: Array<IdeologyInfo>,
@@ -4324,6 +4332,24 @@ hour: number,
  * The hour the new date was first read; nothing shows the election before it.
  */
 witnessed: number, };
+export type GovernmentChange = {
+/**
+ * The recorded hour of the change.
+ */
+hour: number,
+/**
+ * The hour it was read; nothing shows the change before it.
+ */
+witnessed: number,
+/**
+ * The ruling party's ideology before and after; null when not recorded.
+ */
+before: string | null, after: string | null,
+/**
+ * Null when the recording does not name the cause.
+ */
+cause: GovernmentCauseKind | null, };
+export type GovernmentCauseKind = "election" | "coup" | "civilWar" | "effect" | "peaceConference" | "overlord" | "console" | "reset";
 export type RulingRun = { token: string, firstHour: number, lastHour: number,
 /**
  * Follows an hour not read or another holder, so the change before it is not a change of

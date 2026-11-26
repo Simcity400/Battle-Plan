@@ -9,6 +9,7 @@ use dashboard_text::{catalogue::View, identity::character_script_token, metadata
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{PORTRAIT_CIVILIAN, PORTRAIT_LARGE, TableId, tables};
 use replay_frame::frame::DecodedFrame;
+use replay_recording::columnar_frames::{Damage, DamageScope};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -46,6 +47,35 @@ pub struct Election {
     pub hour: i32,
     #[doc = " The hour the new date was first read; nothing shows the election before it."]
     pub witnessed: i32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub enum GovernmentCauseKind {
+    Election,
+    Coup,
+    CivilWar,
+    Effect,
+    PeaceConference,
+    Overlord,
+    Console,
+    Reset,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct GovernmentChange {
+    #[doc = " The recorded hour of the change."]
+    pub hour: i32,
+    #[doc = " The hour it was read; nothing shows the change before it."]
+    pub witnessed: i32,
+    #[doc = " The ruling party's ideology before and after; null when not recorded."]
+    pub before: Option<String>,
+    pub after: Option<String>,
+    #[doc = " Null when the recording does not name the cause."]
+    pub cause: Option<GovernmentCauseKind>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -138,6 +168,10 @@ pub struct PartyHistoryReply {
     pub ideology_types: Vec<IdeologyTypeInfo>,
     #[doc = " Each election whose new date was read, at its recorded date."]
     pub elections: Vec<Election>,
+    #[doc = " Each recorded change of government, in hour order."]
+    pub government_changes: Vec<GovernmentChange>,
+    #[doc = " Hours whose changes of government were not wholly recorded: a change in them may be missing."]
+    pub government_unobserved: Vec<HourSpan>,
     #[doc = " Every ideology group in content order, for colours, names and legend order."]
     pub ideologies: Vec<IdeologyInfo>,
     #[doc = " Hours the country's parties were not read: a change of government next to one is a gap,"]
@@ -162,7 +196,10 @@ pub(crate) struct Parties {
     pub leaders: Vec<LeaderRun>,
     pub people: Vec<Leader>,
     pub elections: Vec<Election>,
+    pub government_changes: Vec<GovernmentChange>,
+    pub government_unobserved: Vec<HourSpan>,
     pub unobserved: Vec<HourSpan>,
+    government_gaps: Vec<(i32, i32)>,
     last: Option<(i32, (u32, u32))>,
     look_last: Option<(i32, (u32, u32))>,
     election: Option<((u32, u32), i64)>,
@@ -179,12 +216,12 @@ struct RulingHistory {
 
 impl RulingHistory {
     fn observe(
-        &mut self, token: &str, raw: u32, key: Option<String>, (hour, end): (i32, i32), continues: bool,
+        &mut self, token: &str, raw: u32, key: Option<String>, (hour, end): (i32, i32), continues: bool, renamed: bool,
         tags: impl FnOnce() -> io::Result<(Option<String>, Result<String, String>)>,
     ) -> io::Result<()> {
         let inputs = (token.to_owned(), raw, key.clone());
         let index = match &self.naming {
-            Some((held, index)) if *held == inputs && continues => *index,
+            Some((held, index)) if *held == inputs && continues && !renamed => *index,
             _ => {
                 let (own, selected) = tags()?;
                 let naming = PartyNaming { token: token.to_owned(), tag: own, original_tag: selected.as_ref().ok().cloned(), key };
@@ -242,6 +279,12 @@ struct Columns {
     party: [usize; 5],
     look: [usize; 2],
     election: usize,
+    character: [usize; 2],
+    link: usize,
+    country: [usize; 2],
+    original: [usize; 2],
+    reserved: [usize; 3],
+    government: government::Columns,
 }
 
 impl Columns {
@@ -256,8 +299,99 @@ impl Columns {
             party,
             look: [field(TableId::CountryAppearance, "leader_ideology")?, field(TableId::CountryAppearance, "leader_character")?],
             election: field(TableId::Politics, "last_election")?,
+            character: [field(TableId::Characters, "name_token_id")?, field(TableId::Characters, "token")?],
+            link: field(TableId::CountryLinks, "canonical_slot")?,
+            country: [field(TableId::Countries, "canonical_slot")?, field(TableId::Countries, "tag")?],
+            original: [field(TableId::CountryAppearance, "original_tag")?, field(TableId::CountryAppearance, "original_tag_reference")?],
+            reserved: [
+                field(TableId::ReservedCountryNaming, "tag")?,
+                field(TableId::ReservedCountryNaming, "original_tag")?,
+                field(TableId::ReservedCountryNaming, "original_tag_reference")?,
+            ],
+            government: government::Columns::new()?,
         })
     }
+}
+
+fn unless_withheld<T: Default>(read: io::Result<T>) -> io::Result<T> {
+    match read {
+        Err(error) if matches!(Damage::of(&error).map(|damage| &damage.scope), Some(DamageScope::Withheld { .. })) => Ok(T::default()),
+        read => read,
+    }
+}
+
+fn numbers(history: &History, column: usize) -> BTreeSet<u32> {
+    let Ok(at) = history.columns.binary_search(&column) else { return BTreeSet::new() };
+    history
+        .keys
+        .iter()
+        .flat_map(|(_, steps)| steps.iter().filter_map(|step| step.cells.as_ref().and_then(|cells| number(cells[at]))))
+        .filter_map(|value| u32::try_from(value).ok())
+        .collect()
+}
+
+fn steps_into(history: &History, hours: &mut Vec<i32>) {
+    hours.extend(history.keys.iter().flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
+}
+
+fn read_bounds_into(reads: &[(i32, i32)], hours: &mut Vec<i32>) {
+    for &(start, end) in reads {
+        hours.push(start);
+        hours.push(end.saturating_add(1));
+    }
+}
+
+fn settled(mut hours: Vec<i32>, first: i32, last: i32) -> Vec<i32> {
+    hours.retain(|hour| (first..=last).contains(hour));
+    hours.sort_unstable();
+    hours.dedup();
+    hours
+}
+
+fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run: u32, columns: &Columns, parties: &History, who: (u32, u32), first: i32, last: i32) -> io::Result<Vec<i32>> {
+    let raws: Vec<u128> = numbers(parties, columns.party[2]).into_iter().map(u128::from).collect();
+    if raws.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hours = Vec::new();
+    let links = unless_withheld(lanes::history(recording, run, TableId::CountryLinks, &[columns.link], Keys::These(&raws), first, last))?;
+    steps_into(&links, &mut hours);
+    let slots = numbers(&links, columns.link);
+    let countries = unless_withheld(lanes::history(recording, run, TableId::Countries, &columns.country, Keys::All, first, last))?;
+    let mut ids = Vec::new();
+    if let Ok(slot) = countries.columns.binary_search(&columns.country[0]) {
+        for (key, steps) in &countries.keys {
+            let own = *key == u128::from(who.1) && slots.contains(&who.0);
+            let linked = steps.iter().any(|step| step.cells.as_ref().and_then(|cells| number(cells[slot])).and_then(|slot| u32::try_from(slot).ok()).is_some_and(|slot| slots.contains(&slot)));
+            if own || linked {
+                ids.push(*key);
+                hours.extend(steps.iter().map(|step| step.hour));
+            }
+        }
+    }
+    if !ids.is_empty() {
+        steps_into(&unless_withheld(lanes::history(recording, run, TableId::CountryAppearance, &columns.original, Keys::These(&ids), first, last))?, &mut hours);
+    }
+    let mut tables = vec![TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance];
+    if raws.first() == Some(&0) || slots.contains(&0) {
+        steps_into(&unless_withheld(lanes::history(recording, run, TableId::ReservedCountryNaming, &columns.reserved, Keys::All, first, last))?, &mut hours);
+        tables.push(TableId::ReservedCountryNaming);
+    }
+    for table in tables {
+        read_bounds_into(&unless_withheld(complete_reads(recording, run, table, first, last))?, &mut hours);
+    }
+    Ok(settled(hours, first, last))
+}
+
+fn character_changes(recording: &replay_recording::columnar_frames::Recording, run: u32, columns: &Columns, looks: &History, first: i32, last: i32) -> io::Result<Vec<i32>> {
+    let ids: Vec<u128> = numbers(looks, columns.look[1]).into_iter().map(u128::from).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hours = Vec::new();
+    steps_into(&unless_withheld(lanes::history(recording, run, TableId::Characters, &columns.character, Keys::These(&ids), first, last))?, &mut hours);
+    read_bounds_into(&unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?, &mut hours);
+    Ok(settled(hours, first, last))
 }
 
 struct Stepper<'a> {
@@ -371,6 +505,13 @@ fn read(query: &Query<'_>, tag: &Country, scope: PartyRead, cancelled: &AtomicBo
             holes.push((covered, stretch.last));
         }
     }
+    let mut government = holes.clone();
+    government.append(&mut parties.government_gaps);
+    government.sort_unstable();
+    for (first, last) in government {
+        mark(&mut parties.government_unobserved, first, last);
+    }
+    parties.government_changes.sort_unstable_by_key(|change| (change.hour, change.witnessed));
     holes.extend(parties.unobserved.drain(..).map(|span| (span.first_hour, span.last_hour)));
     holes.sort_unstable();
     for (first, last) in holes {
@@ -400,20 +541,15 @@ impl Parties {
                 cost::storage(|| lanes::history(recording, run, TableId::Politics, &[columns.election], Keys::These(&[key]), first, last))?,
             ),
         };
+        let renames = cost::storage(|| naming_changes(recording, run, columns, &held, who, first, last))?;
+        let recasts = cost::storage(|| character_changes(recording, run, columns, &looks, first, last))?;
         check_cancel(cancelled)?;
         let mut held = Stepper::new(&held);
         let mut looks = Stepper::new(&looks);
         let mut politics = Stepper::new(&politics);
-        let mut hours: Vec<i32> = held.hours().chain(looks.hours()).chain(politics.hours()).chain([first]).collect();
-        for &(start, end) in observed.iter().flatten() {
-            hours.push(start);
-            if end < last {
-                hours.push(end + 1);
-            }
-        }
-        hours.retain(|hour| (first..=last).contains(hour));
-        hours.sort_unstable();
-        hours.dedup();
+        let mut hours: Vec<i32> = held.hours().chain(looks.hours()).chain(politics.hours()).chain(renames.iter().copied()).chain(recasts.iter().copied()).chain([first]).collect();
+        read_bounds_into(&observed.concat(), &mut hours);
+        let hours = settled(hours, first, last);
         let mut unread = [0; SOURCES.len()];
         for (index, &hour) in hours.iter().enumerate() {
             check_cancel(cancelled)?;
@@ -428,21 +564,25 @@ impl Parties {
                 }
                 reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
             });
-            self.observe(query, run, hour, end, who, tag, columns, read, [&held, &looks, &politics])?;
+            let changed = [renames.binary_search(&hour).is_ok(), recasts.binary_search(&hour).is_ok()];
+            self.observe(query, run, (hour, end), who, tag, columns, read, changed, [&held, &looks, &politics])?;
         }
-        Ok(())
+        if columns.scope == PartyRead::Ruling {
+            return Ok(());
+        }
+        government::read(query, &columns.government, run, who.0, (first, last), &mut self.government_changes, &mut self.government_gaps)
     }
 
-    fn observe(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, read: [bool; SOURCES.len()], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), tag: &str, columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
         let [parties_read, looks_read, politics_read] = read;
         if parties_read {
-            self.observe_parties(query, run, hour, end, who, tag, columns, held)?;
+            self.observe_parties(query, run, (hour, end), who, tag, columns, renamed, held)?;
         } else {
             mark(&mut self.unobserved, hour, end);
             self.last = None;
         }
         if looks_read {
-            self.observe_leader(query, run, hour, end, who, columns, looks)?;
+            self.observe_leader(query, run, (hour, end), who, columns, recast, looks)?;
         } else {
             self.look_last = None;
         }
@@ -452,7 +592,7 @@ impl Parties {
         Ok(())
     }
 
-    fn observe_parties(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), tag: &str, columns: &Columns, held: &Stepper<'_>) -> io::Result<()> {
+    fn observe_parties(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), tag: &str, columns: &Columns, renamed: bool, held: &Stepper<'_>) -> io::Result<()> {
         let continues = self.last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.last = Some((end, who));
         let places = columns.party.map(|column| held.place(column));
@@ -473,20 +613,20 @@ impl Parties {
                 }
                 let raw = number(cells[party_tag]).and_then(|raw| u32::try_from(raw).ok()).unwrap_or_default();
                 let key = (number(cells[default]) == Some(0)).then(|| held.text(cells[name]).map(|name| String::from_utf8_lossy(name).into_owned()).unwrap_or_default());
-                self.ruling.observe(token, raw, key, (hour, end), continues, || party_tags(query, run, hour, raw, who, tag))?;
+                self.ruling.observe(token, raw, key, (hour, end), continues, renamed, || party_tags(query, run, hour, raw, who, tag))?;
             }
         }
         Ok(())
     }
 
-    fn observe_leader(&mut self, query: &Query<'_>, run: u32, hour: i32, end: i32, who: (u32, u32), columns: &Columns, looks: &Stepper<'_>) -> io::Result<()> {
+    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, recast: bool, looks: &Stepper<'_>) -> io::Result<()> {
         let continues = self.look_last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.look_last = Some((end, who));
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
             let ideology = looks.text(cells[ideology]).map(|text| String::from_utf8_lossy(text).into_owned()).unwrap_or_default();
             let id = number(cells[character]).and_then(|id| u32::try_from(id).ok());
             let person = match self.leader {
-                Some((held, person)) if held == id && continues => person,
+                Some((held, person)) if held == id && continues && !recast => person,
                 _ => {
                     let person = match id {
                         Some(id) => {
@@ -534,7 +674,12 @@ impl Parties {
 }
 
 fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32), tag: &str) -> io::Result<(Option<String>, Result<String, String>)> {
-    let reads = [replay_lanes::at::Read::all(TableId::Countries), replay_lanes::at::Read::all(TableId::CountryLinks), replay_lanes::at::Read::all(TableId::CountryAppearance)];
+    let reads = [
+        replay_lanes::at::Read::all(TableId::Countries),
+        replay_lanes::at::Read::all(TableId::CountryLinks),
+        replay_lanes::at::Read::all(TableId::CountryAppearance),
+        replay_lanes::at::Read::all(TableId::ReservedCountryNaming),
+    ];
     let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &reads))?;
     if raw == 0 {
         return Ok((
@@ -685,6 +830,8 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         people,
         ideology_types,
         elections: parties.elections.clone(),
+        government_changes: parties.government_changes.clone(),
+        government_unobserved: parties.government_unobserved.clone(),
         ideologies,
         unobserved: parties.unobserved.clone(),
         warnings,
@@ -753,6 +900,8 @@ impl Product for PartyHistory {
             PartySeries::decl(),
             PartOwnership::decl(),
             Election::decl(),
+            GovernmentChange::decl(),
+            GovernmentCauseKind::decl(),
             RulingRun::decl(),
             LeaderRun::decl(),
             PartyNameRun::decl(),
@@ -775,6 +924,8 @@ impl Product for PartyHistory {
         Ok(reply)
     }
 }
+
+mod government;
 
 #[cfg(test)]
 mod tests;
