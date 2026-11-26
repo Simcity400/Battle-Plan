@@ -108,6 +108,17 @@ export function hoveredSubject(adapter: FamilyHostAdapter<any, any, any, any>, r
   return record && hit ? actionOf(adapter, record, hit, false)?.subject ?? null : null;
 }
 
+export function focusedSubject(
+  adapter: FamilyHostAdapter<any, any, any, any>,
+  record: InstalledRecord | null,
+  key: string | null,
+  parseGridKey: (key: string | null) => { readonly row: number; readonly column: number } | null,
+): string | null {
+  if (!record || key === null) return null;
+  const shown = adapter.navigation === 'grid' ? gridHas(adapter, record, key, parseGridKey) : record.picture.actionKeys.has(key);
+  return shown ? actionOf(adapter, record, { key }, false)?.subject ?? key : null;
+}
+
 export function resolveHostInput(
   adapter: FamilyHostAdapter<any, any, any, any>,
   command: HostCommand,

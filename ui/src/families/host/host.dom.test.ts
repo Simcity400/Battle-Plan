@@ -39,6 +39,13 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: px, y: py, button: 'left', clickCount: 1 });
       const f5Activated = await act<string[]>('waitActivated()');
       assert.deepEqual(f5Activated, ['GER'], 'F5: updating widget frame mid-press preserves pointerdown and activates row on release');
+
+      const focus = await act<{ moved: (string | null)[]; playing: { hoursAdvanced: number; installs: number; repainted: boolean; calls: number; commits: number }; outside: (string | null)[]; left: (string | null)[] }>('testFocusRow()');
+      assert.deepEqual(focus.moved, ['GER', 'FRA'], 'the focused row is reported each time keyboard focus moves to another row');
+      assert.ok(focus.playing.hoursAdvanced > 0 && focus.playing.repainted, `playback advanced and installed another picture under the resting focus (${focus.playing.installs} installs)`);
+      assert.deepEqual([focus.playing.calls, focus.playing.commits], [0, 0], `while playback runs under a resting focus: no report and no React render (${focus.playing.hoursAdvanced} hours)`);
+      assert.deepEqual(focus.outside, [null], 'a seek that takes the picture away clears the focused row with it');
+      assert.deepEqual(focus.left, [null], 'focus leaving the rows clears the focused row');
     } finally {
       cdp.close();
     }
@@ -158,6 +165,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
       playCommits: number;
       playBinds: number;
       playPaints: number;
+      homeParked: (string | null)[];
+      homeFocusRows: (string | null)[];
     }>('testDeepLogHomeEnd()');
     assert.equal(deep.deepRowCount, '2001', 'deep log announces the whole log row count');
     assert.equal(deep.deepRowIndex, '612', 'deeply scrolled row announces its absolute row index');
@@ -165,6 +174,8 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.deepEqual([deep.homeScrollBinds, deep.homeScrollKeptGen], [0, true], 'Home scroll goes through view supply with no rebind');
     assert.equal(deep.homeArrived, true, 'Home focuses absolute row 0 once its page installs');
     assert.deepEqual(deep.homeActive, { key: 'R0', rowIndex: '2' }, 'Home focuses R0 with aria-rowindex 2');
+    assert.deepEqual(deep.homeParked, [null], 'while Home waits for its page with focus parked on the table, the row it left is out of the picture, so the focus tooltip is for no row: reported once, as focus leaving a row is');
+    assert.deepEqual(deep.homeFocusRows, [null, 'R0'], 'and the row Home lands on is reported once, by the install that lands focus on it');
     assert.equal(deep.endScrolled, true, 'End scrolls a deeply scrolled log to the bottom');
     assert.deepEqual([deep.endScrollBinds, deep.endScrollKeptGen], [0, true], 'End scroll goes through view supply with no rebind');
     assert.equal(deep.endArrived, true, 'End focuses the last row once its page installs');

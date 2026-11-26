@@ -237,6 +237,8 @@ const lastViewWindow = new Map<number, unknown>();
 let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string; readonly hoverHour?: number; readonly paged?: unknown; readonly art?: unknown }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
+const tooltipRows: [string, string | null][] = [];
+const deepFocusRows: (string | null)[] = [];
 let currentState = {
   source: sourceA,
   active: true,
@@ -455,6 +457,7 @@ function renderApp() {
               pin={null}
               bounds={BOUNDS}
               onActivate={action => { activated.push(action.subject); }}
+              onTooltipRow={(subject, by) => { tooltipRows.push([by, subject]); }}
             />
           </div>
           {currentState.secondMounted && (
@@ -555,6 +558,7 @@ function renderApp() {
                   options={DEEP_LOG_OPTIONS}
                   label="Deep Log"
                   subject="deep-log"
+                  onTooltipRow={(subject, by) => { if (by === 'focus') deepFocusRows.push(subject); }}
                   widget={widget}
                   runtime={rt}
                   active
@@ -663,6 +667,57 @@ window.hostDom = {
     sendHour(subs, 30, [90n, 70n, 50n, 30n], true);
     await until(() => pipeline.view(newPipe)?.mode === 'picture' && !pipeline.view(newPipe)?.dim);
     return { tipVisible, clearedOnDeactivate: afterDeactivate === null, oldPipe: pipeId, newPipe };
+  },
+
+  async testFocusRow() {
+    const pipeId = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
+    const rows = () => [...container!.querySelectorAll<HTMLTableRowElement>('[data-slot="primary"] table tbody tr')];
+    const focused = () => tooltipRows.filter(([by]) => by === 'focus').map(([, subject]) => subject);
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    (document.activeElement as HTMLElement | null)?.blur();
+    await frames(2);
+    tooltipRows.length = 0;
+    rows()[0]!.focus();
+    await until(() => focused().length === 1, 2000);
+    rows()[1]!.focus();
+    await until(() => focused().length === 2, 2000);
+    const moved = focused();
+    const subs = subsForPipe(pipeId);
+    const before = focused().length;
+    const startHour = clock.getSnapshot().hour;
+    const installsBefore = installCalls.get(pipeId) ?? 0;
+    await frames(2);
+    commits = 0;
+    clock.setSpeed(24);
+    clock.setPlaying(true);
+    const playedFrom = pipeline.view(pipeId)?.id;
+    const installsFrom = installCalls.get(pipeId) ?? 0;
+    for (let i = 0; i < 12; i++) {
+      sendHour(subs, clock.getSnapshot().hour, [90n + BigInt(i), 70n, 50n, 30n]);
+      await frames(1);
+    }
+    await frames(4);
+    const playedTo = pipeline.view(pipeId)?.id;
+    const installsTo = installCalls.get(pipeId) ?? 0;
+    clock.setPlaying(false);
+    const playing = { hoursAdvanced: clock.getSnapshot().hour - startHour, installs: (installCalls.get(pipeId) ?? 0) - installsBefore, repainted: playedTo !== undefined && playedTo !== playedFrom && installsTo > installsFrom, calls: focused().length - before, commits };
+    clock.seek(clock.getSnapshot().hour + 500);
+    seek = clock.getSnapshot().seekSequence;
+    const cleared = await until(() => pipeline.view(pipeId)?.mode !== 'picture', 2000);
+    await until(() => focused().length > before, 2000);
+    const outside = cleared ? focused().slice(before) : ['picture kept'];
+    clock.seek(40);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subs, 40, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeId)?.mode === 'picture' && !pipeline.view(pipeId)?.dim);
+    rows()[1]!.focus();
+    await until(() => focused().at(-1) === 'FRA', 2000);
+    const settled = focused().length;
+    (document.activeElement as HTMLElement | null)?.blur();
+    await until(() => focused().at(-1) === null, 2000);
+    return { moved, playing, outside, left: focused().slice(settled) };
   },
 
   async testF3UnrelatedAppearanceAndF4ReducedMotion() {
@@ -1170,6 +1225,8 @@ window.hostDom = {
     const deepRowIndex = rowEl(610)?.getAttribute('aria-rowindex') ?? null;
     rowEl(610)!.focus();
     await frames(2);
+    await until(() => deepFocusRows.at(-1) === 'R610', 2000);
+    deepFocusRows.length = 0;
 
     deepLogHeldRanges = [[0, 30]];
     boundIds = [];
@@ -1177,10 +1234,12 @@ window.hostDom = {
     rowEl(610)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
     const homeScrolled = await until(() => bodyD.scrollTop === 0 && !!container!.querySelector('[data-slot="deep-log"] table tbody tr[data-row-key="loading:0"]'), 2000);
     await frames(2);
+    const homeParked = [...deepFocusRows];
     const homeScrollBinds = boundIds.filter(id => id === pipeD).length;
     const homeScrollKeptGen = pipeline.binding(pipeD) === homeGen;
     releasePages();
     const homeArrived = await until(() => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') === 'R0', 2000);
+    const homeFocusRows = [...deepFocusRows];
     const homeActive = activeInfo();
 
     await scrollToRow(610);
@@ -1301,6 +1360,8 @@ window.hostDom = {
     renderApp();
     await frames(2);
     return {
+      homeParked,
+      homeFocusRows,
       deepRowCount,
       deepRowIndex,
       homeScrolled,
