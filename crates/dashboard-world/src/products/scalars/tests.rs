@@ -113,14 +113,15 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
     use std::{collections::BTreeSet, sync::Arc};
     use world_tension_stack::{TensionValueMode, WorldTensionStack, WorldTensionStackParams};
 
+    let amount = |hour: i32| if hour % 2 == 0 { i64::from(hour) } else { 47 };
     let frames = (100..=145).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
         *frame.tables[TableId::WorldTension.index()] = TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow { total_raw: hour.into(), ..Default::default() }]));
         *frame.tables[TableId::ThreatCountryAggregates.index()] = TableView::Complete(TableRows::ThreatCountryAggregates(
-            (1..=48).map(|country_slot| ThreatCountryAggregateRow { country_slot, total_raw: if country_slot == 1 { hour.into() } else { country_slot.into() } }).collect()));
+            (1..=48).map(|country_slot| ThreatCountryAggregateRow { country_slot, total_raw: if country_slot == 1 { amount(hour) } else { country_slot.into() } }).collect()));
         *frame.tables[TableId::ThreatSources.index()] = TableView::Complete(TableRows::ThreatSources(
             (0..=hour - 100).map(|offset| ThreatSourceRow { ordinal: offset as u32, country: 9001, date: 100 + offset,
-                final_raw: if offset == 0 { hour.into() } else { 1 }, reason: b"fixture".to_vec(), ..Default::default() }).collect()));
+                final_raw: if offset == 30 { hour.into() } else { 1 }, reason: b"fixture".to_vec(), ..Default::default() }).collect()));
         frame
     }).collect();
     let cancelled = false.into();
@@ -133,20 +134,26 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
         .into_iter().map(|step| step.hour).collect();
     assert_eq!(played.len(), 16);
     let mut visits = Vec::new();
-    for stack in [true, false] {
+    for (stack, layers) in [(true, 2), (false, 2), (true, 1)] {
         let mut total = 0;
         for &hour in &played {
             let (reply, visited) = counted(|| WorldTensionStack::load(&source, &WorldTensionStackParams {
-                branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers: 2, values: TensionValueMode::Recorded,
+                branch_id: "1".into(), first_hour: hour - 10, last_hour: hour, layers, values: TensionValueMode::Recorded,
                 countries: None, top: None, group: None, width: None, include_stack: Some(stack), include_events: Some(!stack),
             }, &load, &cancelled).unwrap());
             if stack {
-                assert_eq!(reply.bands[0].slot, 1);
-                assert_eq!(reply.bands[0].end_raw, Some(hour.to_string()));
+                let (leader, raw) = if hour % 2 == 0 { (1, i64::from(hour)) } else { (48, 48) };
+                assert_eq!(reply.bands[0].slot, leader);
+                assert_eq!(reply.bands[0].end_raw, Some(raw.to_string()));
                 assert_eq!(reply.hours[0], hour - 10);
             } else {
                 assert_eq!((reply.events.first().unwrap().hour, reply.events.last().unwrap().hour), (hour - 10, hour));
                 assert_eq!(reply.events.len(), 11);
+                if hour <= 140 {
+                    let revised = reply.events.iter().find(|event| event.hour == 130).unwrap();
+                    assert_eq!(revised.added_raw, hour.to_string());
+                    assert_eq!(revised.marker_raw.as_deref(), Some("130"));
+                }
             }
             if hour > 130 { total += visited; }
         }
