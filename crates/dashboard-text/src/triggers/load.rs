@@ -152,11 +152,7 @@ impl<'a> Evaluator<'_, 'a> {
     }
 
     pub fn evaluate_seeded(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
-        let depth = self.evaluations.get();
-        if depth == 0 {
-            self.diverged.replace(None);
-        }
-        self.evaluations.set(depth + 1);
+        let evaluation = self.begin_evaluation();
         let value = self.with_variable_context(scopes, || {
             for (name, value) in seeds {
                 self.local_temps
@@ -165,8 +161,7 @@ impl<'a> Evaluator<'_, 'a> {
             }
             self.all(&self.units(items), scopes)
         });
-        self.evaluations.set(depth);
-        match self.divergence() {
+        match evaluation.divergence() {
             Some(why) => {
                 if let Eval::Unknown(reasons) = &value {
                     for failure in reasons {
