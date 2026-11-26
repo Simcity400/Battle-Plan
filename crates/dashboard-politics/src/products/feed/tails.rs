@@ -432,6 +432,7 @@ fn load_feed_at(prepared: &Prepared, query: &Query<'_>, params: &EventFeedTailPa
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
+    let presenter = if opened { presenter } else { presenter.without_effects() };
     let mut events: Vec<&FeedEvent> = Vec::new();
     let mut shapes: Vec<(usize, Option<usize>)> = Vec::new();
     for shown in &answer.rows {
@@ -593,6 +594,7 @@ fn load_cards_at(list: List, prepared: &Prepared, query: &Query<'_>, params: &Sc
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(query, content_from(&prepared.content, &mut notices), Arc::clone(&prepared.kept));
+    let presenter = if opened_row { presenter } else { presenter.without_effects() };
     let mut events: Vec<&FeedEvent> = Vec::new();
     let mut spans: Vec<(usize, usize, bool)> = Vec::new();
     for shown in &answer.rows {

@@ -97,7 +97,10 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
               ) : detail?.missing ? (
                 <p className="evd-missing" title={detail.missing}>Not recorded: {detail.missing}</p>
               ) : item?.description ? (
-                <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
+                <>
+                  <p><ScriptedSpan text={item.description} reason={reasons.gaps} /></p>
+                  {detail?.effectsMissing?.map(reason => <p key={reason} className="evd-missing" title={reason}>Authored effects not recorded: {reason}</p>)}
+                </>
               ) : (
                 <p className="evd-missing" title={reasons.nameMissing ?? 'Event presentation was not recorded'}>
                   Event presentation was not recorded

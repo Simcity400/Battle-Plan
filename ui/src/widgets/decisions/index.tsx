@@ -3,6 +3,7 @@ import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/defini
 import type { InstalledAction } from '../../families/contract.ts';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import DecisionDetailWindow, { type DecisionDetailSubject } from './DecisionDetailWindow.tsx';
+import { useEventDetail } from '../event-choices/eventDetail.ts';
 
 function DecisionsView(props: FamilyViewProps) {
   const anchor = useRef<HTMLDivElement>(null);
@@ -10,11 +11,12 @@ function DecisionsView(props: FamilyViewProps) {
   const scope = track ? `${track.source.id}:${track.source.revision}:${track.branch.id}` : '';
   const [opened, setOpened] = useState<{ readonly scope: string; readonly subject: DecisionDetailSubject } | null>(null);
   const shown = opened && opened.scope === scope ? opened.subject : null;
+  const detail = useEventDetail(props.runtime, props.widget.trackIds[0], 'decisions-tail', shown ? { key: shown.key, hour: shown.startedHour, asOfHour: shown.asOfHour } : null, shown !== null);
 
   const onActivate = useCallback((action: InstalledAction) => {
     const meta = action.meta as DecisionDetailSubject | null | undefined;
     if (!meta || typeof meta !== 'object' || typeof meta.key !== 'string') return;
-    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: action.hour } });
+    setOpened({ scope, subject: { ...meta, key: action.subject || meta.key, asOfHour: meta.asOfHour ?? action.hour } });
   }, [scope]);
 
   return (
@@ -26,7 +28,7 @@ function DecisionsView(props: FamilyViewProps) {
         selectedKey={shown?.key ?? null}
         onActivate={onActivate}
       /> : null}
-      <DecisionDetailWindow subject={shown} anchor={anchor} onClose={() => setOpened(null)} />
+      <DecisionDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>
   );
 }
