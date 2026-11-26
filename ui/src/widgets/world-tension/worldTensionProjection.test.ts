@@ -395,6 +395,12 @@ describe('world-tension projections', () => {
     });
     const evItem = model.hoverDetail?.items.find(item => item.label === 'Remilitarised the Rhineland');
     assert.equal(evItem?.value, '+5%', 'hover shows +5% recorded at hoverHour, not +9% revised later at playhead');
+    const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
+    const markerIndex = model.markers?.findIndex(marker => marker.hour === hoverHour) ?? -1;
+    assert.ok(markerIndex >= 0, 'the event has a marker at its hour');
+    const markerTip = deriveTimeChartTooltip(model, layout, `marker:${markerIndex}@${hoverHour}`);
+    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Remilitarised the Rhineland');
+    assert.deepEqual(listed.map(item => item.value), ['+5%'], `the marker lists its event once, with the hour's read figure: ${JSON.stringify(markerTip?.payload?.items)}`);
   });
 
   it('S11: downsampled world-tension lines paint interval bounds, hover as ranges before exact hover, and show exact hovered-hour contributions once loaded', () => {

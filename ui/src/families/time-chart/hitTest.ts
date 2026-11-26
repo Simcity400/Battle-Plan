@@ -507,9 +507,15 @@ export function deriveTimeChartTooltip(
       };
     });
     const read = model.hoverDetail && model.hoverDetail.hour === m.hour ? model.hoverDetail : null;
+    const readItems = read?.items ?? [];
+    for (const [at, item] of eventItems.entries()) {
+      const fromRead = readItems.find(entry => entry.label === item.label);
+      if (fromRead) eventItems[at] = { ...item, ...(fromRead.value !== undefined ? { value: fromRead.value } : {}) };
+    }
+    const rest = readItems.filter(entry => !eventItems.some(item => item.label === entry.label));
     const valueItems = read?.replacesSeries ? [] : seriesTooltipItemsAt(model, m.hour);
-    if (read?.items.length) {
-      valueItems.push(...(valueItems.length ? [{ ...read.items[0]!, divider: true }, ...read.items.slice(1)] : read.items));
+    if (rest.length) {
+      valueItems.push(...(valueItems.length ? [{ ...rest[0]!, divider: true }, ...rest.slice(1)] : rest));
     }
     if (valueItems.length > 0 && eventItems.length > 0) {
       valueItems[0] = { ...valueItems[0]!, divider: true };
