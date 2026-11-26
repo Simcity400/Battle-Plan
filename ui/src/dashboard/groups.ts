@@ -372,6 +372,7 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
 
 export function tagsAt(resolved: ResolvedCountries, hour: number): readonly string[] {
   const membership = resolved.membership;
+  if (resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return [];
   return membership ? resolved.tags.filter(tag => membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)) : resolved.tags;
 }
 

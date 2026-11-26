@@ -1634,6 +1634,8 @@ test('every member so far is dated for multi-country views: each mask ends befor
       { tag: 'BBB', identities: [{ firstHour: 0, lastHour: 9, slot: 2, countryId: 102 }, { firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
   const so = resolveCountries(selection, [], left, 1000, Number.MAX_SAFE_INTEGER);
   assert.deepEqual([tagsAt(so, 3), tagsAt(so, 12)], [['AAA'], ['BBB']], 'a choice at an hour offers the member under its tag then, never another holder of its later tag');
+  const unread = resolveCountries({ ...selection, membership: 'hour' }, [], everFaction([{ firstHour: 10, lastHour: 10 }], [{ tag: 'AAA', firstHour: 9, lastHour: 11 }]), 1000, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual([tagsAt(unread, 9), tagsAt(unread, 10), tagsAt(unread, 11)], [['AAA'], [], ['AAA']], 'an hour with an unread roster offers no member');
   assert.deepEqual([everStateAt(everBounds(selection, groups)!, 299).kind, everStateAt(everBounds(selection, groups)!, 300).kind], [null, 'unrecorded']);
 });
 
