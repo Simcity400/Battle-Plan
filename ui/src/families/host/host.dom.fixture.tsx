@@ -92,6 +92,8 @@ const client = {
 const clock = new PlaybackController();
 const paintsByWidget = new Map<number, number>();
 let payloadTips = false;
+let hoverRanking: string | null = null;
+const hoverReports: Array<readonly [number | null, readonly string[] | undefined]> = [];
 
 type PaintedField = { readonly value: unknown; readonly content: string };
 function asPayloadTip(field: unknown): unknown {
@@ -122,7 +124,8 @@ function createLane(): LaneWorker {
           paintsByWidget.set(input.widget, (paintsByWidget.get(input.widget) ?? 0) + 1);
           const painted = paint(input, state, content);
           if (painted.mode !== undefined && painted.mode !== 'picture') return painted;
-          const fields = { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' } };
+          const fields = { ...painted.fields, accessibleDescription: { value: 'Four countries ranked by factories', content: 'description' },
+            ...(hoverRanking ? { drawnKeys: { value: { main: [hoverRanking] }, content: hoverRanking } } : {}) };
           if (payloadTips && 'focusTooltip' in fields) fields.focusTooltip = asPayloadTip(fields.focusTooltip) as typeof fields.focusTooltip;
           return { ...painted, fields };
         };
@@ -211,6 +214,7 @@ function subsForPipe(pipeId: number): number[] {
 
 const { chromeState: _chrome, ...tableWithoutChrome } = tableHostAdapter;
 const BODY_FOCUS_ADAPTER = { ...tableWithoutChrome, mirrorFocus: 'body' as const };
+const POINT_HOVER_ADAPTER = { ...tableHostAdapter, navigation: 'points' as const, parseHit: (key: string | null) => key ? { key, hour: 90 } : null };
 
 let root: Root | null = null;
 let genericCommits = 0;
@@ -425,7 +429,8 @@ function renderApp() {
             <Profiler id="generic-host" onRender={() => { genericCommits++; }}>
               <div data-slot="generic" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
                 <FamilyHost
-                  adapter={currentState.genericBodyFocus ? BODY_FOCUS_ADAPTER : tableHostAdapter}
+                  adapter={hoverRanking ? POINT_HOVER_ADAPTER : currentState.genericBodyFocus ? BODY_FOCUS_ADAPTER : tableHostAdapter}
+                  onHoverHour={(hour, keys) => { hoverReports.push([hour, keys?.main]); }}
                   {...(currentState.genericBodyFocus ? {} : { chrome: TableChrome })}
                   settings={SETTINGS}
                   declaration={scoreboardProjection}
@@ -620,6 +625,8 @@ window.hostDom = {
   },
 
   async testGenericHostFrames() {
+    hoverRanking = 'NEW';
+    hoverReports.length = 0;
     currentState = { ...currentState, genericMounted: true };
     renderApp();
     let pipeG = -1;
@@ -642,6 +649,8 @@ window.hostDom = {
     };
     await frames(4);
     const mountCommits = genericCommits;
+    container!.querySelector<HTMLElement>('[data-slot="generic"] table tbody tr')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    await frames(4);
     genericCommits = 0;
     bindCount = 0;
     paintsByWidget.set(pipeG, 0);
@@ -695,11 +704,17 @@ window.hostDom = {
     row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     const installed = pipeline.view(pipeG);
     const activated = genericActivated[0] ?? null;
+    hoverRanking = 'NEXT';
+    sendHour(subsG, clock.getSnapshot().hour, [factories + 1n, 70n, 50n, 30n]);
+    await until(() => hoverReports.at(-1)?.[1]?.[0] === 'NEXT');
+    const rankedHovers = [...hoverReports];
+    hoverRanking = null;
 
     currentState = { ...currentState, genericMounted: false };
     renderApp();
     return {
       firstPicture,
+      rankedHovers,
       mountCommits,
       quiet,
       steady,

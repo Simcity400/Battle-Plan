@@ -34,6 +34,7 @@ import { keepEqual } from './stableValue.ts';
 import FamilyHost, { type FamilyChromeProps } from './FamilyHost.tsx';
 import { useFamilyTheme } from './theme.ts';
 import { useFamilyPlan } from './useFamilyPlan.ts';
+import type { DrawnKeys } from './installed.ts';
 import { Popover, usePopover } from '../../components/Popover';
 import RegionChooser from '../regions/RegionChooser.tsx';
 import { addRegion, AUTOMATIC_REGIONS, isAutomatic, moveRegion, readRegionChoice, removeRegion, writeRegionChoice, type RegionChoice } from '../regions/regionChoice.ts';
@@ -123,11 +124,11 @@ export default function DeclaredFamilyWidget<
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
-  const [hoverHour, setHoverHour] = useState<number | null>(null);
+  const [hover, setHover] = useState<{ hour: number; drawnKeys?: DrawnKeys } | null>(null);
   const lastViewportRef = useRef<FamilyViewportChange | null>(null);
 
-  const handleHoverHour = useCallback((next: number | null) => {
-    setHoverHour(prev => (prev === next ? prev : next));
+  const handleHoverHour = useCallback((next: number | null, drawnKeys?: DrawnKeys) => {
+    setHover(next === null ? null : { hour: next, drawnKeys });
     externalHoverHour?.(next);
   }, [externalHoverHour]);
 
@@ -151,7 +152,8 @@ export default function DeclaredFamilyWidget<
     widget,
     runtime,
     active,
-    hoverHour,
+    hoverHour: hover?.hour,
+    drawnKeys: hover?.drawnKeys,
     setOption,
   });
 

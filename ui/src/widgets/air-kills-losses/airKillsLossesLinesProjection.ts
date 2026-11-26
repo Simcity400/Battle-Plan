@@ -53,6 +53,7 @@ import {
 } from '../bombing-damage/militaryAirAt.ts';
 
 const COLOURED = 8;
+const NO_DRAWN_KEYS = { dealt: [], taken: [] } as const;
 const SCALE = 100_000;
 const DEALT_SUFFIX = '\u0000dealt';
 const TAKEN_SUFFIX = '\u0000taken';
@@ -226,6 +227,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         empty: { message: refused, kind: 'unavailable' },
         auditRows: [],
@@ -247,6 +249,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         warnings: head.warnings,
         empty: { message: head.missing, kind: 'unavailable' },
@@ -265,6 +268,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        drawnKeys: NO_DRAWN_KEYS,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         summaryText: AIR_LEDGER_NOTE,
         ...(note ? { note } : {}),
@@ -387,6 +391,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
         ...(view ? { view } : {}),
         yAxis,
         series: [],
+        drawnKeys: NO_DRAWN_KEYS,
         legend,
         gaps: options.gaps.length > 0 ? options.gaps : undefined,
         hoverDetail,
@@ -412,6 +417,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       ...(view ? { view } : {}),
       yAxis,
       series,
+      drawnKeys: { dealt: orderedKeys, taken: orderedKeys },
       legend,
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail,

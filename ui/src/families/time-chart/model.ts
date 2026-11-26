@@ -1,4 +1,5 @@
 import type { FamilyAuditRow } from '../auditRow.ts';
+import type { DrawnKeys } from '../host/installed.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
 import type { ArtResult, BoundedSeries } from '../plan.ts';
 
@@ -247,6 +248,7 @@ export interface TimeChartModel {
   readonly view?: { readonly x?: readonly [number, number] | null; readonly y?: readonly [number, number] | null };
   readonly yAxis: ChartYAxisSpec;
   readonly series: readonly TimeChartSeriesModel[];
+  readonly drawnKeys?: DrawnKeys;
   readonly stack?: ChartStackModel;
   readonly columns?: ChartColumnModel;
   readonly rows?: readonly ChartRowModel[];

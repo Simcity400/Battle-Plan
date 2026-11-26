@@ -43,6 +43,7 @@ import {
   stabilizeCanvasDimension,
 } from '../broker.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
+import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
 import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -172,6 +173,7 @@ export interface UseFamilyPlanInput<TAux, TExtra> {
   readonly runtime: WidgetRuntime;
   readonly active: boolean;
   readonly hoverHour?: number | null;
+  readonly drawnKeys?: DrawnKeys;
   readonly setOption?: (key: string, value: OptionValue) => void;
 }
 
@@ -230,6 +232,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     runtime,
     active,
     hoverHour = null,
+    drawnKeys,
     setOption,
   } = input;
 
@@ -690,8 +693,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const displayedSeries = tiledState.key === pixelBinnedKey ? tiledState.series : undefined;
   const asksRef = useRef<readonly HoverAsk[] | undefined>(undefined);
   const asks = useMemo(
-    () => (asksRef.current = active && plan ? hoverAsks(plan, hoverHour, name => { const shown = displayedSeries?.[name]; return shown ? [...shown.keys()] : undefined; }, asksRef.current) : []),
-    [active, plan, hoverHour, displayedSeries],
+    () => (asksRef.current = active && plan ? hoverAsks(plan, hoverHour, name => displayedHoverKeys(name, drawnKeys, displayedSeries), asksRef.current) : []),
+    [active, plan, hoverHour, drawnKeys, displayedSeries],
   );
   const hovers = useMemo(() => currentHovers(asks, heldHovers), [asks, heldHovers]);
   const hoverSlotsRef = useRef<ReadonlySet<string>>(new Set());

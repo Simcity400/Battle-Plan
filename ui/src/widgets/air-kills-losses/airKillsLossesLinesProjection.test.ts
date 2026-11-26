@@ -162,6 +162,10 @@ test('air kills & losses lines projects slot-keyed dual lines, whole-number axis
   });
 
   const model = airKillsLossesLinesProjection.project(readView, makeOptions({ rankMetric: 'taken' }));
+  const plan = airKillsLossesLinesDeclaration.sources(makeCtx(), { following: true, staticSpan: null });
+  const asks = hoverAsks(plan, 90, name => model.drawnKeys?.[name] ?? [countryKey(3)]);
+  assert.deepEqual(model.drawnKeys, { dealt: [k1, k2], taken: [k1, k2] });
+  assert.deepEqual(asks[0]?.request.params.countries, [1, 2]);
   assert.equal(model.yAxis.decimals, 0);
   assert.equal(model.series.length, 4);
   assert.equal(model.series[0]!.id, `${k1}\u0000dealt`);
@@ -200,6 +204,7 @@ test('unrecorded air losses stay not recorded with their reason, never zero or b
   assert.equal(model.series.length, 0);
   assert.equal(model.empty?.kind, 'unavailable');
   assert.equal(model.empty?.message, 'Aircraft loss events were not recorded at this hour');
+  assert.deepEqual(model.drawnKeys, { dealt: [], taken: [] });
   assert.deepEqual(model.auditRows?.map(r => r.value), ['Aircraft loss events were not recorded at this hour']);
 });
 
