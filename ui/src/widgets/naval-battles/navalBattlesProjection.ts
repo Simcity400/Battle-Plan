@@ -29,6 +29,7 @@ function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: Iden
   const ships = logPairCell(row.ships, 'Ships');
   return {
     key: row.key, name: title, rowHour: row.hour, live, meta: row.hour,
+    ...(row.result === 'unknown' ? { tooltipNote: 'The game keeps a winner only for battles a player takes part in' } : {}),
     tooltipExtra: () => sides.flatMap((side, i) => [
       { label: i === 0 ? 'Attackers' : 'Defenders', divider: true,
         value: side.length ? knownValue(side.map(who => who.name).join(', ')) : notRecorded('Country not recorded') },

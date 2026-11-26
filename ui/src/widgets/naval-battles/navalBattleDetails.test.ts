@@ -68,6 +68,8 @@ test('the followed naval table shows the supplying read, partial sinkings and IC
     ['Attackers', 'notRecorded'], ['Ships', 'known'], ['Ships sunk', 'partial'], ['IC lost', 'partial'],
     ['Defenders', 'notRecorded'], ['Ships', 'zero'], ['Ships sunk', 'notRecorded'], ['IC lost', 'notRecorded']],
     'the tooltip groups the figures under each side instead of repeating the pair columns');
+  assert.equal(deriveRowTooltip(found, model(true).columns).note, 'The game keeps a winner only for battles a player takes part in');
+  assert.equal(deriveRowTooltip({ ...found, row: model(true).rows[0]! }, model(true).columns).note, undefined);
   assert.deepEqual(row.cells.shipsSunk!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
   assert.equal(row.cells.shipsSunk!.value.kind, 'notRecorded');
   assert.deepEqual(row.cells.icLost!.pair!.map(value => value.kind), ['partial', 'notRecorded']);
