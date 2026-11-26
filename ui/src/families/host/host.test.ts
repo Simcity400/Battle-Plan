@@ -49,7 +49,6 @@ import {
 } from './tooltips.ts';
 import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts';
 import { gatedByCountry, planFamilySources } from './planSources.ts';
-import { effectiveCountryUnobserved } from '../sources.ts';
 import { factionPooledResourcesDeclaration } from '../../widgets/faction-pooled-strength/factionPooledStrengthProjection.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
 import { withSoFarMembership } from './membership.ts';
@@ -1230,6 +1229,8 @@ test('class D: every action and published state comes from the installed picture
   const cardRecord = recordInstalled(cardPicture, { nav: nav([['GER', -1]]), rowHours: { GER: 9 } }, 'GER');
   const menu = resolveHostInput(cardHostAdapter, 'menu', { key: 'GER', hit: null, picture: cardPicture }, gate(cardRecord), options, grid);
   assert.deepEqual(menu?.kind === 'menu' ? [menu.hit.hour, menu.hit.hitHour] : null, [9, 9], '#967 R2-S1: a keyboard menu on a dated card row acts at the hour of that row, not the hour of the installed picture');
+  const pointed = resolveHostInput(cardHostAdapter, 'menu', { key: 'GER', hit: { key: 'GER', hour: 5 }, picture: cardPicture }, gate(cardRecord), options, grid);
+  assert.deepEqual(pointed?.kind === 'menu' ? [pointed.hit.hour, pointed.hit.hitHour] : null, [5, 5], 'a pointer hit keeps the hour it carries');
 
   const selections = new BoundSelections();
   selections.bound(3, 'A');
@@ -1584,14 +1585,6 @@ test('a single-country widget that names its subject itself opens on branch cove
   assert.equal(gatedByCountry(policy, { faction: 'axis' }), false, 'an explicit faction needs no live country');
   assert.equal(gatedByCountry({ mode: 'single' }, { faction: 'axis' }), true, 'a widget without a subject option keeps its country gate');
   assert.equal(gatedByCountry({ mode: 'multi' }, {}), false);
-});
-
-test('every member so far with an unknown roster is unobserved from its first unknown hour, never refused for the whole campaign (#932 R2-S6)', () => {
-  const ever = { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'ever' as const, aggregate: false };
-  const unknown = [{ firstHour: 30, lastHour: 40 }, { firstHour: 10, lastHour: 20 }];
-  assert.deepEqual(effectiveCountryUnobserved(ever, unknown), [[10, Number.MAX_SAFE_INTEGER]], 'members so far are known up to the first unknown roster hour and unknown from it on, as the recording resolver answers');
-  assert.deepEqual(effectiveCountryUnobserved({ ...ever, membership: 'hour' }, unknown), [[30, 40], [10, 20]], 'membership at the hour is unknown only within each unknown span');
-  assert.deepEqual(effectiveCountryUnobserved(ever, []), []);
 });
 
 test('a war group chosen by recorded slot matches that slot under every tag it held, and not the later holder of its old tag (#932 R2-S15)', () => {

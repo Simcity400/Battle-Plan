@@ -8,7 +8,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
-import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -86,6 +86,7 @@ import {
   extractFactionData,
   freezeGate,
   planOwner,
+  selectionUnobservedReason,
   trackGate,
   type FrozenGate,
 } from '../sources.ts';
@@ -450,6 +451,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   );
   const identitySnapshot = useSyncExternalStore(snapshots.subscribe, snapshots.read, snapshots.read);
 
+  const filterUnobserved = useMemo(
+    () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
+    [isFilter, widget.countries, groups.data],
+  );
+
   const selectedSlots = useMemo(() => {
     if (!isFilter && !isMulti) return undefined;
     if (widget.countries.kind !== 'tags' && widget.countries.kind !== 'selected') return undefined;
@@ -474,10 +480,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
-    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
+    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
     unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
-  }), [widget.countries, effectiveMulti, selectedSlots, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
+  }), [widget.countries, effectiveMulti, selectedSlots, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, factionData, filterMatch?.reason]);
 
   const owner = useMemo(
     () => planOwner(kind, track, widget.time, widget.countries, isSingle ? countryTag : undefined),

@@ -52,9 +52,20 @@ export function effectiveCountryUnobserved(
   selection: CountrySelection,
   raw: readonly HourSpan[] | undefined,
 ): HourRanges {
-  if (!raw?.length || selection.kind !== 'group') return [];
-  if (selection.membership === 'ever') return [[Math.min(...raw.map(span => span.firstHour)), Number.MAX_SAFE_INTEGER]];
+  if (!raw?.length) return [];
+  if (selection.kind !== 'group' || selection.membership !== 'hour') return [];
   return raw.map(span => [span.firstHour, span.lastHour] as const);
+}
+
+export function selectionUnobservedReason(
+  selection: CountrySelection,
+  raw: readonly HourSpan[] | undefined,
+): string | null {
+  if (!raw?.length) return null;
+  if (selection.kind === 'group' && selection.membership === 'ever') {
+    return 'Group membership is incomplete for this campaign.';
+  }
+  return null;
 }
 
 export interface FamilyFactionData {

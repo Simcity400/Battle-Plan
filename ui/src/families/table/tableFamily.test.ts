@@ -36,7 +36,9 @@ import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
 import { showBundle } from '../readUnits.ts';
+import { effectiveCountryUnobserved, selectionUnobservedReason } from '../sources.ts';
 import { SlotTags } from '../../dashboard/countrySlots.ts';
+import { groupUnobserved } from '../../dashboard/groups.ts';
 import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
 import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue, type Value } from '../value.ts';
@@ -916,6 +918,9 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
   assert.throws(() => store.require(undefined), /Not auditable/);
   assert.throws(() => store.require(999), /Not auditable/);
 
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), []);
+  assert.deepEqual(effectiveCountryUnobserved({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), [[10, 20]]);
+
   const gate = new CadenceGate(20);
   assert.equal(gate.due(100, 24, 'w'), true);
   gate.record(100, 'w');
@@ -1117,6 +1122,12 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   ]);
   assert.deepEqual(nativeCase.map(r => [r.tag, r.firstHour, r.lastHour]), [['GER', 1, 5], ['D01', 6, 8], ['GER', 9, 10], ['PRU', 11, 15]]);
 
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]),
+    'Group membership is incomplete for this campaign.',
+    'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
+  );
+  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const ctxA = { tag: 'A', role: 'occupier', settings: 'sA', looks: 'lA' };
   const ctxB = { tag: 'B', role: 'occupied', settings: 'sB', looks: 'lB' };
@@ -1333,6 +1344,22 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   assert.equal(overlapsHourRanges(shallowFrozenOuter, 50, 60), true, 'N18: indexed overlap includes boundary');
   assert.throws(() => { (shallowFrozenOuter[0] as [number, number])[1] = 999; }, TypeError, 'N18: inner tuple frozen even when outer array was already frozen');
 
+  const filterGroupUnobserved = groupUnobserved(
+    {
+      humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
+      factions: [],
+      wars: [],
+      unobserved: { humans: [{ firstHour: 10, lastHour: 20 }], factions: [], wars: [] },
+      countryIdentities: [],
+      warnings: [],
+    } as never,
+    { type: 'humans' },
+  );
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, filterGroupUnobserved),
+    'Group membership is incomplete for this campaign.',
+    'M4: filter policy applies ever-membership incompleteness refusal when groupUnobserved has gaps',
+  );
 
   const mirrorRows = Array.from({ length: 10 }, (_, i) => ({
     key: `R${i}`,
