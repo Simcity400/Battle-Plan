@@ -903,7 +903,7 @@ describe('time-chart laneView integration', () => {
   });
 
   it('projects stability with valueScale 100 step lines, 0-100% axis, and future-clamped markers', () => {
-    const HIDDEN = 'War and faction markers are not shown from 1936.1.5: Who holds GER is not known: Countries table unread';
+    const HIDDEN = 'War and faction markers are not shown from 1936.1.6 00:00: Who holds GER is not known: Countries table unread';
     const until = H1936 + 240;
     const stabLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.8, 0.75, 1.0, 1.0, until)]);
     const warLine = makeTiledLine('GER', [makeBucket(H1936, until, 0.35, 0.35, 0.9, 0.9, until)]);
