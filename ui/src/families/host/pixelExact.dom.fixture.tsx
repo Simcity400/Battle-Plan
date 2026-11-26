@@ -7,6 +7,8 @@ import 'react-grid-layout/css/styles.css';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { measureColour } from '../../charts/palette.ts';
+import { DEFAULT_APPEARANCE, resolveAppearance } from '../../shell/appearance/settings.ts';
+import { applyAppearance } from '../../shell/appearance/useAppearance.ts';
 import { engineHour } from '../../dashboard/calendar.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -448,7 +450,7 @@ let root: ReturnType<typeof createRoot> | null = null;
 
 const api = {
   async mount(): Promise<{ readonly settled: boolean; readonly pending: readonly string[]; readonly dpr: number }> {
-    while (!getComputedStyle(document.documentElement).getPropertyValue('--text').trim()) await frames();
+    applyAppearance(document.documentElement, DEFAULT_APPEARANCE, resolveAppearance(DEFAULT_APPEARANCE, true, false));
     await document.fonts.ready;
     document.documentElement.style.setProperty('--surface', '#16181d');
     document.documentElement.style.setProperty('--panel', '#1b1e24');

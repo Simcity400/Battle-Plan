@@ -1,4 +1,4 @@
-import { CONVOY_EFFICIENCY_STOPS, measureColour } from '../../charts/palette.ts';
+import { convoyEfficiencyColour, measureColour } from '../../charts/palette.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { closedDayTiles, dayHistoryNames, dayTileCount, dayTileEntries } from '../../families/heat/dayTiles.ts';
@@ -13,12 +13,11 @@ import {
   type HeatLanesProjection,
 } from '../../families/heat/lanesModel.ts';
 import type { FamilyTooltipPayload } from '../../families/host/tooltips.ts';
-import { readableOn, regionLabel } from '../../families/heat/scale.ts';
+import { regionLabel } from '../../families/heat/scale.ts';
 import { readRegionChoice, regionParams } from '../../families/regions/regionChoice.ts';
 import { countrySubject, noRegionsBody, regionLanes } from '../../families/regions/regionRows.ts';
 import { formatProgress } from '../../families/valueFormat.ts';
 import type { ConvoyCellRun, ConvoyCellState, ConvoyCountry, ConvoyHealthReply, ConvoyView, HourSpan } from '../../generated/dashboard';
-import { mix } from '../../shell/appearance/color.ts';
 
 export const CONVOY_TOP_DEFAULT = 7;
 
@@ -34,25 +33,14 @@ export function convoyView(options: Readonly<Record<string, unknown>>): ConvoyVi
   return options.view === 'trade' ? 'trade' : 'regions';
 }
 
-export function efficiencyColour(share: number): string {
-  const stops = CONVOY_EFFICIENCY_STOPS;
-  const value = Math.max(0, Math.min(1, share));
-  for (let i = 1; i < stops.length; i++) {
-    const [upper, upperColour] = stops[i - 1]!;
-    const [lower, lowerColour] = stops[i]!;
-    if (value >= lower) return mix(lowerColour, upperColour, upper === lower ? 1 : (value - lower) / (upper - lower));
-  }
-  return stops[stops.length - 1]![1];
-}
-
 export function percentText(value: number, scale: number): string {
   return formatProgress(value / scale);
 }
 
-function stateCell(state: ConvoyCellState, scale: number): HeatLaneCell {
+function stateCell(state: ConvoyCellState, scale: number, surface: string): HeatLaneCell {
   if (state.kind === 'notRecorded') return { kind: 'missing', reason: state.reason };
   if (state.kind === 'noTraffic') return { kind: 'clear', label: 'No convoy traffic' };
-  return { kind: 'solid', color: efficiencyColour(Number(state.value) / scale) };
+  return { kind: 'solid', color: convoyEfficiencyColour(Number(state.value) / scale, surface) };
 }
 
 function stateReadout(state: ConvoyCellState | undefined, scale: number, surface: string): HeatLaneReadout | undefined {
@@ -69,7 +57,7 @@ function efficiencyReadout(value: number, scale: number, surface: string): HeatL
     primary: percentText(value, scale),
     meaning: 'Efficiency',
     ...(value >= scale ? { tone: 'muted' as const } : {}),
-    swatch: readableOn(efficiencyColour(value / scale), surface, 1),
+    swatch: convoyEfficiencyColour(value / scale, surface),
   };
 }
 
@@ -91,11 +79,11 @@ function countryAt(runs: readonly ConvoyCountry[], hour: number): string {
   return found.name ?? (found.nameMissing ? 'Name not recorded' : found.tag ?? 'Country not recorded');
 }
 
-function stateTooltip(title: string, hour: number, state: ConvoyCellState, scale: number): FamilyTooltipPayload {
+function stateTooltip(title: string, hour: number, state: ConvoyCellState, scale: number, surface: string): FamilyTooltipPayload {
   if (state.kind === 'notRecorded') return { title, hour, missingReason: state.reason };
   if (state.kind === 'noTraffic') return { title, hour, items: [{ label: 'No convoy traffic' }] };
   const value = Number(state.value);
-  return { title, hour, items: [{ label: 'Efficiency', value: percentText(value, scale), swatch: efficiencyColour(value / scale) }] };
+  return { title, hour, items: [{ label: 'Efficiency', value: percentText(value, scale), swatch: convoyEfficiencyColour(value / scale, surface) }] };
 }
 
 interface Piece<T> {
@@ -115,12 +103,12 @@ function extended(runs: readonly HeatLaneRun[], lastHour: number, through: numbe
   return [...runs.slice(0, -1), { ...last, lastHour: through }];
 }
 
-function cellRuns(cells: readonly ConvoyCellRun[], through: number, scale: number): HeatLaneRun[] {
+function cellRuns(cells: readonly ConvoyCellRun[], through: number, scale: number, surface: string): HeatLaneRun[] {
   const runs: HeatLaneRun[] = [];
   for (const run of cells) {
     if (run.firstHour > through) break;
     const lastHour = Math.min(run.lastHour, through);
-    runs.push({ firstHour: run.firstHour, lastHour, readHour: lastHour, cell: stateCell(run.state, scale) });
+    runs.push({ firstHour: run.firstHour, lastHour, readHour: lastHour, cell: stateCell(run.state, scale, surface) });
   }
   return runs;
 }
@@ -135,14 +123,14 @@ interface TileRegions {
   readonly absent: RegionLane;
 }
 
-const heldRegions = new WeakMap<ConvoyHealthReply, TileRegions>();
+const heldRegions = new WeakMap<ConvoyHealthReply, { readonly surface: string; readonly made: TileRegions }>();
 
-function tileRegions(tile: ConvoyHealthReply): TileRegions {
+function tileRegions(tile: ConvoyHealthReply, surface: string): TileRegions {
   const held = heldRegions.get(tile);
-  if (held) return held;
-  const lane = (cells: readonly ConvoyCellRun[]): RegionLane => ({ runs: cellRuns(cells, tile.lastHour, tile.scale), cells });
+  if (held?.surface === surface) return held.made;
+  const lane = (cells: readonly ConvoyCellRun[]): RegionLane => ({ runs: cellRuns(cells, tile.lastHour, tile.scale, surface), cells });
   const made = { byRegion: new Map(tile.regions.map(region => [region.region, lane(region.cells)])), absent: lane(tile.absent ?? []) };
-  heldRegions.set(tile, made);
+  heldRegions.set(tile, { surface, made });
   return made;
 }
 
@@ -152,12 +140,12 @@ interface ConvoyRow {
 }
 
 function regionRows(readView: BoundedReadView, tiles: readonly ConvoyHealthReply[], now: ConvoyHealthReply, through: number, surface: string): ConvoyRow[] {
-  const held = tiles.map(tileRegions);
+  const held = tiles.map(tile => tileRegions(tile, surface));
   return now.regions.map(region => {
     const { label, nameMissing } = regionLabel(readView, region.region, region.name);
     const pieces: Piece<RegionLane>[] = [
       ...tiles.map((tile, k) => ({ reply: tile, end: tile.lastHour, item: held[k]!.byRegion.get(region.region) ?? held[k]!.absent })),
-      { reply: now, end: through, item: { runs: extended(cellRuns(region.cells, now.lastHour, now.scale), now.lastHour, through), cells: region.cells } },
+      { reply: now, end: through, item: { runs: extended(cellRuns(region.cells, now.lastHour, now.scale, surface), now.lastHour, through), cells: region.cells } },
     ];
     const readout = stateReadout(region.readout, now.scale, surface);
     return {
@@ -176,7 +164,7 @@ function regionRows(readView: BoundedReadView, tiles: readonly ConvoyHealthReply
         const at = Math.min(hour, piece.reply.lastHour);
         const cells = piece.item!.cells;
         const run = cells[spanIndexAt(cells, at, item => item.firstHour)];
-        return run && at <= run.lastHour ? stateTooltip(label, hour, run.state, piece.reply.scale) : null;
+        return run && at <= run.lastHour ? stateTooltip(label, hour, run.state, piece.reply.scale, surface) : null;
       },
     };
   });
@@ -227,24 +215,25 @@ interface TileTrade {
   readonly leases: ReadonlyMap<string, readonly HeatLaneRun[]>;
 }
 
-const heldTrade = new WeakMap<ConvoyHealthReply, TileTrade>();
+const heldTrade = new WeakMap<ConvoyHealthReply, { readonly surface: string; readonly made: TileTrade }>();
 
-function dealRuns(deal: Deal, reply: ConvoyHealthReply, through: number): HeatLaneRun[] {
-  return seriesRuns(deal.efficiency, reply.known[1] ?? [], through, value => ({ kind: 'solid', color: efficiencyColour(value / reply.scale) }), DEALS_UNKNOWN);
+function dealRuns(deal: Deal, reply: ConvoyHealthReply, through: number, surface: string): HeatLaneRun[] {
+  return seriesRuns(deal.efficiency, reply.known[1] ?? [], through, value => ({ kind: 'solid', color: convoyEfficiencyColour(value / reply.scale, surface) }), DEALS_UNKNOWN);
 }
 
 function leaseRuns(lease: Lease, reply: ConvoyHealthReply, through: number, routeBad: string): HeatLaneRun[] {
   return seriesRuns(lease.bad, reply.known[2] ?? [], through, bad => routeCell(bad, routeBad), CLIENTS_UNKNOWN);
 }
 
-function tileTrade(tile: ConvoyHealthReply, routeBad: string): TileTrade {
+function tileTrade(tile: ConvoyHealthReply, surface: string): TileTrade {
   const held = heldTrade.get(tile);
-  if (held) return held;
+  if (held?.surface === surface) return held.made;
+  const routeBad = measureColour('short', surface);
   const made = {
-    deals: new Map(tile.deals.map(deal => [deal.id, dealRuns(deal, tile, tile.lastHour)])),
+    deals: new Map(tile.deals.map(deal => [deal.id, dealRuns(deal, tile, tile.lastHour, surface)])),
     leases: new Map(tile.leases.map(lease => [lease.handle, leaseRuns(lease, tile, tile.lastHour, routeBad)])),
   };
-  heldTrade.set(tile, made);
+  heldTrade.set(tile, { surface, made });
   return made;
 }
 
@@ -264,14 +253,14 @@ function dealName(deal: Deal, reply: ConvoyHealthReply, hour: number): string {
 
 function tradeRows(tiles: readonly ConvoyHealthReply[], now: ConvoyHealthReply, through: number, surface: string): ConvoyRow[] {
   const routeBad = measureColour('short', surface);
-  const held = tiles.map(tile => tileTrade(tile, routeBad));
+  const held = tiles.map(tile => tileTrade(tile, surface));
   const tileDeals = tiles.map(tile => new Map(tile.deals.map(deal => [deal.id, deal])));
   const tileLeases = tiles.map(tile => new Map(tile.leases.map(lease => [lease.handle, lease])));
   const asked = now.lastHour;
   const rows: ConvoyRow[] = [];
   for (const deal of now.deals) {
     const pieces: Piece<Deal>[] = [...tiles.map((tile, k) => ({ reply: tile, end: tile.lastHour, item: tileDeals[k]!.get(deal.id) })), { reply: now, end: through, item: deal }];
-    const runs = [...tiles.flatMap((_, k) => held[k]!.deals.get(deal.id) ?? []), ...extended(dealRuns(deal, now, asked), asked, through)];
+    const runs = [...tiles.flatMap((_, k) => held[k]!.deals.get(deal.id) ?? []), ...extended(dealRuns(deal, now, asked, surface), asked, through)];
     if (!runs.length) continue;
     const named = latest(pieces, item => item.exporter.length > 0 || item.resource.length > 0) ?? pieces.at(-1)!;
     const label = dealName(named.item!, named.reply, Math.min(asked, named.reply.lastHour));
@@ -287,7 +276,7 @@ function tradeRows(tiles: readonly ConvoyHealthReply[], now: ConvoyHealthReply, 
         const at = Math.min(hour, piece.reply.lastHour);
         const item = piece.item;
         const value = item ? valueAt(item.efficiency, at) : null;
-        const shown = value === null ? null : { label: 'Efficiency', value: percentText(value, piece.reply.scale), swatch: efficiencyColour(value / piece.reply.scale) };
+        const shown = value === null ? null : { label: 'Efficiency', value: percentText(value, piece.reply.scale), swatch: convoyEfficiencyColour(value / piece.reply.scale, surface) };
         return seriesTooltip(item ? dealName(item, piece.reply, at) : label, hour, shown, piece.reply.known[1] ?? [], 'No deal', DEALS_UNKNOWN);
       },
     });

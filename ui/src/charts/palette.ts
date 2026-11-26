@@ -40,9 +40,14 @@ export function measureColour(name: MeasureColour, surface: string, minContrast 
   return readableColour(MEASURE_COLOURS[name], surface, minContrast);
 }
 
-export const COMMAND_TERM_COLOURS: readonly string[] = ['#394d72', '#3b64a8', '#44587e', '#355c96'];
+const FILL_CONTRAST = 1.5;
+const COMMAND_TERM_COLOURS = ['#394d72', '#3b64a8', '#44587e', '#355c96'] as const;
 
-export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
+export function commandTermColour(surface: string, index: number): string {
+  return readableColour(COMMAND_TERM_COLOURS[index % COMMAND_TERM_COLOURS.length]!, surface, FILL_CONTRAST);
+}
+
+const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
   [1, '#22364f'],
   [0.86, '#a8790f'],
   [0.62, '#d4661c'],
@@ -50,12 +55,23 @@ export const CONVOY_EFFICIENCY_STOPS: readonly (readonly [number, string])[] = [
   [0, '#ff6b74'],
 ];
 
+export function convoyEfficiencyColour(share: number, surface: string): string {
+  const value = Math.max(0, Math.min(1, share));
+  for (let i = 1; i < CONVOY_EFFICIENCY_STOPS.length; i++) {
+    const [upper, upperColour] = CONVOY_EFFICIENCY_STOPS[i - 1]!;
+    const [lower, lowerColour] = CONVOY_EFFICIENCY_STOPS[i]!;
+    if (value >= lower) return readableColour(mix(lowerColour, upperColour, upper === lower ? 1 : (value - lower) / (upper - lower)), surface, FILL_CONTRAST);
+  }
+  return readableColour(CONVOY_EFFICIENCY_STOPS[CONVOY_EFFICIENCY_STOPS.length - 1]![1], surface, FILL_CONTRAST);
+}
+
 const BLUEPRINT = { '--blueprint': '#1b3a5c', '--blueprint-border': '#2f5c8a' } as const;
 const EVENT_CATEGORY_COLOURS = { '--event-politics': '#b49c6e', '--event-diplomacy': '#49b3d8', '--event-milestones': '#7cb675' } as const;
 
 export function paletteVariables(surface: string): Readonly<Record<string, string>> {
+  const blueprint = Object.entries(BLUEPRINT).map(([name, value]) => [name, readableColour(value, surface, FILL_CONTRAST)]);
   const events = Object.entries(EVENT_CATEGORY_COLOURS).map(([name, value]) => [name, readableColour(value, surface)]);
-  return { ...BLUEPRINT, ...Object.fromEntries(events) };
+  return Object.fromEntries([...blueprint, ...events]);
 }
 
 const NEUTRAL_INK = { dark: '#f5f5f5', light: '#111111' } as const;

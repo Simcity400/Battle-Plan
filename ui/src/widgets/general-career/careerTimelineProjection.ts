@@ -1,5 +1,5 @@
 import { liveKey } from '../../charts/live.ts';
-import { COMMAND_TERM_COLOURS, measureColour } from '../../charts/palette.ts';
+import { commandTermColour, measureColour } from '../../charts/palette.ts';
 import { firstHourOfMonth, gameDate, monthIndex } from '../../dashboard/calendar.ts';
 import { subjectHandle } from '../../dashboard/chosen.ts';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
@@ -270,7 +270,7 @@ export const careerTimelineProjection: TimelineProjection<CareerTimelineOptions>
           id: `cmd:${cmd.formation}:${cmd.firstHour}`,
           firstHour: Math.max(opt.firstHour, cmd.firstHour),
           lastHour: open ? hour : Math.min(hour, cmd.lastHour),
-          color: COMMAND_TERM_COLOURS[index % COMMAND_TERM_COLOURS.length]!,
+          color: commandTermColour(opt.surface, index),
           label,
           open,
           meta: { kind: 'command', name: label, firstHour: cmd.firstHour, lastHour: cmd.lastHour, open },

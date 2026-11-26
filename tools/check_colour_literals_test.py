@@ -24,8 +24,18 @@ class TypeScript(unittest.TestCase):
         text = "ctx.fillStyle = 'white';\ngrad.addColorStop(1, 'black');\nconst swatch = 'red';\n"
         self.assertEqual(cc.literals("ui/src/families/x.ts", text), [1, 2, 3])
 
+    def test_named_colours_in_react_styles_fallbacks_and_conditions_are_refused(self):
+        text = (
+            "const a = <i style={{ backgroundColor: 'white' }} />;\nctx.fillStyle = theme.text ?? 'white';\n"
+            "ctx.strokeStyle = dark ? 'black' : theme.line;\nconst b = { borderColor: 'red', tone: 'red' };\n"
+        )
+        self.assertEqual(cc.literals("ui/src/widgets/x/X.tsx", text), [1, 2, 3, 4])
+
     def test_words_that_are_not_colours_and_names_of_tones_pass(self):
-        text = "type Tone = 'red' | 'grey';\nconst tone: Tone = 'red';\nconst kind = 'tan';\nctx.fillStyle = theme.red;\n"
+        text = (
+            "type Tone = 'red' | 'grey';\nconst tone: Tone = 'red';\nconst kind = 'tan';\nctx.fillStyle = theme.red;\n"
+            "const cell = { color: c, tone: 'red' };\nif (column.tone === 'red') return theme.red;\n"
+        )
         self.assertEqual(cc.literals("ui/src/families/x.ts", text), [])
 
     def test_comments_selectors_and_functions_named_like_colours_pass(self):

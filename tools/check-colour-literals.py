@@ -46,9 +46,10 @@ HEX = re.compile(r"(?<![\w&#])#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}
 FUNCTION = re.compile(r"(?<![\w$.-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\(", re.IGNORECASE)
 WORD = re.compile(r"(?<![\w$-])[a-zA-Z]+(?![\w-])")
 TS_STYLE_VALUE = re.compile(
-    r"(?:\b(?:fillStyle|strokeStyle|shadowColor|colou?r|background|fill|stroke|swatch|tint|ink)\s*[:=]\s*|\baddColorStop\s*\([^,()]*,\s*)$",
+    r"(?:[\w$]*(?:colou?r|background|fill|stroke|outline|border|shadow|swatch|tint|ink)[\w$]*\s*(?::|=(?!=))|\baddColorStop\s*\()",
     re.IGNORECASE,
 )
+STATEMENT_BREAK = re.compile(r"[;,\n{]")
 
 
 def mask_ts(text):
@@ -89,6 +90,13 @@ def line_of(text, offset):
     return text.count("\n", 0, offset) + 1
 
 
+def statement_before(code, end):
+    before = code[max(0, end - 200):end]
+    breaks = [m.end() for m in STATEMENT_BREAK.finditer(before)]
+    stop = re.search(r"addColorStop\s*\([^()]*$", before)
+    return before[stop.start():] if stop else before[breaks[-1]:] if breaks else before
+
+
 def ts_literals(text):
     code, strings = mask_ts(text)
     found = []
@@ -96,7 +104,7 @@ def ts_literals(text):
         found += [m.start() for m in HEX.finditer(code, start, end)]
         found += [m.start() for m in FUNCTION.finditer(code, start, end)]
         content = code[start:end].strip().lower()
-        if content in NAMED and TS_STYLE_VALUE.search(code[max(0, start - 80):start - 1]):
+        if content in NAMED and TS_STYLE_VALUE.search(statement_before(code, start - 1)):
             found.append(start)
     return sorted({line_of(text, offset) for offset in found})
 

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { colour } from '../charts/palette.ts';
 import type { Canvas2D } from '../charts/textWidth.ts';
 import { parseColorAlpha } from '../shell/appearance/color.ts';
-import { deriveColors } from '../shell/appearance/themes.ts';
+import { BUILT_IN_THEMES, deriveColors, themeColors } from '../shell/appearance/themes.ts';
 import { drawFamilyBars } from './bars/painter.ts';
 import { layoutFamilyBars } from './bars/layout.ts';
 import type { BarsModel } from './bars/model.ts';
@@ -44,14 +44,15 @@ import { knownValue, notRecorded, partialValue, zeroValue } from './value.ts';
 
 const LIGHT = familyThemeOf(deriveColors({ canvas: '#f4efdc', accent: '#8a2be2' }));
 const DARK = familyThemeOf(deriveColors({ canvas: '#04191d', accent: '#ff7a00' }));
-const DEFAULT_LITERALS = [
+const DEFAULT_LITERALS = [...new Set([
+  ...Object.values(themeColors(BUILT_IN_THEMES[0], 'dark')),
   '#d4d4d4', '#cfcfcf', '#c4c4c4', '#c8c8c8', '#64748b', '#475569', '#ff6b6f', '#e5484d', '#4fbf7a', '#6fd496', '#3fae63',
-  '#111111', '#1e1e1e', '#f5f5f5', '#929292', '#ffffff', 'rgb(15, 23, 42)', 'rgb(17, 17, 17)',
-].map(key);
+  '#1e1e1e', '#929292', '#ffffff', 'rgb(15, 23, 42)', 'rgb(17, 17, 17)',
+].map(key))];
 
 function key(value: string): string {
   const parsed = parseColorAlpha(value);
-  if (!parsed) return value;
+  if (!parsed) return value.trim().toLowerCase();
   return `${Math.round(parsed.rgb.r)},${Math.round(parsed.rgb.g)},${Math.round(parsed.rgb.b)}`;
 }
 
@@ -60,7 +61,7 @@ function recorder(): { readonly ctx: Canvas2D; readonly colours: Set<string> } {
   const note = (value: unknown) => {
     if (typeof value !== 'string') return;
     const parsed = parseColorAlpha(value);
-    if (parsed && parsed.alpha > 0) colours.add(key(value));
+    if (!parsed || parsed.alpha > 0) colours.add(key(value));
   };
   const gradient = { addColorStop: (_at: number, value: string) => note(value) };
   const state = new Map<PropertyKey, unknown>([['globalAlpha', 1], ['lineWidth', 1], ['font', '10px sans-serif']]);
@@ -103,10 +104,9 @@ function assertThemed(label: string, paint: (ctx: Canvas2D, theme: FamilyTheme) 
     return { colours, data: dataColours(model) };
   });
   const [light, dark] = drawn as [typeof drawn[0], typeof drawn[0]];
-  const data = new Set([...light.data, ...dark.data]);
-  const fixed = [...light.colours].filter(colourKey => dark.colours.has(colourKey) && !data.has(colourKey));
+  const fixed = [...light.colours].filter(colourKey => dark.colours.has(colourKey) && !(light.data.has(colourKey) && dark.data.has(colourKey)));
   assert.deepEqual(fixed, [], `${label}: a colour drawn the same under two unrelated themes was not derived from either`);
-  for (const { colours } of drawn) {
+  for (const { colours, data } of drawn) {
     const stale = DEFAULT_LITERALS.filter(literal => colours.has(literal) && !data.has(literal));
     assert.deepEqual(stale, [], `${label}: a colour of the default dark theme is drawn under a custom theme`);
   }
