@@ -35,15 +35,6 @@ export class RecordedPath2D {
     const { a = 1, b = 0, c = 0, d = 1, e = 0, f = 0 } = m;
     for (const op of path.ops) this.ops.push(op[0] === 'Z' ? op : [op[0], a * op[1] + c * op[2] + e, b * op[1] + d * op[2] + f]);
   }
-
-  subpaths(): [number, number][][] {
-    const out: [number, number][][] = [];
-    for (const op of this.ops) {
-      if (op[0] === 'M') out.push([[op[1], op[2]]]);
-      else if (op[0] === 'L') out[out.length - 1]!.push([op[1], op[2]]);
-    }
-    return out;
-  }
 }
 
 if (!('Path2D' in globalThis)) (globalThis as { Path2D?: unknown }).Path2D = RecordedPath2D;

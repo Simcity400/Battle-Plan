@@ -64,7 +64,7 @@ class ArrayBoundedSlice<T> implements BoundedSlice<T> {
   readonly source: object;
   readonly closedLength: number;
   readonly length: number;
-  readonly tail?: T;
+  declare readonly tail?: T;
   readonly #raw: readonly T[];
   readonly #hasTail: boolean;
 

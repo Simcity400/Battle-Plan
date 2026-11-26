@@ -24,6 +24,7 @@ import {
   boundedUnrecorded,
   boundTiledSeries,
   createBoundedReadView,
+  createBoundedSlice,
   cutStraddlingBucket,
   displayedHour,
   FutureDataError,
@@ -149,6 +150,14 @@ test('BoundedSeriesCursor advances over a 10-year history in O(what changed) wit
   for (const slice of [initial.buckets, initial.missing]) {
     assert.ok(Object.values(slice).every(value => !Array.isArray(value)), 'a bounded slice exposes no backing array');
   }
+  const noTail = createBoundedSlice([1, 99], 1);
+  assert.equal(Object.hasOwn(noTail, 'tail'), false, 'absent tail is not an own property');
+  assert.equal(JSON.stringify(noTail).includes('99'), false, 'JSON.stringify does not expose future backing entries');
+  const zeroTail = createBoundedSlice([1, 99], 1, 0);
+  assert.equal(Object.hasOwn(zeroTail, 'tail'), true, 'present falsy tail 0 is an own property');
+  assert.equal(zeroTail.tail, 0);
+  assert.equal(zeroTail.at(1), 0);
+  assert.deepEqual([...zeroTail], [1, 0]);
 
   let earlyMaxVisits = 0;
   let earlyMaxAllocs = 0;
