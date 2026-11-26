@@ -14,8 +14,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 use video_export::{
     AudioConfig, BackendChoice, Quality, VideoConfig,
     schedule::{
-        FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, StretchJoin, UnheldGap,
-        build_schedule, merge_recorded_tracks, merge_unheld_gaps,
+        FrameKind, FrameSchedule, RecordedStretch, ScheduleRequest, UnheldGap, build_schedule,
+        merge_recorded_tracks, merge_unheld_gaps,
     },
 };
 use viewer::video_export::{
@@ -987,6 +987,65 @@ fn blit_rgba_clipped(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pixel blitter takes source and destination buffers, dimensions, target rectangle, and optional clip rectangle"
+)]
+fn blit_rgba_scaled_clipped(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dst_x: i32,
+    dst_y: i32,
+    dst_rect_w: u32,
+    dst_rect_h: u32,
+    clip: Option<ExportClipRect>,
+) {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 || dst_rect_w == 0 || dst_rect_h == 0 {
+        return;
+    }
+    if src_w == dst_rect_w && src_h == dst_rect_h {
+        blit_rgba_clipped(dst, dst_w, dst_h, src, src_w, src_h, dst_x, dst_y, clip);
+        return;
+    }
+    let (cx0, cy0, cx1, cy1) = match clip {
+        Some(rect) => (
+            rect.x.max(0),
+            rect.y.max(0),
+            (rect.x + rect.width as i32).min(dst_w as i32),
+            (rect.y + rect.height as i32).min(dst_h as i32),
+        ),
+        None => (0, 0, dst_w as i32, dst_h as i32),
+    };
+    let x0 = dst_x.max(cx0);
+    let y0 = dst_y.max(cy0);
+    let x1 = (dst_x + dst_rect_w as i32).min(cx1);
+    let y1 = (dst_y + dst_rect_h as i32).min(cy1);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let src_stride = (src_w * 4) as usize;
+    let dst_stride = (dst_w * 4) as usize;
+    for y in y0..y1 {
+        let local_y = (y - dst_y) as u64;
+        let sy = ((local_y * u64::from(src_h)) / u64::from(dst_rect_h)).min(u64::from(src_h - 1)) as usize;
+        let dst_row = y as usize * dst_stride;
+        let src_row = sy * src_stride;
+        for x in x0..x1 {
+            let local_x = (x - dst_x) as u64;
+            let sx = ((local_x * u64::from(src_w)) / u64::from(dst_rect_w)).min(u64::from(src_w - 1)) as usize;
+            let s = src_row + sx * 4;
+            let d = dst_row + x as usize * 4;
+            if s + 4 <= src.len() && d + 4 <= dst.len() {
+                dst[d..d + 4].copy_from_slice(&src[s..s + 4]);
+            }
+        }
+    }
+}
+
 fn encode_rgba_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let mut encoded = Vec::new();
     let mut encoder = png::Encoder::new(&mut encoded, width, height);
@@ -1080,28 +1139,14 @@ fn render_embedded_map_still(
     config: dashboard_core::config::Config,
     map_req: MapVideoRequest,
     hour: i32,
+    fraction: f64,
     fps: u32,
+    hours_per_second: f64,
     cancel: &AtomicBool,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let width = map_req.width;
     let height = map_req.height;
-    let single = build_schedule(
-        &[RecordedStretch {
-            first: hour,
-            last: hour,
-            join: StretchJoin::Start,
-        }],
-        &[],
-        &ScheduleRequest {
-            from_hour: hour,
-            to_hour: hour,
-            fps: fps.max(1),
-            hours_per_second: 1.0,
-            skip_gaps: false,
-            cut_card_seconds: 0.0,
-        },
-    )
-    .map_err(|e| e.to_string())?;
+    let single = FrameSchedule::single_preview(hour, fraction, fps, hours_per_second);
     let stream = MapFrameStream::spawn(config, map_req, single)?;
     let chunk = stream.next_frame(cancel)?;
     let rgba = chunk
@@ -1140,11 +1185,19 @@ pub fn preview_surface_video(
     let first_recorded_hour = schedule
         .first_recorded()
         .map_or(request.from_hour, |(hour, _)| hour);
-    let frame_kind = schedule.preview_frame_kind(preview_hour);
-    let preview_recorded_hour = match &frame_kind {
-        FrameKind::Recorded { hour, .. } => *hour,
-        _ => preview_hour,
+    let preview = schedule.preview_frame(preview_hour);
+    let (preview_recorded_hour, preview_fraction) = match &preview.frame.kind {
+        FrameKind::Recorded { hour, fraction, .. } => (*hour, *fraction),
+        _ => (preview_hour, 0.0),
     };
+    let mount_initial_hour = preview
+        .seed_frames
+        .first()
+        .and_then(|f| match f.kind {
+            FrameKind::Recorded { hour, .. } => Some(hour),
+            _ => None,
+        })
+        .unwrap_or(first_recorded_hour);
     let window = webview_state.ensure_window(app, &cancel)?;
     let initial = initial_metrics(&request);
     set_device_metrics(&window, initial, &cancel)?;
@@ -1168,7 +1221,7 @@ pub fn preview_surface_video(
         hours_per_second: request.hours_per_second,
         date_stamp: request.date_stamp,
         follow_pinned: request.follow_pinned,
-        initial_hour: first_recorded_hour,
+        initial_hour: mount_initial_hour,
         payload: request.payload.clone(),
     };
     window
@@ -1232,9 +1285,44 @@ pub fn preview_surface_video(
         }
     }
 
+    for seed in &preview.seed_frames {
+        let seed_seq = webview_state.next_seq();
+        let seed_now_ms = (seed.frame_index as f64 * 1000.0) / f64::from(schedule.fps);
+        let (seed_step, _, _) = step_payload_for_frame(
+            seed_seq,
+            seed.frame_index,
+            seed_now_ms,
+            &seed.kind,
+            &request,
+            metrics,
+        );
+        window.emit(STEP_EVENT, seed_step).map_err(|e| {
+            webview_state.unmount_window(app, &window);
+            format!("Couldn’t seed export page for preview: {e}")
+        })?;
+        let seed_ack = match webview_state.wait_for_ack(seed_seq, &cancel) {
+            Ok(ack) => ack,
+            Err(error) => {
+                webview_state.unmount_window(app, &window);
+                return Err(error);
+            }
+        };
+        if let Some(error) = seed_ack.error {
+            webview_state.unmount_window(app, &window);
+            return Err(error);
+        }
+    }
+
     let step_seq = webview_state.next_seq();
-    let (step, card_key, _) =
-        step_payload_for_frame(step_seq, 0, 0.0, &frame_kind, &request, metrics);
+    let preview_now_ms = (preview.frame.frame_index as f64 * 1000.0) / f64::from(schedule.fps);
+    let (step, card_key, _) = step_payload_for_frame(
+        step_seq,
+        preview.frame.frame_index,
+        preview_now_ms,
+        &preview.frame.kind,
+        &request,
+        metrics,
+    );
     window.emit(STEP_EVENT, step).map_err(|e| {
         webview_state.unmount_window(app, &window);
         format!("Couldn’t step export page for preview: {e}")
@@ -1280,10 +1368,11 @@ pub fn preview_surface_video(
                 .embedded_maps
                 .iter()
                 .find(|m| m.widget_id == rect.widget_id)
-                && rect.width >= 16
-                && rect.height >= 16
+                && rect.width > 0
+                && rect.height > 0
             {
-                let map_hour = if spec.advances(request.follow_pinned) {
+                let advances = spec.advances(request.follow_pinned);
+                let map_hour = if advances {
                     Some(preview_recorded_hour + spec.axis_offset)
                 } else {
                     spec.fixed_hour
@@ -1291,12 +1380,15 @@ pub fn preview_surface_video(
                 let Some(map_hour) = map_hour else {
                     continue;
                 };
+                let map_fraction = if advances { preview_fraction } else { 0.0 };
                 let map_req = map_request_for_embedded(spec, rect, &request, false);
                 let (mw, mh, mrgba) = match render_embedded_map_still(
                     config.clone(),
                     map_req,
                     map_hour,
+                    map_fraction,
                     request.fps,
+                    request.hours_per_second,
                     &cancel,
                 ) {
                     Ok(rendered) => rendered,
@@ -1308,7 +1400,7 @@ pub fn preview_surface_video(
                         ));
                     }
                 };
-                blit_rgba_clipped(
+                blit_rgba_scaled_clipped(
                     &mut rgba,
                     request.width,
                     request.height,
@@ -1317,6 +1409,8 @@ pub fn preview_surface_video(
                     mh,
                     rect.x,
                     rect.y,
+                    rect.width,
+                    rect.height,
                     viewport_clip,
                 );
             }
@@ -1555,7 +1649,7 @@ pub fn run_surface_video_export(
             else {
                 continue;
             };
-            if rect.width < 16 || rect.height < 16 {
+            if rect.width == 0 || rect.height == 0 {
                 continue;
             }
             let advances = spec.advances(request.follow_pinned);
@@ -1573,7 +1667,9 @@ pub fn run_surface_video_export(
                     config.clone(),
                     map_req,
                     fixed,
+                    0.0,
                     request.fps,
+                    request.hours_per_second,
                     &cancel,
                 ) {
                     Ok((mw, mh, rgba)) => map_sources.push(EmbeddedMapSource::Static {
@@ -1937,7 +2033,7 @@ pub fn run_surface_video_export(
                 let overlay_patches =
                     save_overlay_patches(&frame_rgba, request.width, request.height, &frame_overlay_rects);
                 for (rect, mrgba, mw, mh) in &embedded_frames {
-                    blit_rgba_clipped(
+                    blit_rgba_scaled_clipped(
                         &mut frame_rgba,
                         request.width,
                         request.height,
@@ -1946,6 +2042,8 @@ pub fn run_surface_video_export(
                         *mh,
                         rect.x,
                         rect.y,
+                        rect.width,
+                        rect.height,
                         viewport_clip,
                     );
                 }
@@ -2068,6 +2166,18 @@ mod tests {
         assert_eq!(&dst[(2 * 6 + 3) * 4..(2 * 6 + 3) * 4 + 4], &[20, 20, 77, 255]);
         assert_eq!(&dst[(2 * 6 + 4) * 4..(2 * 6 + 4) * 4 + 4], &[0, 0, 0, 0]);
         assert_eq!(&dst[(3 * 6 + 2) * 4..(3 * 6 + 2) * 4 + 4], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_rgba_scaled_clipped_scales_sub_minimum_slot_within_clip() {
+        let mut dst = vec![0u8; 16 * 16 * 4];
+        let src = vec![90u8; 16 * 16 * 4];
+        let clip = ExportClipRect { x: 2, y: 2, width: 8, height: 6 };
+        blit_rgba_scaled_clipped(&mut dst, 16, 16, &src, 16, 16, 2, 2, 10, 8, Some(clip));
+        assert_eq!(&dst[(2 * 16 + 2) * 4..(2 * 16 + 2) * 4 + 4], &[90, 90, 90, 90]);
+        assert_eq!(&dst[(7 * 16 + 9) * 4..(7 * 16 + 9) * 4 + 4], &[90, 90, 90, 90]);
+        assert_eq!(&dst[(7 * 16 + 10) * 4..(7 * 16 + 10) * 4 + 4], &[0, 0, 0, 0]);
+        assert_eq!(&dst[(8 * 16 + 2) * 4..(8 * 16 + 2) * 4 + 4], &[0, 0, 0, 0]);
     }
 
     #[test]

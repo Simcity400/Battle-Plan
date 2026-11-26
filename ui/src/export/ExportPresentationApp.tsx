@@ -237,7 +237,7 @@ function measureMapRects(root: HTMLElement | null, dpr: number): ExportMapRect[]
     const y = Math.round(box.top * dpr);
     const width = Math.max(0, Math.round(box.width * dpr));
     const height = Math.max(0, Math.round(box.height * dpr));
-    if (width >= 16 && height >= 16) {
+    if (width > 0 && height > 0) {
       out.push({ widgetId, x, y, width, height });
     }
   }

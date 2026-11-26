@@ -799,6 +799,7 @@ pub(crate) struct VideoSession {
     pub started: Instant,
     pub last_progress: Instant,
     pub mixer: Option<viewer_audio::OfflineMixer>,
+    mixer_notes_sent: usize,
     pub audio_buf: Vec<i16>,
     pub last_recorded_hour: Option<Hour>,
     pub warnings: Vec<String>,
@@ -832,6 +833,7 @@ impl VideoSession {
             started: now,
             last_progress: now,
             mixer: None,
+            mixer_notes_sent: 0,
             audio_buf: Vec::new(),
             last_recorded_hour: None,
             warnings: Vec::new(),
@@ -839,6 +841,17 @@ impl VideoSession {
             burner: None,
             cached_card: None,
         }
+    }
+
+    fn drain_frame_warnings(&mut self) -> Vec<String> {
+        let mut out = std::mem::take(&mut self.warnings);
+        if let Some(mixer) = &self.mixer
+            && self.mixer_notes_sent < mixer.notes.len()
+        {
+            out.extend(mixer.notes[self.mixer_notes_sent..].iter().cloned());
+            self.mixer_notes_sent = mixer.notes.len();
+        }
+        out
     }
 
     pub(crate) fn fps(&self) -> u32 {
@@ -1083,10 +1096,14 @@ impl VideoSession {
             Vec::new()
         };
         if let VideoMode::Frames { tx, .. } = &self.mode {
+            let warnings = self.drain_frame_warnings();
+            let VideoMode::Frames { tx, .. } = &self.mode else {
+                unreachable!()
+            };
             tx.send(Ok(MapFrameChunk {
                 rgba: None,
                 audio,
-                warnings: std::mem::take(&mut self.warnings),
+                warnings,
             }))
                 .map_err(|_| "Embedded map consumer closed".to_owned())?;
         }
@@ -1147,10 +1164,17 @@ impl VideoSession {
                 } else {
                     Vec::new()
                 };
+                let mut warnings = std::mem::take(&mut self.warnings);
+                if let Some(mixer) = &self.mixer
+                    && self.mixer_notes_sent < mixer.notes.len()
+                {
+                    warnings.extend(mixer.notes[self.mixer_notes_sent..].iter().cloned());
+                    self.mixer_notes_sent = mixer.notes.len();
+                }
                 tx.send(Ok(MapFrameChunk {
                     rgba: Some(rgba.to_vec()),
                     audio,
-                    warnings: std::mem::take(&mut self.warnings),
+                    warnings,
                 }))
                 .map_err(|_| "Embedded map consumer closed".to_owned())?;
                 let _ = hour;
@@ -1551,8 +1575,7 @@ fn run_map_video_on_thread(
 
     let first_recorded = match &mode {
         VideoMode::Frames { stretches, .. } => schedule
-            .first_recorded()
-            .filter(|(h, _)| stretches.iter().any(|s| s.first <= *h && *h <= s.last))
+            .first_recorded_covered(stretches)
             .or_else(|| stretches.first().map(|s| (s.first, 0.0)))
             .ok_or_else(|| "Embedded map branch has no recorded hours".to_owned())?,
         _ => schedule

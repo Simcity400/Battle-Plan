@@ -673,6 +673,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
           unheld,
         };
       });
+      const requiredRoleIds = new Set(snapshotBound.map(track => track.roleId));
       const hasPinnedWidgets = widgetsToCheck.some(w => w.time.mode === 'pin');
       const pagedKinds = new Set([
         'construction-log',
@@ -693,7 +694,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       const scrollEl = viewport.current;
       return {
         campaigns: campaignsRef.current
-          .filter(c => !c.loading)
+          .filter(c => !c.loading && requiredRoleIds.has(c.id))
           .map(c => ({ id: c.id, path: c.path, label: c.label, revision: sourceMap.get(c.id)?.revision ?? '' })),
         selectedCountries,
         selectedBranches,
