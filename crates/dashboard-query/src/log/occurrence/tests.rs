@@ -54,6 +54,7 @@ fn predicates_apply_before_the_count_and_the_slice_and_chips_count_the_matching_
     assert_eq!(filtered.total, 20, "the twenty running rows, all older than the newest eighty");
     assert_eq!(ids(&index, &filtered), (10..20).rev().collect::<Vec<u128>>(), "the window holds matching rows though the newest rows do not match");
     assert_eq!(filtered.chips, [20, 20]);
+    assert_eq!(filtered.live, 20, "the live count is every matching live row, whether or not they are moved to the front");
     let live = index.ask(&holders(), &Ask { live_first: true, offset: 18, limit: 4, chips: &chips, ..ask(200) }).unwrap();
     assert_eq!((live.total, live.live), (100, 20));
     assert_eq!(live.chips, [20, 20], "the running chip counts the population, not the rows shown");
@@ -67,7 +68,12 @@ fn a_state_belongs_to_the_hour_asked_and_its_change_is_the_next_change() {
     let index = Index::new(vec![entry], Vec::new(), &[RUNNING]).unwrap();
     let running = [RUNNING];
     let at_20 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(20) }).unwrap();
-    assert_eq!((at_20.total, at_20.live, at_20.next_change), (1, 0, Some(30)));
+    assert_eq!((at_20.total, at_20.live, at_20.next_change), (1, 1, Some(30)), "one running row is one live row in any order");
+    let newer = Occurrence { states: Box::new([(15, DONE)]), ..occurrence(2, 15, 15) };
+    let both = Index::new(vec![Occurrence { states: Box::new([(10, RUNNING), (30, DONE)]), ..occurrence(1, 10, 10) }, newer], Vec::new(), &[RUNNING]).unwrap();
+    let page = both.ask(&holders(), &Ask { limit: 1, ..ask(20) }).unwrap();
+    assert_eq!(ids(&both, &page), [2], "the running row is off the page");
+    assert_eq!((page.live, page.next_change), (1, Some(30)), "its end changes the live count, so the reply changes then");
     let at_30 = index.ask(&holders(), &Ask { states: Some(&running), ..ask(30) }).unwrap();
     assert_eq!(at_30.total, 0, "it ended at 30");
     assert!(Index::new(vec![Occurrence { states: Box::new([(11, RUNNING)]), ..occurrence(1, 10, 10) }], Vec::new(), &[]).is_err(), "a first state is the observation");
@@ -106,6 +112,16 @@ fn a_selection_matches_every_role_at_its_own_date_through_dated_membership() {
     assert_eq!(ids(&index, &answer), [3, 2], "Italy joins at 200: its row of 100 is not the group's; the war join is kept by its ally alone");
     assert_eq!(answer.gaps.iter().map(|gap| (gap.first_hour, gap.last_hour, gap.reason.as_str(), gap.before.as_str())).collect::<Vec<_>>(), [(300, 325, MEMBERSHIP_UNKNOWN, "0")], "Italy's row in the unknown stretch is the gap's, not a member's");
     assert_eq!(answer.unattributed, 1, "a row naming no identified country cannot be placed by a selection, and is counted");
+    let running = [RUNNING];
+    let states = Index::new(
+        vec![Occurrence { roles: Box::new([role(None, 100)]), states: Box::new([(100, RUNNING), (150, DONE)]), ..occurrence(1, 100, 100) }],
+        Vec::new(),
+        &[RUNNING],
+    )
+    .unwrap();
+    let asked = |hour: i32| states.ask(&holders(), &Ask { selection: Some(&selection), states: Some(&running), ..ask(hour) }).unwrap();
+    assert_eq!((asked(120).unattributed, asked(120).next_change), (1, Some(150)), "a running unattributed row passes a running filter until it ends");
+    assert_eq!(asked(160).unattributed, 0, "after it ends the running filter leaves it out, as it would a placed row");
     let everyone = index.ask(&holders(), &ask(400)).unwrap();
     assert_eq!(everyone.total, 5, "with no selection every row is kept, unidentified roles too");
 }

@@ -229,6 +229,8 @@ struct Filtered {
     observed: Vec<i32>,
     changes: Vec<i32>,
     unattributed: Vec<i32>,
+    unattributed_rows: Vec<u32>,
+    unattributed_changes: Vec<i32>,
     unknown: Vec<MissingSpan>,
 }
 
@@ -454,7 +456,7 @@ impl<P> Index<P> {
         let members = ask.selection.map(|selection| Members::resolve(holders, selection));
         let (from, to) = (signature.from.unwrap_or(i32::MIN), signature.to.unwrap_or(i32::MAX));
         let mut display = Vec::new();
-        let mut unattributed = Vec::new();
+        let mut unattributed_rows = Vec::new();
         let mut visit = |at: usize| {
             let entry = &self.entries[at];
             if entry.date < from || entry.date > to || signature.kinds.as_ref().is_some_and(|kinds| kinds.binary_search(&entry.kind).is_err()) {
@@ -465,7 +467,7 @@ impl<P> Index<P> {
             }
             match members.as_ref().map_or(Admit::Yes(entry.observed), |members| members.admits(&entry.roles, entry.observed)) {
                 Admit::Yes(from) => display.push((at as u32, from)),
-                Admit::Unattributed => unattributed.push(entry.observed),
+                Admit::Unattributed => unattributed_rows.push(at as u32),
                 Admit::No | Admit::Unknown => {}
             }
         };
@@ -484,12 +486,15 @@ impl<P> Index<P> {
         observed.sort_unstable();
         let mut changes: Vec<i32> = display.iter().flat_map(|&(at, _)| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
         changes.sort_unstable();
+        let mut unattributed: Vec<i32> = unattributed_rows.iter().map(|&at| self.entries[at as usize].observed).collect();
         unattributed.sort_unstable();
+        let mut unattributed_changes: Vec<i32> = unattributed_rows.iter().flat_map(|&at| self.entries[at as usize].states.iter().skip(1).map(|&(from, _)| from)).collect();
+        unattributed_changes.sort_unstable();
         let mut unknown = members.map_or_else(Vec::new, |members| members.unknown);
         if let Some(spans) = signature.subject.and_then(|id| self.subject_gaps.get(&id)) {
             unknown.extend_from_slice(spans);
         }
-        let made = Arc::new(Filtered { display, observed, changes, unattributed, unknown });
+        let made = Arc::new(Filtered { display, observed, changes, unattributed, unattributed_rows, unattributed_changes, unknown });
         let mut kept = self.filtered.lock().unwrap_or_else(PoisonError::into_inner);
         kept.push_back((signature, Arc::clone(&made)));
         while kept.len() > KEPT_SIGNATURES {
@@ -516,9 +521,17 @@ impl<P> Index<P> {
         out
     }
 
-    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool) -> Option<i32> {
+    fn next_change(&self, filtered: &Filtered, hour: i32, from: i32, gap_end: i32, state_changes: bool, state_filtered: bool) -> Option<i32> {
         let after = |hours: &[i32]| hours.get(hours.partition_point(|&at| at <= hour)).copied();
-        let mut next = [after(&filtered.observed), state_changes.then(|| after(&filtered.changes)).flatten(), after(&filtered.unattributed)].into_iter().flatten().min();
+        let mut next = [
+            after(&filtered.observed),
+            state_changes.then(|| after(&filtered.changes)).flatten(),
+            after(&filtered.unattributed),
+            state_filtered.then(|| after(&filtered.unattributed_changes)).flatten(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let spans = self.gaps.iter().chain(&filtered.unknown).map(|gap| (gap.first_hour, gap.last_hour));
         for (first, last) in spans {
             let (first, last) = (first.max(from), last.min(gap_end));
@@ -553,6 +566,9 @@ impl<P> Index<P> {
         let state_ok = |state: Option<u8>| ask.states.is_none_or(|states| state.is_some_and(|state| states.contains(&state)));
         let mut chips = vec![0u64; ask.chips.len()];
         let mut live_rows: Vec<(u32, Option<u8>)> = Vec::new();
+        let mut live_count = 0u64;
+        let mut live_flip: Option<i32> = None;
+        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
         let mut history: Vec<(u32, Option<u8>)> = Vec::new();
         let mut history_total = 0u64;
         let mut changing_keys = Vec::new();
@@ -583,6 +599,13 @@ impl<P> Index<P> {
                 }
             }
             let live = state.is_some_and(|state| self.live & 1 << state != 0);
+            live_count += u64::from(live);
+            if self.live != 0 && !state_changes {
+                let after = entry.states.partition_point(|step| step.0 <= hour);
+                if let Some(flip) = entry.states[after..].iter().find(|step| (self.live & 1 << step.1 != 0) != live) {
+                    live_flip = live_flip.into_iter().chain([flip.0]).min();
+                }
+            }
             if ask.live_first && live {
                 live_rows.push((at, state));
                 continue;
@@ -661,9 +684,11 @@ impl<P> Index<P> {
             rows.push(Shown { at, ordinal, live, state });
             ordinal += 1;
         }
-        let unattributed = filtered.unattributed.partition_point(|&observed| observed <= hour) as u64;
-        let state_changes = ask.live_first || ask.states.is_some() || !ask.chips.is_empty();
-        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes);
+        let unattributed = match ask.states {
+            None => filtered.unattributed.partition_point(|&observed| observed <= hour) as u64,
+            Some(_) => filtered.unattributed_rows.iter().map(|&at| &self.entries[at as usize]).filter(|entry| entry.observed <= hour && state_ok(entry.state_at(hour))).count() as u64,
+        };
+        let mut next_change = self.next_change(&filtered, hour, from, gap_end, state_changes, ask.states.is_some()).into_iter().chain(live_flip).min();
         if !state_changes {
             for shown in &rows {
                 let steps = &self.get(shown.at).states;
@@ -678,7 +703,7 @@ impl<P> Index<P> {
                 self.next_rank_change(&rows, &changing_keys, hour, (column, direction), next_change)
             };
         }
-        Ok(Answer { hour, total, live: live_total, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
+        Ok(Answer { hour, total, live: live_count, offset: ask.offset, rows, chips, gaps: ordered_gaps, unattributed, next_change })
     }
 
     fn next_rank_change(&self, rows: &[Shown], changing: &[(u32, i32)], hour: i32, order: (usize, Direction), mut next: Option<i32>) -> Option<i32> {
