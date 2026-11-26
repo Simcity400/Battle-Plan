@@ -763,6 +763,7 @@ interface TimeChartBackdropEntry {
   bw: number;
   bh: number;
   dpr: number;
+  colorSpace: PredefinedColorSpace;
   model: TimeChartModel | null;
   layout: TimeChartLayout | null;
   hoveredSeriesId: string | null;
@@ -773,6 +774,10 @@ interface TimeChartBackdropEntry {
 }
 
 const backdropCache = new WeakMap<Canvas2D, TimeChartBackdropEntry>();
+
+export function clearTimeChartBackdrop(ctx: Canvas2D): void {
+  backdropCache.delete(ctx);
+}
 
 function backdropThemeKey(theme: FamilyTheme): string {
   return [
@@ -843,11 +848,13 @@ function sameArtEntry(
 function collectBackdropArtSnapshot(
   model: TimeChartModel,
   layout: TimeChartLayout,
+  legendFit: LegendFit | null,
   artCache: LaneArtCache | undefined,
 ): BackdropArtSnapshot[] {
   const out: BackdropArtSnapshot[] = [];
   if (layout.legendTop !== null && model.legend) {
-    for (let i = 0; i < model.legend.length; i++) {
+    const legendLimit = legendFit ? Math.min(legendFit.shown.length, model.legend.length) : model.legend.length;
+    for (let i = 0; i < legendLimit; i++) {
       const flag = model.legend[i]!.flag;
       if (flag) out.push(artResultEntry(flag.art, artCache));
     }
@@ -875,11 +882,13 @@ function sameBackdropArtSnapshot(
   prev: readonly BackdropArtSnapshot[],
   model: TimeChartModel,
   layout: TimeChartLayout,
+  legendFit: LegendFit | null,
   artCache: LaneArtCache | undefined,
 ): boolean {
   let idx = 0;
   if (layout.legendTop !== null && model.legend) {
-    for (let i = 0; i < model.legend.length; i++) {
+    const legendLimit = legendFit ? Math.min(legendFit.shown.length, model.legend.length) : model.legend.length;
+    for (let i = 0; i < legendLimit; i++) {
       const flag = model.legend[i]!.flag;
       if (!flag) continue;
       if (idx >= prev.length || !sameArtEntry(prev[idx++]!, flag.art, artCache)) return false;
@@ -904,18 +913,12 @@ function sameBackdropArtSnapshot(
   return idx === prev.length;
 }
 
-function isDefaultBackdropCanvasState(ctx: Canvas2D): boolean {
-  if (ctx.globalAlpha !== 1) return false;
-  if (ctx.lineCap !== 'butt' || ctx.lineJoin !== 'miter' || ctx.lineWidth !== 1) return false;
-  const gco = (ctx as { readonly globalCompositeOperation?: string }).globalCompositeOperation;
-  if (gco !== undefined && gco !== 'source-over') return false;
-  const filter = (ctx as { readonly filter?: string }).filter;
-  if (filter !== undefined && filter !== 'none') return false;
-  const shadowBlur = (ctx as { readonly shadowBlur?: number }).shadowBlur;
-  if (shadowBlur !== undefined && shadowBlur !== 0) return false;
-  const dash = typeof ctx.getLineDash === 'function' ? ctx.getLineDash() : null;
-  if (dash && dash.length > 0) return false;
-  return true;
+function backdropColorSpaceOf(ctx: Canvas2D): PredefinedColorSpace | null {
+  const attrs = typeof (ctx as { readonly getContextAttributes?: () => CanvasRenderingContext2DSettings }).getContextAttributes === 'function'
+    ? (ctx as { readonly getContextAttributes: () => CanvasRenderingContext2DSettings }).getContextAttributes()
+    : null;
+  if (attrs && attrs.alpha === false) return null;
+  return attrs?.colorSpace ?? 'srgb';
 }
 
 function drawTimeChartBackdrop(
@@ -1723,6 +1726,10 @@ function drawTimeChartBackdrop(
   }
 }
 
+export interface DrawTimeChartOptions {
+  readonly cacheBackdrop?: boolean;
+}
+
 export function drawTimeChart(
   ctx: Canvas2D,
   model: TimeChartModel,
@@ -1732,6 +1739,7 @@ export function drawTimeChart(
   dpr: number,
   legendFit?: LegendFit | null,
   artCache?: LaneArtCache,
+  options?: DrawTimeChartOptions,
 ): void {
   const tokens = resolveKitTokens(theme);
   const parsedInspect = parseChartInspect(inspectKey);
@@ -1755,17 +1763,19 @@ export function drawTimeChart(
   let usedBackdrop = false;
   let trackedBackdrop = false;
   if (
-    timeChartCacheState.enabled
+    options?.cacheBackdrop === true
+    && timeChartCacheState.enabled
     && model.mode !== 'columns'
     && typeof OffscreenCanvas !== 'undefined'
     && typeof (ctx as { readonly drawImage?: unknown }).drawImage === 'function'
-    && isDefaultBackdropCanvasState(ctx)
   ) {
+    const colorSpace = backdropColorSpaceOf(ctx);
     const canvas = (ctx as { readonly canvas?: { readonly width?: number; readonly height?: number } }).canvas;
     const bw = canvas && typeof canvas.width === 'number' ? canvas.width : 0;
     const bh = canvas && typeof canvas.height === 'number' ? canvas.height : 0;
     if (
-      bw > 0
+      colorSpace !== null
+      && bw > 0
       && bh > 0
       && Math.abs(bw - layout.width * dpr) <= 1
       && Math.abs(bh - layout.height * dpr) <= 1
@@ -1779,18 +1789,20 @@ export function drawTimeChart(
         && entry.bw === bw
         && entry.bh === bh
         && Object.is(entry.dpr, dpr)
+        && entry.colorSpace === colorSpace
         && entry.model === model
         && entry.layout === layout
         && entry.hoveredSeriesId === hoveredSeriesId
         && entry.legendFit === normLegendFit
         && entry.themeKey === themeKey
         && entry.textRev === textRev
-        && sameBackdropArtSnapshot(entry.artSnapshot, model, layout, artCache);
+        && sameBackdropArtSnapshot(entry.artSnapshot, model, layout, normLegendFit, artCache);
       if (sameKey && entry) {
         if (!entry.canvas || !entry.ctx) {
           const off = new OffscreenCanvas(bw, bh);
-          const offCtx = off.getContext('2d');
-          if (offCtx) {
+          const offCtx = off.getContext('2d', colorSpace !== 'srgb' ? { colorSpace } : undefined);
+          const offSpace = offCtx ? (backdropColorSpaceOf(offCtx) ?? null) : null;
+          if (offCtx && offSpace === colorSpace) {
             entry.canvas = off;
             entry.ctx = offCtx;
             offCtx.save();
@@ -1808,7 +1820,7 @@ export function drawTimeChart(
           usedBackdrop = true;
         }
       } else {
-        const artSnapshot = collectBackdropArtSnapshot(model, layout, artCache);
+        const artSnapshot = collectBackdropArtSnapshot(model, layout, normLegendFit, artCache);
         if (!entry) {
           entry = {
             canvas: null,
@@ -1816,6 +1828,7 @@ export function drawTimeChart(
             bw,
             bh,
             dpr,
+            colorSpace,
             model,
             layout,
             hoveredSeriesId,
@@ -1831,6 +1844,7 @@ export function drawTimeChart(
           entry.bw = bw;
           entry.bh = bh;
           entry.dpr = dpr;
+          entry.colorSpace = colorSpace;
           entry.model = model;
           entry.layout = layout;
           entry.hoveredSeriesId = hoveredSeriesId;

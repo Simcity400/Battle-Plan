@@ -6,7 +6,7 @@ import type { TimeChartBinding } from './declaration.ts';
 import { deriveTimeChartTooltip, hitTestTimeChart, parseChartInspect } from './hitTest.ts';
 import { hoverTimeChartLayout, layoutTimeChart, type TimeChartLayout } from './layout.ts';
 import type { TimeChartModel } from './model.ts';
-import { collectVisibleChartArt, drawTimeChart, fitTimeChartLegend } from './painter.ts';
+import { clearTimeChartBackdrop, collectVisibleChartArt, drawTimeChart, fitTimeChartLegend } from './painter.ts';
 import type { LegendFit, TimeAxisTick } from '../../draw/kit.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 
@@ -185,10 +185,11 @@ export const timeChartLane: LaneFamily<TimeChartBinding, TimeChartModel, ChartLa
   paint(ctx, frame) {
     const shown = shownOf(frame);
     if (!shown) {
+      clearTimeChartBackdrop(ctx);
       ctx.clearRect(0, 0, frame.surface.width, frame.surface.height);
       return false;
     }
-    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend, frame.art);
+    drawTimeChart(ctx, frame.layout.model, shown, frame.theme, frame.inspect, frame.surface.dpr > 0 ? frame.surface.dpr : 1, frame.layout.legend, frame.art, { cacheBackdrop: true });
     return false;
   },
   hit(frame, point) {
