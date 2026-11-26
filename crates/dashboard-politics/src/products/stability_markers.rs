@@ -4,6 +4,8 @@ use super::party_history::{self, RulingParties};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, CountryParams, LoadContext, Product, check_reply_budget};
 use dashboard_base::span::HourSpan;
+use dashboard_query::identity::{Holder, Holders, TAG_UNLINKED};
+use dashboard_text::division_history::date;
 use dashboard_world::products::groups::{self, CountryGroupReply};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -236,6 +238,33 @@ fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups:
     }
 }
 
+fn holder_notes(out: &mut Markers, holders: &Holders, country: &Country, from: i32) -> Vec<String> {
+    let mut spans: Vec<(i32, i32, String)> = holders
+        .unknown
+        .iter()
+        .filter_map(|&(first, last, _)| holders.not_known_as(&holders.nearest_name(country, first), first).map(|reason| (first, last, reason)))
+        .collect();
+    let unlinked = |first: i32| format!("Who holds {} is not known: {TAG_UNLINKED}", holders.nearest_name(country, first));
+    match country {
+        Country::Tag(_) => spans.extend(holders.within(country, from, i32::MAX).into_iter().filter(|run| run.holder == Holder::Unresolved).map(|run| (run.first, run.last, unlinked(run.first)))),
+        Country::Slot(_) => spans.extend(holders.unlinked().iter().map(|&(first, last)| (first, last, unlinked(first)))),
+    }
+    spans.sort();
+    let mut notes = Vec::new();
+    for (first, last, reason) in spans.into_iter().filter(|&(_, last, _)| last >= from) {
+        let first = first.max(from);
+        if first > out.hour {
+            out.later(Some(first));
+        } else if last >= out.hour {
+            out.later(Some(last.saturating_add(1)));
+            notes.push(format!("War and faction markers are not shown from {}: {reason}", date(first)));
+        } else {
+            notes.push(format!("War and faction markers are not shown from {} to {}: {reason}", date(first), date(last)));
+        }
+    }
+    notes
+}
+
 pub struct StabilityMarkers;
 
 impl Product for StabilityMarkers {
@@ -282,6 +311,7 @@ impl Product for StabilityMarkers {
             if params.factions {
                 faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last));
             }
+            warnings.extend(holder_notes(&mut out, &query.holders, &params.country, query.timeline.first));
         }
         out.shown.sort_by(|a, b| a.hour.cmp(&b.hour).then_with(|| a.id.cmp(&b.id)));
         warnings.sort();

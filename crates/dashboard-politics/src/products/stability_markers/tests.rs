@@ -73,3 +73,23 @@ fn a_slot_that_changes_tag_inside_its_faction_neither_leaves_nor_joins() {
     faction_markers(&mut out, &slot, &groups, (0, 1000));
     assert_eq!(titles(&out), [(100, "Founded Axis"), (801, "Left Axis")], "the tag change at 600 is no event: the slot stayed a member");
 }
+
+#[test]
+fn markers_a_holder_hides_say_when_and_why() {
+    use dashboard_query::identity::HolderRun;
+    let held = |first, last| HolderRun { first, last, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: false };
+    let holders = Holders::new(
+        [("GER".to_owned(), vec![held(0, 199), HolderRun { first: 200, last: 260, holder: Holder::Unresolved, starts_segment: false }, held(261, 1000)])].into_iter().collect(),
+        vec![(100, 120, "Countries table unread".to_owned()), (700, 720, "Countries table unread".to_owned())],
+    );
+    let mut out = Markers { hour: 230, shown: Vec::new(), next: None };
+    let notes = holder_notes(&mut out, &holders, &Country::Tag("GER".into()), 0);
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(notes[0].ends_with("Who holds GER is not known: Countries table unread"), "{notes:?}");
+    assert!(notes[0].contains(" to "), "a span over by the hour asked has its end: {notes:?}");
+    assert!(notes[1].ends_with(&format!("Who holds GER is not known: {TAG_UNLINKED}")) && !notes[1].contains(" to "), "a span still open says only its start: {notes:?}");
+    assert_eq!(out.next, Some(261), "the open span's end is the next change; a later span starts after it");
+    let mut early = Markers { hour: 50, shown: Vec::new(), next: None };
+    assert!(holder_notes(&mut early, &holders, &Country::Tag("GER".into()), 0).is_empty(), "nothing is said before it is known");
+    assert_eq!(early.next, Some(100));
+}

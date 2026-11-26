@@ -260,7 +260,9 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     }
 
     const markers: ChartMarker[] = [];
-    const recorded = single ? readView.panel<StabilityMarkersReply>('markers')?.markers ?? [] : [];
+    const markersReply = single ? readView.panel<StabilityMarkersReply>('markers') : undefined;
+    const recorded = markersReply?.markers ?? [];
+    const warnings = [...ranking.warnings, ...(markersReply?.warnings ?? [])];
     if (recorded.length > 0) {
       for (const day of markerHours(recorded)) {
         if (day.hour > hour) break;
@@ -297,7 +299,7 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       },
       series,
       markers: markers.length > 0 ? markers : undefined,
-      ...(ranking.warnings.length > 0 ? { warnings: ranking.warnings } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
       gaps: options.gaps.length > 0 ? options.gaps : undefined,
       hoverDetail: single
         ? breakdownDetail(readView, [
