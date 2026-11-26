@@ -1,16 +1,26 @@
 use super::*;
 use super::at_hour::ForceContext;
 use dashboard_world::products::group_members::GroupsAt;
+use dashboard_query::identity::{Holder, HolderRun, Holders};
 use replay_data::rows::TableId;
+
+fn linked_holders() -> Holders {
+    let mut holders = Holders::default();
+    for (tag, slot, id) in [("GER", 1, 10), ("ENG", 2, 20), ("FRA", 3, 30)] {
+        holders.tags.insert(tag.into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot, id }, starts_segment: true }]);
+    }
+    holders
+}
 
 #[test]
 fn parts_split_a_total_only_where_their_rows_add_up_to_it() {
     let held = [(0, Some(30)), (0, Some(20)), (1, Some(10))];
-    assert_eq!(split(Some(60), &held, 2), (vec![Some(50), Some(10)], true));
-    assert_eq!(split(Some(60), &[(0, Some(50)), (1, None)], 2), (vec![Some(50), None], false), "a witnessed part keeps its count beside an unread one");
-    assert_eq!(split(Some(40), &held, 2), (vec![Some(50), Some(10)], false), "parts that do not add up keep their counts; only their shares are withheld");
-    assert_eq!(split(None, &held, 2), (vec![Some(50), Some(10)], false), "a missing total does not clear the parts");
-    assert_eq!(split(Some(0), &[], 3), (vec![Some(0), Some(0), Some(0)], true));
+    let mismatch = Some("Part breakdown does not reconcile with the recorded total at this hour");
+    assert_eq!(split(Some(60), &held, 2), (vec![Some(50), Some(10)], None));
+    assert_eq!(split(Some(60), &[(0, Some(50)), (1, None)], 2), (vec![Some(50), None], mismatch), "a witnessed part keeps its count beside an unread one");
+    assert_eq!(split(Some(40), &held, 2), (vec![Some(50), Some(10)], mismatch), "parts that do not add up keep their counts; only their shares are withheld");
+    assert_eq!(split(None, &held, 2), (vec![Some(50), Some(10)], None), "a missing total does not clear the parts");
+    assert_eq!(split(Some(0), &[], 3), (vec![Some(0), Some(0), Some(0)], None));
 }
 
 #[test]
@@ -31,15 +41,11 @@ fn recorded_parts_group_under_their_reply_part_in_key_order() {
 fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     use dashboard_base::products::at_hour::{At, AtHour};
     use dashboard_follow::live::Cells;
-    use dashboard_query::identity::{Holder, HolderRun, Holders};
     use replay_data::rows::{AirForcePartRow, AirForceTotalRow, Recorded, TableRows};
     use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TABLE_COUNT, TableView};
     use std::sync::atomic::AtomicBool;
 
-    let mut holders = Holders::default();
-    holders.tags.insert("GER".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 1, id: 10 }, starts_segment: true }]);
-    holders.tags.insert("ENG".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 2, id: 20 }, starts_segment: true }]);
-    holders.tags.insert("FRA".into(), vec![HolderRun { first: 0, last: 100, holder: Holder::Found { slot: 3, id: 30 }, starts_segment: true }]);
+    let holders = linked_holders();
 
     let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
     *tables[TableId::AirForceTotals.index()] = TableView::Complete(TableRows::AirForceTotals(vec![
@@ -71,6 +77,12 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!(reply.rows[0].values, vec![Some(80)]);
     assert!(reply.rows[1].parts_missing.is_some(), "parts that do not add up to the total are not its shares");
     assert_eq!(reply.rows[1].values, vec![Some(60)], "and each witnessed count is kept");
+
+    let all = AirForceAt::reply(&frame, &AirForceAtParams { top: None, ..params.clone() }, &at).unwrap();
+    let without_parts = all.rows.iter().find(|row| row.slot == Some(1)).unwrap();
+    assert_eq!(without_parts.total, Some(50));
+    assert_eq!(without_parts.values, [None]);
+    assert_eq!(without_parts.parts_missing.as_deref(), Some("Part breakdown was not recorded at this hour"));
 
     let truncated_params = AirForceAtParams { countries: vec![Country::from("ENG"), Country::from("GER")], top: None, ..params };
     let mut trunc_tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into());
@@ -133,6 +145,95 @@ fn force_at_hour_ranks_top_and_withholds_unreconciled_parts() {
     assert_eq!((unknown.rows.len(), unknown.missing.as_deref()), (0, Some("Membership of this group is not recorded at this hour")), "unknown membership is never a guess");
     let twice = AirForceAtParams { countries: vec![Country::from("GER"), Country::Slot(1)], ..truncated_params };
     assert_eq!(AirForceAt::reply(&frame, &twice, &at).unwrap().rows.len(), 1, "a holder asked by tag and by slot is one row");
+}
+
+#[test]
+fn navy_strength_without_class_rows_is_unknown_in_the_comparison_class() {
+    use dashboard_base::products::at_hour::{At, AtHour};
+    use replay_data::rows::{NavyClassRow, NavyTotalRow, Recorded, TableRows};
+    use replay_frame::frame::{DecodedFrame, TableView};
+
+    let mut frame = DecodedFrame {
+        branch: 1, hour: 10, metrics: Default::default(),
+        tables: std::array::from_fn(|_| TableView::Unavailable { reason: "outside test".into() }.into()),
+    };
+    *frame.tables[TableId::NavyTotals.index()] = TableView::Complete(TableRows::NavyTotals(vec![
+        NavyTotalRow { slot: 1, roster_strength_raw: Recorded::NotRecorded, ..Default::default() },
+        NavyTotalRow { slot: 2, roster_strength_raw: Recorded::Value(73), ..Default::default() },
+    ]));
+    *frame.tables[TableId::NavyClasses.index()] = TableView::Complete(TableRows::NavyClasses(vec![
+        NavyClassRow { slot: 2, ownership: 0, class: 5, ships: 1, strength_raw: Recorded::Value(73) },
+    ]));
+    let at = At {
+        owner: None, holders: &linked_holders(), hour: frame.hour,
+        context: &ForceContext { catalogue: None, warnings: Vec::new(), groups: GroupsAt::default() },
+        cancelled: &false.into(), live: &Default::default(),
+    };
+    let params = NavyAtParams {
+        branch_id: "1".into(), countries: Vec::new(), top: None, group: None,
+        ownership: NavyOwnership::Roster, grouping: NavyGrouping::Class, measure: NavyMeasure::Strength,
+    };
+    let reply = NavyAt::reply(&frame, &params, &at).unwrap();
+    let [known, unknown] = reply.rows.as_slice() else { panic!("expected both linked navies") };
+    assert_eq!((known.slot, known.total), (Some(2), Some(73)));
+    assert_eq!(known.values, [Some(73)]);
+    assert_eq!((unknown.slot, unknown.total), (Some(1), None));
+    assert_eq!(unknown.values, [None]);
+    assert!(unknown.missing.is_some());
+}
+
+#[test]
+fn army_with_unknown_division_composition_has_no_count_for_a_comparison_group() {
+    use crate::products::army::ArmyAt;
+    use dashboard_base::{products::at_hour::exact_panel, test_fixtures::{CAMPAIGN, ownership_frame, records}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{DivisionRow, DivisionTemplateIconRow, LexicalTokenRow, TableRows, TemplateSubunit};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::atomic::AtomicBool;
+
+    let frames = [100, 101].map(|hour| {
+        let mut frame = ownership_frame(1, hour, 11);
+        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
+            DivisionRow { id: 1, roster_owner: 11, logical_owner: 11, template: 1, ..Default::default() },
+            DivisionRow { id: 2, roster_owner: 44, logical_owner: 44, template: 2, ..Default::default() },
+        ]));
+        *frame.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(vec![
+            DivisionTemplateIconRow {
+                template: 1, model_unreadable: u8::from(hour == 100),
+                subunits: vec![TemplateSubunit { token: 1, local: 0, count: 3 }], ..Default::default()
+            },
+            DivisionTemplateIconRow { template: 2, subunits: vec![TemplateSubunit { token: 2, local: 0, count: 5 }], ..Default::default() },
+        ]));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 1, literal: b"unit_a".to_vec() },
+            LexicalTokenRow { token: 2, literal: b"unit_b".to_vec() },
+        ]));
+        frame
+    });
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames.into())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let cancel = AtomicBool::new(false);
+    let src = Source::from_replay(dashboard_base::SourceKey { source_id: "army".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancel).unwrap();
+    let params = json!({ "branchId": "1", "countries": [7, 8], "countFor": "owner" });
+    let panel = exact_panel::<ArmyAt>(&src, &LoadContext { content: None }, &params).unwrap();
+    let read = panel.exact().unwrap();
+    let unknown = (read.cold)(100, &cancel).unwrap();
+    assert_eq!(unknown["parts"][0]["key"], "unknown:unit_b");
+    let rows = &unknown["rows"];
+    assert_eq!(rows[0]["slot"], 8);
+    assert_eq!(rows[0]["total"], 5);
+    assert_eq!(rows[0]["values"], json!([5]));
+    assert!(rows[0]["partsMissing"].is_null());
+    assert_eq!(rows[1]["slot"], 7);
+    assert!(rows[1]["total"].is_null());
+    assert_eq!(rows[1]["missing"], "No total was recorded for battalions at this hour");
+    assert_eq!(rows[1]["values"], json!([null]));
+    assert_eq!(rows[1]["partsMissing"], "Part breakdown was not recorded at this hour");
+
+    let known = (read.cold)(101, &cancel).unwrap();
+    assert_eq!(known["rows"][0]["values"], json!([0, 5]));
+    assert_eq!(known["rows"][1]["total"], 3);
+    assert_eq!(known["rows"][1]["values"], json!([3, 0]));
 }
 
 #[test]

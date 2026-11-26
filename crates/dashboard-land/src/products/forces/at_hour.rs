@@ -538,31 +538,14 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
         .into_iter()
         .map(|row| {
             warnings.extend(row.holder_warning);
-            if let Some(reason) = &parts_error {
-                return ForceAtRow {
-                    country: row.country,
-                    slot: row.holder_slot,
-                    tag: row.tag,
-                    total: row.total,
-                    reference_total: row.reference_total,
-                    missing: row.missing,
-                    values: Vec::new(),
-                    parts_missing: row.total.map(|_| reason.clone()),
-                };
-            }
-            let held: Vec<(usize, Option<i64>)> = row
-                .slot
-                .and_then(|slot| by_slot.get(&slot))
-                .into_iter()
-                .flatten()
-                .filter_map(|&(part, value)| Some((*named.of.get(&part)?, value)))
-                .collect();
-            let (values, reconciled) = if row.holder_slot.is_none() && row.total.is_none() && held.is_empty() {
-                (vec![None; groups], false)
+            let (values, parts_missing) = if let Some(reason) = &parts_error {
+                (Vec::new(), row.total.map(|_| reason.as_str()))
             } else {
+                let held: Vec<_> = row.slot.and_then(|slot| by_slot.get(&slot)).into_iter().flatten()
+                    .filter_map(|&(part, value)| Some((*named.of.get(&part)?, value)))
+                    .collect();
                 split(row.total, &held, groups)
             };
-            let parts_missing = (row.total.is_some() && !reconciled).then(|| "Part breakdown does not reconcile with the recorded total at this hour".to_owned());
             ForceAtRow {
                 country: row.country,
                 slot: row.holder_slot,
@@ -571,7 +554,7 @@ pub(crate) fn attach_parts(selected: Vec<SelectedRow>, named: Named, by_slot: &H
                 reference_total: row.reference_total,
                 missing: row.missing,
                 values,
-                parts_missing,
+                parts_missing: parts_missing.map(str::to_owned),
             }
         })
         .collect();
