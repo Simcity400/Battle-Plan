@@ -380,7 +380,14 @@ impl Stream {
     }
 }
 
-pub struct Held<'a>(&'a mut Arc<PanelData>);
+pub struct Held<'a>(&'a mut Arc<PanelData>, &'a [String]);
+
+impl Held<'_> {
+    pub fn warnings(&mut self, mut warnings: Vec<String>, own: &OwnRefusals) {
+        finish(&mut warnings, own, self.1);
+        self["warnings"] = warnings.into();
+    }
+}
 
 impl std::ops::Deref for Held<'_> {
     type Target = Value;
@@ -446,7 +453,8 @@ where P::Context: Sync, P::Params: Sync {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
             let owner = holder::<P>(&holders, &params, hour)?;
-            let seed = held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
+            let seeking = P::RESEED_ON_SEEK && values && step.is_none_or(|input| input.step.reset());
+            let seed = seeking || held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
                 *held = Some(Stream { tables: HashMap::new(), repeated: RepeatedReads::default(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, context_revision: 0, identity_through: hour, reply_through: i32::MAX, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None, rebuild: true });
             }
@@ -535,10 +543,11 @@ where P::Context: Sync, P::Params: Sync {
                 if !changed && !expired && !P::clock_dependent(&state.plans, &context) {
                     return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                 }
-                if state.data.is_ok() && !expired && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
+                if state.data.is_ok() && hour <= state.reply_through && (revision == state.context_revision || P::UPDATES_REVISION) && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                     let kept = state.data.clone();
-                    if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data))? {
+                    if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data, &warnings))? {
                         state.reply = None;
+                        state.context_revision = revision;
                         state.reply_through = state.reply_through.min(P::valid_through(&state.frame, &params, &at));
                         return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                     }
@@ -548,7 +557,7 @@ where P::Context: Sync, P::Params: Sync {
             let mut own = OwnRefusals::default();
             #[cfg(any(test, feature = "test-support"))]
             crate::test_fixtures::product_called();
-            let result = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)));
+            let result = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::playback_reply(&state.frame, &params, &at)));
             let mut reply = match result {
                 Ok(reply) => reply,
                 Err(error) if dashboard_core::refusal(&error).is_some() && P::holds_refusal(&state.frame) => {

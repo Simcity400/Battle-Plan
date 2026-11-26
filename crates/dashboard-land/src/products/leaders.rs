@@ -1,6 +1,7 @@
 
 pub mod career;
 mod membership;
+mod ranking;
 mod visibility;
 #[cfg(test)]
 mod tests;
@@ -367,6 +368,29 @@ fn run_tally(query: &Query<'_>, run: u32, hour: i32, asked: Asked) -> io::Result
 }
 
 impl RunTally {
+    fn staged(frame: &DecodedFrame, asked: Asked) -> Option<Self> {
+        let totals = frame.complete::<tables::LeaderBattleTotals>().ok()?;
+        let dates = frame.complete::<tables::LeaderTraitDates>().ok()?;
+        let range = |handle: u64| match asked {
+            Asked::All => std::cmp::Ordering::Equal,
+            Asked::Id(id) => ((handle >> 32) as u32).cmp(&id),
+        };
+        let mut out = Self::default();
+        for row in &totals[totals.partition_point(|r| range(r.leader).is_lt())..totals.partition_point(|r| !range(r.leader).is_gt())] {
+            out.battles.push((row.leader, [row.fought, row.won, row.lost].map(u64::from)));
+        }
+        for row in &dates[dates.partition_point(|r| range(r.leader).is_lt())..dates.partition_point(|r| !range(r.leader).is_gt())] {
+            out.date(row.leader, String::from_utf8_lossy(&row.spelling).into_owned(), (row.first_hour, row.first_class), row.gained_hour);
+        }
+        Some(out)
+    }
+
+    fn date(&mut self, handle: u64, spelling: String, first: (i32, u8), gained: Option<i32>) {
+        let held = self.dates.entry((handle, spelling)).or_insert((first, gained));
+        held.0 = held.0.min(first);
+        held.1 = held.1.max(gained);
+    }
+
     fn of(totals: &StoreView<'_>, dated: &StoreView<'_>, asked: Asked) -> Self {
         let mut out = Self::default();
         let view = totals;
@@ -381,9 +405,7 @@ impl RunTally {
             let (Some(first), Some(class)) = (view.number(0, slot), view.number(1, slot)) else { continue };
             let first = (first as i32, class as u8);
             let gained = view.number(2, slot).map(|hour| hour as i32);
-            let held = out.dates.entry((handle, spelling)).or_insert((first, gained));
-            held.0 = held.0.min(first);
-            held.1 = held.1.max(gained);
+            out.date(handle, spelling, first, gained);
         }
         out
     }
@@ -410,7 +432,8 @@ impl Tally {
         self.dates.get(&(leader, token.to_owned())).copied()
     }
 
-    pub fn read(query: &Query<'_>, hour: i32, asked: Asked) -> io::Result<Self> {
+    fn read(query: &Query<'_>, frame: &DecodedFrame, asked: Asked) -> io::Result<Self> {
+        let hour = frame.hour;
         let mut runs: Vec<(u32, i32, i32)> = Vec::new();
         for stretch in query.timeline.within(query.timeline.first, hour) {
             match runs.last_mut() {
@@ -420,7 +443,10 @@ impl Tally {
         }
         let mut out = Self::default();
         for (run, first, last) in runs {
-            let through = run_tally(query, run, last, asked)?;
+            let through = match (last == hour).then(|| RunTally::staged(frame, asked)).flatten() {
+                Some(through) => through,
+                None => run_tally(query, run, last, asked)?,
+            };
             let before = match first > query.replay.recording().run(run)?.first_hour {
                 true => Some(run_tally(query, run, first - 1, asked)?),
                 false => None,
@@ -507,6 +533,7 @@ pub struct LeadersContext {
     verdicts: Arc<std::sync::Mutex<Verdicts>>,
     roster: Option<Arc<Roster>>,
     visibility: std::sync::Mutex<visibility::Visibility>,
+    ranking: std::sync::Mutex<ranking::Ranking>,
     battle_coverage: Option<(u64, Option<i32>)>,
 }
 
@@ -529,7 +556,7 @@ impl LeadersContext {
                 *held = Verdicts { catalogue: catalogue.cloned(), at: HashMap::new() };
             }
         }
-        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), battle_coverage: None })
+        Ok(Self { content, replay: source.replay(), index: dashboard_base::queries::index(source), lifetimes, verdicts, roster: None, visibility: Default::default(), ranking: Default::default(), battle_coverage: None })
     }
 
     fn for_selection(source: &Source, load: &LoadContext, branch: &str, selection: Option<&LeaderSelection>, cancelled: &AtomicBool) -> io::Result<Self> {
@@ -576,8 +603,8 @@ impl LeadersContext {
         lives[start..].iter().take_while(|life| life.0 == key).find(|life| life.1 <= i64::from(hour) && i64::from(hour) <= life.2).and_then(|life| i32::try_from(life.1).ok())
     }
 
-    pub fn tally(&self, query: &Query<'_>, hour: i32, asked: Asked) -> io::Result<Tally> {
-        Tally::read(query, hour, asked)
+    fn tally(&self, query: &Query<'_>, frame: &DecodedFrame, asked: Asked) -> io::Result<Tally> {
+        Tally::read(query, frame, asked)
     }
 
     fn battles_partial(&self, query: &Query<'_>, hour: i32) -> io::Result<Option<i32>> {
@@ -768,22 +795,10 @@ impl EvaluatedLeaders<'_> {
         if let Some(reason) = &self.missing {
             return TopLeader::Missing(reason.clone());
         }
-        if let Some(first) = self.withheld.first() {
-            let count = self.withheld.len();
-            let noun = if count == 1 { "general" } else { "generals" };
-            return TopLeader::Missing(format!("{count} {noun} could not be shown, so no top general is known: {}", first.reason));
+        if let Some(reason) = ranking::top_missing(self.withheld.len(), self.withheld.first(), self.leaders.first().and_then(|l| l.skill).is_some(), self.leaders.last().is_some_and(|l| l.skill.is_none())) {
+            return TopLeader::Missing(reason);
         }
-        if self.leaders.is_empty() {
-            return TopLeader::None;
-        }
-        if self.leaders.iter().any(|leader| leader.skill.is_none()) {
-            let reason = if self.leaders.iter().all(|leader| leader.skill.is_none()) {
-                "Generals' skills were not recorded at this hour, so no top general is known"
-            } else {
-                "Some generals' skills were not recorded at this hour, so no top general is known"
-            };
-            return TopLeader::Missing(reason.into());
-        }
+        if self.leaders.is_empty() { return TopLeader::None; }
         TopLeader::Winner(&self.leaders[0])
     }
 }
@@ -798,11 +813,15 @@ pub struct TraitList {
 
 impl TraitList {
     pub fn index(&mut self, token: &str, content: &Content) -> u32 {
+        self.index_with(token, || content.trait_info(token))
+    }
+
+    fn index_with(&mut self, token: &str, build: impl FnOnce() -> LeaderTrait) -> u32 {
         if let Some(&at) = self.at.get(token) {
             return at;
         }
         let at = self.traits.len() as u32;
-        self.traits.push(content.trait_info(token));
+        self.traits.push(build());
         self.at.insert(token.to_owned(), at);
         at
     }
@@ -822,9 +841,10 @@ pub fn held_traits(rows: &[UnitLeaderTraitRow]) -> BTreeMap<u64, Vec<String>> {
 }
 
 pub fn held_traits_for(rows: &[UnitLeaderTraitRow], leader: u64) -> Vec<String> {
-    let mut held: Vec<(u32, &[u8])> = rows
+    let first = rows.partition_point(|row| row.leader_reference < leader);
+    let mut held: Vec<(u32, &[u8])> = rows[first..]
         .iter()
-        .filter(|row| row.leader_reference == leader)
+        .take_while(|row| row.leader_reference == leader)
         .map(|row| (row.ordinal, row.token.as_slice()))
         .collect();
     held.sort_by_key(|(ordinal, _)| *ordinal);
@@ -832,6 +852,67 @@ pub fn held_traits_for(rows: &[UnitLeaderTraitRow], leader: u64) -> Vec<String> 
 }
 
 impl UnitLeaders {
+    fn board(frame: &DecodedFrame, evaluated: EvaluatedLeaders<'_>, at: &At<'_, LeadersContext>, mut notes: Option<&mut ranking::Notes>) -> io::Result<UnitLeadersReply> {
+        let context = at.context;
+        let content = &context.content;
+        let mut warnings = evaluated.warnings;
+        if let Some(why) = evaluated.missing {
+            return Ok(UnitLeadersReply {
+                leaders: Vec::new(),
+                traits: Vec::new(),
+                withheld: Vec::new(),
+                missing: Some(why),
+                battles_partial_from: None,
+                results_missing: RESULTS_MISSING.into(),
+                skill_icons: content.skill_icons().0.clone(),
+                warnings,
+            });
+        }
+        let held = frame.complete::<tables::UnitLeaderTraits>().map_err(|error| error.to_string());
+        if let Err(why) = &held {
+            warnings.push(format!("Leaders' traits are not recorded at this hour: {why}"));
+        }
+        let mut traits = TraitList::default();
+        let mut out = Vec::with_capacity(evaluated.leaders.len());
+        for leader in evaluated.leaders {
+            let tokens = held.as_ref().ok().map(|held| held_traits_for(held, leader.handle));
+            let dates = tokens
+                .iter()
+                .flatten()
+                .map(|token| evaluated.tally.as_ref().and_then(|tally| tally.date(leader.handle, token)))
+                .collect();
+            let role = || content.role(leader.owner, leader.row.kind, leader.row.category, leader.skill);
+            let role = match &mut notes { Some(notes) => notes.role(leader.handle, role), None => role() };
+            out.push(LeaderRow {
+                reference: leader.handle.to_string(),
+                name: leader.name,
+                role,
+                skill: leader.skill,
+                components: leader.row.components,
+                traits: tokens.map(|tokens| tokens.iter().map(|token| traits.index_with(token, || match &mut notes {
+                    Some(notes) => notes.trait_info(token, || content.trait_info(token)), None => content.trait_info(token),
+                })).collect()),
+                trait_dates: dates,
+                first_seen_hour: evaluated.run.and_then(|run| context.first_seen(run, u128::from(leader.handle), at.hour)),
+                fought: leader.battles.fought,
+                won: leader.battles.won,
+                lost: leader.battles.lost,
+            });
+        }
+        let (icons, icon_warnings) = match notes { Some(notes) => notes.icons(|| content.skill_icons()), None => content.skill_icons() };
+        warnings.extend(icon_warnings.iter().cloned());
+        Ok(UnitLeadersReply {
+            leaders: out,
+            traits: traits.traits,
+            withheld: evaluated.withheld,
+            missing: None,
+            battles_partial_from: evaluated.battles_partial_from,
+            results_missing: RESULTS_MISSING.into(),
+            skill_icons: icons.clone(),
+            warnings,
+        })
+    }
+
     fn kept<'a>(params: &UnitLeadersParams, frame: &'a DecodedFrame, at: &ReadsAt<'_, LeadersContext>) -> Vec<&'a UnitLeaderRow> {
         let Ok(leaders) = frame.complete::<tables::UnitLeaders>() else { return Vec::new() };
         let roster = at.context.roster.as_deref();
@@ -866,6 +947,10 @@ impl UnitLeaders {
         (Vec::new(), clocked)
     }
     pub(crate) fn evaluate<'a>(frame: &'a DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>) -> io::Result<EvaluatedLeaders<'a>> {
+        Self::evaluate_keys(frame, params, at, None, None)
+    }
+
+    fn evaluate_keys<'a>(frame: &'a DecodedFrame, params: &UnitLeadersParams, at: &At<'_, LeadersContext>, keys: Option<&std::collections::BTreeSet<u64>>, mut notes: Option<&mut ranking::Notes>) -> io::Result<EvaluatedLeaders<'a>> {
         let context = at.context;
         let content = &context.content;
         let mut warnings = content.missing();
@@ -906,49 +991,68 @@ impl UnitLeaders {
         let decided = run.map(|run| context.verdicts_at(run, at.hour)).unwrap_or_default();
         let evaluable = core_gap(frame).is_none();
         let mut made = HashMap::new();
-        for row in leaders {
+        let rows: Box<dyn Iterator<Item = &UnitLeaderRow>> = match keys {
+            Some(keys) => Box::new(keys.iter().filter_map(|key| leaders.binary_search_by_key(key, handle).ok().map(|i| &leaders[i]))),
+            None => Box::new(leaders.iter()),
+        };
+        for row in rows {
             dashboard_text::metadata::check_cancel(at.cancelled)?;
             if !params.leaders.includes(row.kind) || row.owner == 0 {
                 continue;
             }
             let reference = handle(row);
-            let owner = tags.as_ref().ok().and_then(|tags| tags.tag(row.owner));
-            let character = characters.and_then(|rows| rows.binary_search_by_key(&row.character_id, |character| character.id).ok().map(|at| &rows[at]));
-            let name = content.person_name(character, lexical);
-            if owner.is_none() && tags.is_ok() && roster.is_none() {
-                if matches!(params.selection, LeaderSelection::All) {
-                    withheld.push(LeaderWithheld { reference: reference.to_string(), owner: None, kind: row.kind, name, reason: "Leader owner has no resolved recorded country tag".into() });
-                }
-                continue;
-            }
-            let slot = tags.as_ref().ok().and_then(|tags| tags.slot(row.owner));
-            if !params.selection.keeps(slot, owner.as_deref(), roster, at.hour) {
-                continue;
-            }
-            let verdict = match decided.get(&reference) {
-                Some(verdict) => verdict.clone(),
-                None => {
-                    let verdict = visible(row, frame, content, &mut world);
-                    if evaluable && world.as_ref().and_then(|world| world.as_ref().ok()).is_some_and(|world| conditioned(row, world)) {
-                        made.insert(reference, verdict.clone());
+            let mut evaluate = || {
+                let owner = tags.as_ref().ok().and_then(|tags| tags.tag(row.owner));
+                let character = characters.and_then(|rows| rows.binary_search_by_key(&row.character_id, |character| character.id).ok().map(|at| &rows[at]));
+                let name = content.person_name(character, lexical);
+                if owner.is_none() && tags.is_ok() && roster.is_none() {
+                    if matches!(params.selection, LeaderSelection::All) {
+                        withheld.push(LeaderWithheld { reference: reference.to_string(), owner: None, kind: row.kind, name, reason: "Leader owner has no resolved recorded country tag".into() });
                     }
-                    verdict
+                    return;
                 }
+                let slot = tags.as_ref().ok().and_then(|tags| tags.slot(row.owner));
+                if !params.selection.keeps(slot, owner.as_deref(), roster, at.hour) {
+                    return;
+                }
+                let verdict = match decided.get(&reference) {
+                    Some(verdict) => verdict.clone(),
+                    None => {
+                        let verdict = visible(row, frame, content, &mut world);
+                        if evaluable && world.as_ref().and_then(|world| world.as_ref().ok()).is_some_and(|world| conditioned(row, world)) {
+                            made.insert(reference, verdict.clone());
+                        }
+                        verdict
+                    }
+                };
+                match verdict {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(reason) => {
+                        withheld.push(LeaderWithheld { reference: reference.to_string(), owner, kind: row.kind, name, reason });
+                        return;
+                    }
+                }
+                shown.push((row, reference, owner, name));
             };
-            match verdict {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(reason) => {
-                    withheld.push(LeaderWithheld { reference: reference.to_string(), owner, kind: row.kind, name, reason });
-                    continue;
-                }
-            }
-            shown.push((row, reference, owner, name));
+            match &mut notes { Some(notes) => notes.leader(reference, evaluate), None => evaluate() }
         }
         if let Some(run) = run {
             context.keep(run, at.hour, made);
         }
-        let tally = if shown.is_empty() { None } else { Some(context.tally(&query, at.hour, Asked::All)?) };
+        let tally = if shown.is_empty() {
+            None
+        } else if keys.is_some() {
+            let mut tally = Tally::default();
+            for id in shown.iter().map(|(row, ..)| row.id).collect::<std::collections::BTreeSet<_>>() {
+                let individual = context.tally(&query, frame, Asked::Id(id))?;
+                tally.counts.extend(individual.counts);
+                tally.dates.extend(individual.dates);
+            }
+            Some(tally)
+        } else {
+            Some(context.tally(&query, frame, Asked::All)?)
+        };
         let mut evaluated: Vec<EvaluatedLeader<'a>> = shown
             .into_iter()
             .map(|(row, reference, owner, name)| {
@@ -981,15 +1085,6 @@ fn leader_plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::
         }
         _ => false,
     }
-}
-
-fn unselected_leader_edits(frame: &DecodedFrame, edits: &dashboard_base::products::at_hour::Edits) -> bool {
-    let table = TableId::UnitLeaders;
-    let Some(changes) = edits.tables.get(&table) else { return false };
-    let membership = dashboard_base::products::at_hour::field_mask(table, &["kind", "owner"]);
-    let selected = frame.tables[TableId::UnitLeaderTraits.index()].keys();
-    edits.replaced.is_empty() && edits.tables.len() == 1
-        && changes.iter().all(|(&key, &fields)| fields & membership == 0 && !selected.contains(key << 32))
 }
 
 fn reply_through(context: &LeadersContext, frame: &DecodedFrame, missing: Option<&str>, warnings: &[String]) -> i32 {
@@ -1046,6 +1141,9 @@ impl AtHour for UnitLeaders {
         (reads, at.context.through(at.hour))
     }
 
+    const UPDATES_REVISION: bool = true;
+    const RESEED_ON_SEEK: bool = true;
+
     fn context_revision(context: &Self::Context) -> u64 { context.visibility.lock().unwrap_or_else(std::sync::PoisonError::into_inner).revision }
 
     fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
@@ -1056,8 +1154,18 @@ impl AtHour for UnitLeaders {
         career::leader_columns(table, plan)
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
-        Ok(frame.tables[TableId::Clock.index()].held().is_not_selected() && unselected_leader_edits(frame, edits))
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).board_step(frame, params, at, edits, data)
+    }
+
+    fn playback_reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        let mut notes = ranking::Notes::default();
+        let evaluated = Self::evaluate_keys(frame, params, at, None, Some(&mut notes))?;
+        let mut ranking = ranking::Ranking::seed(frame, &evaluated, at.context, notes);
+        let reply = Self::board(frame, evaluated, at, Some(&mut ranking.notes))?;
+        ranking.seed_traits(&reply);
+        *at.context.ranking.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ranking;
+        Ok(reply)
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
@@ -1073,61 +1181,7 @@ impl AtHour for UnitLeaders {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let context = at.context;
-        let content = &context.content;
-        let evaluated = Self::evaluate(frame, params, at)?;
-        let mut warnings = evaluated.warnings;
-        if let Some(why) = evaluated.missing {
-            return Ok(UnitLeadersReply {
-                leaders: Vec::new(),
-                traits: Vec::new(),
-                withheld: Vec::new(),
-                missing: Some(why),
-                battles_partial_from: None,
-                results_missing: RESULTS_MISSING.into(),
-                skill_icons: content.skill_icons().0.clone(),
-                warnings,
-            });
-        }
-        let held = frame.complete::<tables::UnitLeaderTraits>().map_err(|error| error.to_string()).map(held_traits);
-        if let Err(why) = &held {
-            warnings.push(format!("Leaders' traits are not recorded at this hour: {why}"));
-        }
-        let mut traits = TraitList::default();
-        let mut out = Vec::with_capacity(evaluated.leaders.len());
-        for leader in evaluated.leaders {
-            let tokens = held.as_ref().ok().map(|held| held.get(&leader.handle).cloned().unwrap_or_default());
-            let dates = tokens
-                .iter()
-                .flatten()
-                .map(|token| evaluated.tally.as_ref().and_then(|tally| tally.date(leader.handle, token)))
-                .collect();
-            out.push(LeaderRow {
-                reference: leader.handle.to_string(),
-                name: leader.name,
-                role: content.role(leader.owner, leader.row.kind, leader.row.category, leader.skill),
-                skill: leader.skill,
-                components: leader.row.components,
-                traits: tokens.map(|tokens| tokens.iter().map(|token| traits.index(token, content)).collect()),
-                trait_dates: dates,
-                first_seen_hour: evaluated.run.and_then(|run| context.first_seen(run, u128::from(leader.handle), at.hour)),
-                fought: leader.battles.fought,
-                won: leader.battles.won,
-                lost: leader.battles.lost,
-            });
-        }
-        let (icons, icon_warnings) = content.skill_icons();
-        warnings.extend(icon_warnings.iter().cloned());
-        Ok(UnitLeadersReply {
-            leaders: out,
-            traits: traits.traits,
-            withheld: evaluated.withheld,
-            missing: None,
-            battles_partial_from: evaluated.battles_partial_from,
-            results_missing: RESULTS_MISSING.into(),
-            skill_icons: icons.clone(),
-            warnings,
-        })
+        Self::board(frame, Self::evaluate(frame, params, at)?, at, None)
     }
 }
 

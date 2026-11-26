@@ -27,10 +27,11 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
         CombatLogManpowerRow { country: 44, group: 1, losses_0: hour, ..Default::default() },
         CombatLogManpowerRow { country: 9001, group: 1, date: 43_800_000, losses_0: amount, losses_1: change, ..Default::default() },
     ]));
-    set(TableId::UnitLeaders, TableRows::UnitLeaders(vec![UnitLeaderRow {
-        id: 1, owner: 9001, kind: crate::products::leaders::KIND_ARMY, skill_valid: 1,
-        skill_level: 3 + change, experience: i64::from(amount), ..Default::default()
-    }]));
+    let leader = UnitLeaderRow { id: 1, owner: 9001, kind: crate::products::leaders::KIND_ARMY, skill_valid: 1,
+        skill_level: 3 + change, experience: i64::from(amount), ..Default::default() };
+    let mut leaders = vec![leader.clone()];
+    if branch == 2 { leaders.push(UnitLeaderRow { id: 2, skill_level: 8, ..leader }); }
+    set(TableId::UnitLeaders, TableRows::UnitLeaders(leaders));
     set(TableId::DivisionTemplates, TableRows::DivisionTemplates(vec![
         DivisionTemplateRow { template: 1, owner: 9001, ..Default::default() },
         DivisionTemplateRow { template: 2, owner: 44, ..Default::default() },
@@ -141,6 +142,25 @@ fn army_losses_follows_the_selected_country_and_seeds_live_losses_on_seek_or_bra
 #[test]
 fn leader_experience_seeds_the_selected_hour_and_branch() {
     follows::<crate::products::leaders::career::LeaderHour>(LEADERS_CAREER_LEADERHOUR, json!({"reference":"4294967296"}), true);
+    let source = recording(&[1, 2]);
+    let load = LoadContext { content: None };
+    for (branch, winner) in [(1, "4294967296"), (2, "8589934592"), (1, "4294967296")] {
+        for (registration, mut request, reference) in [
+            (LEADERS_CAREER_LEADERHOUR, json!({"selection":{"kind":"all"}}), "/reference"),
+            (LEADERS_UNITLEADERS, json!({"selection":{"kind":"all"}, "leaders":"land"}), "/leaders/0/reference"),
+        ] {
+            request["branchId"] = branch.to_string().into();
+            let panel = (registration.panel.unwrap().open)(&source, &load, &request).unwrap();
+            let reader = panel.exact().unwrap();
+            for hour in [107, 114, 100] {
+                let painted = (reader.advance)(hour, true, &false.into(), None);
+                assert_eq!(*painted.value, (reader.cold)(hour, &false.into()), "{request} at {hour}");
+                if hour != 114 {
+                    assert_eq!(painted.value.as_ref().as_ref().unwrap().pointer(reference).and_then(Value::as_str), Some(winner));
+                }
+            }
+        }
+    }
 }
 
 #[test]

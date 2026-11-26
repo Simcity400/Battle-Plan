@@ -557,23 +557,20 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
     let cond_frames: Vec<_> = (100..=105)
         .map(|hour| {
             let mut frame = source(1, hour, Some(1_000));
-            for table in [replay_data::rows::TableId::Provinces, replay_data::rows::TableId::States, replay_data::rows::TableId::UnitLeaderTraits] {
+            for table in [TableId::Provinces, TableId::States, TableId::UnitLeaderTraits, TableId::LandCombatDetails, TableId::NavalCombatDetails, TableId::UnitLeaderTraitExperience] {
                 frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
             }
             frame.tables[TableId::UnitLeaders.index()] =
-                TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), conditioned_ace.clone()])).into();
+                TableView::Complete(TableRows::UnitLeaders(vec![smaller_handle.clone(), conditioned_ace.clone(), UnitLeaderRow {
+                    id: 15, character_id: 10, ..conditioned_ace.clone()
+                }])).into();
+            let character = replay_data::rows::CharacterRow {
+                id: 9, country: 9001, template_present: 1, template_tag: 901,
+                template_file: b"common/characters/test.txt".to_vec(), template_line: 3, ..Default::default()
+            };
             frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![
-                replay_data::rows::CharacterRow {
-                    id: 9,
-                    country: 9001,
-                    template_present: 1,
-                    template_tag: 901,
-                    template_file: b"common/characters/test.txt".to_vec(),
-                    template_line: 3,
-                    ..Default::default()
-                },
-            ]))
-            .into();
+                character.clone(), replay_data::rows::CharacterRow { id: 10, ..character },
+            ])).into();
             frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
                 replay_data::rows::LexicalTokenRow { token: 900, literal: b"mod_flag".to_vec() },
                 replay_data::rows::LexicalTokenRow { token: 901, literal: b"mod_ace".to_vec() },
@@ -621,6 +618,15 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
         !cond_context.verdicts_at(cond_context.query(1).unwrap().timeline.stretches[0].run, 100).is_empty(),
         "verdict cache must be warm before calling LeaderCareer"
     );
+    let run = cond_context.query(1).unwrap().timeline.stretches[0].run;
+    let selection = UnitLeadersParams { branch_id: "1".into(), selection: cond_ger.clone(), leaders: LeaderKinds::Land };
+    for (frame, hour) in cond_frames[..2].iter().zip(100..=101) {
+        let at = dashboard_base::products::at_hour::ReadsAt { context: &cond_context, holders: &holders, run, hour, since: (hour > 100).then_some(100) };
+        super::visibility::prepare(&selection, frame, &at);
+        let proof = cond_context.visibility.lock().unwrap();
+        assert_eq!(proof.proved_at(handle(&conditioned_ace)), Some(hour));
+        assert_eq!(proof.proved_at(15_u64 << 32 | 1), Some(100), "the other leader kept its proof");
+    }
     let cached_career = LeaderCareer::load(
         &cond_src,
         &LeaderCareerParams { branch_id: "1".into(), reference: None, selection: Some(cond_ger.clone()), hour: 100 },
@@ -657,7 +663,7 @@ fn ranking_uses_numeric_handles_and_withholds_unproven_top_general() {
             let expected = materialized_frame(&mut *prior, cond_src.replay_ref(), 1, read.hour);
             assert_eq!(streamed(&read.value, read.fresh), streamed(&expected, read.fresh), "{key} at {}", read.hour);
             if read.hour > 100 {
-                assert_eq!(read.product_calls, u64::from(read.hour == 101), "{key} at {}", read.hour);
+                assert_eq!(read.product_calls, u64::from(read.hour == 101 && key == "unit-leader-hour"), "{key} at {}", read.hour);
             }
         }
     }
@@ -974,7 +980,11 @@ fn top_general_follows_recorded_faction_membership() {
             assert_eq!(streamed(&read.value, read.fresh), streamed(&fresh, read.fresh), "{request} at {}", read.hour);
             let structure = streamed(&fresh, false);
             if let Some(last) = previous {
-                assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+                if request.get("leaders").is_some() {
+                    assert!(read.product_calls <= u64::from(last != structure), "{request} calls at {}", read.hour);
+                } else {
+                    assert_eq!(read.product_calls, u64::from(last != structure), "{request} calls at {}", read.hour);
+                }
             }
             previous = Some(structure);
         }
@@ -1021,6 +1031,65 @@ fn top_general_follows_recorded_faction_membership() {
             let career = LeaderCareer::load(&source, &params, &load, &cancelled).unwrap();
             assert_eq!((head["reference"].as_str(), head["missing"].as_str()), (winner.map(String::as_str), missing), "{membership} at {hour}");
             assert_eq!((career.reference.as_ref(), career.missing.as_deref(), career.next_change), (winner, missing, next), "{membership} at {hour}");
+        }
+    }
+}
+
+#[test]
+fn a_thousand_played_hours_keep_the_ranking_and_only_rebuild_a_changed_top() {
+    use dashboard_base::test_fixtures::{ownership_frame, played, source_with_content, streamed, visual_mods::Machine};
+    use replay_data::rows::{CharacterRow, TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let frames = (100..=1100).map(|hour| {
+        let mut frame = ownership_frame(1, hour, 9001);
+        let leader = |id, owner, skill_level| UnitLeaderRow {
+            id, character_id: id, owner, skill_level, skill_valid: 1, kind: KIND_ARMY, experience: i64::from(hour), ..Default::default()
+        };
+        let mut leaders = vec![leader(1, 9001, 5), leader(2, 9001, 1 + hour % 2)];
+        if hour >= 850 { leaders[1].skill_level = 7; leaders[1].category = 0; } else { leaders[1].category = 1; }
+        if (450..730).contains(&hour) {
+            leaders.push(leader(3, if hour < 600 { 9001 } else { 44 }, 8));
+        }
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(leaders));
+        for table in [TableId::LandCombatDetails, TableId::NavalCombatDetails, TableId::UnitLeaderTraitExperience, TableId::Characters, TableId::LexicalTokens, TableId::UnitLeaderTraits] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        *frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 1, token: if hour < 825 { b"RANK_NAME_A".to_vec() } else { b"RANK_NAME_B".to_vec() }, ..Default::default()
+        }]));
+        frame
+    }).collect();
+    let machine = Machine::new("leader-ranking");
+    machine.write("common/defines/test.lua", b"NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { } } }");
+    machine.write("localisation/english/ranking_l_english.yml", "\u{feff}l_english:\n RANK_NAME_A:0 \"First name\"\n RANK_NAME_B:0 \"New name\"\n".as_bytes());
+    let (source, load) = source_with_content(frames, &machine.root);
+    let source = Arc::new(source);
+    for (entry, request) in [
+        (crate::registrations::LEADERS_CAREER_LEADERHOUR, json!({"branchId":"1","selection":{"kind":"countries","countries":["GER"]}})),
+        (crate::registrations::LEADERS_UNITLEADERS, json!({"branchId":"1","selection":{"kind":"all"},"leaders":"land"})),
+    ] {
+        let panel = (entry.panel.unwrap().open)(&source, &load, &request).unwrap();
+        let exact = panel.exact().unwrap();
+        let top = request.get("leaders").is_none();
+        for read in played(source.replay_ref(), exact, 100, 1100) {
+            if top && read.hour > 100 && ![450, 600, 825, 850].contains(&read.hour) {
+                assert_eq!(read.product_calls, 0, "an edit to a rival rebuilt the top at {}", read.hour);
+            }
+            if [100, 449, 450, 599, 600, 729, 730, 824, 825, 849, 850, 1100].contains(&read.hour) {
+                let cold = (exact.cold)(read.hour, &false.into());
+                assert!(cold.is_ok());
+                if top && [824, 825].contains(&read.hour) {
+                    assert_eq!(cold.as_ref().unwrap()["name"], if read.hour == 824 { "First name" } else { "New name" });
+                }
+                assert_eq!(streamed(&read.value, read.fresh), streamed(&cold, read.fresh), "{request} at {}", read.hour);
+            }
+        }
+        for hour in [550, 1100] {
+            let sought = (exact.advance)(hour, true, &false.into(), None);
+            assert_eq!(*sought.value, (exact.cold)(hour, &false.into()));
         }
     }
 }
