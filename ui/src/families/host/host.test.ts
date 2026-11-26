@@ -1626,6 +1626,9 @@ test('every member so far is dated for multi-country views: each mask ends befor
   const first = resolveCountries(selection, [], swapped, 1000, 1);
   assert.deepEqual([first.dropped, [...first.membership!.entries()]], [1, [['AAA', [{ tag: 'AAA', firstHour: 0, lastHour: 9 }]], ['BBB', [{ tag: 'BBB', firstHour: 10, lastHour: 1000 }]]]],
     'the limit keeps the first country, and the second country that took its old tag is dropped');
+  const together = { ...everFaction([], [{ tag: 'ZZZ', firstHour: 0, lastHour: 1000 }, { tag: 'AAA', firstHour: 0, lastHour: 1000 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 1000, slot: 7, countryId: 107 }] }, { tag: 'ZZZ', identities: [{ firstHour: 0, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  assert.deepEqual(resolveCountries(selection, [], together, 1000, 1).tags, ['AAA'], 'countries joining together are kept in tag order, as membership at the hour keeps them');
   assert.deepEqual([everStateAt(everBounds(selection, groups)!, 299).kind, everStateAt(everBounds(selection, groups)!, 300).kind], [null, 'unrecorded']);
 });
 

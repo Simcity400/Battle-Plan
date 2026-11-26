@@ -85,17 +85,22 @@ export const EVER_UNRECORDED = 'Group membership was not recorded at this time.'
 
 function soFarMembership(groups: CountryGroupReply, runs: readonly MembershipRun[], until: number, max: number): { membership: Map<string, MembershipRun[]>; countries: number } {
   const index = validCountryIdentityHistories(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null;
-  const countries: { id: string; from: number; spans: MembershipRun[] }[] = [];
-  const loose = new Map<string, { id: string; from: number; spans: MembershipRun[] }>();
+  const countries: { tag: string; from: number; spans: MembershipRun[] }[] = [];
+  const loose = new Map<string, { tag: string; from: number; spans: MembershipRun[] }>();
   for (const run of runs) {
     if (run.firstHour > until || index?.keyAt(run.tag, run.firstHour) != null) continue;
     const span = { tag: run.tag, firstHour: run.firstHour, lastHour: Math.min(run.lastHour, until) };
     const held = loose.get(run.tag);
-    if (held) { held.spans.push(span); held.from = Math.min(held.from, span.firstHour); } else loose.set(run.tag, { id: `tag:${run.tag}`, from: span.firstHour, spans: [span] });
+    if (held) { held.spans.push(span); held.from = Math.min(held.from, span.firstHour); } else loose.set(run.tag, { tag: run.tag, from: span.firstHour, spans: [span] });
   }
   countries.push(...loose.values());
-  if (index) for (const [key, from] of index.firstHoursDuring(runs)) if (from <= until) countries.push({ id: key, from, spans: index.aliasRuns(new Set([key]), from, until) });
-  countries.sort((a, b) => a.from - b.from || a.id.localeCompare(b.id));
+  if (index) for (const [key, from] of index.firstHoursDuring(runs)) {
+    if (from > until) continue;
+    const spans = index.aliasRuns(new Set([key]), from, until);
+    const tag = spans.reduce<string | null>((first, span) => span.firstHour === from && (first === null || span.tag.localeCompare(first) < 0) ? span.tag : first, null) ?? key;
+    countries.push({ tag, from, spans });
+  }
+  countries.sort((a, b) => a.from - b.from || a.tag.localeCompare(b.tag));
   const spans = countries.slice(0, max).flatMap(country => country.spans);
   spans.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const membership = new Map<string, MembershipRun[]>();
