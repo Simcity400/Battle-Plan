@@ -20,6 +20,7 @@ use replay_data::rows::{
     GlobalSavedEventTargetRow, PoliticalPartyRow, RowCodec, StateResistanceRow, StateRow,
     TableSchema, mask, tables,
 };
+use engine_executable::executable_tables::effect_identity;
 use replay_frame::frame::{HourFrame, Rowset};
 use std::borrow::Cow;
 
@@ -1353,7 +1354,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return text;
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x142A31830) => return self.context_effect(item, scopes, indent),
+            Some(effect_identity::CONTEXT) => return self.context_effect(item, scopes, indent),
             Some(0x142A31E48) => return self.tooltip_group(item, scopes, indent),
             Some(0x142A31D78) => return self.hidden_group(item, scopes, indent),
             _ => {}
