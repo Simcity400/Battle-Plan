@@ -606,6 +606,7 @@ function wrapBoundedRowSource<TRow extends DatedLogRow>(
     at: source.at,
     missing: boundedMissing,
     refused: source.refused,
+    ...(source.frozen ? { frozen: true as const } : {}),
     ...(source.facetTotals ? { facetTotals: source.facetTotals } : {}),
     ...(source.facetMissing ? { facetMissing: source.facetMissing } : {}),
     ...(source.rawHead !== undefined ? { rawHead: source.rawHead } : {}),

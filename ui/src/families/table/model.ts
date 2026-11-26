@@ -1327,8 +1327,10 @@ export function deriveTableTooltip(
   flatRows: readonly FlatTableRow[],
   itemKey: string,
   allColumns: readonly TableColumnSpec[],
+  rowIndex?: ReadonlyMap<string, number>,
 ): TooltipContent | null {
-  const found = flatRows.find(item => item.key === itemKey);
+  const at = rowIndex?.get(itemKey);
+  const found = rowIndex ? (at === undefined ? undefined : flatRows[at]) : flatRows.find(item => item.key === itemKey);
   if (!found) return null;
   if (found.kind === 'gap') {
     return {

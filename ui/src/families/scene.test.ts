@@ -112,3 +112,18 @@ test('a log frozen on an answered snapshot reads that snapshot, not the live hea
   const live = sceneReadView(scene, { sources: { main: 7 } }, 165);
   assert.equal(live.refused('main'), 'Not recorded at this hour', 'at the live head the refusal stands');
 });
+
+test('a log frozen before its first page answers reads the live head only while that head is proven at the frozen hour', () => {
+  const head = { total: '9', offset: '0', baseOrdinal: '0', firstOrdinal: '0', rows: [{ key: 'old', hour: 100 }], missing: [], counts: [] };
+  const scene = (h: number, c: number) => ({
+    widget: 1,
+    subs: [{ id: 7, channel: 'panel', route: null }],
+    pictures: [{ h, c, parts: [{ ...part(2, { kind: 'panel', bytes: null, data: head, refused: null }), h, c }] }],
+    model: null,
+  } as unknown as Scene);
+  const pending = { 256: { hour: 100, offset: 256, limit: 256, pending: true as const } };
+  const held = sceneReadView(scene(90, 160), { sources: { main: 7 }, pagedRows: { main: pending } }, 150).rows('main')!;
+  assert.deepEqual([held.at, held.total, held.frozen], [100, 9, true], 'the head still proven at the frozen hour is the snapshot');
+  const moved = sceneReadView(scene(140, 160), { sources: { main: 7 }, pagedRows: { main: pending } }, 150).rows('main')!;
+  assert.deepEqual([moved.at, moved.total, moved.rawHead], [100, 512, undefined], 'a head proven only after the frozen hour is not shown');
+});

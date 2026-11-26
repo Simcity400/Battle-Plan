@@ -91,7 +91,7 @@ test('the pager freezes one hour, asks it again after a seek before it, keeps pa
   const back = pager.window({ first: 5, count: 6 }, 90);
   assert.deepEqual([back.cancel, back.fetch.map(ask => [ask.offset, ask.hour])], [[8], [[4, 90], [8, 90]]], 'a seek before the frozen hour drops the snapshot and asks the window again at the displayed hour');
   assert.equal(answer(first.fetch[1]!), false, 'a page asked at the dropped hour is not installed');
-  assert.deepEqual(Object.keys(pager.pages()), [], 'nothing from after the displayed hour is published');
+  assert.deepEqual(Object.values(pager.pages()).map(page => ['pending' in page, page.hour]), [[true, 90], [true, 90]], 'nothing from after the displayed hour is published: only the window asked at it, pending');
   for (const ask of back.fetch) answer(ask);
   const kept = pager.pages()[8];
   const far = pager.window({ first: 12, count: 2 }, 90);
@@ -129,6 +129,18 @@ test('a frozen log scrolled far keeps its snapshot header: until the new window 
   const answered = rawReply([{ key: 'p28', hour: 100 }], 40, { offset: '28' });
   pager.answer(far.fetch[0]!, validateGenericTailReply(answered, 100), answered);
   assert.deepEqual(Object.keys(pager.pages()).map(Number), [28], 'once the window answers, the old header page leaves');
+});
+
+test('a log frozen before its first page answers is loading at the frozen hour, and a refused first page stays refused, never the later head', () => {
+  const pager = new SnapshotPager(4, 4);
+  const first = pager.window({ first: 5, count: 2 }, 100);
+  const loading = buildRowSourceFromHead('q', undefined, undefined, 150, pager.pages())!;
+  assert.deepEqual([loading.at, loading.frozen, loading.facetTotals, loading.rawHead, loading.refused], [100, true, undefined, undefined, null], 'the frozen hour, and no live total, chips or head');
+  assert.deepEqual(loading.sliceAt(150, 4, 4).map(slot => slot.kind), ['loading', 'loading', 'loading', 'loading']);
+  pager.refuse(first.fetch[0]!, 'Log page withheld');
+  const refused = buildRowSourceFromHead('q', undefined, undefined, 150, pager.pages())!;
+  assert.deepEqual([refused.at, refused.frozen], [100, true]);
+  assert.deepEqual(refused.sliceAt(150, 4, 4).map(slot => slot.kind), ['refused', 'refused', 'refused', 'refused']);
 });
 
 test('each snapshot page crosses to the worker once, however many pages the scroll gathers', () => {

@@ -2133,6 +2133,7 @@ test('a scroll or focus step on a two-pane table costs the same at 150 rows as a
   const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'v', direction: 'ascending' } });
   const recording = installRecordingCanvas();
   const push = Array.prototype.push;
+  const find = Array.prototype.find;
   const steps = (perPane: number) => {
     const staticPanels = { main: { perPane } };
     const bound = (scrollTop: number, focusedKey: string | null = null) => ({
@@ -2145,11 +2146,13 @@ test('a scroll or focus step on a two-pane table costs the same at 150 rows as a
     return ([['a scroll', bound(1000)], ['a focus change', bound(1000, 'B40')]] as const).map(([label, binding]) => {
       let pushed = 0;
       Array.prototype.push = function (this: unknown[], ...items: unknown[]) { pushed += items.length; return push.apply(this, items); };
+      Array.prototype.find = function (this: unknown[], ...args: Parameters<typeof find>) { pushed += this.length; return find.apply(this, args); } as typeof find;
       let step;
       try {
         step = lane.paint({ label, binding, hour: 1, now: now += 5000 });
       } finally {
         Array.prototype.push = push;
+        Array.prototype.find = find;
       }
       const mirrored = (step.fields.mirror?.value as { rows: { key: string }[] } | undefined)?.rows.map(row => row.key) ?? [];
       return { label, pushed, mirrored };
@@ -2160,12 +2163,13 @@ test('a scroll or focus step on a two-pane table costs the same at 150 rows as a
     const large = steps(750);
     for (let at = 0; at < small.length; at++) {
       const [few, many] = [small[at]!, large[at]!];
-      assert.ok(many.pushed - few.pushed < 20, `${many.label}: ${many.pushed} entries pushed at 1,500 rows against ${few.pushed} at 150`);
+      assert.ok(many.pushed - few.pushed < 20, `${many.label}: ${many.pushed} entries pushed or searched at 1,500 rows against ${few.pushed} at 150`);
       assert.deepEqual(many.mirrored, few.mirrored, `${many.label}: the mirror speaks the rows on screen, whatever the panes hold`);
     }
     assert.ok(large[1]!.mirrored.includes('B40'), 'the focused row is the one mirrored');
   } finally {
     Array.prototype.push = push;
+    Array.prototype.find = find;
     recording.restore();
   }
 });

@@ -278,4 +278,7 @@ test('a raid in a log frozen at an earlier hour keeps the preparation it had the
   const model = raidLogProjection.project(createBoundedReadView({ hour: 104, rows: new Map([['main', source]]) }), { artwork: false, selected: [] });
   assert.deepEqual(model.rows[0]?.cells.preparation?.value, { kind: 'known', value: '5' }, 'the hours prepared at the frozen hour, not at the displayed one');
   assert.equal(model.nextChangeAt ?? Infinity, Infinity, 'a frozen row does not wake playback to advance');
+  const sameHour = buildRowSourceFromHead('test:raids:frozen-now', frozen, undefined, 100, pages)!;
+  const answeredNow = raidLogProjection.project(createBoundedReadView({ hour: 100, rows: new Map([['main', sameHour]]) }), { artwork: false, selected: [] });
+  assert.equal(answeredNow.nextChangeAt ?? Infinity, Infinity, 'nor one whose page answered at the hour it froze');
 });

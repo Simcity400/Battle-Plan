@@ -22,7 +22,7 @@ import {
   type TableRow,
 } from './model.ts';
 import { createTablePicture, drawFamilyTable, drawPaneFrame, glideDurationForSpeed, hitFamilyTable, hitPanes, NO_GLIDE, rankHoldForSpeed, tableGlide, type FamilyTablePicture, type TableGlide } from './painter.ts';
-import { combinedPaneGeometry, combinedPaneRows, paneGeometry, paneOfRow, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
+import { combinedPaneGeometry, combinedPaneRows, paneGeometry, panesHeight, paneScroll, paneTitleText, resolvePanes, visiblePaneRange, type ResolvedPane } from './panes.ts';
 import { MEDIA_ROW_HEIGHT, ROW_HEIGHT, rankMarkers, type GlideOffset, type RankMarker, type TableSettings } from './settings.ts';
 
 export interface FamilyTableBinding<TOptions = unknown> extends LaneBinding<TOptions> {
@@ -316,8 +316,7 @@ function layoutTable(model: TableModel, binding: FamilyTableBinding, surface: Su
   const tops = (index: number) => (spans ? spans.tops[index]! : (rowGeom ? rowGeom.tops[index]! : index * rowHeight) + windowTop);
   const heights = (index: number) => (spans ? spans.heights[index]! : rowGeom ? rowGeom.heights[index]! : rowHeight);
   const focused = binding.focusedKey;
-  const inPane = focused && panes ? paneOfRow(panes, focused) : null;
-  const focusedIndex = focused ? (panes ? (inPane ? shape.paneStarts[inPane.pane]! + 1 + inPane.index : -1) : (shape.rowIndex.get(focused) ?? -1)) : -1;
+  const focusedIndex = focused ? (shape.rowIndex.get(focused) ?? -1) : -1;
   return { shape, localScrollTop, rowWindow, shownWindows, tops, heights, focusedIndex, height: surface.height };
 }
 
@@ -552,7 +551,7 @@ export const tableLane: LaneFamily<FamilyTableBinding, TableModel, TableLayout> 
   tooltip(frame, key, focus) {
     const rowKey = focus ? key : inspectedRow(key);
     if (!rowKey) return null;
-    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns);
+    const content = deriveTableTooltip(frame.layout.shape.flatRows, rowKey, frame.model.columns, frame.layout.shape.rowIndex);
     return content ? { rowKey, content } : null;
   },
   structure({ layout, binding }) {

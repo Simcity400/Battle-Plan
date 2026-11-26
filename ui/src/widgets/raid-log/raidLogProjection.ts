@@ -331,7 +331,7 @@ export const raidLogProjection: TableProjection<RaidLogProjectionOptions> = regi
       readView.rowWindow,
       rawRow => {
         const built = buildRaidRow(readView, rawRow, readAt, options.artwork, boundary);
-        if (readAt === hour && built.nextChangeAt > hour && built.nextChangeAt < nextPrepChange) nextPrepChange = built.nextChangeAt;
+        if (!source.frozen && built.nextChangeAt > hour && built.nextChangeAt < nextPrepChange) nextPrepChange = built.nextChangeAt;
         return built.row;
       },
     );

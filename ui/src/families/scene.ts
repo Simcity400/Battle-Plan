@@ -9,7 +9,7 @@ import { artHandleKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
-import { buildRowSourceFromHead, frozenAnswer, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, frozenAnswer, frozenHour, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -76,6 +76,14 @@ function readScene(
     const rev = pictureOf(name)?.parts[0]?.version;
     if (rev !== undefined) revisions[name] = rev;
   }
+  const headHolds = (name: string): boolean => {
+    const snapshot = sources.pagedRows?.[name];
+    const frozen = frozenHour(snapshot, hour);
+    if (frozen === null) return true;
+    if (frozenAnswer(snapshot, hour)) return false;
+    const head = pictureOf(name)?.parts[0];
+    return head !== undefined && head.h <= frozen && frozen <= head.c;
+  };
   const liveCache = new Map<string, Live | null>();
   const rowsCache = new Map<string, TableRowSource<DatedLogRow> | undefined>();
   return createBoundedReadView({
@@ -114,7 +122,7 @@ function readScene(
         if (head.kind === 'answer') answers.set(name, head.answer);
         else if (head.kind === 'panel') {
           if (head.refused === null) panels.set(name, head.data);
-          else if (!frozenAnswer(sources.pagedRows?.[name], hour)) refused.set(name, head.refused);
+          else if (headHolds(name)) refused.set(name, head.refused);
         }
       }
       return { panels, answers, refused };
@@ -143,7 +151,8 @@ function readScene(
         rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot) ?? undefined;
       } else if (Object.hasOwn(sources.sources, name)) {
         const head = pictureOf(name)?.parts[0]?.value;
-        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, head.refused === null ? head.data : undefined, head.refused ?? undefined, hour, snapshot) ?? undefined;
+        const holds = headHolds(name);
+        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, holds && head.refused === null ? head.data : undefined, holds ? head.refused ?? undefined : undefined, hour, snapshot) ?? undefined;
       }
       rowsCache.set(name, rows);
       return rows;

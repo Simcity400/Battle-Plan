@@ -103,14 +103,6 @@ export function panesHeight(panes: readonly ResolvedPane[]): number {
   return height;
 }
 
-export function paneOfRow(panes: readonly ResolvedPane[], key: string): { readonly pane: number; readonly index: number } | null {
-  for (let p = 0; p < panes.length; p++) {
-    const index = panes[p]!.rowIndex.get(key);
-    if (index !== undefined) return { pane: p, index };
-  }
-  return null;
-}
-
 export function visiblePaneRange(geom: RowLayoutGeometry, count: number, scrollTop: number, height: number): readonly [number, number] {
   let lo = 0;
   let hi = count;
