@@ -435,10 +435,16 @@ class FamilyKitPatterns(unittest.TestCase):
     def test_family_hand_percent_is_refused_in_families_and_projections(self):
         code, out = check({}, {
             "ui/src/families/bars/painter.ts": "const pct = `${Math.round(share * 100)}%`;\n",
-            "ui/src/widgets/foo/fooProjection.ts": "const a = `${val.toFixed(1)}%`;\nconst b = Math.floor(share * 100) + '%';\n",
+            "ui/src/widgets/foo/fooProjection.ts": (
+                "const a = `${val.toFixed(1)}%`;\n"
+                "const b = Math.floor(share * 100) + '%';\n"
+                "const c = `${n}%`;\n"
+                "const d = `${\n  Math.round(share * 100)\n}%`;\n"
+            ),
         })
         self.assertEqual(code, 1)
         self.assertIn("family-hand-percent", out)
+        self.assertIn("ui/src/widgets/foo/fooProjection.ts: family-hand-percent: 0 at the base, 4 now", out)
         self.assertIn("formatShare", out)
         self.assertIn("formatProgress", out)
         self.assertIn("formatRecordedPercent", out)
@@ -446,6 +452,20 @@ class FamilyKitPatterns(unittest.TestCase):
             "ui/src/families/valueFormat.ts": "const pct = `${Math.round(share * 100)}%`;\n",
             "ui/src/families/heat/matrixModel.ts": "if (Math.floor(at / width) === at % width) continue;\n",
             "ui/src/families/bars/barsFamily.test.ts": "const pct = `${Math.round(share * 100)}%`;\n",
+            "ui/src/widgets/foo/FooWidget.tsx": "export const x = (w: number) => <div style={{ width: `${w}%`, left: `${w}%` }} />;\n",
+        })[0], 0)
+
+    def test_regex_literal_brace_inside_template_substitution_does_not_hide_formatter(self):
+        code, out = check({}, {
+            "ui/src/widgets/foo/regexTemplate.ts": (
+                "const a = `${/}/.test(tag) ? n.toFixed(1) : n}`;\n"
+                "const b = `${/[}]/.test(tag) ? n.toLocaleString('en-US') : n}`;\n"
+            ),
+        })
+        self.assertEqual(code, 1)
+        self.assertIn("ui/src/widgets/foo/regexTemplate.ts: family-locale-string: 0 at the base, 2 now; new at line 1, 2", out)
+        self.assertEqual(check({}, {
+            "ui/src/widgets/foo/divTemplate.ts": "const s = `${a / b} plain .toFixed(1) ${c / d}`;\n",
         })[0], 0)
 
     def test_family_at_least_wording_is_refused_in_families_and_widgets(self):

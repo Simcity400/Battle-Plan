@@ -67,9 +67,21 @@ LOCAL_TICK_ENGINE = re.compile(
 )
 FAMILY_LOCALE_CODE = re.compile(r"""\.toLocaleString\s*\(|\.toFixed\s*\(|\bnew\s+Intl\.NumberFormat\s*\(""")
 FAMILY_LOCALE_IMPORT = re.compile(r"""from\s+['"][^'"]*charts/numberFormat(?:\.ts)?['"]""")
-FAMILY_HAND_PERCENT = re.compile(
-    r"""\$\{[^}\n]*(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^}\n]*\}\s*%|(?:\bMath\.(?:round|floor|trunc|ceil)\s*\(|\.toFixed\s*\()[^;\n]*\+\s*['"`]%"""
+TS_REGEX_PRECEDING_KEYWORDS = frozenset({
+    "return", "throw", "case", "delete", "void", "typeof", "yield", "await",
+    "in", "instanceof", "of", "new", "else", "do", "export", "default",
+    "extends", "as", "satisfies",
+})
+CSS_PERCENT_PROP = re.compile(
+    r"""\b(?:width|height|minWidth|maxWidth|minHeight|maxHeight|left|right|top|bottom|inset|flexBasis|backgroundPosition|transformOrigin)\s*:\s*$"""
 )
+CSS_PERCENT_FN = re.compile(
+    r"""\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lch|lab|color-mix|linear-gradient|radial-gradient|conic-gradient|translate[XY]?|scale[XY]?)\([^)]*$"""
+)
+HAND_PERCENT_CONCAT = re.compile(
+    r"""(?:[A-Za-z0-9_$)\]])\s*\+\s*['"`]%"""
+)
+TEMPLATE_PERCENT_SUFFIX = re.compile(r"""[ \t]*%""")
 FAMILY_PRIVATE_ART_CACHE = re.compile(
     rf"\.stateOfUrl\s*\(|\b(?:function\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\b|(?:const|let)\s+(?:resolve(?:Art|Flag)State|collect(?:Visible)?(?:Cell)?Icons)\s*=\s*{TS_FN_RHS})"
 )
@@ -611,11 +623,12 @@ def _blank_slice(text, start, end):
     return re.sub(r"[^\n]", " ", text[start:end])
 
 
-def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, on_plain=None, on_string=None, on_template_chunk=None):
+def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, is_tsx=False, on_plain=None, on_string=None, on_template_chunk=None, on_template_interp=None):
     out = []
     at = start
     brace_depth = 0
     plain_start = start
+    expect_expr = True
 
     def flush_plain(upto):
         nonlocal plain_start
@@ -631,6 +644,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, o
         if stop_brace:
             if ch == "{":
                 brace_depth += 1
+                expect_expr = True
                 at += 1
                 continue
             if ch == "}":
@@ -638,6 +652,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, o
                     flush_plain(at)
                     return "".join(out), at
                 brace_depth -= 1
+                expect_expr = True
                 at += 1
                 continue
         if ch == "/" and at + 1 < end and text[at + 1] == "/":
@@ -654,6 +669,44 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, o
             out.append(_blank_slice(text, at, stop))
             at = stop
             plain_start = at
+        elif ch == "/" and expect_expr and not (at > start and text[at - 1] == "<") and not (is_tsx and at + 1 < end and text[at + 1] == ">" and text[at + 2:at + 3] != "/"):
+            cursor = at + 1
+            in_class = False
+            slash_end = -1
+            while cursor < end:
+                c = text[cursor]
+                if c == "\\" and cursor + 1 < end and text[cursor + 1] != "\n":
+                    cursor += 2
+                    continue
+                if c == "\n":
+                    break
+                if c == "[" and not in_class:
+                    in_class = True
+                    cursor += 1
+                    continue
+                if c == "]" and in_class:
+                    in_class = False
+                    cursor += 1
+                    continue
+                if c == "/" and not in_class:
+                    slash_end = cursor
+                    cursor += 1
+                    while cursor < end and text[cursor].isalpha():
+                        cursor += 1
+                    break
+                cursor += 1
+            if slash_end >= 0:
+                flush_plain(at)
+                if blank_strings:
+                    out.append("/" + _blank_slice(text, at + 1, slash_end) + text[slash_end:cursor])
+                else:
+                    out.append(text[at:cursor])
+                at = cursor
+                plain_start = at
+                expect_expr = False
+            else:
+                expect_expr = True
+                at += 1
         elif ch in ("'", '"'):
             flush_plain(at)
             quote = ch
@@ -676,38 +729,52 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, o
                 out.append(text[at:cursor])
             at = cursor
             plain_start = at
+            expect_expr = False
         elif ch == "`":
             flush_plain(at)
+            tpl_start = at
             out.append("`")
             cursor = at + 1
             chunk_start = cursor
             after_interp = False
+            prev_chunk = ""
+            interp_start = tpl_start
             while cursor < end:
                 c = text[cursor]
                 if c == "\\":
                     cursor += 2
                     continue
                 if c == "`":
+                    chunk_body = text[chunk_start:cursor]
                     if on_template_chunk is not None:
-                        on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
-                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+                        on_template_chunk(chunk_start, chunk_body, after_interp)
+                    if after_interp and on_template_interp is not None:
+                        on_template_interp(tpl_start, prev_chunk, interp_start, chunk_start, chunk_body)
+                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else chunk_body)
                     out.append("`")
                     cursor += 1
                     break
                 if c == "$" and cursor + 1 < end and text[cursor + 1] == "{":
+                    chunk_body = text[chunk_start:cursor]
                     if on_template_chunk is not None:
-                        on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
-                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+                        on_template_chunk(chunk_start, chunk_body, after_interp)
+                    if after_interp and on_template_interp is not None:
+                        on_template_interp(tpl_start, prev_chunk, interp_start, chunk_start, chunk_body)
+                    out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else chunk_body)
                     out.append("${")
+                    prev_chunk = chunk_body
+                    interp_start = cursor
                     inner_masked, close_brace = _scan_ts_range(
                         text,
                         cursor + 2,
                         end,
                         blank_strings=blank_strings,
                         stop_brace=True,
+                        is_tsx=is_tsx,
                         on_plain=on_plain,
                         on_string=on_string,
                         on_template_chunk=on_template_chunk,
+                        on_template_interp=on_template_interp,
                     )
                     out.append(inner_masked)
                     if close_brace < end:
@@ -720,12 +787,36 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, o
                     continue
                 cursor += 1
             else:
+                chunk_body = text[chunk_start:cursor]
                 if on_template_chunk is not None:
-                    on_template_chunk(chunk_start, text[chunk_start:cursor], after_interp)
-                out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else text[chunk_start:cursor])
+                    on_template_chunk(chunk_start, chunk_body, after_interp)
+                if after_interp and on_template_interp is not None:
+                    on_template_interp(tpl_start, prev_chunk, interp_start, chunk_start, chunk_body)
+                out.append(_blank_slice(text, chunk_start, cursor) if blank_strings else chunk_body)
             at = cursor
             plain_start = at
+            expect_expr = False
+        elif ch.isspace():
+            at += 1
+        elif ch.isalpha() or ch in ("_", "$"):
+            cursor = at + 1
+            while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", "$")):
+                cursor += 1
+            expect_expr = text[at:cursor] in TS_REGEX_PRECEDING_KEYWORDS
+            at = cursor
+        elif ch.isdigit():
+            cursor = at + 1
+            while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", ".")):
+                cursor += 1
+            expect_expr = False
+            at = cursor
+        elif ch in (")", "]", "."):
+            expect_expr = False
+            at += 1
+        elif ch in ("+", "-") and at + 1 < end and text[at + 1] == ch:
+            at += 2
         else:
+            expect_expr = True
             at += 1
     flush_plain(end)
     return "".join(out), end
@@ -753,12 +844,33 @@ def at_least_wording_lines(text, *, is_tsx=False):
         if after_interp and body.startswith("+") and (len(body) == 1 or not re.match(r"[0-9A-Za-z_+=]", body[1])):
             lines.append(line_of(text, offset))
 
-    _scan_ts_range(text, 0, len(text), blank_strings=False, on_plain=on_plain, on_string=on_string, on_template_chunk=on_template_chunk)
+    _scan_ts_range(text, 0, len(text), blank_strings=False, is_tsx=is_tsx, on_plain=on_plain, on_string=on_string, on_template_chunk=on_template_chunk)
     return sorted(lines)
 
 
-def mask_ts_comments(text, *, blank_strings=False):
-    masked, _ = _scan_ts_range(text, 0, len(text), blank_strings=blank_strings)
+def hand_percent_lines(text, code_with_strings, *, is_tsx=False):
+    lines = []
+
+    def on_template_interp(tpl_start, prev_chunk, interp_start, _chunk_start, body):
+        if not TEMPLATE_PERCENT_SUFFIX.match(body):
+            return
+        before_tpl = code_with_strings[max(0, tpl_start - 64):tpl_start]
+        if CSS_PERCENT_PROP.search(before_tpl) or CSS_PERCENT_FN.search(prev_chunk):
+            return
+        lines.append(line_of(text, interp_start))
+
+    _scan_ts_range(text, 0, len(text), blank_strings=False, is_tsx=is_tsx, on_template_interp=on_template_interp)
+    for hit in HAND_PERCENT_CONCAT.finditer(code_with_strings):
+        line_start = code_with_strings.rfind("\n", 0, hit.start()) + 1
+        before_expr = code_with_strings[line_start:hit.start()]
+        if CSS_PERCENT_PROP.search(re.sub(r"[A-Za-z0-9_$.()[\]]+\s*$", "", before_expr)):
+            continue
+        lines.append(line_of(text, hit.start()))
+    return sorted(lines)
+
+
+def mask_ts_comments(text, *, blank_strings=False, is_tsx=False):
+    masked, _ = _scan_ts_range(text, 0, len(text), blank_strings=blank_strings, is_tsx=is_tsx)
     return masked
 
 
@@ -785,8 +897,9 @@ def ts_loop_spans(code):
 
 
 def family_ts_matches(name, text):
-    code_with_strings = mask_ts_comments(text, blank_strings=False)
-    code = mask_ts_comments(text, blank_strings=True)
+    is_tsx = name.endswith(".tsx")
+    code_with_strings = mask_ts_comments(text, blank_strings=False, is_tsx=is_tsx)
+    code = mask_ts_comments(text, blank_strings=True, is_tsx=is_tsx)
     found = {}
     contrast_lines = [line_of(text, m.start()) for m in LOCAL_CONTRAST_INK.finditer(code)]
     if contrast_lines:
@@ -799,7 +912,7 @@ def family_ts_matches(name, text):
         locale_lines = [line_of(text, offset) for offset in sorted(locale_offsets)]
         if locale_lines:
             found["family-locale-string"] = locale_lines
-        percent_lines = [line_of(text, m.start()) for m in FAMILY_HAND_PERCENT.finditer(code_with_strings)]
+        percent_lines = hand_percent_lines(text, code_with_strings, is_tsx=is_tsx)
         if percent_lines:
             found["family-hand-percent"] = percent_lines
     if ".measureText" in code:

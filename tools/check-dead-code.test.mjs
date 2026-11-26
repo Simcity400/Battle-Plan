@@ -532,3 +532,98 @@ test('R2-D7: invalid explicit --against ref fails instead of silently skipping b
     assert.throws(() => parseAgainstArg(['--against=']), /--against requires a commit or ref/);
   });
 });
+
+test('R3-S18: uncalled nested functions inside a called function do not keep their imports or namespace reads live', async () => {
+  await withRepo(baseFiles({
+    'ui/src/nestedDead.ts': 'export const deadFromNested = () => 1;',
+    'ui/src/nestedArrowDead.ts': 'export const deadFromArrow = () => 2;',
+    'ui/src/nestedLive.ts': 'export const liveFromNested = () => 3;',
+    'ui/src/nestedNs.ts': 'export const usedNs = () => 4; export const deadNs = () => 5;',
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import { deadFromNested } from './nestedDead.ts';
+      import { deadFromArrow } from './nestedArrowDead.ts';
+      import { liveFromNested } from './nestedLive.ts';
+      import * as nestedNs from './nestedNs.ts';
+      function start() {
+        const result = usedHoisted();
+        function unusedInner() {
+          return deadFromNested() + nestedNs.deadNs();
+        }
+        const unusedArrow = () => deadFromArrow();
+        function usedHoisted() {
+          return liveFromNested() + nestedNs.usedNs();
+        }
+        return result;
+      }
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(loadLazy, worker, used, ref, REQUEST_PATHS, start());
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, ['ui/src/nestedArrowDead.ts', 'ui/src/nestedDead.ts']);
+    assert.deepEqual(result.exports.unusedExports.map(e => e.key), ['ui/src/nestedNs.ts:deadNs']);
+  });
+});
+
+test('R3-S19: namespace passed to a local reader credits only consumed members, and unused local export aliases are reported', async () => {
+  await withRepo(baseFiles({
+    'ui/src/nsTarget.ts': 'export const draw = () => 1; export const spare = () => 2;',
+    'ui/src/nsDestructured.ts': 'export const draw = () => 3; export const spare = () => 4;',
+    'ui/src/nsEscaped.ts': 'export const a = () => 5; export const b = () => 6;',
+    'ui/src/aliasedMod.ts': `
+      function draw() { return 10; }
+      export const run = () => draw();
+      export { draw as spare };
+    `,
+    'ui/src/main.tsx': `
+      import './styles.css';
+      import type { SharedType } from './types.ts';
+      import { REQUEST_PATHS } from './generated/dashboard.ts';
+      import * as nsTarget from './nsTarget.ts';
+      import * as nsDestructured from './nsDestructured.ts';
+      import * as nsEscaped from './nsEscaped.ts';
+      import { run } from './aliasedMod.ts';
+      function callDraw(m: typeof nsTarget) {
+        return m.draw();
+      }
+      function forwardDraw(m: typeof nsTarget) {
+        return callDraw(m);
+      }
+      function callDestructured({ draw }: typeof nsDestructured) {
+        return draw();
+      }
+      function escapeAll(m: typeof nsEscaped) {
+        return Object.keys(m).length;
+      }
+      const loadLazy = async () => (await import('./lazy.ts')).value;
+      const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
+      type Ref = import('./inlineType.ts').Inline;
+      const used: SharedType = { product: 'live-product', head: 'live-head' };
+      const ref: Ref = { ok: true };
+      console.log(
+        loadLazy, worker, used, ref, REQUEST_PATHS,
+        forwardDraw(nsTarget), callDestructured(nsDestructured), escapeAll(nsEscaped), run(),
+      );
+    `,
+    'tools/legacy-widgets-ratchet.json': '{"maxUnusedExports": 0}',
+  }), async root => {
+    const result = await runDeadCodeCheck(root);
+    assert.deepEqual(result.ui.deadProduction, []);
+    assert.deepEqual(
+      result.exports.unusedExports.map(e => e.key),
+      [
+        'ui/src/aliasedMod.ts:spare',
+        'ui/src/nsDestructured.ts:spare',
+        'ui/src/nsTarget.ts:spare',
+      ],
+    );
+  });
+});
