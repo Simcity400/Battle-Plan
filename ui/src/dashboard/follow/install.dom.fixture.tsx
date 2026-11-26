@@ -118,6 +118,8 @@ const until = async (done: () => boolean, ms = 3000) => { const end = performanc
 declare global { interface Window { installFixture: unknown } }
 window.installFixture = {
   async start(count: number) {
+    pipeline.prepare([], []);
+    await pipeline.whenPrepared();
     mount(count); clock.seek(100); requestAnimationFrame(watch);
     const ok = await until(() => widgets.every(w => pipeline.view(w.id)?.mode === 'picture'));
     return ok || JSON.stringify({ modes: widgets.map(w => `${w.id}/${w.sub}/${pipeline.lane(w.id)}:${pipeline.view(w.id)?.mode}`), rejected: pipeline.page.stats.rejected, installs: pipeline.page.stats.installs, emitted, seek, tap: tap.slice(0, 40) });
