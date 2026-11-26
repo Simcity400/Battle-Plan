@@ -1,5 +1,3 @@
-# Asset and binary files that are ours, and where each came from: `<path or glob> <provenance>`.
-# tools/check-game-content.py fails any other; an entry that matches no file fails too.
 .github/*.yml our GitHub configuration
 .github/*.yaml our GitHub configuration
 .github/workflows/*.yml our CI workflows
