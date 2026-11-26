@@ -1,6 +1,6 @@
 import type { LiveValues } from '../charts/live';
 import { repliedCells } from '../dashboard/follow/liveCells.ts';
-import type { Picture } from '../dashboard/follow/facts.ts';
+import type { Fact, Picture } from '../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../dashboard/follow/message';
 import type { Scene, Value as LaneValue } from '../draw/lane.ts';
 import { sectionLiveValues } from '../draw/views/fields.ts';
@@ -271,17 +271,35 @@ function sameShallow(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(right).length && keys.every(key => left[key] === right[key]);
 }
 
-export function samePictures(prev: readonly (readonly unknown[])[], pictures: readonly Picture<LaneValue>[]): boolean {
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function sameValue(a: LaneValue, b: LaneValue): boolean {
+  if (a === b) return true;
+  if (a.kind === 'panel' && b.kind === 'panel') return a.refused === b.refused && (a.bytes && b.bytes ? sameBytes(a.bytes, b.bytes) : a.data === b.data);
+  if (a.kind === 'seed' && b.kind === 'seed') return a.values.length === b.values.length && a.values.every((value, at) => value === b.values[at]);
+  return a.kind === 'answer' && b.kind === 'answer' && a.answer === b.answer;
+}
+
+function sameFact(a: Fact<LaneValue>, b: Fact<LaneValue>): boolean {
+  return a === b || (a.refused === b.refused && a.cells.length === b.cells.length && a.cells.every((cell, at) => cell === b.cells[at]) && sameValue(a.value, b.value));
+}
+
+export function samePictures(prev: readonly (readonly Fact<LaneValue>[])[], pictures: readonly Picture<LaneValue>[]): boolean {
   if (prev.length !== pictures.length) return false;
   for (let i = 0; i < pictures.length; i++) {
     const a = prev[i]!;
     const b = pictures[i]!.parts;
     if (a.length !== b.length) return false;
-    for (let j = 0; j < b.length; j++) if (a[j] !== b[j]) return false;
+    for (let j = 0; j < b.length; j++) if (!sameFact(a[j]!, b[j]!)) return false;
   }
   return true;
 }
 
-export function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly unknown[])[] {
+export function snapshotPictures(pictures: readonly Picture<LaneValue>[]): readonly (readonly Fact<LaneValue>[])[] {
   return pictures.map(picture => picture.parts.slice());
 }
