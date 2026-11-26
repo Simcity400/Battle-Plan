@@ -3192,3 +3192,74 @@ test('buildDeclarativeRow resolves country identity and flag art once per row ac
   assert.equal(whoCalls, 1, 'identity is resolved once per row at the same hour');
   assert.equal(artCalls, 1, 'flag art is resolved only for the country column, never numeric columns or rowName');
 });
+
+test('a tall row near the window edge keeps its neighbours on screen while scrolling a paused table, and a row whose page comes back as loading keeps its place and its height: the host window and the lane place rows from measured heights', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'date', label: 'Date', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'date', minWidth: 70, maxWidth: 70 },
+    { key: 'item', label: 'Item', as: 'plain', offered: ['plain'], priority: 0, text: true, cellKind: 'item' },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'normal', sort: { column: 'item', direction: 'descending' } });
+  const plain = (key: string): TableRow => ({ key, name: key, cells: { date: { value: knownValue(10) }, item: { value: knownValue(key) } } });
+  const chips = Array.from({ length: 60 }, (_, at) => ({ tag: 'AAA', art: readyArt(`art://${at}`), label: `Province ${at}` }));
+  const group = (key: string): TableRow => ({ ...plain(key), pageGroup: { members: 1, open: true } });
+  const terms = (key: string, parent: string): TableRow => ({ key, name: key, pageParent: parent, detailColumn: 'item', detailEnd: true,
+    cells: { date: { value: knownValue(10) }, item: { value: knownValue(key), flags: chips } } });
+  const all: TableRow[] = [
+    plain('r0'), group('group'), terms('terms', 'group'),
+    ...Array.from({ length: 10 }, (_, at) => plain(`r${at + 3}`)),
+    group('group2'), terms('terms2', 'group2'),
+    ...Array.from({ length: 30 }, (_, at) => plain(`r${at + 15}`)),
+  ];
+  const second = 14;
+  const height = 200;
+  const width = 640;
+  const binding = (scrollTop: number) => ({ family: 'table', settings, width, height, scrollLeft: 0, scrollTop, options: NO_OPTIONS }) as never;
+  const lay = (slots: TableModelSlot[], windowOffset: number, scrollTop: number, measure: object) =>
+    tableLane.layout({ columns, rows: slots.flatMap(slot => slot.kind === 'data' ? [slot.row] : []), slots, hour: 10, unsorted: true, windowOffset, totalRows: all.length },
+      binding(scrollTop), { width, height, dpr: 1 } as never, TEST_THEME, measure as OffscreenCanvasRenderingContext2D, 10, { previous: null, now: 0, speed: 0 } as never);
+  const reference = lay(all.map(row => ({ kind: 'data' as const, row })), 0, 0, instrumentedContext().ctx);
+  for (const ordinal of [2, second]) {
+    assert.ok(reference.heights(ordinal) > ROW_HEIGHT.normal * 3, `the detail row ${ordinal} wraps its terms to several lines (${reference.heights(ordinal)}px)`);
+  }
+  const hostWindow = (scrollTop: number, fields: Readonly<Record<string, unknown>>) =>
+    tableHostAdapter.rowWindow!({ width, height, dpr: 1, scrollLeft: 0, scrollTop, zoomWindow: null }, settings, fields)!;
+  const fieldsOf = (layout: typeof reference, scrollTop: number) => tableLane.structure({ layout, binding: binding(scrollTop) } as never);
+  const measure = instrumentedContext().ctx;
+  const shown = (window: { first: number; count: number }, scrollTop: number, loading: number | null) => lay(all.slice(window.first, window.first + window.count)
+    .map((row, at) => window.first + at === loading ? { kind: 'loading' as const, key: `loading:${loading}` } : { kind: 'data' as const, row }), window.first, scrollTop, measure);
+  let layout = shown(hostWindow(0, {}), 0, null);
+  const visit = (scrollTop: number, loading: number | null = null) => {
+    const window = hostWindow(scrollTop, fieldsOf(layout, scrollTop));
+    layout = shown(window, scrollTop, loading);
+    const settled = hostWindow(scrollTop, fieldsOf(layout, scrollTop));
+    if (settled.first !== window.first || settled.count !== window.count) layout = shown(settled, scrollTop, loading);
+    return window;
+  };
+  const placed = (scrollTop: number, through: number) => {
+    const offset = layout.shape.windowOffset;
+    for (let index = 0; offset + index <= through && index < layout.shape.flatRows.length; index++) {
+      assert.equal(layout.tops(index), reference.tops(offset + index), `row ${offset + index} keeps its place at ${scrollTop}px when the window starts at ${offset}`);
+    }
+  };
+  let extent = 0;
+  for (let scrollTop = 0; scrollTop <= reference.tops(second) + 40; scrollTop += 24) {
+    const window = visit(scrollTop);
+    for (let ordinal = 0; ordinal < all.length; ordinal++) {
+      const onScreen = reference.tops(ordinal) < scrollTop + height && reference.tops(ordinal) + reference.heights(ordinal) > scrollTop;
+      if (onScreen) assert.ok(ordinal >= window.first && ordinal < window.first + window.count, `row ${ordinal} is on screen at ${scrollTop}px and inside the window ${window.first}+${window.count}`);
+    }
+    placed(scrollTop, all.length);
+    assert.ok(layout.shape.totalHeight >= extent, `the scroll extent never shrinks: ${layout.shape.totalHeight}px after ${extent}px at ${scrollTop}px`);
+    extent = layout.shape.totalHeight;
+  }
+  assert.equal(extent, reference.shape.totalHeight, 'the scroll extent is whole once every row has been seen');
+  const back = reference.tops(second - 1);
+  const past = reference.tops(second + 6);
+  for (const [scrollTop, loading] of [[back, second], [past, second], [back, null]] as const) {
+    visit(scrollTop, loading);
+    assert.ok(layout.shape.windowOffset > (scrollTop === past ? second : 2), `the tall rows before ${scrollTop === past ? 'and including the loading one ' : ''}are above the window that starts at ${layout.shape.windowOffset}`);
+    placed(scrollTop, all.length);
+    assert.equal(layout.shape.totalHeight, reference.shape.totalHeight, `the scroll extent stays whole at ${scrollTop}px with row ${loading} loading`);
+  }
+  assert.ok(layout.shape.windowOffset < second && second < layout.shape.windowOffset + layout.shape.flatRows.length, 'the page came back into the window');
+});

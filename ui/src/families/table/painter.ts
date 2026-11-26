@@ -17,9 +17,10 @@ import { resolveCachedArt } from '../art/adapters.ts';
 import type { LaneArtCache } from '../art/laneCache.ts';
 import type { ArtResult } from '../art/types.ts';
 import { drawHatchRect, MISSING_BOX_SIZE } from '../valueCanvas.ts';
+import { notApplicable } from '../value.ts';
 import { formatScalar, formatValueState } from '../valueFormat.ts';
-import { drawApprovedCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
-import { END_NOTE_HEIGHT, LIVE_END_GAP, treeColumnOf, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry, type TableRhythm } from './layout.ts';
+import { drawApprovedCell, drawDetailCell, treeLevelsOf, treeTextStart, type CellRenderContext } from './cellPainters.ts';
+import { DETAIL_HEAD_LEAD, END_NOTE_HEIGHT, LIVE_END_GAP, treeColumnOf, type DetailRowLayout, type FamilyColumnLayout, type FamilyTableLayout, type RowLayoutGeometry, type TableRhythm } from './layout.ts';
 import { computeColumnMaxima, resolveCellPaintModel, type FlatTableRow, type TableCell, type TableRow } from './model.ts';
 import { PANE_FADE_WIDTH, PANE_INDICATOR_HEIGHT, type PaneGeometry, type PaneScroll, type ResolvedPane } from './panes.ts';
 import {
@@ -46,6 +47,8 @@ export const FAST_GLIDE_MS = 120;
 export const TOP_RANK_HOLD_MS = 1500;
 export const WATCHING_RANK_HOLD_MS = 2500;
 const HAIRLINE_INSET = 10;
+const DETAIL_PLATE_INSET = 5;
+const DETAIL_RULE_END = 6;
 
 export function glideDurationForSpeed(speed: number, reducedMotion = false): number {
   if (reducedMotion || speed > FAST_SPEED) return 0;
@@ -405,7 +408,7 @@ export function drawFamilyTable(
     : HAIRLINE_INSET;
   const hairlineSpec = (item: Extract<FlatTableRow, { kind: 'data' }>, index: number, pinned: boolean) => {
     if (item.isLiveEnd) return { kind: 'band' as const, left: HAIRLINE_INSET };
-    if (item.isDayEnd || item.isTotal || isLastChildRow(rows, index)) return { kind: 'strong' as const, left: HAIRLINE_INSET };
+    if (item.isDayEnd || item.isTotal || (!item.row.detailColumn && isLastChildRow(rows, index))) return { kind: 'strong' as const, left: HAIRLINE_INSET };
     if (dayDividersOnly) return { kind: 'normal' as const, left: rowWidth };
     if (afterDate && intraDayLeftBase > HAIRLINE_INSET) {
       const shifted = pinned ? intraDayLeftBase : Math.max(HAIRLINE_INSET, intraDayLeftBase - bounds.left);
@@ -854,6 +857,33 @@ export function drawFamilyTable(
     for (let index = first; index < last; index++) visibleIndices.push(index);
   }
 
+  const paintDetailRow = (
+    item: Extract<FlatTableRow, { kind: 'data' }>,
+    detail: DetailRowLayout,
+    y: number,
+    rowH: number,
+    inspected: boolean,
+    selected: boolean,
+    focused: boolean,
+    hl: ReturnType<typeof hairlineSpec>,
+  ) => {
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, y, rowWidth, rowH);
+    const plateX = detail.indent + DETAIL_PLATE_INSET;
+    const plateW = Math.max(1, rowWidth - ROW_MARGIN_X - plateX);
+    const lead = detail.heading ? DETAIL_HEAD_LEAD : 0;
+    const plateY = y + lead;
+    const plateH = Math.max(1, rowH - lead - detail.bottom);
+    if (selected) drawRowSelected(ctx, plateX, plateY, plateW, plateH, theme, 0);
+    else if (inspected) drawRowHover(ctx, plateX, plateY, plateW, plateH, theme, 0);
+    if (focused) drawRowFocusRing(ctx, plateX, plateY, plateW, plateH, theme, 0);
+    ctx.fillStyle = theme.line;
+    ctx.fillRect(detail.indent, y, 1, rowH - (detail.last ? DETAIL_RULE_END : 0));
+    if (detail.last && hl.kind !== 'band' && hl.left < rowWidth) drawRowHairline(ctx, hl.left, rowWidth - HAIRLINE_INSET, y + rowH - 1, theme, hl.kind);
+    const cell = item.row.cells[item.row.detailColumn!];
+    drawDetailCell(renderCtx, item, cell, formatValueState(cell?.value ?? notApplicable('No detail for this row')), detail, y);
+  };
+
   const paintPass = (pinnedOnly: boolean) => {
     const startCol = 0;
     const endCol = pinnedOnly ? Math.min(layout.pinnedCount, layout.columns.length) : layout.columns.length;
@@ -879,25 +909,16 @@ export function drawFamilyTable(
       const mark = rowMarkState(item, inspectedKey, selectedKey, focusedKey, isLastChildRow(rows, index));
       const contentH = item.isLiveEnd ? rowH - LIVE_END_GAP : rowH;
       const hl = hairlineSpec(item, index, pinnedOnly);
-      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1 && !item.row.detailColumn, inspected, selected, focused, hl.kind, hl.left, logRows);
+      const detailRow = rowGeom?.detailRows?.get(index);
+      if (detailRow) {
+        paintDetailRow(item, detailRow, y, rowH, inspected, selected, focused, hl);
+        paintedCells++;
+        continue;
+      }
+      paintRowBackground(ctx, theme, rowWidth, y, rowH, contentH, item.level > 1, inspected, selected, focused, hl.kind, hl.left, logRows);
       if (rank > 0) {
         drawRankContent(item, pinnedOnly ? 0 : -bounds.left, y, contentH);
         if (picture && !pinnedOnly) picture.ranks[index] = `${rankSignature(item)}\u0001${mark}`;
-      }
-      const detailRow = rowGeom?.detailRows?.get(index);
-      const detail = detailRow && layout.columns.find(col => col.key === item.row.detailColumn);
-      if (detail && detailRow) {
-        const { width, indent, lines } = detailRow;
-        ctx.fillStyle = theme.line;
-        ctx.fillRect(indent, y, 1, contentH);
-        const look = computeLook(item, detail);
-        drawApprovedCell(renderCtx, {
-          item, column: { ...detail, width, inlineFlags: undefined, narrowed: undefined, leadInset: 0, trailInset: 0, textTone: undefined }, labelLines: lines,
-          colIndex: -1, x: indent + CELL_INSET, y, rowHeight: contentH,
-          paintModel: look.paintModel, formatted: look.formatted, fraction: look.fraction, fill: look.fill, rowHovered: inspected, rowFocused: focused, lastChild: isLastChildRow(rows, index),
-        });
-        paintedCells++;
-        continue;
       }
       let x = pinnedOnly ? rank : rank - bounds.left;
       for (let colIndex = startCol; colIndex < endCol; colIndex++) {

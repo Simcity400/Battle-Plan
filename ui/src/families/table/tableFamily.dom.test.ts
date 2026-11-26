@@ -39,9 +39,12 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(played.pauseInstallReads, 0, `zero layout/style reads through pause flush: ${played.pauseInstallReads}`);
     assert.ok(played.installs >= 6, `frames actually installed while playing: ${played.installs}`);
     assert.equal(played.flushedOnPause, true, `mirror immediately flushed to ${played.wantTop} on pause`);
-    const settled = await act<{ mutations: number; installs: number; stepped: number }>('mirrorSyncsOverFrames(40)');
+    await act('mirrorBegin()');
+    let stepped = 0;
+    for (let step = 0; step < 40; step++) if (await act<boolean>('mirrorStep()')) stepped++;
+    const settled = await act<{ mutations: number; installs: number }>('mirrorEnd()');
     t.diagnostic(`40 paused hour steps with unchanged content: ${settled.mutations} mirror mutations, ${settled.installs} installs`);
-    assert.equal(settled.stepped, 40, `R4-S12: every step installed a new hour (${settled.stepped} of 40)`);
+    assert.equal(stepped, 40, `R4-S12: every step installed a new hour (${stepped} of 40)`);
     assert.ok(settled.installs >= 40, `R4-S12: the unchanged-content installs happened (${settled.installs})`);
     assert.equal(settled.mutations, 0, `installs that change neither rows, text, selection nor focus touch the mirror zero times: ${settled.mutations}`);
     assert.equal(played.mirrorRows.at(-1)?.key, 'ENG', 'notRecorded row stays last');
@@ -120,5 +123,5 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(r5.tipShown, true, 'F8: tooltip renders ValueState elements');
     assert.equal(r5.hasMissingState, true, 'F8: missing tooltip cell renders ValueState missing');
     assert.equal(r5.hasKnownState, true, 'F8: known tooltip cell renders ValueState known');
-  }));
+  }, 180_000));
 });

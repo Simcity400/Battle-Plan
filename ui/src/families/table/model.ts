@@ -60,10 +60,18 @@ export type TableHeaderGroup =
 
 export interface TableCellFlag {
   readonly label?: string;
+  readonly note?: string;
+  readonly muted?: boolean;
   readonly tag: string;
   readonly art: ArtResult;
   readonly artKey?: string;
   readonly dimmed?: boolean;
+}
+
+export interface TableCellHeading {
+  readonly flag: TableCellFlag;
+  readonly text: Value<string>;
+  readonly note?: string;
 }
 
 export interface TableCellIconItem {
@@ -133,7 +141,7 @@ export interface TableCell {
   readonly narrowText?: string;
   readonly strong?: boolean;
   readonly tooltipRows?: readonly TooltipExtraRow[];
-  readonly quantities?: readonly { readonly figure: string; readonly unit: string }[];
+  readonly quantities?: readonly { readonly figure?: string; readonly unit: string }[];
   readonly unitSuffix?: string;
   readonly unitArt?: ArtResult;
   readonly missingFigure?: string;
@@ -147,6 +155,7 @@ export interface TableCell {
   readonly artShape?: 'wide' | 'square' | 'portrait' | 'equipment' | 'counter' | 'drawn';
   readonly artName?: string;
   readonly flags?: readonly TableCellFlag[];
+  readonly heading?: TableCellHeading;
   readonly blank?: boolean;
   readonly icons?: readonly TableCellIconItem[];
   readonly iconStripKind?: 'traits' | 'medals';
@@ -218,6 +227,7 @@ export interface TableRow {
   readonly pageGroup?: { readonly members: number; readonly open: boolean };
   readonly pageParent?: string;
   readonly detailColumn?: string;
+  readonly detailEnd?: boolean;
   readonly children?: readonly TableRow[];
   readonly initiallyOpen?: boolean;
   readonly muted?: boolean;
@@ -1112,6 +1122,7 @@ export function deriveTableAudit(input: TableAuditInput): FamilyAuditRow[] {
         ...painted,
         artKey: cell?.artKey ?? null,
         flags: cell?.flags?.map(flag => [flag.tag, flag.artKey ?? null, flag.dimmed === true, ...(flag.label ? [flag.label] : [])]) ?? null,
+        ...(cell?.heading ? { heading: [cell.heading.flag.tag, cell.heading.flag.artKey ?? null, cell.heading.note ?? null] } : {}),
       })));
     }
     const { countryFlag: _flagStatus, rows: tooltipRows, ...tooltip } = deriveRowTooltip(item, model.columns);
@@ -1223,6 +1234,7 @@ function artStatuses(cell: TableCell, inTitle: boolean): { readonly label: strin
     const text = art ? artHoverText(art) : null;
     if (text) out.push({ label, text });
   };
+  if (cell.heading) note(`${cell.heading.flag.tag} flag`, cell.heading.flag.art);
   for (const flag of cell.flags ?? []) note(`${flag.tag} flag`, flag.art);
   if (!inTitle) note(cell.artName ?? 'Art', cell.art);
   note(cell.unitSuffix ?? 'Icon', cell.unitArt);

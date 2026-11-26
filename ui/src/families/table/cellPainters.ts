@@ -1,4 +1,5 @@
 import { CHART_MEASURE_COLOURS, readableColour } from '../../charts/palette.ts';
+import { rgbaColor } from '../../shell/appearance/color.ts';
 import {
   drawActionButton,
   drawArtSlot,
@@ -19,6 +20,7 @@ import {
   FLAG_SLOT_HEIGHT,
   FLAG_SLOT_WIDTH,
   resolveKitTokens,
+  ROW_CORNER_RADIUS,
   type ArtSlotState,
   type IconStripItem,
 } from '../../draw/kit.ts';
@@ -27,7 +29,26 @@ import type { LaneArtCache } from '../art/laneCache.ts';
 import { readyArt, type ArtResult } from '../art/types.ts';
 import { formatValueState } from '../valueFormat.ts';
 import { drawFormattedValue, drawHatchRect, MISSING_BOX_SIZE, PARTIAL_TAB_GAP, PARTIAL_TAB_HEIGHT, PARTIAL_TAB_WIDTH } from '../valueCanvas.ts';
-import { DETAIL_LINE_HEIGHT, SHARE_FIGURE_SLOT, TREE_CHEVRON_LANE, SHARE_TRACK_GAP, SHARE_TRACK_HEIGHT, SHARE_TRACK_WIDTH, TWO_WAY_GAP, TWO_WAY_SLOT, type FamilyColumnLayout, type TableRhythm } from './layout.ts';
+import {
+  DETAIL_CHIP_GAP,
+  DETAIL_FLAG,
+  DETAIL_HEAD_HEIGHT,
+  DETAIL_HEAD_LEAD,
+  DETAIL_LINE_HEIGHT,
+  DETAIL_NOTE_GAP,
+  DETAIL_TEXT_SIZE,
+  detailNote,
+  SHARE_FIGURE_SLOT,
+  SHARE_TRACK_GAP,
+  SHARE_TRACK_HEIGHT,
+  SHARE_TRACK_WIDTH,
+  TREE_CHEVRON_LANE,
+  TWO_WAY_GAP,
+  TWO_WAY_SLOT,
+  type DetailRowLayout,
+  type FamilyColumnLayout,
+  type TableRhythm,
+} from './layout.ts';
 import type { CellPaintModel, FlatTableRow, TableCell } from './model.ts';
 import {
   CELL_INSET,
@@ -47,6 +68,12 @@ const PAIR_BAR_HEIGHT = 3;
 const PAIR_LIT_SPILL = 6;
 const LOG_ACTION_IDLE_INSET = 6;
 const LOG_ACTION_BUTTON = { padLeft: 8, padRight: 10, gap: 6, height: 26 } as const;
+const EXPANDER_ICON = 13;
+const EXPANDER_FILL = { dark: 0.09, light: 0.08 } as const;
+const QUANTITY_UNIT_GAP = 4;
+const QUANTITY_GAP = 14;
+const DETAIL_HEAD_FLAG_GAP = 8;
+const DETAIL_HEAD_NOTE_GAP = 14;
 
 function signedText(text: string, signed: number): string {
   if (signed > 0) return text.startsWith('+') ? text : `+${text}`;
@@ -93,7 +120,6 @@ export interface CellRenderContext {
 }
 
 export interface CellDrawArgs {
-  readonly labelLines?: readonly number[];
   readonly item: Extract<FlatTableRow, { kind: 'data' }>;
   readonly column: FamilyColumnLayout;
   readonly colIndex: number;
@@ -268,6 +294,35 @@ function drawKindTile(rc: CellRenderContext, tile: NonNullable<TableCell['artTil
   ctx.restore();
 }
 
+let expanderPaths: { readonly open: Path2D; readonly closed: Path2D } | null = null;
+
+function drawLogExpander(rc: CellRenderContext, right: number, middle: number, open: boolean, active: boolean): void {
+  const { ctx, theme } = rc;
+  const tokens = resolveKitTokens(theme);
+  let iconX = right - EXPANDER_ICON;
+  if (active) {
+    const { padLeft, padRight, height } = LOG_ACTION_BUTTON;
+    const width = padLeft + EXPANDER_ICON + padRight;
+    iconX = right - width + padLeft;
+    ctx.save();
+    ctx.fillStyle = rgbaColor(theme.text, tokens.dark ? EXPANDER_FILL.dark : EXPANDER_FILL.light, theme.text);
+    ctx.beginPath();
+    ctx.roundRect(right - width, Math.round(middle - height / 2), width, height, ROW_CORNER_RADIUS);
+    ctx.fill();
+    ctx.restore();
+  }
+  expanderPaths ??= { open: new Path2D('M4.5 6.3 8 9.8l3.5-3.5'), closed: new Path2D('M6.3 4.5 9.8 8l-3.5 3.5') };
+  ctx.save();
+  ctx.strokeStyle = active ? theme.text : tokens.quiet;
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.translate(iconX, Math.round(middle - EXPANDER_ICON / 2));
+  ctx.scale(EXPANDER_ICON / 16, EXPANDER_ICON / 16);
+  ctx.stroke(open ? expanderPaths.open : expanderPaths.closed);
+  ctx.restore();
+}
+
 export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): void {
   const { ctx, theme, density, measure, fit } = rc;
   const { item, column, colIndex, x, y, rowHeight, paintModel, formatted, fraction, rowHovered, rowFocused } = args;
@@ -282,16 +337,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   const kind = column.cellKind;
 
   if (kind === 'action') {
-    if (item.isTreeGroup && (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '')) {
-      drawChevron(ctx, right - 10, middle, item.isOpen, theme);
-      return;
-    }
-    if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
-    const label = cell?.actionLabel ?? 'View';
     const active = rowHovered || rowFocused;
     const log = rc.rhythm === 'log';
     const idleInset = log && !active ? Math.max(0, Math.min(LOG_ACTION_IDLE_INSET, right - left - 13)) : 0;
-    drawActionButton(ctx, right - idleInset, middle, label, active, theme, cell?.actionIcon, log ? LOG_ACTION_BUTTON : undefined);
+    if (item.isTreeGroup && (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '')) {
+      if (log) drawLogExpander(rc, right - idleInset, middle, item.isOpen, active);
+      else drawChevron(ctx, right - 10, middle, item.isOpen, theme);
+      return;
+    }
+    if (cell?.blank || formatted.kind === 'notApplicable' || cell?.actionLabel === '') return;
+    drawActionButton(ctx, right - idleInset, middle, cell?.actionLabel ?? 'View', active, theme, cell?.actionIcon, log ? LOG_ACTION_BUTTON : undefined);
     return;
   }
 
@@ -677,8 +732,8 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.quantities?.length) {
     for (const { figure, unit } of cell.quantities) {
       if (left >= right) break;
-      left += drawInlineRuns(rc, figure, left, middle, right - left, fontOf(theme, 13, 600), theme.text) + 4;
-      left += drawInlineRuns(rc, unit, left, middle, right - left, fontOf(theme, 13, 400), theme.muted) + 12;
+      if (figure) left += drawInlineRuns(rc, figure, left, middle, right - left, fontOf(theme, DETAIL_TEXT_SIZE, 600), theme.text) + QUANTITY_UNIT_GAP;
+      left += drawInlineRuns(rc, unit, left, middle, right - left, fontOf(theme, DETAIL_TEXT_SIZE, 400), theme.muted) + QUANTITY_GAP;
     }
     return;
   }
@@ -695,21 +750,6 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (cell?.flags && cell.flags.length > 0) {
     let fx = left;
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
-    if (args.labelLines?.length) {
-      const font = fontOf(theme, theme.fontSize.body, 400);
-      for (const [line, start] of args.labelLines.entries()) {
-        fx = left;
-        const mid = y + (line + 0.5) * DETAIL_LINE_HEIGHT;
-        const end = args.labelLines[line + 1] ?? cell.flags.length;
-        for (let i = start; i < end; i++) {
-          const flag = cell.flags[i]!;
-          drawFlagSlot(ctx, fx, Math.round(mid - FLAG_SLOT_HEIGHT / 2), slotOf(flag.art, flag.tag, rc), theme, { dimmed: flag.dimmed });
-          fx += FLAG_SLOT_WIDTH + 5;
-          fx += drawInlineRuns(rc, flag.label ?? flag.tag, fx, mid, right - fx, font, tokens.childText) + 6;
-        }
-      }
-      return;
-    }
     for (const fl of cell.flags) {
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
       const state = slotOf(fl.art, fl.tag, rc);
@@ -858,6 +898,50 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   }
 }
 
+export function drawDetailCell(
+  rc: CellRenderContext,
+  item: Extract<FlatTableRow, { kind: 'data' }>,
+  cell: TableCell | undefined,
+  formatted: ReturnType<typeof formatValueState>,
+  detail: DetailRowLayout,
+  y: number,
+): void {
+  const { ctx, theme } = rc;
+  const tokens = resolveKitTokens(theme);
+  const right = detail.left + detail.width;
+  const font = fontOf(theme, DETAIL_TEXT_SIZE, 400);
+  const flags = cell?.flags ?? [];
+  const heading = cell?.heading;
+  if (heading) {
+    const mid = y + DETAIL_HEAD_LEAD + DETAIL_HEAD_HEIGHT / 2;
+    const named = formatValueState(heading.text);
+    const missing = named.kind === 'notRecorded' || named.kind === 'notApplicable';
+    drawFlagSlot(ctx, detail.left, Math.round(mid - FLAG_SLOT_HEIGHT / 2), slotOf(heading.flag.art, heading.flag.tag, rc), theme, { dimmed: heading.flag.dimmed });
+    let x = detail.left + FLAG_SLOT_WIDTH + DETAIL_HEAD_FLAG_GAP;
+    x += drawInlineRuns(rc, missing ? named.label : named.text, x, mid, right - x, fontOf(theme, 13, missing ? 400 : 600), missing ? theme.muted : theme.text);
+    if (heading.note && right - x > DETAIL_HEAD_NOTE_GAP) drawInlineRuns(rc, heading.note, x + DETAIL_HEAD_NOTE_GAP, mid, right - x - DETAIL_HEAD_NOTE_GAP, font, theme.muted);
+  }
+  if (flags.length) {
+    for (const [line, start] of detail.lines.entries()) {
+      const mid = y + detail.top + line * DETAIL_LINE_HEIGHT + DETAIL_LINE_HEIGHT / 2;
+      const end = detail.lines[line + 1] ?? flags.length;
+      let x = detail.left;
+      for (let i = start; i < end && x < right; i++) {
+        const flag = flags[i]!;
+        drawFlagSlot(ctx, x, Math.round(mid - DETAIL_FLAG.height / 2), slotOf(flag.art, flag.tag, rc), theme,
+          { width: DETAIL_FLAG.width, height: DETAIL_FLAG.height, dimmed: flag.dimmed });
+        x += DETAIL_FLAG.width + DETAIL_FLAG.gap;
+        if (flag.label) x += drawInlineRuns(rc, flag.label, x, mid, right - x, font, flag.muted ? theme.muted : tokens.childText);
+        if (flag.note && right - x > DETAIL_NOTE_GAP) x += DETAIL_NOTE_GAP + drawInlineRuns(rc, detailNote(flag.note), x + DETAIL_NOTE_GAP, mid, right - x - DETAIL_NOTE_GAP, font, theme.muted);
+        x += DETAIL_CHIP_GAP;
+      }
+    }
+  }
+  if (detail.text) {
+    const missing = formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable';
+    drawInlineRuns(rc, missing ? formatted.label : formatted.text, detail.left, y + DETAIL_LINE_HEIGHT / 2, detail.width, font, item.row.muted || missing ? theme.muted : tokens.childText);
+  }
+}
 
 function drawShareCell(
   rc: CellRenderContext,

@@ -15,7 +15,7 @@ import {
   type TableTheme,
 } from './settings.ts';
 import { defaultWidestSamples, type ValueFormat } from '../valueFormat.ts';
-import type { FlatTableRow, TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
+import type { FlatTableRow, TableCellFlag, TableCellKind, TableColumnSpec, TableHeaderGroup } from './model.ts';
 
 export type MeasureText = (text: string, font: string) => number;
 
@@ -346,7 +346,6 @@ export function layoutFamilyTable(
 const GROUP_HEADER_HEIGHT = 30;
 const GAP_ROW_HEIGHT = 30;
 const REFUSED_ROW_HEIGHT = 32;
-const LOADING_ROW_HEIGHT = 32;
 export const LIVE_END_GAP = 9;
 export const END_NOTE_HEIGHT = 44;
 
@@ -358,13 +357,75 @@ export interface RowLayoutGeometry {
 }
 
 export interface DetailRowLayout {
+  readonly heading: boolean;
+  readonly text: boolean;
   readonly indent: number;
+  readonly left: number;
   readonly width: number;
+  readonly top: number;
+  readonly bottom: number;
+  readonly last: boolean;
   readonly lines: readonly number[];
 }
 
-export const DETAIL_LINE_HEIGHT = 28;
+export const DETAIL_LINE_HEIGHT = 29;
+export const DETAIL_FLAG = { width: 16, height: 11, gap: 7 } as const;
+export const DETAIL_CHIP_GAP = 5;
+export const DETAIL_NOTE_GAP = 4;
+export const DETAIL_TEXT_SIZE = 12.5;
+export const DETAIL_HEAD_HEIGHT = 30;
+export const DETAIL_HEAD_LEAD = 6;
+const DETAIL_BLOCK_TAIL = 18;
+const DETAIL_RULE_GAP = 14;
 
+export function detailNote(note: string): string {
+  return `· ${note}`;
+}
+
+function detailChipWidth(flag: TableCellFlag, measure: MeasureText, font: string): number {
+  const label = flag.label ? measure(flag.label, font) : 0;
+  const note = flag.note ? DETAIL_NOTE_GAP + measure(detailNote(flag.note), font) : 0;
+  return DETAIL_FLAG.width + DETAIL_FLAG.gap + label + note;
+}
+
+function detailIndent(columns: readonly FamilyColumnLayout[]): number {
+  const date = columns.findIndex(col => col.cellKind === 'date');
+  if (date < 0) return ROW_MARGIN_X + CELL_INSET;
+  let x = 0;
+  for (let at = 0; at <= date; at++) x += columns[at]!.width;
+  return x + CELL_INSET + (columns[date + 1]?.leadInset ?? 0);
+}
+
+function detailRowLayout(
+  row: Extract<FlatTableRow, { kind: 'data' }>,
+  detail: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
+): DetailRowLayout {
+  const indent = detailIndent(detail.columns);
+  const left = indent + 1 + DETAIL_RULE_GAP;
+  const width = Math.max(0, detail.width - ROW_MARGIN_X - CELL_INSET - left);
+  const last = row.row.detailEnd === true;
+  const cell = row.row.cells[row.row.detailColumn!];
+  const heading = cell?.heading !== undefined;
+  const flags = cell?.flags ?? [];
+  const lines: number[] = [];
+  const font = fontString(detail.theme, DETAIL_TEXT_SIZE, 400);
+  let used = 0;
+  for (const [at, flag] of flags.entries()) {
+    const chip = detailChipWidth(flag, detail.measure, font);
+    if (!lines.length || used + DETAIL_CHIP_GAP + chip > width) {
+      lines.push(at);
+      used = chip;
+    } else used += DETAIL_CHIP_GAP + chip;
+  }
+  return {
+    heading, text: !heading && !flags.length, indent, left, width,
+    top: heading ? DETAIL_HEAD_LEAD + DETAIL_HEAD_HEIGHT : 0, bottom: last ? DETAIL_BLOCK_TAIL : 0, last, lines,
+  };
+}
+
+function detailRowHeight(layout: DetailRowLayout): number {
+  return layout.top + (layout.text ? 1 : layout.lines.length) * DETAIL_LINE_HEIGHT + layout.bottom;
+}
 export function rowHeightOf(
   item: FlatTableRow,
   density: TableDensity,
@@ -373,7 +434,7 @@ export function rowHeightOf(
   if (item.kind === 'group-header') return GROUP_HEADER_HEIGHT;
   if (item.kind === 'gap') return GAP_ROW_HEIGHT;
   if (item.kind === 'refused') return REFUSED_ROW_HEIGHT;
-  if (item.kind === 'loading') return LOADING_ROW_HEIGHT;
+  if (item.kind === 'loading') return mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density];
   const base = item.level > 1 && !item.row.pageParent ? CHILD_ROW_HEIGHT : (mode === 'media' ? MEDIA_ROW_HEIGHT[density] : ROW_HEIGHT[density]);
   return item.isLiveEnd ? base + LIVE_END_GAP : base;
 }
@@ -383,6 +444,7 @@ export function computeRowLayout(
   density: TableDensity,
   mode: 'standard' | 'media' = 'standard',
   detail?: { width: number; columns: readonly FamilyColumnLayout[]; theme: TableTheme; measure: MeasureText },
+  loadingHeight?: (index: number) => number | undefined,
 ): RowLayoutGeometry {
   const tops = new Array<number>(rows.length);
   const heights = new Array<number>(rows.length);
@@ -390,24 +452,11 @@ export function computeRowLayout(
   let y = 0;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    let h = rowHeightOf(row, density, mode);
+    let h = (row.kind === 'loading' ? loadingHeight?.(i) : undefined) ?? rowHeightOf(row, density, mode);
     if (detail && row.kind === 'data' && row.row.detailColumn) {
-      const indent = (detail.columns.find(col => col.cellKind === 'date')?.width ?? 0) + CELL_INSET;
-      const width = Math.max(0, detail.width - indent - CELL_INSET * 2);
-      const flags = row.row.cells[row.row.detailColumn]?.flags ?? [];
-      const lines: number[] = [];
-      let used = 0;
-      for (const [at, flag] of flags.entries()) {
-        if (flag.label === undefined) continue;
-        const required = FLAG_SLOT_WIDTH + 5 + detail.measure(flag.label, fontString(detail.theme, detail.theme.fontSize.body, 400)) + 6;
-        if (!lines.length || used + required > width - CELL_INSET * 2) {
-          lines.push(at);
-          used = 0;
-        }
-        used += required;
-      }
-      detailRows.set(i, { indent, width, lines });
-      h = lines.length ? lines.length * DETAIL_LINE_HEIGHT : 30;
+      const layout = detailRowLayout(row, detail);
+      detailRows.set(i, layout);
+      h = detailRowHeight(layout);
     }
     tops[i] = y;
     heights[i] = h;
@@ -417,6 +466,67 @@ export function computeRowLayout(
 }
 
 export const TABLE_WINDOW_OVERSCAN = 4;
+
+export interface RowExtents {
+  readonly rowHeight: number;
+  readonly at: readonly number[];
+  readonly extra: readonly number[];
+  readonly before: readonly number[];
+}
+
+export function rowExtents(rowHeight: number, entries: Iterable<readonly [ordinal: number, height: number]>): RowExtents | null {
+  const at: number[] = [];
+  const extra: number[] = [];
+  const before: number[] = [];
+  let sum = 0;
+  for (const [ordinal, height] of [...entries].sort((a, b) => a[0] - b[0])) {
+    if (height === rowHeight) continue;
+    at.push(ordinal);
+    extra.push(height - rowHeight);
+    before.push(sum);
+    sum += height - rowHeight;
+  }
+  return at.length ? { rowHeight, at, extra, before } : null;
+}
+
+export function extentTop(extents: RowExtents | null, rowHeight: number, ordinal: number): number {
+  if (!extents) return ordinal * rowHeight;
+  let lo = 0;
+  let hi = extents.at.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (extents.at[mid]! < ordinal) lo = mid + 1;
+    else hi = mid;
+  }
+  return ordinal * rowHeight + (lo === 0 ? 0 : extents.before[lo - 1]! + extents.extra[lo - 1]!);
+}
+
+function extentOrdinalAt(extents: RowExtents | null, rowHeight: number, count: number, y: number): number {
+  let lo = 0;
+  let hi = Math.max(0, count);
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (extentTop(extents, rowHeight, mid + 1) <= y) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export function extentsRowWindow(
+  count: number,
+  extents: RowExtents | null,
+  rowHeight: number,
+  scrollTop: number,
+  height: number,
+): { readonly first: number; readonly count: number } {
+  const total = Number.isFinite(count) ? count : Math.ceil((scrollTop + height) / rowHeight) + TABLE_WINDOW_OVERSCAN;
+  const first = extentOrdinalAt(extents, rowHeight, total, scrollTop);
+  let end = first;
+  while (end < total && extentTop(extents, rowHeight, end) < scrollTop + height) end++;
+  const from = Math.max(0, Math.min(total, first - TABLE_WINDOW_OVERSCAN));
+  const to = Math.max(from, Math.min(count, end + TABLE_WINDOW_OVERSCAN));
+  return { first: from, count: to - from };
+}
 
 export function tableRowWindow(
   count: number,

@@ -5,11 +5,11 @@ import type { TableColumnSpec } from '../../families/table/model.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 
 export const PEACE_DEALS_COLUMNS: readonly TableColumnSpec[] = [
-  logDateColumn({ minWidth: 68 }),
-  logKindColumn({ minWidth: 36 }),
-  logCountryColumn({ label: 'Sides', minWidth: 60, grow: 0 }),
-  logItemColumn({ key: 'terms', label: 'Terms', minWidth: 80, grow: 9, narrow: 'primary', textTone: 'muted', widest: ['White peace'] }),
-  logActionColumn({ minWidth: 24, narrow: 'hide' }),
+  logDateColumn({ minWidth: 70, maxWidth: 70 }),
+  logKindColumn({ minWidth: 52, maxWidth: 52 }),
+  logCountryColumn({ label: 'Sides', minWidth: 68, grow: 0 }),
+  logItemColumn({ key: 'terms', label: 'Terms', minWidth: 80, narrow: 'primary', widest: ['White peace'] }),
+  logActionColumn({ minWidth: 60, maxWidth: 60, narrow: 'hide' }),
 ];
 
 export const definition = {
