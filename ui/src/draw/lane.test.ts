@@ -3911,3 +3911,25 @@ test('cropSurfaces transfers registered canvases synchronously with zero copies,
   await assert.rejects(cropSurfaces<MockBmp>([ok, boom], fallback), /transfer boom/);
   assert.equal(okClosed, true, 'already-created sibling bitmaps are closed if a synchronous transfer throws');
 });
+
+test('a lane answers a prepare once every family and the projections have settled, each started on its own, even when building one throws', async () => {
+  const posted: FromLane[] = [];
+  const started: string[] = [];
+  let release = () => {};
+  const turn = () => new Promise(resolve => setImmediate(resolve));
+  const dispatch = startLaneWorker(message => { posted.push(message); }, {
+    views: kind => {
+      if (kind === 'broken') throw new Error('the broken lane has no export');
+      return { paint: () => ({ surfaces: [], fields: {}, motion: false }), prepare: () => { started.push(kind); return new Promise<void>(resolve => { release = resolve; }); } } as unknown as LaneView;
+    },
+    prepare: async keys => { started.push(`projections ${keys.length}`); },
+    schedule: undefined,
+  });
+  dispatch({ type: 'prepare', ask: 7, families: ['broken', 'slow'], projections: [['bars', 'kind', 'main']] });
+  await turn();
+  assert.deepEqual(started, ['slow', 'projections 1'], 'a family that throws does not stop the others or the projections from starting');
+  assert.deepEqual(posted.filter(message => message.type === 'prepared'), [], 'no answer while a family is still loading');
+  release();
+  await turn();
+  assert.deepEqual(posted.filter(message => message.type === 'prepared'), [{ type: 'prepared', lane: -1, ask: 7 }]);
+});

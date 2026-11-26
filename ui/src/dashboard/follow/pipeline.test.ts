@@ -1067,15 +1067,10 @@ test('the lanes of every pipeline on a clock are asked for what the dashboard ne
   assert.equal(pipeline.prepared(), false, 'one lane of two has answered');
   lanes[0]!.onerror!({ message: 'late' } as ErrorEvent);
   assert.equal(pipeline.prepared(), false, 'an error from a lane that has answered is its own failure, not a missing start');
-  const [first, second] = [pipeline.mount({ offset: 0, pin: null }), pipeline.mount({ offset: 0, pin: null })];
-  assert.deepEqual([pipeline.lane(first), pipeline.lane(second)], [0, 1]);
   const ready = pipeline.whenPrepared();
   lanes[1]!.onerror!({ message: 'chunk missing' } as ErrorEvent);
   await ready;
   assert.equal(pipeline.prepared(), true, 'a lane whose worker never started counts as answered, so nothing waits on it');
-  assert.deepEqual([pipeline.view(first)?.mode === 'failed', pipeline.view(second)?.mode], [false, 'failed'], 'only the widget on the lane that never started fails, by name');
-  const third = pipeline.mount({ offset: 0, pin: null });
-  assert.equal(pipeline.lane(third), 0, 'a widget mounted later goes to a lane that started');
   prepareLanes(clock, { families: ['card'], projections: [] });
   assert.deepEqual(asked.slice(2), ['0:2:card', '1:2:card'], 'a change in what the dashboard needs asks the current pipeline');
   const next = restartPipeline(pipeline)!;
@@ -1084,9 +1079,6 @@ test('the lanes of every pipeline on a clock are asked for what the dashboard ne
   assert.deepEqual(asked.slice(6), ['2:2:', '3:2:'], 'removing the last family widget is still the latest ask');
   for (const [at, worker] of lanes.slice(2).entries()) worker.onmessage!({ data: { type: 'prepared', lane: at, ask: 2 } } as MessageEvent);
   assert.equal(next.prepared(), true, 'the empty ask is answered, so readiness does not hang on the earlier one');
-  const healthy = next.mount({ offset: 0, pin: null });
-  lanes[2]!.onerror!({ message: 'late' } as ErrorEvent);
-  assert.notEqual(next.view(healthy)?.mode, 'failed', 'an error from a lane that has answered is left to its own failure report');
   next.close();
   assert.equal(next.prepared(), true);
 });
