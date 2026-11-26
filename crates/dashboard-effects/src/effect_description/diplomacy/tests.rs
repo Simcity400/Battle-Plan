@@ -13,7 +13,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/factions/templates/test.txt",
@@ -212,7 +212,7 @@ fn create_wargoal_refuses_without_complete_inventory_tables() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -279,7 +279,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -560,7 +560,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/ideologies/test.txt",
@@ -718,7 +718,7 @@ fn faction_influence_environment_keeps_links() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/scripted_localisation/test.txt",
@@ -829,7 +829,7 @@ fn diplomacy_output_branches() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -2215,7 +2215,7 @@ fn diplomacy_ordered_subjects() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         ("localisation/test_l_english.yml", &localisation),
     ]);
@@ -2268,7 +2268,7 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",

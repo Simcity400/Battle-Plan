@@ -11,7 +11,7 @@ fn fixture(output: &str) -> (Fixture, Folder) {
     let (catalogue, folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7}}",
         ),
         ("common/country_tags/test.txt", "AAA=a BBB=b CCC=c"),
         (
@@ -50,9 +50,9 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " STAT_SYNTHETIC_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
                 " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n",
                 " SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT:0 \"Equipment got\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE:0 \"Modules got\"\n",
-                " mod_armor:0 \"Armor technology\"\n AND:0 \"and \"\n EFFECT_TECH_BONUS_USES:0 \"$USES$x \"\n EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"$USES$$BONUS|%0+$ Research bonus for: $LIST|Y$.\"\n",
-                " mod_science:0 \"Naval Engineering\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC:0 \"Gain breakthrough progress:\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION:0 \"$SPECIALIZATION|Y$: $AMOUNT|2%G$\"\n",
-                " EFFECT_ADD_NAVY_EXPERIENCE:0 \"Navy Experience: $VAL|=+0$.\"\n SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT:0 \"gains $XP|0Y$ experience in $SPECIALIZATION|Y$\"\n"
+                " mod_armor:0 \"Armor technology\"\n AND:0 \"and \"\n EFFECT_TECH_BONUS_USES:0 \"$USES$x \"\n EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"Trial grant $USES$$BONUS|%0+$ for $LIST|Y$.\"\n",
+                " mod_science:0 \"Naval Engineering\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC:0 \"Trial milestone:\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION:0 \"$SPECIALIZATION|Y$: $AMOUNT|2%G$\"\n",
+                " EFFECT_ADD_NAVY_EXPERIENCE:0 \"Harbour points $VAL|=+0$.\"\n SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT:0 \"Trial award $XP|0Y$ for $SPECIALIZATION|Y$\"\n"
             ),
         ),
     ]);
@@ -573,10 +573,10 @@ fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
         "fixture_finish_project=sp:mod_project add_breakthrough_progress={specialization=mod_science value=0.25}",
     );
     for game in [
-        "1x \u{11}G20%\u{11}! Research bonus for: \u{11}YArmor technology\u{11}!.",
+        "Trial grant 1x \u{11}G20%\u{11}! for \u{11}YArmor technology\u{11}!.",
         "Project context Project AAA Progress Project AAA 0.15",
-        "Navy Experience: \u{11}G+15\u{11}!.",
-        "Gain breakthrough progress:\n  \u{11}YNaval Engineering\u{11}!: \u{11}G25.00%\u{11}!",
+        "Harbour points \u{11}G+15\u{11}!.",
+        "Trial milestone:\n  \u{11}YNaval Engineering\u{11}!: \u{11}G25.00%\u{11}!",
     ] {
         assert!(output.text.contains(game), "outside iterations the game text stays: {game:?} in {output:?}");
     }

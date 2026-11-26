@@ -1,5 +1,5 @@
+import type { PanelKey } from '../../generated/dashboard';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import type { DeclaredProduct } from '../../dashboard/request.ts';
 import type { Breakdown } from '../../generated/dashboard';
 import type { FamilyPlanContext, SourcePlan } from '../plan.ts';
 import { formatDateOnly } from '../valueFormat.ts';
@@ -31,7 +31,7 @@ export function breakdownRange(ctx: FamilyPlanContext): Readonly<Record<string, 
 
 export function breakdownAtHourSource(
   ctx: FamilyPlanContext,
-  product: DeclaredProduct,
+  product: PanelKey,
   params: Readonly<Record<string, unknown>>,
   validate: (raw: unknown) => BreakdownAtHour,
 ): SourcePlan {

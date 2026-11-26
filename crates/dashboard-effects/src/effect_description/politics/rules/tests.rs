@@ -74,7 +74,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         ),
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "localisation/test_l_english.yml",
@@ -135,7 +135,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         graph,
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let items = content_reader_parser::parser::parse(body.as_bytes())

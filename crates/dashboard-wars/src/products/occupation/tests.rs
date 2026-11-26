@@ -50,6 +50,22 @@ mod reply {
     }
 
     #[test]
+    fn shared_defines_give_the_garrison_its_mod_threshold_or_name_the_missing_value() {
+        let read = |value| {
+            let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+                "NDefines={NInterface={GARRISON_STRENGTH_TO_SHOW_RED=0.4375}}",
+                &format!("NDefines.NInterface.GARRISON_STRENGTH_TO_SHOW_RED={value}"),
+                &[],
+            );
+            states::reply(&frame(), &Content::load(&source, &load), &Cells::default()).unwrap()
+        };
+        assert_eq!(read("0.8125").garrison_red_raw.as_deref(), Some("81250"));
+        let refused = read("nil");
+        assert!(refused.garrison_red_raw.is_none());
+        assert!(refused.warnings.iter().any(|why| why == "Garrison red threshold unavailable: NDefines.NInterface.GARRISON_STRENGTH_TO_SHOW_RED is not a number"), "{:?}", refused.warnings);
+    }
+
+    #[test]
     fn occupied_states_join_by_resolved_countries_and_name_their_moving_numbers_as_live_cells() {
         let frame = frame();
         let cells = Cells::default();

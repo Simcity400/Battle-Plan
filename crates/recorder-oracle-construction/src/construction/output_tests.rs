@@ -475,6 +475,47 @@ fn bank_is_not_factory_output_and_carry_is_only_a_discard_bound() {
     assert_eq!(checked(&frames).differences.len(), 1);
 }
 #[test]
+fn completing_a_level_on_the_last_railway_segment_can_discard_unforwarded_spending() {
+    use replay_data::rows::RailEdgeRow;
+
+    let mut frames = [frame(100, 0, 475, 0, true), frame(124, 50, 500, 0, true)];
+    for (index, frame) in frames.iter_mut().enumerate() {
+        let TableView::Complete(TableRows::RailwayConstruction(lines)) =
+            &mut *frame.tables[TableId::RailwayConstruction.index()]
+        else {
+            unreachable!()
+        };
+        let line = &mut lines[0];
+        line.current_segment = 1;
+        line.amount = 3 - index as i32;
+        *frame.tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(vec![
+            RailEdgeRow { from: 8, to: 9, level: 1 + index as i32 },
+        ]));
+        output(frame).ticks = index as i32;
+    }
+    let report = checked(&frames);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ConstructionLineOutput railways"], 1);
+
+    output(&mut frames[1]).construction_raw = 24;
+    assert_eq!(checked(&frames).differences.len(), 1);
+    output(&mut frames[1]).construction_raw = 50;
+    let mut interior = frames.clone();
+    let TableView::Complete(TableRows::RailwayConstruction(lines)) =
+        &mut *interior[1].tables[TableId::RailwayConstruction.index()]
+    else {
+        unreachable!()
+    };
+    lines[0].current_segment = 0;
+    assert_eq!(checked(&interior).differences.len(), 1);
+    frames[1].tables[TableId::RailEdges.index()] = frames[0].tables[TableId::RailEdges.index()].clone();
+    assert_eq!(checked(&frames).differences.len(), 1);
+    *frames[1].tables[TableId::RailEdges.index()] = TableView::Unavailable { reason: "edge read unavailable".into() };
+    let report = checked(&frames);
+    assert!(report.differences.is_empty());
+    assert!(report.limitations.keys().any(|reason| reason.contains("edge level is unavailable")));
+}
+#[test]
 fn a_linked_secondary_mirrors_progress_without_a_spend() {
     let mut frames = [frame(100, 0, 0, 1, false), frame(124, 200, 200, 1, false)];
     output(&mut frames[1]).linked = true;

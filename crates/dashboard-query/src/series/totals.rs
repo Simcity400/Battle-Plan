@@ -1,15 +1,17 @@
 
-use super::{Ask, Line, Part, invalid};
+use super::{Line, invalid};
 use crate::{
-    identity::{Country, Holder},
+    identity::{Country, Holder, Key},
     read,
 };
 use dashboard_declare::{Column, RunningTotal};
 use replay_lanes::lanes::Runs;
 use replay_columnar::{manifest::Status, summary::Source};
+use replay_recording::columnar_frames::{Damage, DamageScope};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
+    sync::Arc,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,11 +23,21 @@ pub enum Gap {
     OutOfRange,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryGap {
+    Missing(Gap),
+    Damage(Arc<str>),
+}
+
+type HistoryValue = Result<i64, HistoryGap>;
+type HistoryRuns = Vec<(i32, i32, HistoryValue)>;
+type ColumnRuns = HashMap<usize, HashMap<u128, Runs>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TotalRun {
     pub first: i32,
     pub last: i32,
-    pub value: Result<i64, Gap>,
+    pub value: HistoryValue,
     pub opens: bool,
 }
 
@@ -46,7 +58,9 @@ pub struct ClockAt {
     pub next_change: Option<i32>,
 }
 
-const REACH: i32 = 2 * 744;
+fn block_damage(error: &io::Error) -> bool {
+    matches!(Damage::of(error).map(|d| &d.scope), Some(DamageScope::Table { .. } | DamageScope::Page { .. }))
+}
 
 fn at(runs: Option<&Runs>, hour: i32) -> Option<i64> {
     let runs = runs?;
@@ -83,6 +97,46 @@ fn sum_parts<P: Copy, E>(
     Ok(Some(total))
 }
 
+struct HistoryOwner {
+    line: usize,
+    first: i32,
+    opens: bool,
+    keys: Vec<(u128, u128)>,
+    rest: Option<u128>,
+}
+
+impl HistoryOwner {
+    fn row_keys(&self) -> impl Iterator<Item = u128> + '_ {
+        self.keys.iter().map(|&(_, key)| key).chain(self.rest)
+    }
+}
+
+struct Samples {
+    amounts: ColumnRuns,
+    clock: ColumnRuns,
+}
+
+impl Samples {
+    fn dates<'a>(&'a self, columns: &Columns, clock: u128, back: &'a dyn Fn(i32) -> Option<i32>) -> impl Iterator<Item = i32> + 'a {
+        self.clock[&columns.as_of].get(&clock).into_iter().flatten().filter_map(|r| r.2.and_then(|v| i32::try_from(v).ok()))
+            .flat_map(move |read| std::iter::once(read).chain(back(read)))
+    }
+}
+
+type SampleSpan<T> = (i32, i32, Result<T, Arc<str>>);
+
+struct HistorySamples {
+    shown: Samples,
+    earlier: Vec<SampleSpan<Samples>>,
+}
+
+#[derive(Clone, Copy)]
+struct WindowEndpoint {
+    read: Option<i32>,
+    since: Option<i32>,
+    sum: Result<i128, Gap>,
+}
+
 struct TotalWindow {
     read: i32,
     start: Option<i32>,
@@ -98,8 +152,12 @@ impl TotalWindow {
     }
 }
 
-fn after_restart(value: Result<i64, Gap>, start: Option<i32>, since: Option<i32>) -> Result<i64, Gap> {
-    value.and_then(|value| if start.zip(since).is_some_and(|(start, since)| since > start) { Err(Gap::Restarted) } else { Ok(value) })
+impl From<Gap> for HistoryGap {
+    fn from(gap: Gap) -> Self { Self::Missing(gap) }
+}
+
+fn after_restart<E: From<Gap>>(value: Result<i64, E>, start: Option<i32>, since: Option<i32>) -> Result<i64, E> {
+    value.and_then(|value| if start.zip(since).is_some_and(|(start, since)| since > start) { Err(Gap::Restarted.into()) } else { Ok(value) })
 }
 
 pub fn ranked_total(
@@ -148,32 +206,173 @@ impl<'q, 'a> Line<'q, 'a> {
         read::runs(self.query.replay.recording(), run, self.series.table, Source::Cell(column), Some(keys), first, last)
     }
 
-    pub fn totals<C: Clone + Into<Country>>(&self, tags: &[C], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
+    pub fn total_history<C: Clone + Into<Country>>(&self, tags: &[C], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
         if self.series.key.unowned() {
             return Err(invalid(format!("{} is rows no country owns", self.series.kind)));
         }
         let running = self.running()?;
         let columns = self.total_columns(running)?;
         let timeline = &self.query.timeline;
-        let mut out = Vec::with_capacity(tags.len());
-        for tag in tags {
-            let whole: Vec<Part> = self.held(&Ask::whole(tag.clone()), timeline.first, timeline.last);
-            let opening = whole.first().map(|part| part.first);
-            let mut runs: Vec<TotalRun> = Vec::new();
-            for part in whole.iter().filter(|part| part.first <= to && part.last >= from) {
-                let owner = self.series.key.of(part.slot, part.id);
-                let (keys, rest) = self.set_keys(running, owner, &parts(part.run))?;
-                let shown = (from.max(part.first), to.min(part.last));
-                let values = match back {
-                    None => self.part_totals(part, &keys, rest, &columns, shown)?,
-                    Some(back) => self.part_windows(running, part, &keys, rest, &columns, shown, back)?,
-                };
-                let opens = Some(part.first) != opening;
-                runs.extend(values.into_iter().map(|(first, last, value)| TotalRun { first, last, value, opens: opens && first == part.first }));
+        let holders: Vec<_> = tags.iter().cloned().map(|tag| {
+            let held = tag.into().runs(&self.query.holders);
+            let opening = held.iter().filter(|h| matches!(h.holder, Holder::Found { .. }))
+                .find_map(|h| timeline.within(h.first, h.last).next().map(|s| s.first));
+            (held, opening)
+        }).collect();
+        let mut out = vec![Vec::new(); tags.len()];
+        let start = timeline.stretches.partition_point(|s| s.last < from);
+        for stretch in timeline.stretches[start..].iter().take_while(|s| s.first <= to) {
+            let (lo, hi) = (from.max(stretch.first), to.min(stretch.last));
+            let parts = parts(stretch.run);
+            let mut intervals = BTreeMap::<_, Vec<HistoryOwner>>::new();
+            for (line, &(held, opening)) in holders.iter().enumerate() {
+                let start = held.partition_point(|h| h.last < lo);
+                for holder in held[start..].iter().take_while(|h| h.first <= hi) {
+                    let Holder::Found { slot, id } = holder.holder else { continue };
+                    let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &parts)?;
+                    let first = holder.first.max(stretch.first);
+                    let shown = (first.max(lo), holder.last.min(hi));
+                    intervals.entry(shown).or_default().push(HistoryOwner { line, first, opens: Some(first) != opening && shown.0 == first, keys, rest });
+                }
             }
-            out.push(runs);
+            for (shown, owners) in intervals {
+                self.history_group(stretch.run, shown, owners, running, &columns, back, &mut out)?;
+            }
         }
         Ok(out)
+    }
+
+    fn history_group(&self, run: u32, shown: (i32, i32), owners: Vec<HistoryOwner>, running: &RunningTotal,
+        columns: &Columns, back: Back<'_>, out: &mut [Vec<TotalRun>]) -> io::Result<()> {
+        let mut groups = vec![owners];
+        while let Some(owners) = groups.pop() {
+            let keys: Vec<_> = owners.iter().flat_map(HistoryOwner::row_keys).collect::<BTreeSet<_>>().into_iter().collect();
+            let floor = owners.iter().map(|owner| owner.first).min().unwrap();
+            let spans = self.history_samples(run, shown, &keys, floor, running, columns, back)?;
+            if owners.len() > 1 {
+                let plans = self.history_plans(run, &keys, &owners, &spans, running, columns, back)?;
+                if plans.windows(2).any(|pair| pair[0] != pair[1]) {
+                    let mut split = BTreeMap::<_, Vec<_>>::new();
+                    for (owner, plan) in owners.into_iter().zip(plans) { split.entry(plan).or_default().push(owner); }
+                    groups.extend(split.into_values());
+                    continue;
+                }
+            }
+            for mut owner in owners {
+                for (first, last, samples) in &spans {
+                    let range = (*first, *last);
+                    let values = match samples {
+                        Err(reason) => vec![(*first, *last, Err(HistoryGap::Damage(reason.clone())))],
+                        Ok(sample) => match back {
+                            None => Self::part_totals(&owner, columns, &sample.shown.amounts, range),
+                            Some(back) => Self::part_windows(&owner, running.clock, columns, &sample.shown, &sample.earlier, range, back),
+                        },
+                    };
+                    for (first, last, value) in values {
+                        let damage = matches!(value, Err(HistoryGap::Damage(_)));
+                        out[owner.line].push(TotalRun { first, last, value, opens: owner.opens });
+                        owner.opens = damage;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn history_samples(&self, run: u32, shown: (i32, i32), keys: &[u128], floor: i32, running: &RunningTotal,
+        columns: &Columns, back: Back<'_>) -> io::Result<Vec<SampleSpan<HistorySamples>>> {
+        let load = |first, last| {
+            let clock = match back {
+                Some(_) => self.set_runs(run, &[columns.since, columns.as_of], &[running.clock], first, last)?,
+                None => HashMap::new(),
+            };
+            let amounts = self.set_runs(run, &[columns.value, columns.reason], keys, first, last)?;
+            Ok(Samples { amounts, clock })
+        };
+        let mut spans = Vec::new();
+        self.history_spans(run, shown, |first, last| {
+            let samples = load(first, last)?;
+            let mut earlier = Vec::new();
+            if let Some(back) = back {
+                let dates: BTreeSet<_> = samples.dates(columns, running.clock, back).filter(|&at| floor <= at && at < first).collect();
+                let dates: Vec<_> = dates.into_iter().collect();
+                let held = self.query.replay.recording().run(run)?;
+                let block = |at: i32| (i64::from(at) - i64::from(held.first_hour)) / i64::from(replay_columnar::unit::BLOCK);
+                for dates in dates.chunk_by(|a, b| block(*a) == block(*b)) {
+                    self.history_spans(run, (dates[0], dates[dates.len() - 1]), load, |a, b, samples| earlier.push((a, b, samples)))?;
+                }
+            }
+            Ok(HistorySamples { shown: samples, earlier })
+        }, |first, last, samples| spans.push((first, last, samples)))?;
+        Ok(spans)
+    }
+
+    fn history_plans(&self, run: u32, keys: &[u128], owners: &[HistoryOwner], spans: &[SampleSpan<HistorySamples>],
+        running: &RunningTotal, columns: &Columns, back: Back<'_>) -> io::Result<Vec<(usize, Vec<bool>)>> {
+        let damaged = spans.iter().any(|(_, _, samples)| match samples {
+            Err(_) => true,
+            Ok(samples) => samples.earlier.iter().any(|(_, _, earlier)| earlier.is_err()),
+        });
+        let different_openings = back.is_some() && owners.windows(2).any(|pair| pair[0].first != pair[1].first);
+        if !damaged && !different_openings { return Ok(Vec::new()); }
+
+        let held = self.query.replay.recording().run(run)?;
+        let block = |at| held.place((i64::from(at) - i64::from(held.first_hour)) as u32).0;
+        let mut blocks = BTreeSet::new();
+        let mut dates = BTreeSet::new();
+        for (first, last, samples) in spans {
+            if damaged { blocks.extend(block(*first)..=block(*last)); }
+            if let (Ok(samples), Some(back)) = (samples, back) {
+                if different_openings { dates.extend(samples.shown.dates(columns, running.clock, back).filter(|at| at < first)); }
+                if damaged { blocks.extend(samples.earlier.iter().map(|(at, _, _)| block(*at))); }
+            }
+        }
+        let dates: Vec<_> = dates.into_iter().collect();
+        let blocks: Vec<_> = blocks.into_iter().collect();
+        let mut known = Vec::new();
+        for adjacent in blocks.chunk_by(|a, b| a + 1 == *b) {
+            let range = adjacent[0]..adjacent[adjacent.len() - 1] + 1;
+            known.extend(replay_lanes::points::keys_in_summarized_blocks(self.query.replay.recording(), run, self.series.table, keys, range)?);
+        }
+        Ok(owners.iter().map(|owner| {
+            let start = dates.partition_point(|&at| at < owner.first);
+            let reads = known.iter().map(|keys| owner.row_keys().any(|key| keys.contains(&key))).collect();
+            (start, reads)
+        }).collect())
+    }
+
+    fn history_spans<T>(&self, run: u32, (first, last): (i32, i32), read: impl Fn(i32, i32) -> io::Result<T>, mut emit: impl FnMut(i32, i32, Result<T, Arc<str>>)) -> io::Result<()> {
+        match read(first, last) {
+            Ok(value) => { emit(first, last, Ok(value)); return Ok(()) }
+            Err(error) if !block_damage(&error) => return Err(error),
+            Err(_) => {}
+        }
+        let recording = self.query.replay.recording();
+        let held = recording.run(run)?;
+        let mut lo = first;
+        loop {
+            let block = held.place(read::ordinal(recording, run, lo)?).0;
+            let hi = held.block_first_hour(block).saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(last);
+            match read(lo, hi) {
+                Ok(value) => emit(lo, hi, Ok(value)),
+                Err(error) if block_damage(&error) => {
+                    let (mut from, mut to) = (lo, hi);
+                    while from < to {
+                        let mid = from + (to - from) / 2;
+                        match read(lo, mid) {
+                            Ok(_) => from = mid + 1,
+                            Err(error) if block_damage(&error) => to = mid,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    if lo < from { emit(lo, from - 1, Ok(read(lo, from - 1)?)); }
+                    emit(from, hi, Err(Arc::from(error.to_string())));
+                }
+                Err(error) => return Err(error),
+            }
+            if hi == last { return Ok(()); }
+            lo = hi + 1;
+        }
     }
 
     pub fn totals_at(&self, countries: &[Country], parts: Parts<'_>, back: Back<'_>, hour: i32) -> io::Result<Vec<Result<i64, Gap>>> {
@@ -201,12 +400,8 @@ impl<'q, 'a> Line<'q, 'a> {
             return Ok(vec![Err(Gap::NotRecorded); countries.len()]);
         };
         let wanted: Vec<_> = wanted.into_iter().collect();
-        let amounts = |at| [columns.value, columns.reason].into_iter()
-            .map(|col| Ok((col, self.column_runs(stretch.run, col, &wanted, at, at)?))).collect::<io::Result<HashMap<_, _>>>();
-        let clock = |at| {
-            let runs = self.set_runs(stretch.run, &[columns.as_of, columns.since], &[(0, running.clock)], None, at, at)?;
-            Ok::<_, io::Error>((clock_at(&runs[&columns.as_of], running.clock, at), clock_at(&runs[&columns.since], running.clock, at)))
-        };
+        let amounts = |at| self.set_runs(stretch.run, &[columns.value, columns.reason], &wanted, at, at);
+        let clock = |at| self.clock_values(stretch.run, running, &columns, at);
         if let Some(back) = back {
             let (read, since_hour) = clock(hour)?;
             let dates = read.filter(|&r| first <= r && r <= hour)
@@ -232,80 +427,81 @@ impl<'q, 'a> Line<'q, 'a> {
         }).collect())
     }
 
-    fn set_at(runs: &HashMap<usize, HashMap<u128, Runs>>, columns: &Columns, keys: &[(u128, u128)], rest: Option<u128>, hour: i32) -> Result<i128, Gap> {
+    fn set_at(runs: &ColumnRuns, columns: &Columns, keys: &[(u128, u128)], rest: Option<u128>, hour: i32) -> Result<i128, Gap> {
         let cell = |col, key| at(runs.get(&col).and_then(|by| by.get(&key)), hour);
         sum_parts(keys.iter().copied(), rest, |part, key| {
             cell(columns.value, key).map(Ok).or_else(|| cell(columns.reason, key).map(|why| Err(Gap::Cell { part, reason: why as u8 })))
         })?.ok_or(Gap::NotRecorded)
     }
 
-    fn set_runs(&self, run: u32, columns: &[usize], keys: &[(u128, u128)], rest: Option<u128>, first: i32, last: i32) -> io::Result<HashMap<usize, HashMap<u128, Runs>>> {
-        let mut wanted: Vec<u128> = keys.iter().map(|&(_, key)| key).chain(rest).collect();
-        wanted.sort_unstable();
-        wanted.dedup();
-        columns.iter().map(|&column| Ok((column, self.column_runs(run, column, &wanted, first, last)?))).collect()
+    fn set_runs(&self, run: u32, columns: &[usize], keys: &[u128], first: i32, last: i32) -> io::Result<ColumnRuns> {
+        columns.iter().map(|&column| Ok((column, self.column_runs(run, column, keys, first, last)?))).collect()
     }
 
-    fn part_totals(&self, part: &Part, keys: &[(u128, u128)], rest: Option<u128>, columns: &Columns, (first, last): (i32, i32)) -> io::Result<Vec<(i32, i32, Result<i64, Gap>)>> {
-        let runs = self.set_runs(part.run, &[columns.value, columns.reason], keys, rest, first, last)?;
-        let mut cuts: BTreeSet<i32> = BTreeSet::from([first]);
+    fn part_totals(owner: &HistoryOwner, columns: &Columns, runs: &ColumnRuns, (first, last): (i32, i32)) -> HistoryRuns {
+        let mut cuts = BTreeSet::from([first]);
         for by in runs.values() {
-            for held in by.values() {
-                cuts.extend(held.iter().flat_map(|run| [run.0, run.1.saturating_add(1)]).filter(|&hour| first < hour && hour <= last));
+            for key in owner.keys.iter().map(|&(_, key)| key).chain(owner.rest) {
+                if let Some(held) = by.get(&key) {
+                    cuts.extend(held.iter().flat_map(|r| [r.0, r.1.saturating_add(1)]).filter(|&at| first < at && at <= last));
+                }
             }
         }
-        let mut out: Vec<(i32, i32, Result<i64, Gap>)> = Vec::new();
+        let mut out = Vec::new();
         let cuts: Vec<i32> = cuts.into_iter().collect();
         for (index, &from) in cuts.iter().enumerate() {
             let to = cuts.get(index + 1).map_or(last, |next| next - 1);
-            let value = Self::set_at(&runs, columns, keys, rest, from).and_then(|sum| i64::try_from(sum).map_err(|_| Gap::OutOfRange));
-            push(&mut out, from, to, value);
+            let value = Self::set_at(runs, columns, &owner.keys, owner.rest, from).and_then(|sum| i64::try_from(sum).map_err(|_| Gap::OutOfRange));
+            push(&mut out, from, to, value.map_err(HistoryGap::Missing));
         }
-        Ok(out)
+        out
     }
 
-    fn part_windows(&self, running: &RunningTotal, part: &Part, keys: &[(u128, u128)], rest: Option<u128>, columns: &Columns, (first, last): (i32, i32), back: &dyn Fn(i32) -> Option<i32>) -> io::Result<Vec<(i32, i32, Result<i64, Gap>)>> {
-        let mut reach = REACH;
-        let clock = loop {
-            let from = first.saturating_sub(reach).max(part.first);
-            let clock = self.set_runs(part.run, &[columns.since, columns.as_of], &[(0, running.clock)], None, from, last)?;
-            let start = clock_at(&clock[&columns.as_of], running.clock, first).and_then(back);
-            if from == part.first || start.is_some_and(|start| start >= from) {
-                break (from, clock);
-            }
-            reach = reach.saturating_mul(4);
+    fn part_windows(owner: &HistoryOwner, clock_key: u128, columns: &Columns, shown: &Samples, earlier: &[SampleSpan<Samples>], (first, last): (i32, i32), back: &dyn Fn(i32) -> Option<i32>) -> HistoryRuns {
+        let since = &shown.clock[&columns.since];
+        let reads = shown.clock[&columns.as_of].get(&clock_key).map_or(&[][..], Vec::as_slice);
+        let endpoint = |at| -> Result<WindowEndpoint, HistoryGap> {
+            let pos = earlier.partition_point(|s| s.1 < at);
+            let sample = match earlier.get(pos).filter(|s| s.0 <= at) {
+                Some((_, _, result)) => result.as_ref().map_err(|reason| HistoryGap::Damage(reason.clone()))?,
+                None => shown,
+            };
+            Ok(WindowEndpoint {
+                read: clock_at(&sample.clock[&columns.as_of], clock_key, at),
+                since: clock_at(&sample.clock[&columns.since], clock_key, at),
+                sum: Self::set_at(&sample.amounts, columns, &owner.keys, owner.rest, at),
+            })
         };
-        let (from, clock) = clock;
-        let since = &clock[&columns.since];
-        let as_of = &clock[&columns.as_of];
-        let runs = self.set_runs(part.run, &[columns.value, columns.reason], keys, rest, from, last)?;
-        let window = |read: i32| -> Result<i64, Gap> {
-            let start = back(read);
-            TotalWindow { read, start, opening_read: start.and_then(|at| clock_at(as_of, running.clock, at)), since: clock_at(since, running.clock, read) }
-                .value(part.first, |at| Self::set_at(&runs, columns, keys, rest, at))
+        let window = |read| {
+            let Some(start) = back(read).filter(|&at| at >= owner.first && read >= owner.first) else {
+                return Err(HistoryGap::Missing(Gap::WindowIncomplete));
+            };
+            let now = endpoint(read)?;
+            let before = endpoint(start)?;
+            TotalWindow { read, start: Some(start), opening_read: before.read, since: now.since }
+                .value(owner.first, |at| if at == read { now.sum } else { before.sum }).map_err(HistoryGap::Missing)
         };
-        let mut out: Vec<(i32, i32, Result<i64, Gap>)> = Vec::new();
-        let reads: &Runs = as_of.get(&running.clock).map_or(&EMPTY, |runs| runs);
+        let mut out = Vec::new();
         let mut hour = first;
         for &(run_first, run_last, read) in reads.iter().filter(|run| run.1 >= first && run.0 <= last) {
             let (lo, hi) = (run_first.max(first), run_last.min(last));
             if lo > hour {
-                push(&mut out, hour, lo - 1, Err(Gap::WindowIncomplete));
+                push(&mut out, hour, lo - 1, Err(HistoryGap::Missing(Gap::WindowIncomplete)));
             }
             let read = read.and_then(|read| i32::try_from(read).ok());
-            let value = read.map_or(Err(Gap::WindowIncomplete), |read| window(read));
-            let mut cuts: Vec<i32> = since.get(&running.clock).into_iter().flatten().map(|run| run.0).filter(|&at| lo < at && at <= hi).collect();
+            let value = read.map_or(Err(HistoryGap::Missing(Gap::WindowIncomplete)), window);
+            let mut cuts: Vec<i32> = since.get(&clock_key).into_iter().flatten().map(|run| run.0).filter(|&at| lo < at && at <= hi).collect();
             cuts.insert(0, lo);
             for (index, &from) in cuts.iter().enumerate() {
                 let to = cuts.get(index + 1).map_or(hi, |next| next - 1);
-                push(&mut out, from, to, after_restart(value, read.and_then(back), clock_at(since, running.clock, from)));
+                push(&mut out, from, to, after_restart(value.clone(), read.and_then(back), clock_at(since, clock_key, from)));
             }
             hour = hi + 1;
         }
         if hour <= last {
-            push(&mut out, hour, last, Err(Gap::WindowIncomplete));
+            push(&mut out, hour, last, Err(HistoryGap::Missing(Gap::WindowIncomplete)));
         }
-        Ok(out)
+        out
     }
 
     pub fn totals_ranked(&self, hour: i32, n: usize, parts: Parts<'_>, back: Back<'_>, keep: &dyn Fn(i64) -> bool) -> io::Result<Result<Vec<String>, String>> {
@@ -359,8 +555,8 @@ impl<'q, 'a> Line<'q, 'a> {
         let before_value = |key| start.as_ref()?.1.get(&key).map(|cells| cells[0]);
         let before = start.as_ref().map(|_| &before_value as RankedCells<'_>);
         let mut scored: Vec<(i128, &str)> = Vec::new();
-        for (tag, runs) in &self.query.holders.tags {
-            let Some(run) = runs.iter().find(|run| run.first <= hour && hour <= run.last) else { continue };
+        for tag in self.query.holders.tags.keys() {
+            let Some(run) = self.query.holders.at(tag, hour) else { continue };
             let Holder::Found { slot, id } = run.holder else { continue };
             let (keys, rest) = self.set_keys(running, self.series.key.of(slot, id), &set)?;
             match ranked_total(keys.iter().map(|&(_, key)| key), rest, &now_value, before, keep) {
@@ -373,46 +569,86 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(Ok(scored.into_iter().take(n).map(|(_, tag)| tag.to_owned()).collect()))
     }
 
+    fn clock_values(&self, run: u32, running: &RunningTotal, columns: &Columns, hour: i32) -> io::Result<(Option<i32>, Option<i32>)> {
+        let runs = self.set_runs(run, &[columns.as_of, columns.since], &[running.clock], hour, hour)?;
+        Ok((clock_at(&runs[&columns.as_of], running.clock, hour), clock_at(&runs[&columns.since], running.clock, hour)))
+    }
+
+    pub fn observation_at(&self, hour: i32) -> io::Result<(Option<i32>, Option<i32>)> {
+        let Some(stretch) = self.query.timeline.at(hour) else { return Ok((None, None)) };
+        let running = self.running()?;
+        let (read, since) = self.clock_values(stretch.run, running, &self.total_columns(running)?, hour)?;
+        Ok((read.filter(|&at| at <= hour), since))
+    }
+
     pub fn clock_at(&self, hour: i32) -> io::Result<ClockAt> {
         let running = self.running()?;
         let columns = self.total_columns(running)?;
         let Some(stretch) = self.query.timeline.at(hour).copied() else {
             return Ok(ClockAt { read: None, since: None, since_from: None, next_change: None });
         };
-        let runs = self.set_runs(stretch.run, &[columns.since, columns.as_of], &[(0, running.clock)], None, hour, hour)?;
-        let value = |column: usize| {
-            runs.get(&column)
-                .and_then(|by| by.get(&running.clock))
-                .and_then(|held| held.iter().find(|run| run.0 <= hour && hour <= run.1))
-                .and_then(|run| run.2)
-                .and_then(|at| i32::try_from(at).ok())
-        };
+        let observed = self.clock_values(stretch.run, running, &columns, hour)?;
+        let (read, since) = (observed.0.filter(|&at| at <= hour), observed.1);
         let recording = self.query.replay.recording();
-        let next = |column: usize| crate::cost::storage(|| replay_lanes::lanes::next(recording, stretch.run, self.series.table, column, running.clock, hour));
-        let next_change = [next(columns.as_of)?, next(columns.since)?].into_iter().flatten().min().filter(|&at| at <= stretch.last);
-        let read = value(columns.as_of).filter(|&read| read <= hour);
-        let since_start = read.map_or(stretch.first, |read| read.max(stretch.first));
-        let since_from = match since_start < hour {
-            true => self
-                .set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, since_start, hour)?
-                .get(&columns.since)
-                .and_then(|by| by.get(&running.clock))
-                .and_then(|held| held.iter().find(|run| run.0 <= hour && hour <= run.1))
-                .map(|run| run.0),
-            false => None,
-        };
-        Ok(ClockAt { read, since: value(columns.since), since_from, next_change })
+        let run = recording.run(stretch.run)?;
+        let (block, _) = run.place(read::ordinal(recording, stretch.run, hour)?);
+        let block_hours = replay_columnar::unit::BLOCK as i32;
+        let block_first = run.block_first_hour(block);
+        let block_last = block_first.saturating_add(block_hours - 1).min(stretch.last);
+        let start = read.unwrap_or(stretch.first).max(stretch.first);
+        let stale = hour.saturating_sub(start) >= block_hours;
+        let mut first = if stale { block_first.max(stretch.first) } else { start };
+        let limit = if stale { block_last } else { hour.saturating_add(block_hours).min(stretch.last) };
+        let until = crate::cost::storage(|| {
+            let wanted = [columns.as_of, columns.since, columns.value, columns.reason];
+            let mut reader = replay_recording::cells::TableReader::new(recording, stretch.run, self.series.table, Some(&wanted))?;
+            reader.index_keys();
+            let mut at = first;
+            let mut seek = true;
+            loop {
+                let ordinal = read::ordinal(recording, stretch.run, at)?;
+                let verified = if seek || run.place(ordinal).1 == 0 {
+                    reader.seek(recording, ordinal)
+                } else {
+                    reader.step(recording).map(|_| ())
+                };
+                if let Err(error) = verified {
+                    if Damage::of(&error).is_none() { return Err(error); }
+                    if at > hour { return Ok(at - 1); }
+                    if at == hour { first = hour; return Ok(hour); }
+                    at = if at < block_first { block_first } else { hour };
+                    first = at;
+                    seek = true;
+                    continue;
+                }
+                let date = |col| read::number(&reader, running.clock, col).and_then(|v| i32::try_from(v).ok());
+                if (date(columns.as_of), date(columns.since)) != observed {
+                    if at > hour { return Ok(at - 1); }
+                    first = at.saturating_add(1).min(hour);
+                }
+                if at == limit { return Ok(if at < stretch.last { block_last } else { at }); }
+                at += 1;
+                seek = false;
+            }
+        })?;
+        let since_from = (start < hour).then_some(first);
+        let next_change = (until < stretch.last).then(|| until + 1);
+        Ok(ClockAt { read, since, since_from, next_change })
     }
 
-    pub fn since_runs(&self, from: i32, to: i32) -> io::Result<Vec<(i32, i32, Option<i32>)>> {
+    pub fn since_runs(&self, from: i32, to: i32) -> io::Result<Vec<(i32, i32, Result<Option<i32>, Arc<str>>)>> {
         let running = self.running()?;
         let columns = self.total_columns(running)?;
         let mut out = Vec::new();
         for stretch in self.query.timeline.within(from, to) {
             let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-            let runs = self.set_runs(stretch.run, &[columns.since], &[(0, running.clock)], None, first, last)?;
-            let held = runs.get(&columns.since).and_then(|by| by.get(&running.clock)).into_iter().flatten();
-            out.extend(held.map(|run| (run.0.max(first), run.1.min(last), run.2.and_then(|hour| i32::try_from(hour).ok()))));
+            self.history_spans(stretch.run, (first, last), |lo, hi|
+                self.column_runs(stretch.run, columns.since, &[running.clock], lo, hi),
+                |lo, hi, held| match held {
+                    Ok(runs) => out.extend(runs.get(&running.clock).into_iter().flatten()
+                        .map(|r| (r.0.max(lo), r.1.min(hi), Ok(r.2.and_then(|v| i32::try_from(v).ok()))))),
+                    Err(reason) => out.push((lo, hi, Err(reason))),
+                })?;
         }
         Ok(out)
     }
@@ -422,7 +658,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let columns = self.total_columns(running)?;
         let (mut reads, mut since) = (BTreeSet::new(), BTreeSet::new());
         for stretch in self.query.timeline.within(from, to) {
-            let runs = self.set_runs(stretch.run, &[columns.since, columns.as_of], &[(0, running.clock)], None, stretch.first, stretch.last)?;
+            let runs = self.set_runs(stretch.run, &[columns.since, columns.as_of], &[running.clock], stretch.first, stretch.last)?;
             let values = |column: usize| runs.get(&column).and_then(|by| by.get(&running.clock)).into_iter().flatten().filter_map(|run| run.2.and_then(|hour| i32::try_from(hour).ok()));
             reads.extend(values(columns.as_of).filter(|&read| from <= read && read <= to));
             since.extend(values(columns.since));
@@ -431,9 +667,7 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 }
 
-static EMPTY: Runs = Vec::new();
-
-fn push(out: &mut Vec<(i32, i32, Result<i64, Gap>)>, first: i32, last: i32, value: Result<i64, Gap>) {
+fn push(out: &mut HistoryRuns, first: i32, last: i32, value: HistoryValue) {
     match out.last_mut() {
         Some(open) if open.2 == value && open.1.checked_add(1) == Some(first) => open.1 = last,
         _ => out.push((first, last, value)),
@@ -467,6 +701,7 @@ mod tests {
         let holders = Holders::new([
             ("AAA".into(), vec![holder(first, last, 7)]),
             ("BBB".into(), vec![holder(first, 105, 7), holder(106, last, 9)]),
+            ("EEE".into(), vec![holder(first, last, 77)]),
             ("CCC".into(), vec![HolderRun { first, last, holder: Holder::Unresolved, starts_segment: true }]),
         ].into(), Vec::new());
         let timeline = Timeline { id: 1, first, last, stretches: vec![Stretch { run: 0, first, last, join: Join::Start }], unheld: Vec::new() };
@@ -484,11 +719,37 @@ mod tests {
             let opening = |_| start;
             let back = start.map(|_| &opening as &dyn Fn(i32) -> Option<i32>);
             let single = line.totals_at(&tags, &parts, back, hour).unwrap();
-            let history = line.totals(&tags, &parts, back, hour, hour).unwrap();
-            assert_eq!(single, history.iter().map(|runs| runs.first().map_or(Err(Gap::NotRecorded), |r| r.value)).collect::<Vec<_>>(), "hour {hour}, opening {start:?}");
+            let history = line.total_history(&tags, &parts, back, hour, hour).unwrap();
+            assert_eq!(single.iter().map(|v| v.map_err(HistoryGap::Missing)).collect::<Vec<_>>(), history.iter().map(|runs| runs.first().map_or(Err(HistoryGap::Missing(Gap::NotRecorded)), |r| r.value.clone())).collect::<Vec<_>>(), "hour {hour}, opening {start:?}");
             assert_eq!(single[0], first_value);
             assert_eq!(single[2..], [Err(Gap::NotRecorded); 2]);
-            if hour == 107 { assert_eq!(single[1], Err(Gap::WindowIncomplete), "a different holder at the opening"); }
+            if hour == 107 {
+                assert_eq!(single[1], Err(Gap::WindowIncomplete), "a different holder at the opening");
+            }
+        }
+        let selected = [tags[0].clone(), tags[1].clone(), Country::from("EEE"), Country::Slot(7)];
+        let baseline = |_| Some(101);
+        for back in [None, Some(&baseline as &dyn Fn(i32) -> Option<i32>)] {
+            let history = |countries: &[Country]| replay_recording::cells::count_reads(||
+                line.total_history(countries, &parts, back, 102, last).unwrap());
+            let (one, one_read) = history(&selected[..1]);
+            let (_, stable) = history(&[selected[0].clone(), selected[2].clone(), selected[3].clone()]);
+            assert_eq!(stable[&TableId::ProducedValues].opened, one_read[&TableId::ProducedValues].opened);
+            let (_, same_intervals) = history(&selected[..2]);
+            let (many, many_read) = history(&selected);
+            assert_eq!(one[0], many[0]);
+            assert_eq!(many[0], many[3]);
+            assert!(many[1].iter().any(|r| r.first == 106 && r.opens));
+            for hour in 102..=last {
+                let expected = line.totals_at(&selected, &parts, back, hour).unwrap();
+                for (runs, expected) in many.iter().zip(expected) {
+                    let at = runs.iter().find(|r| r.first <= hour && hour <= r.last).unwrap();
+                    assert_eq!(at.value, expected.map_err(HistoryGap::Missing));
+                }
+            }
+            assert_eq!(many[2][0].value, Err(HistoryGap::Missing(Gap::NotRecorded)));
+            assert_eq!(many_read[&TableId::ProducedValues].opened, same_intervals[&TableId::ProducedValues].opened,
+                "additional countries share the reads for each plotted interval and its window endpoints");
         }
         let reads = |countries: &[Country]| {
             crate::cost::take_calls();
@@ -498,7 +759,140 @@ mod tests {
         assert_eq!(reads(&tags[..1]), reads(&tags), "additional lines share the same dated storage reads");
         let series = dashboard_declare::series("country-measure").unwrap();
         let other = Line::new(&query, series, series.measure("politicalPower").unwrap()).unwrap();
-        assert_eq!(other.totals_at(&tags, &parts, None, last).unwrap_err().to_string(), other.totals(&tags, &parts, None, last, last).unwrap_err().to_string());
+        assert_eq!(other.totals_at(&tags, &parts, None, last).unwrap_err().to_string(), other.total_history(&tags, &parts, None, last, last).unwrap_err().to_string());
+    }
+
+    #[test]
+    fn single_hour_window_matches_history_across_a_damaged_production_block() {
+        use crate::identity::{HolderRun, Holders};
+        use crate::timeline::{Join, Stretch, Timeline};
+        use replay::campaign::Replay;
+        use replay_columnar::unit;
+        use replay_data::rows::{ProducedValueRow, Recorded, TableId};
+        use replay_journal::synthetic::{Input, Sample};
+        use replay_recording::columnar_frames::{Damage, DamageScope};
+
+        let table = TableId::ProducedValues;
+        let restore_block = unit::Settings::at(1).restore_blocks - 1;
+        let damaged_block = restore_block - 1;
+        let block = unit::BLOCK as i32;
+        let opening = damaged_block as i32 * block - 1;
+        let changed = opening + 2;
+        let carried = (damaged_block as i32 + 1) * block + 3;
+        let restored_block_start = (restore_block as i32 + 1) * block;
+        let restored = restored_block_start + 3;
+        let last = restored + 3;
+        let recordings = |reads: &[i32]| {
+            let clean = crate::fixture::bare(0, last, |frame, hour| {
+                let read = reads.iter().copied().take_while(|at| *at <= hour).last();
+                let mut rows = vec![ProducedValueRow { country: ProducedValueRow::CLOCK, since: Some(0), as_of: read, ..Default::default() }];
+                for (country, units) in [(7, if hour < changed { 9 } else { 16 }), (8, 11)] {
+                    rows.push(ProducedValueRow { country, archetype: 1, units: Recorded::Value(units), ..Default::default() });
+                }
+                frame.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+            }).unwrap();
+            let entry = |block| clean.recording().table_entry(0, block, table.index()).unwrap().unit;
+            let damaged_entry = entry(damaged_block);
+            assert!(damaged_entry.restore.is_none() && entry(restore_block).restore.is_some());
+            let units = unit::column_stream(dashboard_declare::field(table, "units").unwrap());
+            let frame = damaged_entry.parts.iter().flat_map(|part| &part.frames).find(|frame| frame.streams.contains(&units)).unwrap();
+            let mut bytes = clean.bytes().to_vec();
+            bytes[(frame.offset + u64::from(frame.stored / 2)) as usize] ^= 0x40;
+            (clean, Replay::open(bytes).unwrap())
+        };
+        let tags = ["AAA", "BBB"].map(Country::from);
+        let held = |slot| vec![HolderRun { first: 0, last, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
+        let holders = std::sync::Arc::new(Holders::new([("AAA".into(), held(7)), ("BBB".into(), held(8)), ("EEE".into(), held(77))].into(), vec![]));
+        let timeline = std::sync::Arc::new(Timeline { id: 1, first: 0, last, stretches: vec![Stretch { run: 0, first: 0, last, join: Join::Start }], unheld: vec![] });
+        let series = dashboard_declare::series("produced-values").unwrap();
+        let scope = DamageScope::Table { run: 0, block: damaged_block, table: table.index() as u32 };
+        let refusal = |error: io::Error| {
+            assert_eq!(Damage::of(&error).unwrap().scope, scope);
+            error.to_string()
+        };
+        let (clean, damaged) = recordings(&[0, opening, restored, last]);
+        let parts = |_| vec![1];
+        for (replay, corrupt) in [(&clean, false), (&damaged, true)] {
+            let query = crate::Query { replay, holders: holders.clone(), timeline: timeline.clone() };
+            let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+            let after = line.clock_at(restored - 1).unwrap();
+            assert_eq!((after.read, after.since), (Some(opening), Some(0)));
+            assert_eq!(after.since_from, Some(restored_block_start), "a stale read cannot extend validity behind this restore");
+            assert_eq!(line.totals_at(&tags, &parts, None, restored - 1).unwrap(), [Ok(16), Ok(11)]);
+            let before = line.clock_at(opening).unwrap();
+            assert_eq!((before.read, before.since), (Some(opening), Some(0)));
+            assert_eq!(before.next_change, Some(opening + 1), "a quiet clock cannot certify the next block");
+            if corrupt {
+                assert!(line.totals_at(&tags, &parts, None, changed).map_err(refusal).is_err());
+            }
+        }
+        let (clean, damaged) = recordings(&[0, opening, changed, carried, restored, last]);
+        for (replay, corrupt) in [(&clean, false), (&damaged, true)] {
+            let query = crate::Query { replay, holders: holders.clone(), timeline: timeline.clone() };
+            let line = Line::new(&query, series, series.measure("units").unwrap()).unwrap();
+            let parts = |_| vec![1];
+            for (hour, read, start, dependent) in [
+                (changed + 1, changed, opening, true), (carried + 1, carried, opening, true),
+                (restored - 1, carried, opening, true), (restored + 1, restored, changed, true),
+                (restored + 1, restored, opening, false),
+            ] {
+                let back = |_| Some(start);
+                let batch = line.totals_at(&tags, &parts, Some(&back), hour).map_err(refusal);
+                let ranked = line.totals_ranked(hour, 2, &parts, Some(&back), &|v| v > 0).map_err(refusal);
+                let chart = line.total_history(&tags, &parts, Some(&back), hour, hour).unwrap();
+                if corrupt && dependent {
+                    let reason = batch.unwrap_err();
+                    assert_eq!(ranked.unwrap_err(), reason);
+                    for country in chart {
+                        assert_eq!(country[0].value, Err(HistoryGap::Damage(Arc::from(reason.as_str()))));
+                    }
+                } else {
+                    let difference = if start == changed { 0 } else { 7 };
+                    assert_eq!(batch.unwrap(), [Ok(difference), Ok(0)]);
+                    assert_eq!(ranked.unwrap().unwrap(), if difference > 0 { vec!["AAA"] } else { vec![] });
+                    for (country, value) in chart.iter().zip([difference, 0]) {
+                        assert_eq!(country[..], [TotalRun { first: hour, last: hour, value: Ok(value), opens: false }]);
+                    }
+                    let clock = line.clock_at(hour).unwrap();
+                    let next = if read == changed { restore_block as i32 * block } else if read == carried { restored } else { last };
+                    assert_eq!((clock.read, clock.since, clock.since_from, clock.next_change), (Some(read), Some(0), Some(read), Some(next)));
+                }
+            }
+            if corrupt {
+                let before = line.clock_at(opening).unwrap();
+                assert_eq!((before.read, before.since), (Some(opening), Some(0)));
+                let mixed = ["AAA", "BBB", "EEE"].map(Country::from);
+                for at in [changed, carried] {
+                    let alone = line.totals_at(&mixed[2..], &parts, None, at).unwrap_err();
+                    let together = line.totals_at(&mixed, &parts, None, at).unwrap_err();
+                    assert_eq!(refusal(alone), refusal(together), "a fresh endpoint requires the same verified frame");
+                }
+                let chart = line.total_history(&mixed, &parts, None, opening, last).unwrap();
+                for (index, tag) in mixed.iter().enumerate() {
+                    let own = line.total_history(std::slice::from_ref(tag), &parts, None, opening, last).unwrap();
+                    assert_eq!(chart[index], own[0], "a neighbour's damaged frame cannot change a line's own missing reason");
+                }
+                assert_eq!(chart[2], [TotalRun { first: opening, last, value: Err(Gap::NotRecorded.into()), opens: false }]);
+                let unreadable = (opening + 1..=changed).find(|&at| line.totals_at(&tags, &parts, None, at).is_err()).unwrap();
+                assert!(before.next_change.is_some_and(|next| next <= unreadable), "clock at {opening} held until {:?} across damage at {unreadable}", before.next_change);
+                let back = |_| Some(opening);
+                for window in [None, Some(&back as &dyn Fn(_) -> _)] {
+                    let history = line.total_history(&tags, &parts, window, opening, last).unwrap();
+                    for (i, country) in history.iter().enumerate() {
+                        let at = |hour| country.iter().find(|r| r.first <= hour && hour <= r.last).unwrap();
+                        assert_eq!(at(opening).value, Ok(if window.is_some() { 0 } else { [9, 11][i] }));
+                        for hour in [changed, carried] {
+                            assert!(matches!(&at(hour).value, Err(HistoryGap::Damage(reason)) if reason.contains("differs from its digest")));
+                        }
+                        let resumed = at(restored);
+                        assert_eq!(resumed.value, Ok(if window.is_some() { [7, 0][i] } else { [16, 11][i] }));
+                        let last_damage = country.iter().rposition(|r| matches!(r.value, Err(HistoryGap::Damage(_)))).unwrap();
+                        assert!(country[last_damage + 1].opens);
+                        assert!(country[last_damage].last < resumed.first);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

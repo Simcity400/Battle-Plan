@@ -72,7 +72,7 @@ impl Player {
         if entity_changed {
             player
                 .pass
-                .make_field_resident(device, queue, model.library)?;
+                .make_field_resident(device, queue)?;
         }
         let bound = model
             .library

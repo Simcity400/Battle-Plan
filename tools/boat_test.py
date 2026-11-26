@@ -983,6 +983,24 @@ class Run(Harness):
         self.assertNotIn("release", [call[1] for call in fake.remote_calls])
         self.assertGreater(self.state.entry("a")["used"], 0)
 
+    def test_an_untracked_asset_is_refused_before_a_vm_is_claimed(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        (self.repo / "copied.dds").write_bytes(b"DDS " + bytes(range(256)))
+        (self.repo / "second.ogg").write_bytes(b"trial")
+        with mock.patch.object(bt, "say") as output:
+            self.assertEqual(bt.main(["check", "-p", "x"]), 2)
+        refusal = output.call_args.args[0]
+        self.assertIn("copied.dds", refusal)
+        self.assertIn("second.ogg", refusal)
+        self.assertEqual(fake.remote_calls, [])
+        (self.repo / ".gitignore").write_text("*.dds\n*.ogg\n")
+        tracked = self.repo / "src" / "lib.rs"
+        tracked.write_bytes(b"trial\0")
+        self.assertEqual(bt.main(["check", "-p", "x"]), 2)
+        self.assertEqual(fake.synced, [])
+        tracked.write_text("fn trial() {}")
+        self.assertEqual(bt.main(["check", "-p", "x"]), 0)
+
     def test_a_small_source_goes_up_in_commands_and_a_large_one_in_one_push(self):
         fake = self.use(FakeBoat([vm("a")]))
         self.assertEqual(bt.main(["check", "-p", "x"]), 0)

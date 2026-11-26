@@ -32,6 +32,24 @@ fn context() -> Context {
 }
 
 #[test]
+fn shared_defines_give_a_doctrine_reward_its_mod_threshold_or_name_the_refusal() {
+    let read = |value| {
+        let (_machine, source, load) = dashboard_base::test_fixtures::recorded_mod_defines(
+            "NDefines={NDoctrines={DEFAULT_REWARD_MASTERY=3}}",
+            &format!("NDefines.NDoctrines.DEFAULT_REWARD_MASTERY={value}"),
+            &[("common/doctrines/subdoctrines/probe/sub.txt", "mobile_infantry={ rewards={ probe_reward={} } }")],
+        );
+        let context = super::context(&source, &load, "Doctrine mastery").unwrap();
+        let (folders, refused) = folders(&frame(), 7, &context, &Cells::default()).unwrap();
+        (folders[0].tracks[0].rewards[0].threshold.clone(), refused.lines("doctrine mastery content"))
+    };
+    assert_eq!(read("17.25").0.as_deref(), Some("1725000"));
+    let (threshold, warnings) = read("nil");
+    assert_eq!(threshold, None);
+    assert!(warnings.iter().any(|why| why.contains("default reward mastery unavailable: NDefines.NDoctrines.DEFAULT_REWARD_MASTERY is not a number")), "{warnings:?}");
+}
+
+#[test]
 fn a_countrys_folders_hold_its_own_tracks_as_recorded_and_unknown_names_are_counted_not_made_up() {
     let frame = frame();
     let cells = Cells::default();

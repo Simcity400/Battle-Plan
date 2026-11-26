@@ -425,7 +425,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
                     follow.follow(id as u32, parsed[id].clone().expect("a log"))?;
                     continue;
                 }
-                let reply = registry.answer(Path::new("bench"), "follow", &json!({ "id": id, "branchId": "1", "clock": 0, "query": request }), |_| Err(invalid("The query layer reads no format-12 recording yet")), Box::new(|_| None));
+                let reply = registry.answer(Path::new("bench"), "follow", &json!({ "id": id, "branchId": "1", "clock": 0, "query": request }), |_| Err(invalid("The query layer reads no format-12 recording yet")), Box::new(|asked| Err(format!("No panel {}", asked["panel"]))));
                 unavailable.push(Some((id, match reply {
                     Ok(reply) => reply.get("reason").and_then(serde_json::Value::as_str).unwrap_or("followed").to_owned(),
                     Err(error) => error.to_string(),

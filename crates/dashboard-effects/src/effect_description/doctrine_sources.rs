@@ -25,7 +25,7 @@ pub fn doctrine_tactic_sources(
         graph: Rc::new(RefCell::new(EventScopes::new(Vec::new()))),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let mut output = Vec::new();
@@ -270,7 +270,7 @@ pub fn doctrine_benefits(
         graph: Rc::new(RefCell::new(scopes.clone())),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
@@ -319,12 +319,8 @@ pub fn doctrine_benefits(
         }
     }
     if !benefits.effects.is_empty() {
-        let description = describe(&benefits.effects, context, scopes);
-        output.push_str(&description.text);
-        for (why, count) in description.refusals {
-            *renderer.out.refusals.entry(why).or_default() += count;
-        }
+        output.push_str(&renderer.effect_section(&benefits.effects, scopes));
     }
     renderer.out.text = output;
-    renderer.out
+    renderer.finish()
 }

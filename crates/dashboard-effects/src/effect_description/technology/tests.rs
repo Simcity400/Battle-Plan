@@ -13,7 +13,7 @@ fn fixture() -> (Fixture, Folder) {
         ("common/country_tags/synthetic.txt", "AAA=a BBB=b CCC=c"),
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5},NProject={DEFAULT_COMPLEXITY=3}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=7},NProject={DEFAULT_COMPLEXITY=3}}",
         ),
         (
             "common/technologies/synthetic.txt",

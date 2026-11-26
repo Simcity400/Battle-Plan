@@ -77,7 +77,7 @@ pub fn typescript_contract() -> String {
         dashboard_production::products::equipment_produced::tiles::EquipmentProducedTileFamily::decl(),
         dashboard_world::products::autonomy_lines::AutonomyLinesTileFamily::decl(),
     ];
-    for product in products::PRODUCTS {
+    for product in products::PRODUCTS.iter() {
         declarations.extend(product.types.expect("every exported product registers its types")());
     }
     let mut seen = std::collections::BTreeMap::new();
@@ -138,6 +138,9 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Errors that only say there was no room: the request may be tried again. */\nexport const TRANSIENT_ERRORS = [{transient}] as const;\n"
     ));
+    let panels: Vec<_> = crate::panel::READERS.keys().copied().collect();
+    text.push_str(&format!("export const PANEL_KEYS = {} as const;\n", serde_json::to_string(&panels).unwrap()));
+    text.push_str("export type PanelKey = typeof PANEL_KEYS[number];\n");
     let content_products = products::PRODUCTS
         .iter()
         .filter(|product| product.content_dependent)
@@ -210,7 +213,7 @@ pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::B
         out
     };
     let mut table = std::collections::BTreeMap::new();
-    for product in products::PRODUCTS {
+    for product in products::PRODUCTS.iter() {
         table.insert(product.key.to_owned(), paths((product.params)(), product.read_hour));
     }
     let series = paths(series_walk(), false);
@@ -226,7 +229,7 @@ pub fn request_paths() -> std::collections::BTreeMap<String, std::collections::B
 pub fn request_fields() -> std::collections::BTreeMap<String, Vec<(&'static str, &'static str)>> {
     let dated = |fields: dashboard_base::products::Fields| fields.iter().filter_map(|(path, role)| role.name().map(|role| (*path, role))).collect::<Vec<_>>();
     let mut table = std::collections::BTreeMap::new();
-    for product in products::PRODUCTS {
+    for product in products::PRODUCTS.iter() {
         let mut fields = dated(product.fields);
         if product.read_hour {
             fields.push(("hour", "read"));

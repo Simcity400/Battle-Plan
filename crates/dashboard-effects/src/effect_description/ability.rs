@@ -21,7 +21,7 @@ pub fn ability_description(
         graph: Rc::new(RefCell::new(scopes.clone())),
         evaluator: OnceCell::new(),
         out: Description::default(),
-        scripted_stack: Vec::new(),
+        scripted: Default::default(),
         concise: None,
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
@@ -89,15 +89,14 @@ pub fn ability_description(
                 Err(why) => renderer.refuse("ability effect heading", why),
             }
         }
-        let description = describe(effects, context, scopes);
-        text.push_str(&description.text);
-        for (why, count) in description.refusals {
-            *renderer.out.refusals.entry(why).or_default() += count;
+        text.push_str(&renderer.effect_section(effects, scopes));
+        if renderer.scripted.exhausted.is_some() {
+            break;
         }
     }
     if !text.is_empty() {
         text.insert(0, '\n');
     }
     renderer.out.text = text;
-    renderer.out
+    renderer.finish()
 }

@@ -60,7 +60,7 @@ mod tests {
         let (catalogue, _folder) = folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             (
                 "localisation/test_l_english.yml",

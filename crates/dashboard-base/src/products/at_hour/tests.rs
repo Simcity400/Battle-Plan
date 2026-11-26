@@ -137,7 +137,7 @@ fn load() -> LoadContext {
 }
 
 fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::QueryError> {
-    let text = (entry::<Power>().registered.load)(source, "lease", request, &load(), &AtomicBool::new(false))?;
+    let text = (entry::<Power>().load)(source, "lease", request, &load(), &AtomicBool::new(false))?;
     let mut reply: Value = serde_json::from_str(&text).unwrap();
     Ok(reply["data"].take())
 }
@@ -192,7 +192,7 @@ fn cell_json(value: &CellValue) -> Value {
 #[test]
 fn a_rows_at_an_hour_product_answers_a_request_and_its_panel_with_one_reply() {
     let (source, pages) = recording();
-    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER" })).unwrap();
+    let mut panel = super::frame_panel::<Power>(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER" })).unwrap();
     assert_eq!(panel.tables(), [TableId::Countries, TableId::CountryLinks]);
     let (mut rowless, mut unavailable, mut valueless) = (0, 0, 0);
     for hour in FIRST..=LAST {
@@ -240,12 +240,12 @@ fn a_refused_reply_is_the_same_named_refusal_on_both_paths() {
     assert_eq!(refused(requested(&source, "FRA", 110).unwrap_err()), unheld);
     assert_eq!(refused(requested(&source, 8, ITA_LEAVES).unwrap_err()), unheld, "a country holding no tag at the hour is not recorded there");
     assert!(requested(&source, 8, ITA_LEAVES - 1).is_ok());
-    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "FRA" })).unwrap();
+    let mut panel = super::frame_panel::<Power>(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "FRA" })).unwrap();
     assert_eq!(followed(&source, &mut *panel, 110), Err(unheld.to_owned()));
     assert!(panel.live().is_none(), "a refused reply names no cells");
     assert_eq!(refused(requested(&source, "GER", LAST + 50).unwrap_err()), "Power hour is not recorded");
     assert!(asked(&source, json!({ "branchId": "1", "country": "GER" })).unwrap_err().to_string().contains("names no hour"));
-    assert!((entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER", "hour": 3 })).is_err(), "a panel takes the head's hour");
+    assert!(super::frame_panel::<Power>(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER", "hour": 3 })).is_err(), "a panel takes the head's hour");
 }
 
 struct Scoped;
@@ -865,7 +865,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
     let exact = panel.exact().unwrap();
     let token = AtomicBool::new(false);
     for hour in FIRST..=LAST {
-        let text = (entry::<Partial>().registered.load)(&source, "lease", json!({ "branchId": "1", "hour": hour }), &load(), &token).unwrap();
+        let text = (entry::<Partial>().load)(&source, "lease", json!({ "branchId": "1", "hour": hour }), &load(), &token).unwrap();
         assert_eq!(said(&serde_json::from_str::<Value>(&text).unwrap()["data"]), recorded(hour), "a request at hour {hour}");
         assert_eq!(said(&(exact.cold)(hour, &token).unwrap()), recorded(hour), "an exact read at hour {hour}");
     }

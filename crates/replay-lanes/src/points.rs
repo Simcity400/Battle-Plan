@@ -9,7 +9,7 @@ use replay_columnar::{
     summary::{self, Cells, Piece},
     unit::BLOCK,
 };
-use std::{collections::HashMap, io};
+use std::{collections::{HashMap, HashSet}, io};
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -434,7 +434,7 @@ fn born<L: Look>(recording: &Recording, (run, table): (u32, TableId), probe: &mu
     Ok(out)
 }
 
-fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted, blocks: std::ops::Range<u32>) -> io::Result<Option<Vec<bool>>> {
+fn summarized_blocks<T: Default>(recording: &Recording, run: u32, table: TableId, wanted: &Wanted, blocks: std::ops::Range<u32>, mut live: impl FnMut(&mut T, u128)) -> io::Result<Option<(Vec<bool>, Vec<T>)>> {
     let by_key = |shape: &summary::Shape| !matches!(shape, summary::Shape::Log(_));
     if matches!(wanted, Wanted::All) || blocks.is_empty() || !replay_recording::summaries::registry()?.iter().any(|(held, shape)| *held == table.index() && by_key(shape)) {
         return Ok(None);
@@ -442,7 +442,8 @@ fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted,
     let held = recording.run(run)?;
     let first_hour = i64::from(held.first_hour);
     let count = blocks.len();
-    let (mut summarized, mut covered) = (vec![false; count], vec![false; count]);
+    let mut summarized = vec![false; count];
+    let mut coverage = (0..count).map(|_| T::default()).collect::<Vec<_>>();
     let block_of = |hour: i64| ((hour - first_hour).max(0) / i64::from(BLOCK)).clamp(i64::from(blocks.start), i64::from(blocks.end - 1)) as usize - blocks.start as usize;
     for extent in crate::lanes::pieces(recording, run, table.index(), blocks.clone(), 1)? {
         let bytes = recording.stored_bytes(&extent)?;
@@ -468,12 +469,24 @@ fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted,
                     continue;
                 }
                 for block in block_of(lived)..=block_of(past - 1) {
-                    covered[block] = true;
+                    live(&mut coverage[block], piece.keys[at]);
                 }
             }
         }
     }
-    Ok(Some(summarized.iter().zip(&covered).map(|(&summarized, &covered)| !summarized || covered).collect()))
+    Ok(Some((summarized, coverage)))
+}
+
+fn blocks_read(recording: &Recording, run: u32, table: TableId, wanted: &Wanted, blocks: std::ops::Range<u32>) -> io::Result<Option<Vec<bool>>> {
+    let blocks = summarized_blocks(recording, run, table, wanted, blocks, |read, _| *read = true)?;
+    Ok(blocks.map(|(summarized, read)| summarized.into_iter().zip(read).map(|(known, live)| !known || live).collect()))
+}
+
+pub fn keys_in_summarized_blocks(recording: &Recording, run: u32, table: TableId, keys: &[u128], blocks: std::ops::Range<u32>) -> io::Result<Vec<HashSet<u128>>> {
+    let wanted = Wanted::of(Keys::These(keys));
+    let blocks = summarized_blocks(recording, run, table, &wanted, blocks, |set: &mut HashSet<_>, key| { set.insert(key); })?;
+    Ok(blocks.into_iter().flat_map(|(summarized, keys)| summarized.into_iter().zip(keys))
+        .filter_map(|(known, keys)| known.then_some(keys)).collect())
 }
 
 fn ordinals(recording: &Recording, run: u32, from: i32, to: i32) -> io::Result<(u32, u32)> {

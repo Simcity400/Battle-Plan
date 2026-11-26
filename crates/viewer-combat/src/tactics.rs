@@ -1859,7 +1859,7 @@ mod tests {
         for (relative, contents) in [
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
             ),
             ("common/units/test.txt", "sub_units={syn_unit={}}"),
             (

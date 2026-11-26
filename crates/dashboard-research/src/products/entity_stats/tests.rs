@@ -21,12 +21,12 @@ fn localisation() -> Localisation {
         ("STAT_MODIFIER_DIFF", "$VALUE|=+0%$"),
         ("STAT_MODIFIER_DIFF_NEG", "$VALUE|=-0%$"),
         ("EQUIPMENT_MODULE_STAT_AVERAGED", " (averaged)"),
-        ("TACTICS_DAMAGE_ATTACKER", "Attacker tactic damage:"),
-        ("TACTICS_DAMAGE_DEFENDER", "Defender tactic damage:"),
-        ("TACTICS_COMBATWIDTH", "Tactics combat width:"),
+        ("TACTICS_DAMAGE_ATTACKER", "Breakwater push:"),
+        ("TACTICS_DAMAGE_DEFENDER", "Breakwater hold:"),
+        ("TACTICS_COMBATWIDTH", "Breakwater frontage:"),
         ("TACTICS_MOVEMENTSPEED_ATTACKER", "Tactics movement:"),
-        ("TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER", "Attacker organization damage modifier:"),
-        ("TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER", "Defender organization damage modifier:"),
+        ("TACTICS_ATTACKER_ORG_DAMAGE_MODIFIER", "Org hit when attacking (made up):"),
+        ("TACTICS_DEFENDER_ORG_DAMAGE_MODIFIER", "Org hit when defending (made up):"),
         ("TACTIC_LIST_VALUE_GOOD", "$VAL|+=0%$"),
         ("TACTIC_LIST_VALUE_BAD", "$VAL|-=0%$"),
         ("TACTIC_LIST_VALUE_NEUTRAL", "$VAL|=Y0%$"),
@@ -213,7 +213,7 @@ fn recording() -> Source {
 #[test]
 fn stats_without_the_recorded_content_are_withheld_by_name() {
     let request = json!({ "branchId": "1", "kind": "equipment", "token": "infantry_equipment_1", "hour": 25 });
-    let text = (entry::<EntityStatsAt>().registered.load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    let text = (entry::<EntityStatsAt>().load)(&recording(), "lease", request, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     let reply: Value = serde_json::from_str::<Value>(&text).unwrap()["data"].take();
     assert_eq!(reply["stats"], json!([]));
     assert_eq!(reply["kind"], "equipment");

@@ -1031,13 +1031,10 @@ impl Scene {
 
     pub fn warm_trains(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &Arc<viewer_rail::trains::TrainAssets>,
     ) -> io::Result<()> {
         if self.trains.is_none() {
-            let mut pass = ModelPass::new(&assets.library, "supply trains");
-            pass.upload_library(device, queue, &assets.library)?;
+            let pass = ModelPass::new(&assets.library, "supply trains");
             self.trains = Some((
                 pass,
                 Arc::clone(assets),
@@ -1049,13 +1046,12 @@ impl Scene {
 
     pub fn warm_aircraft(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &Arc<viewer_aircraft::aircraft::AircraftAssets>,
     ) -> io::Result<()> {
         if self.aircraft.is_none() {
-            let mut pass = ModelPass::new(&assets.library(), "flying aircraft");
-            pass.upload_library(device, queue, &assets.library())?;
+            let library = assets.library();
+            let pass = ModelPass::new(&library, "flying aircraft");
+            drop(library);
             self.aircraft = Some((
                 pass,
                 Arc::clone(assets),
@@ -1071,14 +1067,11 @@ impl Scene {
 
     pub fn warm_unit_models(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &UnitModelAssets,
     ) -> io::Result<()> {
         if self.unit_models.is_none() {
             let library = assets.library();
-            let mut pass = ModelPass::new(&library, "unit models");
-            pass.upload_library(device, queue, &library)?;
+            let pass = ModelPass::new(&library, "unit models");
             drop(library);
             self.unit_models = Some(pass);
         }
@@ -1088,13 +1081,10 @@ impl Scene {
 
     pub fn warm_map_buildings(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &MapBuildingAssets,
     ) -> io::Result<()> {
         if self.map_buildings.is_none() {
-            let mut pass = ModelPass::new(&assets.library, "map buildings");
-            pass.upload_library(device, queue, &assets.library)?;
+            let pass = ModelPass::new(&assets.library, "map buildings");
             self.map_buildings = Some(pass);
         }
         Ok(())
@@ -1102,13 +1092,10 @@ impl Scene {
 
     pub fn warm_bridges(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         bridges: &Bridges,
     ) -> io::Result<()> {
         if self.bridges.is_none() {
-            let mut pass = ModelPass::new(&bridges.library, "railway bridges");
-            pass.upload_library(device, queue, &bridges.library)?;
+            let pass = ModelPass::new(&bridges.library, "railway bridges");
             self.bridges = Some(pass);
         }
         Ok(())
@@ -1285,13 +1272,10 @@ impl Scene {
 
     pub fn set_map_frame(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &FrameAssets,
     ) -> io::Result<()> {
         let mut pass = ModelPass::new(&assets.library, "map frame");
-        pass.upload_library(device, queue, &assets.library)?;
-        pass.upload(device, queue, &assets.library, assets.field.clone())?;
+        pass.set_field(&assets.library, assets.field.clone());
         self.native_map_frame = Some(pass);
         self.ambient = Some(assets.presentation.clone());
         self.strikes = viewer_models::strike_effects::Presentation::new(assets.strikes.clone());
@@ -1322,7 +1306,6 @@ impl Scene {
     pub fn set_unit_models(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &UnitModelAssets,
         field: viewer_unit_history::unit_history::Field,
         steady: bool,
@@ -1333,7 +1316,7 @@ impl Scene {
                 &mut self.unit_gates,
                 &mut self.unit_history,
             ),
-            (device, queue),
+            device,
             assets,
             (field, steady),
             (self.map_size, self.graphics.samples),
@@ -1346,7 +1329,7 @@ impl Scene {
             &mut Option<UnitGates>,
             &mut viewer_unit_history::unit_history::History,
         ),
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        device: &wgpu::Device,
         assets: &UnitModelAssets,
         (field, steady): (viewer_unit_history::unit_history::Field, bool),
         (map, samples): ([u32; 2], u32),
@@ -1355,7 +1338,7 @@ impl Scene {
         *gates = Some(assets.gates);
         history.set_prepared_with_naval(field.targets, assets.bounds.clone(), steady, field.naval);
         history.set_raids(field.raids);
-        pass.upload(device, queue, &assets.library(), field.models)?;
+        pass.set_field(&assets.library(), field.models);
         history.field_replaced();
         pass.warm_added(device, map, samples)
     }
@@ -1566,24 +1549,18 @@ impl Scene {
         }
     }
 
-    pub fn set_bridges(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bridges: &Bridges,
-        field: ModelField,
-    ) -> io::Result<()> {
-        Self::install_bridges(&mut self.bridges, (device, queue), bridges, field)
+    pub fn set_bridges(&mut self, bridges: &Bridges, field: ModelField) -> io::Result<()> {
+        Self::install_bridges(&mut self.bridges, bridges, field)
     }
 
     fn install_bridges(
         pass: &mut Option<ModelPass>,
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
         bridges: &Bridges,
         field: ModelField,
     ) -> io::Result<()> {
         pass.get_or_insert_with(|| ModelPass::new(&bridges.library, "railway bridges"))
-            .upload(device, queue, &bridges.library, field)
+            .set_field(&bridges.library, field);
+        Ok(())
     }
 
     pub fn set_orders(
@@ -1713,8 +1690,6 @@ impl Scene {
 
     pub fn set_map_buildings(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         assets: &MapBuildingAssets,
         prepared: map_display_data::buildings::Buildings,
         passed: Option<&[&map_display_data::buildings::Buildings]>,
@@ -1726,7 +1701,6 @@ impl Scene {
                 &mut self.city_presentation,
                 &mut self.sprawl,
             ),
-            (device, queue),
             assets,
             prepared,
             passed,
@@ -1740,15 +1714,12 @@ impl Scene {
             &mut Option<viewer_buildings::sprawl::Presentation>,
             &mut Option<ModelPass>,
         ),
-        (device, queue): (&wgpu::Device, &wgpu::Queue),
         assets: &MapBuildingAssets,
         prepared: map_display_data::buildings::Buildings,
         passed: Option<&[&map_display_data::buildings::Buildings]>,
     ) -> io::Result<()> {
         if buildings.is_none() {
-            let mut pass = ModelPass::new(&assets.library, "map buildings");
-            pass.upload_library(device, queue, &assets.library)?;
-            *buildings = Some(pass);
+            *buildings = Some(ModelPass::new(&assets.library, "map buildings"));
         }
         for hour in passed.unwrap_or_default() {
             let installed = history.install_display(hour, assets)?;
@@ -1769,15 +1740,13 @@ impl Scene {
 
     pub fn set_sprawl(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         sprawl: &Sprawl,
     ) -> io::Result<()> {
         self.sprawl = Some(ModelPass::new(&sprawl.library, "city sprawl"));
         self.city_presentation = Some(sprawl.presentation());
         if let Some(pass) = &mut self.sprawl {
             let field = sprawl.field.clone();
-            pass.upload(device, queue, &sprawl.library, field)?;
+            pass.set_field(&sprawl.library, field);
         }
         Ok(())
     }
@@ -2393,7 +2362,7 @@ impl Scene {
                 &mut self.sprawl,
             );
             jobs.push(Box::new(move || {
-                Self::install_map_buildings(parts, gpu, assets, prepared, passed)
+                Self::install_map_buildings(parts, assets, prepared, passed)
             }));
         }
         if let Some(regions) = political {
@@ -2450,7 +2419,7 @@ impl Scene {
                 drop(Self::install_railways(
                     railways, gpu, samples, assets, geometry,
                 )?);
-                Self::install_bridges(bridge_pass, gpu, bridges, field)
+                Self::install_bridges(bridge_pass, bridges, field)
             }));
         }
         if let Some(placements) = names {
@@ -2494,7 +2463,7 @@ impl Scene {
             );
             let target = (self.map_size, self.graphics.samples);
             jobs.push(Box::new(move || {
-                Self::install_unit_models(parts, gpu, assets, (field, steady), target)
+                Self::install_unit_models(parts, device, assets, (field, steady), target)
             }));
         }
         let mut refused = Ok(());
@@ -2932,6 +2901,9 @@ impl Scene {
             let Some(pass) = pass else {
                 continue;
             };
+            if drawn {
+                pass.make_field_resident(device, queue)?;
+            }
             pass.pose_on_the_frame(stopped);
             if let Some(made) = &made {
                 pass.take_poses(made);
@@ -2951,17 +2923,6 @@ impl Scene {
         );
         self.poses.give(animation_time, &mut self.pose_jobs);
         self.detail_laps.lap("poses");
-        if let Some((pass, assets, _)) = &mut self.aircraft
-            && self.graphics.aircraft()
-        {
-            pass.make_field_resident(device, queue, &assets.library())?;
-        }
-        if let Some((pass, assets, _)) = &mut self.trains
-            && trains_visible
-        {
-            pass.make_field_resident(device, queue, &assets.library)?;
-        }
-        self.detail_laps.lap("aircraft_trains_resident");
         let targets = self.targets.as_ref().expect("created above");
         let events_copy_span = viewer_runtime::profiling::span("frame_events");
         let events = step::frame_events(

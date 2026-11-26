@@ -25,7 +25,7 @@ pub fn state_country_order_demand(
     reason = "the pointer and source row locate one state, and the resolved links, output and scratch are caller-owned"
 )]
 pub fn state_country_order<M: Memory>(
-    memory: &M,
+    memory: &impl Memory,
     image: usize,
     pointer: usize,
     source: &Row,

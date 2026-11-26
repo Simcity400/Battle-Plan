@@ -145,7 +145,7 @@ impl Content {
         };
         let units = catalogue.as_ref().and_then(|catalogue| catalogue::equipment_units(catalogue).map_err(|error| warnings.push(format!("Equipment types are unavailable: {error}"))).ok());
         let retained_months = (land == LandSource::CombatLog).then_some(catalogue.as_ref()).flatten().and_then(|catalogue| {
-            content_reader_defines::defines::read(&catalogue.content.layers)
+            catalogue.read_defines()
                 .and_then(|defines| defines.int32("NGame", "COMBAT_LOG_MAX_MONTHS"))
                 .map_err(|error| warnings.push(format!("The Combat Log's retention is unavailable: {error}")))
                 .ok()

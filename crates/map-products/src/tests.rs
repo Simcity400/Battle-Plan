@@ -176,9 +176,9 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
         r#"
         NDefines = {
             NBuildings = { MAX_BUILDING_LEVELS = 10 },
-            NGraphics = { MAP_BUILDINGS_SHRINK_DISTANCE = 180,
-                MESH_POPUP_SCALE_UP_SPEED = 5, MAP_BUILDINGS_DESTROYED_STATUS = 60,
-                MAP_BUILDINGS_DESTROYED_DEAD_ZONE = 80, MAP_BUILDINGS_DAMAGED_THRESHOLD = 0.8 }
+            NGraphics = { MAP_BUILDINGS_SHRINK_DISTANCE = 190,
+                MESH_POPUP_SCALE_UP_SPEED = 6, MAP_BUILDINGS_DESTROYED_STATUS = 55,
+                MAP_BUILDINGS_DESTROYED_DEAD_ZONE = 75, MAP_BUILDINGS_DAMAGED_THRESHOLD = 0.7 }
         }
     "#,
     );

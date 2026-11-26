@@ -214,7 +214,7 @@ fn random_list_maximum_weight_uses_native_invalid_chance_sentinel() {
 }
 
 #[test]
-fn scripted_depth_is_bounded_when_this_keeps_changing() {
+fn scripted_walk_visits_every_distinct_this_scope() {
     game::enter();
     use crate::scripted_text::{EventObject, EventScope};
     use replay_data::rows::*;
@@ -229,11 +229,18 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
             })
             .collect(),
     ));
-    fixture.neighbors = Some((1..65).map(|id| (id, vec![id + 1])).collect());
+    fixture.neighbors = Some(
+        (1..=65)
+            .map(|id| (id, if id < 65 { vec![id + 1] } else { vec![] }))
+            .collect(),
+    );
     let mut names = content_reader_script::key_names::KeyNames::default();
     names.scripted_effects.insert(b"walk".to_vec());
     let mut database = content_reader_key_names::scripted_effects::ScriptedEffects::default();
-    database.read_file(b"walk={fixture_list_neighbor_state={walk=yes}}", &names);
+    database.read_file(
+        b"walk={fixture_list_neighbor_state={walk=yes} fixture_points=2}",
+        &names,
+    );
     let mut graph = EventScopes::new(vec![EventScope::of(EventObject::State(1))]);
     let out = fixture.render(
         "walk=yes",
@@ -244,16 +251,91 @@ fn scripted_depth_is_bounded_when_this_keeps_changing() {
             ..Default::default()
         },
     );
-    assert_eq!(
-        out.refusals.values().sum::<usize>(),
-        1,
-        "{:?}",
-        out.refusals
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    assert_eq!(out.text.matches("XP2").count(), 65);
+}
+
+#[test]
+fn scripted_work_budget_withholds_the_whole_description_and_preserves_cycle_reasons() {
+    game::enter();
+    let mut fixture = Fixture::new();
+    fixture.catalogue.localisation = Arc::new(
+        [
+            ("SYN_LINE".to_owned(), "x".repeat(4096)),
+            ("ABILITY_ON_HOURLY".to_owned(), "Hourly".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let mut names = content_reader_script::key_names::KeyNames::default();
+    names.scripted_effects.insert(b"synthetic_cycle".to_vec());
+    let mut source = String::from("synthetic_cycle={synthetic_cycle=yes} ");
+    for i in 0..14 {
+        let name = format!("synth_fan_{i}");
+        names.scripted_effects.insert(name.as_bytes().to_vec());
+        let next = if i == 13 {
+            "fixture_written_tooltip=SYN_LINE".to_owned()
+        } else {
+            format!("synth_fan_{}=yes", i + 1)
+        };
+        source.push_str(&format!("{name}={{{next} {next}}} "));
+    }
+    let mut effects = content_reader_key_names::scripted_effects::ScriptedEffects::default();
+    effects.read_file(source.as_bytes(), &names);
+    let content = Content {
+        key_names: Some(&names),
+        scripted_effects: Some(&effects),
+        ..Default::default()
+    };
+    let result = fixture.render(
+        "fixture_written_tooltip=SYN_LINE synthetic_cycle=yes synth_fan_0=yes fixture_written_tooltip=SYN_LINE",
+        &mut fresh(),
+        content,
     );
     assert!(
-        out.refusals
+        result.text.is_empty(),
+        "{} bytes, {:?}",
+        result.text.len(),
+        result.refusals
+    );
+    assert_eq!(
+        result.refusals.values().sum::<usize>(),
+        2,
+        "{:?}",
+        result.refusals
+    );
+    assert!(
+        result
+            .refusals
             .keys()
-            .any(|why| why.contains("effect walk:") && why.contains("depth"))
+            .any(|why| why.contains("synthetic_cycle") && why.contains("recursively"))
+    );
+    assert!(
+        result
+            .refusals
+            .keys()
+            .any(|why| why.contains("synth_fan_") && why.contains("work budget"))
+    );
+
+    let half = content_reader_parser::parser::parse(b"synth_fan_2=yes")
+        .unwrap()
+        .items;
+    let ability = content_reader_abilities::abilities::Definition {
+        effects: [half.clone(), half, Vec::new()],
+        ..Default::default()
+    };
+    let result = fixture.with_context(content, |context| {
+        ability_description(&ability, context, &mut fresh())
+    });
+    assert!(result.text.is_empty());
+    assert_eq!(result.refusals.len(), 1, "{:?}", result.refusals);
+    assert!(
+        result
+            .refusals
+            .keys()
+            .next()
+            .unwrap()
+            .contains("work budget")
     );
 }
 

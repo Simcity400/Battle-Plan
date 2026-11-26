@@ -2,12 +2,13 @@ import { decode } from '@msgpack/msgpack';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { FollowedWidgetKind } from './store.ts';
 import type { DashboardClient, DashboardSource } from '../client';
+import type { FollowRequest } from '../regionTime';
 import type { PlaybackController } from '../playback';
 import { baseClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { playbackRate } from '../pulled.ts';
 import { canonical } from './canonical.ts';
-import { pipelineFor, pipelineGeneration, subscribeClockPipeline, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
+import { pipelineFor, pipelineGeneration, subscribeClockPipeline, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
 import type { Channel } from './facts';
 import type { FollowedPanel } from './message';
 import type { WidgetView } from './page';
@@ -90,7 +91,7 @@ export function useOnScreen(target: Element | null, onScreen: OnScreen = observe
 }
 
 export function useFollowedSub(pipeline: Pipeline | null, widget: number | null, follow: { source: DashboardSource; branch: string; offset: number } | null,
-  query: FollowQuery | null, channel: Channel, product?: string): number | undefined {
+  query: FollowRequest | null, channel: Channel, product?: string): number | undefined {
   const [sub, setSub] = useState<number | undefined>(undefined);
   const key = query && follow ? canonical(query) : null;
   const held = useRef({ query, follow });

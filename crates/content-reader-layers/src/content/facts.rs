@@ -443,6 +443,7 @@ impl Pack {
             .get(file as usize)
             .ok_or_else(|| invalid("fact pack file is absent"))?;
         let mut bytes = Vec::with_capacity(entry.length as usize);
+        let mut whole_chunks: Option<std::ops::Range<usize>> = None;
         let end = entry.offset + entry.length;
         let mut index = self.chunks.partition_point(|chunk| chunk.start + u64::from(chunk.raw) <= entry.offset);
         while (bytes.len() as u64) < entry.length {
@@ -454,7 +455,14 @@ impl Pack {
             let from = (entry.offset + bytes.len() as u64 - chunk.start) as usize;
             let to = (end.min(chunk.start + u64::from(chunk.raw)) - chunk.start) as usize;
             bytes.extend_from_slice(&raw[from..to]);
+            if from == 0 && to == raw.len() {
+                whole_chunks.get_or_insert(index..index).end = index + 1;
+            }
             index += 1;
+        }
+        if let Some(whole_chunks) = whole_chunks {
+            self.kept.lock().unwrap_or_else(|error| error.into_inner())
+                .retain(|(index, _)| !whole_chunks.contains(index));
         }
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         if digest != entry.digest {
@@ -1219,7 +1227,11 @@ mod tests {
         assert_eq!(pieces, [b"456789".to_vec(), b"abcdefghij".to_vec(), b"KLMNOP".to_vec()]);
         assert!(read.kept.lock().unwrap().is_empty(), "a piecewise read keeps no chunk");
         assert_eq!(read.read_payload(0).unwrap().0, pieces.concat());
-        assert_eq!(read.kept.lock().unwrap().len(), 3, "a whole read keeps its chunks");
+        assert_eq!(read.kept.lock().unwrap().iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(read.read_payload(0).unwrap().0, pieces.concat());
+        let aligned = pack(&raws, 10, 20, None);
+        assert_eq!(aligned.read_payload(0).unwrap().0, raws[1]);
+        assert!(aligned.kept.lock().unwrap().is_empty());
         let unkept = pack(&raws, 4, 26, None).keeping(0);
         assert_eq!(unkept.read_payload(0).unwrap().0, pieces.concat());
         assert!(unkept.kept.lock().unwrap().is_empty());

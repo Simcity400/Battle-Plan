@@ -203,7 +203,7 @@ impl PoliticsContent {
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let (ideologies, ideology_warnings) = ideologies(layers)?;
-        let officers = content_reader_defines::defines::read(layers)?
+        let officers = catalogue.read_defines()?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
         let (read, traits, definitions, names) = std::thread::scope(|threads| {
             let traits = content_reader_layers::parallel::spawn(threads, || {

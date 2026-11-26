@@ -7,6 +7,7 @@ export interface TableMirrorSyncOptions {
   readonly focusInsideRef: { readonly current: boolean };
   readonly restoringFocusRef: { current: boolean };
   readonly lastMirrorKeyRef: { current: string };
+  readonly holdFocus?: boolean;
 }
 
 export function mirrorRowSelector(key: string): string {
@@ -61,7 +62,8 @@ export function syncTableMirror(
   const selected = options.selectedKey ?? '';
   const focusedKey = options.focusedKeyRef.current;
   const hasFocused = focusedKey !== null && mirror.rows.some(r => !r.groupHeader && r.key === focusedKey);
-  const activeFocus = hasFocused ? focusedKey : (mirror.rows.find(r => !r.groupHeader)?.key ?? null);
+  const holdMissing = options.holdFocus === true && !hasFocused;
+  const activeFocus = hasFocused ? focusedKey : (holdMissing ? null : (mirror.rows.find(r => !r.groupHeader)?.key ?? null));
   const key = JSON.stringify([
     options.rowsFocusable,
     mirror.first,
@@ -82,6 +84,14 @@ export function syncTableMirror(
   options.lastMirrorKeyRef.current = key;
   const active = document.activeElement;
   const wasFocused = options.rowsFocusable && options.focusInsideRef.current && active instanceof HTMLElement && (tbody.contains(active) || active === table);
+  if (holdMissing && wasFocused && active !== table) {
+    options.restoringFocusRef.current = true;
+    try {
+      table?.focus({ preventScroll: true });
+    } finally {
+      options.restoringFocusRef.current = false;
+    }
+  }
   let restore: HTMLTableRowElement | null = null;
   const canReuseInPlace = typeof tbody.children?.length === 'number' && typeof tbody.lastElementChild !== 'undefined';
 

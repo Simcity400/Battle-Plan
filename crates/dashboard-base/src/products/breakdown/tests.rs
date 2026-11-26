@@ -297,3 +297,34 @@ fn a_recorded_whole_is_the_denominator_and_an_unread_one_keeps_every_known_part(
     assert_eq!((unread.total.amount, unread.total.state), (None, BreakdownState::NotRecorded));
     assert_eq!((unread.parts[0].amount.clone(), unread.parts[0].share), (figure("5"), None));
 }
+
+#[test]
+fn large_numerators_keep_exact_order_without_floating_point_ties() {
+    let base = 10_i128.pow(30);
+    let denom = 10_i128.pow(10);
+    let smaller = Exact::new(base + 1, denom).expect("positive");
+    let larger = Exact::new(base + 3, denom).expect("positive");
+    let reply = breakdown(
+        &[
+            leaf(&[node("smaller", 0)], Amount::Known(smaller)),
+            leaf(&[node("larger", 1)], Amount::Known(larger)),
+        ],
+        &Unrecorded::default(),
+    );
+    assert_eq!(keys(&reply.parts), ["larger", "smaller"], "distinct large fractions never tie in f64");
+
+    let neg_more = Exact::new(-(base + 3), denom).expect("positive");
+    let neg_less = Exact::new(-(base + 1), denom).expect("positive");
+    let negative = breakdown(
+        &[
+            leaf(&[node("more_negative", 0)], Amount::Known(neg_more)),
+            leaf(&[node("less_negative", 1)], Amount::Known(neg_less)),
+        ],
+        &Unrecorded::default(),
+    );
+    assert_eq!(keys(&negative.parts), ["less_negative", "more_negative"], "distinct large negative fractions keep exact order");
+
+    assert_eq!(Exact::new(i128::MIN, i128::MAX).unwrap().compare(Exact::new(i128::MIN + 1, i128::MAX).unwrap()), std::cmp::Ordering::Less);
+    assert_eq!(Exact::new(i128::MAX - 1, i128::MAX).unwrap().compare(Exact::new(i128::MAX, i128::MAX - 1).unwrap()), std::cmp::Ordering::Less);
+    assert_eq!(Exact::new(-1, i128::MAX).unwrap().compare(Exact::new(1, i128::MAX).unwrap()), std::cmp::Ordering::Less);
+}

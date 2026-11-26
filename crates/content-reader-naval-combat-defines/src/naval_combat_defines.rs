@@ -239,8 +239,8 @@ mod tests {
             script.push_str(&format!("NDefines.NNavy.{key} = {}\n", index + 2));
         }
         script.push_str(
-            "NDefines.NNavy.SCREEN_CAP_REDUCTION_FACTOR = 0.02\n\
-             NDefines.NNavy.NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT = 0.005\n\
+            "NDefines.NNavy.SCREEN_CAP_REDUCTION_FACTOR = 0.03\n\
+             NDefines.NNavy.NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT = 0.004\n\
              NDefines.NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO = { 1 }\n\
              NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY = 1\n\
              NDefines.NNavy.SELECTED_SORTIE_INITIAL_TIME = 1\n\
@@ -255,8 +255,8 @@ mod tests {
             .unwrap();
         let read = from_numbers(&numbers).unwrap();
         assert_eq!(read.silhouette_planes, [2, 3, 4, 5, 6, 7]);
-        assert_eq!(read.screen_cap_reduction_factor, 2_000);
-        assert_eq!(read.plane_stacking_penalty_effect, 500);
+        assert_eq!(read.screen_cap_reduction_factor, 3_000);
+        assert_eq!(read.plane_stacking_penalty_effect, 400);
         assert_eq!(read.positioning_impacts, [10_000, 20_000, 30_000]);
     }
 }

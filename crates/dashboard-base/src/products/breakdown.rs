@@ -149,15 +149,32 @@ impl Exact {
     }
 
     fn compare(self, other: Self) -> std::cmp::Ordering {
-        match (self.numerator.checked_mul(other.denominator), other.numerator.checked_mul(self.denominator)) {
-            (Some(left), Some(right)) => left.cmp(&right),
-            _ => self.value().total_cmp(&other.value()),
+        let sign = self.numerator.signum().cmp(&other.numerator.signum());
+        if sign != std::cmp::Ordering::Equal {
+            return sign;
         }
+        let left = wide_mul(self.numerator.unsigned_abs(), other.denominator.unsigned_abs());
+        let right = wide_mul(other.numerator.unsigned_abs(), self.denominator.unsigned_abs());
+        if self.numerator < 0 { right.cmp(&left) } else { left.cmp(&right) }
     }
 
     pub fn wire(self) -> BreakdownAmount {
         BreakdownAmount { numerator: self.numerator.to_string(), denominator: self.denominator.to_string() }
     }
+}
+
+fn wide_mul(a: u128, b: u128) -> (u128, u128) {
+    const LOW: u128 = u64::MAX as u128;
+    let (a_lo, a_hi) = (a & LOW, a >> 64);
+    let (b_lo, b_hi) = (b & LOW, b >> 64);
+    let ll = a_lo * b_lo;
+    let lh = a_lo * b_hi;
+    let hl = a_hi * b_lo;
+    let hh = a_hi * b_hi;
+    let mid = (ll >> 64) + (lh & LOW) + (hl & LOW);
+    let lo = (ll & LOW) | (mid << 64);
+    let hi = hh + (lh >> 64) + (hl >> 64) + (mid >> 64);
+    (hi, lo)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

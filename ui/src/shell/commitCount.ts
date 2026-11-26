@@ -10,24 +10,15 @@ const zones = new Map<unknown, string>();
 let widgetContext: unknown = null;
 export type CommitCauses = ReadonlyMap<string, ReadonlyMap<string, number>>;
 let attribute: ((zones: ReadonlySet<string>, causes: CommitCauses) => void) | null = null;
-let noted = new Map<string, Map<string, number>>();
 
 const host = globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: unknown };
 if (host.__REACT_DEVTOOLS_GLOBAL_HOOK__ === undefined) {
   host.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, inject: () => 1, onCommitFiberRoot: (_renderer: number, root: { current: Fiber }) => {
     commits++;
     if (!attribute) return;
-    const causes = noted;
-    noted = new Map();
+    const causes = new Map<string, Map<string, number>>();
     attribute(renderedZones(root.current, causes), causes);
   } };
-}
-
-export function noteCause(zone: string, cause: string): void {
-  if (!attribute) return;
-  let held = noted.get(zone);
-  if (!held) noted.set(zone, held = new Map());
-  held.set(cause, (held.get(cause) ?? 0) + 1);
 }
 
 const MEMO = Symbol.for('react.memo'), FORWARD_REF = Symbol.for('react.forward_ref');
@@ -67,7 +58,7 @@ export function takeCommits(): number {
   return taken;
 }
 
-export function attributeCommits(sink: ((zones: ReadonlySet<string>, causes: CommitCauses) => void) | null): void { attribute = sink; noted = new Map(); }
+export function attributeCommits(sink: ((zones: ReadonlySet<string>, causes: CommitCauses) => void) | null): void { attribute = sink; }
 
 export function commitZone(component: unknown, name: string): void { zones.set(component, name); }
 

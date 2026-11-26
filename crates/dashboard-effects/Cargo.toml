@@ -33,12 +33,14 @@ content-reader-raids.workspace = true
 content-reader-save.workspace = true
 content-reader-state-categories.workspace = true
 content-reader-wargoals.workspace = true
+dashboard-core.workspace = true
 dashboard-text.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 game-model.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
+stacker.workspace = true
 
 [dev-dependencies]
 engine-native = { workspace = true, features = ["test-support"] }

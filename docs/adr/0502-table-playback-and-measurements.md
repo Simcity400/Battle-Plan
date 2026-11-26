@@ -10,4 +10,4 @@ An order change compares against the last committed ranks. A marker's hold begin
 
 The table keeps column measurements only within the same typography and column configuration. Rank, identity and sorted columns affect the available tracks, and the identity and sorted columns are protected from hiding. A layout pass hides or restores one priority column at a time against the actual table width. Wrapped heights are observed only for mounted rows. Last measured heights keep positions from collapsing across a width change, with a baseline for new rows. Observations land in the frame's data phase and repeated readings avoid a new commit. Stale measurements are pruned in batches so each departing row does not cause a separate commit.
 
-[Table component](../../ui/src/charts/table/Table.tsx) · [Table layout and value contracts](0502-table-layout-and-value-contracts.md) · [Frame loop](0505-frame-and-drawing.md)
+[Table family chrome](../../ui/src/families/table/TableChrome.tsx) · [Table painter](../../ui/src/families/table/painter.ts) · [Table layout and value contracts](0502-table-layout-and-value-contracts.md) · [Frame loop](0505-frame-and-drawing.md)

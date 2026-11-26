@@ -93,8 +93,8 @@ impl Content {
         let localisation = dashboard_base::content::localisation(source, content).map_err(|error| error.to_string());
         let defines = source
             .content(&content.options)
+            .and_then(|bound| dashboard_base::catalogue::defines_for_layers(&bound.layers))
             .map_err(|error| error.to_string())
-            .and_then(|bound| content_reader_defines::defines::read(&bound.layers).map_err(|error| error.to_string()))
             .and_then(|defines| cryptology::Defines::read(&defines));
         Self { localisation, defines }
     }

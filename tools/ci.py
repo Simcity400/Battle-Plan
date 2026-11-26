@@ -597,6 +597,11 @@ def compiled(log):
 
 
 
+def not_run_here(log_text):
+    """The parts a job printed it could not run on this machine, as `not run here: <part> (<why>)`."""
+    return [line.strip() for line in log_text.splitlines() if line.startswith("not run here: ")]
+
+
 class Runner:
     """Runs decided jobs, each logging to its own file in the run's folder."""
 
@@ -641,7 +646,8 @@ class Runner:
                 if lines is not None:
                     log.with_suffix(".failures.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         seconds = time.monotonic() - started
-        detail = ", ".join(filter(None, [decision.detail, compiled(log) if job.kind == "crates" else ""]))
+        notes = not_run_here(log.read_text(encoding="utf-8", errors="replace"))
+        detail = ", ".join(filter(None, [decision.detail, compiled(log) if job.kind == "crates" else "", *notes]))
         if code == 0:
             return Outcome(job.name, "pass", detail, seconds, str(log))
         if code == 127:

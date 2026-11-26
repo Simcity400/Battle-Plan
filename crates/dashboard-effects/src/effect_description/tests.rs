@@ -16,7 +16,7 @@ fn effect_key_names_share_the_complete_cached_registry_after_a_source_disappears
     let (catalogue, folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/country_tags/test.txt",
@@ -94,7 +94,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={\"synthetic_slot\"}},NSupply={MAX_RAILWAY_LEVEL=5}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={\"synthetic_slot\"}},NSupply={MAX_RAILWAY_LEVEL=7}}",
         ),
         (
             "common/idea_tags/test.txt",
@@ -168,7 +168,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .unwrap()
     );
-    assert_eq!(content.max_railway_level, Some(5));
+    assert_eq!(content.max_railway_level, Some(7));
     assert!(std::ptr::eq(environment, scripted.environment().unwrap()));
     assert!(std::ptr::eq(content, scripted.effects().unwrap()));
     let templates = content.advisor_templates.as_ref().unwrap();
@@ -194,7 +194,7 @@ fn effect_catalogues_remain_available_without_map_inputs() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
         ),
         ("common/ideologies/test.txt", "ideologies={synthetic={}}"),
         (
@@ -251,7 +251,7 @@ impl Fixture {
         let (catalogue, folder) = crate::fixtures::folder_catalogue(&[
             (
                 "common/defines/test.lua",
-                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MIN_TRAIN_REQUIREMENT=2}}",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NSupply={MIN_TRAIN_REQUIREMENT=3}}",
             ),
             (
                 "localisation/test_l_english.yml",
@@ -451,7 +451,7 @@ impl Fixture {
                 graph: Rc::new(RefCell::new(scopes.clone())),
                 evaluator: OnceCell::new(),
                 out: Description::default(),
-                scripted_stack: Vec::new(),
+                scripted: Default::default(),
                 concise: None,
             };
             let out = run(&mut renderer);
@@ -519,19 +519,118 @@ fn native_country_targets_read_custom_target_fields() {
     game::enter();
     let fixture = Fixture::new();
     for body in [
-        "puppet={target=BBB}",
+        "fixture_make_subject={target=BBB}",
+        "fixture_declare_conflict={target=BBB}",
         "fixture_revoke_objective={target=BBB}",
         "fixture_subject_release={target=BBB}",
         "fixture_subject_level={target=BBB}",
         "fixture_equipment_delivery={target=BBB}",
         "fixture_send_share={target=BBB}",
         "fixture_move_share={target=BBB}",
+        "fixture_release_country=BBB",
     ] {
         let parsed = content_reader_parser::parser::parse(body.as_bytes()).unwrap();
         let target = fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
             renderer.country_target(&parsed.items[0], Scopes::of(Scope::Country(1)))
         });
         assert_eq!(target, Ok(Some(2)), "{body}");
+    }
+    let block = content_reader_parser::parser::parse(b"fixture_unverified={target=BBB}").unwrap();
+    fixture.with_renderer(&mut fresh(), Content::default(), |renderer| {
+        let why = renderer
+            .country_target(&block.items[0], Scopes::empty())
+            .unwrap_err();
+        assert!(
+            why.contains("fixture_unverified") && why.contains("reader"),
+            "{why}"
+        );
+    });
+}
+
+#[test]
+fn authored_ideology_accessor_uses_the_ruling_party_at_the_effect_hour() {
+    game::enter();
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=12}}",
+        ),
+        (
+            "common/scripted_localisation/fixture.txt",
+            "defined_text={name=GetCopperParty text={localization_key=SYN_CURRENT_PARTY}} defined_text={name=GetQuietLeader text={localization_key=SYN_EMPTY}}",
+        ),
+        (
+            "localisation/fixture_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " SYN_TIP:0 \"[ROOT.GetCopperParty]\"\n",
+                " SYN_UNKNOWN:0 \"[ROOT.GetTinParty]\"\n SYN_UNKNOWN_LEADER:0 \"[ROOT.GetTinLeader]\"\n",
+                " SYN_KNOWN_EMPTY:0 \"A[ROOT.GetQuietLeader]/[ROOT.MissingEntry]/[ROOT.GetLeader]Z\"\n SYN_EMPTY:0 \"\"\n",
+                " SYN_CURRENT_PARTY:0 \"[THIS.GetRulingParty]\"\n",
+                " AAA_syn_copper_party:0 \"Copper circle\"\n",
+                " AAA_syn_tin_party:0 \"Tin circle\"\n",
+            ),
+        ),
+    ]);
+    catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    fixture.catalogue = catalogue;
+    *fixture.frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(
+            ["syn_copper", "syn_tin"]
+                .into_iter()
+                .enumerate()
+                .map(|(i, group)| PoliticalPartyRow {
+                    country: 100,
+                    id: i as u32 + 1,
+                    tag: 100,
+                    name_default: 1,
+                    token: group.into(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    for (hour, ruling, expected) in [(7, 1, "Copper circle"), (19, 2, "Tin circle")] {
+        fixture.frame.hour = hour;
+        *fixture.frame.tables[TableId::Politics.index()] =
+            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+                country: 100,
+                ruling_party: Some(ruling),
+                ..Default::default()
+            }]));
+        let out = fixture.render(
+            "fixture_written_tooltip=SYN_TIP",
+            &mut fresh(),
+            Content::default(),
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+        assert_eq!(out.text.trim_end(), expected);
+    }
+    let out = fixture.render(
+        "fixture_written_tooltip=SYN_KNOWN_EMPTY",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(out.text.trim_end(), "A//Z");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    for (key, getter) in [
+        ("SYN_UNKNOWN", "GetTinParty"),
+        ("SYN_UNKNOWN_LEADER", "GetTinLeader"),
+    ] {
+        let out = fixture.render(
+            &format!("fixture_written_tooltip={key}"),
+            &mut fresh(),
+            Content::default(),
+        );
+        assert!(out.text.is_empty());
+        assert!(
+            out.refusals.keys().any(|why| why.contains(getter)),
+            "{:?}",
+            out.refusals
+        );
     }
 }
 
@@ -541,7 +640,7 @@ fn equipment_and_autonomy_content_is_cached_with_reader_notes() {
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/units/equipment/test.txt",
@@ -1763,7 +1862,7 @@ fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() 
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         (
             "common/factions/templates/test.txt",

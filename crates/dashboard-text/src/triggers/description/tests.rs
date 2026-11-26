@@ -61,7 +61,7 @@ fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(
     let (catalogue, _folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}",
         ),
         ("common/scripted_triggers/test.txt", scripted),
         ("common/scripted_localisation/test.txt", entries),
@@ -306,7 +306,7 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
     let _folder = Folder(root.clone());
     let defines = root.join("common/defines/test.lua");
     std::fs::create_dir_all(defines.parent().unwrap()).unwrap();
-    std::fs::write(&defines, "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}").unwrap();
+    std::fs::write(&defines, "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}").unwrap();
     let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let resolved = content_reader_layers::content::ResolvedContent {
         layers,

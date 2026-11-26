@@ -2490,6 +2490,12 @@ impl ModelPass {
                                 {
                                     return Err(PrepareError::Actor(invalid(why.clone())));
                                 }
+                                if !self.ready[source.material_index] {
+                                    return Err(io::Error::other(format!(
+                                        "{} material is not resident (slot {})",
+                                        self.label, source.material_index
+                                    )).into());
+                                }
                             }
 
                             let skin_pose = descriptor.lods[lod]

@@ -381,7 +381,7 @@ fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stret
     let ask = |src: &Source, params: serde_json::Value| {
         let mut req = params;
         req.as_object_mut().unwrap().insert("hour".into(), FIRST.into());
-        let (result, reads) = replay_recording::cells::count_reads(|| (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.registered.load)(src, "lease", req, &load, &cancelled));
+        let (result, reads) = replay_recording::cells::count_reads(|| (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.load)(src, "lease", req, &load, &cancelled));
         (serde_json::from_str::<serde_json::Value>(&result.unwrap()).unwrap()["data"].clone(), reads)
     };
     let (all_one, reads_one) = ask(&one, serde_json::json!({ "branchId": "1" }));
@@ -407,7 +407,7 @@ fn next_elections_at_hour_is_bounded_by_asked_countries_and_independent_of_stret
     assert_eq!(only_eng["unknown"], 1);
 
     let after_loss = recording();
-    let lost = (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.registered.load)(
+    let lost = (crate::registrations::POLITICS_ELECTIONS_NEXTELECTIONS.load)(
         &after_loss,
         "lease",
         serde_json::json!({ "branchId": "1", "hour": 116, "countries": ["GER"] }),

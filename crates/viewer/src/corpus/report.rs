@@ -401,7 +401,7 @@ pub fn summary(run: &BTreeMap<String, StackReport>, causes: usize) -> String {
             kind_cells(&totals)
         );
     }
-    let products = dashboard::products::PRODUCTS;
+    let products = &*dashboard::products::PRODUCTS;
     let _ = writeln!(out, "\n## Dashboard products\n");
     let _ = writeln!(
         out,
@@ -1253,7 +1253,7 @@ mod tests {
         assert!(summary.contains("## Stacks found\n"));
         assert!(summary.contains("mod/fixture.mod | Fixture \\| conversion | 2.4 | 1.17.* | Dependency (123, 1.0) | Other: not installed"), "{summary}");
         assert!(summary.contains("## Dashboard products\n"));
-        for product in dashboard::products::PRODUCTS {
+        for product in dashboard::products::PRODUCTS.iter() {
             let expected = if product.key == NationalFocus::KEY {
                 "1 ambiguous, 1 fallback"
             } else {

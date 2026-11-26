@@ -249,7 +249,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
     std::fs::create_dir_all(root.join("map")).unwrap();
     std::fs::write(
         root.join("common/defines/synthetic.lua"),
-        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 10, INFRASTRUCTURE_RESOURCE_BONUS = 0, SUPPLY_ROUTE_RESOURCE_BONUS = 0 } }",
+        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NBuildings = { MAX_BUILDING_LEVELS = 10, INFRASTRUCTURE_RESOURCE_BONUS = 0, SUPPLY_ROUTE_RESOURCE_BONUS = 0 } }",
     )
     .unwrap();
     std::fs::write(

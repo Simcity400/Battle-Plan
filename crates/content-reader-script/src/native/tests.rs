@@ -1007,7 +1007,7 @@ fn number_and_keyword_tokens_follow_the_lexer() {
 fn keyword_dispatch_stops_at_the_token_nul() {
     let mut seen = Vec::new();
     let read = read(
-        b"Buildings suffix = { cost = Land x }  lead = 1",
+        b"Buildings\0suffix = { cost = Land\0x } \0lead = 1",
         Mode::KeepMark,
         Top::File(()),
         None,

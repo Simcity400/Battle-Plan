@@ -13,8 +13,10 @@ fn day_history_follows_midnight_and_preserves_unrecorded_days() {
         "synthetic.battleplan".into(), Arc::new(replay), &cancelled,
     ).unwrap());
     let load = LoadContext { content: None };
+    let unknown = json!({"branchId": "1", "panel": "unregistered-widget"});
+    assert_eq!(open(&source, &load, &unknown).err().unwrap(), "No panel \"unregistered-widget\"");
     let params = json!({"branchId":"1", "panel":"convoy-health", "view":"regions", "country":"GER", "regions":[17], "from":10, "to":71});
-    let panel = dated_panel_of(&source, &load, &params).unwrap().unwrap();
+    let panel = open(&source, &load, &params).unwrap();
     let exact = panel.exact().unwrap();
     for (hour, last) in [(10, None), (23, None), (24, Some(23)), (48, Some(47)), (71, Some(47)), (72, Some(71)), (10, None)] {
         let read = (exact.advance)(hour, hour == 10, &cancelled, None);
@@ -40,7 +42,7 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
     let root = std::env::temp_dir().join(format!("dated-products-{}", uuid::Uuid::new_v4()));
     let defines = root.join("common/defines");
     std::fs::create_dir_all(&defines).unwrap();
-    std::fs::write(defines.join("test.lua"), "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NGame={MAX_SCRIPTED_LOC_RECURSION=30},NSupply={MAX_RAILWAY_LEVEL=5}}").unwrap();
+    std::fs::write(defines.join("test.lua"), "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NGame={MAX_SCRIPTED_LOC_RECURSION=23},NSupply={MAX_RAILWAY_LEVEL=7}}").unwrap();
     let frames = [100, 101, 102, 103, 110, 111].map(|hour| {
         let mut frame = source(1, hour, None);
         for table in TableId::ALL {
@@ -91,7 +93,7 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
             "territory-share" => params["measure"] = "ownedStates".into(),
             _ => params["country"] = "GER".into(),
         }
-        let panel = dated_panel_of(&source, &load, &params).unwrap().unwrap_or_else(|error| panic!("{name}: {error}"));
+        let panel = open(&source, &load, &params).unwrap_or_else(|error| panic!("{name}: {error}"));
         let exact = panel.exact().unwrap();
         let mut delivery = Delivery::default();
         let mut previous = None;
@@ -128,4 +130,43 @@ fn dated_products_seed_advance_confirm_and_reseed_across_a_recording_gap() {
     }
     drop(source);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn each_ui_panel_key_has_one_registered_reader() {
+    let folder = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let contract = std::fs::read_to_string(folder.join("../../ui/src/generated/dashboard.ts")).unwrap();
+    let keys = contract.lines().find_map(|line| line.strip_prefix("export const PANEL_KEYS = ")).unwrap();
+    let keys: Vec<String> = serde_json::from_str(keys.strip_suffix(" as const;").unwrap()).unwrap();
+    assert_eq!(keys, READERS.keys().copied().collect::<Vec<_>>());
+}
+
+#[test]
+fn readers_that_can_rebuild_at_each_hour_are_named() {
+    let allowed = [
+        "air-aces", "air-missions", "air-statistics", "air-superiority", "air-superiority-timeline",
+        "army-losses", "autonomy-levels", "casualty-matrix",
+        "country-faction-goals", "country-fuel", "country-stability-breakdown", "decorated-divisions",
+        "decryption", "division-equipment", "division-templates", "doctrine-rewards",
+        "faction-details", "factory-parts", "minefields", "naval-management", "naval-refits", "naval-repairs",
+        "naval-supremacy", "next-elections", "occupation-at", "operative-matrix", "operatives-roster",
+        "production-licences", "resource-balance", "special-project-details", "special-project-effects",
+        "special-project-iteration", "special-projects", "stability-part-names", "stockpile-artwork",
+        "technology-effects", "template-roster", "territory-breakdown", "trade-flow",
+        "training-queue", "unit-leaders", "volunteer-flow", "war-contributions",
+        "wargoals", "world-tension",
+    ];
+    let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
+        matches!(reader.kind, PanelKind::WholeFrame { every_frame: true } | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)
+    }).collect();
+    assert_eq!(READERS.iter().filter_map(|(&key, reader)| (reader.kind == PanelKind::WholeFrame { every_frame: false }).then_some(key)).collect::<Vec<_>>(), ["content-entity-stats"]);
+    let conditional: Vec<_> = READERS.iter().filter_map(|(&key, reader)| match reader.kind {
+        PanelKind::ExactHourlyWhen(conditions) => Some((key, conditions)),
+        _ => None,
+    }).collect();
+    assert_eq!(conditional, [
+        ("occupied-states", ["occupation law reads a timed or undeclared world condition"].as_slice()),
+        ("unit-leader-hour", ["reference", "all", "countries"].as_slice()),
+    ]);
+    assert_eq!(actual, allowed, "Remove a name when its reader no longer needs whole frames or hourly refreshes");
 }

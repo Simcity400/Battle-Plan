@@ -1,9 +1,10 @@
 use super::*;
 
-pub(super) const OUTPUT_TABLES: [TableId; 7] = [
+pub(super) const OUTPUT_TABLES: [TableId; 8] = [
     TableId::ConstructionLineOutput,
     TableId::BuildingConstruction,
     TableId::RailwayConstruction,
+    TableId::RailEdges,
     TableId::StateBuildings,
     TableId::ProvinceBuildings,
     TableId::States,
@@ -79,7 +80,7 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
         let mut since = None;
         replay.visit_blocks(
             &[block],
-            &OUTPUT_TABLES,
+            &[TableId::ConstructionLineOutput],
             |_, _, hour_frame| {
             if hour_frame.hour > frame.hour {
                 return Ok(false);
@@ -105,12 +106,20 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
 pub(super) const ENDED_ADDITION: &str = "a line with a completion beside an unwitnessed count addition ended before the compared hour; the save keeps no deleted line to certify its count";
 
 #[derive(Clone)]
+struct RailwayEnd {
+    edge: (u32, u32),
+    level: Option<i32>,
+    selected: bool,
+}
+
+#[derive(Clone)]
 struct Published {
     output: ConstructionLineOutputRow,
     produced: i64,
     cost: i64,
     amount: i32,
     shares_segment: bool,
+    end: Option<RailwayEnd>,
     target: Option<(u32, u32, u32, u32, u32)>,
     country: Option<u32>,
     state_owner: Option<u32>,
@@ -128,6 +137,8 @@ pub(super) struct OutputCheck {
     missing_buildings: usize,
     ownership_resets: usize,
     bounded_carries: usize,
+    terminal_spills: usize,
+    missing_terminal_levels: usize,
     external_levels: usize,
     count_additions: usize,
     uncertified_additions: BTreeMap<u64, (Hour, Hour)>,
@@ -215,14 +226,27 @@ impl OutputCheck {
                 }
             }
         }
+        let mut end_levels = BTreeMap::new();
         let mut segments: BTreeMap<(u32, u32), BTreeSet<u64>> = BTreeMap::new();
         for line in railways {
+            if let [.., from, to] = *line.route {
+                end_levels.insert((from, to), 0);
+            }
             for pair in line.route.windows(2) {
                 segments
                     .entry((pair[0].min(pair[1]), pair[0].max(pair[1])))
                     .or_default()
                     .insert(line.id);
             }
+        }
+        if let Ok(edges) = super::complete::<tables::RailEdges>(frame) {
+            for edge in edges {
+                if let Some(level) = end_levels.get_mut(&(edge.from, edge.to)) {
+                    *level = edge.level;
+                }
+            }
+        } else {
+            end_levels.clear();
         }
         let shared: BTreeSet<u64> = segments
             .values()
@@ -241,6 +265,14 @@ impl OutputCheck {
                         cost: r.cost,
                         amount: r.amount,
                         shares_segment: shared.contains(&r.id),
+                        end: r.route.last_chunk::<2>().map(|&[from, to]| {
+                            let edge = (from, to);
+                            RailwayEnd {
+                                edge,
+                                level: end_levels.get(&edge).copied(),
+                                selected: usize::try_from(r.current_segment).ok() == Some(r.route.len() - 2),
+                            }
+                        }),
                         target: None,
                         country: canonical(r.country),
                         state_owner: None,
@@ -262,6 +294,7 @@ impl OutputCheck {
                         cost: r.cost,
                         amount: r.amount,
                         shares_segment: false,
+                        end: None,
                         target: Some((
                             r.building_type,
                             r.target_flags,
@@ -479,7 +512,20 @@ impl OutputCheck {
                     continue;
                 }
                 let valid = if b.railway {
-                    carry >= 0 && spent >= expected && spent - expected <= carry
+                    let mut within_bound = spent - expected <= carry;
+                    if !within_bound && carry >= 0 && expected > 0 && b.ticks > a.ticks
+                        && now.amount < was.amount
+                        && let (Some(old), Some(new)) = (&was.end, &now.end)
+                        && old.edge == new.edge && new.selected
+                    {
+                        let Some((old, new)) = old.level.zip(new.level) else {
+                            self.missing_terminal_levels += 1;
+                            continue;
+                        };
+                        within_bound = new > old;
+                        self.terminal_spills += usize::from(within_bound);
+                    }
+                    carry >= 0 && spent >= expected && within_bound
                 } else {
                     carry == 0 && spent as u64 == expected as u64
                 };
@@ -559,6 +605,14 @@ impl OutputCheck {
             self.natural_repairs,
         );
         for (count, reason) in [
+            (
+                self.terminal_spills,
+                "a level completed on the selected final railway segment: spending must cover the gain, but the game discards excess there without a carry to another segment",
+            ),
+            (
+                self.missing_terminal_levels,
+                "the selected final railway segment may have completed a level, but its recorded edge level is unavailable to verify the discarded excess",
+            ),
             (
                 self.shared_railways,
                 "shares a segment with another railway line",

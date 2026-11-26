@@ -8,4 +8,4 @@ Rows derive motion from the last committed history. Strict Mode renders and aban
 
 Following lists prepare short windows of rows ahead of the playhead and reveal them on frame ticks. Window length is bounded by playback time and prepared row count so one batch can render within a frame. A paused list ends its window at the next row. An incomplete page stops at the last known arrival hour because other rows from that hour can still land. Keyboard focus and pointer interactions share row-menu and tooltip semantics. Description IDs include the owner and the typed key so numeric and string identities remain distinct.
 
-[Frame scheduling](../../ui/src/charts/scheduler.ts) · [Canvas sizing](../../ui/src/charts/surface.ts) · [Row motion](../../ui/src/charts/rowMotion.ts) · [List reveal](../../ui/src/charts/reveal.ts) · [Chart tokens](../../ui/src/charts/tokens.ts)
+[Frame scheduling](../../ui/src/charts/scheduler.ts) · [Canvas sizing](../../ui/src/charts/surface.ts) · [Row motion](../../ui/src/charts/rowMotion.ts) · [Chart tokens](../../ui/src/charts/tokens.ts)

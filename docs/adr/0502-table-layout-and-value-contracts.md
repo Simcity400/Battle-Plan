@@ -8,4 +8,4 @@ Sort on exact values and break ties by stable row key in either direction. Appro
 
 Live cell text, sort order and bars can share the same head value. Structural bars and bars fed by a second live cell can move independently of a painted label. Content revisions identify geometry changes without requiring different label text. A narrow table may hide columns by priority, with later columns hiding first on ties. It remembers each removed width to decide when a column can return. Hidden values follow the widget's own tooltip rows, with the shared scroll surface keeping expanded tooltips reachable. Widgets that prefer all values can opt into horizontal scrolling.
 
-[Logical scroll geometry](../../ui/src/families/host/scroll.ts) · [Table logic](../../ui/src/charts/table/logic.ts) · [Column contracts](../../ui/src/charts/table/columns.ts) · [Table options](../../ui/src/charts/table/options.ts)
+[Logical scroll geometry](../../ui/src/families/host/scroll.ts) · [Table model](../../ui/src/families/table/model.ts) · [Table layout](../../ui/src/families/table/layout.ts) · [Table options](../../ui/src/charts/table/options.ts)

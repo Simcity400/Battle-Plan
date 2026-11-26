@@ -153,13 +153,13 @@ impl Fixture {
             &political.regions,
             &d.demilitarized_zone(&political.regions)?,
         )?;
-        scene.set_map_frame(device, queue, &d.frame_assets)?;
+        scene.set_map_frame(&d.frame_assets)?;
         let (buildings, _) = d.map_building_field(&perspective)?;
         scene.set_city_damage(&buildings, true);
-        scene.set_map_buildings(device, queue, &d.map_buildings, buildings, None)?;
+        scene.set_map_buildings(&d.map_buildings, buildings, None)?;
         let rails = d.rail_mesh()?;
         scene.set_railways(device, queue, &d.rail_assets, &rails)?;
-        scene.set_bridges(device, queue, &d.bridges, d.bridges.field(&rails))?;
+        scene.set_bridges(&d.bridges, d.bridges.field(&rails))?;
         let _ = scene.set_aircraft(
             d.aircraft.clone(),
             d.aircraft_plan(&perspective)?,
@@ -171,7 +171,7 @@ impl Fixture {
             Continuity::Reset,
         )?;
         let (units, _) = d.unit_model_field(&perspective)?;
-        scene.set_unit_models(device, queue, &d.unit_models, units, true)?;
+        scene.set_unit_models(device, &d.unit_models, units, true)?;
         scene.set_orders(
             device,
             queue,

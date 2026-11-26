@@ -6,7 +6,7 @@ use content_reader_parser::parser::{Item, c_string};
 
 mod classes;
 pub(crate) mod key_readers;
-pub use key_readers::is_own_field;
+pub use key_readers::{is_own_field, reads_scope_chain};
 #[cfg(test)]
 mod tests;
 pub(crate) mod value_readers;

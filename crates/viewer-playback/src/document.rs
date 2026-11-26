@@ -5285,7 +5285,7 @@ mod tests {
         write("base/gfx/models/house.mesh", &mesh(1.0));
         write(
             "base/common/defines/00_graphics.lua",
-            b"NDefines = { NGraphics = { CITY_DAMAGED_THRESHOLD = 0.8, CITY_DESTROYED_THRESHOLD = 0.3 } }",
+            b"NDefines = { NGraphics = { CITY_DAMAGED_THRESHOLD = 0.75, CITY_DESTROYED_THRESHOLD = 0.25 } }",
         );
         write("art/gfx/models/house.mesh", &mesh(2.0));
         let art = root.join("art").display().to_string().replace('\\', "/");
@@ -5803,7 +5803,7 @@ mod tests {
         defines
             .load(
                 "common/defines/00_graphics.lua",
-                b"NDefines = { NGraphics = { RIVER_FADE_TO = 3.0 } }",
+                b"NDefines = { NGraphics = { RIVER_FADE_TO = 4.5 } }",
             )
             .unwrap();
         let rows = [

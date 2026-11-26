@@ -184,7 +184,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
             b"NDefines = { NInterface = {
         TOOLTIP_SCREEN_LEFT_OFFSET_X = 0, TOOLTIP_SCREEN_TOP_OFFSET_Y = 0,
         TOOLTIP_SCREEN_RIGHT_OFFSET_X = 0, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 0
-    }, NGraphics = { TOOLTIP_SHOW_DELAY = 0.05, TOOLTIP_DELAYED_DELAY = 0, TOOLTIP_HIDE_DELAY = 0 } }",
+    }, NGraphics = { TOOLTIP_SHOW_DELAY = 0.04, TOOLTIP_DELAYED_DELAY = 0, TOOLTIP_HIDE_DELAY = 0 } }",
         )
         .unwrap();
     let mut batch = Batch::default();

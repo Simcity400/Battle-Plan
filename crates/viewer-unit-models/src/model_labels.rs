@@ -273,7 +273,7 @@ mod tests {
         [
             ("USE_DEFAULT_MODEL", "Use default model"),
             ("infantry_equipment", "Infantry Equipment"),
-            ("infantry_equipment_1", "Infantry Equipment I"),
+            ("infantry_equipment_1", "Copperline Field Kit"),
             ("GER_infantry_equipment_1", "Gewehr 98"),
             ("infantry", "Infantry"),
             ("derived_name", "Derived"),
@@ -326,7 +326,7 @@ mod tests {
         variant.origin_link = 2;
         assert_eq!(
             labels.display(&variant, "infantry_equipment_1"),
-            label("Infantry Equipment I")
+            label("Copperline Field Kit")
         );
         variant.display_name = b"Custom".to_vec();
         variant.variant_name = b"Mk II".to_vec();

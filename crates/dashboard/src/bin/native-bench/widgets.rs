@@ -1,4 +1,3 @@
-use dashboard::panel::dated_panel_of;
 use dashboard_base::{Source, products::at_hour};
 use dashboard_core::config::LoadContext;
 use dashboard_follow::{Follow, Identity, panel::{ExactReader, ProductReader, Panel, PanelData, ProductStep, product::Delivery}};
@@ -132,7 +131,7 @@ fn rank(identity: &Identity, name: &'static str, product: &str, mut params: Valu
 pub fn page(source: &Arc<Source>, load: &LoadContext, identity: &Identity, tag: &str) -> io::Result<Vec<Widget>> {
     let product = |name: &'static str, mut params: Value| {
         params["panel"] = name.into();
-        panel(name, dated_panel_of(source, load, &params).expect("registered dated product"))
+        panel(name, dashboard::panel::open(source, load, &params))
     };
     let branch = identity.timeline.id.to_string();
     let owner = json!({ "branchId": branch, "country": tag });
