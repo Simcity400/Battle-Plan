@@ -106,14 +106,24 @@ function isSkippedIdent(node, parent) {
       && parent.tagName === node && /^[a-z]/.test(node.text));
 }
 
-function isDeferredNestedDecl(node, rootNode) {
-  if (!node || node === rootNode) return false;
+function isParamProperty(node) {
+  return node?.kind === SyntaxKind.Parameter && (
+    hasModifier(node, SyntaxKind.PublicKeyword)
+    || hasModifier(node, SyntaxKind.PrivateKeyword)
+    || hasModifier(node, SyntaxKind.ProtectedKeyword)
+    || hasModifier(node, SyntaxKind.ReadonlyKeyword)
+    || hasModifier(node, SyntaxKind.OverrideKeyword)
+  );
+}
+
+function isDeferredNestedDecl(node, skipRoot) {
+  if (!node || node === skipRoot) return false;
   if (node.kind === SyntaxKind.FunctionDeclaration) {
     return node.name?.kind === SyntaxKind.Identifier && Boolean(node.body);
   }
   if ((node.kind === SyntaxKind.VariableDeclaration
-    || node.kind === SyntaxKind.Parameter
-    || (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind !== SyntaxKind.ComputedPropertyName))
+    || (node.kind === SyntaxKind.Parameter && !isParamProperty(node))
+    || node.kind === SyntaxKind.BindingElement)
     && node.name?.kind === SyntaxKind.Identifier && node.initializer) {
     const init = unwrapTsExpr(node.initializer);
     return init?.kind === SyntaxKind.ArrowFunction || init?.kind === SyntaxKind.FunctionExpression;
@@ -995,6 +1005,22 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           if (effectiveType) markTypeUnit(rel, idx, true);
           else markRuntimeUnit(rel, idx, true);
         }
+      } else {
+        let forwardedViaStar = false;
+        for (const stmt of info.sf.statements) {
+          if (stmt.kind === SyntaxKind.ExportDeclaration && !stmt.exportClause && stmt.moduleSpecifier) {
+            const spec = staticTsString(stmt.moduleSpecifier);
+            const target = spec !== null ? resolveLocalImport(info.full, spec, root) : null;
+            if (!target) continue;
+            const targetRel = relPosix(root, target);
+            const targetInfo = getFileInfo(targetRel);
+            if (targetInfo?.exportSymbolByName.has(expName)) {
+              addModuleEdge(rel, targetRel, effectiveType || Boolean(stmt.isTypeOnly), expName);
+              forwardedViaStar = true;
+            }
+          }
+        }
+        if (forwardedViaStar) return;
       }
       if (sym.flags & SymbolFlags.Alias) {
         followSymbolReference(rel, sym, effectiveType);
@@ -1016,15 +1042,21 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       }
     };
 
-    const resolveCallableDecls = calleeNode => {
+    const resolveCallableDecls = (calleeNode, callerRel, seenSymIds = new Set()) => {
       const callee = unwrapTsExpr(calleeNode);
-      if (!callee || callee.kind !== SyntaxKind.Identifier) return null;
+      if (!callee) return null;
+      if ((callee.kind === SyntaxKind.ArrowFunction || callee.kind === SyntaxKind.FunctionExpression) && callee.body) {
+        return [{ declRel: callerRel, fn: callee }];
+      }
+      if (callee.kind !== SyntaxKind.Identifier) return null;
       let sym = checker.getSymbolAtLocation(callee);
       if (!sym || checker.isUnknownSymbol(sym)) return null;
       if (sym.flags & SymbolFlags.Alias) {
         sym = checker.getAliasedSymbol(sym);
         if (!sym || checker.isUnknownSymbol(sym)) return null;
       }
+      if (seenSymIds.has(sym.id)) return null;
+      seenSymIds.add(sym.id);
       const decls = sym.declarations ?? [];
       if (decls.length === 0) return null;
       const fns = [];
@@ -1043,6 +1075,10 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           const init = unwrapTsExpr(decl.initializer);
           if ((init?.kind === SyntaxKind.ArrowFunction || init?.kind === SyntaxKind.FunctionExpression) && init.body) {
             fns.push({ declRel, fn: init });
+          } else if (init?.kind === SyntaxKind.Identifier) {
+            const aliased = resolveCallableDecls(init, declRel, seenSymIds);
+            if (!aliased) return null;
+            for (const item of aliased) fns.push(item);
           } else {
             return null;
           }
@@ -1061,17 +1097,20 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const deferredNames = new Set();
       const allIdents = [];
       const allShorthands = [];
-      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null }));
+      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null, skipRoot: null }));
 
-      const walkReachable = (node, parent, rootNode, newlyDeferred) => {
+      const walkReachable = (node, parent, skipRoot, newlyDeferred) => {
         if (!node) return;
         parentOfLocal.set(node, parent);
         if (TYPE_NODE_KINDS.has(node.kind)) return;
-        if (isDeferredNestedDecl(node, rootNode)) {
+        if (isDeferredNestedDecl(node, skipRoot)) {
+          if (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind === SyntaxKind.ComputedPropertyName) {
+            walkReachable(node.propertyName, node, skipRoot, newlyDeferred);
+          }
           if (!deferredNodes.has(node)) {
             deferredNodes.add(node);
             deferredNames.add(node.name.text);
-            newlyDeferred.push({ node, parent });
+            newlyDeferred.push({ node, parent, skipRoot: node });
           }
           return;
         }
@@ -1085,7 +1124,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           const childInType = (node.type === child)
             || (Array.isArray(node.typeArguments) && node.typeArguments.includes(child))
             || (Array.isArray(node.typeParameters) && node.typeParameters.includes(child));
-          if (!childInType) walkReachable(child, node, rootNode, newlyDeferred);
+          if (!childInType) walkReachable(child, node, skipRoot, newlyDeferred);
         });
       };
 
@@ -1106,7 +1145,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const newlyDeferred = [];
         const batch = pending.splice(0, pending.length);
         for (const item of batch) {
-          walkReachable(item.node, item.parent, item.node, newlyDeferred);
+          walkReachable(item.node, item.parent, item.skipRoot, newlyDeferred);
         }
         if (newlyDeferred.length > 0) {
           const declSyms = checker.getSymbolAtLocation(newlyDeferred.map(item => item.node.name));
@@ -1162,17 +1201,20 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const deferredNames = new Set();
       const allIdents = [];
       const allShorthands = [];
-      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null, owner: fn }));
+      const pending = rootNodes.filter(Boolean).map(node => ({ node, parent: null, owner: fn, skipRoot: null }));
 
-      const walkArgs = (node, parent, rootNode, owner, newlyDeferred) => {
+      const walkArgs = (node, parent, skipRoot, owner, newlyDeferred) => {
         if (!node) return;
         parentOfLocal.set(node, parent);
         if (TYPE_NODE_KINDS.has(node.kind)) return;
-        if (isDeferredNestedDecl(node, rootNode)) {
+        if (isDeferredNestedDecl(node, skipRoot)) {
+          if (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind === SyntaxKind.ComputedPropertyName) {
+            walkArgs(node.propertyName, node, skipRoot, owner, newlyDeferred);
+          }
           if (!deferredNodes.has(node)) {
             deferredNodes.add(node);
             deferredNames.add(node.name.text);
-            newlyDeferred.push({ node, parent, owner });
+            newlyDeferred.push({ node, parent, owner, skipRoot: node });
           }
           return;
         }
@@ -1190,7 +1232,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             || (Array.isArray(node.typeParameters) && node.typeParameters.includes(child));
           if (!childInType) {
             const childOwner = (node.name === child && child.kind === SyntaxKind.ComputedPropertyName) ? owner : bodyOwner;
-            walkArgs(child, node, rootNode, childOwner, newlyDeferred);
+            walkArgs(child, node, skipRoot, childOwner, newlyDeferred);
           }
         });
       };
@@ -1212,7 +1254,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const newlyDeferred = [];
         const batch = pending.splice(0, pending.length);
         for (const item of batch) {
-          walkArgs(item.node, item.parent, item.node, item.owner, newlyDeferred);
+          walkArgs(item.node, item.parent, item.skipRoot, item.owner, newlyDeferred);
         }
         if (newlyDeferred.length > 0) {
           const declSyms = checker.getSymbolAtLocation(newlyDeferred.map(item => item.node.name));
@@ -1275,7 +1317,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       return false;
     };
 
-    const consumedMembersOfLocalSymbol = (sym, symName, rootNodes, visitedFnParams, visitedSyms) => {
+    const consumedMembersOfLocalSymbol = (sym, symName, rootNodes, ownerRel, visitedFnParams, visitedSyms) => {
       const members = new Set();
       const identHits = [];
       const shorthandHits = [];
@@ -1321,7 +1363,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
               if (!aliasSym) return null;
               if (!visitedSyms.has(aliasSym.id)) {
                 visitedSyms.add(aliasSym.id);
-                const nested = consumedMembersOfLocalSymbol(aliasSym, parent.name.text, rootNodes, visitedFnParams, visitedSyms);
+                const nested = consumedMembersOfLocalSymbol(aliasSym, parent.name.text, rootNodes, ownerRel, visitedFnParams, visitedSyms);
                 if (!nested) return null;
                 for (const k of nested) members.add(k);
               }
@@ -1331,7 +1373,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           } else if (parent.kind === SyntaxKind.CallExpression && Array.isArray(parent.arguments)) {
             const subIdx = parent.arguments.indexOf(cur);
             if (subIdx < 0) return null;
-            const nested = consumedMembersOfCallArg(parent, subIdx, visitedFnParams);
+            const nested = consumedMembersOfCallArg(parent, subIdx, ownerRel, visitedFnParams);
             if (!nested) return null;
             for (const k of nested) members.add(k);
           } else if (parent.kind === SyntaxKind.TypeQuery || parent.kind === SyntaxKind.ExpressionStatement || parent.kind === SyntaxKind.VoidExpression) {
@@ -1344,12 +1386,12 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       return members;
     };
 
-    const consumedMembersOfCallArg = (callNode, argIdx, visitedFnParams) => {
+    const consumedMembersOfCallArg = (callNode, argIdx, callerRel, visitedFnParams) => {
       const args = callNode.arguments ?? [];
       for (let i = 0; i <= argIdx && i < args.length; i += 1) {
         if (args[i]?.kind === SyntaxKind.SpreadElement) return null;
       }
-      const fns = resolveCallableDecls(callNode.expression);
+      const fns = resolveCallableDecls(callNode.expression, callerRel);
       if (!fns) return null;
       const allMembers = new Set();
       for (const { declRel, fn } of fns) {
@@ -1372,7 +1414,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         } else if (param.name.kind === SyntaxKind.Identifier) {
           const paramSym = checker.getSymbolAtLocation(param.name);
           if (!paramSym) return null;
-          const used = consumedMembersOfLocalSymbol(paramSym, param.name.text, rootNodes, visitedFnParams, new Set([paramSym.id]));
+          const used = consumedMembersOfLocalSymbol(paramSym, param.name.text, rootNodes, declRel, visitedFnParams, new Set([paramSym.id]));
           if (!used) return null;
           for (const k of used) allMembers.add(k);
         } else {
@@ -1412,6 +1454,8 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         if (isDeferredNestedDecl(node, rootNode)) {
           if (node.kind === SyntaxKind.Parameter && node.type) {
             walk(node.type, node, true, rootNode, newlyDeferred);
+          } else if (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind === SyntaxKind.ComputedPropertyName) {
+            walk(node.propertyName, node, nextInType, rootNode, newlyDeferred);
           }
           if (!deferredNodes.has(node)) {
             deferredNodes.add(node);
@@ -1628,7 +1672,14 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           if (!node) return;
           let nextBodyIsTypeOnly = bodyIsTypeOnly;
           if (deferredNodes.has(node)) {
-            if (!liveDeferredRuntime.has(node) && !liveDeferredType.has(node)) return;
+            if (!liveDeferredRuntime.has(node) && !liveDeferredType.has(node)) {
+              if (node.kind === SyntaxKind.Parameter && node.type) {
+                walkMod(node.type, true, true);
+              } else if (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind === SyntaxKind.ComputedPropertyName) {
+                walkMod(node.propertyName, inTypeSyntax, bodyIsTypeOnly);
+              }
+              return;
+            }
             nextBodyIsTypeOnly = bodyIsTypeOnly || !liveDeferredRuntime.has(node);
           }
           const nextInTypeSyntax = inTypeSyntax || TYPE_NODE_KINDS.has(node.kind);
@@ -1679,15 +1730,36 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         walkMod(unit.node, false, unitIsType || unit.isTypeOnly);
 
         const typeQueryNodes = [];
-        for (const item of propAccesses) typeQueryNodes.push(item.node.expression);
+        for (const item of propAccesses) {
+          const expr = item.node.expression;
+          const unwrapped = unwrapTsExpr(expr);
+          item.hasUnwrapped = unwrapped !== expr;
+          typeQueryNodes.push(expr);
+          if (item.hasUnwrapped) typeQueryNodes.push(unwrapped);
+        }
         for (const item of elemAccesses) {
           if (item.node.kind === SyntaxKind.ElementAccessExpression) {
-            typeQueryNodes.push(item.node.expression, item.node.argumentExpression);
+            const expr = item.node.expression;
+            const unwrapped = unwrapTsExpr(expr);
+            item.hasUnwrapped = unwrapped !== expr;
+            typeQueryNodes.push(expr, item.node.argumentExpression);
+            if (item.hasUnwrapped) typeQueryNodes.push(unwrapped);
           } else {
             typeQueryNodes.push(item.node.objectType, item.node.indexType);
           }
         }
-        for (const item of objBindings) typeQueryNodes.push(item.node);
+        for (const item of objBindings) {
+          const parent = parentOf.get(item.node);
+          const init = (parent && (parent.kind === SyntaxKind.VariableDeclaration
+            || parent.kind === SyntaxKind.Parameter
+            || parent.kind === SyntaxKind.BindingElement) && parent.name === item.node)
+            ? parent.initializer
+            : null;
+          const unwrappedInit = init ? unwrapTsExpr(init) : null;
+          item.hasUnwrappedInit = Boolean(unwrappedInit && unwrappedInit !== init);
+          typeQueryNodes.push(item.node);
+          if (item.hasUnwrappedInit) typeQueryNodes.push(unwrappedInit);
+        }
         for (const item of potentialEscapes) typeQueryNodes.push(item.node);
 
         if (typeQueryNodes.length > 0) {
@@ -1696,7 +1768,9 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
 
           for (const item of propAccesses) {
             const objType = types[cursor++];
-            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker);
+            const unwrappedType = item.hasUnwrapped ? types[cursor++] : null;
+            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker)
+              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
             if (targetRel) {
               addModuleEdge(rel, targetRel, item.isType, item.node.name.text);
             }
@@ -1705,7 +1779,9 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           for (const item of elemAccesses) {
             const objType = types[cursor++];
             const keyType = types[cursor++];
-            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker);
+            const unwrappedType = item.hasUnwrapped ? types[cursor++] : null;
+            const targetRel = moduleRelFromType(objType, modSymIdToRel, checker)
+              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
             if (targetRel) {
               const isTypeAccess = item.isType || item.node.kind === SyntaxKind.IndexedAccessType;
               const keys = stringLiteralsFromType(keyType);
@@ -1719,7 +1795,9 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
 
           for (const item of objBindings) {
             const patType = types[cursor++];
-            const targetRel = moduleRelFromType(patType, modSymIdToRel, checker);
+            const unwrappedType = item.hasUnwrappedInit ? types[cursor++] : null;
+            const targetRel = moduleRelFromType(patType, modSymIdToRel, checker)
+              ?? (unwrappedType ? moduleRelFromType(unwrappedType, modSymIdToRel, checker) : null);
             if (targetRel) {
               for (const el of item.node.elements ?? []) {
                 if (el.dotDotDotToken) {
@@ -1761,7 +1839,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
               if (p?.kind === SyntaxKind.CallExpression && Array.isArray(p.arguments)) {
                 const argIdx = p.arguments.indexOf(cur);
                 if (argIdx >= 0) {
-                  const consumed = consumedMembersOfCallArg(p, argIdx, new Set());
+                  const consumed = consumedMembersOfCallArg(p, argIdx, rel, new Set());
                   if (consumed) {
                     addModuleEdge(rel, directMod, item.isType, null);
                     for (const member of consumed) {

@@ -71,10 +71,11 @@ TS_REGEX_PRECEDING_KEYWORDS = frozenset({
     "in", "instanceof", "of", "new", "else", "do", "export", "default",
     "extends", "as", "satisfies",
 })
-STYLE_ATTR_OPEN = re.compile(r"""\bstyle\s*=\s*$""")
+STYLE_ATTR_OPEN = re.compile(r"""(?<![.\w$])style\s*=\s*$""")
 CSS_PROPS_DECL = re.compile(r""":\s*(?:React\.)?CSSProperties\s*=\s*$""")
 CSS_PROPS_SUFFIX = re.compile(r"""\s*(?:satisfies|as)\s+(?:React\.)?CSSProperties\b""")
 DOM_STYLE_ASSIGN = re.compile(r"""\.style\.[A-Za-z_$]\w*\s*=\s*$""")
+DOM_STYLE_SET_PROP = re.compile(r"""\.style\.setProperty\s*$""")
 LOCAL_VAR_ASSIGN = re.compile(r"""\b(?:const|let)\s+([A-Za-z_$]\w*)\s*(?::\s*(?:[^=;]|=>)+)?=\s*$""")
 EXPORTED_VAR_ASSIGN = re.compile(r"""\bexport\s+(?:const|let)\s+[A-Za-z_$]\w*\s*(?::\s*(?:[^=;]|=>)+)?=\s*$""")
 CSS_PERCENT_FN_OPEN = re.compile(
@@ -625,18 +626,66 @@ def _blank_slice(text, start, end):
     return re.sub(r"[^\n]", " ", text[start:end])
 
 
+def _skip_ws_and_comments(text, at, end):
+    cursor = at
+    while cursor < end:
+        ch = text[cursor]
+        if ch.isspace():
+            cursor += 1
+        elif ch == "/" and cursor + 1 < end and text[cursor + 1] == "/":
+            nl = text.find("\n", cursor + 2, end)
+            cursor = end if nl < 0 else nl + 1
+        elif ch == "/" and cursor + 1 < end and text[cursor + 1] == "*":
+            close = text.find("*/", cursor + 2, end)
+            cursor = end if close < 0 else close + 2
+        else:
+            break
+    return cursor
+
+
 def _skip_angle_group(text, at, end):
     depth = 0
+    brace_depth = 0
     cursor = at
     while cursor < end:
         c = text[cursor]
-        if c == "<":
+        if c == "/" and cursor + 1 < end and text[cursor + 1] == "/":
+            nl = text.find("\n", cursor + 2, end)
+            cursor = end if nl < 0 else nl + 1
+            continue
+        if c == "/" and cursor + 1 < end and text[cursor + 1] == "*":
+            close = text.find("*/", cursor + 2, end)
+            cursor = end if close < 0 else close + 2
+            continue
+        if c in ("'", '"'):
+            quote = c
+            cursor += 1
+            while cursor < end:
+                if text[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if text[cursor] == quote or text[cursor] == "\n":
+                    if text[cursor] == quote:
+                        cursor += 1
+                    break
+                cursor += 1
+            continue
+        if c == "{":
+            brace_depth += 1
+        elif c == "}":
+            if brace_depth == 0:
+                return -1
+            brace_depth -= 1
+        elif c == "<" and brace_depth == 0:
             depth += 1
-        elif c == ">":
+        elif c == ">" and brace_depth == 0:
+            if cursor > at and text[cursor - 1] == "=":
+                cursor += 1
+                continue
             depth -= 1
             if depth == 0:
                 return cursor + 1
-        elif c in (";", "\n"):
+        elif c == ";" and brace_depth == 0:
             return -1
         cursor += 1
     return -1
@@ -654,9 +703,7 @@ def _looks_like_jsx_start(text, at, end):
     while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", "$", ".", "-")):
         cursor += 1
     tag = text[at + 1:cursor]
-    ws_end = cursor
-    while ws_end < end and text[ws_end].isspace():
-        ws_end += 1
+    ws_end = _skip_ws_and_comments(text, cursor, end)
     if ws_end >= end:
         return False
     after = text[ws_end]
@@ -672,8 +719,7 @@ def _looks_like_jsx_start(text, at, end):
         after_generic = _skip_angle_group(text, ws_end, end)
         if after_generic < 0:
             return False
-        while after_generic < end and text[after_generic].isspace():
-            after_generic += 1
+        after_generic = _skip_ws_and_comments(text, after_generic, end)
         if after_generic >= end:
             return False
         c = text[after_generic]
@@ -704,13 +750,12 @@ def _scan_jsx_element(text, at, end, *, blank_strings=False, on_plain=None, on_s
         while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", "$", ".", "-")):
             cursor += 1
         out.append(text[at:cursor])
-        ws = cursor
-        while ws < end and text[ws].isspace():
-            ws += 1
+        ws = _skip_ws_and_comments(text, cursor, end)
         if ws < end and text[ws] == "<":
             generic_end = _skip_angle_group(text, ws, end)
             if generic_end > 0:
-                out.append(text[cursor:generic_end])
+                out.append(_blank_slice(text, cursor, ws))
+                out.append(text[ws:generic_end])
                 cursor = generic_end
         while cursor < end:
             c = text[cursor]
@@ -854,6 +899,8 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
     plain_start = start
     expect_expr = True
     after_dot = False
+    last_keyword = ""
+    paren_stack = []
 
     def flush_plain(upto):
         nonlocal plain_start
@@ -871,6 +918,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
                 brace_depth += 1
                 expect_expr = True
                 after_dot = False
+                last_keyword = ""
                 at += 1
                 continue
             if ch == "}":
@@ -880,6 +928,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
                 brace_depth -= 1
                 expect_expr = False
                 after_dot = False
+                last_keyword = ""
                 at += 1
                 continue
         if is_tsx and ch == "<" and expect_expr and _looks_like_jsx_start(text, at, end):
@@ -899,6 +948,7 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
             plain_start = at
             expect_expr = False
             after_dot = False
+            last_keyword = ""
         elif ch == "/" and at + 1 < end and text[at + 1] == "/":
             flush_plain(at)
             nl = text.find("\n", at + 2, end)
@@ -1047,7 +1097,9 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
             cursor = at + 1
             while cursor < end and (text[cursor].isalnum() or text[cursor] in ("_", "$")):
                 cursor += 1
-            expect_expr = (not after_dot) and (text[at:cursor] in TS_REGEX_PRECEDING_KEYWORDS)
+            word = text[at:cursor]
+            expect_expr = (not after_dot) and (word in TS_REGEX_PRECEDING_KEYWORDS)
+            last_keyword = "" if after_dot else word
             after_dot = False
             at = cursor
         elif ch.isdigit():
@@ -1056,32 +1108,51 @@ def _scan_ts_range(text, start, end, *, blank_strings=False, stop_brace=False, i
                 cursor += 1
             expect_expr = False
             after_dot = False
+            last_keyword = ""
             at = cursor
         elif ch == ".":
             expect_expr = False
             after_dot = True
+            last_keyword = ""
             at += 1
-        elif ch in (")", "]", "}"):
+        elif ch == "(":
+            paren_stack.append(last_keyword in ("if", "while", "for", "with"))
+            expect_expr = True
+            after_dot = False
+            last_keyword = ""
+            at += 1
+        elif ch == ")":
+            expect_expr = paren_stack.pop() if paren_stack else False
+            after_dot = False
+            last_keyword = ""
+            at += 1
+        elif ch in ("]", "}"):
             expect_expr = False
             after_dot = False
+            last_keyword = ""
             at += 1
         elif ch == "=" and at + 1 < end and text[at + 1] == ">":
             expect_expr = True
             after_dot = False
+            last_keyword = ""
             at += 2
         elif ch == ">" and at + 1 < end and text[at + 1] == "=":
             expect_expr = True
             after_dot = False
+            last_keyword = ""
             at += 2
         elif ch == "!" and not (at + 1 < end and text[at + 1] == "="):
             after_dot = False
+            last_keyword = ""
             at += 1
         elif ch in ("+", "-") and at + 1 < end and text[at + 1] == ch:
             after_dot = False
+            last_keyword = ""
             at += 2
         else:
             expect_expr = True
             after_dot = False
+            last_keyword = ""
             at += 1
     flush_plain(end)
     return "".join(out), end
@@ -1146,6 +1217,13 @@ def _find_assignment_eq(code, pos):
             depth += 1
         elif ch in ("(", "[", "{"):
             if depth == 0:
+                if ch == "(":
+                    prev_idx = cursor - 1
+                    while prev_idx >= 0 and code[prev_idx].isspace():
+                        prev_idx -= 1
+                    if prev_idx < 0 or not (code[prev_idx].isalnum() or code[prev_idx] in ("_", "$", ")", "]")):
+                        cursor -= 1
+                        continue
                 return -1
             depth -= 1
         elif depth == 0:
@@ -1160,6 +1238,35 @@ def _find_assignment_eq(code, pos):
     return -1
 
 
+def _in_jsx_open_tag(code, pos):
+    depth = 0
+    cursor = pos - 1
+    while cursor >= 0:
+        ch = code[cursor]
+        if ch in (")", "]", "}"):
+            depth += 1
+        elif ch in ("(", "[", "{"):
+            if depth == 0:
+                return False
+            depth -= 1
+        elif depth == 0:
+            if ch == "<":
+                return True
+            if ch in (";", ">"):
+                return False
+        cursor -= 1
+    return False
+
+
+def _is_jsx_style_attr(code, brace_pos):
+    before = code[max(0, brace_pos - 96):brace_pos]
+    match = STYLE_ATTR_OPEN.search(before)
+    if not match:
+        return False
+    style_start = max(0, brace_pos - 96) + match.start()
+    return _in_jsx_open_tag(code, style_start)
+
+
 def _in_direct_style_context(code, pos):
     brace_depth = 0
     cursor = pos
@@ -1170,7 +1277,7 @@ def _in_direct_style_context(code, pos):
         elif ch == "{":
             if brace_depth == 0:
                 before = code[max(0, cursor - 96):cursor]
-                if STYLE_ATTR_OPEN.search(before) or CSS_PROPS_DECL.search(before):
+                if _is_jsx_style_attr(code, cursor) or CSS_PROPS_DECL.search(before):
                     return True
                 close_brace = closing(code, cursor, "{", "}")
                 if CSS_PROPS_SUFFIX.match(code, close_brace):
@@ -1179,6 +1286,22 @@ def _in_direct_style_context(code, pos):
                     break
             else:
                 brace_depth -= 1
+        cursor -= 1
+
+    paren_depth = 0
+    cursor = pos
+    while cursor >= 0:
+        ch = code[cursor]
+        if ch == ")":
+            paren_depth += 1
+        elif ch == "(":
+            if paren_depth == 0:
+                if DOM_STYLE_SET_PROP.search(code[max(0, cursor - 96):cursor]):
+                    return True
+            else:
+                paren_depth -= 1
+        elif ch in ("{", ";") and paren_depth == 0:
+            break
         cursor -= 1
 
     eq_pos = _find_assignment_eq(code, pos)
@@ -1241,26 +1364,30 @@ def _is_style_only_binding(code, pos):
     ident = match.group(1)
     decl_start = max(0, eq_pos - 96) + match.start()
     block = enclosing_block(code, decl_start)
+    scope_start = block[0] if block is not None else 0
     scope_end = block[1] if block is not None else len(code)
-    search_start = _statement_end_after(code, after_expr)
-    if search_start >= scope_end:
-        return False
+    decl_end = _statement_end_after(code, after_expr)
     ref_pattern = re.compile(rf"\b{re.escape(ident)}\b")
     ref_count = 0
-    for hit in ref_pattern.finditer(code, search_start, scope_end):
-        p = hit.start() - 1
-        while p >= search_start and code[p].isspace():
-            p -= 1
-        if p >= search_start and code[p] == ".":
+    for seg_start, seg_end in ((scope_start, decl_start), (decl_end, scope_end)):
+        if seg_start >= seg_end:
             continue
-        q = hit.end()
-        while q < scope_end and code[q].isspace():
-            q += 1
-        if p >= search_start and code[p] in ("{", ",") and q < scope_end and code[q] == ":":
-            continue
-        ref_count += 1
-        if not _in_direct_style_context(code, hit.start()):
-            return False
+        for hit in ref_pattern.finditer(code, seg_start, seg_end):
+            p = hit.start() - 1
+            while p >= seg_start and code[p].isspace():
+                p -= 1
+            if p >= seg_start and code[p] == ".":
+                continue
+            q = hit.end()
+            while q < seg_end and code[q].isspace():
+                q += 1
+            if p >= seg_start and code[p] in ("{", ",") and q < seg_end and code[q] == ":":
+                continue
+            if q < seg_end and code[q] == "=" and (q + 1 >= seg_end or code[q + 1] not in ("=", ">")) and _in_jsx_open_tag(code, hit.start()):
+                continue
+            ref_count += 1
+            if not _in_direct_style_context(code, hit.start()):
+                return False
     return ref_count > 0
 
 

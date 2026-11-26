@@ -538,6 +538,10 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
     'ui/src/nestedDead.ts': 'export const deadFromNested = () => 1;',
     'ui/src/nestedArrowDead.ts': 'export const deadFromArrow = () => 2;',
     'ui/src/nestedParamDead.ts': 'export const deadFromParam = () => 21;',
+    'ui/src/nestedComputedKeyLive.ts': 'export const getKey = () => "k";',
+    'ui/src/nestedComputedValDead.ts': 'export const deadComputedCb = () => 22;',
+    'ui/src/ctorParamPropLive.ts': 'export const tick = () => 23;',
+    'ui/src/deferredParamTypeNs.ts': 'export const draw = () => 24; export const spare = () => 25;',
     'ui/src/nestedLive.ts': 'export const liveFromNested = () => 3;',
     'ui/src/nestedKeepDeadChild.ts': 'export const deadChildHelper = () => 4;',
     'ui/src/nestedNs.ts': 'export const usedNs = () => 5; export const deadNs = () => 6;',
@@ -553,13 +557,24 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       import { deadFromNested } from './nestedDead.ts';
       import { deadFromArrow } from './nestedArrowDead.ts';
       import { deadFromParam } from './nestedParamDead.ts';
+      import { getKey } from './nestedComputedKeyLive.ts';
+      import { deadComputedCb } from './nestedComputedValDead.ts';
+      import { tick } from './ctorParamPropLive.ts';
       import { liveFromNested } from './nestedLive.ts';
       import { deadChildHelper } from './nestedKeepDeadChild.ts';
       import { compute } from './typeThenRuntimeHelper.ts';
       import { draw as shorthandDraw } from './shorthandTypeOnly.ts';
       import * as nestedNs from './nestedNs.ts';
       import * as typeOnlyNs from './typeOnlyNs.ts';
-      function start(onTick = () => deadFromParam()) {
+      import * as deferredParamTypeNs from './deferredParamTypeNs.ts';
+      class Hooks {
+        constructor(public readonly onTick = () => tick()) {}
+      }
+      function start(
+        onTick = () => deadFromParam(),
+        _typedCb: (arg: (typeof deferredParamTypeNs)['draw']) => void = () => {},
+        { [getKey()]: _computedCb = () => deadComputedCb() }: Record<string, () => number> = {},
+      ) {
         const result = usedHoisted();
         function unusedInner() {
           return deadFromNested() + nestedNs.deadNs();
@@ -597,7 +612,7 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
         type LoadedDraw = ReturnType<typeof loadTypeOnly>;
         type LoadedDyn = ReturnType<typeof dynTypeOnly>;
         const typed: [LoadedDraw | null, LoadedDyn | null, DescC | null] = [null, null, null];
-        return result + keepRef() + runBothVal + typed.length;
+        return result + keepRef() + runBothVal + typed.length + new Hooks().onTick();
       }
       const loadLazy = async () => (await import('./lazy.ts')).value;
       const worker = new Worker(new URL('./lane.worker.ts', import.meta.url), { type: 'module' });
@@ -611,13 +626,17 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, [
       'ui/src/nestedArrowDead.ts',
+      'ui/src/nestedComputedValDead.ts',
       'ui/src/nestedDead.ts',
       'ui/src/nestedKeepDeadChild.ts',
       'ui/src/nestedParamDead.ts',
     ]);
+    assert.equal(result.ui.runtimeLive.has('ui/src/ctorParamPropLive.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/nestedComputedKeyLive.ts'), true);
     assert.equal(result.ui.runtimeLive.has('ui/src/typeThenRuntimeSideEffect.ts'), true);
     assert.equal(result.ui.runtimeLive.has('ui/src/typeOnlyDyn.ts'), false);
     assert.deepEqual(result.exports.unusedExports.map(e => e.key), [
+      'ui/src/deferredParamTypeNs.ts:spare',
       'ui/src/nestedNs.ts:deadNs',
       'ui/src/typeOnlyDyn.ts:sideEffectValue',
       'ui/src/typeOnlyNs.ts:spare',
@@ -644,7 +663,15 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     'ui/src/nsNestedOuterArgs.ts': 'export const draw = () => 28; export const spare = () => 29;',
     'ui/src/nsParamDestructDefault.ts': 'export const draw = () => 30; export const spare = () => 31;',
     'ui/src/nsAngleCast.ts': 'export const draw = () => 32; export const spare = () => 33;',
-    'ui/src/angleReader.ts': 'export function readAngle(m: unknown) { return (<{ draw(): number }>m).draw(); }\n',
+    'ui/src/nsDirectCast.ts': 'export const draw = () => 34; export const spare = () => 35;',
+    'ui/src/nsUnusedDefaultCb.ts': 'export const draw = () => 36; export const spare = () => 37;',
+    'ui/src/nsLocalAliasReader.ts': 'export const draw = () => 38; export const spare = () => 39;',
+    'ui/src/nsInlineArrow.ts': 'export const draw = () => 40; export const spare = () => 41;',
+    'ui/src/angleReader.ts': `
+      import * as nsDirectCast from './nsDirectCast.ts';
+      export function readAngle(m: unknown) { return (<{ draw(): number }>m).draw(); }
+      export function callDirectCast() { return (<{ draw(): number }>nsDirectCast).draw(); }
+    `,
     'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
     'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
     'ui/src/aliasedMod.ts': `
@@ -657,12 +684,17 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       export { draw, draw as spare };
     `,
     'ui/src/aliasBarrelSideEffect.ts': 'console.log("barrel-side-effect");',
+    'ui/src/aliasBarrelMidSideEffect.ts': 'console.log("barrel-mid-side-effect");',
     'ui/src/aliasBarrelSub.ts': `
       import './aliasBarrelSideEffect.ts';
       function draw() { return 12; }
       export { draw, draw as spare };
     `,
-    'ui/src/aliasBarrel.ts': `export * from './aliasBarrelSub.ts';`,
+    'ui/src/aliasBarrelMid.ts': `
+      import './aliasBarrelMidSideEffect.ts';
+      export * from './aliasBarrelSub.ts';
+    `,
+    'ui/src/aliasBarrel.ts': `export * from './aliasBarrelMid.ts';`,
     'ui/src/main.tsx': `
       import './styles.css';
       import type { SharedType } from './types.ts';
@@ -684,8 +716,11 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsNestedOuterArgs from './nsNestedOuterArgs.ts';
       import * as nsParamDestructDefault from './nsParamDestructDefault.ts';
       import * as nsAngleCast from './nsAngleCast.ts';
+      import * as nsUnusedDefaultCb from './nsUnusedDefaultCb.ts';
+      import * as nsLocalAliasReader from './nsLocalAliasReader.ts';
+      import * as nsInlineArrow from './nsInlineArrow.ts';
       import * as aliasBarrelNs from './aliasBarrel.ts';
-      import { readAngle } from './angleReader.ts';
+      import { readAngle, callDirectCast } from './angleReader.ts';
       import { read as readA } from './helperA.ts';
       import { read as readB } from './helperB.ts';
       import { run } from './aliasedMod.ts';
@@ -716,6 +751,10 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function readParamDestructDefault(m: { draw(): number }, { draw } = m) {
         return draw();
       }
+      function readUnusedDefaultCb(m: { draw(): number; spare(): number }, _cb = () => m.spare()) {
+        return m.draw();
+      }
+      const readerAlias = readA;
       function readComputedKey(m: { key: string }, { [m.key]: value }: Record<string, number> = {}) {
         return value ?? 0;
       }
@@ -756,7 +795,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         loadLazy, worker, used, ref, REQUEST_PATHS,
         forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
         api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
-        readParamDestructDefault(nsParamDestructDefault), readAngle(nsAngleCast),
+        readParamDestructDefault(nsParamDestructDefault), readAngle(nsAngleCast), callDirectCast(),
+        readUnusedDefaultCb(nsUnusedDefaultCb), readerAlias(nsLocalAliasReader),
+        ((m: { draw(): number }) => m.draw())(nsInlineArrow),
         readComputedKey(nsComputedKey), readWithThis(nsThisParam), readArguments(nsArgsObj),
         readArgsShorthand(nsArgsShorthand), readNestedOuterArgs(nsNestedOuterArgs),
         readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
@@ -768,6 +809,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, []);
     assert.equal(result.ui.runtimeLive.has('ui/src/aliasBarrelSideEffect.ts'), true);
+    assert.equal(result.ui.runtimeLive.has('ui/src/aliasBarrelMidSideEffect.ts'), true);
     assert.deepEqual(
       result.exports.unusedExports.map(e => e.key),
       [
@@ -778,12 +820,16 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         'ui/src/nsComputedKey.ts:spare',
         'ui/src/nsDefaultInit.ts:spare',
         'ui/src/nsDestructured.ts:spare',
+        'ui/src/nsDirectCast.ts:spare',
         'ui/src/nsDocComment.ts:spare',
+        'ui/src/nsInlineArrow.ts:spare',
         'ui/src/nsInnerOwnArgs.ts:spare',
+        'ui/src/nsLocalAliasReader.ts:spare',
         'ui/src/nsParamDestructDefault.ts:spare',
         'ui/src/nsPatternDefault.ts:spare',
         'ui/src/nsTarget.ts:spare',
         'ui/src/nsThisParam.ts:spare',
+        'ui/src/nsUnusedDefaultCb.ts:spare',
       ],
     );
   });
