@@ -153,7 +153,7 @@ test('the lane sends a bounded picture while the page can still install it', asy
   const { page, lane, mount, step, presented } = rig({ probe });
   mount(1, [{ id: 3, channel: 'panel' }], 'probe', 0, { offset: 10 });
   lane.bindRoute(3, ROUTE, NATIVE);
-  const supply = (hour: number) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }]));
+  const supply = (hour: number) => lane.receive('panels', panels([{ id: 3, hour, kind: 'data', stepped: true, data: { hour } }, { id: 0, hour: 100, kind: 'completed' }]));
   supply(10);
   await step(3, { playing: true, step: 10 });
   assert.equal(page.view(1).fields?.first, 10);
@@ -187,6 +187,21 @@ test('playing past its confirmed hour, a time-dependent widget shows its newest 
   assert.equal(page.view(1).fields?.first, 30);
   await step(88);
   assert.equal(page.view(1).fields?.first, 30, 'with no newer data the newest known picture stays');
+});
+
+test('a statically dated time chart repaints at the newest hour its supply covers while playing, though its next change lies past that hour', async () => {
+  const probe: LaneView = {
+    next: (_scene, hour) => hour + 1,
+    paint: ({ hour }) => ({ surfaces: [], fields: { first: { value: hour, content: String(hour) } }, nextChangeAt: hour + 1, motion: false }),
+  };
+  const { page, lane, mount, step } = rig({ probe });
+  mount(1, [], 'probe', 0, { dated: { h: 0, c: 20 } });
+  await step(20, { playing: false });
+  assert.equal(page.view(1).fields?.first, 20);
+  await step(20, { playing: true, speed: 1440, step: 24 });
+  lane.supply(1, { dated: { h: 0, c: 40 } });
+  await step(60);
+  assert.equal(page.view(1).fields?.first, 40, 'the supply now covers 40, so its picture shows though the playhead is past it');
 });
 
 test('playing past its confirmed hour, a newer picture with the same day deadline as the shown one still replaces it', async () => {
