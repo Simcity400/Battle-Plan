@@ -69,21 +69,52 @@ fn identity(country: &PeaceTransferCountry) -> String {
     format!("{}:{}", country.slot, country.country_id)
 }
 
-enum Worth {
-    NotRecorded,
-    Read { hour: i32, points: i128 },
+struct Step {
+    hour: i32,
+    gained: u32,
+    lost: u32,
+    named: usize,
 }
 
-struct Move {
-    shown: i32,
-    from: PeaceTransferCountry,
-    to: PeaceTransferCountry,
-    worth: Worth,
+struct Read {
+    hour: i32,
+    points: i128,
+}
+
+struct History {
+    key: String,
+    names: Vec<(String, i32)>,
+    steps: Vec<Step>,
+    reads: Vec<Read>,
+}
+
+impl History {
+    fn row(&self, through: i32, partial: bool) -> Option<TerritoryCountry> {
+        let counted = self.steps.partition_point(|step| step.hour <= through);
+        let step = self.steps.get(counted.checked_sub(1)?)?;
+        let read = self.reads.partition_point(|read| read.hour <= through);
+        let victory_points = (read == counted).then(|| self.reads[read - 1].points);
+        let (tag, hour) = &self.names[step.named];
+        Some(TerritoryCountry {
+            key: self.key.clone(),
+            tag: tag.clone(),
+            hour: *hour,
+            gained: step.gained,
+            lost: step.lost,
+            net: (!partial).then(|| {
+                let net = i64::from(step.gained) - i64::from(step.lost);
+                i32::try_from(net).unwrap_or(if net < 0 { i32::MIN } else { i32::MAX })
+            }),
+            net_victory_points: if partial { None } else { victory_points.map(|sum| sum.to_string()) },
+            victory_points_missing: if partial { Some(PARTIAL.to_owned()) } else { victory_points.is_none().then(|| VP_NOT_RECORDED.to_owned()) },
+        })
+    }
 }
 
 pub struct TransfersIndex {
     branch_id: String,
-    moves: Vec<Move>,
+    shown: Vec<i32>,
+    countries: Vec<History>,
     gap_starts: Vec<i32>,
     warnings: Vec<PeaceWarning>,
     changes: Vec<i32>,
@@ -91,78 +122,64 @@ pub struct TransfersIndex {
 
 impl TransfersIndex {
     pub fn new(branch_id: String, deals: &[PeaceDeal], unobserved: &PeaceUnobserved, mut warnings: Vec<PeaceWarning>) -> Self {
-        let mut moves = Vec::new();
+        let mut moves: Vec<(i32, &PeaceTransferCountry, &PeaceTransferCountry, Option<(i32, i128)>)> = Vec::new();
         for deal in deals {
             let known = deal_known_at(deal);
             for state in &deal.transfers {
                 let shown = state.dates.after_hour.max(known);
                 let worth = match (state.victory_points.as_deref().map(str::parse::<i128>), state.victory_points_read_hour) {
-                    (Some(Ok(points)), Some(read)) => Worth::Read { hour: read.max(shown), points },
-                    _ => Worth::NotRecorded,
+                    (Some(Ok(points)), Some(read)) => Some((read.max(shown), points)),
+                    _ => None,
                 };
-                moves.push(Move { shown, from: state.from_country.clone(), to: state.to_country.clone(), worth });
+                moves.push((shown, &state.to_country, &state.from_country, worth));
             }
         }
-        moves.sort_by_key(|item| item.shown);
+        moves.sort_by_key(|item| item.0);
+        let mut histories: BTreeMap<String, History> = BTreeMap::new();
+        for &(shown, to, from, worth) in &moves {
+            for (country, gained) in [(to, true), (from, false)] {
+                let history = histories.entry(identity(country)).or_insert_with_key(|key| History { key: key.clone(), names: Vec::new(), steps: Vec::new(), reads: Vec::new() });
+                let (mut gains, mut losses, mut named) = history.steps.last().map_or((0, 0, None), |step| (step.gained, step.lost, Some(step.named)));
+                if gained { gains += 1 } else { losses += 1 }
+                if named.is_none_or(|at| country.hour >= history.names[at].1) {
+                    history.names.push((country.tag.clone(), country.hour));
+                    named = Some(history.names.len() - 1);
+                }
+                history.steps.push(Step { hour: shown, gained: gains, lost: losses, named: named.unwrap_or_default() });
+                if let Some((hour, points)) = worth {
+                    history.reads.push(Read { hour, points: if gained { points } else { -points } });
+                }
+            }
+        }
+        let mut countries: Vec<History> = histories.into_values().collect();
+        for history in &mut countries {
+            history.reads.sort_by_key(|read| read.hour);
+            let mut sum = 0_i128;
+            for read in &mut history.reads {
+                sum += read.points;
+                read.points = sum;
+            }
+        }
         let mut gap_starts: Vec<i32> = unobserved.settlements.iter().chain(&unobserved.ownership).map(|span| span.first_hour).collect();
         gap_starts.sort_unstable();
         gap_starts.dedup();
         warnings.sort_by_key(|warning| warning.hour);
-        let read_hours = moves.iter().filter_map(|item| match item.worth {
-            Worth::Read { hour, .. } => Some(hour),
-            Worth::NotRecorded => None,
-        });
-        let mut changes: Vec<i32> = moves
+        let shown: Vec<i32> = moves.iter().map(|item| item.0).collect();
+        let mut changes: Vec<i32> = shown
             .iter()
-            .map(|item| item.shown)
-            .chain(read_hours)
+            .copied()
+            .chain(moves.iter().filter_map(|item| item.3.map(|(hour, _)| hour)))
             .chain(gap_starts.iter().copied())
             .chain(warnings.iter().filter_map(|warning| warning.hour))
             .collect();
         changes.sort_unstable();
         changes.dedup();
-        Self { branch_id, moves, gap_starts, warnings, changes }
+        Self { branch_id, shown, countries, gap_starts, warnings, changes }
     }
 
     pub fn answer(&self, through: i32) -> TerritoryTransfersReply {
-        let counted = &self.moves[..self.moves.partition_point(|item| item.shown <= through)];
         let partial = self.gap_starts.first().is_some_and(|&first| first <= through);
-        let mut countries: BTreeMap<String, Tally> = BTreeMap::new();
-        for item in counted {
-            let worth = match item.worth {
-                Worth::Read { hour, points } if hour <= through => Ok(points),
-                _ => Err(VP_NOT_RECORDED),
-            };
-            for (country, sign) in [(&item.to, 1i128), (&item.from, -1)] {
-                let row = countries.entry(identity(country)).or_insert_with(|| Tally { tag: String::new(), hour: i32::MIN, gained: 0, lost: 0, victory_points: Ok(0) });
-                if country.hour >= row.hour {
-                    row.tag.clone_from(&country.tag);
-                    row.hour = country.hour;
-                }
-                if sign > 0 { row.gained += 1 } else { row.lost += 1 }
-                row.victory_points = match (row.victory_points, worth) {
-                    (Ok(sum), Ok(points)) => Ok(sum + sign * points),
-                    (Err(held), _) => Err(held),
-                    (_, Err(why)) => Err(why),
-                };
-            }
-        }
-        let mut countries: Vec<TerritoryCountry> = countries
-            .into_iter()
-            .map(|(key, row)| TerritoryCountry {
-                key,
-                tag: row.tag,
-                hour: row.hour,
-                gained: row.gained,
-                lost: row.lost,
-                net: (!partial).then(|| {
-                    let net = i64::from(row.gained) - i64::from(row.lost);
-                    i32::try_from(net).unwrap_or(if net < 0 { i32::MIN } else { i32::MAX })
-                }),
-                net_victory_points: if partial { None } else { row.victory_points.ok().map(|sum| sum.to_string()) },
-                victory_points_missing: if partial { Some(PARTIAL.to_owned()) } else { row.victory_points.err().map(str::to_owned) },
-            })
-            .collect();
+        let mut countries: Vec<TerritoryCountry> = self.countries.iter().filter_map(|history| history.row(through, partial)).collect();
         if !partial {
             countries.sort_by(|a, b| b.net.cmp(&a.net).then(b.gained.cmp(&a.gained)).then_with(|| a.tag.cmp(&b.tag)).then_with(|| a.key.cmp(&b.key)));
         }
@@ -170,21 +187,13 @@ impl TransfersIndex {
         TerritoryTransfersReply {
             branch_id: self.branch_id.clone(),
             through,
-            transfers: u32::try_from(counted.len()).unwrap_or(u32::MAX),
+            transfers: u32::try_from(self.shown.partition_point(|&hour| hour <= through)).unwrap_or(u32::MAX),
             countries,
             next_change: self.changes.get(self.changes.partition_point(|&hour| hour <= through)).copied(),
             partial: partial.then(|| PARTIAL.to_owned()),
             warnings,
         }
     }
-}
-
-struct Tally {
-    tag: String,
-    hour: i32,
-    gained: u32,
-    lost: u32,
-    victory_points: Result<i128, &'static str>,
 }
 
 #[derive(Default)]
