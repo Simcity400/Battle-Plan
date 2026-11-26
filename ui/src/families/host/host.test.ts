@@ -2348,6 +2348,14 @@ test('points keyboard navigation supports async next-change focus without activa
   const record = recordInstalled(installed, {
     nav,
     meta: { transform: { xFrom: 0, xTo: 17, axisFrom: 0, axisTo: 17 } },
+    focusTooltip: {
+      key: 'plot:3',
+      text: {
+        rowKey: 'plot:3',
+        hour: 3,
+        payload: { title: 'Hour 3', hour: 3 },
+      },
+    },
   }, null);
   const effect = resolveHostInput(
     timeChartHostAdapter,
@@ -2359,4 +2367,86 @@ test('points keyboard navigation supports async next-change focus without activa
   );
   assert.equal(effect?.kind, 'activate', 'resolveHostInput accepts an in-axis plot:<hour> focus key even when absent from coarse nav');
   assert.equal(effect?.kind === 'activate' ? effect.action.hour : null, 3);
+
+  const menuEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'menu',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: true },
+    () => null,
+  );
+  assert.equal(menuEffect?.kind, 'menu');
+  assert.equal(menuEffect?.kind === 'menu' ? menuEffect.hit.hour : null, 3, 'keyboard context menu uses focused plot hour 3, not picture head 17');
+  assert.equal(menuEffect?.kind === 'menu' ? menuEffect.hit.hitHour : null, 3);
+
+  const pinEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'pin',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(pinEffect?.kind, 'pin');
+  assert.equal(pinEffect?.kind === 'pin' ? pinEffect.hour : null, 3, 'pinning focused tooltip uses tooltip hour 3, not picture head 17');
+
+  const emptyInstalled: InstalledPicture = {
+    ...installed,
+    id: 2,
+    hour: displayedHour(5),
+    through: 5,
+    validInterval: [0, 5],
+    actionKeys: lazyActionKeys([], displayedHour(5)),
+  };
+  const emptyRecord = recordInstalled(emptyInstalled, { nav: [] }, null);
+  const staleEnter = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: 'plot:13', hit: null, picture: emptyInstalled },
+    { current: emptyRecord, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(staleEnter, null, 'empty chart with no axis transform rejects stale plot:13 focus key');
+
+  const tips = new FamilyTooltipController('points-focus-over-stationary-pointer');
+  const tipOf = (hour: number) => ({
+    rowKey: `plot:${hour}`,
+    hour,
+    payload: { title: `Hour ${hour}`, hour },
+  });
+  tips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: 'plot:12',
+    inspectedToken: 'plot:12',
+    pointerPos: { x: 100, y: 100 },
+    hoverTip: tipOf(12),
+    hoverFieldKey: 'plot:12',
+    keepHoverWhilePending: true,
+    focusInside: true,
+    focusedKey: 'plot:3',
+    focusAnchor: { x: 50, y: 50 },
+    focusTip: tipOf(3),
+    viewportHeight: 600,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Hour 12');
+  tips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: null,
+    inspectedToken: null,
+    pointerPos: { x: 100, y: 100 },
+    hoverTip: tipOf(12),
+    hoverFieldKey: 'plot:12',
+    keepHoverWhilePending: true,
+    focusInside: true,
+    focusedKey: 'plot:3',
+    focusAnchor: { x: 50, y: 50 },
+    focusTip: tipOf(3),
+    viewportHeight: 600,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Hour 3', 'clearing pointer inspection on keyboard focus lets the focused hour tooltip show');
+  tips.dispose();
 });

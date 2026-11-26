@@ -536,6 +536,8 @@ function measurePartsFromSeries(
     const series = seriesMap.get(keyId({ tag: ownerKey, part }));
     if (!series) continue;
     if (series.straddling === 'loading') anyLoading = true;
+    const declaredLifetime = partSpans?.[part];
+    const mergedLifetime = declaredLifetime ? mergeSpans(declaredLifetime) : null;
     const seriesMissing: HourSpan[] = [];
     for (let i = 0; i < series.missing.length; i++) {
       const span = series.missing.at(i);
@@ -544,7 +546,14 @@ function measurePartsFromSeries(
       const last = Math.min(span.lastHour, until);
       if (first <= last) {
         seriesMissing.push({ firstHour: first, lastHour: last });
-        if (span.reason && overlapsWithin(first, last, within)) missingReasons.push(span.reason);
+        if (span.reason) {
+          const relevant = mergedLifetime
+            ? intersectSpans([{ firstHour: first, lastHour: last }], mergedLifetime)
+            : [{ firstHour: first, lastHour: last }];
+          if (relevant.some(item => overlapsWithin(item.firstHour, item.lastHour, within))) {
+            missingReasons.push(span.reason);
+          }
+        }
       }
     }
     const { runs, reduced: partReduced } = boundedToRuns(series, until, headHour);
@@ -566,9 +575,8 @@ function measurePartsFromSeries(
     }
     for (const run of runs) addRun(held.runs, run);
     const openSpans = unresolvedOpenIntervals(series, runs, until);
-    const declaredLifetime = partSpans?.[part];
-    if (declaredLifetime) {
-      const inLifetimeMissing = seriesMissing.length ? intersectSpans(mergeSpans(seriesMissing), mergeSpans(declaredLifetime)) : [];
+    if (mergedLifetime) {
+      const inLifetimeMissing = seriesMissing.length ? intersectSpans(mergeSpans(seriesMissing), mergedLifetime) : [];
       if (inLifetimeMissing.length) openSpans.push(...inLifetimeMissing);
     } else if (seriesMissing.length) {
       let bucket = missingRaw.get(id);

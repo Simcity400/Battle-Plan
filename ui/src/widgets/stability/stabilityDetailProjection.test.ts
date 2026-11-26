@@ -720,6 +720,37 @@ describe('stability detail projections', () => {
     const gappedOther = inLifetimeGap.stack!.bands.find(b => b.id === '__smaller')!;
     assert.equal(gappedOther.values[inLifetimeGap.stack!.hours.indexOf(11)], null, 'missing span inside declared lifetime keeps grouped layer unresolved');
 
+    const futureModSeries: BoundedSeries = {
+      tag: keyId({ tag: 'GER', part: POS_PART }),
+      decimals: 5,
+      binHours: 1,
+      from: 0,
+      validInterval: [0, 50],
+      runs: emptySlice(),
+      buckets: emptySlice(),
+      missing: createBoundedSlice([{ firstHour: 0, lastHour: 29, reason: 'Modifier absent before hour 30' }], 1),
+      straddling: 'none',
+    };
+    const emptyEarlyChart = buildStabilityPartsChartModel(
+      createBoundedReadView({
+        hour: displayedHour(5),
+        series: new Map([['parts', new Map([[keyId({ tag: 'GER', part: POS_PART }), futureModSeries]])]]),
+      }),
+      baseOptions({
+        parts: [TOTAL_PART, POS_PART],
+        partSpans: {
+          [TOTAL_PART]: [{ firstHour: 30, lastHour: 50 }],
+          [POS_PART]: [{ firstHour: 30, lastHour: 50 }],
+        },
+        extent: [0, 50],
+      }),
+    );
+    assert.notEqual(
+      emptyEarlyChart.empty?.message,
+      'Modifier absent before hour 30',
+      'empty-chart explanation clips tile missing reasons to each part lifetime',
+    );
+
     const slot7 = countryKey(7);
     const tableOpts = baseOptions({ ownerKey: slot7, parts: [TOTAL_PART, POS_PART], extent: [0, 100] });
     const tablePlan = stabilityPartsTableDeclaration.sources({

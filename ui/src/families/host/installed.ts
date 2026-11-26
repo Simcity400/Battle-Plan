@@ -113,7 +113,7 @@ function pointsHas(adapter: FamilyHostAdapter<any, any, any, any>, record: Insta
   const parsed = parseFamilyHit(adapter, key);
   if (!parsed || parsed.kind !== 'plot' || parsed.hour === undefined) return false;
   const transform = (record.fields.meta as { readonly transform?: { readonly axisFrom?: number; readonly axisTo?: number } } | undefined)?.transform;
-  if (!transform || transform.axisFrom === undefined || transform.axisTo === undefined) return true;
+  if (!transform || transform.axisFrom === undefined || transform.axisTo === undefined) return false;
   return parsed.hour >= transform.axisFrom && parsed.hour <= transform.axisTo;
 }
 
@@ -155,13 +155,14 @@ export function resolveHostInput(
   if (command === 'menu') {
     if (!options.menu) return null;
     const target = key ? picture.actionKeys.get(key) : undefined;
-    const resolved = key !== null && !hit && adapter.resolveHitAction ? adapter.resolveHitAction({ key }, picture, record.fields) : null;
-    const hitHour = hit?.hour ?? resolved?.hour ?? target?.hour ?? null;
+    const parsedHit = key !== null && !hit ? parseFamilyHit(adapter, key) : null;
+    const resolved = key !== null && !hit && adapter.resolveHitAction ? adapter.resolveHitAction(parsedHit ?? { key }, picture, record.fields) : null;
+    const hitHour = hit?.hour ?? parsedHit?.hour ?? resolved?.hour ?? target?.hour ?? null;
     return {
       kind: 'menu',
       hit: {
         key,
-        subject: hit?.subject ?? target?.subject ?? key,
+        subject: hit?.subject ?? parsedHit?.subject ?? target?.subject ?? key,
         label: hit?.label ?? target?.label ?? key,
         hour: hitHour ?? picture.hour,
         hitHour,
@@ -174,7 +175,7 @@ export function resolveHostInput(
   if (key === null) return null;
   if (command === 'pin') {
     const tip = (record.fields.focusTooltip as FamilyTooltipField | undefined)?.text;
-    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: picture.hour } : null;
+    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: tip.hour ?? picture.hour } : null;
   }
   if (command === 'activate' && options.regions) {
     const field = record.fields.regions as RegionRowsField | undefined;
