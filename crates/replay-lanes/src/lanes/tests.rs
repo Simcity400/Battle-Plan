@@ -1052,10 +1052,15 @@ fn power_recording(summarized: bool) -> (Recording, usize) {
     }
     let (bytes, _) = fixtures::written_with_summaries(recorder_derive::writers(), b"power synthetic", &RUNS, &[TableId::Countries], registry, |synthetic, _, ordinal| {
         let rows: Vec<CountryRow> = (1..=8_u32)
-            .filter(|&id| (ordinal / (29 + id * 13)) % 5 != 0)
-            .map(|id| CountryRow { id, political_power_raw: Some(i64::from((ordinal / 24 + id * 5) % 11) * 3), ..Default::default() })
+            .filter(|&id| ordinal == 0 || (ordinal / (29 + id * 13)) % 5 != 0)
+            .map(|id| CountryRow { id, political_power_raw: Some(if ordinal == 0 { 100 } else { i64::from((ordinal / 24 + id * 5) % 11) * 3 }), ..Default::default() })
             .collect();
-        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let input = if ordinal == 0 {
+            Input::Snapshot { rows: &rows[..3], partial: Some(2), read: true, sample: Sample::FromReadBit }
+        } else {
+            Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }
+        };
+        synthetic.table(TableId::Countries, input).unwrap();
     });
     (Recording::open(bytes).unwrap(), column)
 }
@@ -1077,6 +1082,10 @@ fn a_chart_and_a_top_view_over_pieces_without_the_measure_read_the_hours_themsel
         assert_eq!((&chart.keys, &chart.values, &chart.life, &chart.totals), (&walked.keys, &walked.values, &walked.life, &walked.totals));
         assert_eq!((&chart.keys, shown(&chart), &chart.life), (&summed.keys, shown(&summed), &summed.life), "level {level}: the walk shows what the summary shows");
         assert_eq!(chart.totals, summed.totals, "level {level}: the walk counts only what the summary declares");
+        let keys = [1_u128, 2, 7];
+        let keyed = chart_at(&bare, 0, TableId::Countries, source, Some(&keys), from, to, level, bin_hours).unwrap();
+        let keyed_summed = chart_at(&summarized, 0, TableId::Countries, source, Some(&keys), from, to, level, bin_hours).unwrap();
+        assert_eq!((&keyed.keys, shown(&keyed), &keyed.life), (&keyed_summed.keys, shown(&keyed_summed), &keyed_summed.life), "level {level}: a keyed walk shows what the summary shows");
     }
     let values = |bins: Vec<Vec<(u128, Bin)>>| bins.into_iter().map(|bin| bin.into_iter().map(|(key, bin)| (key, bin.hours, bin.first, bin.last, bin.min, bin.max)).collect::<Vec<_>>()).collect::<Vec<_>>();
     for (width, n, by) in [(48, 3, By::Max), (240, 5, By::Min), (48, 2, By::Last), (240, 4, By::Last), (2, 1, By::Last), (4, 2, By::Last)] {
@@ -1116,13 +1125,31 @@ fn a_coarse_piece_ending_inside_a_bucket_does_not_reach_past_its_last_hour() {
 }
 
 #[test]
+fn a_walked_mark_ends_where_the_piece_after_it_begins_and_a_walk_between_pieces_keeps_their_ends() {
+    let lacking = [(11_623, 12_342, summary::bucket_hours(1))];
+    let grid = WalkGrid { lacking: &lacking, starts: &[11_623], ends: &[12_342], covered: &[], bucket_hours: summary::bucket_hours(2) };
+    assert!(grid.mark(11_622) < grid.mark(11_623), "an hour before a piece is marked before the piece's own hours");
+    assert_eq!(grid.mark(11_623), hour_mark(11_711), "a piece's hour is marked at the end of the piece's own bucket");
+    let constant = |value: i64, hour: i64| {
+        let mut fold = summary::Fold::constant(value, 1, summary::bucket_of(hour, 0));
+        fold.last_bucket = summary::bucket_of(hour, 0);
+        fold
+    };
+    let mut held = Bin::default();
+    held.add(&constant(10, 1_000));
+    held.add(&constant(30, 3_000));
+    add_walked(&mut held, &constant(20, 2_000), &[(900, 1_100), (2_900, 3_100)], (2_000, 2_000));
+    assert_eq!((held.first, held.last, held.hours), (10, 30, 3), "a walk between two summarized pieces is neither first nor last");
+}
+
+#[test]
 fn a_chart_bucket_split_between_a_walked_range_and_a_piece_keeps_its_first_and_last_in_hour_order() {
     const KEY: u128 = 7;
     for (summarized, walked, covered, ends) in [((823, 828), (822, 823), (823, 1543), (10, 20)), ((822, 827), (827, 828), (103, 827), (20, 10))] {
         let mut chart = Chart { level: 0, bin_hours: 6, first_bin_hour: 822, bins: 1, keys: vec![KEY], values: vec![Bin::default()], totals: Vec::new(), aggregates: 0, life: vec![0], pieces: 1, walked: 0 };
         let mut piece = summary::Fold::constant(20, (summarized.1 - summarized.0) as u32, summary::bucket_of(summarized.0, 0));
         piece.last_bucket = summary::bucket_of(summarized.1 - 1, 0);
-        chart.add_beside(0, 0, &piece, false, false);
+        chart.values[0].add(&piece);
         let mut walk = Walk::new(None, None, 822, 6, 1);
         walk.add_value(KEY, 10, walked.0, walked.1);
         let mut rows = HashMap::default();

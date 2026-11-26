@@ -1131,24 +1131,6 @@ impl Bin {
         }
         self.hours += fold.hours;
     }
-
-    fn merge_later(&mut self, later: &Self) {
-        if self.hours == 0 {
-            *self = *later;
-            return;
-        }
-        if later.hours == 0 {
-            return;
-        }
-        if later.min < self.min {
-            (self.min, self.min_bucket) = (later.min, later.min_bucket);
-        }
-        if later.max > self.max {
-            (self.max, self.max_bucket) = (later.max, later.max_bucket);
-        }
-        (self.last, self.last_bucket) = (later.last, later.last_bucket);
-        self.hours += later.hours;
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1211,10 +1193,6 @@ impl Chart {
     }
 
     fn merge_walk(&mut self, walk: Walk<'_>, covered: &[(i64, i64)], rows: &mut HashMap<u128, usize, foldhash::fast::RandomState>) {
-        let pieced_after = |hour: i64| {
-            let bucket_end = (summary::bucket_of(hour, 0) + 1) * summary::bucket_hours(0);
-            covered.iter().any(|&(lo, _)| hour < lo && lo < bucket_end)
-        };
         let mut walked: Vec<(u128, Row)> = walk.rows.into_iter().collect();
         walked.sort_unstable_by_key(|(key, _)| *key);
         for (key, folded) in walked {
@@ -1222,27 +1200,13 @@ impl Chart {
             for (bin, walked_bin) in folded.bins {
                 self.life[row * self.bins + bin] += walked_bin.life;
                 if let Some(fold) = walked_bin.fold() {
-                    self.add_beside(row, bin, &fold, pieced_after(walked_bin.first_hour), pieced_after(walked_bin.last_hour));
+                    let index = row * self.bins + bin;
+                    add_walked(&mut self.values[index], &fold, covered, (walked_bin.first_hour, walked_bin.last_hour));
+                    if let Some(totals) = self.totals.get_mut(index) {
+                        totals.add(&fold);
+                    }
                 }
             }
-        }
-    }
-
-    fn add_beside(&mut self, at: usize, bin: usize, fold: &Fold, first_earlier: bool, last_earlier: bool) {
-        let index = at * self.bins + bin;
-        let held = self.values[index];
-        self.values[index].add(fold);
-        if held.hours > 0 {
-            let value = &mut self.values[index];
-            if first_earlier && fold.first_bucket as i32 == held.first_bucket {
-                value.first = fold.first;
-            }
-            if last_earlier && fold.last_bucket as i32 == held.last_bucket {
-                value.last = held.last;
-            }
-        }
-        if let Some(totals) = self.totals.get_mut(index) {
-            totals.add(fold);
         }
     }
 
@@ -1253,6 +1217,24 @@ impl Chart {
             *totals = Totals { sum: if sum { totals.sum } else { 0 }, abs: if abs { totals.abs } else { 0 }, falls: if falls { totals.falls } else { 0 }, changes: if changes { totals.changes } else { 0 } };
         }
         self
+    }
+}
+
+fn pieced_after(covered: &[(i64, i64)], hour: i64) -> bool {
+    let bucket_end = (summary::bucket_of(hour, 0) + 1) * summary::bucket_hours(0);
+    covered.iter().any(|&(lo, _)| hour < lo && lo < bucket_end)
+}
+
+fn add_walked(held: &mut Bin, fold: &Fold, covered: &[(i64, i64)], (first_hour, last_hour): (i64, i64)) {
+    let before = *held;
+    held.add(fold);
+    if before.hours > 0 {
+        if pieced_after(covered, first_hour) && fold.first_bucket as i32 == before.first_bucket {
+            held.first = fold.first;
+        }
+        if pieced_after(covered, last_hour) && fold.last_bucket as i32 == before.last_bucket {
+            held.last = before.last;
+        }
     }
 }
 
@@ -1586,7 +1568,8 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
             (None, Some((lo, hi))) => Keys::Range(lo, hi),
             (None, None) => Keys::All,
         };
-        crate::points::points(recording, run, table, columns, walk.source, keys, from, to, &mut |point| {
+        let read = if before.is_some() { crate::points::points } else { crate::points::witnessed_points };
+        read(recording, run, table, columns, walk.source, keys, from, to, &mut |point| {
             if before.is_some() && point.hour == from {
                 walk.begin(point.key, point.covered, point.value, start);
             } else {
@@ -2194,7 +2177,35 @@ fn top_with(
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
-        false => grid.top_folded(&decoded, &walked, (&lacking, &walked_ends, summary::bucket_hours(level)), n, by),
+        false => {
+            let mut starts: Vec<i64> = lacking.iter().map(|&(first, ..)| first).chain(covered.iter().map(|&(lo, _)| lo)).collect();
+            starts.sort_unstable();
+            grid.top_folded(&decoded, &walked, &WalkGrid { lacking: &lacking, starts: &starts, ends: &walked_ends, covered: &covered, bucket_hours: summary::bucket_hours(level) }, n, by)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WalkGrid<'a> {
+    lacking: &'a [(i64, i64, i64)],
+    starts: &'a [i64],
+    ends: &'a [i64],
+    covered: &'a [(i64, i64)],
+    bucket_hours: i64,
+}
+
+impl WalkGrid<'_> {
+    fn mark(&self, hour: i64) -> u64 {
+        let bucket_last = |size: i64| (hour.div_euclid(size) + 1) * size - 1;
+        let last = match self.lacking.get(self.lacking.partition_point(|&(_, last, _)| last < hour)).filter(|&&(first, ..)| first <= hour) {
+            Some(&(_, last, size)) => bucket_last(size).min(last),
+            None => {
+                let range_last = self.ends[self.ends.partition_point(|&end| end < hour).min(self.ends.len() - 1)];
+                let before_piece = self.starts.get(self.starts.partition_point(|&start| start <= hour)).map_or(i64::MAX, |&start| start - 1);
+                bucket_last(self.bucket_hours).min(range_last).min(before_piece)
+            }
+        };
+        hour_mark(last)
     }
 }
 
@@ -2243,18 +2254,10 @@ impl Grid {
         &self,
         pieces: &[(Piece<'_>, ColumnFrame)],
         walked: &HashMap<u128, Row, foldhash::fast::RandomState>,
-        (lacking, walked_ends, bucket_hours): (&[(i64, i64, i64)], &[i64], i64),
+        grid: &WalkGrid<'_>,
         n: usize,
         by: By,
     ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
-        let walked_mark = |hour: i64| {
-            let bucket_last = |size: i64| (hour.div_euclid(size) + 1) * size - 1;
-            let last = match lacking.get(lacking.partition_point(|&(_, last, _)| last < hour)).filter(|&&(first, ..)| first <= hour) {
-                Some(&(_, last, size)) => bucket_last(size).min(last),
-                None => bucket_last(bucket_hours).min(walked_ends[walked_ends.partition_point(|&end| end < hour).min(walked_ends.len() - 1)]),
-            };
-            hour_mark(last)
-        };
         use std::cmp::Ordering;
         let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).chain(walked.keys().copied()).collect();
         keys.sort_unstable();
@@ -2271,19 +2274,8 @@ impl Grid {
                 if let Some(row) = walked.get(&key) {
                     for &(bin, walked_bin) in &row.bins {
                         if let Some(fold) = walked_bin.fold() {
-                            let mark = walked_mark(walked_bin.last_hour);
-                            if values[bin].hours == 0 {
-                                values[bin].add(&fold);
-                                marks[bin] = mark;
-                            } else if mark < marks[bin] {
-                                let mut combined = Bin::default();
-                                combined.add(&fold);
-                                combined.merge_later(&values[bin]);
-                                values[bin] = combined;
-                            } else {
-                                values[bin].add(&fold);
-                                marks[bin] = mark;
-                            }
+                            add_walked(&mut values[bin], &fold, grid.covered, (walked_bin.first_hour, walked_bin.last_hour));
+                            marks[bin] = marks[bin].max(grid.mark(walked_bin.last_hour));
                         }
                     }
                 }
