@@ -24,7 +24,7 @@ import { formatDateOnly } from '../valueFormat.ts';
 import { parseChartInspect, sampleSeriesValueAt } from './hitTest.ts';
 import { historyFits, lineHistory, LineTrace, type LineWindow } from './history.ts';
 import { formatChartAxisValue, type TimeChartLayout } from './layout.ts';
-import { seriesLookAt, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
+import { seriesLookAt, type ChartSeriesLook, type ChartStackBand, type TimeChartModel, type TimeChartSeriesModel } from './model.ts';
 import { drawChartRows, parseRowsInspect } from './rows.ts';
 
 export function timeChartLegendSpec(model: TimeChartModel, artCache?: LaneArtCache, ink?: string): LegendStripSpec | null {
@@ -64,6 +64,11 @@ export function fitTimeChartLegend(model: TimeChartModel, layout: TimeChartLayou
 
 export function collectVisibleChartArt(model: TimeChartModel, layout: TimeChartLayout, legend: LegendFit | null): string[] {
   const items: ArtUrlInput[] = [];
+  for (const band of model.stack?.bands ?? []) {
+    if (band.identities?.length) {
+      visibleBandLooks(band, layout.xDomain[0], Math.min(model.hour, layout.xDomain[1]), (_, look) => items.push(look.flag));
+    }
+  }
   for (const label of layout.endLabels) {
     items.push(label.flag, label.icon);
   }
@@ -201,6 +206,42 @@ export function lineOf(series: TimeChartSeriesModel, layout: TimeChartLayout, un
   return { paths, end: trace.ended ? [layout.toX(trace.lastHour), layout.toY(trace.lastValue)] : null };
 }
 
+function visibleBandLooks(band: ChartStackBand, first: number, last: number, visit: (hour: number, look: ChartSeriesLook) => void): void {
+  if (first > last) return;
+  const runs = band.identities!;
+  let lo = 0, hi = runs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (runs[mid]!.lastHour < first) lo = mid + 1;
+    else hi = mid;
+  }
+  let at = first;
+  for (let i = lo; i < runs.length && runs[i]!.firstHour <= last; i++) {
+    const run = runs[i]!;
+    if (at < run.firstHour) visit(at, band);
+    visit(Math.max(at, run.firstHour), run);
+    at = run.lastHour + 1;
+  }
+  if (at <= last) visit(at, band);
+}
+
+function bandFill(ctx: Canvas2D, band: ChartStackBand, layout: TimeChartLayout, hour: number): string | CanvasGradient {
+  const [first, end] = layout.xDomain;
+  const last = Math.min(end, hour);
+  let color: string | undefined;
+  let gradient: CanvasGradient | undefined;
+  visibleBandLooks(band, first, last, (at, look) => {
+    if (color !== undefined && color !== look.color && end > first) {
+      gradient ??= ctx.createLinearGradient(layout.toX(first), 0, layout.toX(end), 0);
+      const offset = (at - first) / (end - first);
+      gradient.addColorStop(offset, color);
+      gradient.addColorStop(offset, look.color);
+    }
+    color = look.color;
+  });
+  return gradient ?? color ?? band.color;
+}
+
 function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour: number): readonly { readonly color: string; readonly x0: number; readonly x1: number }[] | null {
   const runs = s.identities;
   if (!runs || runs.length < 2) return null;
@@ -323,6 +364,9 @@ export function drawTimeChart(
     }
   } else if (model.mode === 'stack' && model.stack && model.stack.hours.length > 0) {
     const { hours, bands, total, step } = model.stack;
+    const fills = bands.some(band => band.identities?.length)
+      ? bands.map(band => band.identities?.length ? bandFill(ctx, band, layout, model.hour) : band.color)
+      : null;
     let count = 0;
     while (count < hours.length && hours[count]! <= model.hour) count++;
     if (count > 0 && step) {
@@ -362,7 +406,8 @@ export function drawTimeChart(
           const negAcc = new Float64Array(len);
           const endX = layout.toX(Math.min(run.endHour, layout.xDomain[1], model.hour));
           const xEndAt = (k: number) => (k + 1 < len ? layout.toX(hours[run.start + k + 1]!) : endX);
-          for (const band of bands) {
+          for (let bandIdx = 0; bandIdx < bands.length; bandIdx++) {
+            const band = bands[bandIdx]!;
             const botVals = new Float64Array(len);
             const topVals = new Float64Array(len);
             const sign = new Int8Array(len);
@@ -412,7 +457,7 @@ export function drawTimeChart(
                 ctx.lineTo(x, y);
               }
               ctx.closePath();
-              ctx.fillStyle = band.color;
+              ctx.fillStyle = fills?.[bandIdx] ?? band.color;
               ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
               ctx.fill();
               ctx.globalAlpha = 0.9;
@@ -520,7 +565,7 @@ export function drawTimeChart(
               }
             }
             ctx.closePath();
-            ctx.fillStyle = band.color;
+            ctx.fillStyle = fills?.[bandIdx] ?? band.color;
             ctx.globalAlpha = (band.opacity ?? 0.78) * (hoveredSeriesId && hoveredSeriesId !== band.id ? 0.35 : 1);
             ctx.fill();
             if (bandIdx < bands.length - 1 && len > 1) {
