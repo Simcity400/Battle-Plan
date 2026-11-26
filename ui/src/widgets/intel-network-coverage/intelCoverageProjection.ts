@@ -4,7 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import { NO_CELLS, steadyMatrixModel, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell } from '../../families/heat/matrixModel.ts';
 import { labelsAtReadings, resolveEntityFromReadView, sequentialRampColour } from '../../families/heat/scale.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
 import type { IntelCoverageBasis, IntelCoverageMeasure, IntelCoverageReply, IntelPair } from '../../generated/dashboard';
@@ -62,12 +62,7 @@ export function projectIntelCoverage(readView: BoundedReadView, options: IntelCo
       meta: { countryId: country.id },
     };
   });
-  const labels = displayed.map((_, index) => labelAt(index, readHour));
-  return steadyMatrixModel([{ ...reply, readHour: null }, entities, labels, options.measure, grey, accent], readHour, readHourOf => coverageMatrix(reply, entities, labels, grey, accent, options, hour, readHourOf));
-}
-
-function coverageMatrix(reply: IntelCoverageReply, entities: readonly MatrixAxisEntity[], labels: readonly string[], grey: string, accent: string, options: IntelCoverageProjectionOptions, hour: number, readHour: () => number): HeatMatrixModel {
-  const n = reply.displayed.length;
+  const n = displayed.length;
   const highest = Math.max(1, Number(reply.maxValue));
   const present = new Map<number, MatrixCell>();
   const networks = new Map<number, IntelPair>();
@@ -88,13 +83,13 @@ function coverageMatrix(reply: IntelCoverageReply, entities: readonly MatrixAxis
     },
     tooltip: (_row, _column, item, rowIndex, columnIndex) => {
       if (item.kind === 'diagonal') return null;
-      const title = `${labels[rowIndex]}’s network in ${labels[columnIndex]}`;
-      if (item.kind === 'missing') return { title, hour: readHour(), missingReason: item.reason };
-      if (item.kind === 'empty') return { title, hour: readHour(), items: [{ label: 'No intel network' }] };
+      const title = `${labelAt(rowIndex, readHour)}’s network in ${labelAt(columnIndex, readHour)}`;
+      if (item.kind === 'missing') return { title, hour: readHour, missingReason: item.reason };
+      if (item.kind === 'empty') return { title, hour: readHour, items: [{ label: 'No intel network' }] };
       const raw = networks.get(rowIndex * n + columnIndex);
       return {
         title,
-        hour: readHour(),
+        hour: readHour,
         items: raw
           ? [
               { label: 'Controlled states covered', value: String(raw.coveredControlled) },
@@ -106,7 +101,6 @@ function coverageMatrix(reply: IntelCoverageReply, entities: readonly MatrixAxis
           : [],
       };
     },
-    readHour,
     warnings: reply.warnings,
   };
 }

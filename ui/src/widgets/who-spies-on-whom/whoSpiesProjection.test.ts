@@ -81,13 +81,3 @@ test('top pairs keep the product order and scale', () => {
   assert.deepEqual(model.rows.map(row => row.key), ['ENG>GER', 'GER>ENG']);
   assert.equal(model.scaleMax, 3);
 });
-
-test('spy matrix: a new census that changes no cell keeps the drawn model, and its tooltip carries the new read hour', () => {
-  const first = projectOperativeMatrix(view(reply));
-  const later = projectOperativeMatrix(view({ ...reply, readHour: HOUR - 1 }));
-  assert.equal(later, first, 'a sample-only change neither lays out nor paints again');
-  assert.equal(deriveMatrixTooltip(later, 0, 1)?.hour, HOUR - 1);
-  assert.equal(deriveMatrixTooltip(later, 0, later.columns.length)?.hour, HOUR - 1, 'the margin too');
-  const changed = projectOperativeMatrix(view({ ...reply, readHour: HOUR, most: 4 }));
-  assert.notEqual(changed, first, 'a changed census is a new model');
-});

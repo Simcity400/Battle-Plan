@@ -4,7 +4,7 @@ import { countryRowPresentation } from '../../families/bars/model.ts';
 import type { BarsWidgetDeclaration } from '../../families/bars/declaration.ts';
 import type { BoundedReadView, SourcePlan } from '../../families/contract.ts';
 import type { HeatMatrixWidgetDeclaration } from '../../families/heat/matrixDeclaration.ts';
-import { NO_CELLS, steadyMatrixModel, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
+import { NO_CELLS, type HeatMatrixModel, type HeatMatrixProjection, type MatrixAxisEntity, type MatrixCell, type MatrixMarginCell } from '../../families/heat/matrixModel.ts';
 import { resolveEntityFromReadView } from '../../families/heat/scale.ts';
 import type { FamilyPlanContext } from '../../families/plan.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
@@ -83,15 +83,13 @@ export function projectOperativeMatrix(readView: BoundedReadView): HeatMatrixMod
   };
   const rows = reply.rows.map(row => entity(row.country));
   const columns = reply.columns.map(entity);
-  return steadyMatrixModel([{ ...reply, readHour: null }, rows, columns], reply.readHour ?? hour, readHour => matrixOf(reply, rows, columns, hour, readHour));
-}
-
-function matrixOf(reply: OperativeMatrixReply, rows: readonly MatrixAxisEntity[], columns: readonly MatrixAxisEntity[], hour: number, readHour: () => number): HeatMatrixModel {
   const width = columns.length;
   const byPair = new Map<number, OperativeMatrixReply['cells'][number]>();
   for (const cell of reply.cells) byPair.set(cell.row * width + cell.column, cell);
   const most = Math.max(1, reply.most);
   const hasMissing = reply.rows.some(row => row.missing !== null || row.capacity.kind === 'missing');
+  const readHour = reply.readHour ?? hour;
+
   const present = new Map<number, MatrixCell>();
   for (const [at, found] of byPair) {
     const r = Math.floor(at / width);
@@ -139,14 +137,13 @@ function matrixOf(reply: OperativeMatrixReply, rows: readonly MatrixAxisEntity[]
     tooltip: (row, column, item, r, c) => {
       const found = byPair.get(r * width + c);
       if (item.kind === 'diagonal') {
-        if (!found) return { title: row.label, hour: readHour(), items: [{ label: 'No operatives on counter-intelligence', tone: 'muted' }] };
-        return { title: `${row.label}: ${operativesLabel(found.operatives.length)} on counter-intelligence at home`, hour: readHour(), items: operativeItems(found.operatives) };
+        if (!found) return { title: row.label, hour: readHour, items: [{ label: 'No operatives on counter-intelligence', tone: 'muted' }] };
+        return { title: `${row.label}: ${operativesLabel(found.operatives.length)} on counter-intelligence at home`, hour: readHour, items: operativeItems(found.operatives) };
       }
-      if (item.kind === 'missing') return { title: `${row.label} → ${column.label}`, hour: readHour(), missingReason: item.reason };
-      if (!found) return { title: `${row.label} → ${column.label}`, hour: readHour(), items: [{ label: 'No operatives', tone: 'muted' }] };
-      return { title: `${row.label} has ${operativesLabel(found.operatives.length)} in ${column.label}`, hour: readHour(), items: operativeItems(found.operatives) };
+      if (item.kind === 'missing') return { title: `${row.label} → ${column.label}`, hour: readHour, missingReason: item.reason };
+      if (!found) return { title: `${row.label} → ${column.label}`, hour: readHour, items: [{ label: 'No operatives', tone: 'muted' }] };
+      return { title: `${row.label} has ${operativesLabel(found.operatives.length)} in ${column.label}`, hour: readHour, items: operativeItems(found.operatives) };
     },
-    readHour,
     warnings: reply.warnings,
   };
 }
