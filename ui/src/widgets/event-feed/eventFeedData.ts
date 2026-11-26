@@ -26,7 +26,7 @@ const strike = (row: Record<string, unknown>): boolean => {
 };
 
 const optionalText = (value: unknown) => value === undefined || typeof value === 'string';
-const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && text(value.description)
+const item = (value: unknown): value is EventFeedItem => object(value) && text(value.token) && text(value.name) && text(value.icon) && (value.description === undefined || text(value.description))
   && optionalText(value.nameMissing) && optionalText(value.gaps)
   && (value.options === undefined || (Array.isArray(value.options) && value.options.every(option => object(option) && int(option.ordinal) && text(option.name))));
 const roles = (row: Record<string, unknown>): boolean => {
@@ -62,7 +62,7 @@ export function validateFeedRow(value: unknown): EventFeedRow {
     || value.hour > value.readHour || typeof value.exact !== 'boolean' || typeof value.category !== 'string' || !CATEGORY_NAMES.has(value.category)
     || typeof value.kind !== 'string' || !KINDS.has(value.kind) || !Array.isArray(value.tags) || !value.tags.every(opaqueTag)
     || (!NATIVE_KINDS.has(value.kind) && value.kind !== 'eventWindowPresented' && value.tags.length === 0) || !roles(value) || !cause(value) || !strike(value) || !decisionState(value)
-    || !(value.item === null || item(value.item)) || !(value.amount === null || (int(value.amount) && value.amount > 0))) {
+    || !(value.item === null || item(value.item)) || !(value.amount == null || (int(value.amount) && value.amount > 0))) {
     throw new Error('The event feed row is malformed.');
   }
   const row = value as unknown as EventFeedRow;

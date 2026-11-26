@@ -733,9 +733,12 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     assert_eq!(state_of(&feed_b1, "native:1:11"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:12"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
     assert_eq!(state_of(&feed_b1, "native:1:13"), Some(DecisionLifecycleState::Failed { observed_hour: 101 }));
+    assert_eq!(state_of(&feed_b1, "native:1:9"), None, "a list row leaves out a state no list shows");
+    let feed_opened = EventFeedTail::load(&replay_source, &EventFeedTailParams { row: Some("native:1:9".into()), ..ask("1") }, &context, &cancel).unwrap();
     assert_eq!(
-        state_of(&feed_b1, "native:1:9"),
-        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+        state_of(&feed_opened, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        "the opened row keeps it, with its reason"
     );
 
     let card_end_state = |page: &super::ScriptOccurrenceTailReply, opener_id: &str| {
@@ -749,9 +752,12 @@ fn decision_failed_state_handles_same_hour_duplicates_branch_boundaries_and_miss
     let cards_b1_at_100 = DecisionsTail::load(&replay_source, &cards_at(100), &context, &cancel).unwrap();
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:2"), Some(DecisionLifecycleState::Active));
     assert_eq!(card_end_state(&cards_b1_at_100, "native:1:4"), Some(DecisionLifecycleState::Active));
+    assert_eq!(card_end_state(&cards_b1_at_100, "native:1:9"), None, "a listed card leaves out a state no list shows");
+    let card_opened = DecisionsTail::load(&replay_source, &ScriptTailParams { row: Some("native:1:9".into()), ..cards_at(100) }, &context, &cancel).unwrap();
     assert_eq!(
-        card_end_state(&cards_b1_at_100, "native:1:9"),
-        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() })
+        card_end_state(&card_opened, "native:1:9"),
+        Some(DecisionLifecycleState::NotApplicable { reason: DECISION_NO_MISSION_LIFECYCLE.to_owned() }),
+        "the opened card keeps it, with its reason"
     );
 
     let cards_b1 = DecisionsTail::load(&replay_source, &cards_at(101), &context, &cancel).unwrap();

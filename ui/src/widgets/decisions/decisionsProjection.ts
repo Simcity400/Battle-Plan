@@ -67,11 +67,11 @@ function decisionCostInfo(
   at: DecisionAt,
 ): { readonly cell: TableCell; readonly costText: string | null; readonly costMissing: string | null } {
   const chargeable = at.edges.filter(edge => CHARGEABLE_KINDS.has(edge.row.kind));
-  const proven = at.edges.filter(edge => edge.costs !== null);
+  const proven = at.edges.filter(edge => edge.costs != null);
   if (!chargeable.length && !proven.length) {
     return { cell: { value: notApplicable('No selection cost'), blank: true }, costText: null, costMissing: null };
   }
-  if (chargeable.some(edge => edge.costs === null)) {
+  if (chargeable.some(edge => edge.costs == null)) {
     return {
       cell: { value: notRecorded('Decision cost was not recorded') },
       costText: null,

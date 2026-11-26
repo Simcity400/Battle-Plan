@@ -126,8 +126,9 @@ test('decisions projection formats unsigned costs with PP icon, keeps unknown ch
   const start = day(3, 1);
   const hour = start + 10;
   const missionOcc = card([edge('decisionActivated', start, { days: 10 })]);
+  const { costs: _absent, ...unproven } = edge('decisionSelected', start);
   const mixedUnknownOcc = card([
-    edge('decisionSelected', start, { costs: null }),
+    unproven as ScriptEdge,
     edge('decisionTimeoutEffect', start + 2, { costs: [] }),
   ]);
   const chargedOcc = card([edge('decisionSelected', start, { days: 10, costs: pp('-5000000') })]);

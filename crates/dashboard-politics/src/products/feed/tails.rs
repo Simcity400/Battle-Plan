@@ -590,6 +590,9 @@ fn listed(rows: &mut [Option<EventFeedRow>], description: bool, window: bool) {
         if !window {
             row.window = None;
         }
+        if matches!(row.decision_state, Some(super::DecisionLifecycleState::NotApplicable { .. })) {
+            row.decision_state = None;
+        }
     }
 }
 

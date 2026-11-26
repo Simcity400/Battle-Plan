@@ -187,6 +187,8 @@ pub struct EventFeedRow {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub participants: Option<[Option<String>; 2]>,
     pub item: Option<EventFeedItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub amount: Option<u32>,
     #[doc = " A native event's recorded cause; absent when the recording holds none."]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -340,6 +342,8 @@ pub struct EventFeedItem {
     pub token: Option<String>,
     pub name: Option<String>,
     pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
     pub description: Option<String>,
     #[doc = " A scripted event's authored options in the game's order; absent for other kinds and when"]
     #[doc = " the event's content does not resolve."]
