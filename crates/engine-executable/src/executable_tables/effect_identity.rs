@@ -1,0 +1,2 @@
+pub const CONTEXT: u64 = 0x142A31830;
+pub const SCRIPTED: u64 = 0x142A31900;

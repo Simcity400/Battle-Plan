@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use engine_executable::executable_tables::{self, Tables};
+pub use crate::effect_keys::EffectShape;
 pub use synthetic_game::Executable;
 
 #[derive(Clone, Copy)]

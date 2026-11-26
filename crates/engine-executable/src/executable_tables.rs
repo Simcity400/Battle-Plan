@@ -2,6 +2,7 @@
 pub mod auxiliary;
 pub mod commands;
 pub mod cursors;
+pub mod effect_identity;
 pub mod folding;
 pub mod keywords;
 pub mod numeric;
