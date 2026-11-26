@@ -4,7 +4,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { createBoundedReadView, createBoundedSlice, displayedHour } from '../../families/boundedView.ts';
 import { compileFollowPlan, readPlanExact } from '../../families/broker.ts';
-import type { FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
+import type { BoundedSeries, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { ReadTarget, unitEntries } from '../../families/readUnits.ts';
 import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
 import { TIME_CHART_VIEWS } from '../manifest/time-chart.ts';
@@ -155,7 +155,7 @@ test('autonomy lines keys by slot, preserves missing progress with reason, filte
     binHours: 1,
     decimals: 5,
     buckets: createBoundedSlice([
-      { firstHour: 100, lastHour: 300, firstValue: 0.4, lastValue: 0.82, lastValueHour: 300, minValue: 0.4, minHour: 100, maxValue: 0.82, maxHour: 300, firstBreak: true, hasBreak: false },
+      { firstHour: 200, lastHour: 300, firstValue: 0.4, lastValue: 0.82, lastValueHour: 300, minValue: 0.4, minHour: 200, maxValue: 0.82, maxHour: 300, firstBreak: true, hasBreak: false },
     ], 1),
     straddling: 'none' as const,
     missing: createBoundedSlice([], 0),
@@ -230,6 +230,85 @@ test('the exact audit reads the dated autonomy levels, so a correct picture has 
   const exact = await readPlanExact(autonomyLinesDeclaration.sources(makeCtx(), { following: false, staticSpan: null }), 300, { client, following: false, timeMode: 'pin', branch: { firstHour: 100, lastHour: 600 }, window: null, staticSpan: null, gate: { recorded: (h: number) => h, span: (a: number, b: number) => ({ firstHour: a, lastHour: b }) } as never });
   assert.ok(exact, 'an exact read exists');
   assert.equal(asked.length, 1);
+});
+
+test('a subject that became independent keeps its history', () => {
+  const formerKey = countryKey(14);
+  const tile = {
+    tag: formerKey, from: 100, binHours: 1, decimals: 5,
+    buckets: createBoundedSlice([{ firstHour: 100, lastHour: 150, firstValue: 0.3, lastValue: 0.6, lastValueHour: 150, minValue: 0.3, minHour: 100, maxValue: 0.6, maxHour: 150, firstBreak: true, hasBreak: false }], 1),
+    straddling: 'none' as const, missing: createBoundedSlice([], 0), validInterval: [100, 300] as const,
+  };
+  const reply: AutonomyLevelsReply = { levels: [], subjects: [], missing: null, warnings: [] };
+  const ctx = makeCtx({ countriesAre: 'overlords' });
+  const model = autonomyLinesProjection.project(createBoundedReadView({ hour: displayedHour(300), series: new Map([['main', new Map([[formerKey, tile]])]]), panels: new Map([['head', reply]]) }),
+    autonomyLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }));
+  assert.equal(model.empty ?? null, null, 'never "No subjects at this time" while recorded history exists');
+  assert.deepEqual(model.series.map(s => [s.id, s.headValue, s.endLabel]), [[formerKey, null, null]], 'drawn as history, with no head and no end label');
+  assert.deepEqual(model.auditRows, [], 'a former subject has no reading at the hour to audit');
+});
+
+test('a faction-joined overlord draws subjects from the join, and the keyed subject request preserves the same dates', () => {
+  const selected = (countriesAre: string) => {
+    const base = makeCtx({ countriesAre });
+    const ctx: FamilyPlanContext = { ...base, countries: { ...base.countries, all: false, filter: { ...base.countries.filter, passing: { AAA: [[200, 320], [400, 600]] } } } };
+    const read = autonomyLinesDeclaration.sources(ctx, { following: true, staticSpan: null }).entries.find(entry => entry.name === 'main')!.read;
+    assert.ok(read.shape === 'pixel-binned');
+    return read;
+  };
+  const dates = [{ firstHour: 200, lastHour: 320 }, { firstHour: 400, lastHour: 600 }];
+  assert.deepEqual(selected('overlords').family.overlords, [['AAA', dates]]);
+  const subjects = selected('subjects');
+  assert.deepEqual(subjects.tags, ['AAA']);
+  assert.deepEqual(subjects.within?.get('AAA'), dates);
+  assert.equal(subjects.top, undefined);
+  const subject = makeSubject({ subject: 'BBB', subjectId: 42, overlord: 'AAA' });
+  const tile = { ...emptyTile, tag: countryKey(42), missing: createBoundedSlice([{ firstHour: 200, lastHour: 210, reason: 'No progress' }], 1) };
+  const gap = historyModel(tile, [subject], 260, { bySubject: false, filter: { passing: { AAA: [[200, 210], [400, 600]] }, bounds: [], unrecorded: [] } });
+  assert.equal(gap.series[0]?.absentReason, 'Outside the selected countries at this date');
+  assert.ok(gap.hoverDetail?.items.some(item => item.missingReason === gap.series[0]?.absentReason));
+});
+
+const emptyTile: BoundedSeries = {
+  tag: 'AAA', from: 100, binHours: 1, decimals: 5, buckets: createBoundedSlice([null, null], 2),
+  straddling: 'none', missing: createBoundedSlice([], 0), validInterval: [100, 300],
+};
+
+function historyModel(tile: BoundedSeries, subjects: AutonomySubject[] = [], hoverHour = 250, options?: Partial<AutonomyLinesOptions>) {
+  const ctx = makeCtx({ countriesAre: 'subjects' });
+  const reply: AutonomyLevelsReply = { levels: [], subjects, missing: null, warnings: [] };
+  const view = createBoundedReadView({
+    hour: displayedHour(300), series: new Map([['main', new Map([[tile.tag, tile]])]]),
+    panels: new Map([['head', reply]]), hovers: new Map([['hover', { hour: hoverHour, data: reply }]]),
+    identity: fakeIdentity({ AAA: { name: 'Alpha', tag: 'AAA', color: '#888888' }, [countryKey(41)]: { name: 'Alpha', tag: 'AAA', color: '#888888' } }),
+  });
+  return autonomyLinesProjection.project(view, { ...autonomyLinesDeclaration.projectionOptions(ctx, { extent: [100, 600], surface: '#111111' }),
+    filterAll: false, filter: { passing: { AAA: [[100, 600]], BBB: [[100, 600]] }, unrecorded: [], bounds: [] }, ...options });
+}
+
+test('a never-subject tag draws nothing while a subject with only missing progress keeps its history', () => {
+  const never = historyModel(emptyTile);
+  assert.deepEqual(never.series, []);
+  assert.equal(never.empty?.message, 'No matching subjects at this time.');
+  const gap = { firstHour: 110, lastHour: 180, reason: 'No recorded progress range' };
+  const former = historyModel({ ...emptyTile, missing: createBoundedSlice([gap], 1) });
+  assert.deepEqual(former.series.map(series => series.missingSpans), [[gap]]);
+  assert.ok(former.hoverDetail?.items.some(item => item.label === 'Alpha' && item.missingReason));
+});
+
+test('the exact hover lists a former subject beside a current subject and its peak counts toward the axis', () => {
+  const bucket = { firstHour: 120, lastHour: 160, firstValue: 0.8, lastValue: 1.35, lastValueHour: 160, minValue: 0.8, minHour: 120, maxValue: 1.35, maxHour: 160, firstBreak: true, hasBreak: false };
+  const tile = { ...emptyTile, buckets: createBoundedSlice([bucket], 1) };
+  const model = historyModel(tile, [makeSubject({ subject: 'BBB', subjectId: 42, overlord: 'CCC' })]);
+  assert.ok(model.hoverDetail?.items?.some(item => item.value === '50%'));
+  const former = model.series.find(series => series.key === 'AAA')!;
+  assert.ok(model.hoverDetail?.items.some(item => item.label === 'Alpha' && item.swatch === former.color && item.missingReason === 'Not a subject at this date'));
+  assert.deepEqual(model.yAxis.fixed, [0, 150]);
+  assert.equal(historyModel(tile, [], 110).hoverDetail, null, 'the first relationship is still in the future at the hovered hour');
+  const selectedAgain = historyModel(tile, [makeSubject({ subject: 'AAA', subjectId: 41, overlord: 'CCC' })], 250,
+    { filter: { passing: { AAA: [[100, 160], [300, 600]] }, unrecorded: [], bounds: [] } });
+  assert.ok(selectedAgain.hoverDetail?.items.some(item => item.label === 'Alpha' && item.missingReason === 'Outside the selected countries at this date'
+    && item.swatch === selectedAgain.series[0]!.color));
 });
 
 test('a quiet stretch of played hours makes zero extra requests for autonomy lines', async () => {

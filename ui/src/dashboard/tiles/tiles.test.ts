@@ -61,6 +61,44 @@ const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 const TAGS = ['GER', 'ITA', 'JAP', 'SOV', 'USA', 'ENG', 'FRA', 'CHI'];
 const LAST = 105_541;
 
+test('tile views share a compact key for identical membership and release it with the last view and tile', async () => {
+  const cache = new TileCache(0);
+  const overlords = Array.from({ length: 1500 }, (_, slot) => [slot, [{ firstHour: 100, lastHour: 600 }]]);
+  const config = () => 'source|1|1|' + JSON.stringify({ kind: 'autonomy-lines', overlords });
+  const viewport = { from: 100, to: 110, end: 110, width: 20 };
+  const open = () => {
+    const held = lane(['AAA'], 600, { hold: true });
+    const view = new TileView(cache, { ...held, key: config() }, () => {});
+    view.setView(viewport);
+    return { view, held };
+  };
+  const first = open(), same = open();
+  assert.equal(same.held.asked.length, 0);
+  const [key] = cache.inflight.keys();
+  assert.ok(key && key.length < 30, 'individual tile keys do not contain the family configuration');
+  overlords[1499] = [1499, [{ firstHour: 101, lastHour: 600 }]];
+  const changed = open();
+  assert.equal(changed.held.asked.length, 1, 'one different membership date needs a different tile');
+  first.view.close();
+  first.held.release();
+  changed.held.release();
+  await settle();
+  assert.ok(cache.has(key), 'the second view still holds the tile');
+  same.view.close();
+  changed.view.close();
+  assert.equal(cache.size, 0);
+  overlords[1499] = [1499, [{ firstHour: 100, lastHour: 600 }]];
+  const next = open();
+  assert.ok(!cache.inflight.has(key), 'closing the last view and evicting its tile released the old configuration');
+  next.held.release();
+  await settle();
+  cache.forget('another-source|');
+  assert.equal(cache.size, 1);
+  cache.forget('source|');
+  assert.equal(cache.size, 0, 'source invalidation reaches compact keys');
+  next.view.close();
+});
+
 function following(head: number, days = 365): TileViewport {
   const [from, end] = playbackDomain('window', [0, LAST], head, days * 24, 24);
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width: 600 };

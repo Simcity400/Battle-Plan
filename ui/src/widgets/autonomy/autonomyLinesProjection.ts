@@ -1,5 +1,5 @@
 import { tailColour } from '../../charts/palette.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { artUrlOf, flagChoiceArt } from '../../families/art/provider.ts';
 import { auditRow, type FamilyAuditRow } from '../../families/auditRow.ts';
 import {
@@ -10,7 +10,7 @@ import {
   type SourcePlan,
 } from '../../families/contract.ts';
 import type { DeclaredCountryFilter } from '../../families/plan.ts';
-import type { HolderRun } from '../../families/holders.ts';
+import { inHourRanges, type HolderRun } from '../../families/holders.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
 import { identityName } from '../../families/table/identityCell.ts';
@@ -29,7 +29,7 @@ import {
   ALL_POPULATION_TOP,
 } from '../../families/time-chart/seriesHelpers.ts';
 import { formatScalar, notRecordedLabel } from '../../families/valueFormat.ts';
-import type { AutonomyLevelsReply, AutonomySubject } from '../../generated/dashboard';
+import type { AutonomyLevelsReply, AutonomyLinesTileFamily, AutonomySubject } from '../../generated/dashboard';
 import {
   filterNext,
   levelTitle,
@@ -37,7 +37,6 @@ import {
   percentText,
   subjectKeyOf,
   validateAutonomyLevels,
-  within,
 } from './autonomyLevelsProjection.ts';
 
 const COLOURED = 8;
@@ -53,6 +52,10 @@ export interface AutonomyLinesOptions {
   readonly surface: string;
 }
 
+function historicalReason(roster: ReadonlySet<string>, key: string): string {
+  return roster.has(key) ? 'Outside the selected countries at this date' : 'Not a subject at this date';
+}
+
 function matchingSubjects(
   subjects: readonly AutonomySubject[],
   filter: DeclaredCountryFilter,
@@ -63,7 +66,7 @@ function matchingSubjects(
   if (!passing) return subjects;
   return subjects.filter(item => {
     const tag = bySubject ? item.subject : item.overlord;
-    return tag !== null && within(passing[tag], hour);
+    return tag !== null && inHourRanges(passing[tag], hour);
   });
 }
 
@@ -71,10 +74,20 @@ function formatScore(value: number): string {
   return formatScalar(value, { decimals: 0, maxDecimals: 1 });
 }
 
+function subjectKeys(subjects: readonly AutonomySubject[]): Set<string> {
+  const keys = new Set<string>();
+  for (const item of subjects) {
+    keys.add(subjectKeyOf(item));
+    if (item.subject) keys.add(item.subject);
+  }
+  return keys;
+}
+
 function buildHoverDetail(
   readView: BoundedReadView,
   options: AutonomyLinesOptions,
-  looks: ReadonlyMap<string, ReturnType<typeof countrySeriesLooks> extends ReadonlyMap<string, infer T> ? T : never>,
+  series: readonly TimeChartSeriesModel[],
+  firstSeen: ReadonlyMap<string, number>,
 ): ChartHoverDetail | null {
   let hover;
   try {
@@ -101,12 +114,17 @@ function buildHoverDetail(
     };
   }
   const eligible = matchingSubjects(reply.subjects, options.filter, options.bySubject, hour);
-  if (eligible.length === 0) return null;
+  const roster = subjectKeys(reply.subjects);
+  const byKey = new Map<string, TimeChartSeriesModel>();
+  for (const line of series) {
+    byKey.set(line.key, line);
+    if (line.bounded) byKey.set(line.bounded.tag, line);
+  }
 
   const items: TooltipListItem[] = [];
   for (const item of eligible) {
     const key = subjectKeyOf(item);
-    const look = looks.get(key);
+    const look = byKey.get(key) ?? (item.subject && byKey.get(item.subject));
     const atHour = look ? seriesLookAt(look, hour) : null;
     const label = atHour ? atHour.name : identityName(readView, 'country', key, hour);
     const who = readView.who('country', key, hour);
@@ -141,6 +159,19 @@ function buildHoverDetail(
         : '';
       items.push({ label: 'Score', value: `${formatScore(item.score)}${bounds}`, indent: true });
     }
+  }
+  const current = subjectKeys(eligible);
+  for (const [key, first] of firstSeen) {
+    if (first > hour || current.has(key)) continue;
+    const look = byKey.get(key);
+    const atHour = look && seriesLookAt(look, hour);
+    const flag = atHour?.flag && artUrlOf(atHour.flag.art);
+    items.push({
+      label: atHour?.name ?? identityName(readView, 'country', key, hour),
+      missingReason: historicalReason(roster, key), tone: 'muted', divider: items.length > 0,
+      swatch: atHour?.color ?? tailColour(options.surface),
+      ...(flag ? { countryFlag: { flag } } : {}),
+    });
   }
   return items.length > 0 ? { hour, replacesSeries: true, items } : null;
 }
@@ -236,7 +267,21 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
     }
 
     const shown = matchingSubjects(reply.subjects, options.filter, options.bySubject, hour);
-    if (shown.length === 0) {
+    const mainTiles = readView.series('main');
+    const current = subjectKeys(shown);
+    const firstSeen = new Map<string, number>();
+    let maxSeen = 100;
+    for (const [key, tile] of mainTiles ?? []) {
+      let first = tile.missing.at(0)?.firstHour ?? Infinity;
+      for (const bucket of tile.buckets) {
+        if (!bucket) continue;
+        first = Math.min(first, bucket.firstHour);
+        maxSeen = Math.max(maxSeen, bucket.maxValue * 100);
+      }
+      if (first <= hour) firstSeen.set(key, first);
+    }
+    const former = [...firstSeen.keys()].filter(key => !current.has(key));
+    if (shown.length === 0 && former.length === 0) {
       return {
         kind: 'autonomy',
         measureTitle: 'Autonomy',
@@ -256,7 +301,6 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       };
     }
 
-    const mainTiles = readView.series('main');
     const orderedKeys: string[] = [];
     const seen = new Set<string>();
     const itemByKey = new Map<string, AutonomySubject>();
@@ -269,17 +313,18 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       }
     }
 
-    const looks = countrySeriesLooks(orderedKeys, readView, {
+    const allKeys = [...orderedKeys, ...former];
+    const looks = countrySeriesLooks(allKeys, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: true,
+      colouredCount: orderedKeys.length,
       tailColor: tailColour(options.surface),
     });
 
     const seriesList: TimeChartSeriesModel[] = [];
     const auditRows: FamilyAuditRow[] = [];
-    let maxSeen = 100;
     for (let i = 0; i < orderedKeys.length; i++) {
       const key = orderedKeys[i]!;
       const item = itemByKey.get(key)!;
@@ -293,13 +338,6 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       const known = item.progressMilli !== null;
       const headValue = known ? item.progressMilli! / 1000 : null;
       if (headValue !== null && headValue > maxSeen) maxSeen = headValue;
-      if (tile) {
-        for (const bucket of tile.buckets) {
-          if (!bucket) continue;
-          const scaled = bucket.maxValue * 100;
-          if (Number.isFinite(scaled) && scaled > maxSeen) maxSeen = scaled;
-        }
-      }
       const absentReason = known ? null : (item.progressUnknown ?? notRecordedLabel());
       const levelName = levelTitle(reply.levels, item.level);
 
@@ -334,8 +372,31 @@ export const autonomyLinesProjection: TimeChartProjection<AutonomyLinesOptions> 
       ));
     }
 
+    const roster = subjectKeys(reply.subjects);
+    for (const key of former) {
+      const look = looks.get(key)!;
+      const tile = mainTiles?.get(key) ?? null;
+      seriesList.push({
+        id: key,
+        key,
+        name: look.name,
+        color: look.color,
+        role: 'tail',
+        step: true,
+        bounded: tile,
+        valueScale: 100,
+        headValue: null,
+        headHour: hour,
+        flag: look.flag,
+        identities: look.identities,
+        missingSpans: missingSpansOf(tile),
+        absentReason: historicalReason(roster, key),
+        endLabel: null,
+      });
+    }
+
     const yTop = maxSeen > 100 ? Math.ceil(maxSeen / 25) * 25 : 100;
-    const hoverDetail = buildHoverDetail(readView, options, looks);
+    const hoverDetail = buildHoverDetail(readView, options, seriesList, firstSeen);
     return {
       kind: 'autonomy',
       measureTitle: 'Autonomy',
@@ -367,6 +428,20 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
   countries: { mode: 'filter' },
   sources: (ctx: FamilyPlanContext): SourcePlan => {
     const common = { source: ctx.track.source, branch: ctx.branch.id, offset: ctx.track.axisOffset };
+    const passing = ctx.countries.filter.passing;
+    const selected = passing ? Object.keys(passing).sort() : [];
+    const within = passing ? new Map(selected.map(tag => [tag, passing[tag]!.flatMap(([first, last]) => ctx.gateSpan(first, last) ?? [])])) : null;
+    const bySubject = ctx.options.countriesAre === 'subjects';
+    const tiles: SourceEntry['read'] = within && bySubject
+      ? { shape: 'pixel-binned', coverage: { mode: 'keyed', keys: selected }, family: { kind: 'autonomy-lines' }, tags: selected, within, headQuery: null }
+      : {
+          shape: 'pixel-binned',
+          coverage: { mode: 'population', form: 'all' },
+          family: { kind: 'autonomy-lines', ...(within ? { overlords: [...within].map(([tag, spans]) => [countryFromKey(tag), spans]) } : {}) } satisfies AutonomyLinesTileFamily,
+          tags: [],
+          top: { n: ALL_POPULATION_TOP },
+          headQuery: null,
+        };
     const head: SourceEntry = {
       name: 'head',
       ...common,
@@ -381,21 +456,10 @@ export const autonomyLinesDeclaration: TimeChartWidgetDeclaration<AutonomyLinesO
       },
     };
     return {
-      owner: `autonomy:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}`,
+      owner: `autonomy:lines:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${bySubject ? 's' : 'o'}:${passing ? selected.join(',') : '*'}`,
       exactEntry: head,
       entries: [
-        {
-          name: 'main',
-          ...common,
-          read: {
-            shape: 'pixel-binned',
-            coverage: { mode: 'population', form: 'all' },
-            family: { kind: 'autonomy-lines' },
-            tags: [],
-            top: { n: ALL_POPULATION_TOP },
-            headQuery: null,
-          },
-        },
+        { name: 'main', ...common, read: tiles },
         head,
         {
           name: 'hover',
