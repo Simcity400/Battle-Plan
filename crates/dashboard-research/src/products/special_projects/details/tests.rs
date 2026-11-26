@@ -456,27 +456,29 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
 
 #[test]
 fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predecessors_project_values() {
-    use replay_data::rows::{ProjectVariable, ProjectVariableStore};
+    use replay_data::rows::{CountryRow, ProjectVariable, ProjectVariableStore};
     dashboard_core::test_fixtures::game::enter();
     const REPLACED: i32 = 35;
     const BEFORE: i32 = 30;
     const OWN: i32 = 38;
     const TRANSFERRED: i32 = 39;
     const LISTED: i32 = 40;
+    const OTHER_OWNER: u32 = 21;
     const RIVAL_OWNER: u32 = 9003;
     let root = std::env::temp_dir().join(format!("special-project-iteration-{}-{:?}", std::process::id(), std::thread::current().id()));
     for (path, text) in [
         ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}"),
+        ("common/country_tags/fixture.txt", "HOM=countries/home.txt ALT=countries/other.txt"),
         ("common/special_projects/specialization/test.txt", "mod_science={}"),
         (
             "common/special_projects/prototype_rewards/test.txt",
-            "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE if={limit={is_special_project_completed=sp:rival} add_political_power=5} else={add_political_power=7} if={limit={ITA={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}}}}}",
+            "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE if={limit={is_special_project_completed=sp:rival} add_political_power=5} else={add_political_power=7} if={limit={ALT={is_special_project_completed=sp:rival}} add_political_power=3} else={add_political_power=4}}}}}",
         ),
         (
             "common/special_projects/projects/test.txt",
             "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward}} rival={specialization=mod_science generic_prototype_rewards={mod_reward}}",
         ),
-        ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n"),
+        ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"$VAL|1$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n"),
     ] {
         let file = root.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -497,8 +499,12 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         project.state.not_completed = 1;
         let rival = ProjectRow { owner: RIVAL_OWNER, local_id: 1, definition_id: 79, completed: 1, ..Default::default() };
         set(&mut frame, TableId::Projects, TableRows::Projects(vec![project, rival]));
+        let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] else { unreachable!() };
+        countries[0].tag = b"HOM".to_vec();
+        countries.insert(0, CountryRow { id: OTHER_OWNER, canonical_slot: 8, tag: b"ALT".to_vec(), ..Default::default() });
+        let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+        links.insert(1, CountryLinkRow { id: OTHER_OWNER, canonical_slot: 8 });
         if hour >= TRANSFERRED {
-            let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
             links.push(CountryLinkRow { id: RIVAL_OWNER, canonical_slot: 7 });
         }
         let choice = |ordinal, date| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() };
@@ -510,7 +516,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
         set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.collect()));
         let mut slices: Vec<SliceReadRow> = [TableId::Projects, TableId::ProjectHistory]
             .into_iter()
-            .flat_map(|table| [(11, hour), (21, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
+            .flat_map(|table| [(11, hour), (OTHER_OWNER, hour), (9001, hour), (RIVAL_OWNER, hour.min(TRANSFERRED - 1))].map(|(owner, sample_hour)| SliceReadRow { table: table.index() as u32, owner, sample_hour }))
             .collect();
         slices.sort_by_key(|row| (row.table, row.owner));
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -530,7 +536,7 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-iteration-rendered".into(), revision: "1".into() }, path, Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let load = LoadContext { content: Some(options) };
     let iteration = |ordinal: u32, hour: i32| {
-        let request = json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": LISTED });
+        let request = json!({ "branchId": "1", "country": "HOM", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": LISTED });
         let text = (entry::<SpecialProjectIterationAt>().registered.load)(&source, "lease", request, &load, &AtomicBool::new(false)).unwrap();
         let mut reply: Value = serde_json::from_str(&text).unwrap();
         reply["data"].take()
@@ -538,11 +544,11 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     let own = iteration(1, OWN);
     assert_eq!(own["unavailable"], Value::Null, "{own}");
     assert!(own["sections"].to_string().contains("Variable 2"), "a choice made by the project the listing names shows its own values: {own}");
-    assert!(own["sections"].to_string().contains("PP7") && !own["sections"].to_string().contains("PP5"), "every owner of the country supplies its read and none completed the rival, so the else branch is shown: {own}");
-    assert!(own["sections"].to_string().contains("PP4") && !own["sections"].to_string().contains("PP3"), "O-S1: the trigger asks about ITA, every owner of which supplies its read, so its else branch is shown too: {own}");
+    assert!(own["sections"].to_string().contains("Political power +7.0") && !own["sections"].to_string().contains("Political power +5.0"), "every owner of the country supplies its read and none completed the rival, so the else branch is shown: {own}");
+    assert!(own["sections"].to_string().contains("Political power +4.0") && !own["sections"].to_string().contains("Political power +3.0"), "O-S1: the trigger asks about ALT, every owner of which supplies its read, so its else branch is shown too: {own}");
     let transferred = iteration(2, TRANSFERRED);
     let shown = transferred["sections"].to_string();
-    assert!(!shown.contains("PP5") && !shown.contains("PP7"), "O-S1: the second owner's completed rival was read before it joined the country, so neither branch is shown: {transferred}");
+    assert!(!shown.contains("Political power +5.0") && !shown.contains("Political power +7.0"), "O-S1: the second owner's completed rival was read before it joined the country, so neither branch is shown: {transferred}");
     assert!(transferred["refusals"].as_object().is_some_and(|refusals| !refusals.is_empty()), "and the reward is refused by name: {transferred}");
     let before = iteration(0, BEFORE);
     assert!(before["unavailable"].as_str().is_some_and(|why| why.contains("not proven to be this one")), "a choice whose project the choice-hour read does not prove is withheld whole, before anything is rendered: {before}");
