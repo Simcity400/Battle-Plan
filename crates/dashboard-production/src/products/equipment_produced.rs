@@ -502,6 +502,7 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         return Ok(reply);
     };
     let Holder::Found { id, .. } = run.holder else {
+        reply.warnings.extend(query.holders.not_known(&params.country, hour));
         return Ok(reply);
     };
     let first = stretch.first.max(run.first);

@@ -1731,10 +1731,11 @@ impl Product for RaidTallyAt {
             RaidTallyMetric::Both | RaidTallyMetric::Launched => launched,
         };
         let mut rows_out: Vec<RaidTallyAtRow> = if let Some(asked) = explicit_countries {
-            let resolved: Vec<(Country, Option<u32>, String)> = asked
+            let resolved: Vec<(Country, Option<u32>, String, Option<String>)> = asked
                 .into_iter()
                 .map(|country| {
                     let tag = query.holders.name(&country, hour);
+                    let missing = query.holders.not_known(&country, hour);
                     let slot = match query.holders.at(&country, hour).map(|run| run.holder) {
                         Some(Holder::Found { slot, .. }) => Some(slot),
                         _ => match country {
@@ -1743,12 +1744,12 @@ impl Product for RaidTallyAt {
                         },
                     };
                     let out_country = slot.map_or(country, Country::Slot);
-                    (out_country, slot, tag)
+                    (out_country, slot, tag, missing)
                 })
                 .collect();
             let mut counts: Vec<(u32, u32)> = vec![(0, 0); resolved.len()];
             for event in cached.events.iter().take_while(|event| event.hour <= hour) {
-                for (index, (country, slot, _)) in resolved.iter().enumerate() {
+                for (index, (country, slot, _, _)) in resolved.iter().enumerate() {
                     let matches = match (slot, event.slot) {
                         (Some(asked_slot), Some(event_slot)) => *asked_slot == event_slot,
                         (_, None) => query.holders.goes_by(country, &event.tag, event.hour),
@@ -1766,12 +1767,12 @@ impl Product for RaidTallyAt {
             resolved
                 .into_iter()
                 .zip(counts)
-                .map(|((country, _, tag), (launched, succeeded))| RaidTallyAtRow {
+                .map(|((country, _, tag, missing), (launched, succeeded))| RaidTallyAtRow {
                     country,
                     tag,
                     launched,
                     succeeded,
-                    missing: None,
+                    missing,
                 })
                 .collect()
         } else {

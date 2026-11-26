@@ -1144,7 +1144,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             });
             naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
                 Some(slot) => scoped_at(query, content, key, hour, slot),
-                None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
+                None => Err(query.holders.not_known(&params.country, hour).unwrap_or_else(|| "The project's name needs its country's scope, which is unresolved".to_owned())),
             })
         });
         let person = |person: &Person| match person {

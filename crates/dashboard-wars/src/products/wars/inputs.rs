@@ -159,7 +159,7 @@ pub(crate) struct Countries {
 pub(crate) trait Resolve {
     fn slot(&self, raw: u32) -> Option<u32>;
     fn holder(&self, slot: u32) -> Option<(&str, u32)>;
-    fn country_slot(&self, country: &dashboard_base::products::Country) -> Option<u32>;
+    fn country_slot(&self, country: &dashboard_base::products::Country) -> Result<u32, String>;
 }
 
 #[derive(Clone)]
@@ -203,7 +203,7 @@ impl Hour {
         let recorded_view = state.local.as_ref().and_then(|r| countries.add(resolve, if r.country as i32 > 0 { r.country } else { r.observer_country }).ok());
         let view = match view {
             Some(country) => {
-                let slot = resolve.country_slot(country).ok_or_else(|| country.tag().map_or_else(|| "Not in this recording: viewpoint".to_owned(), |tag| format!("Not in this recording: viewpoint {tag}")))?;
+                let slot = resolve.country_slot(country)?;
                 countries.held(resolve, slot)?;
                 slot
             }

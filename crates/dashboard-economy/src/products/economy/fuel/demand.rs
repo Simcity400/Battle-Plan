@@ -21,7 +21,7 @@ use ts_rs::TS;
 pub(crate) fn holder_id(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result<u32> {
     match query.holders.at(tag, hour).map(|run| run.holder) {
         Some(Holder::Found { id, .. }) => Ok(id),
-        _ => Err(dashboard_core::refused("Fuel country is unavailable at this hour")),
+        _ => Err(dashboard_core::refused(query.holders.not_known(tag, hour).unwrap_or_else(|| "Fuel country is unavailable at this hour".to_owned()))),
     }
 }
 

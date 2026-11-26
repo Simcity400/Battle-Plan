@@ -235,10 +235,10 @@ impl Resolve for Resolved<'_> {
         self.names.at(slot, self.hour)
     }
 
-    fn country_slot(&self, country: &Country) -> Option<u32> {
-        match self.holders.at(country, self.hour)?.holder {
-            Holder::Found { slot, .. } => Some(slot),
-            Holder::Unresolved => None,
+    fn country_slot(&self, country: &Country) -> Result<u32, String> {
+        match self.holders.at(country, self.hour).map(|run| run.holder) {
+            Some(Holder::Found { slot, .. }) => Ok(slot),
+            _ => Err(self.holders.not_known(country, self.hour).unwrap_or_else(|| country.tag().map_or_else(|| "Not in this recording: viewpoint".to_owned(), |tag| format!("Not in this recording: viewpoint {tag}")))),
         }
     }
 }
