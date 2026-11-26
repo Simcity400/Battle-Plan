@@ -5,10 +5,10 @@ use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, cost, identity::Holder};
-use dashboard_text::{catalogue::View, identity::character_script_token, metadata::link_slot, party_names::{PartyNaming, party_key_for_tag_checked}};
+use dashboard_text::{catalogue::View, identity::character_script_literal, metadata::link_slot, party_names::{PartyNaming, party_key_for_tag_checked}};
 use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::rows::{PORTRAIT_CIVILIAN, PORTRAIT_LARGE, TableId, tables};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::TableView;
 use replay_recording::columnar_frames::{Damage, DamageScope};
 use serde::Serialize;
 use std::{
@@ -412,27 +412,35 @@ fn naming_changes(recording: &replay_recording::columnar_frames::Recording, run:
     Ok(Naming { hours: settled(hours, first, last), reads })
 }
 
+#[derive(Default)]
 struct Recasts {
     hours: Vec<i32>,
     reads: Vec<(i32, i32)>,
+    characters: History,
+    lexical: History,
 }
 
 fn character_changes(recording: &replay_recording::columnar_frames::Recording, run: u32, columns: &Columns, looks: &History, first: i32, last: i32) -> io::Result<Recasts> {
     let ids: Vec<u128> = numbers(looks, columns.look[1]).into_iter().map(u128::from).collect();
     if ids.is_empty() {
-        return Ok(Recasts { hours: Vec::new(), reads: Vec::new() });
+        return Ok(Recasts::default());
     }
     let mut hours = Vec::new();
     let characters = unless_withheld(lanes::history(recording, run, TableId::Characters, &columns.character, Keys::These(&ids), first, last))?;
     steps_into(&characters, &mut hours);
-    let words: Vec<u128> = numbers(&characters, columns.character[0]).into_iter().filter(|word| *word != 0).map(u128::from).collect();
-    if !words.is_empty() {
-        steps_into(&unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?, &mut hours);
+    let words: Vec<u128> = numbers(&characters, columns.character[0]).into_iter().map(u128::from).collect();
+    let lexical = if words.is_empty() {
+        History::default()
+    } else {
+        unless_withheld(lanes::history(recording, run, TableId::LexicalTokens, &[columns.literal], Keys::These(&words), first, last))?
+    };
+    if words.iter().any(|&word| word != 0) {
+        hours.extend(lexical.keys.iter().filter(|(word, _)| *word != 0).flat_map(|(_, steps)| steps.iter().map(|step| step.hour)));
         read_bounds_into(&unless_withheld(complete_reads(recording, run, TableId::LexicalTokens, first, last))?, &mut hours);
     }
     let reads = unless_withheld(complete_reads(recording, run, TableId::Characters, first, last))?;
     read_bounds_into(&reads, &mut hours);
-    Ok(Recasts { hours: settled(hours, first, last), reads })
+    Ok(Recasts { hours: settled(hours, first, last), reads, characters, lexical })
 }
 
 struct Stepper<'a> {
@@ -617,12 +625,12 @@ impl Parties {
                 reads.get(unread[source]).is_some_and(|&(from, _)| from <= hour)
             });
             let changed = [renames.hours.binary_search(&hour).is_ok(), recasts.hours.binary_search(&hour).is_ok()];
-            self.observe(query, run, (hour, end), who, (asked, &renames.reads, &recasts.reads), columns, read, changed, [&held, &looks, &politics])?;
+            self.observe(query, run, (hour, end), who, (asked, &renames.reads, &recasts), columns, read, changed, [&held, &looks, &politics])?;
         }
         Ok(())
     }
 
-    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &[(i32, i32)]), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
+    fn observe(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), (asked, naming, characters): (&Country, &NamingReads, &Recasts), columns: &Columns, read: [bool; SOURCES.len()], [renamed, recast]: [bool; 2], [held, looks, politics]: [&Stepper<'_>; SOURCES.len()]) -> io::Result<()> {
         let [parties_read, looks_read, politics_read] = read;
         if parties_read {
             self.observe_parties(query, run, (hour, end), who, (asked, naming), columns, renamed, held)?;
@@ -668,7 +676,7 @@ impl Parties {
         Ok(())
     }
 
-    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, (recast, characters): (bool, &[(i32, i32)]), looks: &Stepper<'_>) -> io::Result<()> {
+    fn observe_leader(&mut self, query: &Query<'_>, run: u32, (hour, end): (i32, i32), who: (u32, u32), columns: &Columns, (recast, characters): (bool, &Recasts), looks: &Stepper<'_>) -> io::Result<()> {
         let continues = self.look_last.is_some_and(|(at, seen)| seen == who && i64::from(at) + 1 == i64::from(hour));
         self.look_last = Some((end, who));
         if let (Some(ideology), Some(character), Some(cells)) = (looks.place(columns.look[0]), looks.place(columns.look[1]), looks.shown().next()) {
@@ -679,7 +687,7 @@ impl Parties {
                 _ => {
                     let person = match id {
                         Some(id) => {
-                            let leader = leader_at(query, run, hour, id, read_at(characters, hour))?;
+                            let leader = characters.leader_at(query, run, hour, id, columns)?;
                             Some(match self.people.iter().position(|held| *held == leader) {
                                 Some(index) => index as u32,
                                 None => {
@@ -765,26 +773,33 @@ fn party_tags(query: &Query<'_>, run: u32, hour: i32, raw: u32, who: (u32, u32),
     })
 }
 
-fn leader_at(query: &Query<'_>, run: u32, hour: i32, id: u32, read: bool) -> io::Result<Leader> {
-    let recording = query.replay.recording();
-    let key = [u128::from(id)];
-    let reads = [
-        replay_lanes::at::Read { table: TableId::Characters, columns: None, keys: replay_lanes::at::Keys::These(&key) },
-        replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: replay_lanes::at::Keys::These(&key) },
-    ];
-    let frame = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
-    let row = frame.complete::<tables::Characters>().ok().filter(|_| read).and_then(|rows| rows.iter().find(|row| row.id == id)).cloned();
-    let token = match &row {
-        Some(row) => {
-            let words = u32::try_from(row.name_token_id).ok().map(u128::from).into_iter().collect::<Vec<_>>();
-            let lexicon: DecodedFrame = cost::storage(|| replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&words) }]))?;
-            lexicon.complete::<tables::LexicalTokens>().ok().and_then(|lexical| character_script_token(row, lexical)).unwrap_or_default().to_owned()
-        }
-        None => String::new(),
-    };
-    let name = row.as_ref().and_then(|row| std::str::from_utf8(&row.token).ok()).unwrap_or_default().to_owned();
-    let portrait = recorded_portrait(frame.complete::<tables::CharacterPortraits>().ok(), id, PORTRAIT_CIVILIAN, PORTRAIT_LARGE);
-    Ok(Leader { character: IdeaCharacter { id, token, name }, portrait })
+impl Recasts {
+    fn leader_at(&self, query: &Query<'_>, run: u32, hour: i32, id: u32, columns: &Columns) -> io::Result<Leader> {
+        let key = u128::from(id);
+        let cells = match self.characters.reading(key, hour) {
+            lanes::Reading::Cells(cells) if read_at(&self.reads, hour) => Some(cells),
+            _ => None,
+        };
+        let cell = |column| self.characters.columns.binary_search(&column).ok().and_then(|at| cells.map(|row| row[at]));
+        let name = cell(columns.character[1]).and_then(|value| self.characters.text(value)).and_then(|text| std::str::from_utf8(text).ok());
+        let word = cell(columns.character[0]).and_then(number).and_then(|word| u32::try_from(word).ok());
+        let token = word.and_then(|word| {
+            let at = self.lexical.statuses.partition_point(|held| held.last < hour);
+            let status = self.lexical.statuses.get(at).filter(|held| held.first <= hour)?;
+            if !replay_recording::columnar_frames::complete(status.status) {
+                return None;
+            }
+            let literal = match self.lexical.reading(u128::from(word), hour) {
+                lanes::Reading::Cells(row) => self.lexical.text(row[0]),
+                _ => None,
+            };
+            character_script_literal(word, literal)
+        });
+        let reads = [replay_lanes::at::Read { table: TableId::CharacterPortraits, columns: None, keys: Keys::These(std::slice::from_ref(&key)) }];
+        let frame = cost::storage(|| replay_lanes::at::frame(query.replay.recording(), run, hour, &reads))?;
+        let portrait = recorded_portrait(frame.complete::<tables::CharacterPortraits>().ok(), id, PORTRAIT_CIVILIAN, PORTRAIT_LARGE);
+        Ok(Leader { character: IdeaCharacter { id, token: token.unwrap_or_default().to_owned(), name: name.unwrap_or_default().to_owned() }, portrait })
+    }
 }
 
 fn chart_color(color: [f32; 4]) -> [u8; 3] {
