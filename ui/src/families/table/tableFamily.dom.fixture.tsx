@@ -414,8 +414,8 @@ window.tableFamilyDom = {
         const snap = clock.getSnapshot();
         const view = pipeline.view(pipeId);
         if (snap.playing && (view?.h ?? 0) >= 14) playingDuringAdvance = true;
-        return snap.playing && (view?.h ?? 0) >= targetHour && !view?.dim;
-      }, () => `Live playback did not reach hour ${targetHour} (at ${pipeline.view(pipeId)?.h})`);
+        return snap.playing && (view?.h ?? 0) >= targetHour && !view?.dim && installs >= 6;
+      }, () => `Live playback did not reach hour ${targetHour} with six installs (at ${pipeline.view(pipeId)?.h}, ${installs} installs)`);
       const playingBeforePause = clock.getSnapshot().playing;
       const playCommits = commits;
       const playReads = totalInstallReads;

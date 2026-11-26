@@ -190,7 +190,12 @@ function rememberHeights(
   const end = windowOffset + rows.length;
   const held = heightMemories.get(owner);
   const same = held !== undefined && (Object.keys(basis) as (keyof HeightBasis)[]).every(key => held.basis[key] === basis[key]);
-  if (same && [...held.rows].every(([ordinal, row]) => ordinal < windowOffset || ordinal >= end || rows[ordinal - windowOffset]!.key === row.key)) {
+  const matches = ([ordinal, row]: readonly [number, MeasuredRow]) => {
+    if (ordinal < windowOffset || ordinal >= end) return true;
+    const at = rows[ordinal - windowOffset]!;
+    return at.kind === 'loading' || at.key === row.key;
+  };
+  if (same && [...held.rows].every(matches)) {
     for (const [ordinal, row] of held.rows) if (ordinal < windowOffset || ordinal >= end) memory.set(ordinal, row);
   }
   for (let i = 0; i < rows.length; i++) {
