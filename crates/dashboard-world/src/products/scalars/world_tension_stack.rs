@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
-    sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
+    sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -379,7 +379,6 @@ struct BranchTension {
     events: Vec<CachedEvent>,
     event_index: EventIndex,
     index: OnceLock<Arc<SlotIndex>>,
-    views: Mutex<Vec<(WorldTensionStackParams, Arc<Mutex<Playback>>)>>,
     listing_missing: Vec<MissingSpan>,
     tension_missing: Vec<MissingSpan>,
     aggregates_missing: Vec<MissingSpan>,
@@ -390,6 +389,7 @@ struct BranchTension {
 
 #[derive(Default)]
 struct Cache {
+    views: Vec<(Weak<BranchTension>, WorldTensionStackParams, Arc<Mutex<Playback>>)>,
     branches: BTreeMap<u64, Arc<BranchTension>>,
     gates: BTreeMap<u64, Arc<Mutex<()>>>,
 }
@@ -397,6 +397,7 @@ struct Cache {
 pub(crate) fn forget(source: &Source) {
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    cache.views.clear();
     cache.branches.clear();
     cache.gates.clear();
 }
@@ -675,7 +676,6 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         names: SlotNames::new(&query.holders),
         event_index: EventIndex::new(&events),
         index: OnceLock::new(),
-        views: Default::default(),
         tension,
         sum,
         slots,
@@ -870,7 +870,11 @@ pub(super) fn compute_stack(
     mut slot_next_change: impl FnMut(u32, i32) -> Option<i32>,
 ) -> StackOutput {
     let mut playback = Playback::default();
-    playback.index = Some(Arc::new(SlotIndex::new(input, group_filter, None)));
+    let base = Arc::new(SlotIndex::new(input, None, None, None));
+    playback.index = Some(match group_filter {
+        Some(group) => Arc::new(SlotIndex::new(input, Some(group), None, Some(base))),
+        None => base,
+    });
     let next_name = input.slots.keys().filter_map(|&slot| slot_next_change(slot, last)).min();
     let selected = |tag: &str| filter.is_some_and(|tags| tags.contains(tag));
     let wanted = filter.map(|_| &selected as &dyn Fn(&str) -> bool);
@@ -1222,20 +1226,28 @@ impl Product for WorldTensionStack {
             }
         };
         let view = {
-            let mut views = held.views.lock().unwrap_or_else(|error| error.into_inner());
-            let at = views.iter().position(|(key, _)| key.layers == params.layers && key.top == params.top
+            let state = source.state::<Cache>();
+            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+            let views = &mut cache.views;
+            let branch_key = Arc::downgrade(&held);
+            let at = views.iter().position(|(branch, key, _)| branch.ptr_eq(&branch_key) && key.layers == params.layers && key.top == params.top
                 && key.values == params.values && key.include_stack == params.include_stack && key.include_events == params.include_events
                 && key.group == params.group && key.countries == params.countries);
             let entry = at.map(|at| views.remove(at)).unwrap_or_else(|| {
                 let countries = params.countries.as_ref().map(|tags| Arc::new(tags.iter().cloned().collect()));
-                (params.clone(), Arc::new(Mutex::new(Playback { countries, ..Playback::default() })))
+                (branch_key, params.clone(), Arc::new(Mutex::new(Playback { countries, ..Playback::default() })))
             });
-            let view = Arc::clone(&entry.1);
+            let view = Arc::clone(&entry.2);
             views.push(entry);
             if views.len() > 8 { views.remove(0); }
             view
         };
-        let mut playback = view.lock().unwrap_or_else(|error| error.into_inner());
+        let mut playback = view.lock().unwrap_or_else(|error| {
+            let mut state = error.into_inner();
+            *state = Playback { countries: state.countries.take(), ..Playback::default() };
+            view.clear_poison();
+            state
+        });
         let group_filter = if let Some(group) = &params.group {
             if playback.group.is_none() {
                 let groups = groups::shared(source, &query, context, cancelled)?;
@@ -1314,10 +1326,10 @@ impl Product for WorldTensionStack {
                 aggregates_missing: &held.aggregates_missing,
             };
             if playback.index.is_none() {
-                playback.index = Some(if let Some(group) = group_filter.as_deref() {
-                    Arc::new(SlotIndex::new(&input, Some(group), Some(named)))
-                } else {
-                    held.index.get_or_init(|| Arc::new(SlotIndex::new(&input, None, Some(named)))).clone()
+                let base = held.index.get_or_init(|| Arc::new(SlotIndex::new(&input, None, Some(named), None)));
+                playback.index = Some(match group_filter.as_deref() {
+                    Some(group) => Arc::new(SlotIndex::new(&input, Some(group), None, Some(Arc::clone(base)))),
+                    None => Arc::clone(base),
                 });
             }
             let out = compute_window(

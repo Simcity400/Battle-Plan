@@ -168,9 +168,7 @@ impl Plot {
             if curve.points.is_empty() {
                 hours.push(start);
             }
-            let edits = index.slot_edits(slot, start, last);
-            dashboard_base::products::at_hour::count_rows(|| edits.len() as u64);
-            hours.extend_from_slice(edits);
+            index.plot_edits(slot, start, last, &mut hours);
             let spans = input.aggregates_complete;
             let at = spans.partition_point(|span| span.1.saturating_add(1) < start);
             for &(lo, hi) in spans[at..].iter().take_while(|span| span.0 <= last) {

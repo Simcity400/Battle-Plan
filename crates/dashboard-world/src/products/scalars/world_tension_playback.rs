@@ -16,12 +16,6 @@ impl Edits {
     pub(super) fn next(&self, after: i32) -> Option<i32> {
         self.0.range((Excluded(after), Unbounded)).next().map(|(&hour, _)| hour)
     }
-
-    fn crossed(&self, old: i32, new: i32, keys: &mut HashSet<u32>) {
-        for (_, edited) in self.0.range((Excluded(old.min(new)), Included(old.max(new)))) {
-            keys.extend(edited);
-        }
-    }
 }
 
 struct Peaks {
@@ -69,21 +63,32 @@ impl Peaks {
 }
 
 pub(super) struct SlotIndex {
+    source: Option<std::sync::Arc<SlotIndex>>,
     dates: HashMap<u32, Vec<i32>>,
     changes: Edits,
     peaks: BTreeMap<u32, Peaks>,
 }
 
 impl SlotIndex {
-    pub(super) fn new(input: &StackInput<'_>, group: Option<&DatedGroupFilter>, names: Option<&SlotNames>) -> Self {
+    pub(super) fn new(
+        input: &StackInput<'_>,
+        group: Option<&DatedGroupFilter>,
+        names: Option<&SlotNames>,
+        source: Option<std::sync::Arc<SlotIndex>>,
+    ) -> Self {
         let mut changes = Edits::default();
         let mut peaks = BTreeMap::new();
         for (&slot, runs) in input.slots {
+            if group.is_some_and(|g| !g.runs_by_slot.contains_key(&slot)) {
+                continue;
+            }
             let mut values = Vec::new();
             for &(first, last, value) in runs {
-                changes.add(first, slot);
-                if let Some(next) = last.checked_add(1) {
-                    changes.add(next, slot);
+                if source.is_none() {
+                    changes.add(first, slot);
+                    if let Some(next) = last.checked_add(1) {
+                        changes.add(next, slot);
+                    }
                 }
                 if let Some(raw) = value.filter(|&value| value != 0) {
                     if let Some(group) = group {
@@ -118,16 +123,53 @@ impl SlotIndex {
                 dates.entry(slot).or_default().push(hour);
             }
         }
-        Self { changes, peaks, dates }
+        Self { changes, peaks, dates, source }
     }
 
-    pub(super) fn slot_edits(&self, slot: u32, first: i32, last: i32) -> &[i32] {
-        let Some(dates) = self.dates.get(&slot) else { return &[] };
-        &dates[dates.partition_point(|&hour| hour < first)..dates.partition_point(|&hour| hour <= last)]
+    fn indexes(&self) -> impl Iterator<Item = &SlotIndex> {
+        self.source.as_deref().into_iter().chain(std::iter::once(self))
+    }
+
+    pub(super) fn plot_edits(&self, slot: u32, first: i32, last: i32, out: &mut Vec<i32>) {
+        for index in self.indexes() {
+            if let Some(dates) = index.dates.get(&slot) {
+                let edits = &dates[dates.partition_point(|&hour| hour < first)..dates.partition_point(|&hour| hour <= last)];
+                dashboard_base::products::at_hour::count_rows(|| edits.len() as u64);
+                out.extend_from_slice(edits);
+            }
+        }
+    }
+
+    fn changed(&self, old: Window, window: Window) -> Option<HashSet<u32>> {
+        let mut remaining = self.peaks.len();
+        let mut slots = HashSet::new();
+        let mut ranges = [(old.first, window.first), (old.last, window.last), (old.rank?, window.rank?)];
+        for (a, b) in &mut ranges {
+            if *a > *b {
+                std::mem::swap(a, b);
+            }
+        }
+        ranges.sort_unstable();
+        let mut through = i32::MIN;
+        for (a, b) in ranges {
+            let after = a.max(through);
+            if after >= b {
+                continue;
+            }
+            through = b;
+            for index in self.indexes() {
+                for (_, ids) in index.changes.0.range((Excluded(after), Included(b))) {
+                    remaining = remaining.checked_sub(ids.len())?;
+                    dashboard_base::products::at_hour::count_rows(|| ids.len() as u64);
+                    slots.extend(ids.iter().filter(|slot| self.peaks.contains_key(slot)).copied());
+                }
+            }
+        }
+        Some(slots)
     }
 
     pub(super) fn next(&self, hour: i32) -> Option<i32> {
-        self.changes.next(hour)
+        self.indexes().filter_map(|i| i.changes.next(hour)).min()
     }
 }
 
@@ -174,14 +216,11 @@ impl Ranking {
             *self = Self::default();
             return;
         };
-        let mut changed = HashSet::new();
-        if let Some(old) = self.window.filter(|old| old.complete == window.complete) {
-            index.changes.crossed(old.first, window.first, &mut changed);
-            index.changes.crossed(old.last, window.last, &mut changed);
-            index.changes.crossed(old.rank.unwrap(), rank, &mut changed);
-        } else {
-            changed.extend(input.slots.keys());
-        }
+        let changed = self
+            .window
+            .filter(|old| old.complete == window.complete)
+            .and_then(|old| index.changed(old, window))
+            .unwrap_or_else(|| index.peaks.keys().copied().collect());
         self.window = Some(window);
         for slot in changed {
             dashboard_base::products::at_hour::count_rows(|| 1);
@@ -283,7 +322,9 @@ impl EventWindow {
         mut row_at: impl FnMut(&CachedEvent) -> Option<TensionStackEvent>,
     ) {
         let mut changed = HashSet::<u32>::new();
-        if let Some((old_first, old_last)) = self.bounds.filter(|(a, b)| *a <= last && first <= *b) {
+        if let Some((old_first, old_last)) =
+            self.bounds.filter(|(a, b)| *a <= last && first <= *b && a.abs_diff(first).max(b.abs_diff(last)) <= last.abs_diff(first))
+        {
             let latest = old_last.max(last);
             for (_, ids) in index.changes.0.range((Excluded(old_last.min(last)), Included(latest))) {
                 let from = ids.partition_point(|&id| events[id as usize].hour < first);

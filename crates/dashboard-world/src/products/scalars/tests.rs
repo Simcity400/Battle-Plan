@@ -108,7 +108,8 @@ fn tension_markers_keep_the_witness_at_their_hour_and_report_an_unread_listing()
 #[test]
 fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring() {
     use dashboard_base::{Source, SourceKey, products::{LoadContext, Product, at_hour::{counted, exact_panel}}, test_fixtures};
-    use replay_data::rows::{TableId, TableRows, ThreatCountryAggregateRow, ThreatSourceRow, WorldTensionRow};
+    use dashboard_query::series::ranked::{GroupKind, GroupMembership, GroupSelection};
+    use replay_data::rows::{HumanControllerRow, TableId, TableRows, ThreatCountryAggregateRow, ThreatSourceRow, WorldTensionRow};
     use replay_frame::frame::TableView;
     use std::{collections::BTreeSet, sync::Arc};
     use world_tension_stack::{TensionValueMode, WorldTensionStack, WorldTensionStackParams};
@@ -116,18 +117,26 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
     let amount = |hour: i32| if hour % 2 == 0 { i64::from(hour) } else { 47 };
     let frames = (100..=145).map(|hour| {
         let mut frame = test_fixtures::source(1, hour, None);
+        if hour >= 135 && let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] {
+            countries[0].tag = b"D01".to_vec();
+        }
+        *frame.tables[TableId::HumanControllers.index()] = TableView::Complete(TableRows::HumanControllers(
+            (125..139).contains(&hour).then_some(HumanControllerRow { country: 9001, count: 1 }).into_iter().collect()));
         *frame.tables[TableId::WorldTension.index()] = TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow { total_raw: hour.into(), ..Default::default() }]));
         *frame.tables[TableId::ThreatCountryAggregates.index()] = TableView::Complete(TableRows::ThreatCountryAggregates(
             (1..=48).map(|country_slot| ThreatCountryAggregateRow { country_slot, total_raw: if country_slot == 1 { amount(hour) } else { country_slot.into() } }).collect()));
+        if hour == 111 {
+            *frame.tables[TableId::ThreatCountryAggregates.index()] = TableView::Unavailable { reason: "Fixture contributions unavailable".into() };
+        }
         *frame.tables[TableId::ThreatSources.index()] = TableView::Complete(TableRows::ThreatSources(
-            (0..=hour - 100).map(|offset| ThreatSourceRow { ordinal: offset as u32, country: 9001, date: 100 + offset,
+            (0..=hour - 100).filter(|&offset| offset != 10 || hour < 113).map(|offset| ThreatSourceRow { ordinal: offset as u32, country: 9001, date: 100 + offset,
                 final_raw: if offset == 30 { hour.into() } else { 1 }, reason: b"fixture".to_vec(), ..Default::default() }).collect()));
         frame
     }).collect();
     let cancelled = false.into();
-    let replay = test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+    let replay = Arc::new(test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap());
     let source = Source::from_replay(SourceKey { source_id: "tension-played".into(), revision: "1".into() },
-        "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+        "synthetic.battleplan".into(), Arc::clone(&replay), &cancelled).unwrap();
     let load = LoadContext { content: None };
     let driver = exact_panel::<world_tension::WorldTension>(&source, &load, &serde_json::json!({ "branchId": "1" })).unwrap();
     let played: BTreeSet<i32> = test_fixtures::played(&source.replay(), &driver.exact().unwrap(), 130, 145)
@@ -167,7 +176,29 @@ fn world_tension_playback_visits_only_slot_and_event_edits_entering_or_expiring(
         assert_eq!(reply.events.iter().map(|e| e.hour).collect::<Vec<_>>(), (hour - 10..=hour).collect::<Vec<_>>());
         assert_eq!(reply.events.iter().find(|e| e.hour == 130).map(|e| &e.added_raw), (hour <= 140).then(|| hour.to_string()).as_ref());
     }
-    println!("slot and event edit visits: {visits:?}");
+    let cold = Source::from_replay(SourceKey { source_id: "fresh-tension".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), replay, &cancelled).unwrap();
+    let group = GroupSelection { kind: GroupKind::Humans, membership: GroupMembership::Hour, tag: None, id: None };
+    for (countries, group, top) in [(None, None, Some(2)), (Some(vec!["GER".into()]), None, None), (None, Some(group), None)] {
+        for (first, last) in [(100, 110), (100, 114), (100, 111), (124, 131), (132, 136), (104, 144), (118, 134), (100, 110)] {
+            let params = WorldTensionStackParams {
+                branch_id: "1".into(), first_hour: first, last_hour: last, layers: 2, values: TensionValueMode::Recorded,
+                countries: countries.clone(), top, group: group.clone(), width: None, include_stack: Some(true), include_events: Some(true),
+            };
+            world_tension_stack::forget(&cold);
+            let fresh = WorldTensionStack::load(&cold, &params, &load, &cancelled).unwrap();
+            let warm = WorldTensionStack::load(&source, &params, &load, &cancelled).unwrap();
+            assert_eq!(warm, fresh, "warm read differs at {first}..{last} for {params:?}");
+            if last == 111 && top.is_some() { assert_eq!(warm.refused.as_deref(), Some("Fixture contributions unavailable")); }
+            if last == 131 && top.is_some() { assert_eq!(warm.bands.iter().map(|b| b.slot).collect::<Vec<_>>(), [48, 1]); }
+            if last == 131 && group.is_some() { assert_eq!(warm.bands[0].slot, 7); }
+            if last == 136 && countries.is_some() { assert!(warm.bands.is_empty()); }
+            if last == 114 && countries.is_some() {
+                let removed = warm.events.iter().find(|event| event.hour == 110).unwrap();
+                assert_eq!(removed.last_read, Some(112));
+            }
+        }
+    }
     assert!(visits.iter().all(|&count| count <= 15 * 6), "stack and event visits for fifteen entry and expiry steps: {visits:?}");
 }
 
