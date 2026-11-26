@@ -700,7 +700,7 @@ export type ForceAtRow = { country: CountryRef,
 /**
  * The recorded slot holding the country at the hour; none where its holder is not resolved.
  */
-slot: number | null, tag: string, total: number | null, referenceTotal?: number | null, missing: string | null, values: Array<number | null>, partsMissing: string | null, };
+slot: number | null, tag: string, total: number | null, referenceTotal?: number | null, missing: string | null, partial?: string, partsPartial?: Array<string | null>, values: Array<number | null>, partsMissing: string | null, };
 export type ForceAtReply = { parts: Array<ForcePart>,
 /**
  * Each part's position in the recorded content's own list (unit groups, ship classes or roles, aircraft archetypes), in `parts` order; none where the content does not classify the part.

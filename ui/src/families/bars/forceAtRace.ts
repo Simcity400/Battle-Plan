@@ -3,7 +3,7 @@ import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
 import type { TooltipListItem } from '../host/tooltips.ts';
-import { knownValue, notRecorded, zeroValue, type Value } from '../value.ts';
+import { knownValue, notRecorded, partialValue, type Value } from '../value.ts';
 import { formatValueState, type ValueFormat } from '../valueFormat.ts';
 import type { ForceAtReply, ForceAtRow, ForcePart, NavalLossesAtReply } from '../../generated/dashboard';
 import { partColours } from './partColour.ts';
@@ -113,7 +113,9 @@ function isForceAtRow(v: unknown): v is ForceAtRow {
     && (v.referenceTotal === undefined || isNumOrNull(v.referenceTotal))
     && isTextOrNull(v.missing)
     && Array.isArray(v.values) && v.values.every(isNumOrNull)
-    && isTextOrNull(v.partsMissing);
+    && isTextOrNull(v.partsMissing)
+    && (v.partial === undefined || (typeof v.partial === 'string' && v.partial.length > 0 && v.total !== null))
+    && (v.partsPartial === undefined || (Array.isArray(v.partsPartial) && v.partsPartial.length === v.values.length && v.partsPartial.every(isTextOrNull)));
 }
 
 function isOrdinal(v: unknown): v is number | null {
@@ -159,7 +161,11 @@ export function witnessedPartItems(reply: ForceAtReply, item: ForceAtRow, decima
   return reply.parts.flatMap((part, at): TooltipListItem[] => {
     const raw = item.values[at] ?? null;
     if (raw === null) return item.values.length ? [{ label: forcePartLabel(part), missingReason: 'Not recorded at this hour' }] : [];
-    return raw > 0 ? [{ label: forcePartLabel(part), value: formatScaled(scaleRaw(raw, decimals, null).value, format) }] : [];
+    const reason = item.partsPartial?.[at] ?? (reply.parts.length === 1 ? item.partial : undefined);
+    return raw > 0 || reason ? [{
+      label: forcePartLabel(part), value: formatScaled(forceReading(raw, decimals, null).value, format),
+      ...(reason ? { partialReason: reason } : {}),
+    }] : [];
   });
 }
 
@@ -167,18 +173,13 @@ export function forcePartLabel(part: ForcePart): string {
   return part.name ?? (part.unresolved ? 'Name unavailable' : part.key);
 }
 
-function scaleRaw(raw: number | null, decimals: number, missingReason: string | null): { readonly value: Value<bigint | number>; readonly numeric: number | null } {
-  if (raw === null) {
-    return { value: notRecorded(missingReason ?? 'Not recorded at this hour'), numeric: null };
-  }
-  if (decimals === 0) {
-    return { value: raw === 0 ? zeroValue() : knownValue(raw), numeric: raw };
-  }
-  const num = raw / (10 ** decimals);
-  return { value: num === 0 ? zeroValue() : knownValue(num), numeric: num };
+export function forceReading(raw: number | null, decimals: number, missingReason: string | null, partial?: string | null): { readonly value: Value<number>; readonly numeric: number | null } {
+  if (raw === null) return { value: notRecorded(missingReason ?? 'Not recorded at this hour'), numeric: null };
+  const numeric = raw / (10 ** decimals);
+  return { value: partial ? partialValue(numeric, partial, { atLeast: true }) : knownValue(numeric), numeric };
 }
 
-function formatScaled(value: Value<bigint | number>, format: ValueFormat): string {
+export function formatScaled(value: Value<bigint | number>, format: ValueFormat): string {
   const fmt = formatValueState(value, format);
   if (fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial') return fmt.exact ?? fmt.text;
   return fmt.label;
@@ -208,17 +209,17 @@ export function projectForceAtReply(
   const rows: BarsDataRow[] = [];
   for (const item of reply.rows) {
     const { key, tag: displayTag, pres } = forceRowIdentity(readView, item);
-    const { value, numeric } = scaleRaw(item.total, config.decimals, item.missing);
+    const { value, numeric } = forceReading(item.total, config.decimals, item.missing, item.partial);
     const totalItem: TooltipListItem = value.kind === 'notRecorded'
       ? { label: config.valueLabel, missingReason: value.reason }
-      : { label: config.valueLabel, value: formatScaled(value, config.valueFormat) };
+      : { label: config.valueLabel, value: formatScaled(value, config.valueFormat), ...(item.partial ? { partialReason: item.partial } : {}) };
     const tooltipItems: TooltipListItem[] = [totalItem];
 
     if (config.referenceLabel && item.referenceTotal !== undefined) {
       if (item.referenceTotal === null) {
         tooltipItems.push({ label: config.referenceLabel, missingReason: 'Not recorded at this hour' });
       } else {
-        const refScaled = scaleRaw(item.referenceTotal, config.decimals, null);
+        const refScaled = forceReading(item.referenceTotal, config.decimals, null);
         tooltipItems.push({ label: config.referenceLabel, value: formatScaled(refScaled.value, config.valueFormat) });
       }
     }
@@ -239,7 +240,7 @@ export function projectForceAtReply(
             break;
           }
           if (rawPart <= 0) continue;
-          const scaled = scaleRaw(rawPart, config.decimals, null);
+          const scaled = forceReading(rawPart, config.decimals, null, item.partsPartial?.[i] ?? (reply.parts.length === 1 ? item.partial : undefined));
           partEntries.push({ part: reply.parts[i]!, color: colours[i]!, scaled });
         }
         if (anyMissing) {
@@ -256,7 +257,7 @@ export function projectForceAtReply(
               format: config.valueFormat,
               color: entry.color,
             });
-            tooltipItems.push({ label: partName, swatch: entry.color, value: formatScaled(entry.scaled.value, config.valueFormat) });
+            tooltipItems.push({ label: partName, swatch: entry.color, value: formatScaled(entry.scaled.value, config.valueFormat), ...(entry.scaled.value.kind === 'partial' ? { partialReason: entry.scaled.value.reason } : {}) });
           }
           if (built.length) segments = built;
         }

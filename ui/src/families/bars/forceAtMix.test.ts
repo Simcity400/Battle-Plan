@@ -5,7 +5,7 @@ import { createBoundedReadView, displayedHour } from '../boundedView.ts';
 import type { IdentityProvider } from '../plan.ts';
 import type { ForceAtReply } from '../../generated/dashboard';
 import { projectForceAtMix } from './forceAtMix.ts';
-import { validateNavalLossesAtReply } from './forceAtRace.ts';
+import { projectForceAtReply, validateNavalLossesAtReply } from './forceAtRace.ts';
 import { CATEGORY_LIMIT, categoricalPalette, colour, reservedGrey } from '../../charts/palette.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string }>): IdentityProvider {
@@ -36,7 +36,7 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
     ],
     ordinals: [0, 1],
     rows: [
-      { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, values: [25, 75], partsMissing: null },
+      { country: 'ENG', slot: null, tag: 'ENG', total: 100, missing: null, partial: 'Uncounted ship', values: [25, 75], partsPartial: ['Uncounted ship', null], partsMissing: null },
       { country: 'GER', slot: null, tag: 'GER', total: 50, missing: null, values: [30, null], partsMissing: null },
       { country: 'ITA', slot: null, tag: 'ITA', total: 40, missing: null, values: [12, 20], partsMissing: 'Part breakdown does not reconcile with the recorded total at this hour' },
     ],
@@ -64,7 +64,15 @@ test('projectForceAtMix builds share rows with legend and marks unreconciled par
   assert.equal(model.scaleUnit, 'Ships & convoys');
   const rows = model.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(rows[0]!.segments?.map(s => [s.label, s.share]), [['Ships', 0.25], ['Convoys', 0.75]]);
-  assert.equal(rows[0]!.readout?.primary, '100');
+  assert.equal(rows[0]!.readout?.primary, '100, partial: Uncounted ship');
+  assert.deepEqual(rows[0]!.tooltip?.items?.map(item => item.partialReason), ['Uncounted ship', 'Uncounted ship', undefined]);
+  const race = projectForceAtReply(view, reply, { surface: '#1e1e1e', top: 10, group: false, split: true }, {
+    decimals: 0, valueFormat: 'integer', scaleFormat: 'integer', scaleUnit: 'Losses',
+    valueLabel: 'Lost', partsLabel: 'Parts', emptyMessage: 'No losses.',
+  });
+  const first = race.rows.find((row): row is BarsDataRow => row.kind === 'data')!;
+  assert.deepEqual(first.value?.value, { kind: 'partial', value: 100, reason: 'Uncounted ship', atLeast: true });
+  assert.deepEqual(first.tooltip?.items?.map(item => item.partialReason), ['Uncounted ship', 'Uncounted ship', undefined]);
   assert.equal(rows[1]!.segments?.length, 0);
   assert.equal(rows[1]!.value?.value.kind, 'notRecorded');
   assert.deepEqual(model.legend?.map(l => l.label), ['Ships', 'Convoys']);

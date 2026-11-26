@@ -11,7 +11,7 @@ use dashboard_query::{
     Query,
     identity::{Holder, Holders, TAG_UNLINKED},
     read,
-    series::{Part, ranked::GroupSelection},
+    series::{MissingSpan, Part, ranked::GroupSelection},
 };
 use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
 use replay_recording::columnar_frames::Recording;
@@ -133,6 +133,8 @@ pub struct Counts {
     known: HashMap<u128, Runs>,
     counted_from: HashMap<u128, Runs>,
     totals: HashMap<u128, Runs>,
+    lost_from: HashMap<u128, Runs>,
+    refused: HashMap<u128, Runs>,
 }
 
 impl Counts {
@@ -144,12 +146,18 @@ impl Counts {
             }
             read::runs(recording, run, TABLE, summary::Source::Cell(column), Some(keys), from, to)
         };
-        Ok(Self { known: column(KNOWN, &runs)?, counted_from: column(COUNTED_FROM, &runs)?, totals: column(TOTAL, keys)? })
+        Ok(Self {
+            known: column(KNOWN, &runs)?,
+            counted_from: column(COUNTED_FROM, &runs)?,
+            totals: column(TOTAL, keys)?,
+            lost_from: column(LOST_FROM, &runs)?,
+            refused: column(UNKNOWN, keys)?,
+        })
     }
 
     #[cfg(test)]
     pub fn of(known: HashMap<u128, Runs>, counted_from: HashMap<u128, Runs>, totals: HashMap<u128, Runs>) -> Self {
-        Self { known, counted_from, totals }
+        Self { known, counted_from, totals, lost_from: HashMap::new(), refused: HashMap::new() }
     }
 
     pub fn baseline(&self, kind: u8, hour: i32) -> Option<i32> {
@@ -166,10 +174,9 @@ impl Counts {
 
     pub fn count(&self, kind: u8, key: u128, hour: i32, period: NavalPeriod) -> Option<i64> {
         let now = self.running(kind, key, hour)?;
-        match period {
-            NavalPeriod::Running => Some(now),
-            NavalPeriod::Month => {
-                let base = (month_start(hour) - 1).max(self.baseline(kind, hour)?);
+        match self.opening(kind, hour, period) {
+            None => Some(now),
+            Some(base) => {
                 if base >= hour {
                     return Some(0);
                 }
@@ -178,9 +185,55 @@ impl Counts {
         }
     }
 
-    fn edges(&self, out: &mut Vec<i32>) {
-        for runs in self.known.values().chain(self.counted_from.values()).chain(self.totals.values()) {
-            for &(first, last, _) in runs {
+    fn opening(&self, kind: u8, hour: i32, period: NavalPeriod) -> Option<i32> {
+        match period {
+            NavalPeriod::Running => None,
+            NavalPeriod::Month => Some((month_start(hour) - 1).max(self.baseline(kind, hour)?)),
+        }
+    }
+
+    fn retention(&self, kind: u8, hour: i32, period: NavalPeriod) -> Option<String> {
+        let run = Row::run_key(kind);
+        let from = at(self.lost_from.get(&run), hour)?;
+        if let Some(base) = self.opening(kind, hour, period) && from <= i64::from(base) {
+            let known = self.known.get(&run)?;
+            let index = known.partition_point(|&(_, last, _)| last < base);
+            let mut next = i64::from(base);
+            for &(first, last, value) in &known[index..] {
+                if i64::from(first) > next || value != Some(1) { break; }
+                if last >= hour { return None; }
+                next = i64::from(last) + 1;
+            }
+        }
+        let what = if kind == Row::SHIPS { "ship sinkings" } else { "convoy losses" };
+        Some(format!("Some {what} may be missing from hour {from}: hours went unread long enough for the game to forget sinkings, or its retention is not known."))
+    }
+
+    fn refused_count(&self, kind: u8, key: u128, hour: i32, period: NavalPeriod) -> i64 {
+        let runs = self.refused.get(&key);
+        let before = self.opening(kind, hour, period).and_then(|base| at(runs, base)).unwrap_or(0);
+        at(runs, hour).unwrap_or(0).saturating_sub(before).max(0)
+    }
+
+    fn partial(&self, kind: u8, key: u128, hour: i32, period: NavalPeriod) -> Option<String> {
+        let retention = self.retention(kind, hour, period);
+        let count = self.refused_count(kind, key, hour, period);
+        if count == 0 {
+            return retention;
+        }
+        let what = match (kind == Row::SHIPS, count == 1) {
+            (true, true) => "ship sinking", (true, false) => "ship sinkings",
+            (false, true) => "convoy loss", (false, false) => "convoy losses",
+        };
+        let refused = format!("{count} {what} could not be counted: the game listed an hour or a flag out of range.");
+        Some(match retention { Some(reason) => format!("{reason} {refused}"), None => refused })
+    }
+
+    fn edges(&self, out: &mut Vec<i32>, kind: u8, key: u128, lo: i32, hi: i32) {
+        let run = Row::run_key(kind);
+        for runs in [self.known.get(&run), self.counted_from.get(&run), self.lost_from.get(&run), self.totals.get(&key), self.refused.get(&key)].into_iter().flatten() {
+            let index = runs.partition_point(|&(_, last, _)| last < lo);
+            for &(first, last, _) in runs[index..].iter().take_while(|&&(first, _, _)| first <= hi) {
                 out.extend([first, last.saturating_add(1)]);
             }
         }
@@ -198,10 +251,7 @@ fn parts(kind: NavalKind) -> Vec<ForcePart> {
 }
 
 pub(super) fn month_bases(counts: &Counts, kinds: &[u8], hour: i32, period: NavalPeriod) -> Vec<Option<i32>> {
-    match period {
-        NavalPeriod::Running => vec![None; kinds.len()],
-        NavalPeriod::Month => kinds.iter().map(|&kind| Some((month_start(hour) - 1).max(counts.baseline(kind, hour).unwrap_or(hour)))).collect(),
-    }
+    kinds.iter().map(|&kind| counts.opening(kind, hour, period)).collect()
 }
 
 #[cfg(test)]
@@ -216,6 +266,20 @@ pub(super) fn score(owner: u128, attribution: u8, kinds: &[u8], bases: &[Option<
     })
 }
 
+fn combined(reasons: impl Iterator<Item = String>) -> Option<String> {
+    reasons.reduce(|mut first, next| {
+        first.push(' ');
+        first.push_str(&next);
+        first
+    })
+}
+
+#[derive(Clone, Default)]
+pub(super) struct LossHistory {
+    pub runs: Vec<ForceRun>,
+    pub partial: Vec<MissingSpan>,
+}
+
 pub(super) fn part_runs(
     part: &Part,
     lo: i32,
@@ -224,49 +288,33 @@ pub(super) fn part_runs(
     attribution: NavalAttribution,
     kind: NavalKind,
     period: NavalPeriod,
-    out: &mut Vec<ForceRun>,
+    out: &mut LossHistory,
 ) {
     let mut edges = vec![lo];
-    counts.edges(&mut edges);
+    let owner = Key::Holder.of(part.slot, part.id);
+    let attribution = attribution.code();
+    for &kind in kind.kinds() {
+        counts.edges(&mut edges, kind, Row::holder_key(owner, attribution, kind), lo, hi);
+    }
     if period == NavalPeriod::Month {
         edges.extend(month_starts(lo, hi));
     }
     edges.retain(|&edge| lo <= edge && edge <= hi);
     edges.sort_unstable();
     edges.dedup();
-    let attribution = attribution.code();
     for (index, &start) in edges.iter().enumerate() {
         let end = edges.get(index + 1).map_or(hi, |next| next - 1);
-        let owner = Key::Holder.of(part.slot, part.id);
         let values: Vec<Option<i64>> = kind.kinds().iter().map(|&kind| counts.count(kind, Row::holder_key(owner, attribution, kind), start, period)).collect();
         let total = values.iter().try_fold(0i64, |sum, value| sum.checked_add((*value)?));
         let starts = part.starts && start == part.first;
-        match out.last_mut() {
+        if total.is_some() && let Some(reason) = combined(kind.kinds().iter().filter_map(|&kind| counts.partial(kind, Row::holder_key(owner, attribution, kind), start, period))) {
+            dashboard_base::tile_runs::push_span(&mut out.partial, start, end, &reason);
+        }
+        match out.runs.last_mut() {
             Some(previous) if !starts && previous.last_hour + 1 == start && previous.total == total && previous.values == values => previous.last_hour = end,
-            _ => out.push(ForceRun { first_hour: start, last_hour: end, starts_segment: starts, total, values, reference_total: None }),
+            _ => out.runs.push(ForceRun { first_hour: start, last_hour: end, starts_segment: starts, total, values, reference_total: None }),
         }
     }
-}
-
-fn warn(recording: &Recording, run: u32, kinds: &[u8], keys: &[u128], first: i32, last: i32, warnings: &mut Vec<String>) -> io::Result<()> {
-    let runs: Vec<u128> = kinds.iter().map(|&kind| Row::run_key(kind)).collect();
-    let lost = read::runs(recording, run, TABLE, summary::Source::Cell(LOST_FROM), Some(&runs), first, last)?;
-    for (key, held) in &lost {
-        if let Some(from) = held.iter().filter_map(|run| run.2).min() {
-            let what = if *key as u8 == Row::SHIPS { "Ships" } else { "Convoys" };
-            warnings.push(format!(
-                "{what} sunk are lower bounds from hour {from}: hours went unread long enough for the game to forget sinkings, or its retention is not known."
-            ));
-        }
-    }
-    if !keys.is_empty() {
-        let unknown = read::runs(recording, run, TABLE, summary::Source::Cell(UNKNOWN), Some(keys), first, last)?;
-        let refused = unknown.values().filter_map(|held| held.last().and_then(|run| run.2)).filter(|&count| count > 0).sum::<i64>();
-        if refused > 0 {
-            warnings.push(format!("{refused} sinkings of the countries shown could not be counted: the game listed them with an hour or a flag out of range."));
-        }
-    }
-    Ok(())
 }
 
 fn unlinked_tag_at(holders: &Holders, hour: i32) -> bool {
@@ -467,7 +515,7 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
         NavalPeriod::Running => hour,
         NavalPeriod::Month => (month_start(hour) - 1).clamp(stretch.first, hour),
     };
-    let counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
+    let mut counts = Counts::read(recording, stretch.run, kinds, &[], from, hour)?;
     let missing_baseline = kinds.iter().all(|&kind| counts.baseline(kind, hour).is_none());
     let kind_missing: Vec<Option<String>> = kinds
         .iter()
@@ -590,6 +638,8 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                     reference_total: None,
                     missing: total.is_none().then(|| why.unwrap_or_else(|| "Naval losses could not be computed at this hour".into())),
                     values,
+                    partial: None,
+                    parts_partial: None,
                     parts_missing: None,
                 });
             }
@@ -644,6 +694,8 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                         reference_total: None,
                         missing: total.is_none().then(|| why.unwrap_or_else(|| "Naval losses could not be computed at this hour".into())),
                         values,
+                        partial: None,
+                        parts_partial: None,
                         parts_missing: None,
                     });
                 }
@@ -657,6 +709,8 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
                             reference_total: None,
                             missing: Some(format!("Who holds {country} is not known: {reason}")),
                             values: vec![None; kinds.len()],
+                            partial: None,
+                            parts_partial: None,
                             parts_missing: None,
                         });
                     }
@@ -673,9 +727,29 @@ pub fn reply_at(query: &Query<'_>, params: &NavalLossesAtParams, groups: &Groups
     let mut used_keys: Vec<_> = rows.iter().filter(|row| row.slot.is_some()).flat_map(|row| loss_keys(&row.country)).collect();
     used_keys.sort_unstable();
     used_keys.dedup();
-    warn(recording, stretch.run, kinds, &used_keys, hour, hour, &mut warnings)?;
-    let mut seen_warnings = BTreeSet::new();
-    warnings.retain(|warning| seen_warnings.insert(warning.clone()));
+    warnings.extend(kinds.iter().filter_map(|&kind| counts.retention(kind, hour, params.period)));
+    if !used_keys.is_empty() {
+        counts.refused = read::runs(recording, stretch.run, TABLE, summary::Source::Cell(UNKNOWN), Some(&used_keys), from, hour)?;
+        let refused: i64 = used_keys.iter().map(|&key| counts.refused_count(key as u8, key, hour, params.period)).sum();
+        if refused > 0 {
+            warnings.push(format!("{refused} sinkings of the countries shown could not be counted: the game listed them with an hour or a flag out of range."));
+        }
+    }
+    for row in &mut rows {
+        let mut reasons = kinds.iter().zip(loss_keys(&row.country)).zip(&row.values)
+            .map(|((&kind, key), value)| value.and_then(|_| counts.partial(kind, key, hour, params.period)));
+        if kinds.len() == 1 {
+            row.partial = reasons.next().flatten();
+        } else {
+            let parts: Vec<_> = reasons.collect();
+            if parts.iter().any(Option::is_some) {
+                if row.total.is_some() {
+                    row.partial = combined(parts.iter().flatten().cloned());
+                }
+                row.parts_partial = Some(parts);
+            }
+        }
+    }
     Ok(NavalLossesAtReply { first_hour, last_hour, parts: reply_parts, rows, missing: None, warnings })
 }
 
@@ -716,6 +790,29 @@ impl Product for NavalLossesAt {
 #[cfg(test)]
 mod at_tests {
     use super::*;
+
+    #[test]
+    fn a_month_with_complete_reads_starts_clear_of_last_months_refusals_and_retention_gap() {
+        let kind = Row::SHIPS;
+        let run = Row::run_key(kind);
+        let key = Row::holder_key(3, Row::LOST, kind);
+        let open = month_start(HOUR_EPOCH);
+        let prior = open - 20;
+        let last = open + 12;
+        let counts = Counts {
+            known: HashMap::from([(run, vec![(prior, open + 5, Some(1)), (open + 6, open + 6, Some(0)), (open + 7, last, Some(1))])]),
+            counted_from: HashMap::from([(run, vec![(prior, last, Some(i64::from(prior)))])]),
+            totals: HashMap::new(),
+            lost_from: HashMap::from([(run, vec![(prior + 1, last, Some(i64::from(prior + 1)))])]),
+            refused: HashMap::from([(key, vec![(prior + 2, open + 3, Some(2)), (open + 4, last, Some(3))])]),
+        };
+        assert!(counts.partial(kind, key, open, NavalPeriod::Running).unwrap().contains("2 ship sinkings"));
+        assert_eq!(counts.partial(kind, key, open, NavalPeriod::Month), None);
+        let refused = counts.partial(kind, key, open + 4, NavalPeriod::Month).unwrap();
+        assert!(refused.starts_with("1 ship sinking"));
+        let resumed = counts.partial(kind, key, last, NavalPeriod::Month).unwrap();
+        assert!(resumed.contains("may be missing") && resumed.contains(&refused));
+    }
 
     #[test]
     fn next_month_start_advances_exactly_one_calendar_month() {

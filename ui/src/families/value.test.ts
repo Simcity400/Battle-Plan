@@ -188,8 +188,10 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
   const partialAtLeast = formatValueState(partialValue(15, 'Gaps', { atLeast: true }), 'integer');
-  assert.equal(partialAtLeast.kind, 'partial');
-  assert.equal(partialAtLeast.spoken, '15, partial: Gaps');
+  assert.deepEqual(partialAtLeast, {
+    kind: 'partial', text: '15', exact: '15', reason: 'Gaps',
+    spoken: '15, partial: Gaps', audit: '15, partial: Gaps',
+  });
 });
 
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
