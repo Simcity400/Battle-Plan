@@ -2419,3 +2419,32 @@ fn format_101_rows_fingerprint_their_retained_inputs_and_their_stamped_hours_the
     };
     assert_eq!(fingerprint(&naming()), fingerprint(&naming()), "a stamped hour the writer cannot write still reads the same twice");
 }
+
+#[test]
+fn a_fingerprint_that_fails_to_read_is_never_reused_and_never_counted_as_a_missed_dependency() {
+    use replay_data::{event_feed_rows::{EventFeedCoverage, EventFeedScope, EventFeedText}, rows::EventFeedHistoryRow};
+    thread_local! {
+        static STOPPED: Cell<bool> = const { Cell::new(false) };
+    }
+    fn stopped() -> bool {
+        STOPPED.with(Cell::get)
+    }
+    let names = [EventFeedText::new(b"Reich").unwrap(), EventFeedText::default(), EventFeedText::default()];
+    let scope = EventFeedScope { country: 5, country_attempted: true, country_id: Some(9), country_names: Some(names), ..Default::default() };
+    let row = EventFeedHistoryRow { read_hour: 10, coverage: EventFeedCoverage::Partial, script_scopes: vec![scope], ..Default::default() };
+    row.validate().unwrap();
+    let table = TableView::Complete(TableRows::EventFeedHistory(vec![row]));
+    let read = fingerprint(&table);
+    assert_ne!(read, UNREUSABLE);
+    engine_allocation::set_stop_hook(Some(stopped));
+    STOPPED.with(|stop| stop.set(true));
+    let failed = fingerprint(&table);
+    STOPPED.with(|stop| stop.set(false));
+    engine_allocation::set_stop_hook(None);
+    assert_eq!(failed, UNREUSABLE, "a walk the allocator stopped is marked, never hashed as a value");
+    assert_eq!(fingerprint(&table), read, "and the next read that completes is the same as before");
+    assert_eq!(agrees(read, Some(failed)), None, "a reread that could not be read declines reuse and is no missed dependency");
+    assert_eq!(agrees(UNREUSABLE, Some(read)), None, "a read that could not be fingerprinted is never reused");
+    assert_eq!(agrees(read, Some(read)), Some(true));
+    assert_eq!(agrees(read, Some(read ^ 1)), Some(false));
+}

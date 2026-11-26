@@ -752,7 +752,7 @@ fn with_resolutions(
     value: u64,
     failures: &std::collections::BTreeSet<super::refusal::Identity>,
 ) -> u64 {
-    if failures.is_empty() {
+    if failures.is_empty() || value == UNREUSABLE {
         value
     } else {
         digest(&(value, failures))
@@ -854,9 +854,11 @@ pub trait Fingerprint {
 }
 
 pub fn fingerprint<V: Fingerprint + ?Sized>(value: &V) -> u64 {
+    let outer = FINGERPRINT_FAILED.with(|failed| failed.replace(false));
     let mut hasher = DefaultHasher::new();
     value.fingerprint(&mut hasher);
-    hasher.finish()
+    let failed = FINGERPRINT_FAILED.with(|failed| failed.replace(outer));
+    if failed { UNREUSABLE } else { hasher.finish() }
 }
 
 macro_rules! hashed {
@@ -898,12 +900,24 @@ fn wire_fingerprint<R: RowCodec>(row: &R, into: &mut DefaultHasher) {
         Err(error) if error.kind() == std::io::ErrorKind::InvalidData => into.write_u8(1),
         Err(_) => {
             into.write_u8(2);
-            into.write_u64(UNREUSABLE.fetch_add(1, Ordering::Relaxed));
+            FINGERPRINT_FAILED.with(|failed| failed.set(true));
         }
     }
 }
 
-static UNREUSABLE: AtomicU64 = AtomicU64::new(0);
+pub(crate) const UNREUSABLE: u64 = u64::MAX;
+
+thread_local! {
+    static FINGERPRINT_FAILED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn agrees(stored: u64, now: Option<u64>) -> Option<bool> {
+    match now {
+        _ if stored == UNREUSABLE => None,
+        Some(UNREUSABLE) => None,
+        now => Some(now == Some(stored)),
+    }
+}
 
 fn native_fingerprint<V: std::fmt::Debug + ?Sized>(value: &V, into: &mut DefaultHasher) {
     struct Writing<'h>(&'h mut DefaultHasher);
@@ -1292,18 +1306,22 @@ impl Inputs {
                     (Value::View(view), Some(table), Some(decoded)) => {
                         *view = decoded.tables[table.index()].identity()
                     }
-                    (Value::Digest(digest), Some(table), None) => {
-                        if checking
-                            && !matches!(view_value(frame, table), Value::Digest(now) if now == *digest)
-                        {
-                            missed(&read.key, hour);
+                    (Value::Digest(digest), Some(table), None) if checking => {
+                        let now = match view_value(frame, table) {
+                            Value::Digest(now) => Some(now),
+                            Value::View(_) => None,
+                        };
+                        match agrees(*digest, now) {
+                            Some(true) => {}
+                            Some(false) => missed(&read.key, hour),
+                            None => return false,
                         }
                     }
-                    (Value::Digest(digest), _, _)
-                        if checking && reread(&read.key) != Some(*digest) =>
-                    {
-                        missed(&read.key, hour);
-                    }
+                    (Value::Digest(digest), _, _) if checking => match agrees(*digest, reread(&read.key)) {
+                        Some(true) => {}
+                        Some(false) => missed(&read.key, hour),
+                        None => return false,
+                    },
                     _ => {}
                 }
                 continue;
@@ -1313,7 +1331,7 @@ impl Inputs {
                     view.is(&decoded.tables[table.index()])
                 }
                 (Key::Table(_) | Key::Fields(..), Value::Digest(_), None) => false,
-                (_, Value::Digest(digest), _) => reread(&read.key) == Some(*digest),
+                (_, Value::Digest(digest), _) => agrees(*digest, reread(&read.key)) == Some(true),
                 _ => false,
             };
             if !same {
