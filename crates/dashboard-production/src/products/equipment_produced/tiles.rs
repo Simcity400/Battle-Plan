@@ -495,6 +495,24 @@ mod tests {
         let full_ger = full_at.rows[0].value.unwrap();
         let range_ger = range_at.rows[0].value.unwrap();
         assert!(range_ger > 0 && range_ger < full_ger, "range total {range_ger} must exclude pre-range production from full total {full_ger}");
+        assert_eq!(range_at.observation_hour, Some(range_start), "a Range total is counted from the Range's start");
+        let one_hour = race_reply(
+            &src,
+            &query,
+            &EquipmentProducedRaceParams { hour: 1120, from_hour: Some(1120), ..EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("GER".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: None } },
+            &load,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(one_hour.rows[0].value, Some(1), "a Range of the one hour GER delivers in counts that delivery");
+        let detail = |from_hour| {
+            crate::products::equipment_produced::at_reply(&src, &query, &crate::products::equipment_produced::ProducedAtParams { branch_id: "1".into(), country: Country::Tag("GER".into()), hour: LAST, measure: ProducedMeasure::Total, refits: false, from_hour }, &load).unwrap()
+        };
+        let ranged = detail(Some(range_start));
+        assert_eq!(ranged.observation, Some(range_start), "the detail counts from the same opening as the race");
+        let units: i64 = ranged.models.iter().filter_map(|model| model.units.value).sum();
+        assert_eq!(units, range_ger, "the detail's models add up to the race's Range total");
+        assert_eq!(detail(Some(FIRST)).observation, detail(None).observation, "a Range from the stretch's first hour opens nowhere, in the detail as in the race");
 
         let range_reply = |hour: i32, from_hour: i32| race_reply(
             &src,
@@ -568,11 +586,23 @@ mod tests {
         let leader = ranged_top(&renamed, LAST, FIRST + 120);
         assert_eq!(leader.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "DEU"], "a country renamed inside the window stays a contender, read by its own rows: {leader:?}");
         assert_eq!(leader.rows[1].value, Some(8), "and its amount is the country's deliveries since the start, read by its slot: {leader:?}");
+        assert_eq!(leader.rows[1].counted, leader.rows[1].country, "a ranked row was counted for its slot, and its detail asks for that slot");
+        let renamed_query = dashboard_base::queries::query(&renamed, 1).unwrap();
+        let asked = race_reply(&renamed, &renamed_query, &EquipmentProducedRaceParams { branch_id: "1".into(), hour: LAST, countries: vec![Country::Tag("DEU".into())], group: None, top: None, count: ProducedCount::Units, measure: ProducedMeasure::Total, types: Vec::new(), refits: false, from_hour: Some(FIRST + 120) }, &load, &cancelled).unwrap();
+        assert_eq!(asked.rows[0].counted, Country::Tag("DEU".into()), "a row asked for by its tag was counted for that tag, and its detail asks for the same history: {asked:?}");
         let restarted = crate::products::equipment_produced::tests::two_producers_read_from("produced-tiles-restarted", FIRST, LAST, FIRST, true, None, Some(FIRST + 150));
         let after = ranged_top(&restarted, LAST, FIRST);
         assert_eq!(after.missing.as_deref(), Some(unknown_reason(Gap::Restarted)), "a range from the first hour is not known after counting restarted: {:?}", after.rows);
         assert!(ranged_top(&restarted, FIRST + 100, FIRST).missing.is_none(), "and is known before");
         let restarted_query = dashboard_base::queries::query(&restarted, 1).unwrap();
+        let restarted_detail = crate::products::equipment_produced::at_reply(&restarted, &restarted_query, &crate::products::equipment_produced::ProducedAtParams { branch_id: "1".into(), country: Country::Slot(7), hour: LAST, measure: ProducedMeasure::Total, refits: false, from_hour: Some(FIRST) }, &load).unwrap();
+        let restarted_reason = Some(crate::products::equipment_produced::ProducedUnknown::ObservationRestarted);
+        assert!(
+            !restarted_detail.models.is_empty() && restarted_detail.models.iter().all(|model| model.units.reason == restarted_reason && model.ic.reason == restarted_reason),
+            "the detail of a Range from the opening is not known after counting restarted, as the race says: {:?}",
+            restarted_detail.models
+        );
+        assert_eq!(restarted_detail.ic_total.reason, Some(crate::products::equipment_produced::ProducedUnknown::ObservationRestarted));
         let restart_tile = tile(
             &restarted,
             &restarted_query,

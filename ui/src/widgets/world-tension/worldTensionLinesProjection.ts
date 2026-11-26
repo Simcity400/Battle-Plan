@@ -1,9 +1,8 @@
 import { auditRow } from '../../families/auditRow.ts';
 import { liveKey } from '../../charts/live.ts';
-import { categoricalPalette, nudgeApart, readableColour, tailColour } from '../../charts/palette.ts';
+import { resolveLineColors, tailColour } from '../../charts/palette.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { parseColor, toHex } from '../../shell/appearance/color.ts';
 import { flagArtHandle } from '../../families/art/provider.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import { groupSelection } from '../../families/groupSelection.ts';
@@ -36,26 +35,6 @@ function formatContributionPct(value: number, rawStr: string | null | undefined,
     return formatRational(parsed, BigInt(scale), { maxDecimals: 5, percent: true });
   }
   return formatRecordedPercent(value);
-}
-
-function resolveLineColors(rawColors: readonly (string | null)[], surface: string): string[] {
-  const surfaceRgb = parseColor(surface)!;
-  const parsed: { r: number; g: number; b: number }[] = [];
-  const indices: number[] = [];
-  for (let i = 0; i < rawColors.length; i++) {
-    const c = rawColors[i] ? parseColor(readableColour(rawColors[i]!, surface)) : null;
-    if (c) {
-      parsed.push(c);
-      indices.push(i);
-    }
-  }
-  const nudged = parsed.length > 0 ? nudgeApart(parsed, surfaceRgb) : [];
-  const fallbacks = categoricalPalette(surface);
-  const out: string[] = rawColors.map((_, i) => fallbacks[i % fallbacks.length]!);
-  for (let j = 0; j < indices.length; j++) {
-    out[indices[j]!] = toHex(nudged[j]!);
-  }
-  return out;
 }
 
 export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesOptions> = registerFamilyProjection({
@@ -125,7 +104,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
     }
     const endHour = reply.endHour;
     const labelHour = endHour ?? hour;
-    const hasNegative = reply.bands.some(band => band.values.some(v => v !== null && v < 0));
+    const hasNegative = reply.bands.some(band => [...band.values, ...(band.minValues ?? [])].some(v => v !== null && v < 0));
     const infos = reply.bands.map(band => {
       if (!band.tag) return { name: 'Unknown', fullName: 'Unknown country', color: null, flagChoice: null };
       const id = readView.who('country', band.tag, hour);
@@ -144,7 +123,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
       ? (exactHover.data.warnings.find(w => w.startsWith('Country contributions are not known at this hour')) ?? null)
       : null;
     const hoverSlots = exactHover ? new Set(exactHover.data.contributions.map(c => c.slot)) : null;
-    const topColors = resolveLineColors(infos.slice(0, TOP_NAMED).map(info => info.color), options.surface);
+    const topColors = resolveLineColors(reply.bands.slice(0, TOP_NAMED).map((band, i) => ({ key: band.slot, color: infos[i]!.color })), options.surface);
     const scaleBig = reply.contributionScale > 0 ? BigInt(reply.contributionScale) : null;
     const endTexts = new Map<string, string>();
     const series: TimeChartSeriesModel[] = reply.bands.map((band, rank) => {
@@ -202,7 +181,7 @@ export const worldTensionLinesProjection: TimeChartProjection<WorldTensionLinesO
         id: `slot:${band.slot}`,
         key: `slot:${band.slot}`,
         name: info.fullName,
-        color: isTop ? topColors[rank]! : tailColour(options.surface),
+        color: isTop ? topColors.get(band.slot)! : tailColour(options.surface),
         role: isTop ? 'primary' : 'tail',
         step: true,
         points,

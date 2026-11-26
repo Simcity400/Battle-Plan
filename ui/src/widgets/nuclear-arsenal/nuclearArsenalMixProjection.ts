@@ -38,9 +38,7 @@ export const nuclearArsenalMixProjection: BarsProjection<NuclearArsenalMixOption
     }
 
     const typeByOrdinal = new Map<number, { readonly type: NukeType; readonly color: string; readonly label: string }>();
-    reply.types.forEach((type, index) => {
-      typeByOrdinal.set(type.ordinal, { type, color: colour(options.surface, index), label: typeName(type) });
-    });
+    for (const type of reply.types) typeByOrdinal.set(type.ordinal, { type, color: colour(options.surface, type.ordinal), label: typeName(type) });
 
     const usedOrdinals = new Set<number>();
     const rows: ShareRowEntry[] = [];

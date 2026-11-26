@@ -1152,7 +1152,7 @@ test('the picker dates the rows that decide what it shows in the same render: a 
 test('a country name that is still loading reads as loading in every family, never as its tag, and as the name once it arrives', () => {
   const waiting = createBoundedReadView({ hour: 10, identity: datedIdentity({}) });
   const named = createBoundedReadView({ hour: 10, identity: datedIdentity({ GER: [{ from: 0, name: 'Germany' }] }) });
-  const looks = (view: typeof waiting) => countrySeriesLooks(['GER'], view, { holders: null, from: 0, surface: '#111111', withFlag: false, recordedOrdinal: () => 0 }).get('GER')!;
+  const looks = (view: typeof waiting) => countrySeriesLooks(['GER'], view, { holders: null, from: 0, surface: '#111111', withFlag: false }).get('GER')!;
   const shown = (view: typeof waiting) => ({
     bars: countryRowPresentation(view, 'GER').label,
     heat: resolveEntityFromReadView(view, 'country', 'GER', 10, 'GER').label,

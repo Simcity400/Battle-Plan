@@ -5500,7 +5500,6 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-politics",
- "content-reader-province-area",
  "content-reader-regions",
  "dashboard-base",
  "dashboard-core",

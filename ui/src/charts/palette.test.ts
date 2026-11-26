@@ -12,10 +12,18 @@ import {
   authoredHex,
   categoricalPalette,
   colour,
+  commandTermColour,
+  convoyEfficiencyColour,
   distance,
   GREY_CHROMA,
+  identityColour,
   MARK_CONTRAST,
+  measureColour,
+  neutralColour,
   nudgeApart,
+  paletteVariables,
+  surfaceGrey,
+  tailColour,
 } from './palette.ts';
 import { NearestColours } from './paletteDistance.ts';
 
@@ -235,10 +243,85 @@ test('authored colours stay byte-exact', () => {
   const exact = '#4f86f7';
   assert.equal(authoredHex(exact), exact);
   assert.equal(authoredHex([79, 134, 247]), '#4f86f7');
+  for (const rgb of [{ r: -2, g: 134.5, b: 1000 }, { r: NaN, g: Infinity, b: -Infinity }, { r: 0, g: 255, b: 0 }]) {
+    assert.equal(authoredHex(rgb), toHex(rgb));
+    assert.equal(authoredHex([rgb.r, rgb.g, rgb.b]), toHex(rgb));
+  }
 });
 
+test('warm palette lookups perform no hex conversions or array joins', () => {
+  const surface = '#171a21';
+  const options = { contrastSurfaces: [surface], avoid: [colour(surface, 1)] };
+  const customBase = { base: ['#4f86f7'], contrastSurfaces: options.contrastSurfaces };
+  const paint = () => {
+    authoredHex([79, 134, 247]);
+    authoredHex({ r: 79, g: 134, b: 247 });
+    readableForGrey([79, 134, 247], surface, 4.5);
+    colour(surface, 1, options);
+    colour(surface, 1, customBase);
+    identityColour(surface, 'weather', 'new', 0);
+    reservedGrey(surface);
+    commandTermColour(surface, 3);
+    convoyEfficiencyColour(0.455, surface);
+  };
+  paint();
+  const numberString = Number.prototype.toString, join = Array.prototype.join;
+  let hexConversions = 0, joins = 0;
+  Number.prototype.toString = function (radix?: number) {
+    if (radix === 16) hexConversions++;
+    return numberString.call(this, radix);
+  };
+  Array.prototype.join = function (separator?: string) {
+    joins++;
+    return join.call(this, separator);
+  };
+  try {
+    for (let i = 0; i < 1000; i++) paint();
+  } finally {
+    Number.prototype.toString = numberString;
+    Array.prototype.join = join;
+  }
+  assert.deepEqual({ hexConversions, joins }, { hexConversions: 0, joins: 0 });
+});
 
+test('palette marks keep their exact colours when switching between custom surfaces', () => {
+  const marks = (surface: string) => [
+    colour(surface, 10), readableForGrey([79, 134, 247], surface, 4.5),
+    identityColour(surface, 'weather', 'snow', 4), identityColour(surface, 'weather', 'new', 0),
+    reservedGrey(surface), reservedGrey(surface, [reservedGrey(surface)]),
+    neutralColour('fallback', surface), surfaceGrey(surface, 0.04), tailColour(surface),
+    measureColour('politicalPower', surface), commandTermColour(surface, 3),
+    convoyEfficiencyColour(0.455, surface), paletteVariables(surface)['--blueprint'],
+  ];
+  const dark = '#171a21', light = '#e9e7df';
+  const darkMarks = ['#d6d72a', '#4f86f7', '#9fc9e6', '#00baba', '#5a5c61', '#36393f',
+    '#8d8e91', '#202329', 'rgba(245, 245, 245, 0.22)', '#e3a83b', '#355c96', '#dd523c', '#1c3b5d'];
+  assert.deepEqual(marks(dark), darkMarks);
+  assert.deepEqual(marks(light), ['#616100', '#2e62cf', '#6189a5', '#2a78d6', '#a8a7a1', '#cbc9c2',
+    '#777672', '#e0ded7', 'rgba(17, 17, 17, 0.22)', '#af7a00', '#355c96', '#dd523c', '#1b3a5c']);
+  assert.deepEqual(marks(dark), darkMarks);
+  assert.equal(paletteVariables(dark), paletteVariables(dark));
+});
 
+test('mutable colour inputs still select their current values', () => {
+  const surface = '#171a21';
+  const input = { r: 50.5, g: 90, b: 45 };
+  const first = readableForGrey(input, surface);
+  input.r = 140.5;
+  assert.notEqual(readableForGrey(input, surface), first);
+  assert.equal(readableForGrey(input, surface), readableForGrey([140.5, 90, 45], surface));
+  const base = ['#A4B5C6'], avoid = ['#a4b5c6'], contrastSurfaces = [surface];
+  const options = { base, avoid, contrastSurfaces };
+  assert.notEqual(colour(surface, 0, options), base[0]!.toLowerCase());
+  avoid.length = 0;
+  assert.equal(colour(surface, 0, options), '#a4b5c6');
+  base[0] = '#eaeaea';
+  assert.equal(colour(surface, 0, options), '#eaeaea');
+  contrastSurfaces[0] = '#eaeaea';
+  assert.notEqual(colour(surface, 0, options), '#eaeaea');
+  contrastSurfaces.length = 0;
+  assert.equal(colour(surface, 0, options), '#eaeaea');
+});
 test('the reserved grey for contested and other moves away from a near-neutral identity colour in the same picture', () => {
   const surface = '#161616';
   const lightness = (hex: string) => rgbToOklch(parseColor(hex)!).l;

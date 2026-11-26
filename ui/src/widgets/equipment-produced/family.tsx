@@ -1,17 +1,17 @@
 import { useCallback, useRef, useState } from 'react';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { resolveWindow } from '../../dashboard/model';
 import type { FamilyViewProps, FamilyViewRenderer } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { useGate } from '../../dashboard/regionGate';
-import { SPEC, type GatedHour } from '../../dashboard/regionTime';
+import { SPEC, type BoundHour, type BoundWindow, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
 import { DetailWindowHost } from '../../families/host/DetailWindowHost.tsx';
 import { FamilyWidget } from '../../families/host/registry.tsx';
 import type { InstalledAction } from '../../families/plan.ts';
-import { formatDateOnly, formatScalar } from '../../families/valueFormat.ts';
+import { formatScalar } from '../../families/valueFormat.ts';
 import type { ProducedAtReply, ProducedCount, ProducedMeasure } from '../../generated/dashboard';
-import type { EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import { detailCountry, detailEmptyText, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function validateProducedAt(data: unknown): ProducedAtReply {
   const reply = data as Partial<ProducedAtReply> | null;
@@ -21,19 +21,20 @@ function validateProducedAt(data: unknown): ProducedAtReply {
   return reply as ProducedAtReply;
 }
 
-function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, refits }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
-  readonly tag: string;
+function ProducedDetails({ widget, runtime, active, row, hour, count, measure, refits, fromHour }: Pick<FamilyViewProps, 'widget' | 'runtime' | 'active'> & {
+  readonly row: EquipmentProducedRowMeta;
   readonly hour: GatedHour;
   readonly count: ProducedCount;
   readonly measure: ProducedMeasure;
   readonly refits: boolean;
+  readonly fromHour: BoundHour | null;
 }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? productRequest({
     sourceId: track.source.id,
     revision: track.source.revision,
     product: 'equipment-produced-at',
-    params: { branchId: track.branch.id, country: countryFromKey(tag), hour, measure, refits },
+    params: { branchId: track.branch.id, country: detailCountry(row), hour, measure, refits, ...(fromHour !== null ? { fromHour } : {}) },
   }) : null;
   const reply = useProduct<ProducedAtReply>(runtime.client, request, active, validateProducedAt, track?.source);
   if (reply.error) {
@@ -42,8 +43,9 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
   if (!reply.data) {
     return <div className="detail-empty">Loading production detail…</div>;
   }
-  if (!reply.data.models.length) {
-    return <div className="detail-empty">Nothing delivered at {formatDateOnly(hour)}.</div>;
+  const empty = detailEmptyText(reply.data, hour);
+  if (empty !== null) {
+    return <div className="detail-empty">{empty}</div>;
   }
   const decimals = count === 'ic' ? 5 : 0;
   const fmt = count === 'ic' ? { decimals: 0, maxDecimals: 2 } : { decimals: 0 };
@@ -66,6 +68,12 @@ function ProducedDetails({ widget, runtime, active, tag, hour, count, measure, r
   );
 }
 
+function rangeStart(widget: FamilyViewProps['widget'], runtime: FamilyViewProps['runtime'], span: (first: number, last: number) => BoundWindow | null, hour: GatedHour): BoundHour | null {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const first = track ? resolveWindow(widget, track, runtime.tracks, hour)?.firstHour : undefined;
+  return first === undefined ? null : span(first, hour)?.firstHour ?? null;
+}
+
 function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
   const { widget, runtime, active, manifestDeclaration, options } = props;
   const count: ProducedCount = options.count === 'ic' ? 'ic' : 'units';
@@ -73,14 +81,14 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
     ? options.measure : 'day';
   const refits = options.refits === true;
   const anchorRef = useRef<HTMLDivElement>(null);
-  const [detail, setDetail] = useState<{ readonly tag: string; readonly key: string; readonly hour: GatedHour } | null>(null);
+  const [detail, setDetail] = useState<EquipmentProducedRowMeta & { readonly hour: GatedHour } | null>(null);
   const gate = useGate(runtime, widget, SPEC, active);
 
   const onActivate = useCallback((action: InstalledAction) => {
     const gated = gate.recorded(Math.floor(action.hour));
     if (gated === null) return;
     const meta = action.meta as EquipmentProducedRowMeta | null | undefined;
-    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, hour: gated });
+    setDetail({ tag: meta?.tag ?? action.subject, key: meta?.key ?? action.subject, counted: meta?.counted ?? meta?.key ?? action.subject, hour: gated });
   }, [gate]);
 
   if (!manifestDeclaration) return null;
@@ -109,11 +117,12 @@ function EquipmentProducedFamilyWidget(props: FamilyViewProps) {
             widget={widget}
             runtime={runtime}
             active={active}
-            tag={detail.tag}
+            row={detail}
             hour={detail.hour}
             count={count}
             measure={measure}
             refits={refits}
+            fromHour={measure === 'total' && widget.time.mode === 'range' ? rangeStart(widget, runtime, gate.span, detail.hour) : null}
           />
         ) : null}
       </DetailWindowHost>

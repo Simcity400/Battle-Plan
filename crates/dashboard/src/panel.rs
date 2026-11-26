@@ -38,14 +38,7 @@ pub fn dated_panel_of(source: &Arc<Source>, load: &LoadContext, asked: &Value) -
         "casualty-breakdown" => product_interval_panel::<dashboard_wars::products::casualties::CasualtyBreakdown>(source, load, asked, at_hour, |r| r.through),
         "bombing-damage-breakdown" => product_interval_panel::<dashboard_air::products::air_ledger::breakdown::BombingDamageBreakdown>(source, load, asked, at_hour, |r| r.through),
         "focus-card" => product_interval_panel::<dashboard_politics::products::focus_card::FocusCard>(source, load, asked, at_hour, |r| r.valid_through),
-        "regional-weather" => {
-            let first = dashboard_query::branch(asked).and_then(|branch| dashboard_base::queries::query(source, branch)).map(|q| q.timeline.first);
-            first.map_err(|e| e.to_string()).and_then(|first| product_interval_panel::<dashboard_air::products::regional_weather::RegionalWeather>(
-                source, load, asked, move |request, hour| {
-                    request["firstHour"] = first.max(hour.saturating_sub(7 * 24 - 1)).into();
-                    request["lastHour"] = hour.into();
-                }, |r| r.last_hour))
-        }
+        "regional-weather" => product_interval_panel::<dashboard_air::products::regional_weather::RegionalWeather>(source, load, asked, |request, hour| request["lastHour"] = hour.into(), |r| r.valid_through),
         "series-rank" => rank_panel(source, load, asked),
         "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
         "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),

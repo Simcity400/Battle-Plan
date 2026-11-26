@@ -386,16 +386,18 @@ fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<Army
         .collect()
 }
 
+pub(super) fn group_key(group: &str) -> String {
+    let identity = match content_reader_parser::tokens::Token::c_str(group.as_bytes()) {
+        content_reader_parser::tokens::Token::Name(name) => String::from_utf8(name).unwrap_or_else(|_| group.to_owned()),
+        content_reader_parser::tokens::Token::Rejected => String::new(),
+    };
+    format!("group:{identity}")
+}
+
 pub(super) fn group_info(units: Option<&SubUnits>, catalogue: Option<&dashboard_base::catalogue::Catalogue>, name: &str) -> (String, ArmyType, Option<String>) {
     let group = units.map_or_else(|| Err("game content is unavailable".into()), |units| units.group(name.as_bytes()));
     let (key, label, mut warning) = match group {
-        Ok(Some(group)) => {
-            let identity = match content_reader_parser::tokens::Token::c_str(group.as_bytes()) {
-                content_reader_parser::tokens::Token::Name(name) => String::from_utf8(name).unwrap_or_else(|_| group.to_owned()),
-                content_reader_parser::tokens::Token::Rejected => String::new(),
-            };
-            (format!("group:{identity}"), group, None)
-        }
+        Ok(Some(group)) => (group_key(group), group, None),
         Ok(None) => ("group:".into(), "", None),
         Err(why) => (format!("unknown:{name}"), name, Some(format!("{name}: unknown unit group: {why}"))),
     };

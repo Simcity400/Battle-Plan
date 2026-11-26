@@ -115,6 +115,10 @@ pub struct ProducedAtParams {
     pub hour: i32,
     pub measure: ProducedMeasure,
     pub refits: bool,
+    #[doc = " A Range's first hour: a total counts the deliveries from it on."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub from_hour: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -404,7 +408,7 @@ fn design_row(purpose: u8, read: impl Fn(usize) -> Option<i64>) -> DesignRow {
 }
 
 fn unnamed(key: DesignKey) -> spending::Design {
-    spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new() }
+    spending::Design { type_key: format!("{}variant/{}", spending::UNRESOLVED_MARK, key.1), name: None, domain: None, names: Vec::new(), typed_since: None }
 }
 
 fn type_recorded(design: &spending::Design) -> bool {
@@ -514,13 +518,29 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         return Ok(reply);
     };
     let now = DesignsAt::read(query, stretch.run, read, id)?;
-    let before = match measure::back(params.measure, read) {
-        Some(start) if start >= first && reads.binary_search(&start).is_ok() => Some(DesignsAt::read(query, stretch.run, start, id)?),
+    let series = dashboard_declare::series("produced-values").ok_or_else(|| invalid("Equipment produced's series is not declared"))?;
+    let counted = series.measure(produced_measure(ProducedCount::Units, params.refits)).ok_or_else(|| invalid("Equipment produced's measure is not declared"))?;
+    let line = dashboard_query::series::Line::new(query, series, counted)?;
+    let opening = tiles::range_baseline(&line, query, params.measure, params.from_hour)?;
+    let restarted = match opening {
+        tiles::Baseline::Opening(start) => line.clock_at(hour)?.since != Some(start),
+        _ => false,
+    };
+    let whole = match opening {
+        tiles::Baseline::Unrestricted => true,
+        tiles::Baseline::Opening(_) => !restarted,
+        tiles::Baseline::From(_) | tiles::Baseline::Unavailable(_) => false,
+    };
+    let ranged = if matches!(opening, tiles::Baseline::Unrestricted) { None } else { params.from_hour };
+    let before = match (opening.hour(), ranged, measure::back(params.measure, read)) {
+        (Some(base), _, _) => (base >= first && reads.binary_search(&base).is_ok()).then(|| DesignsAt::read(query, stretch.run, base, id)).transpose()?,
+        (None, None, Some(start)) if start >= first && reads.binary_search(&start).is_ok() => Some(DesignsAt::read(query, stretch.run, start, id)?),
         _ => None,
     };
     let at = |held: &DesignsAt, key: DesignKey, choice: Choice| held.amount(key, held.hour, choice);
-    let windowed = |key: DesignKey, choice: Choice| match params.measure {
-        ProducedMeasure::Total => at(&now, key, choice).0,
+    let windowed = |key: DesignKey, choice: Choice| match (params.measure, whole) {
+        _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
+        (ProducedMeasure::Total, true) => at(&now, key, choice).0,
         _ => measure::difference(at(&now, key, choice), before.as_ref().map(|before| at(before, key, choice))),
     };
     let units = Choice { count: ProducedCount::Units, refits: params.refits };
@@ -560,12 +580,13 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         }
         Amount::Known(0)
     };
-    reply.ic_total = amount_of(country(&now).plus(match params.measure {
-        ProducedMeasure::Total => Amount::Known(0),
+    reply.ic_total = amount_of(country(&now).plus(match (params.measure, whole) {
+        _ if restarted => Amount::Unknown(ProducedUnknown::ObservationRestarted),
+        (ProducedMeasure::Total, true) => Amount::Known(0),
         _ => before.as_ref().map_or(Amount::Unknown(ProducedUnknown::WindowIncomplete), country),
     }).plus(total));
     reply.recorded = now.country;
-    reply.observation = now.observation.0;
+    reply.observation = ranged.or(now.observation.0);
     reply.read = Some(read);
     warnings.extend(notes);
     reply.warnings = warnings;
@@ -604,7 +625,7 @@ impl Product for EquipmentProducedAt {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = ProducedAtParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, measure, refits];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read, measure, refits, fromHour: Start];
     type Reply = ProducedAtReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -655,6 +676,8 @@ pub struct EquipmentProducedRaceParams {
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentProducedRaceRow {
     pub country: Country,
+    #[doc = " The country the total was read for: the slot a ranking counted, or the country a selection asked for. A detail of the row asks for the same."]
+    pub counted: Country,
     pub tag: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub value: Option<i64>,
@@ -758,7 +781,7 @@ fn race_reply(
 
     let clock = line.clock_at(hour)?;
     let read_hour = clock.read;
-    let observation_hour = clock.since.filter(|&since| since <= hour);
+    let observation_hour = if baseline.hour().is_some() { params.from_hour } else { clock.since.filter(|&since| since <= hour) };
     if let tiles::Baseline::Opening(start) = baseline
         && clock.since != Some(start)
     {
@@ -833,6 +856,7 @@ fn race_reply(
     let runs = if tags.is_empty() { Vec::new() } else { line.totals(&tags, &parts_of, back, hour, hour)? };
     let mut rows = Vec::with_capacity(tags.len());
     for (asked, country_runs) in tags.into_iter().zip(runs) {
+        let counted = asked.clone();
         let tag = query.holders.name(&asked, hour);
         let country = match query.holders.at(&asked, hour) {
             Some(holder_run) => {
@@ -854,7 +878,7 @@ fn race_reply(
             Amount::Known(_) => (None, Some(ProducedUnknown::OutOfRange)),
             Amount::Unknown(reason) => (None, Some(reason)),
         };
-        rows.push(EquipmentProducedRaceRow { country, tag, value, unknown });
+        rows.push(EquipmentProducedRaceRow { country, counted, tag, value, unknown });
     }
     if is_population {
         (first_hour, last_hour) = population_bounds(query, hour, first_hour, last_hour);

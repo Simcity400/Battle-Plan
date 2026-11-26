@@ -447,6 +447,15 @@ const WHOLE_FIELDS: [(TableId, u64); 8] = [
     (TableId::Politics, mask::<PoliticsRow>(&["capital", "original_capital"])),
 ];
 
+pub fn naming_columns(table: TableId) -> Option<Vec<usize>> {
+    let fields = match table {
+        TableId::VariantDefinitions => VARIANT_FIELDS,
+        TableId::States => mask::<replay_data::rows::StateRow>(&["continent"]),
+        _ => WHOLE_FIELDS.iter().find(|(held, _)| *held == table)?.1,
+    };
+    (fields & table.full_mask() != table.full_mask()).then(|| (0..table.field_count()).filter(|&column| fields & (1 << column) != 0).collect())
+}
+
 pub struct Naming {
     run: u32,
     branch: u64,

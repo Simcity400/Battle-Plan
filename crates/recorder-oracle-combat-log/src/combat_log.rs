@@ -6,7 +6,6 @@ use std::{
 
 use engine_land_inputs::{
     ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager::RECOVERED_KIND,
-    ncombat_log_cmanager::WINDOW_ENTRIES,
 };
 use engine_resources::{clend_lease_exchange::DELIVERED_KIND, clend_lease_exchange::SUNK_KIND};
 use content_reader_save::{Save, production};
@@ -60,7 +59,7 @@ pub fn compare(
             return Err(invalid("duplicate resolved combat log row"));
         }
     }
-    let mut expected: BTreeMap<Key<'_>, (Saved, bool)> = BTreeMap::new();
+    let mut expected: BTreeMap<Key<'_>, Saved> = BTreeMap::new();
     let mut saved_groups: BTreeSet<(&[u8], u32)> = BTreeSet::new();
     let mut omits_zero: BTreeMap<(&[u8], u32, u8, u16), i32> = BTreeMap::new();
     for country in &saved.combat_log.countries {
@@ -75,24 +74,16 @@ pub fn compare(
             if !compared {
                 continue;
             }
-            let mut arrays: [Vec<&content_reader_save::combat_log::Month>; 5] = Default::default();
-            for month in &group.losses {
-                let kind = u8::try_from(month.reason)
-                    .ok()
-                    .filter(|&reason| reason < RECOVERED_KIND)
-                    .ok_or_else(|| invalid("saved combat log loss reason outside 0 to 3"))?;
-                arrays[kind as usize].push(month);
-            }
-            arrays[RECOVERED_KIND as usize].extend(&group.recovered);
-            for (kind, months) in arrays.iter().enumerate() {
-                let kind = kind as u8;
-                let window = if full {
-                    0
-                } else {
-                    months.len().saturating_sub(WINDOW_ENTRIES as usize)
-                };
-                for (position, month) in months.iter().enumerate() {
-                    let required = position >= window;
+            for (months, recovered) in [(&group.losses, false), (&group.recovered, true)] {
+                for month in months {
+                    let kind = if recovered {
+                        RECOVERED_KIND
+                    } else {
+                        u8::try_from(month.reason)
+                            .ok()
+                            .filter(|&reason| reason < RECOVERED_KIND)
+                            .ok_or_else(|| invalid("saved combat log loss reason outside 0 to 3"))?
+                    };
                     let bucket = u16::try_from(month_bucket(month.date)).map_err(|_| {
                         invalid("saved combat log month outside the recorded range")
                     })?;
@@ -108,7 +99,7 @@ pub fn compare(
                             date: month.date,
                             amount_raw: entry.amount.raw,
                         };
-                        if expected.insert(key, (value, required)).is_some() {
+                        if expected.insert(key, value).is_some() {
                             return Err(invalid(
                                 "saved combat log repeats a variant within one group, kind and month",
                             ));
@@ -119,12 +110,10 @@ pub fn compare(
         }
     }
     let mut count = 0;
-    for (key, (saved, required)) in &expected {
+    for (key, saved) in &expected {
         let label = label(key);
         let Some((date, amount_raw)) = actual.remove(key) else {
-            if *required {
-                report.difference(label, "absent", "saved amount present");
-            }
+            report.difference(label, "absent", "saved amount present");
             continue;
         };
         if date != saved.date {
@@ -193,7 +182,7 @@ pub fn compare(
     }
     if !full {
         report.limitation(
-            "outside a full hour a country last read completely this or last month is read through each array's last two month entries, and a country without rows has no read record, so older saved months are compared only where recorded and countries never read are not compared",
+            "outside a full refresh the comparison covers every saved equipment month for countries with a current read",
             "CombatLogEquipment",
         );
     }

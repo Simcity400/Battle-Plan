@@ -17,12 +17,12 @@ const levels = (value: unknown) => list(value, row => typeof row.variant === 'st
 const grants = (value: unknown) => list(value, row => raw(row.cicRaw) && text(row.archetype) && text(row.trigger) && Array.isArray(row.targets) && row.targets.every(tag => typeof tag === 'string'));
 const named = (value: Record<string, unknown>) => Array.isArray(value.variants) && value.variants.every(object) && Array.isArray(value.icons) && value.icons.every(object)
   && Array.isArray(value.warnings) && value.warnings.every(warning => typeof warning === 'string');
-export const isLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string' && text(row.giver) && text(row.receiver) && raw(row.revision)
+export const isLease = (row: Record<string, unknown>) => typeof row.key === 'string' && typeof row.id === 'string' && text(row.giver) && text(row.giverMissing) && text(row.receiver) && text(row.receiverMissing) && raw(row.revision)
   && integer(row.activeSince) && integer(row.lastDelivery) && ['monthly', 'percentage', 'once', 'delivered', 'sunk'].every(key => items(row[key]))
   && ['fuelDailyRaw', 'fuelPercentageRaw', 'lastFuelDeliveredRaw'].every(key => raw(row[key]));
 export function validateMarketReply(value: unknown): MarketLendLeaseReply {
   const nullable = (v: unknown, valid: (row: Record<string, unknown>) => boolean) => v === null || list(v, valid);
-  if (!object(value) || typeof value.branchId !== 'string' || !named(value) || !text(value.purchasesMissing) || !integer(value.unattributed) || !text(value.refused)
+  if (!object(value) || typeof value.branchId !== 'string' || !named(value) || !text(value.purchasesMissing) || !text(value.agreementsMissing) || !integer(value.unattributed) || !text(value.refused)
     || !nullable(value.offers, row => integer(row.country) && text(row.tag) && items(row.inventory) && levels(row.prices) && grants(row.subsidies) && raw(row.subsidyTotalRaw) && typeof row.autoSendMarketAccess === 'boolean')
     || !nullable(value.contracts, row => typeof row.key === 'string' && typeof row.id === 'string' && text(row.seller) && text(row.buyer) && typeof row.request === 'boolean'
       && integer(row.speed) && items(row.equipment) && items(row.prices) && levels(row.levels) && grants(row.subsidies) && typeof row.purchase === 'boolean')

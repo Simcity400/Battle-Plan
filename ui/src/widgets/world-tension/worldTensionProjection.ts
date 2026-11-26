@@ -332,7 +332,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       || (reply.other?.values.some(v => v !== null && v < 0) ?? false);
     const endHour = reply.endHour;
     const totalScale = reply.tensionScale;
-    const totalExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.totalRaw) && reply.totalRaw.length === reply.hours.length && totalScale > 0
+    const totalExactSeries: readonly (ChartExactRational | null)[] | undefined = !reply.downsampled && Array.isArray(reply.totalRaw) && reply.totalRaw.length === reply.hours.length && totalScale > 0
       ? reply.totalRaw.map(rawStr => {
           const parsed = parseRawInt(rawStr);
           return parsed !== null ? { raw: parsed, denominator: BigInt(totalScale) } : null;
@@ -355,7 +355,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
         : null;
       bandEndExacts.push(endExact);
       const validEnd = endVal != null && Number.isFinite(endVal) && (endExact ? endExact.raw !== 0n : endVal !== 0);
-      const bandExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(band.valuesRaw) && band.valuesRaw.length === reply.hours.length
+      const bandExactSeries: readonly (ChartExactRational | null)[] | undefined = !reply.downsampled && Array.isArray(band.valuesRaw) && band.valuesRaw.length === reply.hours.length
         ? band.valuesRaw.map((rawStr, idx) =>
             exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
         : undefined;
@@ -385,7 +385,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       const otherLabel = reply.other.count > 0 ? `Other (${reply.other.count})` : 'Other';
       const otherEnd = endHour !== null ? reply.other.endValue : null;
       const validOther = otherEnd != null && Number.isFinite(otherEnd) && (otherEndExact ? otherEndExact.raw !== 0n : otherEnd !== 0);
-      const otherExactSeries: readonly (ChartExactRational | null)[] | undefined = Array.isArray(reply.other.valuesRaw) && reply.other.valuesRaw.length === reply.hours.length
+      const otherExactSeries: readonly (ChartExactRational | null)[] | undefined = !reply.downsampled && Array.isArray(reply.other.valuesRaw) && reply.other.valuesRaw.length === reply.hours.length
         ? reply.other.valuesRaw.map((rawStr, idx) =>
             exactBandRational(rawStr, options.values, reply.totalRaw?.[idx], reply.sumRaw?.[idx], reply.tensionScale, reply.contributionScale))
         : undefined;
@@ -434,6 +434,7 @@ export const worldTensionProjection: TimeChartProjection<WorldTensionChartOption
       },
       series: [],
       stack: {
+        ...(reply.downsampled ? { reduced: true } : {}),
         hours: reply.hours,
         bands: orderedBands,
         bandFormat: 'signedPercent',

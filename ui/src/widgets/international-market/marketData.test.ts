@@ -9,7 +9,7 @@ import { liveKey } from '../../charts/live.ts';
 import { valuesOf } from '../../test-support/liveValues.ts';
 
 const item = (variant: string, amountRaw: string) => ({ variant, name: null, amountRaw });
-const raw = { branchId: '1', purchasesMissing: null, unattributed: 1, refused: null, warnings: [],
+const raw = { branchId: '1', purchasesMissing: null, agreementsMissing: null, unattributed: 1, refused: null, warnings: [],
   variants: [{ id: '5', hour: 7, known: true, token: 'infantry_equipment', name: 'Rifle', typeName: 'Infantry equipment', nameUnknown: null, icon: 'a', iconUnknown: null }],
   icons: [{ key: 'a', image: 'data:rifle' }],
   offers: [

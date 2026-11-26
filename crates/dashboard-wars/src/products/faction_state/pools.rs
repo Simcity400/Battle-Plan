@@ -140,7 +140,7 @@ fn decimals_for(pool: FactionPoolKind) -> u8 {
     }
 }
 
-fn blank(pool: FactionPoolKind, status: FactionPoolStatus, reason: Option<String>, faction: Option<u64>) -> FactionPoolsReply {
+pub(super) fn blank(pool: FactionPoolKind, status: FactionPoolStatus, reason: Option<String>, faction: Option<u64>) -> FactionPoolsReply {
     FactionPoolsReply {
         pool,
         status,
@@ -176,7 +176,17 @@ fn resolve_faction(frame: &DecodedFrame, params: &FactionPoolsParams, owner: Opt
     let links = frame
         .complete::<tables::CountryLinks>()
         .map_err(|why| (FactionPoolStatus::MembershipNotRecorded, format!("Country links are not recorded at this hour: {why}")))?;
-    Ok(faction_of(members, links, owner.slot))
+    pooled_faction(members, links, owner.slot)
+}
+
+pub(super) fn pooled_faction(members: &[replay_data::rows::FactionMemberRow], links: &[replay_data::rows::CountryLinkRow], slot: u32) -> Result<Option<u64>, (FactionPoolStatus, String)> {
+    if let Some(faction) = faction_of(members, links, slot) {
+        return Ok(Some(faction));
+    }
+    if members.iter().any(|member| member.faction != 0 && dashboard_text::metadata::link_slot(links, member.country).is_none()) {
+        return Err((FactionPoolStatus::MembershipNotRecorded, "A faction member's country is not linked to a recorded country at this hour, so this country's faction is not known".into()));
+    }
+    Ok(None)
 }
 
 fn pool_reads(pool: FactionPoolKind, faction: u64, include_links: bool) -> Vec<Read> {
@@ -311,31 +321,49 @@ fn build_resources(frame: &DecodedFrame, faction: u64, naming: &ResourceNaming, 
     Ok(())
 }
 
-fn check_unlocked(frame: &DecodedFrame, faction: u64, pick: impl Fn(&replay_data::rows::FactionUnlockRow) -> u8, reply: &mut FactionPoolsReply) -> bool {
+enum Unlock {
+    Open,
+    Locked,
+    Unknown(String),
+}
+
+fn unlock(frame: &DecodedFrame, faction: u64, pick: impl Fn(&replay_data::rows::FactionUnlockRow) -> u8) -> Unlock {
     match frame.complete::<tables::FactionUnlocks>() {
         Ok(rows) => match owned(rows, faction, |row| row.faction).first() {
-            Some(row) if pick(row) == 0 => {
-                reply.status = FactionPoolStatus::PoolLocked;
-                reply.reason = Some("This faction has not unlocked this pool at this time.".into());
-                false
-            }
-            Some(_) => true,
-            None => {
-                reply.warnings.push("Faction unlocks: the faction has no row at this hour".into());
-                true
-            }
+            Some(row) if pick(row) == 0 => Unlock::Locked,
+            Some(_) => Unlock::Open,
+            None => Unlock::Unknown("the faction has no unlock row at this hour".into()),
         },
-        Err(why) => {
+        Err(why) => Unlock::Unknown(why.to_string()),
+    }
+}
+
+fn check_unlocked(frame: &DecodedFrame, faction: u64, pick: impl Fn(&replay_data::rows::FactionUnlockRow) -> u8, reply: &mut FactionPoolsReply) -> Option<Option<String>> {
+    match unlock(frame, faction, pick) {
+        Unlock::Open => Some(None),
+        Unlock::Locked => {
+            reply.status = FactionPoolStatus::PoolLocked;
+            reply.reason = Some("This faction has not unlocked this pool at this time.".into());
+            None
+        }
+        Unlock::Unknown(why) => {
             reply.warnings.push(format!("Faction unlocks: {why}"));
-            true
+            Some(Some(why))
         }
     }
 }
 
-fn build_manpower(frame: &DecodedFrame, faction: u64, reply: &mut FactionPoolsReply) {
-    if !check_unlocked(frame, faction, |row| row.manpower, reply) {
+fn unproven_empty(reply: &mut FactionPoolsReply, unlock: Option<String>) -> bool {
+    let Some(why) = unlock else { return false };
+    reply.status = FactionPoolStatus::PoolNotRecorded;
+    reply.reason = Some(format!("Whether this faction had unlocked this pool was not recorded at this hour ({why}), so an empty pool is not known to be empty"));
+    true
+}
+
+pub(super) fn build_manpower(frame: &DecodedFrame, faction: u64, reply: &mut FactionPoolsReply) {
+    let Some(unknown) = check_unlocked(frame, faction, |row| row.manpower, reply) else {
         return;
-    }
+    };
     let rows = match frame.complete::<tables::FactionManpower>() {
         Ok(rows) => owned(rows, faction, |row| row.faction),
         Err(why) => {
@@ -347,6 +375,9 @@ fn build_manpower(frame: &DecodedFrame, faction: u64, reply: &mut FactionPoolsRe
     if rows.iter().enumerate().any(|(index, row)| row.ordinal as usize != index) {
         reply.status = FactionPoolStatus::PoolNotRecorded;
         reply.reason = Some("Faction manpower ordinals are not contiguous".into());
+        return;
+    }
+    if rows.is_empty() && unproven_empty(reply, unknown) {
         return;
     }
     let mut held: Vec<(i32, u32, FactionPoolManpower)> = Vec::with_capacity(rows.len());
@@ -378,7 +409,7 @@ fn build_manpower(frame: &DecodedFrame, faction: u64, reply: &mut FactionPoolsRe
 }
 
 fn build_research(frame: &DecodedFrame, faction: u64, reply: &mut FactionPoolsReply) {
-    if !check_unlocked(frame, faction, |row| row.research, reply) {
+    if check_unlocked(frame, faction, |row| row.research, reply).is_none() {
         return;
     }
     let rows = match frame.complete::<tables::FactionResearch>() {

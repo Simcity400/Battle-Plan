@@ -294,13 +294,11 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       for (const key of options.tags) addKey(key);
     }
 
-    const rowOf = new Map(orderedKeys.map((key, idx) => [key, idx]));
     const looks = countrySeriesLooks(orderedKeys, readView, {
       holders: options.holders,
       from: options.extent[0],
       surface: options.surface,
       withFlag: true,
-      recordedOrdinal: key => rowOf.get(key) ?? 0,
       tailColor: tailColour(options.surface),
     });
 
@@ -330,8 +328,9 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
       const takenValue = present && row ? rawToPlot(row.taken) : null;
 
       if (present && row) {
-        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, formatAirExact(row.dealt)));
-        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, formatAirExact(row.taken)));
+        const atLeast = row.partial ? ` (recorded subtotal: ${row.partial})` : '';
+        auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, `${formatAirExact(row.dealt)}${atLeast}`));
+        auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, `${formatAirExact(row.taken)}${atLeast}`));
       } else if (present && head) {
         auditRows.push(auditRow(`${key}${DEALT_SUFFIX}`, 'This country is not present at this date.'));
         auditRows.push(auditRow(`${key}${TAKEN_SUFFIX}`, 'This country is not present at this date.'));
@@ -339,7 +338,7 @@ export const airKillsLossesLinesProjection: TimeChartProjection<AirKillsLossesLi
 
       const labelOnDealt = options.rankMetric === 'dealt';
       const bothFigures = !isTail && options.endLabels && row && present
-        ? { flag: look.flag, name: look.name, fullName: look.name, value: `${formatAirCompact(row.dealt)} / ${formatAirCompact(row.taken)}` }
+        ? { flag: look.flag, name: look.name, fullName: look.name, value: `${formatAirCompact(row.dealt)} / ${formatAirCompact(row.taken)}${row.partial ? ' (partial)' : ''}` }
         : null;
       const dealtEndLabel = labelOnDealt ? bothFigures : null;
       const takenEndLabel = labelOnDealt ? null : bothFigures;

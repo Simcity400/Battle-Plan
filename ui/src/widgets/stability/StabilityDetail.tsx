@@ -17,7 +17,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { FamilyViewProps } from '../../dashboard/definitions';
 import { groupNumbers } from '../../dashboard/groupsReply';
-import { resolveCountries } from '../../dashboard/groups';
+import { resolveCountries, tagsAt } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useHeldEdges } from '../../dashboard/regionGate';
@@ -110,12 +110,12 @@ export default function StabilityDetail({ widget, runtime, active, options, char
   const anchor = useRef<HTMLDivElement | null>(null);
 
   const onActivate = useCallback((subject: string, hour: number) => {
-    const picked = pickFromAction(subject, hour, resolved.tags, shown);
+    const picked = pickFromAction(subject, hour, tagsAt(resolved, Math.floor(hour)), shown);
     if (!picked) return;
     setActorPick({ owner: pickOwner, pick: picked });
     setDrillMeasure(picked.measure);
     dispatchDrill(stabilityPickAction(picked, drillOpen, drillControl.followsAt));
-  }, [resolved.tags, shown, pickOwner, drillOpen, drillControl.followsAt, dispatchDrill]);
+  }, [resolved, shown, pickOwner, drillOpen, drillControl.followsAt, dispatchDrill]);
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';

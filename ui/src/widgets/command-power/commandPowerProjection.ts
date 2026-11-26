@@ -84,7 +84,6 @@ export const commandPowerProjection: TimeChartProjection<CommandPowerOptions> = 
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
-      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: measureColour('commandPower', options.surface),
     }), ranking.unnamed, hour);
 

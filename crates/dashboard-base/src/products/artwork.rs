@@ -1892,6 +1892,10 @@ pub fn window_icon_url(
         return Err("the recorded content stack is not configured".to_owned());
     };
     let catalogue = catalogue::catalogue(source, content).map_err(|error| error.to_string())?;
+    window_icon(&catalogue, window, icon, edge)
+}
+
+fn window_icon(catalogue: &Catalogue, window: &str, icon: &str, edge: u32) -> Result<String, String> {
     let guis = catalogue.guis().map_err(|error| error.to_string())?;
     let name = content_reader_gui::gui::native::window_icon_sprite(
         guis,
@@ -1900,9 +1904,18 @@ pub fn window_icon_url(
         &mut Vec::new(),
     )
     .map_err(|error| error.to_string())?;
+    let declared = content_reader_gui::gui::native::kept_container_window(guis, window, &mut Vec::new())
+        .ok()
+        .and_then(|(_, element)| element.find_recursive(content_reader_gui::gui::native::Kind::Icon, icon))
+        .and_then(|element| element.icon())
+        .map_or(1, |icon| icon.frame);
+    let frame = declared
+        .checked_sub(1)
+        .and_then(|frame| u32::try_from(frame).ok())
+        .ok_or_else(|| format!("{window}.{icon}: unsupported frame {declared}"))?;
     let sprite =
         catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|error| error.to_string())?;
-    resolve_sprite_type(&catalogue, sprite, 0, edge)
+    resolve_sprite_type(catalogue, sprite, frame, edge)
         .into_result()?
         .ok_or_else(|| format!("{window}.{icon}: icon artwork unavailable"))
 }
@@ -2912,6 +2925,11 @@ mod tests {
         assert_eq!(
             from_url(nuke_icon(&catalogue).unwrap().as_deref().unwrap()).pixels[0],
             22
+        );
+        assert_eq!(
+            from_url(&window_icon(&catalogue, "topbar", "authored_stockpile", ICON_EDGE).unwrap()).pixels[0],
+            22,
+            "a window icon draws the frame its interface declares, as the fuel branches' icons do"
         );
         let (catalogue, _folders) = texture_catalogue(
             &[(

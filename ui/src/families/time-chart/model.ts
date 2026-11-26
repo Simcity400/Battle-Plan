@@ -120,6 +120,7 @@ export interface ChartStackBand {
 
 export interface ChartStackModel {
   readonly hours: readonly number[];
+  readonly reduced?: boolean;
   readonly bands: readonly ChartStackBand[];
   readonly bandFormat?: ChartValueFormat;
   readonly step?: boolean;

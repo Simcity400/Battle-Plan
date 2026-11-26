@@ -51,8 +51,9 @@ import { centerWindowPosition, clampWindowPosition } from './windowPlacement.ts'
 import { gatedByCountry, planFamilySources } from './planSources.ts';
 import { factionPooledResourcesDeclaration } from '../../widgets/faction-pooled-strength/factionPooledStrengthProjection.ts';
 import { identitySnapshots } from './identitySnapshots.ts';
-import { withSoFarMembership } from './membership.ts';
-import { groupRuns, rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
+import { countryMatch, EVER_UNRECORDED, everBounds, everStateAt, groupMembers, groupRuns, groupUnobserved, membershipUnrecordedAt, rankedCandidates, resolveCountries, tagsAt, worldFilter } from '../../dashboard/groups.ts';
+import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
+import { effectiveCountryUnobserved } from '../sources.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { IdentityBroker, type IdentityTransport } from '../identity/broker.ts';
 import { flagChoiceKey, type IdentityScope } from '../identity/types.ts';
@@ -1561,8 +1562,7 @@ test('every member so far masks each member from its first membership, follows i
     warnings: [],
   };
   const selection = { kind: 'group' as const, group: { type: 'faction' as const, id: '7' }, membership: 'ever' as const, aggregate: false };
-  const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
-  const masked = withSoFarMembership(resolved, selection, groups, 1000);
+  const masked = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
   assert.deepEqual([...masked.membership!.entries()], [
     ['GER', [{ tag: 'GER', firstHour: 50, lastHour: 1000 }]],
     ['CCC', [{ tag: 'CCC', firstHour: 100, lastHour: 1000 }]],
@@ -1575,7 +1575,94 @@ test('every member so far masks each member from its first membership, follows i
 
   const atHour = { ...selection, membership: 'hour' as const };
   const hourly = resolveCountries(atHour, [], groups, 1000, Number.MAX_SAFE_INTEGER);
-  assert.equal(withSoFarMembership(hourly, atHour, groups, 1000), hourly, 'membership at the hour keeps its recorded runs');
+  assert.deepEqual([...hourly.membership!.entries()], [
+    ['GER', [{ tag: 'GER', firstHour: 50, lastHour: 400 }]],
+    ['CCC', [{ tag: 'CCC', firstHour: 100, lastHour: 200 }]],
+    ['AAA', [{ tag: 'AAA', firstHour: 200, lastHour: 260 }]],
+  ], 'membership at the hour keeps its recorded runs');
+});
+
+const everFaction = (unknown: { firstHour: number; lastHour: number }[], members = [{ tag: 'GER', firstHour: 0, lastHour: 1000 }, { tag: 'ITA', firstHour: 600, lastHour: 1000 }]): CountryGroupReply => ({
+  branchId: '1',
+  humans: [],
+  factions: [{ id: '42', name: null, nameReason: null, names: [], recordedName: '', firstHour: 0, lastHour: 1000, members, leaders: [], incomplete: unknown }],
+  wars: [], warStarts: [], capitulations: [], identityChanges: [],
+  countryIdentities: [
+    { tag: 'GER', identities: [{ firstHour: 0, lastHour: 1000, slot: 1, countryId: 101 }] },
+    { tag: 'ITA', identities: [{ firstHour: 0, lastHour: 1000, slot: 2, countryId: 102 }] },
+  ],
+  unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
+  warnings: [],
+} as unknown as CountryGroupReply);
+const everOf = (group: { type: 'faction'; id: string } | { type: 'war'; tag: string }) => ({ kind: 'group' as const, group, membership: 'ever' as const, aggregate: false });
+
+test('every member so far is dated for filters: a later member never passes before it joins, and nothing passes from the first unknown roster hour (#1016)', () => {
+  const groups = everFaction([{ firstHour: 900, lastHour: 950 }]);
+  const selection = everOf({ type: 'faction', id: '42' });
+  const match = countryMatch(selection, [], groups, 1000);
+  assert.equal(match.reason, null, 'a roster gap no longer refuses the whole campaign');
+  assert.deepEqual([match.matches('GER', 200), match.matches('ITA', 200)], [true, false], 'Italy, joining at 600, does not pass at 200');
+  assert.deepEqual([match.matches('GER', 899), match.matches('ITA', 899)], [true, true]);
+  assert.deepEqual([match.matches('GER', 900), match.matches('ITA', 960)], [false, false], 'from the first unknown roster hour nothing passes, even after the gap ends');
+  assert.deepEqual([membershipUnrecordedAt(selection, groups, 899), membershipUnrecordedAt(selection, groups, 900), membershipUnrecordedAt(selection, groups, 960)], [null, EVER_UNRECORDED, EVER_UNRECORDED]);
+  const noEnemies = { ...everFaction([]), wars: [], unobserved: { humans: [], factions: [], wars: [{ firstHour: 20, lastHour: 30 }], unattributed: [] } } as unknown as CountryGroupReply;
+  assert.equal(countryMatch({ ...everOf({ type: 'war', tag: 'GER' }), membership: 'hour' }, [], noEnemies, 1000).reason, 'Group membership is incomplete for this campaign.', 'membership at the hour keeps its campaign-wide reason, never a date-specific one');
+});
+
+test('every member so far is dated for multi-country views: each mask ends before the first unknown roster hour, and the hours from it are unobserved (#1016)', () => {
+  const groups = everFaction([{ firstHour: 300, lastHour: 320 }]);
+  const selection = everOf({ type: 'faction', id: '42' });
+  const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
+  assert.equal(resolved.reason, null);
+  assert.deepEqual([...resolved.membership!.entries()], [['GER', [{ tag: 'GER', firstHour: 0, lastHour: 299 }]]], 'Germany is a member so far up to 299; Italy, joining after the gap, is never presented');
+  assert.deepEqual(effectiveCountryUnobserved(selection, resolved.unobserved), [[300, Number.MAX_SAFE_INTEGER]], 'members so far are unknown from 300 on, never the roster of 299 presented as current');
+  const renamed = { ...everFaction([], [{ tag: 'OLD', firstHour: 0, lastHour: 9 }, { tag: 'NEW', firstHour: 10, lastHour: 1000 }]),
+    countryIdentities: [{ tag: 'OLD', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 101 }] }, { tag: 'NEW', identities: [{ firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  const one = resolveCountries(selection, [], renamed, 1000, 1);
+  assert.deepEqual([one.tags, one.dropped], [['OLD', 'NEW'], 0], 'a limit counts countries, never a renamed country twice');
+  const swapped = { ...everFaction([], [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 1000 }, { tag: 'AAA', firstHour: 10, lastHour: 1000 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 101 }, { firstHour: 10, lastHour: 1000, slot: 2, countryId: 102 }] },
+      { tag: 'BBB', identities: [{ firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  const first = resolveCountries(selection, [], swapped, 1000, 1);
+  assert.deepEqual([first.dropped, [...first.membership!.entries()]], [1, [['AAA', [{ tag: 'AAA', firstHour: 0, lastHour: 9 }]], ['BBB', [{ tag: 'BBB', firstHour: 10, lastHour: 1000 }]]]],
+    'the limit keeps the first country, and the second country that took its old tag is dropped');
+  const together = { ...everFaction([], [{ tag: 'ZZZ', firstHour: 0, lastHour: 1000 }, { tag: 'AAA', firstHour: 0, lastHour: 1000 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 1000, slot: 7, countryId: 107 }] }, { tag: 'ZZZ', identities: [{ firstHour: 0, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  assert.deepEqual(resolveCountries(selection, [], together, 1000, 1).tags, ['AAA'], 'countries joining together are kept in tag order, as membership at the hour keeps them');
+  const left = { ...everFaction([], [{ tag: 'AAA', firstHour: 0, lastHour: 5 }]),
+    countryIdentities: [{ tag: 'AAA', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 101 }] },
+      { tag: 'BBB', identities: [{ firstHour: 0, lastHour: 9, slot: 2, countryId: 102 }, { firstHour: 10, lastHour: 1000, slot: 1, countryId: 101 }] }] } as unknown as CountryGroupReply;
+  const so = resolveCountries(selection, [], left, 1000, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual([tagsAt(so, 3), tagsAt(so, 12)], [['AAA'], ['BBB']], 'a choice at an hour offers the member under its tag then, never another holder of its later tag');
+  const unread = resolveCountries({ ...selection, membership: 'hour' }, [], everFaction([{ firstHour: 10, lastHour: 10 }], [{ tag: 'AAA', firstHour: 9, lastHour: 11 }]), 1000, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual([tagsAt(unread, 9), tagsAt(unread, 10), tagsAt(unread, 11)], [['AAA'], [], ['AAA']], 'an hour with an unread roster offers no member');
+  assert.deepEqual([everStateAt(everBounds(selection, groups)!, 299).kind, everStateAt(everBounds(selection, groups)!, 300).kind], [null, 'unrecorded']);
+});
+
+test('an empty group with a later roster gap is known and empty before the gap and not recorded from it, never refused for the campaign (#1016)', () => {
+  const groups = { ...everFaction([]), wars: [], unobserved: { humans: [], factions: [], wars: [{ firstHour: 20, lastHour: 30 }], unattributed: [] } } as unknown as CountryGroupReply;
+  const selection = everOf({ type: 'war', tag: 'GER' });
+  const resolved = resolveCountries(selection, [], groups, 1000, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual([resolved.tags, resolved.reason], [[], null]);
+  const bounds = everBounds(selection, groups)!;
+  assert.deepEqual([everStateAt(bounds, 10).kind, everStateAt(bounds, 19).kind, everStateAt(bounds, 20).kind, everStateAt(bounds, 500).kind], ['empty', 'empty', 'unrecorded', 'unrecorded']);
+  assert.deepEqual([everStateAt(bounds, 10).until, everStateAt(bounds, 20).from], [19, 20], 'the state changes only at the boundary hour');
+  assert.equal(worldFilter(selection, [], groups, 10).reason, NO_MEMBERS.yet);
+  assert.deepEqual(resolveCountries(selection, [], everFaction([], []), 1000, Number.MAX_SAFE_INTEGER).reason, NO_MEMBERS.ever, 'with no gap, a group with no members is empty for the whole campaign');
+});
+
+test('the dated rule answers as the recording resolver members_at does on its own fixture (a_group_is_its_members_at_the_asked_hour_and_unknown_membership_stays_unknown)', () => {
+  const groups = everFaction([{ firstHour: 300, lastHour: 320 }]);
+  const selection = everOf({ type: 'faction', id: '42' });
+  const runs = groupRuns(groups, selection.group)!;
+  const unknown = groupUnobserved(groups, selection.group);
+  const members = (hour: number) => groupMembers(runs, 'ever', hour, Infinity, unknown);
+  assert.deepEqual(members(0), ['GER'], 'the first-membership hour');
+  assert.deepEqual(members(200), ['GER'], 'every member so far, never one from later');
+  assert.deepEqual(members(299), ['GER'], 'the last hour before the unknown roster');
+  assert.equal(members(300), null, 'the first unknown roster hour');
+  assert.equal(members(700), null, 'a past unknown roster leaves who was ever a member unknown');
+  assert.equal(worldFilter(selection, [], groups, 700).reason, EVER_UNRECORDED);
 });
 
 test('a single-country widget that names its subject itself opens on branch coverage, not on a live country (#873 S14)', () => {

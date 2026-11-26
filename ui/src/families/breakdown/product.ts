@@ -1,5 +1,5 @@
 import type { Breakdown, BreakdownAmount, BreakdownPart as WirePart } from '../../generated/dashboard';
-import { formatScalar } from '../valueFormat.ts';
+import { formatRational, formatScalar } from '../valueFormat.ts';
 import { PATH, type BreakdownPart, type BreakdownTotal } from './model.ts';
 
 export interface BreakdownWords {
@@ -12,11 +12,15 @@ function sentence(text: string | null): string | undefined {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : undefined;
 }
 
-function amount(wire: BreakdownAmount | null, words: BreakdownWords): { readonly value: number; readonly text: string } | null {
+const EXACT_DECIMALS = 7;
+
+function amount(wire: BreakdownAmount | null, words: BreakdownWords): { readonly value: number; readonly text: string; readonly exact?: string } | null {
   if (wire === null) return null;
   const numerator = BigInt(wire.numerator);
   const denominator = BigInt(wire.denominator);
-  return { value: Number(numerator) / Number(denominator), text: words.format(numerator, denominator) };
+  const text = words.format(numerator, denominator);
+  const exact = formatRational(numerator, denominator, { maxDecimals: EXACT_DECIMALS });
+  return { value: Number(numerator) / Number(denominator), text, ...(exact !== text ? { exact } : {}) };
 }
 
 function part(wire: WirePart, words: BreakdownWords, parent: string | null): BreakdownPart {
@@ -30,6 +34,8 @@ function part(wire: WirePart, words: BreakdownWords, parent: string | null): Bre
     ordinal: wire.ordinal,
     value: known?.value ?? null,
     text: known?.text ?? '',
+    ...(known?.exact ? { exact: known.exact } : {}),
+    ...(wire.amount ? { raw: `${wire.amount.numerator}/${wire.amount.denominator}` } : {}),
     share: wire.share,
     parentShare: wire.parentShare,
     ...(wire.other ? { neutral: true } : {}),
@@ -61,6 +67,7 @@ export function breakdownTotal(breakdown: Breakdown, words: BreakdownWords): Bre
     ...(total.state === 'partial' || total.state === 'atLeast' ? { partial: true } : {}),
     value: known?.value ?? null,
     text: known?.text ?? 'Not recorded',
+    ...(known?.exact ? { exact: known.exact } : {}),
     unit: words.unit,
     verb: words.verb,
     ...(reason ? { reason } : {}),

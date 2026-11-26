@@ -278,6 +278,11 @@ def library_reach(crates, names):
     return reach
 
 
+def test_reach(crates, names):
+    dependencies = {dep for name in names for dep in crates[name].deps}
+    return set(names) | library_reach(crates, dependencies)
+
+
 def job_reach(root, job, crates):
     """The workspace crates a job's `manifest` or `package` builds; None when the manifest cannot
     be read. A package the workspace lacks is refused by name."""
@@ -657,8 +662,9 @@ def held_detail(held):
 class Runner:
     """Runs decided jobs, each logging to its own file in the run's folder."""
 
-    def __init__(self, folder, values, local=False):
+    def __init__(self, folder, values, crates, local=False):
         self.folder, self.values, self.local = folder, values, local
+        self.crates = crates
 
     def execute(self, command, log):
         env = dict(os.environ)
@@ -687,7 +693,8 @@ class Runner:
         else:
             if report:
                 report.unlink(missing_ok=True)
-            if not self.local and sys.platform == "win32" and job.name == "rust-test" and "shader-pipeline" in decision.crates:
+            if (not self.local and sys.platform == "win32" and job.name == "rust-test"
+                    and "shader-pipeline" in test_reach(self.crates, decision.crates)):
                 stage_code = stage_shader_compiler(command, log)
                 if stage_code != 0:
                     return Outcome(job.name, "fail", f"staging pinned shader compiler failed, exit {stage_code}", time.monotonic() - started, str(log))
@@ -810,7 +817,7 @@ def plan(tier, base_ref, exact=False, everything=False):
     if not ratchet_base(base):
         decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")
                      if d.job.base and d.state == "run" else d for d in decisions]
-    return pipeline, values, decisions, base
+    return ctx, values, decisions, base
 
 
 def unplanned_outcomes(planned, decisions):
@@ -878,12 +885,12 @@ def matrix_legs(pipeline, decisions, crates, table):
 
 def changes(args):
     """The workflow's `changes` job: each job's gate, and the matrix of legs."""
-    pipeline, _, decisions, base = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
+    ctx, _, decisions, base = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
     for decision in decisions:
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
     sharded = any(d.state == "run" and d.job.shards for d in decisions)
     load_weights({}, committed_weights())
-    matrix = matrix_legs(pipeline, decisions, crates_from_manifests(ROOT) if sharded else {}, committed_weights() if sharded else "")
+    matrix = matrix_legs(ctx.pipeline, decisions, ctx.crates, committed_weights() if sharded else "")
     for leg in matrix:
         print(f"leg {leg['name']}: {leg['jobs']}")
     print(f"legs: {len(matrix) or 'none'}")
@@ -925,8 +932,8 @@ def take_shard(decisions, shard, crates, table):
 def job_group(args):
     """The workflow's matrix leg: runs the jobs of one group that `changes` gated in, or one
     runner's share of a sharded job."""
-    pipeline, values, decisions, _ = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
-    if args.group not in pipeline.groups:
+    ctx, values, decisions, _ = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
+    if args.group not in ctx.pipeline.groups:
         sys.exit(f"tools/ci.toml has no group {args.group!r}")
     planned = args.jobs.split()
     wrong = [d.job.name for d in decisions if d.job.name in planned and d.job.group != args.group]
@@ -935,9 +942,9 @@ def job_group(args):
     decisions = [d for d in decisions if d.job.name in planned]
     outcomes = unplanned_outcomes(planned, decisions)
     if args.shard:
-        decisions, refused = take_shard(decisions, args.shard, crates_from_manifests(ROOT), committed_weights())
+        decisions, refused = take_shard(decisions, args.shard, ctx.crates, committed_weights())
         outcomes += refused
-    runner = Runner(Path(tempfile.mkdtemp(prefix="ci-")), values)
+    runner = Runner(Path(tempfile.mkdtemp(prefix="ci-")), values, ctx.crates)
     outcomes += run_all(runner, [d for d in decisions if d.state == "run"])
     return report(outcomes, f"group {args.group}" + (f" shard {args.shard}" if args.shard else ""))
 
@@ -945,7 +952,7 @@ def job_group(args):
 def check(args):
     """The quick run here before a push: the check tier's jobs the change touches, except those
     that compile or test, which CI runs."""
-    _, values, decisions, base = plan("check", args.base)
+    ctx, values, decisions, base = plan("check", args.base)
     print(f"ci check: HEAD {git('rev-parse', 'HEAD').strip()[:10]} against {base[:10]}, {len(changed_since(base))} changed files", flush=True)
     outcomes = []
     running = []
@@ -958,7 +965,7 @@ def check(args):
             outcomes.append(Outcome(decision.job.name, decision.state, decision.detail))
     folder = Path(tempfile.mkdtemp(prefix="ci-check-"))
     print(f"logs: {folder}", flush=True)
-    outcomes += run_all(Runner(folder, values, local=True), running)
+    outcomes += run_all(Runner(folder, values, ctx.crates, local=True), running)
     return report(outcomes, "ci check (GitHub CI is the gate)")
 
 

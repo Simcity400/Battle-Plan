@@ -94,7 +94,7 @@ export function sampleSeriesValueAt(
   hour: number,
   until: number,
 ): { readonly value: number; readonly min: number; readonly max: number; readonly exact: boolean; readonly raw?: bigint; readonly denominator?: bigint } | null {
-  if (hour > until) return null;
+  if (hour > until || series.missingSpans?.some(span => span.firstHour <= hour && hour <= span.lastHour)) return null;
   if (series.bounded) {
     const sampled = sampleBoundedAt(series.bounded, hour, series.valueScale ?? 1);
     if (sampled) return sampled;
@@ -275,6 +275,11 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
     for (let i = 0; i < model.stack.hours.length; i++) {
       if (model.stack.hours[i]! <= hour) at = i;
       else break;
+    }
+    if (at >= 0 && model.stack.reduced && model.stack.hours[at] !== hour && at + 1 < model.stack.hours.length) {
+      return model.hoverDetail?.hour === hour
+        ? []
+        : [{ label: model.measureTitle, missingReason: 'This hour is inside a grouped span; its figures come from the read of this hour', tone: 'muted' }];
     }
     if (at >= 0) {
       const totalVal = model.stack.total?.values[at];

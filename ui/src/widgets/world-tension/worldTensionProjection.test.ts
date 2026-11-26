@@ -71,8 +71,8 @@ function sampleStack(): WorldTensionStackReply {
     ],
     other: { count: 31, values: [0, 3, 12], valuesRaw: ['0', '300000', '1200000'], endValue: 12, endRaw: '1200000', endMissing: null },
     events: [
-      { hour: H1936 + 5000, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
-      { hour: H1941 + 200, slot: 2, secondCountry: 0, place: 0, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
+      { hour: H1936 + 5000, country: 9001, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+      { hour: H1941 + 200, country: 9002, slot: 2, secondCountry: 0, place: 0, tag: 'JAP', remembered: false, reason: 'Future event', addedRaw: '1000000', firstRead: H1941 + 200, lastRead: null },
     ],
     missing: [],
     nextChangeHour: H1941 + 24,
@@ -344,7 +344,7 @@ describe('world-tension projections', () => {
     const reply: WorldTensionStackReply = {
       ...sampleStack(),
       events: [
-        { hour: hoverHour, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
+        { hour: hoverHour, country: 9001, slot: 1, secondCountry: 0, place: 0, tag: 'GER', remembered: false, reason: 'Remilitarised the Rhineland', addedRaw: '900000', firstRead: hoverHour, lastRead: null },
       ],
     };
     const hoverReply: WorldTensionReply = {
@@ -395,6 +395,12 @@ describe('world-tension projections', () => {
     });
     const evItem = model.hoverDetail?.items.find(item => item.label === 'Remilitarised the Rhineland');
     assert.equal(evItem?.value, '+5%', 'hover shows +5% recorded at hoverHour, not +9% revised later at playhead');
+    const layout = layoutTimeChart(model, 720, 260, 'Segoe UI', measure);
+    const markerIndex = model.markers?.findIndex(marker => marker.hour === hoverHour) ?? -1;
+    assert.ok(markerIndex >= 0, 'the event has a marker at its hour');
+    const markerTip = deriveTimeChartTooltip(model, layout, `marker:${markerIndex}@${hoverHour}`);
+    const listed = (markerTip?.payload?.items ?? []).filter(item => item.label === 'Remilitarised the Rhineland');
+    assert.equal(listed.length, 1, `the marker lists its event once: ${JSON.stringify(markerTip?.payload?.items)}`);
   });
 
   it('S11: downsampled world-tension lines paint interval bounds, hover as ranges before exact hover, and show exact hovered-hour contributions once loaded', () => {
@@ -434,6 +440,30 @@ describe('world-tension projections', () => {
     const rangeItem = tipWithoutExact?.payload?.items?.find(i => i.label === 'German Reich');
     assert.ok(rangeItem?.value?.includes('\u2013'), `expected interval bounds range on downsampled hover, got ${rangeItem?.value}`);
 
+    const dipping = worldTensionLinesProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, bands: [{ ...downsampledReply.bands[0]!, minValues: [0, -4, 60] }] }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', gaps: [] });
+    assert.notEqual(dipping.yAxis.min, 0, 'a bin that dipped to -4% before ending higher keeps its low on the axis');
+    const reducedStack = worldTensionProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, bands: [{ ...downsampledReply.bands[0]!, valuesRaw: ['0', '2000000', '6000000'] }] }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
+    assert.ok(reducedStack.stack?.bands.every(band => band.exact === undefined), 'a reduced stack claims no exact figure for its bins');
+    const dipLayout = layoutTimeChart(dipping, 720, 260, 'Segoe UI', measure);
+    assert.ok(dipLayout.yDomain[0] <= -4, `the axis reaches the bin's low: ${dipLayout.yDomain}`);
+    const between = deriveTimeChartTooltip(reducedStack, layoutTimeChart(reducedStack, 720, 260, 'Segoe UI', measure), `plot:${hoverHour - 5}`);
+    assert.ok(!(between?.payload?.items ?? []).some(item => item.value !== undefined), `inside a grouped span no figure is shown as the hour's: ${JSON.stringify(between?.payload?.items)}`);
+    const settled = worldTensionProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, hours: [H1936, hoverHour - 10], total: [0, 20], bands: [{ ...downsampledReply.bands[0]!, values: [0, 20], minValues: [0, 10], maxValues: [0, 40], valuesRaw: ['0', '2000000'] }] }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
+    const afterLast = deriveTimeChartTooltip(settled, layoutTimeChart(settled, 720, 260, 'Segoe UI', measure), `plot:${hoverHour}`);
+    assert.ok((afterLast?.payload?.items ?? []).some(item => item.value !== undefined), `after the last kept change the figures stand: ${JSON.stringify(afterLast?.payload?.items)}`);
+
     const { subpaths } = buildLineSubpaths(lineModel.series[0]!, layout, H1941);
     const ys = subpaths.flat().map(p => p[1]);
     assert.ok(ys.some(y => Math.abs(y - layout.toY(40)) < 0.5), 'painter includes max excursion 40%');
@@ -470,6 +500,14 @@ describe('world-tension projections', () => {
     const exactTip = deriveTimeChartTooltip(exactModel, exactLayout, `plot:${hoverHour}`);
     const exactItem = exactTip?.payload?.items?.find(i => i.label === 'German Reich');
     assert.equal(exactItem?.value, '+35%', 'exact hover overrides downsampled range with the signed slot contribution');
+    const readStack = worldTensionProjection.project(createBoundedReadView({
+      hour: H1941,
+      panels: new Map([['main', { ...downsampledReply, bands: [{ ...downsampledReply.bands[0]!, valuesRaw: ['0', '2000000', '6000000'] }] }]]),
+      hovers: new Map([['hover', { hour: hoverHour, data: hoverReply }]]),
+      identity: makeIdentity(),
+    }), { extent: [H1936, H1941], surface: '#111111', layers: 5, values: 'share', showMarkers: false, gaps: [] });
+    const readTip = deriveTimeChartTooltip(readStack, layoutTimeChart(readStack, 720, 260, 'Segoe UI', measure), `plot:${hoverHour}`);
+    assert.ok(!(readTip?.payload?.items ?? []).some(item => item.missingReason?.includes('grouped span')), `once the hour is read its figures replace the grouped-span note: ${JSON.stringify(readTip?.payload?.items)}`);
 
     const plan = worldTensionLinesDeclaration.sources({
       track: { source: { id: 's', revision: '1' }, axisOffset: 0 },
@@ -491,9 +529,11 @@ describe('world-tension projections', () => {
       ],
       other: null,
       events: [
-        { hour: H1936 + 5000, slot: 1, secondCountry: 2, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
-        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '400000', firstRead: H1936 + 5000, lastRead: null },
-        { hour: H1936 + 5000, slot: 1, secondCountry: 3, place: 1, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '300000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, country: 9001, slot: 1, secondCountry: 2, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '500000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, country: 9001, slot: 1, secondCountry: 3, place: 0, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '400000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, country: 9001, slot: 1, secondCountry: 3, place: 1, tag: 'GER', remembered: false, reason: 'Declared war', addedRaw: '300000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, country: 9050, slot: null, secondCountry: 3, place: 0, tag: null, remembered: false, reason: 'Declared war', addedRaw: '200000', firstRead: H1936 + 5000, lastRead: null },
+        { hour: H1936 + 5000, country: 9051, slot: null, secondCountry: 3, place: 0, tag: null, remembered: false, reason: 'Declared war', addedRaw: '100000', firstRead: H1936 + 5000, lastRead: null },
       ],
     } as unknown as WorldTensionStackReply;
 
@@ -527,7 +567,7 @@ describe('world-tension projections', () => {
 
     const table = worldTensionEventsProjection.project(view, { branchFirst: H1936 });
     const rowKeys = table.rows.map(r => r.key);
-    assert.equal(new Set(rowKeys).size, 3, 'events table rowKey distinguishes secondary country and occurrence ordinal');
+    assert.equal(new Set(rowKeys).size, rowKeys.length, 'events table rowKey distinguishes secondary country, occurrence ordinal and unresolved primary country');
   });
 
   it('S15 + S18: passes top and dated GroupSelection to Rust across Stack/Lines/Events, renders refused replies, and skips unused stack/event work', () => {

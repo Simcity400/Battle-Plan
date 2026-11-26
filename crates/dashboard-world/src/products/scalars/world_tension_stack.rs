@@ -90,6 +90,7 @@ pub struct TensionStackOther {
 #[serde(rename_all = "camelCase")]
 pub struct TensionStackEvent {
     pub hour: i32,
+    pub country: u32,
     pub slot: Option<u32>,
     pub second_country: u32,
     pub place: u32,
@@ -286,6 +287,7 @@ fn row_step(row: &log::Row) -> Option<Step> {
 
 struct CachedEvent {
     hour: i32,
+    country: u32,
     slot: Option<u32>,
     second_country: u32,
     place: u32,
@@ -553,6 +555,7 @@ fn build_branch(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Res
         .into_iter()
         .map(|event| CachedEvent {
             hour: event.identity.date,
+            country: event.identity.country,
             slot: event.slot,
             second_country: event.identity.second,
             place: event.identity.place,
@@ -1065,16 +1068,8 @@ pub(super) fn compute_stack(
                 reduced.push(sample);
                 last_bucket = bucket;
             } else if let Some(last_kept) = reduced.last_mut() {
-                last_kept.total = sample.total;
-                last_kept.total_raw = sample.total_raw;
-                last_kept.sum_raw = sample.sum_raw;
-                last_kept.other = sample.other;
-                last_kept.other_raw = sample.other_raw;
                 for i in 0..last_kept.bands.len() {
-                    let val = sample.bands[i];
-                    last_kept.bands[i] = val;
-                    last_kept.band_raws[i] = sample.band_raws[i];
-                    if let Some(v) = val {
+                    if let Some(v) = sample.bands[i] {
                         last_kept.band_min[i] = Some(last_kept.band_min[i].map_or(v, |m| m.min(v)));
                         last_kept.band_max[i] = Some(last_kept.band_max[i].map_or(v, |m| m.max(v)));
                     }
@@ -1484,6 +1479,7 @@ impl Product for WorldTensionStack {
                     .flatten();
                 events.push(TensionStackEvent {
                     hour: event.hour,
+                    country: event.country,
                     slot: event.slot,
                     second_country: event.second_country,
                     place: event.place,

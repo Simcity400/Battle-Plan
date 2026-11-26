@@ -149,7 +149,6 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
     const stabMap = options.showStability ? readView.series('stability') : undefined;
     const warMap = options.showWarSupport ? readView.series('warSupport') : undefined;
 
-    const rowOf = new Map(tags.map((tag, row) => [tag, row]));
     const stabByTag = new Map<string, HeadReading | null>();
     const warByTag = new Map<string, HeadReading | null>();
     const readings: [string, HeadReading | null][] = [];
@@ -179,7 +178,6 @@ export const stabilityProjection: TimeChartProjection<StabilityOptions> = regist
       from: options.extent[0],
       surface: options.surface,
       withFlag: !single,
-      recordedOrdinal: tag => rowOf.get(tag) ?? 0,
       singleColor: measureColour('stability', options.surface),
     }), ranking.unnamed, hour);
 

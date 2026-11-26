@@ -1,4 +1,4 @@
-use super::{GROUP_LINE, measure_of, merged, slot_joins, within};
+use super::{EverIndex, GROUP_LINE, measure_of, merged, within};
 use dashboard_base::{
     Source,
     products::{Country, LoadContext, validate_country},
@@ -6,7 +6,6 @@ use dashboard_base::{
 };
 use dashboard_query::{
     Query,
-    identity::Holders,
     chart::{ChartBucket, ChartRun},
     series::{
         Ask, Line, MissingSpan,
@@ -295,10 +294,10 @@ fn sum_member_tiles(
     })
 }
 
-fn ever_spans_from_runs(holders: &Holders, runs: &[MembershipRun], first: i32, clip: i32) -> Vec<(Country, Vec<(i32, i32)>)> {
-    let mut drawn: Vec<(Country, Vec<(i32, i32)>)> = slot_joins(runs, holders)
-        .into_iter()
-        .filter_map(|(start, slot)| {
+fn ever_spans(joins: &[(i32, u32)], first: i32, clip: i32) -> Vec<(Country, Vec<(i32, i32)>)> {
+    let mut drawn: Vec<(Country, Vec<(i32, i32)>)> = joins
+        .iter()
+        .filter_map(|&(start, slot)| {
             let lo = start.max(first);
             (lo <= clip).then(|| (Country::Slot(slot), vec![(lo, clip)]))
         })
@@ -374,25 +373,35 @@ pub fn tile(
 
         if let Some(group) = &family.group {
             let reply = groups::shared(source, query, context, cancelled)?;
-            match group_members::runs(&reply, group)? {
-                Ok(found) => {
-                    let (drawn, unread) = match group.membership {
-                        GroupMembership::Hour => (
-                            hour_spans_from_runs(&found.members, read_from, clip),
-                            merged(found.unknown.iter().map(|s| (s.first_hour, s.last_hour)).collect(), read_from, clip)
+            let unread_reason = "The group's members were not read whole here";
+            let held = match group.membership {
+                GroupMembership::Ever => {
+                    let index = EverIndex::shared(source, query.timeline.id, &reply, Some(group))?;
+                    match &index.refused {
+                        Some(reason) => Err(reason.clone()),
+                        None => Ok((
+                            ever_spans(index.joins_of(GROUP_LINE), read_from, clip),
+                            index
+                                .unknown_from
+                                .filter(|&from| from <= clip)
+                                .map(|from| MissingSpan { first_hour: from.max(read_from), last_hour: clip, reason: unread_reason.to_owned() })
                                 .into_iter()
-                                .map(|(first_hour, last_hour)| MissingSpan {
-                                    first_hour,
-                                    last_hour,
-                                    reason: "The group's members were not read whole here".to_owned(),
-                                })
-                                .collect(),
-                        ),
-                        GroupMembership::Ever => (
-                            ever_spans_from_runs(&query.holders, &found.members, read_from, clip),
-                            ever_unread(&found.unknown, read_from, clip, "The group's members were not read whole here"),
-                        ),
-                    };
+                                .collect::<Vec<_>>(),
+                        )),
+                    }
+                }
+                GroupMembership::Hour => group_members::runs(&reply, group)?.map(|found| {
+                    (
+                        hour_spans_from_runs(&found.members, read_from, clip),
+                        merged(found.unknown.iter().map(|s| (s.first_hour, s.last_hour)).collect(), read_from, clip)
+                            .into_iter()
+                            .map(|(first_hour, last_hour)| MissingSpan { first_hour, last_hour, reason: unread_reason.to_owned() })
+                            .collect(),
+                    )
+                }),
+            };
+            match held {
+                Ok((drawn, unread)) => {
                     check_cancel(cancelled)?;
                     built.push(sum_member_tiles(
                         &line,
@@ -414,6 +423,7 @@ pub fn tile(
             }
         } else if family.membership == Some(GroupMembership::Ever) {
             let reply = groups::shared(source, query, context, cancelled)?;
+            let index = EverIndex::shared(source, query.timeline.id, &reply, None)?;
             let by_id: BTreeMap<&str, _> =
                 reply.factions.iter().map(|faction| (faction.id.as_str(), faction)).collect();
             let requested: Vec<String> = if ask.countries.is_empty() {
@@ -440,7 +450,7 @@ pub fn tile(
                 let drawn = if faction.first_hour > clip {
                     Vec::new()
                 } else {
-                    ever_spans_from_runs(&query.holders, &faction.members, read_from, clip)
+                    ever_spans(index.joins_of(&faction.id), read_from, clip)
                 };
                 built.push(sum_member_tiles(
                     &line,
@@ -542,7 +552,7 @@ mod tests {
     use replay_frame::frame::{DecodedFrame, Metrics, TableView};
     use std::sync::Arc;
 
-    fn flags(reply: &SeriesTileReply, line: usize) -> Vec<u8> {
+    fn bytes(reply: &SeriesTileReply) -> Vec<u8> {
         const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let val = |byte: u8| ALPHABET.iter().position(|&c| c == byte).map_or(0, |at| at as u32);
         let mut out = Vec::new();
@@ -550,7 +560,12 @@ mod tests {
             let word = chunk.iter().fold(0u32, |word, &byte| (word << 6) | val(byte));
             out.extend([(word >> 16) as u8, (word >> 8) as u8, word as u8]);
         }
-        out[line * BINS..(line + 1) * BINS].to_vec()
+        out.truncate(out.len() - reply.bins.bytes().rev().take_while(|&byte| byte == b'=').count());
+        out
+    }
+
+    fn flags(reply: &SeriesTileReply, line: usize) -> Vec<u8> {
+        bytes(reply)[line * BINS..(line + 1) * BINS].to_vec()
     }
 
     fn build_source() -> Source {
@@ -670,7 +685,7 @@ mod tests {
             MembershipRun { tag: "GER".to_owned(), first_hour: 100, last_hour: 107 },
             MembershipRun { tag: "DEU".to_owned(), first_hour: 108, last_hour: 115 },
         ];
-        let drawn = ever_spans_from_runs(&query.holders, &runs, 0, 115);
+        let drawn = ever_spans(&super::super::slot_joins(&runs, &query.holders), 0, 115);
         assert_eq!(drawn, vec![(Country::Slot(7), vec![(100, 115)])], "membership belongs to the slot, never to whoever holds GER later");
         let series = dashboard_declare::series("country-factories").unwrap();
         let reader = Line::new(&query, series, series.measure("free7").unwrap()).unwrap();
@@ -704,6 +719,51 @@ mod tests {
                 assert_eq!(played["rows"], cold["rows"], "playback reads the member slot's own row at {hour} for {asked}");
                 assert_eq!(cold["rows"][0]["total"], 40, "the member that left is still counted, from its own slot, at {hour} for {asked}");
             }
+        }
+    }
+
+    #[test]
+    fn a_member_slot_with_no_tag_while_it_was_a_member_is_still_ever_a_member() {
+        let links = vec![CountryLinkRow { id: 9001, canonical_slot: 7 }, CountryLinkRow { id: 9002, canonical_slot: 9 }];
+        let frames: Vec<DecodedFrame> = (100..=115)
+            .map(|hour| {
+                let mut tables = std::array::from_fn(|_| TableView::Unavailable { reason: "outside fixture".into() });
+                tables[TableId::Campaign.index()] = TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: CAMPAIGN.into() }]));
+                let mut countries = vec![CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9001, canonical_slot: 7, tag: b"GER".to_vec(), ..CountryRow::default() }];
+                if hour >= 108 {
+                    countries.push(CountryRow { border_land_doctrine_level: Recorded::Value(None), id: 9002, canonical_slot: 9, tag: b"ITA".to_vec(), ..CountryRow::default() });
+                }
+                tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+                tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links.clone()));
+                tables[TableId::HumanControllers.index()] = TableView::Complete(TableRows::HumanControllers(Vec::new()));
+                tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![FactionRow { id: 10, name: b"Axis".to_vec(), ..FactionRow::default() }]));
+                let mut members = vec![FactionMemberRow { country: 9001, faction: 10, ordinal: 0 }];
+                if hour <= 104 {
+                    members.push(FactionMemberRow { country: 9002, faction: 10, ordinal: 1 });
+                }
+                tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+                tables[TableId::CountryFactories.index()] = TableView::Complete(TableRows::CountryFactories(vec![
+                    CountryFactoriesRow { country: 9001, military_total_raw: 4_000_000, ..CountryFactoriesRow::default() },
+                    CountryFactoriesRow { country: 9002, military_total_raw: 2_000_000, ..CountryFactoriesRow::default() },
+                ]));
+                DecodedFrame { branch: 1, hour, tables: tables.map(Into::into), metrics: Metrics::default() }
+            })
+            .collect();
+        let built = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let src = Source::from_replay(SourceKey { source_id: "faction-untagged-member".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(built), &AtomicBool::new(false)).unwrap();
+        let (load, cancelled) = (LoadContext { content: None }, AtomicBool::new(false));
+        let at = load_at(&src, serde_json::json!({ "branchId": "1", "hour": 110, "kind": "country-factories", "measure": "free7", "membership": "ever" }), &load, &cancelled);
+        assert_eq!(at["rows"][0]["total"], 60, "slot 9 was a member at 100 to 104 though it held no tag then: {at}");
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        for family in [
+            serde_json::json!({ "kind": SERIES, "sourceKind": "country-factories", "measure": "free7", "membership": "ever" }),
+            serde_json::json!({ "kind": SERIES, "sourceKind": "country-factories", "measure": "free7", "group": { "type": "faction", "id": "10", "membership": "ever" } }),
+        ] {
+            let line = if family.get("group").is_some() { GROUP_LINE } else { "10" };
+            let reply = tile(&src, &query, &serde_json::json!({ "branchId": "1", "family": family, "binHours": 1, "index": 0, "countries": [line] }), &load, &cancelled).unwrap();
+            let drawn = tile::decode_runs(&bytes(&reply), 1, reply.first_hour, 10f64.powi(i32::from(reply.decimals)), reply.raw_values).unwrap().remove(0);
+            let at_110 = drawn.iter().find(|run| run.0 <= 110 && 110 <= run.1).map(|run| run.2);
+            assert_eq!(at_110, Some(60.0), "the tile draws the untagged member too, for {family}: {drawn:?}");
         }
     }
 
