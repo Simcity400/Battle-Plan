@@ -2345,6 +2345,101 @@ fn compare_capitulation(
     Ok(())
 }
 
+pub fn compare_surrender_inputs(
+    frame: &DecodedFrame,
+    saved: &content_reader_save::construction::Pack,
+    countries: &BTreeMap<u32, &CountryRow>,
+    recount: Option<(&[u8], io::Result<[i32; 4]>)>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut found_recount = false;
+    for row in complete::<tables::Capitulation>(frame)? {
+        let tag = required_country_tag(row.country, countries)?;
+        let name = "Capitulation.selected_collaboration";
+        let subject = format!("{}.{name}", text(tag));
+        let expected = saved
+            .surrender_recipients
+            .get(tag)
+            .and_then(|recipient| {
+                saved
+                    .country_collaboration
+                    .get(&(tag.to_vec(), recipient.clone()))
+            })
+            .map_or(0, |pair| pair.progress.raw);
+        match report.recorded(&row.selected_collaboration, name, &subject) {
+            Some(Some(actual)) => {
+                equal(report, &subject, *actual, expected);
+                report.compared(name, 1);
+            }
+            Some(None) => report.difference(subject, "refused read", expected),
+            None => {}
+        }
+        let weights = [
+            (
+                "Capitulation.cached_held_core_weight",
+                &row.cached_held_core_weight,
+            ),
+            (
+                "Capitulation.cached_total_core_weight",
+                &row.cached_total_core_weight,
+            ),
+            (
+                "Capitulation.cached_held_territory_weight",
+                &row.cached_held_territory_weight,
+            ),
+            (
+                "Capitulation.cached_total_territory_weight",
+                &row.cached_total_territory_weight,
+            ),
+        ];
+        let witness = recount.as_ref().filter(|(country, _)| *country == tag);
+        found_recount |= witness.is_some();
+        if let Some((_, Ok(expected))) = witness {
+            for ((field, value), &expected) in weights.into_iter().zip(expected) {
+                let subject = format!("{}.{field}", text(tag));
+                match report.recorded(value, field, &subject) {
+                    Some(Some(actual)) => {
+                        equal(report, &subject, *actual, expected);
+                        report.compared(field, 1);
+                    }
+                    Some(None) => report.difference(subject, "refused read", expected),
+                    None => {}
+                }
+            }
+        } else {
+            let reason = match witness {
+                Some((_, Err(error))) => {
+                    format!("The save cannot determine the recounted weights: {error}")
+                }
+                _ => {
+                    "The save cannot determine weights cached before its province state".to_owned()
+                }
+            };
+            for (field, _) in weights {
+                report.limitation(&reason, format!("{}.{field}", text(tag)));
+            }
+        }
+        for field in [
+            "surrender_limit_modifier",
+            "forced_surrender_limit_modifier",
+            "max_surrender_limit_offset",
+        ] {
+            report.limitation(
+                "The save omits the effective country modifier total",
+                format!("{}.Capitulation.{field}", text(tag)),
+            );
+        }
+    }
+    if let Some((tag, _)) = recount.filter(|_| !found_recount) {
+        report.difference(
+            format!("{}.Capitulation", text(tag)),
+            "country absent",
+            "recount witnessed",
+        );
+    }
+    Ok(())
+}
+
 fn compare_flags(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -3575,6 +3670,97 @@ mod tests {
         assert!(
             compare_captured_operatives(&make(missing), &save, &countries, &mut Report::default())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn surrender_inputs_compare_collaboration_and_only_witnessed_cached_weights() {
+        let input = br#"countries={AAA={diplomacy={} last_collaborated_surrender_recipient=BBB collaboration={collaboration={BBB={value=0.34827}}}} BBB={diplomacy={}}} states={} provinces={}"#;
+        let saved = content_reader_save::construction::parse(
+            &content_reader_parser::parser::parse(input).unwrap().items,
+        )
+        .unwrap();
+        let countries = [(7, b"AAA"), (9, b"BBB")].map(|(id, tag)| CountryRow {
+            id,
+            tag: tag.to_vec(),
+            ..Default::default()
+        });
+        let links = countries.iter().map(|row| (row.id, row)).collect();
+        let run = |selected: Recorded<Option<i64>>, held: Recorded<Option<i32>>, recount| {
+            let rows = [selected, Some(0).into()]
+                .into_iter()
+                .zip(&countries)
+                .map(
+                    |(selected_collaboration, country)| replay_data::rows::CapitulationRow {
+                        country: country.id,
+                        selected_collaboration,
+                        cached_held_core_weight: held.clone(),
+                        cached_total_core_weight: Some(57).into(),
+                        cached_held_territory_weight: Some(42).into(),
+                        cached_total_territory_weight: Some(79).into(),
+                        ..Default::default()
+                    },
+                )
+                .collect();
+            let frame = frame(TableId::Capitulation, TableRows::Capitulation(rows));
+            let mut report = Report::default();
+            compare_surrender_inputs(&frame, &saved, &links, recount, &mut report).unwrap();
+            report
+        };
+        let recounted = || Some((b"AAA".as_slice(), Ok([31, 57, 42, 79])));
+        let report = run(Some(34827).into(), Some(31).into(), recounted());
+        assert!(report.differences.is_empty());
+        assert_eq!(
+            report
+                .compared_tables
+                .get("Capitulation.selected_collaboration"),
+            Some(&2)
+        );
+        let weight = "Capitulation.cached_held_core_weight";
+        assert_eq!(report.compared_tables.get(weight), Some(&1));
+        assert_eq!(
+            run(Some(34826).into(), Some(31).into(), recounted())
+                .differences
+                .len(),
+            1
+        );
+        assert_eq!(
+            run(None.into(), Some(31).into(), recounted())
+                .differences
+                .len(),
+            1
+        );
+        assert_eq!(
+            run(Some(34827).into(), Some(32).into(), recounted())
+                .differences
+                .len(),
+            1
+        );
+        let refused = run(Some(34827).into(), None.into(), recounted());
+        assert_eq!(refused.differences.len(), 1);
+        assert!(!refused.compared_tables.contains_key(weight));
+        let ordinary = run(Some(34827).into(), Some(11).into(), None);
+        assert!(ordinary.differences.is_empty());
+        assert!(!ordinary.compared_tables.contains_key(weight));
+        assert_eq!(ordinary.limitations["The save cannot determine weights cached before its province state"].len(), 8);
+        let unavailable = run(
+            Some(34827).into(),
+            Some(31).into(),
+            Some((b"AAA", Err(io::Error::other("unknown terrain")))),
+        );
+        assert_eq!(unavailable.limitations["The save cannot determine the recounted weights: unknown terrain"].len(), 4);
+        assert_eq!(
+            unavailable.compared_tables["Capitulation.selected_collaboration"],
+            2
+        );
+        let older = run(Recorded::NotRecorded, Recorded::NotRecorded, recounted());
+        assert!(older.differences.is_empty());
+        assert!(!older.compared_tables.contains_key(weight));
+        assert_eq!(
+            older
+                .compared_tables
+                .get("Capitulation.selected_collaboration"),
+            Some(&1)
         );
     }
 

@@ -1,5 +1,5 @@
 use crate::witness::ContentReads;
-use dashboard_text::triggers::LeaderRoles;
+use dashboard_text::triggers::{LeaderRoles, SurrenderLimits};
 use content_reader_layers::ResolvedLayers;
 use content_reader_defines::defines::Defines;
 use content_reader_map::map::MapData;
@@ -355,6 +355,7 @@ impl TriggerLoader {
             dlcs,
             resource_bonuses,
             continents,
+            SurrenderLimits::read(defines),
             invasion_prepare_days,
             script_constants,
         ))
@@ -387,6 +388,7 @@ pub fn assemble_trigger_content(
     dlcs: std::collections::BTreeSet<String>,
     resource_bonuses: [i64; 2],
     continents: Result<Vec<String>, String>,
+    surrender_limits: Result<SurrenderLimits, String>,
     invasion_prepare_days: Result<i32, String>,
     script_constants: Result<content_reader_politics::script_constants::Constants, String>,
 ) -> TriggerContent {
@@ -404,6 +406,7 @@ pub fn assemble_trigger_content(
         dlcs,
         resource_bonuses,
         continents,
+        surrender_limits,
         invasion_prepare_days,
         script_constants,
     }

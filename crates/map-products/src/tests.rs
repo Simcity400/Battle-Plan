@@ -67,6 +67,7 @@ fn trigger_content() -> TriggerContent {
         terrain: None,
         resource_bonuses: [0; 2],
         leader_roles: Err("fixture has no leader definitions".into()),
+        surrender_limits: Err("fixture has no surrender defines".into()),
         invasion_prepare_days: Err("fixture has no invasion define".into()),
         script_constants: Err("fixture has no constants".into()),
     }

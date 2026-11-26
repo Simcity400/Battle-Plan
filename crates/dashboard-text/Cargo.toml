@@ -13,6 +13,7 @@ doctest = false
 test-support = ["replay-frame/test-support", "dashboard-core/test-support", "content-reader-abilities/test-support", "content-reader-image/test-support", "content-reader-layers/test-support", "content-reader-script/test-support", "content-reader-country-names/test-support", "content-reader-division-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-events/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-raids/test-support", "content-reader-regions/test-support", "content-reader-scripted-localisation/test-support", "content-reader-settings/test-support", "content-reader-state-categories/test-support", "content-reader-states/test-support", "content-reader-wargoals/test-support"]
 
 [dependencies]
+dashboard-query.workspace = true
 engine-native-parts.workspace = true
 engine-native-air.workspace = true
 content-reader-defines.workspace = true
@@ -110,6 +111,7 @@ replay = { workspace = true, features = ["default", "recording", "test-support"]
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

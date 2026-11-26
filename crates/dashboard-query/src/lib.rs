@@ -11,6 +11,7 @@ pub mod named;
 pub mod pieces;
 pub mod read;
 pub mod series;
+pub mod surrender;
 pub mod tile;
 pub mod timeline;
 

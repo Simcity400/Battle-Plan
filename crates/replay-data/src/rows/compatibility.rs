@@ -918,13 +918,19 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::Capitulation.index()] = appended_at(
         TableId::Capitulation,
-        MAP_MODE_INPUTS_FORMAT,
-        "pol/mapmode-capture owned war goals",
-        &[AppendedField {
-            index: 6,
-            name: "war_goal_recipients",
-            introduced: MAP_MODE_INPUTS_FORMAT,
-        }],
+        SURRENDER_INPUTS_FORMAT,
+        "country surrender inputs",
+        &[
+            AppendedField { index: 6, name: "war_goal_recipients", introduced: MAP_MODE_INPUTS_FORMAT },
+            AppendedField { index: 7, name: "cached_held_core_weight", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 8, name: "cached_total_core_weight", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 9, name: "cached_held_territory_weight", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 10, name: "cached_total_territory_weight", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 11, name: "surrender_limit_modifier", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 12, name: "forced_surrender_limit_modifier", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 13, name: "max_surrender_limit_offset", introduced: SURRENDER_INPUTS_FORMAT },
+            AppendedField { index: 14, name: "selected_collaboration", introduced: SURRENDER_INPUTS_FORMAT },
+        ],
     );
     history[TableId::StateCores.index()] = appended_at(
         TableId::StateCores,
@@ -4310,6 +4316,9 @@ mod tests {
             if format < DIVISION_DAMAGE_FORMAT {
                 fewer.push((TableId::LandCombatEdges, 8));
             }
+            if format < SURRENDER_INPUTS_FORMAT {
+                fewer.push((TableId::Capitulation, 7));
+            }
             if format < LEADER_VISIBILITY_FORMAT {
                 fewer.push((TableId::UnitLeaders, 23));
             }
@@ -4906,7 +4915,10 @@ mod tests {
         assert_eq!(RECORDING_SIZE_AUDIT_FORMAT, 151);
         assert_eq!(DIVISION_DAMAGE_FORMAT, 152);
         assert_eq!(LEADER_VISIBILITY_FORMAT, 153);
-        assert_eq!(FORMAT_VERSION, LEADER_VISIBILITY_FORMAT);
+        assert_eq!(FORMAT_VERSION, SURRENDER_INPUTS_FORMAT);
+        let capitulation = TableId::Capitulation.last_change();
+        assert_eq!(capitulation.fields(TableId::Capitulation, LEADER_VISIBILITY_FORMAT), 7);
+        assert_eq!(capitulation.fields(TableId::Capitulation, SURRENDER_INPUTS_FORMAT), 15);
         let leaders = TableId::UnitLeaders.last_change();
         assert!(leaders.gap(TableId::UnitLeaders, DIVISION_DAMAGE_FORMAT).is_none(), "older leaders still play");
         assert!(leaders.gap(TableId::UnitLeaders, DAILY_PROGRESS_FORMAT - 1).is_some(), "the daily-progress meaning change still refuses older leaders");

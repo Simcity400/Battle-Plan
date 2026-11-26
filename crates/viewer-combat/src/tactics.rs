@@ -2037,6 +2037,7 @@ mod tests {
                     .into(),
                 ),
             ))),
+            surrender_limits: Err("the test has no surrender defines"),
             invasion_prepare_days: Err("the test has no invasion define"),
             script_constants: Err("the test has no script constants"),
         }
@@ -4003,11 +4004,19 @@ mod tests {
             "common/ideologies/mod_ideologies.txt",
             "ideologies = { Technocracy = { types = { planners = { } } } }",
         );
+        write(
+            "mod",
+            "common/defines/surrender.lua",
+            "NDefines = { NCountry = { BASE_SURRENDER_LIMIT = 0.78125, MIN_SURRENDER_LIMIT = 0.15625,
+            SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION = 0.34375, SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES = 0.84375 } }",
+        );
         let layers = content_reader_layers::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
+        let defines = content_reader_defines::defines::read(&layers).unwrap();
+        let surrender_limits = dashboard_text::triggers::SurrenderLimits::read(&defines).unwrap();
         let buildings = content_reader_key_names::buildings::read(&layers).unwrap();
         let (ideologies, _) = content_reader_key_names::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
@@ -4063,6 +4072,29 @@ mod tests {
                 ),
             );
             let lost = hour == 9;
+            set(
+                TableId::Capitulation,
+                TableRows::Capitulation(vec![replay_data::rows::CapitulationRow {
+                    country: 100,
+                    cached_held_core_weight: Some(6).into(),
+                    cached_total_core_weight: Some(8).into(),
+                    cached_held_territory_weight: Some(6).into(),
+                    cached_total_territory_weight: Some(8).into(),
+                    surrender_limit_modifier: Some(0).into(),
+                    forced_surrender_limit_modifier: Some(0).into(),
+                    max_surrender_limit_offset: Some(0).into(),
+                    selected_collaboration: (hour != 6).then_some(0).into(),
+                    ..Default::default()
+                }]),
+            );
+            set(
+                TableId::CountryGameScoreInputs,
+                TableRows::CountryGameScoreInputs(vec![replay_data::rows::CountryGameScoreInputRow {
+                    country: 100,
+                    land_count: Some(1),
+                    ..Default::default()
+                }]),
+            );
             set(
                 TableId::Countries,
                 TableRows::Countries(
@@ -4262,6 +4294,7 @@ mod tests {
                 buildings: Ok(&buildings),
                 ideologies: Ok(&ideologies),
                 resource_bonuses: Ok([15_000, 20_000]),
+                surrender_limits: Ok(surrender_limits),
                 ..facts(&content)
             };
             let mut context = context_with(&detail, &content, &aliases, &frame, facts);
@@ -4305,6 +4338,10 @@ mod tests {
         assert_eq!(weigh_country("ARMS_FACTORY = 5"), Ok(100_000));
         assert_eq!(weigh_country("mod_mill = 3"), Ok(100_000));
         assert_eq!(weigh("GER = { Mod_Mill < 4 }"), Ok(100_000));
+        assert_eq!(weigh("GER = { surrender_progress > 0.31999 }"), Ok(100_000));
+        assert_eq!(weigh("GER = { surrender_progress > 0.32 }"), Ok(0));
+        let missing = weigh_at(6, "GER = { surrender_progress > 0.31999 }").unwrap_err();
+        assert!(missing.contains("selected_collaboration"), "{missing}");
         assert_eq!(weigh("64 = { arms_factory = 3 }"), Ok(100_000));
         assert_eq!(weigh("65 = { mod_mill = 4 }"), Ok(100_000));
         assert_eq!(weigh_country("arms_factory = \"5.9\""), Ok(100_000));

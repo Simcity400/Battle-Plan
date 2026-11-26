@@ -45,6 +45,7 @@ use recorder_oracle_fog::fog;
 #[cfg(test)]
 mod fresh_movement_tests;
 use recorder_oracle_game_score::game_score;
+mod surrender;
 use recorder_oracle_governance::governance;
 use recorder_oracle_intel::intel;
 use recorder_oracle_land::land;
@@ -101,7 +102,7 @@ use self::report::recorded_table_counts;
 
 use self::report::{Report, is_load_hour, last_read_hours};
 
-pub const USAGE: &str = "recorder oracle <campaign.battleplan> <save.hoi4> [--hour n] [--branch id] [--game-dir <directory>] [--user-dir <directory>]";
+pub const USAGE: &str = "recorder oracle <campaign.battleplan> <save.hoi4> [--hour n] [--branch id] [--game-dir <directory>] [--user-dir <directory>] [--recounted-country <tag>]\n  Supply a recounted country only for a controlled save taken after its control weights were rebuilt and before any further control or victory-point change.";
 
 pub fn command(args: Vec<OsString>) -> io::Result<()> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
@@ -114,6 +115,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     let save_path = PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?);
     let mut requested_hour = None;
     let mut requested_branch = None;
+    let mut recounted_country = None;
     let mut game_dir = None;
     let mut user_dir = None;
     while let Some(option) = args.next() {
@@ -136,6 +138,9 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
                 );
             }
             Some("--game-dir") if game_dir.is_none() => game_dir = Some(PathBuf::from(value)),
+            Some("--recounted-country") if recounted_country.is_none() => {
+                recounted_country = Some(value.into_string().map_err(|_| invalid("--recounted-country requires a tag"))?.into_bytes());
+            }
             Some("--user-dir") if user_dir.is_none() => user_dir = Some(PathBuf::from(value)),
             _ => return Err(invalid(USAGE)),
         }
@@ -244,6 +249,16 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         });
     let province_modifiers = weather::ProvinceModifierContent::read(&content.layers, &save);
     let read_hours = last_read_hours(&replay, frame.branch, hour)?;
+    let weights = |tag: &[u8]| {
+        surrender::recounted_weights(
+            &save,
+            tag,
+            membership.as_ref().copied().map_err(invalid)?,
+            &content.layers,
+            defines.as_ref().map_err(|error| invalid(error.to_string()))?,
+        )
+    };
+    let recount = recounted_country.as_deref().map(|tag| (tag, weights(tag)));
     let mut report = compare_core(
         &frame,
         session.sample_boundary,
@@ -265,6 +280,9 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             &save_document,
             &mut save,
         )
+    });
+    report.attempt("Capitulation surrender inputs", |report| {
+        intel::compare_surrender_inputs(&frame, &save.construction, &country_context(&frame)?.links, recount, report)
     });
     compare_extended(
         &frame,

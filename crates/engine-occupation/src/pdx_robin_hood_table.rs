@@ -9,12 +9,12 @@ use engine_native_memory::{Memory, read};
 use crate::pdx_robin_hood_bucket as bucket;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Entry {
+pub struct Entry {
     pub key: u32,
     pub value: usize,
 }
 
-pub(crate) fn find(
+pub fn find(
     memory: &impl Memory,
     address: usize,
     key: u32,

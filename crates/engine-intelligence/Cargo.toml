@@ -13,6 +13,7 @@ doctest = false
 alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 
 [dependencies]
+engine-occupation.workspace = true
 engine-allocation.workspace = true
 engine-native-parts.workspace = true
 engine-native-memory.workspace = true

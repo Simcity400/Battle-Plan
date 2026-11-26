@@ -246,6 +246,7 @@ fn with_world_traits<T>(
             buildings: Ok(&buildings),
             resource_bonuses: Err("none"),
             leader_roles: roles,
+            surrender_limits: Err("none"),
             invasion_prepare_days: Err("none"),
             script_constants: Err("none"),
         },
@@ -1300,30 +1301,32 @@ fn a_link_through_a_link_is_its_scope_s_own() {
     });
 }
 
+struct CountrySide(u32);
+
+impl Combat for CountrySide {
+    fn country(&self) -> Result<u32, Failure> {
+        Ok(self.0)
+    }
+    fn trigger(
+        &self,
+        _: &str,
+        _: &content_reader_parser::parser::Item,
+        _: Scope,
+        _: &Evaluator,
+    ) -> Option<Eval> {
+        None
+    }
+    fn category_share(&self, _: u64) -> Result<i64, Failure> {
+        Err("unused combat equipment count".into())
+    }
+}
+
 #[test]
 fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
     script_game::enter();
-    struct Side;
-    impl Combat for Side {
-        fn country(&self) -> Result<u32, crate::triggers::Failure> {
-            Ok(4)
-        }
-        fn trigger(
-            &self,
-            _: &str,
-            _: &content_reader_parser::parser::Item,
-            _: Scope,
-            _: &Evaluator,
-        ) -> Option<Eval> {
-            None
-        }
-        fn category_share(&self, _: u64) -> Result<i64, crate::triggers::Failure> {
-            Err("unused combat equipment count".into())
-        }
-    }
     let frame = frame(&countries(), &[104]);
     with_world(&frame, "", Err("none"), |world| {
-        let evaluator = Evaluator::new(world, Some(&Side));
+        let evaluator = Evaluator::new(world, Some(&CountrySide(4)));
         assert_eq!(
             evaluator.evaluate(
                 &items("has_country_flag = x"),
@@ -1343,6 +1346,57 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
             Eval::True
         );
     });
+}
+
+#[test]
+fn surrender_progress_uses_the_battle_hour_scope_country_and_names_missing_inputs() {
+    use replay_data::rows::{CapitulationRow, CountryGameScoreInputRow};
+    script_game::enter();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "common/defines/fixture.lua",
+        "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 23 }, NCountry = { BASE_SURRENDER_LIMIT = 0.625, MIN_SURRENDER_LIMIT = 0.125,
+            SURRENDER_LIMIT_REDUCTION_PER_COLLABORATION = 0.375, SURRENDER_LIMIT_MULT_FOR_COUNTRIES_WITH_NO_CORES = 0.875 } }",
+    )]);
+    let content = catalogue.scripted_content().unwrap();
+    let mut frame = frame(&countries(), &[]);
+    *frame.tables[TableId::CountryGameScoreInputs.index()] =
+        TableView::Complete(TableRows::CountryGameScoreInputs(vec![
+            CountryGameScoreInputRow {
+                country: 104,
+                land_count: Some(5),
+                ..Default::default()
+            },
+        ]));
+    for (weight, above) in [
+        (Some(63), Some(false)),
+        (Some(42), Some(true)),
+        (None, None),
+    ] {
+        frame.hour += 1;
+        *frame.tables[TableId::Capitulation.index()] =
+            TableView::Complete(TableRows::Capitulation(vec![CapitulationRow {
+                country: 104,
+                cached_held_core_weight: weight.into(),
+                cached_total_core_weight: Some(84).into(),
+                cached_held_territory_weight: Some(81).into(),
+                cached_total_territory_weight: Some(105).into(),
+                surrender_limit_modifier: Some(0).into(),
+                forced_surrender_limit_modifier: Some(0).into(),
+                max_surrender_limit_offset: Some(0).into(),
+                selected_collaboration: Some(0).into(),
+                ..Default::default()
+            }]));
+        let world = content.recorded_world(&frame).unwrap();
+        let result = world
+            .evaluate(&items("surrender_progress > 0.57"), Scopes::of(Scope::Country(4)))
+            .decided_input();
+        match above {
+            Some(expected) => assert_eq!(result, Ok(expected)),
+            None => assert!(
+                result.unwrap_err().names("Capitulation.cached_held_core_weight (Country(4))")
+            ),
+        }
+    }
 }
 
 fn countries() -> Vec<(u32, u32, &'static str, i32, &'static str, &'static str)> {

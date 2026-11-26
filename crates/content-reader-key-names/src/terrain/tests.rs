@@ -79,7 +79,7 @@ fn water_reads_its_regions_naval_terrain_or_ocean() {
 fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
     content_reader_script::test_game::enter();
     let definitions = database(&[
-        "categories = { plains = { movement_cost = 1 } Plains = { movement_cost = 2 } }",
+        "categories = { plains = { movement_cost = 1 worth = -7 } Plains = { movement_cost = 2 worth = 13 } }",
         "categories = { plains = { movement_cost = 3 } } terrain = { a = { type = PLAINS color = { 0 } } }",
     ]);
     let names: Vec<&[u8]> = definitions
@@ -92,6 +92,7 @@ fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
     assert_eq!(definitions.category(b"missing"), None);
     assert_eq!(definitions.palette[&0].category, Some(0));
     assert_eq!(definitions.categories[2].movement_cost, 300_000);
+    assert_eq!(definitions.categories.iter().map(|c| c.control_weight).collect::<Vec<_>>(), [Some(-7), Some(13), Some(0)]);
 }
 
 #[test]

@@ -30,6 +30,7 @@ mod tests;
 mod variables;
 pub mod world;
 
+pub use dashboard_query::surrender::SurrenderLimits;
 pub use eval::{Combat, Evaluator, VariableSession};
 pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_boolean};
 pub use variables::{Store, Temps};
@@ -48,6 +49,7 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::ArmyOrderPlans,
     replay_data::rows::TableId::ArmyOrders,
     replay_data::rows::TableId::Autonomy,
+    replay_data::rows::TableId::Capitulation,
     replay_data::rows::TableId::CharacterOperatives,
     replay_data::rows::TableId::CharacterRoleTraits,
     replay_data::rows::TableId::Characters,
@@ -61,6 +63,7 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::CountryCommandPower,
     replay_data::rows::TableId::CountryCounterInputs,
     replay_data::rows::TableId::CountryFactories,
+    replay_data::rows::TableId::CountryGameScoreInputs,
     replay_data::rows::TableId::CountryLeaderRoles,
     replay_data::rows::TableId::CountryLinks,
     replay_data::rows::TableId::CountryResources,

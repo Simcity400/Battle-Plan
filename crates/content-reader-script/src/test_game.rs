@@ -306,6 +306,7 @@ pub fn enter_viewer() -> Tables {
                 0,
             )
             .trigger("armor", Combat.bit(), Reader::Assign, 0)
+            .trigger("surrender_progress", Country.bit(), Reader::Comparison, 0)
             .trigger(
                 "custom_override_tooltip",
                 0,

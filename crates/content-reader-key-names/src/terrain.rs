@@ -8,6 +8,7 @@ use content_reader_script::{modifiers, native::{self, Shape}};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerrainCategory {
     pub name: Vec<u8>,
+    pub control_weight: Option<i32>,
     pub movement_cost: i64,
     pub combat_width: i64,
     pub combat_support_width: i64,
@@ -193,6 +194,7 @@ impl TerrainDefinitions {
         let name = entry.key.clone().unwrap_or_default();
         let what = format!("terrain category {}", String::from_utf8_lossy(&name));
         let mut values = [0_i64; 4];
+        let mut control_weight = Some(0);
         let mut common = modifiers::Modifiers::default();
         let mut classes = Vec::new();
         let mut minimum_seazone_dominance = 0;
@@ -201,6 +203,10 @@ impl TerrainDefinitions {
         let mut color = content_reader_script::color_reads::ColorReads::default();
         for field in entry.value.items().unwrap_or_default() {
             let keyword = field.keyword().map(|keyword| keyword.folded());
+            if keyword.as_deref() == Some(b"worth") {
+                control_weight = scan_i32(field.value.scalar().unwrap_or_default()).stored();
+                continue;
+            }
             if keyword.as_deref() == Some(b"color") {
                 color.read(field);
                 continue;
@@ -259,6 +265,7 @@ impl TerrainDefinitions {
         }
         self.categories.push(TerrainCategory {
             name,
+            control_weight,
             movement_cost: values[0],
             combat_width: values[1],
             combat_support_width: values[2],

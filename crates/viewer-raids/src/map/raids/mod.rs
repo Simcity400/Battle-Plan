@@ -425,6 +425,7 @@ impl RaidAssets {
         let continents = product.continents();
         let tag_aliases = Arc::new(tag_aliases);
         let tooltip = tooltips::content::Content::read(defines, states, layers);
+        let surrender_limits = dashboard_text::triggers::SurrenderLimits::read(defines);
         let invasion_prepare_days = product.invasion_prepare_days(defines);
         let script_constants = product.constants();
         let defines = RaidDefines::read(defines)?;
@@ -438,6 +439,7 @@ impl RaidAssets {
             dlcs,
             resource_bonuses,
             continents,
+            surrender_limits,
             invasion_prepare_days,
             script_constants,
         );

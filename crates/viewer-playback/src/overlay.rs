@@ -100,6 +100,7 @@ const OVERLAY: &[TableId] = &[
     TableId::NavalTransferUnits,
     TableId::NavalAccidentReports,
     TableId::Capitulation,
+    TableId::CountryGameScoreInputs,
     TableId::AirRegionalMissions,
     TableId::VariantDefinitions,
     TableId::RaidAirSites,

@@ -110,6 +110,7 @@ impl Content {
             terrain: Arc::new(TerrainDefinitions {
                 categories: vec![content_reader_key_names::terrain::TerrainCategory {
                     name: name.to_vec(),
+                    control_weight: Some(0),
                     movement_cost: 0,
                     combat_width: 0,
                     combat_support_width: 0,

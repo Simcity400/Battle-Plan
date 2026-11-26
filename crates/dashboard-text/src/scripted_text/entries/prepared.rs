@@ -1,5 +1,5 @@
 use super::*;
-use crate::triggers::{AuthoredStates, PreparedContent};
+use crate::triggers::{AuthoredStates, PreparedContent, SurrenderLimits};
 use content_reader_layers::content::diagnostics::Once as OnceLock;
 
 #[derive(Default)]
@@ -12,6 +12,7 @@ pub(super) struct PreparedInputs {
     roles: OnceLock<Result<LeaderRoles, String>>,
     constants: OnceLock<Result<content_reader_politics::script_constants::Constants, String>>,
     traits: OnceLock<Result<content_reader_key_names::unit_leader::Traits, String>>,
+    surrender_limits: OnceLock<Result<SurrenderLimits, String>>,
     invasion_days: OnceLock<Result<i32, String>>,
     mio_traits: OnceLock<Result<std::sync::Arc<content_reader_military::mio_traits::Catalog>, String>>,
     equipment_groups: OnceLock<Result<content_reader_key_names::equipment::Groups, String>>,
@@ -32,6 +33,7 @@ impl PreparedInputs {
         assert!(self.traits.get().is_none());
         assert!(self.continents.get().is_none());
         assert!(self.invasion_days.get().is_none());
+        assert!(self.surrender_limits.get().is_none());
     }
 }
 
@@ -130,7 +132,19 @@ impl ScriptedContent {
     }
 }
 
+impl Environment {
+    pub(super) fn surrender_limits(&self) -> Result<SurrenderLimits, &str> {
+        self.prepared
+            .surrender_limits
+            .get_or_init(|| SurrenderLimits::read(self.defines()))
+            .as_ref().copied().map_err(String::as_str)
+    }
+}
+
 impl PreparedContent for ScriptedContent {
+    fn surrender_limits(&self) -> Result<SurrenderLimits, &str> {
+        self.prepared_environment()?.surrender_limits()
+    }
     fn special_projects(&self) -> Result<&content_reader_military::special_projects::Catalog, &str> {
         self.prepared_environment()?
             .prepared

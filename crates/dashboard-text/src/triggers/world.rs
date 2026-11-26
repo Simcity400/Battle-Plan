@@ -21,7 +21,7 @@ use replay_data::{
 use replay_frame::frame::{HourFrame, Leader, OperandStatus, Province, Rowset};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
-use super::{Eval, Scope, ongoing, variables::Store};
+use super::{Eval, Scope, SurrenderLimits, ongoing, variables::Store};
 use crate::{
     character_scope,
     scope::RecordedScopes,
@@ -96,6 +96,7 @@ pub(crate) trait PreparedContent: Send + Sync {
     fn constants(&self) -> Result<&Constants, &str>;
     fn invasion_days(&self) -> Result<i32, &str>;
     fn geography(&self) -> GeographyInputs<'_>;
+    fn surrender_limits(&self) -> Result<SurrenderLimits, &str>;
 }
 
 #[path = "world/folds.rs"]
@@ -567,6 +568,7 @@ pub struct World<'a> {
     resource_amounts: PreparedOperand<'a, Result<StateResources<'a>, &'a str>>,
     invasions: Index<Linked<Invasions<'a>>>,
     script_constants: PreparedOperand<'a, Result<&'a Constants, &'a str>>,
+    pub(super) surrender_limits: PreparedOperand<'a, Result<SurrenderLimits, &'a str>>,
     invasion_prepare_days: PreparedOperand<'a, Result<i32, &'a str>>,
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
@@ -596,6 +598,7 @@ pub struct ContentFacts<'a> {
     pub buildings: Result<&'a content_reader_key_names::buildings::Buildings, &'a str>,
     pub resource_bonuses: Result<[i64; 2], &'a str>,
     pub leader_roles: Result<&'a LeaderRoles, &'a str>,
+    pub surrender_limits: Result<SurrenderLimits, &'a str>,
     pub invasion_prepare_days: Result<i32, &'a str>,
     pub script_constants: Result<&'a Constants, &'a str>,
 }
@@ -624,6 +627,7 @@ impl<'a> ContentFacts<'a> {
             buildings: Ok(BUILDINGS.get_or_init(Default::default)),
             resource_bonuses: Err("resource defines are unavailable in this content-only check"),
             leader_roles: Err("character templates are unavailable in this content-only check"),
+            surrender_limits: Err("recorded surrender defines are unavailable in this content-only check"),
             invasion_prepare_days: Err(
                 "invasion defines are unavailable in this content-only check",
             ),
@@ -1605,6 +1609,7 @@ impl<'a> World<'a> {
                 .into(),
             invasions: OnceLock::new(),
             script_constants: content.script_constants.into(),
+            surrender_limits: content.surrender_limits.into(),
             invasion_prepare_days: content.invasion_prepare_days.into(),
             leader_roles: content.leader_roles.into(),
             appearance: OnceLock::new(),
@@ -1676,6 +1681,8 @@ impl<'a> World<'a> {
             PreparedOperand::lazy(content, self.frame, |content, _| content.leader_roles());
         self.script_constants =
             PreparedOperand::lazy(content, self.frame, |content, _| content.constants());
+        self.surrender_limits =
+            PreparedOperand::lazy(content, self.frame, |content, _| content.surrender_limits());
         self.invasion_prepare_days =
             PreparedOperand::lazy(content, self.frame, |content, _| content.invasion_days());
         self.resource_amounts = PreparedOperand::lazy(content, self.frame, |content, frame| {
