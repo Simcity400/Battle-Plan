@@ -5220,7 +5220,6 @@ dependencies = [
  "engine-resources",
  "game-model",
  "indexmap 2.14.2",
- "job-priority",
  "log",
  "num-traits",
  "once_cell",

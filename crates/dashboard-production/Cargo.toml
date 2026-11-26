@@ -36,7 +36,6 @@ engine-executable = { workspace = true }
 engine-native = { workspace = true }
 engine-resources = { workspace = true }
 game-model = { workspace = true }
-job-priority = { workspace = true }
 rayon = { workspace = true }
 replay-columnar = { workspace = true }
 replay-data = { workspace = true }
