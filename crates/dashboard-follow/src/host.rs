@@ -291,7 +291,7 @@ struct StepProduct {
 
 enum PanelRead {
     Seed(Hour),
-    CatchUp { before: Hour, quantum: Hour },
+    CatchUp { through: Hour, quantum: Hour },
 }
 
 struct PanelJob {
@@ -319,10 +319,10 @@ impl PanelJob {
             let epoch = || owner.upgrade().map(|owner| get(&owner).epoch());
             match read {
                 PanelRead::Seed(hour) => self.seed(&mut product, hour, epoch),
-                PanelRead::CatchUp { before, quantum } => {
+                PanelRead::CatchUp { through, quantum } => {
                     if let Some((_, _, mut hour)) = product.last {
-                        while hour.saturating_add(quantum) < before {
-                            hour += quantum;
+                        while hour < through {
+                            hour = hour.saturating_add(quantum).min(through);
                             if !self.read_one(&mut product, hour, quantum > 1, &epoch) {
                                 product.resend = true;
                                 product.joined = true;
@@ -651,7 +651,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 let job = if product.started_on != Some((epoch, stamp.2)) {
                     Some(PanelRead::Seed(playhead.head(Instant::now()).min(step.last())))
                 } else if !product.joined && !step.reset() && product.last.is_some_and(|(e, g, h)| (e, g) == (epoch, stamp.2) && h.saturating_add(quantum) < step.first()) {
-                    Some(PanelRead::CatchUp { before: step.first(), quantum })
+                    Some(PanelRead::CatchUp { through: step.last(), quantum })
                 } else {
                     None
                 };
