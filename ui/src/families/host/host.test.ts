@@ -2047,6 +2047,11 @@ test('a scrolled log keeps its frozen hour when its plan changes, as expanding a
   assert.deepEqual(hours(pagerWindow(gapThenChange, paged(), scrolled, 124).step), [100], 'a window of gaps only, then another plan change, keeps the frozen hour');
   const unseen = replacePagers(replacePagers(frozenAt100(), 'branch b', [paged('2')]), 'branch a', [paged()]);
   assert.deepEqual(hours(pagerWindow(unseen, paged(), scrolled, 124).step), [124], 'a branch switch drops the frozen hour even when the other branch never reported a window');
+  const empty = replacePagers(frozenAt100(), 'empty', [expanded]);
+  assert.deepEqual(pagerWindow(empty, expanded, { first: 0, count: 0, dataFirst: 0, dataCount: 0 }, 124).step.fetch, []);
+  assert.deepEqual(hours(pagerWindow(replacePagers(empty, 'empty again', [paged()]), paged(), scrolled, 124).step), [100], 'an empty window is not a return to the head');
+  const filtered = replacePagers(frozenAt100('{"facets":["spy|range:west"]}'), '{"facets":["spy|range:east"]}', [expanded]);
+  assert.deepEqual(hours(pagerWindow(filtered, expanded, scrolled, 124).step), [100], 'a filter naming a range is not the plan range');
   const homed = replacePagers(frozenAt100(), 'home', [expanded]);
   pagerWindow(homed, expanded, head, 124);
   assert.deepEqual(hours(pagerWindow(homed, expanded, scrolled, 130).step), [130], 'returning to the head drops the frozen hour');

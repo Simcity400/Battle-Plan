@@ -26,7 +26,7 @@ export function pagedEntries(plan: SourcePlan | null): PagedEntry[] {
 
 function identityOf(entry: PagedEntry, sig: string): string {
   const query = entry.read.tailQuery;
-  const range = sig.includes('|range:') ? sig.slice(sig.lastIndexOf('|range:')) : '';
+  const range = /\|range:-?\d+:-?\d+$/.exec(sig)?.[0] ?? '';
   return JSON.stringify([entry.name, entry.source.id, entry.source.revision, entry.branch, query.product, query.log ?? null, query.from, query.limit, range]);
 }
 
@@ -42,6 +42,7 @@ export function replacePagers(previous: PagerSet, sig: string, entries: readonly
 }
 
 function atHead(window: FamilyRowWindow, limit: number): boolean {
+  if (Math.floor(window.count) <= 0) return false;
   const first = Math.max(0, Math.floor(window.dataFirst ?? window.first));
   const count = Math.max(0, Math.floor(window.dataCount ?? window.count));
   return first + count <= limit;
