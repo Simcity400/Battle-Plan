@@ -734,6 +734,18 @@ fn aliased_relation_opinion_witnessed_at_truncated_hour_agrees_between_state_and
 }
 
 #[test]
+fn a_step_over_a_measure_the_summaries_do_not_hold_reads_the_hours_themselves() {
+    let fixture = TruncatedFixture::new();
+    let query = fixture.query();
+    let line = Line::new(&query, &RATIO_EXP, &RATIO_EXP.measures[0]).unwrap();
+    let ask = Ask { country: Country::from("ITA"), part: 0 };
+    let step = |origin: i32, key| line.change_lines(std::slice::from_ref(&ask), &[&RATIO_EXP.measures[0]], Some(origin), key, (BASE, LAST_HOUR), &Within::new());
+    let forward = step(BASE, NavigationKey::ArrowRight).expect("a summary piece without the measure's column is read hour by hour, never refused");
+    let back = step(LAST_HOUR, NavigationKey::ArrowLeft).expect("both directions");
+    assert!(forward.is_some_and(|hour| hour > BASE) && back.is_some_and(|hour| hour < LAST_HOUR), "ITA's ratio changes inside the recording: {forward:?} {back:?}");
+}
+
+#[test]
 fn a_row_read_at_a_truncated_hour_is_served_only_where_that_hour_witnessed_it() {
     use replay_data::rows::tables::CountryExperience;
     let fixture = TruncatedFixture::new();
