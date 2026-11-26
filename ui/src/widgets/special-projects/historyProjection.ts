@@ -8,7 +8,7 @@ import type { TimelineWidgetDeclaration } from '../../families/timeline/declarat
 import { clipSpansToHour, countryLook, inHourSpans, nextBoundaryAfter, spanStart, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection, type TimelineSpan } from '../../families/timeline/model.ts';
 import { formatDateOnly } from '../../families/valueFormat.ts';
-import type { HourSpan, ProjectRecord, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
+import type { HourSpan, ProjectPresentation, ProjectRecord, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
 import { validateSpecialProjectsReply } from './specialProjectsData.ts';
 
 export const HISTORY_VIEW = 'history';
@@ -31,15 +31,33 @@ const STATE_WORDS: Readonly<Record<ProjectStatus['state'], string>> = {
   unknown: 'State not recorded',
 };
 
-function gapsOf(reply: SpecialProjectsReply, hour: number): HourSpan[] {
+function mergeSpans(spans: readonly HourSpan[]): HourSpan[] {
+  if (spans.length <= 1) return spans.map(span => ({ ...span }));
+  const sorted = [...spans].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour);
+  const out: HourSpan[] = [{ ...sorted[0]! }];
+  for (let i = 1; i < sorted.length; i++) {
+    const next = sorted[i]!;
+    const prev = out[out.length - 1]!;
+    if (next.firstHour <= prev.lastHour + 1) prev.lastHour = Math.max(prev.lastHour, next.lastHour);
+    else out.push({ ...next });
+  }
+  return out;
+}
+
+function isRecordedAt(reply: SpecialProjectsReply, hour: number): boolean {
+  return inHourSpans(reply.available, hour) && !inHourSpans(reply.partial, hour) && !inHourSpans(reply.unresolved, hour);
+}
+
+function gapsOf(reply: SpecialProjectsReply, hour: number, branchFirstHour: number): HourSpan[] {
   const gaps: HourSpan[] = [];
-  let cursor = Number.NEGATIVE_INFINITY;
+  let cursor = branchFirstHour - 1;
   for (const span of reply.available) {
     if (span.firstHour > hour) break;
-    if (Number.isFinite(cursor) && span.firstHour > cursor + 1) gaps.push({ firstHour: cursor + 1, lastHour: span.firstHour - 1 });
-    cursor = span.lastHour;
+    if (span.firstHour > cursor + 1) gaps.push({ firstHour: cursor + 1, lastHour: span.firstHour - 1 });
+    cursor = Math.max(cursor, span.lastHour);
   }
-  return clipSpansToHour([...gaps, ...reply.partial], hour);
+  if (cursor < hour) gaps.push({ firstHour: cursor + 1, lastHour: hour });
+  return mergeSpans(clipSpansToHour([...gaps, ...reply.partial, ...reply.unresolved], hour));
 }
 
 function within(ranges: HourRanges | undefined, first: number, last: number): readonly (readonly [number, number])[] {
@@ -54,6 +72,14 @@ function within(ranges: HourRanges | undefined, first: number, last: number): re
 }
 
 function statusAt(project: ProjectRecord, hour: number): ProjectStatus | null {
+  for (const status of project.statuses) {
+    if (status.firstHour > hour) break;
+    if (hour <= status.lastHour) return status;
+  }
+  return null;
+}
+
+function latestStatusThrough(project: ProjectRecord, hour: number): ProjectStatus | null {
   let held: ProjectStatus | null = null;
   for (const status of project.statuses) {
     if (status.firstHour > hour) break;
@@ -62,68 +88,88 @@ function statusAt(project: ProjectRecord, hour: number): ProjectStatus | null {
   return held;
 }
 
+function sameVisual(a: ProjectPresentation, b: ProjectPresentation): boolean {
+  return a.name === b.name && a.icon === b.icon && a.iconMissing === b.iconMissing;
+}
+
 function completedSince(project: ProjectRecord, shown: ProjectStatus): number {
   let since = shown.firstHour;
   for (let i = project.statuses.indexOf(shown) - 1; i >= 0; i--) {
     const before = project.statuses[i]!;
-    if (before.state !== 'completed') break;
+    if (before.state !== 'completed' || before.lastHour + 1 !== since) break;
     since = before.firstHour;
   }
   return since;
 }
 
-function projectLane(readView: BoundedReadView, reply: SpecialProjectsReply, project: ProjectRecord, ordinal: number, hour: number, gaps: readonly HourSpan[], options: SpecialProjectsHistoryOptions): TimelineLane | null {
-  const shown = statusAt(project, hour);
-  if (!shown) return null;
-  const info = reply.presentations[shown.presentation]!;
+function statusSummary(project: ProjectRecord, status: ProjectStatus): string {
+  const words = STATE_WORDS[status.state];
+  if (status.state === 'running' || status.state === 'paused') return `${words} · ${status.progress}%`;
+  if (status.state === 'completed') return `${words} · ${formatDateOnly(completedSince(project, status))}`;
+  return words;
+}
+
+interface LaneMeta {
+  readonly sourceKey: string;
+  readonly project: string;
+  readonly since?: number;
+  readonly heldBefore?: boolean;
+}
+
+function projectLane(readView: BoundedReadView, sourceKey: string, reply: SpecialProjectsReply, project: ProjectRecord, ordinal: number, hour: number, gaps: readonly HourSpan[], options: SpecialProjectsHistoryOptions): TimelineLane | null {
+  const current = statusAt(project, hour);
+  const latest = current ?? latestStatusThrough(project, hour);
+  if (!latest) return null;
+  const info = reply.presentations[latest.presentation]!;
   const icon = productIconArt(readView, info.icon, info.iconMissing);
   const fill = colour(options.surface, ordinal);
-  const ranges = options.membership?.[reply.tag];
-  const stretches: [number, number, boolean][] = [];
+  const ranges = options.membership?.[sourceKey] ?? options.membership?.[reply.tag];
+  const stretches: [number, number, boolean, number, number][] = [];
   for (const status of project.statuses) {
     if (status.firstHour > hour) break;
     if (status.state !== 'running' && status.state !== 'paused') continue;
     const last = Math.min(status.lastHour, hour);
     const held = stretches[stretches.length - 1];
-    if (held && held[1] + 1 === status.firstHour) {
-      held[1] = last;
-      held[2] = status.lastHour >= hour;
+    const contiguous = Boolean(held && held[1] + 1 === status.firstHour);
+    if (contiguous && sameVisual(reply.presentations[held![3]]!, reply.presentations[status.presentation]!)) {
+      held![1] = last;
+      held![2] = status.lastHour >= hour;
     } else {
-      stretches.push([status.firstHour, last, status.lastHour >= hour]);
+      stretches.push([status.firstHour, last, status.lastHour >= hour, status.presentation, contiguous ? held![4] : status.firstHour]);
     }
   }
   const spans: TimelineSpan[] = [];
-  for (const [from, to, running] of stretches) {
+  for (const [from, to, running, presentation, stretchStart] of stretches) {
+    const spanInfo = reply.presentations[presentation]!;
+    const spanIcon = productIconArt(readView, spanInfo.icon, spanInfo.iconMissing);
     for (const [first, last] of within(ranges, from, to)) {
       const open = running && last >= hour;
+      const since = ranges ? Math.max(stretchStart, ranges.find(([a, b]) => a <= first && first <= b)?.[0] ?? first) : stretchStart;
       spans.push({
         id: `${project.id}:${first}`,
         firstHour: first,
         lastHour: last,
         color: fill,
-        label: info.name,
-        icon,
+        label: spanInfo.name,
+        icon: spanIcon,
         ...spanStart(first, options.branchFirstHour, gaps),
         endUnseen: !open && inHourSpans(gaps, last + 1),
         open,
-        meta: { tag: reply.tag, project: project.id },
+        meta: { sourceKey, project: project.id, since, heldBefore: since <= options.branchFirstHour } satisfies LaneMeta,
       });
     }
   }
   if (ranges && !spans.length && !within(ranges, project.firstRead, hour).length) return null;
-  const words = STATE_WORDS[shown.state];
-  const subtitle = shown.state === 'running' || shown.state === 'paused'
-    ? `${words} · ${shown.progress}%`
-    : shown.state === 'completed' ? `${words} · ${formatDateOnly(completedSince(project, shown))}` : words;
+  const subtitle = current ? statusSummary(project, current) : isRecordedAt(reply, hour) ? 'Not in progress' : 'Not recorded';
   return {
-    key: `${reply.tag}:${project.id}`,
+    key: `${sourceKey}:${project.id}`,
     kind: 'item',
     label: info.name,
     subtitle,
     icon,
     spans,
     auditValue: `${info.name}|${subtitle}`,
-    meta: { tag: reply.tag, project: project.id },
+    meta: { sourceKey, project: project.id } satisfies LaneMeta,
   };
 }
 
@@ -132,6 +178,8 @@ function boundaries(replies: readonly SpecialProjectsReply[]): number[] {
   for (const reply of replies) {
     for (const project of reply.projects) for (const status of project.statuses) hours.push(status.firstHour, status.lastHour + 1);
     for (const span of reply.available) hours.push(span.firstHour, span.lastHour + 1);
+    for (const span of reply.partial) hours.push(span.firstHour, span.lastHour + 1);
+    for (const span of reply.unresolved) hours.push(span.firstHour, span.lastHour + 1);
   }
   return [...new Set(hours)].sort((a, b) => a - b);
 }
@@ -166,32 +214,41 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     const lanes: TimelineLane[] = [];
     const gaps: HourSpan[] = [];
     let ordinal = 0;
-    for (const reply of shown) {
-      const own = gapsOf(reply, hour);
+    for (let i = 0; i < shown.length; i++) {
+      const sourceKey = options.tags[i]!;
+      const reply = shown[i]!;
+      const own = gapsOf(reply, hour, options.branchFirstHour);
       gaps.push(...own);
       const projectLanes = reply.projects
-        .map(project => projectLane(readView, reply, project, ordinal++, hour, own, options))
+        .map(project => projectLane(readView, sourceKey, reply, project, ordinal++, hour, own, options))
         .filter((lane): lane is TimelineLane => lane !== null);
       if (shown.length > 1) {
-        const look = countryLook(readView, reply.tag, hour);
+        const look = countryLook(readView, sourceKey, hour);
+        const headingStatus = reply.unavailable
+          ? reply.unavailable
+          : projectLanes.length
+            ? undefined
+            : isRecordedAt(reply, hour) ? 'No special projects yet' : 'Not recorded at this date';
         lanes.push({
-          key: `country:${reply.tag}`,
+          key: `country:${sourceKey}`,
           kind: 'heading',
-          label: look.name,
+          label: headingStatus ? `${look.name} · ${headingStatus}` : look.name,
           flag: look.flag,
           flagTag: reply.tag,
-          ...(reply.unavailable ? { subtitle: reply.unavailable } : projectLanes.length ? {} : { subtitle: 'No special projects yet' }),
           spans: [],
-          auditValue: `${look.name}|${reply.unavailable ?? projectLanes.length}`,
+          auditValue: `${look.name}|${headingStatus ?? projectLanes.length}`,
         });
       }
       lanes.push(...projectLanes);
     }
     if (!lanes.some(lane => lane.kind === 'item')) {
-      const unrecorded = shown.every(reply => !reply.available.some(span => span.firstHour <= hour));
-      return timelineModel(unrecorded
-        ? { ...base, empty: 'Special projects were not recorded at this date.', emptyKind: 'unavailable', warnings, nextChangeAt }
-        : { ...base, lanes, empty: 'No special projects yet.', warnings, nextChangeAt });
+      if (shown.every(reply => !isRecordedAt(reply, hour))) {
+        return timelineModel({ ...base, empty: 'Special projects were not recorded at this date.', emptyKind: 'unavailable', warnings, nextChangeAt });
+      }
+      if (shown.every(reply => !reply.unavailable && isRecordedAt(reply, hour))) {
+        return timelineModel({ ...base, lanes, empty: 'No special projects yet.', warnings, nextChangeAt });
+      }
+      return timelineModel({ ...base, lanes, unobserved: gaps, warnings, nextChangeAt });
     }
     return timelineModel({ ...base, lanes, unobserved: gaps, warnings, nextChangeAt });
   },
@@ -201,22 +258,37 @@ export const specialProjectsHistoryProjection: TimelineProjection<SpecialProject
     if (!lane || lane.kind !== 'item') return null;
     const span = spanAt(lane, hit);
     const at = hit.hour ?? model.hour;
-    const where = span?.meta as { readonly tag: string; readonly project: string } | undefined;
-    const raw = where ? readView.panel<unknown>(entryName(where.tag)) : undefined;
-    const project = raw === undefined ? undefined : validateSpecialProjectsReply(raw).projects.find(item => item.id === where!.project);
+    const where = (span?.meta as LaneMeta | undefined) ?? (lane.meta as LaneMeta | undefined);
+    const raw = where ? readView.panel<unknown>(entryName(where.sourceKey)) : undefined;
+    const reply = raw === undefined ? undefined : validateSpecialProjectsReply(raw);
+    const project = reply?.projects.find(item => item.id === where!.project);
     const status = project ? statusAt(project, at) : null;
-    const meta = status ? { state: status.state, progress: status.progress, read: status.readHour } : undefined;
+    const titleStatus = status ?? (project ? latestStatusThrough(project, at) : null);
+    const title = project
+      ? (titleStatus ? reply!.presentations[titleStatus.presentation]!.name : 'Special project')
+      : span?.label ?? lane.label;
+    if (span && status) {
+      const since = where?.since ?? span.firstHour;
+      const heldBefore = where?.heldBefore ?? span.heldBefore;
+      return {
+        title,
+        hour: at,
+        items: [
+          { label: 'State', value: STATE_WORDS[status.state] },
+          { label: 'Progress', value: `${status.progress}%` },
+          { label: heldBefore ? 'Held before' : 'Since', value: formatDateOnly(since) },
+          { label: 'Read', value: formatDateOnly(status.readHour) },
+        ],
+      };
+    }
+    const recorded = reply ? isRecordedAt(reply, at) : !inHourSpans(model.unobserved, at);
+    const stateText = status && project
+      ? statusSummary(project, status)
+      : recorded ? 'Not in progress' : 'Not recorded';
     return {
-      title: lane.label,
+      title,
       hour: at,
-      items: span && meta
-        ? [
-            { label: 'State', value: STATE_WORDS[meta.state] },
-            { label: 'Progress', value: `${meta.progress}%` },
-            { label: span.heldBefore ? 'Held before' : 'Since', value: formatDateOnly(span.firstHour) },
-            { label: 'Read', value: formatDateOnly(meta.read) },
-          ]
-        : [{ label: 'State', value: inHourSpans(model.unobserved, at) ? 'Not recorded' : lane.subtitle ?? 'Not in progress' }],
+      items: [{ label: 'State', value: stateText }],
     };
   },
 }, HISTORY_VIEW);
