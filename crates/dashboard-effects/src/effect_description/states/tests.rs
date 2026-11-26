@@ -4,11 +4,11 @@ use crate::scripted_text::{EventObject, EventScope, Link};
 use EventObject::{Country as C, State as S};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 #[test]
 fn state_category_description_uses_cached_validity_and_operand_spelling() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -41,43 +41,43 @@ fn state_category_description_uses_cached_validity_and_operand_spelling() {
     assert!(std::ptr::eq(cached, scripted.effects().unwrap()));
     for (body, object, expected, refusal) in [
         (
-            "set_state_category=Syn_Category",
+            "fixture_region_category=Syn_Category",
             S(1),
             "Category Declared [This.GetName] [This.GetName]\n",
             None,
         ),
         (
-            "set_state_category=SYN_CATEGORY",
+            "fixture_region_category=SYN_CATEGORY",
             S(1),
             "Category Operand [This.GetName]\n",
             None,
         ),
         (
-            "set_state_category=syn_category",
+            "fixture_region_category=syn_category",
             C(1),
             "Category syn_category [This.GetName]\n",
             None,
         ),
         (
-            "set_state_category=missing_loc",
+            "fixture_region_category=missing_loc",
             S(999),
             "Category missing_loc [This.GetName]\n",
             None,
         ),
         (
-            "set_state_category=undefined",
+            "fixture_region_category=undefined",
             S(1),
             "",
             Some("invalid state category undefined"),
         ),
         (
-            "set_state_category=replacement",
+            "fixture_region_category=replacement",
             S(1),
             "",
             Some("invalid state category replacement"),
         ),
         (
-            "set_state_category={}",
+            "fixture_region_category={}",
             S(1),
             "",
             Some("requires a scalar operand"),
@@ -99,8 +99,7 @@ fn state_category_description_uses_cached_validity_and_operand_spelling() {
 
 #[test]
 fn state_content_descriptions_use_cached_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -202,278 +201,278 @@ fn state_content_descriptions_use_cached_names() {
     }
     for (body, object, expected, refusal) in [
         (
-            "add_building_construction={type=syn_mill level=2}",
+            "fixture_construction_order={type=syn_mill level=2}",
             C(1),
             "Instant 2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=syn_mill level=syn_amount}",
+            "fixture_construction_order={type=syn_mill level=syn_amount}",
             C(1),
             "Instant 2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=SYN_MILL level=-1.5 instant_build=no}",
+            "fixture_construction_order={type=SYN_MILL level=-1.5 instant_build=no}",
             C(1),
             "Build -2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=syn_mill level=1.5 province=1}",
+            "fixture_construction_order={type=syn_mill level=1.5 province=1}",
             C(1),
             "InstantProvince 2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=syn_mill level=1 province=1 instant_build=no}",
+            "fixture_construction_order={type=syn_mill level=1 province=1 instant_build=no}",
             C(1),
             "Province 1/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=syn_mill province={id=1}}",
+            "fixture_construction_order={type=syn_mill province={id=1}}",
             C(1),
             "Instant 0/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_building_construction={type=syn_mill province=1 province={id=2}}",
+            "fixture_construction_order={type=syn_mill province=1 province={id=2}}",
             C(1),
             "InstantProvince 0/Mill [This.GetName]\n",
             None,
         ),
         (
-            "set_building_level={type=syn_mill level=-2}",
+            "fixture_building_level={type=syn_mill level=-2}",
             C(1),
             "Set -2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "set_building_level={type=syn_mill level=2 province=1}",
+            "fixture_building_level={type=syn_mill level=2 province=1}",
             C(1),
             "Set 2/Mill [This.GetName]\n",
             None,
         ),
         (
-            "add_offsite_building={type=syn_mill level=2}",
+            "fixture_external_building={type=syn_mill level=2}",
             C(1),
             "Offsite 2/Mill Alpha\n",
             None,
         ),
         (
-            "construct_building_in_random_province={syn_tower=3 syn_mill=4}",
+            "fixture_province_construction={syn_tower=3 syn_mill=4}",
             S(1),
             "Random Tower/One",
             None,
         ),
         (
-            "construct_building_in_random_province={\"syn_tower\"=3}",
+            "fixture_province_construction={\"syn_tower\"=3}",
             S(1),
             "Random Tower/One",
             None,
         ),
         (
-            "construct_building_in_random_province={syn_tower=3 syn_spire=2 syn_mill=1}",
+            "fixture_province_construction={syn_tower=3 syn_spire=2 syn_mill=1}",
             S(1),
             "Random Spire/One",
             None,
         ),
         (
-            "damage_building={type=syn_mill damage=.125 province=unavailable}",
+            "fixture_building_damage={type=syn_mill damage=.125 province=unavailable}",
             C(1),
             "Damage Mills/0.000 [This.GetName]\n",
             None,
         ),
         (
-            "damage_building={type=syn_mill damage=0.125 repair_speed_modifier=-0.1}",
+            "fixture_building_damage={type=syn_mill damage=0.125 repair_speed_modifier=-0.1}",
             C(1),
             "Damage Mills/0.125 [This.GetName]\n   Repair Mills/-0.1\n\n   More\n",
             None,
         ),
         (
-            "remove_building={type=syn_mill state=1 level=1.5}",
+            "fixture_dismantle_building={type=syn_mill state=1 level=1.5}",
             C(1),
             "Remove 2/Mill [This.GetName]/One\n",
             None,
         ),
         (
-            "remove_building={type=syn_mill state=999 level=1}",
+            "fixture_dismantle_building={type=syn_mill state=999 level=1}",
             S(1),
             "Remove 1/Mill [This.GetName]/One\n",
             None,
         ),
         (
-            "remove_building={type=syn_mill state=2 level=unavailable}",
+            "fixture_dismantle_building={type=syn_mill state=2 level=unavailable}",
             C(1),
             "",
             None,
         ),
-        ("remove_building={type=syn_tower level=1}", S(1), "", None),
+        ("fixture_dismantle_building={type=syn_tower level=1}", S(1), "", None),
         (
-            "modify_building_resources={building=syn_mill amount=3 resource=syn_ore}",
+            "fixture_building_resources={building=syn_mill amount=3 resource=syn_ore}",
             C(1),
             "Modify Mill Alpha/3/9\n",
             None,
         ),
         (
-            "modify_building_resources={building=missing amount=3 resource=syn_ore}",
+            "fixture_building_resources={building=missing amount=3 resource=syn_ore}",
             C(1),
             "",
             None,
         ),
         (
-            "modify_building_resources={building=\"syn_mill\" amount=3 resource=syn_ore}",
+            "fixture_building_resources={building=\"syn_mill\" amount=3 resource=syn_ore}",
             C(1),
             "",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=1.5 state=1}",
+            "fixture_resource_gain={type=syn_ore amount=1.5 state=1}",
             C(1),
             "Add 2\u{13}resources_strip|7 /One/0\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=0 state=1}",
+            "fixture_resource_gain={type=syn_ore amount=0 state=1}",
             C(1),
             "Minus 0\u{13}resources_strip|7 /One/0\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=1 state=1 days=2}",
+            "fixture_resource_gain={type=syn_ore amount=1 state=1 days=2}",
             C(1),
             "TempAdd 1\u{13}resources_strip|7 /One/2\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=syn_amount state=1 days=syn_days}",
+            "fixture_resource_gain={type=syn_ore amount=syn_amount state=1 days=syn_days}",
             C(1),
             "TempAdd 2\u{13}resources_strip|7 /One/-3\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=-1.5 days=-2}",
+            "fixture_resource_gain={type=syn_ore amount=-1.5 days=-2}",
             S(1),
             "TempMinus 2\u{13}resources_strip|7 /One/-2\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=1 state=1 show_state_in_tooltip=no}",
+            "fixture_resource_gain={type=syn_ore amount=1 state=1 show_state_in_tooltip=no}",
             C(1),
             "AddHidden 1\u{13}resources_strip|7 \n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=-1 state=1 show_state_in_tooltip=no}",
+            "fixture_resource_gain={type=syn_ore amount=-1 state=1 show_state_in_tooltip=no}",
             C(1),
             "MinusHidden 1\u{13}resources_strip|7 \n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=1 state=1 days=2 show_state_in_tooltip=no}",
+            "fixture_resource_gain={type=syn_ore amount=1 state=1 days=2 show_state_in_tooltip=no}",
             C(1),
             "TempAddHidden 1\u{13}resources_strip|7 /2\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=-1 state=1 days=2 show_state_in_tooltip=no}",
+            "fixture_resource_gain={type=syn_ore amount=-1 state=1 days=2 show_state_in_tooltip=no}",
             C(1),
             "TempMinusHidden 1\u{13}resources_strip|7 /2\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=1 state=0 days=unavailable}",
+            "fixture_resource_gain={type=syn_ore amount=1 state=0 days=unavailable}",
             S(1),
             "",
             None,
         ),
         (
-            "create_railway_gun={location=999}",
+            "fixture_rail_gun={location=999}",
             C(1),
             "Gun Alphan Alpha",
             None,
         ),
-        ("create_railway_gun={}", C(1), "Gun Alphan Alpha", None),
+        ("fixture_rail_gun={}", C(1), "Gun Alphan Alpha", None),
         (
-            "create_railway_gun={location=1}",
+            "fixture_rail_gun={location=1}",
             C(1),
             "GunAt Alphan/One Alpha",
             None,
         ),
-        ("build_railway={level=5 path={999}}", C(1), "", None),
-        ("build_railway={path={1}}", C(1), "Rail 1/One Alpha", None),
+        ("fixture_railway_route={level=5 path={999}}", C(1), "", None),
+        ("fixture_railway_route={path={1}}", C(1), "Rail 1/One Alpha", None),
         (
-            "build_railway={level=.5 path={1 2}}",
+            "fixture_railway_route={level=.5 path={1 2}}",
             C(1),
             "Rail 1/One/Two Alpha",
             None,
         ),
         (
-            "build_railway={path={1 999 2}}",
+            "fixture_railway_route={path={1 999 2}}",
             C(1),
             "Rail 1/One/Two Alpha",
             None,
         ),
         (
-            "build_railway={path={1} build_only_on_allied=yes}",
+            "fixture_railway_route={path={1} build_only_on_allied=yes}",
             S(1),
             "Rail 1/One One",
             None,
         ),
-        ("build_railway={path={5}}", C(1), "", None),
-        ("build_railway={}", C(1), "", None),
+        ("fixture_railway_route={path={5}}", C(1), "", None),
+        ("fixture_railway_route={}", C(1), "", None),
         (
-            "build_railway={path={1} controller_priority={factor=2}}",
+            "fixture_railway_route={path={1} controller_priority={factor=2}}",
             C(1),
             "",
             Some("controller"),
         ),
         (
-            "build_railway={path={1} build_only_on_allied=yes}",
+            "fixture_railway_route={path={1} build_only_on_allied=yes}",
             C(1),
             "",
             Some("country/controller eligibility"),
         ),
         (
-            "remove_building={type=syn_tower province=1}",
+            "fixture_dismantle_building={type=syn_tower province=1}",
             S(1),
             "",
             Some("MovementMap::terrain"),
         ),
         (
-            "remove_building={type=syn_mill state=1 tags={syn_tag}}",
+            "fixture_dismantle_building={type=syn_mill state=1 tags={syn_tag}}",
             S(1),
             "",
             Some("tag-selected"),
         ),
         (
-            "add_resource={type=syn_missing amount=1 state=1}",
+            "fixture_resource_gain={type=syn_missing amount=1 state=1}",
             C(1),
             "",
             Some("null resource"),
         ),
         (
-            "build_railway={start_state=1 target_state=2}",
+            "fixture_railway_route={start_state=1 target_state=2}",
             C(1),
             "",
             Some("endpoint selection/pathfinding"),
         ),
-        ("add_building_construction={}", C(1), "", Some("template")),
+        ("fixture_construction_order={}", C(1), "", Some("template")),
         (
-            "add_building_construction={type=syn_missing}",
+            "fixture_construction_order={type=syn_missing}",
             C(1),
             "",
             Some("null-template"),
         ),
         (
-            "modify_building_resources={building=syn_mill resource=syn_ore}",
+            "fixture_building_resources={building=syn_mill resource=syn_ore}",
             C(1),
             "",
             Some("missing or failed amount assignment leaves the amount uninitialised"),
         ),
         (
-            "modify_building_resources={building=syn_mill amount=1}",
+            "fixture_building_resources={building=syn_mill amount=1}",
             C(1),
             "",
             Some("missing resource leaves the resource index uninitialised"),
@@ -502,8 +501,7 @@ fn state_content_descriptions_use_cached_names() {
 
 #[test]
 fn state_content_province_display_uses_fallbacks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -543,15 +541,15 @@ fn state_content_province_display_uses_fallbacks() {
         rows[0].victory_points = 1;
     }
     for (body, expected) in [
-        ("set_victory_points={province=1 value=-2.5}", "SetVP One/-3"),
-        ("add_victory_points={province=1 value=2.49}", "AddVP One/2"),
-        ("add_victory_points={province=1 value=-2.5}", "SubVP One/3"),
-        ("add_victory_points={province=1 value=0}", "SubVP One/0"),
+        ("fixture_victory_value={province=1 value=-2.5}", "SetVP One/-3"),
+        ("fixture_victory_gain={province=1 value=2.49}", "AddVP One/2"),
+        ("fixture_victory_gain={province=1 value=-2.5}", "SubVP One/3"),
+        ("fixture_victory_gain={province=1 value=0}", "SubVP One/0"),
         (
-            "set_province_name={id=1 name=SYN_NAME}",
+            "fixture_province_title={id=1 name=SYN_NAME}",
             "Rename One/New Alpha\n",
         ),
-        ("reset_province_name=1", "ResetProvince One"),
+        ("fixture_restore_province_title=1", "ResetProvince One"),
     ] {
         let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
         let out = fixture.render(body, &mut scopes, Content::default());
@@ -589,7 +587,7 @@ fn state_content_province_display_uses_fallbacks() {
         }]));
     let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
     let out = fixture.render(
-        "set_victory_points={province=2 value=2}",
+        "fixture_victory_value={province=2 value=2}",
         &mut scopes,
         Content::default(),
     );
@@ -614,7 +612,7 @@ fn state_content_province_display_uses_fallbacks() {
                 .original_tag_reference = reference;
         }
         let out = fixture.render(
-            "set_victory_points={province=1 value=-2.5}",
+            "fixture_victory_value={province=1 value=-2.5}",
             &mut EventScopes::new(vec![EventScope::of(C(1))]),
             Content::default(),
         );
@@ -635,14 +633,13 @@ fn state_content_province_display_uses_fallbacks() {
 
 #[test]
 fn state_effect_zero_keeps_target() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     for (body, expected) in [
-        ("add_state_claim=0", "Claim \n"),
-        ("transfer_state=0", "Transfer \n"),
-        ("add_state_claim=THIS", "Claim One\n"),
-        ("transfer_state=THIS", "Transfer One\n"),
+        ("fixture_claim_region=0", "Claim \n"),
+        ("fixture_handover_region=0", "Transfer \n"),
+        ("fixture_claim_region=THIS", "Claim One\n"),
+        ("fixture_handover_region=THIS", "Transfer One\n"),
     ] {
         let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
         let out = fixture.render(body, &mut scopes, Content::default());
@@ -653,8 +650,7 @@ fn state_effect_zero_keeps_target() {
 
 #[test]
 fn reserved_country_names_describe_omitted_country_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -690,18 +686,18 @@ fn reserved_country_names_describe_omitted_country_operands() {
         ]));
     for (body, object, expected) in [
         (
-            "add_resistance_target=5",
+            "fixture_resistance_target=5",
             S(1),
             "Target \u{11}R+5.0%\u{11}!/\u{12}ZERO The reserved/\u{12}ZERO The reserved\n",
         ),
         (
-            "give_resource_rights={state=1}",
+            "fixture_resource_rights={state=1}",
             C(1),
             "Rights the reserved/One\n",
         ),
-        ("set_state_owner_to=0", S(1), "Owner Reserved\n"),
-        ("create_railway_gun={location=999}", C(0), "Gun reservedish"),
-        ("add_to_war={}", C(1), "War Reserved/Reserved\n"),
+        ("fixture_new_region_owner=0", S(1), "Owner Reserved\n"),
+        ("fixture_rail_gun={location=999}", C(0), "Gun reservedish"),
+        ("fixture_join_war={}", C(1), "War Reserved/Reserved\n"),
     ] {
         let mut scopes = EventScopes::new(vec![EventScope::of(object)]);
         let out = fixture.render(body, &mut scopes, Content::default());
@@ -714,7 +710,7 @@ fn reserved_country_names_describe_omitted_country_operands() {
         rows[0].built = 0;
     }
     let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
-    let out = fixture.render("add_resistance_target=5", &mut scopes, Content::default());
+    let out = fixture.render("fixture_resistance_target=5", &mut scopes, Content::default());
     assert_eq!(
         out.text,
         "Target \u{11}R+5.0%\u{11}!/\u{12}ZERO /\u{12}ZERO \n"
@@ -723,7 +719,7 @@ fn reserved_country_names_describe_omitted_country_operands() {
     *fixture.frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
         reason: "format 98".into(),
     };
-    let out = fixture.render("add_resistance_target=5", &mut scopes, Content::default());
+    let out = fixture.render("fixture_resistance_target=5", &mut scopes, Content::default());
     assert!(
         out.refusals
             .keys()
@@ -733,8 +729,7 @@ fn reserved_country_names_describe_omitted_country_operands() {
 
 #[test]
 fn country_effect_state_links_use_recorded_owner() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -770,11 +765,11 @@ fn country_effect_state_links_use_recorded_owner() {
         rows[2].owner = 300;
     }
     for (body, expected) in [
-        ("set_state_owner_to=ROOT", "OwnerTo Beta\n"),
-        ("set_state_controller_to=PREV", "ControllerTo Gamma\n"),
-        ("transfer_state_to=FROM", "TransferTo Alpha\n"),
-        ("start_resistance=ROOT", "Init Beta"),
-        ("transfer_state_to=THIS", "TransferTo Alpha\n"),
+        ("fixture_new_region_owner=ROOT", "OwnerTo Beta\n"),
+        ("fixture_new_region_controller=PREV", "ControllerTo Gamma\n"),
+        ("fixture_region_recipient=FROM", "TransferTo Alpha\n"),
+        ("fixture_resistance_start=ROOT", "Init Beta"),
+        ("fixture_region_recipient=THIS", "TransferTo Alpha\n"),
     ] {
         let mut scopes = EventScopes::new(vec![
             EventScope {
@@ -795,8 +790,7 @@ fn country_effect_state_links_use_recorded_owner() {
 
 #[test]
 fn states_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -938,578 +932,578 @@ fn states_branches() {
         ..Default::default()
     };
     for (body, object, expected, refusal) in [
-        ("add_state_core=2.5", C(1), "Core Three\n", None),
-        ("add_state_core=1", C(1), "Core One\n", None),
-        ("add_state_core=0", S(1), "Core \n", None),
-        ("add_state_core=-1", C(1), "Core \n", None),
-        ("add_state_core=syn", C(1), "Core Two\n", None),
-        ("add_state_core=THIS", S(1), "Core One\n", None),
-        ("add_state_core=ROOT", C(1), "Core \n", None),
-        ("add_state_core=PREV", S(1), "Core One\n", None),
-        ("add_state_core=FROM", S(1), "Core One\n", None),
+        ("fixture_region_core=2.5", C(1), "Core Three\n", None),
+        ("fixture_region_core=1", C(1), "Core One\n", None),
+        ("fixture_region_core=0", S(1), "Core \n", None),
+        ("fixture_region_core=-1", C(1), "Core \n", None),
+        ("fixture_region_core=syn", C(1), "Core Two\n", None),
+        ("fixture_region_core=THIS", S(1), "Core One\n", None),
+        ("fixture_region_core=ROOT", C(1), "Core \n", None),
+        ("fixture_region_core=PREV", S(1), "Core One\n", None),
+        ("fixture_region_core=FROM", S(1), "Core One\n", None),
         (
-            "add_state_core=event_target:syn_state",
+            "fixture_region_core=event_target:syn_state",
             C(1),
             "Core Three\n",
             None,
         ),
-        ("add_state_core=owner", S(1), "Core \n", None),
-        ("add_state_core=capital", S(0), "Core \n", None),
+        ("fixture_region_core=owner", S(1), "Core \n", None),
+        ("fixture_region_core=capital", S(0), "Core \n", None),
         (
-            "add_state_core=capital",
+            "fixture_region_core=capital",
             S(u32::MAX),
             "",
             Some("invalid state"),
         ),
-        ("add_state_core=capital", C(1), "Core \n", None),
-        ("add_state_core=capital", S(1), "Core Four\n", None),
+        ("fixture_region_core=capital", C(1), "Core \n", None),
+        ("fixture_region_core=capital", S(1), "Core Four\n", None),
         (
-            "add_state_core=capital",
+            "fixture_region_core=capital",
             S(6),
             "",
             Some("reserved country zero's capital state"),
         ),
         (
-            "goto_state=capital",
+            "fixture_visit_region=capital",
             S(999),
             "",
             Some("missing state owner"),
         ),
-        ("remove_state_claim=99", C(1), "Unclaim \n", None),
-        ("remove_state_core=2", C(1), "Uncore Two\n", None),
-        ("set_capital={state=3}", C(1), "Capital Three\n", None),
-        ("set_capital={}", S(1), "Capital \n", None),
+        ("fixture_end_region_claim=99", C(1), "Unclaim \n", None),
+        ("fixture_end_region_core=2", C(1), "Uncore Two\n", None),
+        ("fixture_capital_location={state=3}", C(1), "Capital Three\n", None),
+        ("fixture_capital_location={}", S(1), "Capital \n", None),
         (
-            "set_capital={state=syn remember_old_capital=no}",
+            "fixture_capital_location={state=syn remember_old_capital=no}",
             C(1),
             "Capital Two\n",
             None,
         ),
         (
-            "set_capital={state=THIS remember_old_capital=yes}",
+            "fixture_capital_location={state=THIS remember_old_capital=yes}",
             S(1),
             "Capital One\n",
             None,
         ),
-        ("set_state_owner=4", C(1), "Owner Four\n", None),
-        ("set_state_controller=5", C(1), "Controller Five\n", None),
-        ("set_state_owner_to=BBB", S(1), "OwnerTo Beta\n", None),
+        ("fixture_region_owner=4", C(1), "Owner Four\n", None),
+        ("fixture_region_controller=5", C(1), "Controller Five\n", None),
+        ("fixture_new_region_owner=BBB", S(1), "OwnerTo Beta\n", None),
         (
-            "set_state_controller_to=CCC",
+            "fixture_new_region_controller=CCC",
             S(1),
             "ControllerTo Gamma\n",
             None,
         ),
-        ("transfer_state_to=AAA", S(1), "TransferTo Alpha\n", None),
-        ("transfer_state_to=THIS", C(1), "TransferTo Alpha\n", None),
-        ("set_state_owner_to=owner", S(1), "OwnerTo Alpha\n", None),
+        ("fixture_region_recipient=AAA", S(1), "TransferTo Alpha\n", None),
+        ("fixture_region_recipient=THIS", C(1), "TransferTo Alpha\n", None),
+        ("fixture_new_region_owner=owner", S(1), "OwnerTo Alpha\n", None),
         (
-            "set_state_controller_to=controller",
+            "fixture_new_region_controller=controller",
             S(1),
             "ControllerTo Alpha\n",
             None,
         ),
         (
-            "transfer_state_to=event_target:syn_country",
+            "fixture_region_recipient=event_target:syn_country",
             S(1),
             "TransferTo Beta\n",
             None,
         ),
-        ("set_state_owner_to=ROOT", S(1), "OwnerTo Alpha\n", None),
+        ("fixture_new_region_owner=ROOT", S(1), "OwnerTo Alpha\n", None),
         (
-            "set_state_owner_to=ROOT",
+            "fixture_new_region_owner=ROOT",
             S(999),
             "",
             Some("invalid nonzero state"),
         ),
         (
-            "start_resistance=ROOT",
+            "fixture_resistance_start=ROOT",
             S(u32::MAX),
             "",
             Some("invalid nonzero state"),
         ),
         (
-            "set_state_controller_to=event_target:syn_state",
+            "fixture_new_region_controller=event_target:syn_state",
             S(1),
             "",
             Some("country zero"),
         ),
         (
-            "transfer_state_to=occupied",
+            "fixture_region_recipient=occupied",
             S(1),
             "TransferTo Beta\n",
             None,
         ),
-        ("transfer_state_to=0", S(1), "", Some("country zero")),
+        ("fixture_region_recipient=0", S(1), "", Some("country zero")),
         (
-            "set_state_name=SYN_NAME",
+            "fixture_region_title=SYN_NAME",
             S(1),
             "Name New [This.GetName]\n",
             None,
         ),
-        ("set_state_name=\"\"", S(1), "Reset\n", None),
-        ("reset_state_name=yes", S(1), "Reset\n", None),
+        ("fixture_region_title=\"\"", S(1), "Reset\n", None),
+        ("fixture_restore_region_title=yes", S(1), "Reset\n", None),
         (
-            "add_compliance=1.25",
+            "fixture_compliance_gain=1.25",
             S(1),
             "Compliance \u{11}G+1.2%\u{11}!\n",
             None,
         ),
         (
-            "add_compliance=-1.25",
+            "fixture_compliance_gain=-1.25",
             S(1),
             "Compliance \u{11}R-1.2%\u{11}!\n",
             None,
         ),
         (
-            "add_resistance=1.25",
+            "fixture_resistance_gain=1.25",
             S(1),
             "Resistance \u{11}R+1.2%\u{11}!\n",
             None,
         ),
         (
-            "add_resistance=-1.25",
+            "fixture_resistance_gain=-1.25",
             S(1),
             "Resistance \u{11}G-1.2%\u{11}!\n",
             None,
         ),
         (
-            "add_compliance=0",
+            "fixture_compliance_gain=0",
             S(1),
             "Compliance \u{11}Y+0.0%\u{11}!\n",
             None,
         ),
         (
-            "add_resistance=0",
+            "fixture_resistance_gain=0",
             S(1),
             "Resistance \u{11}Y+0.0%\u{11}!\n",
             None,
         ),
         (
-            "add_resistance=ROOT",
+            "fixture_resistance_gain=ROOT",
             S(1),
             "Resistance \u{11}Y+0.0%\u{11}!\n",
             None,
         ),
-        ("set_compliance=1.25", S(1), "SetCompliance 1.2%\n", None),
-        ("set_resistance=-1.25", S(1), "SetResistance -1.2%\n", None),
-        ("set_compliance=ROOT", S(1), "SetCompliance 0.0%\n", None),
-        ("set_demilitarized_zone=yes", S(1), "Demilitarized\n", None),
-        ("set_demilitarized_zone=no", S(1), "Militarized\n", None),
+        ("fixture_compliance_level=1.25", S(1), "SetCompliance 1.2%\n", None),
+        ("fixture_resistance_level=-1.25", S(1), "SetResistance -1.2%\n", None),
+        ("fixture_compliance_level=ROOT", S(1), "SetCompliance 0.0%\n", None),
+        ("fixture_military_restriction=yes", S(1), "Demilitarized\n", None),
+        ("fixture_military_restriction=no", S(1), "Militarized\n", None),
         (
-            "set_demilitarized_zone=invalid",
+            "fixture_military_restriction=invalid",
             S(1),
             "Militarized\n",
             None,
         ),
-        ("set_demilitarized_zone=ROOT", S(1), "Militarized\n", None),
-        ("set_demilitarized_zone=yes", S(999), "", None),
+        ("fixture_military_restriction=ROOT", S(1), "Militarized\n", None),
+        ("fixture_military_restriction=yes", S(999), "", None),
         (
-            "add_extra_state_shared_building_slots=0.5",
+            "fixture_construction_capacity=0.5",
             S(1),
             "Slots 1\n",
             None,
         ),
         (
-            "add_extra_state_shared_building_slots=-0.5",
+            "fixture_construction_capacity=-0.5",
             S(1),
             "Unslots 1\n",
             None,
         ),
         (
-            "add_extra_state_shared_building_slots=0",
+            "fixture_construction_capacity=0",
             S(1),
             "Unslots 0\n",
             None,
         ),
         (
-            "add_extra_state_shared_building_slots=ROOT",
+            "fixture_construction_capacity=ROOT",
             S(1),
             "Unslots 0\n",
             None,
         ),
-        ("cancel_resistance=no", C(1), "Cancel [This.GetName]", None),
+        ("fixture_cancel_resistance=no", C(1), "Cancel [This.GetName]", None),
         (
-            "force_enable_resistance={clear=yes}",
+            "fixture_resistance_activity={clear=yes}",
             S(1),
             "Clear One",
             None,
         ),
         (
-            "force_enable_resistance={clear=yes clear=invalid}",
+            "fixture_resistance_activity={clear=yes clear=invalid}",
             S(1),
             "Clear One",
             None,
         ),
         (
-            "force_enable_resistance={clear=no}",
+            "fixture_resistance_activity={clear=no}",
             S(1),
             "Enable One",
             None,
         ),
-        ("force_enable_resistance=BBB", S(1), "Enable One", None),
-        ("force_enable_resistance={}", S(999), "", None),
+        ("fixture_resistance_activity=BBB", S(1), "Enable One", None),
+        ("fixture_resistance_activity={}", S(999), "", None),
         (
-            "force_enable_resistance={add_political_power=1}",
+            "fixture_resistance_activity={add_political_power=1}",
             S(1),
             "Enable One\nPP1\n",
             None,
         ),
         (
-            "start_resistance={}",
+            "fixture_resistance_start={}",
             S(1),
             "",
             Some("requires a scalar operand"),
         ),
         (
-            "add_resistance_target={amount={value=0}}",
+            "fixture_resistance_target={amount={value=0}}",
             S(1),
             "",
             Some("amount requires a scalar operand"),
         ),
         (
-            "set_victory_points={province={value=1}}",
+            "fixture_victory_value={province={value=1}}",
             S(1),
             "",
             Some("province requires a scalar operand"),
         ),
-        ("start_resistance=BBB", S(1), "Init Beta", None),
-        ("start_resistance=owner", S(1), "Init Alpha", None),
-        ("start_resistance=controller", S(1), "Init Alpha", None),
-        ("start_resistance=occupied", S(1), "Init Beta", None),
+        ("fixture_resistance_start=BBB", S(1), "Init Beta", None),
+        ("fixture_resistance_start=owner", S(1), "Init Alpha", None),
+        ("fixture_resistance_start=controller", S(1), "Init Alpha", None),
+        ("fixture_resistance_start=occupied", S(1), "Init Beta", None),
         (
-            "start_resistance=event_target:syn_country",
+            "fixture_resistance_start=event_target:syn_country",
             S(1),
             "Init Beta",
             None,
         ),
-        ("start_resistance=capital", S(1), "Init", None),
+        ("fixture_resistance_start=capital", S(1), "Init", None),
         (
-            "start_resistance=event_target:syn_state",
+            "fixture_resistance_start=event_target:syn_state",
             S(1),
             "Init",
             None,
         ),
-        ("start_resistance=owner", C(1), "Init", None),
+        ("fixture_resistance_start=owner", C(1), "Init", None),
         (
-            "transfer_state_to=controller",
+            "fixture_region_recipient=controller",
             C(1),
             "",
             Some("country zero"),
         ),
         (
-            "transfer_state_to=owner",
+            "fixture_region_recipient=owner",
             EventObject::Province(1),
             "",
             Some("event scope's state ID"),
         ),
-        ("start_resistance=ROOT", S(0), "Init", None),
-        ("start_resistance=yes", S(1), "Init", None),
-        ("start_resistance=0", S(1), "Init", None),
-        ("start_resistance=ROOT", C(1), "Init Alpha", None),
-        ("start_resistance=ROOT", S(1), "Init Alpha", None),
+        ("fixture_resistance_start=ROOT", S(0), "Init", None),
+        ("fixture_resistance_start=yes", S(1), "Init", None),
+        ("fixture_resistance_start=0", S(1), "Init", None),
+        ("fixture_resistance_start=ROOT", C(1), "Init Alpha", None),
+        ("fixture_resistance_start=ROOT", S(1), "Init Alpha", None),
         (
-            "set_state_category=SYN_CATEGORY",
+            "fixture_region_category=SYN_CATEGORY",
             S(1),
             "",
             Some("state categories content unavailable"),
         ),
-        ("supply_units=3.25", S(1), "Supply 3.25", None),
-        ("supply_units=ROOT", S(1), "Supply 0.00", None),
-        ("add_resistance_target=0", S(1), "", None),
+        ("fixture_supply_change=3.25", S(1), "Supply 3.25", None),
+        ("fixture_supply_change=ROOT", S(1), "Supply 0.00", None),
+        ("fixture_resistance_target=0", S(1), "", None),
         (
-            "add_resistance_target={amount=0 days=random occupied=unrecorded}",
+            "fixture_resistance_target={amount=0 days=random occupied=unrecorded}",
             S(1),
             "",
             None,
         ),
         (
-            "add_resistance_target={}",
+            "fixture_resistance_target={}",
             S(1),
             "",
             Some("reserved country naming has no singleton row"),
         ),
         (
-            "add_resistance_target=5",
+            "fixture_resistance_target=5",
             S(1),
             "",
             Some("reserved country naming has no singleton row"),
         ),
         (
-            "add_resistance_target={amount=1 occupied=AAA}",
+            "fixture_resistance_target={amount=1 occupied=AAA}",
             S(1),
             "",
             Some("reserved country naming has no singleton row"),
         ),
         (
-            "add_resistance_target={amount=1 occupier=BBB}",
+            "fixture_resistance_target={amount=1 occupier=BBB}",
             S(1),
             "",
             Some("reserved country naming has no singleton row"),
         ),
         (
-            "add_resistance_target={amount=1 occupied=AAA occupier=BBB}",
+            "fixture_resistance_target={amount=1 occupied=AAA occupier=BBB}",
             S(1),
             "Target \u{11}R+1.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/0 [This.GetName]\n",
             None,
         ),
         (
-            "add_resistance_target={occupied=AAA occupier=BBB days=2.5}",
+            "fixture_resistance_target={occupied=AAA occupier=BBB days=2.5}",
             S(1),
             "Target \u{11}G-1.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/3 [This.GetName] (3 days [This.GetName])\n",
             None,
         ),
         (
-            "add_resistance_target={amount=-1.25 occupied=BBB occupier=AAA days=-2.5}",
+            "fixture_resistance_target={amount=-1.25 occupied=BBB occupier=AAA days=-2.5}",
             C(1),
             "Target \u{11}G-1.2%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/-3 [This.GetName]\n",
             None,
         ),
         (
-            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=AAA days=var:syn}",
+            "fixture_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=AAA days=var:syn}",
             S(1),
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
         ),
         (
-            "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
+            "fixture_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
             S(1),
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
         ),
         (
-            "add_resistance_target={amount=-92233720368547.75808 occupied=AAA occupier=BBB}",
+            "fixture_resistance_target={amount=-92233720368547.75808 occupied=AAA occupier=BBB}",
             S(1),
             "Target \u{11}Y+0.0%\u{11}!/\u{12}BBB Beta/\u{12}AAA Alpha/0 [This.GetName]\n",
             None,
         ),
         (
-            "add_resistance_target={amount=1 amount=0 occupied=AAA occupier=BBB}",
+            "fixture_resistance_target={amount=1 amount=0 occupied=AAA occupier=BBB}",
             S(1),
             "",
             Some("repeated resistance-target operand amount"),
         ),
         (
-            "add_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
+            "fixture_resistance_target={amount=1 days=random occupied=AAA occupier=BBB}",
             S(1),
             "",
             Some("seed of script variables"),
         ),
         (
-            "add_resistance_target={amount=0 add_political_power=1}",
+            "fixture_resistance_target={amount=0 add_political_power=1}",
             S(1),
             "PP1\n",
             None,
         ),
-        ("goto_state=1", C(1), "Go One\n", None),
-        ("goto_state=999", S(1), "", None),
-        ("goto_state=0", S(1), "", None),
-        ("goto_state=THIS", S(1), "Go One\n", None),
-        ("goto_state=capital", S(0), "", None),
-        ("goto_state=capital", C(1), "", None),
-        ("goto_state=capital", S(1), "Go Four\n", None),
-        ("goto_province=010", C(1), "Go Three\n", None),
-        ("goto_province=2", C(1), "Go Two\n", None),
-        ("goto_province=\"2.9\"", C(1), "Go Two\n", None),
-        ("goto_province=03", C(1), "Go Three\n", None),
-        ("goto_province=999", C(1), "", Some("invalid province")),
-        ("goto_province=5", C(1), "", Some("province has no state")),
-        ("set_province_controller=2", C(1), "Control Two", None),
-        ("set_province_controller=999", C(1), "", None),
-        ("set_province_controller=THIS", S(1), "", None),
-        ("set_victory_points={province=999 value=1}", C(1), "", None),
-        ("set_victory_points={province=5.5 value=1}", C(1), "", None),
-        ("add_victory_points={value=1}", C(1), "", None),
+        ("fixture_visit_region=1", C(1), "Go One\n", None),
+        ("fixture_visit_region=999", S(1), "", None),
+        ("fixture_visit_region=0", S(1), "", None),
+        ("fixture_visit_region=THIS", S(1), "Go One\n", None),
+        ("fixture_visit_region=capital", S(0), "", None),
+        ("fixture_visit_region=capital", C(1), "", None),
+        ("fixture_visit_region=capital", S(1), "Go Four\n", None),
+        ("fixture_visit_province=010", C(1), "Go Three\n", None),
+        ("fixture_visit_province=2", C(1), "Go Two\n", None),
+        ("fixture_visit_province=\"2.9\"", C(1), "Go Two\n", None),
+        ("fixture_visit_province=03", C(1), "Go Three\n", None),
+        ("fixture_visit_province=999", C(1), "", Some("invalid province")),
+        ("fixture_visit_province=5", C(1), "", Some("province has no state")),
+        ("fixture_province_control=2", C(1), "Control Two", None),
+        ("fixture_province_control=999", C(1), "", None),
+        ("fixture_province_control=THIS", S(1), "", None),
+        ("fixture_victory_value={province=999 value=1}", C(1), "", None),
+        ("fixture_victory_value={province=5.5 value=1}", C(1), "", None),
+        ("fixture_victory_gain={value=1}", C(1), "", None),
         (
-            "set_victory_points={province=1.49 value=-2.5}",
+            "fixture_victory_value={province=1.49 value=-2.5}",
             C(1),
             "SetVP One/-3",
             None,
         ),
         (
-            "add_victory_points={province=1 value=2}",
+            "fixture_victory_gain={province=1 value=2}",
             C(1),
             "AddVP One/2",
             None,
         ),
         (
-            "set_province_name={}",
+            "fixture_province_title={}",
             C(1),
             "ERROR: Invalid location or missing victory point for rename",
             None,
         ),
         (
-            "set_province_name={id=2 name=SYN_NAME}",
+            "fixture_province_title={id=2 name=SYN_NAME}",
             C(1),
             "ERROR: Invalid location or missing victory point for rename",
             None,
         ),
         (
-            "set_province_name={id=1 id=invalid name=SYN_NAME}",
+            "fixture_province_title={id=1 id=invalid name=SYN_NAME}",
             C(1),
             "Rename One/New Alpha\n",
             None,
         ),
-        ("reset_province_name=999", C(1), "", None),
+        ("fixture_restore_province_title=999", C(1), "", None),
         (
-            "add_building_construction={type=syn_mill level=1}",
+            "fixture_construction_order={type=syn_mill level=1}",
             C(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "set_building_level={type=syn_mill level=2 province=1}",
+            "fixture_building_level={type=syn_mill level=2 province=1}",
             S(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "add_offsite_building={type=syn_mill level=-1}",
+            "fixture_external_building={type=syn_mill level=-1}",
             C(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "construct_building_in_random_province={syn_mill=2}",
+            "fixture_province_construction={syn_mill=2}",
             S(1),
             "",
             Some("buildings content unavailable"),
         ),
-        ("damage_building={}", S(1), "", None),
+        ("fixture_building_damage={}", S(1), "", None),
         (
-            "damage_building={state=999 province=999 damage=2}",
+            "fixture_building_damage={state=999 province=999 damage=2}",
             S(1),
             "",
             None,
         ),
         (
-            "damage_building={type=syn_mill damage=.5}",
+            "fixture_building_damage={type=syn_mill damage=.5}",
             S(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "damage_building={tags={syn_tag}}",
+            "fixture_building_damage={tags={syn_tag}}",
             S(1),
             "",
             Some("tag-selected building helper"),
         ),
-        ("remove_building={}", S(1), "", None),
+        ("fixture_dismantle_building={}", S(1), "", None),
         (
-            "remove_building={type=syn_mill level=2}",
+            "fixture_dismantle_building={type=syn_mill level=2}",
             S(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "modify_building_resources={building=syn_unknown amount=3 resource=syn_ore}",
+            "fixture_building_resources={building=syn_unknown amount=3 resource=syn_ore}",
             C(1),
             "",
             None,
         ),
-        ("modify_building_resources={building={}}", C(1), "", None),
+        ("fixture_building_resources={building={}}", C(1), "", None),
         (
-            "modify_building_resources={building=syn_mill amount=3 resource=syn_ore}",
+            "fixture_building_resources={building=syn_mill amount=3 resource=syn_ore}",
             C(1),
             "",
             Some("buildings content unavailable"),
         ),
         (
-            "add_resource={type=syn_ore amount=2 state=999}",
+            "fixture_resource_gain={type=syn_ore amount=2 state=999}",
             C(1),
             "",
             None,
         ),
-        ("add_resource={type=syn_ore amount=2}", C(1), "", None),
+        ("fixture_resource_gain={type=syn_ore amount=2}", C(1), "", None),
         (
-            "add_resource={type=syn_ore amount=2}",
+            "fixture_resource_gain={type=syn_ore amount=2}",
             S(1),
             "Resource 2\u{13}resources_strip|7 /One\n",
             None,
         ),
         (
-            "add_resource={type=syn_ore amount=-2 state=0}",
+            "fixture_resource_gain={type=syn_ore amount=-2 state=0}",
             S(1),
             "",
             None,
         ),
         (
-            "give_resource_rights={receiver=BBB state=1}",
+            "fixture_resource_rights={receiver=BBB state=1}",
             C(1),
             "Rights beta/One\n",
             None,
         ),
         (
-            "give_resource_rights={receiver=BBB state=1 resources={syn_ore}}",
+            "fixture_resource_rights={receiver=BBB state=1 resources={syn_ore}}",
             C(1),
             "Rights beta/One\n",
             None,
         ),
-        ("give_resource_rights={receiver=BBB}", S(1), "", None),
+        ("fixture_resource_rights={receiver=BBB}", S(1), "", None),
         (
-            "give_resource_rights={receiver=BBB state=999}",
+            "fixture_resource_rights={receiver=BBB state=999}",
             C(1),
             "",
             None,
         ),
         (
-            "give_resource_rights={state=1}",
+            "fixture_resource_rights={state=1}",
             C(1),
             "",
             Some("reserved country naming has no singleton row"),
         ),
-        ("remove_resource_rights=0", S(1), "", None),
-        ("remove_resource_rights=THIS", S(1), "End One\n", None),
-        ("remove_resource_rights=2", C(1), "End Two\n", None),
-        ("remove_resource_rights=999", C(1), "", None),
-        ("build_railway={level=0}", C(1), "", None),
-        ("build_railway={level=.49999}", C(1), "", None),
+        ("fixture_revoke_resources=0", S(1), "", None),
+        ("fixture_revoke_resources=THIS", S(1), "End One\n", None),
+        ("fixture_revoke_resources=2", C(1), "End Two\n", None),
+        ("fixture_revoke_resources=999", C(1), "", None),
+        ("fixture_railway_route={level=0}", C(1), "", None),
+        ("fixture_railway_route={level=.49999}", C(1), "", None),
         (
-            "build_railway={level=.5}",
+            "fixture_railway_route={level=.5}",
             C(1),
             "",
             Some("MAX_RAILWAY_LEVEL content unavailable"),
         ),
         (
-            "build_railway={}",
+            "fixture_railway_route={}",
             C(1),
             "",
             Some("MAX_RAILWAY_LEVEL content unavailable"),
         ),
         (
-            "build_railway={level=0 add_stability=.1}",
+            "fixture_railway_route={level=0 add_stability=.1}",
             C(1),
             "S0\n",
             None,
         ),
         (
-            "create_railway_gun={location=1}",
+            "fixture_rail_gun={location=1}",
             C(1),
             "GunAt Alphan/One",
             None,
         ),
         (
-            "create_railway_gun={location=999}",
+            "fixture_rail_gun={location=999}",
             C(1),
             "Gun Alphan",
             None,
         ),
-        ("strategic_state_location={syn_radar=42}", C(1), "", None),
-        ("strategic_state_location={}", S(1), "", None),
+        ("fixture_strategic_location={syn_radar=42}", C(1), "", None),
+        ("fixture_strategic_location={}", S(1), "", None),
         (
-            "strategic_state_location={syn_radar=42}",
+            "fixture_strategic_location={syn_radar=42}",
             S(1),
             "",
             Some("strategic-location templates"),
         ),
         (
-            "BBB={add_state_core=1 set_capital={state=2}}",
+            "BBB={fixture_region_core=1 fixture_capital_location={state=2}}",
             C(1),
             "\u{12}BBBBeta:\n   Core One\n   Capital Two\n",
             None,
         ),
         (
-            "cancel_resistance=no supply_units=2",
+            "fixture_cancel_resistance=no fixture_supply_change=2",
             C(1),
             "Cancel [This.GetName]\nSupply 2.00",
             None,
@@ -1545,7 +1539,7 @@ fn states_branches() {
     }
     let mut scopes = EventScopes::new(vec![EventScope::of(S(1))]);
     let out = fixture.render(
-        "add_resistance_target={amount=0 ignored_field=yes}",
+        "fixture_resistance_target={amount=0 ignored_field=yes}",
         &mut scopes,
         content,
     );
@@ -1568,7 +1562,7 @@ fn states_branches() {
         EventScope::of(S(4)),
     ]);
     let out = fixture.render(
-        "add_state_core=ROOT remove_state_core=PREV set_state_owner=FROM",
+        "fixture_region_core=ROOT fixture_end_region_core=PREV fixture_region_owner=FROM",
         &mut scopes,
         content,
     );
@@ -1578,24 +1572,23 @@ fn states_branches() {
 
 #[test]
 fn state_tables_refuse_gaps_and_name_a_late_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     for (table, rows, body) in [
         (
             TableId::States,
             TableRows::States(vec![]),
-            "add_state_core=999",
+            "fixture_region_core=999",
         ),
         (
             TableId::Provinces,
             TableRows::Provinces(vec![]),
-            "set_province_controller=999",
+            "fixture_province_control=999",
         ),
         (
             TableId::StateResistance,
             TableRows::StateResistance(vec![]),
-            "transfer_state_to=occupied",
+            "fixture_region_recipient=occupied",
         ),
     ] {
         let previous = fixture.frame.tables[table.index()].clone();
@@ -1658,7 +1651,7 @@ fn state_tables_refuse_gaps_and_name_a_late_country() {
         .into();
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
     let mut scopes = EventScopes::new(vec![EventScope::of(C(24))]);
-    let out = fixture.render("transfer_state_to=THIS", &mut scopes, Content::default());
+    let out = fixture.render("fixture_region_recipient=THIS", &mut scopes, Content::default());
     assert_eq!(out.text, "TransferTo Many\n", "{:?}", out.refusals);
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

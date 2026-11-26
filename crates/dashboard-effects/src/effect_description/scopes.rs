@@ -67,7 +67,7 @@ struct IteratorKind {
 
 fn iterator_kind(class: u64) -> Option<IteratorKind> {
     let (roster, random) = match class {
-        0x1427EA260 => (
+        effect_identity::LIST_COUNTRY => (
             Roster::Countries {
                 other: false,
                 enemy: false,
@@ -75,7 +75,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x1427EA150 => (
+        effect_identity::SELECT_COUNTRY => (
             Roster::Countries {
                 other: false,
                 enemy: false,
@@ -83,7 +83,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             true,
         ),
-        0x1427EA590 => (
+        effect_identity::LIST_OTHER_COUNTRY => (
             Roster::Countries {
                 other: true,
                 enemy: false,
@@ -99,7 +99,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             true,
         ),
-        0x1427EC1B8 => (
+        effect_identity::LIST_ENEMY_COUNTRY => (
             Roster::Countries {
                 other: false,
                 enemy: true,
@@ -123,66 +123,66 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x1427EB218 => (Roster::States, false),
-        0x1427EAF48 => (Roster::States, true),
+        effect_identity::ALL_STATES => (Roster::States, false),
+        effect_identity::PICK_STATE => (Roster::States, true),
         0x1428468b8 => (Roster::Faction { allied: false }, false),
-        0x1427FB360 => (Roster::Faction { allied: true }, false),
+        effect_identity::LIST_ALLIED_COUNTRY => (Roster::Faction { allied: true }, false),
         0x1427FB470 => (Roster::Faction { allied: true }, true),
-        0x1427EC0A8 => (Roster::Subjects, false),
-        0x1427EBF98 => (Roster::Subjects, true),
-        0x1427BEBE0 => (Roster::Characters, false),
+        effect_identity::LIST_SUBJECT_COUNTRY => (Roster::Subjects, false),
+        effect_identity::SELECT_SUBJECT_COUNTRY => (Roster::Subjects, true),
+        effect_identity::LIST_CHARACTER => (Roster::Characters, false),
         0x1427BEAF0 => (Roster::Characters, true),
-        0x1427bef60 => (Roster::PartyLeaders, true),
+        effect_identity::PARTY_LEADER => (Roster::PartyLeaders, true),
         0x14283D0C0 => (Roster::Scientists { active: false }, false),
-        0x14283CFD0 => (Roster::Scientists { active: false }, true),
-        0x14283D290 => (Roster::Scientists { active: true }, true),
-        0x14283D1A8 => (Roster::Scientists { active: true }, false),
-        0x1427CBD90 => (Roster::Neighbors, false),
-        0x1427EB128 => (Roster::Neighbors, true),
-        0x1427EC618 => (Roster::OriginalTags, false),
+        effect_identity::SELECT_SCIENTIST => (Roster::Scientists { active: false }, true),
+        effect_identity::SELECT_ACTIVE_SCIENTIST => (Roster::Scientists { active: true }, true),
+        effect_identity::LIST_ACTIVE_SCIENTIST => (Roster::Scientists { active: true }, false),
+        effect_identity::LIST_NEIGHBOR_STATE => (Roster::Neighbors, false),
+        effect_identity::SELECT_NEIGHBOR_STATE => (Roster::Neighbors, true),
+        effect_identity::LIST_COUNTRY_WITH_ORIGINAL_TAG => (Roster::OriginalTags, false),
         0x1427EC4E8 => (Roster::OriginalTags, true),
-        0x1427EB8A8 | 0x1427EB3F8 | 0x1427EB7B8 => (
+        effect_identity::LIST_OWNED_STATE | effect_identity::PICK_OWNED_STATE | effect_identity::SELECT_OWNED_CONTROLLED_STATE => (
             Roster::CountryStates {
                 owned: true,
-                controlled: class == 0x1427EB7B8,
+                controlled: class == effect_identity::SELECT_OWNED_CONTROLLED_STATE,
                 core: false,
             },
-            class != 0x1427EB8A8,
+            class != effect_identity::LIST_OWNED_STATE,
         ),
-        0x1427CBCA0 | 0x1427EB5D8 => (
+        effect_identity::LIST_CONTROLLED_STATE | effect_identity::PICK_CONTROLLED_STATE => (
             Roster::CountryStates {
                 owned: false,
                 controlled: true,
                 core: false,
             },
-            class == 0x1427EB5D8,
+            class == effect_identity::PICK_CONTROLLED_STATE,
         ),
-        0x1427EB998 | 0x1427EBB78 => (
+        effect_identity::LIST_CORE_STATE | effect_identity::PICK_CORE_STATE => (
             Roster::CountryStates {
                 owned: false,
                 controlled: false,
                 core: true,
             },
-            class == 0x1427EBB78,
+            class == effect_identity::PICK_CORE_STATE,
         ),
-        0x1427EBD78 | 0x1427EBC68 => (Roster::CountryNeighbors, class == 0x1427EBC68),
+        effect_identity::LIST_NEIGHBOR_COUNTRY | 0x1427EBC68 => (Roster::CountryNeighbors, class == 0x1427EBC68),
         0x1427EC3D8 | 0x1427EC2C8 => (Roster::OccupiedCountries, class == 0x1427EC2C8),
-        0x1427E7A80 | 0x1427E77B8 | 0x1427E7998 | 0x1427E78A8 | 0x1427E76D0 | 0x1427E75E0
-        | 0x1427E7D40 | 0x1427E7C58 | 0x1427E7B68 => (
+        effect_identity::LIST_ARMY_LEADER | effect_identity::SELECT_ARMY_LEADER | effect_identity::LIST_NAVY_LEADER | effect_identity::SELECT_NAVY_LEADER | effect_identity::LIST_UNIT_LEADER | effect_identity::SELECT_UNIT_LEADER
+        | effect_identity::LIST_GLOBAL_ARMY | effect_identity::LIST_OPERATIVE | effect_identity::SELECT_OPERATIVE => (
             Roster::Leaders {
                 army: matches!(
                     class,
-                    0x1427E7A80 | 0x1427E77B8 | 0x1427E76D0 | 0x1427E75E0 | 0x1427E7D40
+                    effect_identity::LIST_ARMY_LEADER | effect_identity::SELECT_ARMY_LEADER | effect_identity::LIST_UNIT_LEADER | effect_identity::SELECT_UNIT_LEADER | effect_identity::LIST_GLOBAL_ARMY
                 ),
-                navy: matches!(class, 0x1427E7998 | 0x1427E78A8 | 0x1427E76D0 | 0x1427E75E0),
-                operative: matches!(class, 0x1427E7C58 | 0x1427E7B68),
-                global: class == 0x1427E7D40,
+                navy: matches!(class, effect_identity::LIST_NAVY_LEADER | effect_identity::SELECT_NAVY_LEADER | effect_identity::LIST_UNIT_LEADER | effect_identity::SELECT_UNIT_LEADER),
+                operative: matches!(class, effect_identity::LIST_OPERATIVE | effect_identity::SELECT_OPERATIVE),
+                global: class == effect_identity::LIST_GLOBAL_ARMY,
             },
-            matches!(class, 0x1427E77B8 | 0x1427E78A8 | 0x1427E75E0 | 0x1427E7B68),
+            matches!(class, effect_identity::SELECT_ARMY_LEADER | effect_identity::SELECT_NAVY_LEADER | effect_identity::SELECT_UNIT_LEADER | effect_identity::SELECT_OPERATIVE),
         ),
         0x14282ACE0 | 0x14282ABF0 => (Roster::CountryDivisions, class == 0x14282ABF0),
-        0x14282B0C0 | 0x14282AFD0 => (Roster::StateDivisions, class == 0x14282AFD0),
-        0x1427c34f8 | 0x1427c3408 => (Roster::IndustrialOrganisations, class == 0x1427c3408),
+        effect_identity::LIST_STATE_DIVISION | 0x14282AFD0 => (Roster::StateDivisions, class == 0x14282AFD0),
+        effect_identity::LIST_ORGANISATION | effect_identity::SELECT_ORGANISATION => (Roster::IndustrialOrganisations, class == effect_identity::SELECT_ORGANISATION),
         _ => return None,
     };
     Some(IteratorKind { roster, random })
@@ -483,13 +483,13 @@ impl Renderer<'_, '_, '_> {
         let class = self.effect_class(item)?;
         let result = if let Some(kind) = iterator_kind(class.vtable) {
             self.iterator(item, scopes, indent, kind)
-        } else if class.vtable == 0x14284A2E0 {
+        } else if class.vtable == effect_identity::COLLECTION_MEMBERS {
             self.collection_elements(item, scopes, indent)
-        } else if class.vtable == 0x1427f3b40 {
+        } else if class.vtable == effect_identity::ARRAY_MEMBER {
             self.array_scope(item, scopes, indent)
-        } else if class.vtable == 0x1427BEDB8 {
+        } else if class.vtable == effect_identity::CHARACTER_ROSTER {
             self.character_list(item, scopes, indent)
-        } else if class.vtable == 0x1427E4AF8 {
+        } else if class.vtable == effect_identity::GOVERNMENT_DETAIL {
             self.set_politics(item, scopes)
         } else {
             return None;
@@ -505,7 +505,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn iterator_multiple(&self, item: &Item) -> bool {
         self.effect_class(item).is_some_and(|class| {
-            iterator_kind(class.vtable).is_some() || class.vtable == 0x1427BEDB8
+            iterator_kind(class.vtable).is_some() || class.vtable == effect_identity::CHARACTER_ROSTER
         })
     }
 

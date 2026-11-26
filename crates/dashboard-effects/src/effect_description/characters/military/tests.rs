@@ -4,6 +4,7 @@ use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture(category: i32) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -127,8 +128,7 @@ fn rendered(fixture: &Fixture, body: &str, expected: &str, character: bool) {
 
 #[test]
 fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
@@ -146,18 +146,17 @@ fn legacy_empty_name_uses_recorded_name_token_then_exact_stored_token() {
 
 #[test]
 fn create_operative_leader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "create_operative_leader={bypass_recruitment=yes}",
+        "fixture_new_agent={bypass_recruitment=yes}",
         "Operative  AAA",
         false,
     );
     rendered(
         &fixture,
-        "create_operative_leader={traits={} bypass_recruitment=yes name=synthetic_operative}",
+        "fixture_new_agent={traits={} bypass_recruitment=yes name=synthetic_operative}",
         "Operative Authored agent AAA",
         false,
     );
@@ -165,12 +164,11 @@ fn create_operative_leader() {
 
 #[test]
 fn show_unit_leaders_tooltip() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         "Corps Leader name [Root.GetTag]\n",
         false,
     );
@@ -186,7 +184,7 @@ fn show_unit_leaders_tooltip() {
         ]));
     rendered(
         &fixture,
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         "Corps Leader name [Root.GetTag]\n",
         false,
     );
@@ -197,7 +195,7 @@ fn show_unit_leaders_tooltip() {
     }
     rendered(
         &fixture,
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         "",
         false,
     );
@@ -205,14 +203,13 @@ fn show_unit_leaders_tooltip() {
 
 #[test]
 fn promote_and_demote_leader_category_gates() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     for (category, body, expected) in [
-        (1, "promote_leader=yes", "Promote [Root.GetTag]\n"),
-        (1, "demote_leader=yes", ""),
-        (0, "demote_leader=yes", "Demote [Root.GetTag]\n"),
-        (0, "promote_leader=yes", ""),
+        (1, "fixture_raise_rank=yes", "Promote [Root.GetTag]\n"),
+        (1, "fixture_lower_rank=yes", ""),
+        (0, "fixture_lower_rank=yes", "Demote [Root.GetTag]\n"),
+        (0, "fixture_raise_rank=yes", ""),
     ] {
         let TableView::Complete(TableRows::UnitLeaders(rows)) =
             &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
@@ -232,44 +229,41 @@ fn promote_and_demote_leader_category_gates() {
 
 #[test]
 fn remove_unit_leader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "remove_unit_leader=7",
+        "fixture_retire_commander=7",
         "Remove corps Leader name [Root.GetTag]",
         false,
     );
     rendered(
         &fixture,
-        "remove_unit_leader=yes",
+        "fixture_retire_commander=yes",
         "Remove corps Leader name [Root.GetTag]",
         true,
     );
-    rendered(&fixture, "remove_unit_leader=201", "", false);
+    rendered(&fixture, "fixture_retire_commander=201", "", false);
 }
 
 #[test]
 fn remove_operative_refuses_codename_by_class_and_field() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(3);
     let out = fixture.render(
-        "remove_unit_leader=yes",
+        "fixture_retire_commander=yes",
         &mut character_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect remove_unit_leader: key remove_unit_leader: operative codename not recorded".to_owned(), 1
+        "synthetic effect fixture_retire_commander: key fixture_retire_commander: operative codename not recorded".to_owned(), 1
     )]));
 }
 
 #[test]
 fn remove_operative_uses_format98_codename() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(3);
     if let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *fixture.frame.tables[TableId::UnitLeaders.index()]
@@ -282,7 +276,7 @@ fn remove_operative_uses_format98_codename() {
         }));
     }
     let out = fixture.render(
-        "remove_unit_leader=yes",
+        "fixture_retire_commander=yes",
         &mut character_scopes(),
         Content::default(),
     );
@@ -295,8 +289,7 @@ fn remove_operative_uses_format98_codename() {
 
 #[test]
 fn show_unit_leaders_uses_format98_referenced_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(3);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -312,7 +305,7 @@ fn show_unit_leaders_uses_format98_referenced_name() {
             },
         ]));
     let out = fixture.render(
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Country(1))]),
         Content::default(),
     );
@@ -324,28 +317,27 @@ fn show_unit_leaders_uses_format98_referenced_name() {
         rows[0].name = Recorded::NotRecorded;
     }
     let out = fixture.render(
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Country(1))]),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect show_unit_leaders_tooltip: key show_unit_leaders_tooltip: character 7 referenced unit leader name not recorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_list_commanders: key fixture_list_commanders: character 7 referenced unit leader name not recorded".into(), 1)]));
 }
 
 #[test]
 fn remove_unit_leader_role() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     rendered(
         &fixture,
-        "remove_unit_leader_role=yes",
+        "fixture_remove_commander_role=yes",
         "Remove role Character name/Ground commander AAA",
         true,
     );
     rendered(
         &fixture,
-        "remove_unit_leader_role={character=synthetic_character}",
+        "fixture_remove_commander_role={character=synthetic_character}",
         "Remove role Character name/Ground commander AAA",
         false,
     );
@@ -353,18 +345,17 @@ fn remove_unit_leader_role() {
 
 #[test]
 fn remove_military_role_respects_its_scope_dependent_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(0);
     rendered(
         &fixture,
-        "remove_unit_leader_role=synthetic_character",
+        "fixture_remove_commander_role=synthetic_character",
         "Remove role Character name/Strategic commander AAA",
         false,
     );
     rendered(
         &fixture,
-        "remove_unit_leader_role={character=synthetic_other}",
+        "fixture_remove_commander_role={character=synthetic_other}",
         "Remove role Character name/Strategic commander AAA",
         true,
     );
@@ -372,12 +363,11 @@ fn remove_military_role_respects_its_scope_dependent_reader() {
 
 #[test]
 fn remove_operative_role_uses_skill_specific_title_then_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(3);
     rendered(
         &fixture,
-        "remove_unit_leader_role=yes",
+        "fixture_remove_commander_role=yes",
         "Remove role Character name/Expert Agent AAA",
         true,
     );
@@ -388,7 +378,7 @@ fn remove_operative_role_uses_skill_specific_title_then_fallback() {
     }
     rendered(
         &fixture,
-        "remove_unit_leader_role=yes",
+        "fixture_remove_commander_role=yes",
         "Remove role Character name/Agent AAA",
         true,
     );
@@ -396,8 +386,7 @@ fn remove_operative_role_uses_skill_specific_title_then_fallback() {
 
 #[test]
 fn add_divisional_commander_xp() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     let reference = 44 | 2 << 32;
     *fixture.frame.tables[TableId::Divisions.index()] =
@@ -406,7 +395,7 @@ fn add_divisional_commander_xp() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "add_divisional_commander_xp=137.5",
+        "fixture_division_experience=137.5",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(reference))]),
         Content::default(),
     );
@@ -414,7 +403,7 @@ fn add_divisional_commander_xp() {
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
     for object in [EventObject::Unit(0), EventObject::Country(1)] {
         let out = fixture.render(
-            "add_divisional_commander_xp=137.5",
+            "fixture_division_experience=137.5",
             &mut EventScopes::new(vec![EventScope::of(object)]),
             Content::default(),
         );
@@ -425,11 +414,10 @@ fn add_divisional_commander_xp() {
 
 #[test]
 fn add_unit_medal_is_empty_without_army() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     let out = fixture.render(
-        "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
+        "fixture_award_medal={unit_medals=synthetic_medal}",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Unit(0))]),
         Content::default(),
     );
@@ -439,8 +427,7 @@ fn add_unit_medal_is_empty_without_army() {
 
 #[test]
 fn army_name_consumers_share_names_and_field_level_compatibility() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     let unit = 44 | 2 << 32;
     let raid = 9 | 3 << 32;
@@ -475,20 +462,20 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
             }]));
         for (source, effect_key, scope, expected) in [
             (
-                "add_history_entry={key=synthetic_history subject=\"Training record\" allow=yes}",
-                "add_history_entry",
+                "fixture_division_history={key=synthetic_history subject=\"Training record\" allow=yes}",
+                "fixture_division_history",
                 EventObject::Unit(unit),
                 "History Recorded army [Root.GetTag]",
             ),
             (
-                "add_unit_medal_to_latest_entry={unit_medals=synthetic_medal}",
-                "add_unit_medal_to_latest_entry",
+                "fixture_award_medal={unit_medals=synthetic_medal}",
+                "fixture_award_medal",
                 EventObject::Unit(unit),
                 "Medal Recorded army [Root.GetTag]",
             ),
             (
-                "add_raid_history_entry=yes",
-                "add_raid_history_entry",
+                "fixture_raid_history=yes",
+                "fixture_raid_history",
                 EventObject::Raid(raid),
                 "Raid history Recorded army [Root.GetTag]\n",
             ),
@@ -529,8 +516,7 @@ fn army_name_consumers_share_names_and_field_level_compatibility() {
 
 #[test]
 fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     let reference = 9 | 3 << 32;
     *fixture.frame.tables[TableId::Raids.index()] =
@@ -540,7 +526,7 @@ fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "add_raid_history_entry=yes",
+        "fixture_raid_history=yes",
         &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
         Content::default(),
     );
@@ -550,8 +536,7 @@ fn raid_history_without_assigned_army_or_wing_keeps_empty_name_line() {
 
 #[test]
 fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     use engine_native_air::raid_tooltip_operands::{
         ARMY_RESOLVED,
         NAME,
@@ -598,7 +583,7 @@ fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal()
                 })
                 .collect(),
         ));
-    let body = "add_raid_history_entry=yes";
+    let body = "fixture_raid_history=yes";
     let out = fixture.render(
         body,
         &mut EventScopes::new(vec![EventScope::of(EventObject::Raid(reference))]),
@@ -662,24 +647,23 @@ fn raid_history_wing_falls_back_from_stale_army_and_preserves_language_refusal()
     );
     assert!(out.text.is_empty());
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect add_raid_history_entry: key add_raid_history_entry: raid wing name is text the game stored in english without its key, and the viewer's language is french".into(), 1
+        "synthetic effect fixture_raid_history: key fixture_raid_history: raid wing name is text the game stored in english without its key, and the viewer's language is french".into(), 1
     )]));
 }
 
 #[test]
 fn add_random_valid_trait_from_unit() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture(1);
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Character(7))]);
     rendered(
         &fixture,
-        "add_random_valid_trait_from_unit={character=THIS}",
+        "fixture_choose_unit_award={character=THIS}",
         "Random trait for Character name",
         true,
     );
     let out = fixture.render(
-        "add_random_valid_trait_from_unit={character=ROOT}",
+        "fixture_choose_unit_award={character=ROOT}",
         &mut scopes,
         Content::default(),
     );
@@ -689,31 +673,30 @@ fn add_random_valid_trait_from_unit() {
 
 #[test]
 fn absent_characters_and_missing_roles_keep_empty_descriptions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture(1);
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
     for body in [
-        "promote_leader=yes",
-        "demote_leader=yes",
-        "remove_unit_leader=yes",
-        "remove_unit_leader_role=yes",
+        "fixture_raise_rank=yes",
+        "fixture_lower_rank=yes",
+        "fixture_retire_commander=yes",
+        "fixture_remove_commander_role=yes",
     ] {
         rendered(&fixture, body, "", true);
     }
     rendered(
         &fixture,
-        "show_unit_leaders_tooltip=synthetic_character",
+        "fixture_list_commanders=synthetic_character",
         "",
         false,
     );
     *fixture.frame.tables[TableId::Characters.index()] =
         TableView::Complete(TableRows::Characters(vec![]));
-    rendered(&fixture, "add_corps_commander_role={}", "", true);
+    rendered(&fixture, "fixture_assign_commander={}", "", true);
     rendered(
         &fixture,
-        "add_random_valid_trait_from_unit={character=THIS}",
+        "fixture_choose_unit_award={character=THIS}",
         "",
         true,
     );

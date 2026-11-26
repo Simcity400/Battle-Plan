@@ -658,14 +658,14 @@ impl Renderer<'_, '_, '_> {
 #[cfg(test)]
 mod politics_days {
     use super::*;
+    use crate::fixtures::game;
     use crate::{fixtures::folder_catalogue, effect_description::tests::Fixture};
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows};
     use replay_frame::frame::TableView;
 
     #[test]
     fn remove_days_uses_caller_title_scope_and_negates_each_branch_without_instance_reads() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         let mut fixture = Fixture::new();
         let (catalogue, _folder) = folder_catalogue(&[
             (
@@ -750,7 +750,7 @@ mod politics_days {
             ),
         ] {
             let output = fixture.render(
-                &format!("add_days_remove = {{ days = {days} decision = SYN_DECISION }}"),
+                &format!("fixture_removal_clock = {{ days = {days} decision = SYN_DECISION }}"),
                 &mut scopes,
                 Content {
                     decisions: Some(&database),
@@ -763,7 +763,7 @@ mod politics_days {
             assert_eq!(scopes.scopes.len(), 3);
         }
         let absent = fixture.render(
-            "add_days_remove = { days = -43 decision = ABSENT }",
+            "fixture_removal_clock = { days = -43 decision = ABSENT }",
             &mut scopes,
             Content {
                 decisions: Some(&database),

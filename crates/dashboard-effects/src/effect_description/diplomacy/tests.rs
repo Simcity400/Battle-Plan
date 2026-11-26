@@ -4,11 +4,11 @@ use crate::scripted_text::{EventObject, EventScope};
 use EventObject::{Country as C, State as S};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 #[test]
 fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -77,7 +77,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
                     .collect(),
             ));
         let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
-        let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+        let out = fixture.render("fixture_invite_country=BBB", &mut graph, Content::default());
         assert_eq!(
             out.text, "Leave Beta/\nLeave Gamma/\nJoin Beta/\nJoin Gamma/\n",
             "{template_token:?}: {:?}",
@@ -89,8 +89,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
 
 #[test]
 fn same_faction_nonleader_preview_reads_only_subject_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
@@ -112,7 +111,7 @@ fn same_faction_nonleader_preview_reads_only_subject_operands() {
     };
     rows[1].subjects = Recorded::NotRecorded;
     let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
-    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    let out = fixture.render("fixture_invite_country=BBB", &mut graph, Content::default());
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 
@@ -122,15 +121,14 @@ fn same_faction_nonleader_preview_reads_only_subject_operands() {
         unreachable!()
     };
     rows[1].overlord = 300;
-    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    let out = fixture.render("fixture_invite_country=BBB", &mut graph, Content::default());
     assert_eq!(out.text, "Free Beta/gamma\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -148,7 +146,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
         canonical_slot: 3,
     });
     let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
-    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    let out = fixture.render("fixture_invite_country=BBB", &mut graph, Content::default());
     assert_eq!(
         out.text,
         "Join Beta\nJoin Gamma\nJoin Alpha\nJoin Gamma\nJoin Gamma\n"
@@ -192,7 +190,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
         unreachable!()
     };
     rows[1].subjects = Recorded::NotRecorded;
-    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    let out = fixture.render("fixture_invite_country=BBB", &mut graph, Content::default());
     assert!(out.text.is_empty());
     assert_eq!(
         out.refusals.values().sum::<usize>(),
@@ -209,8 +207,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
 
 #[test]
 fn create_wargoal_refuses_without_complete_inventory_tables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -246,13 +243,13 @@ fn create_wargoal_refuses_without_complete_inventory_tables() {
     }
     for (body, refused) in [
         (
-            "create_wargoal={target=BBB type=SynGoal generator={1}}",
+            "fixture_war_objective={target=BBB type=SynGoal generator={1}}",
             true,
         ),
-        ("create_wargoal={target=BBB type=SynGoal}", true),
-        ("create_wargoal={target=BBB type=unknown}", false),
-        ("create_wargoal={target=BBB type=\"SynGoal\"}", false),
-        ("create_wargoal={target=BBB}", false),
+        ("fixture_war_objective={target=BBB type=SynGoal}", true),
+        ("fixture_war_objective={target=BBB type=unknown}", false),
+        ("fixture_war_objective={target=BBB type=\"SynGoal\"}", false),
+        ("fixture_war_objective={target=BBB}", false),
     ] {
         let out = fixture.render_native(
             body,
@@ -277,8 +274,7 @@ fn create_wargoal_refuses_without_complete_inventory_tables() {
 
 #[test]
 fn purchase_contract_uses_seller_roster_and_quantity_pool() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -481,7 +477,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
             EventScope::of(C(2)),
             EventScope::of(C(3)),
         ]);
-        let body = format!("create_purchase_contract={{seller=ROOT buyer=THIS {fields}}}");
+        let body = format!("fixture_purchase_order={{seller=ROOT buyer=THIS {fields}}}");
         let out = fixture.render(
             &body,
             &mut scopes,
@@ -522,7 +518,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
         ]));
     let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
     let out = fixture.render(
-        "create_purchase_contract={seller=faction_leader buyer=ROOT civilian_factories=3 equipment={type=syn_a amount=2000} equipment={type=syn_b amount=200}}",
+        "fixture_purchase_order={seller=faction_leader buyer=ROOT civilian_factories=3 equipment={type=syn_a amount=2000} equipment={type=syn_b amount=200}}",
         &mut scopes,
         Content {
             equipment: Some(&equipment),
@@ -541,7 +537,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
     };
     let mut scopes = EventScopes::new(vec![EventScope::of(C(1))]);
     let out = fixture.render(
-        "create_purchase_contract={seller=BBB buyer=AAA equipment={type=syn_one amount=1}}",
+        "fixture_purchase_order={seller=BBB buyer=AAA equipment={type=syn_one amount=1}}",
         &mut scopes,
         Content {
             equipment: Some(&equipment),
@@ -559,8 +555,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
 
 #[test]
 fn civil_war_heading_and_selected_party_follow_separate_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -640,49 +635,49 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
         }]));
     for (body, country, expected, refusal) in [
         (
-            "start_civil_war={ideology=syn_new size=0.5}",
+            "fixture_civil_conflict={ideology=syn_new size=0.5}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=syn_new ruling_party=0}",
+            "fixture_civil_conflict={ideology=syn_new ruling_party=0}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=syn_new ruling_party=syn_new}",
+            "fixture_civil_conflict={ideology=syn_new ruling_party=syn_new}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Generated [Root.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=syn_new ruling_party=var:20}",
+            "fixture_civil_conflict={ideology=syn_new ruling_party=var:20}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=var:syn_group ruling_party=syn_old}",
+            "fixture_civil_conflict={ideology=var:syn_group ruling_party=syn_old}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=syn_old ideology=syn_new ruling_party=syn_new}",
+            "fixture_civil_conflict={ideology=syn_old ideology=syn_new ruling_party=syn_new}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Generated [Root.GetTag]\nNo elections\n",
             None,
         ),
         (
-            "start_civil_war={ideology=syn_new ruling_party=syn_old size=0.9 keep_unit_leaders=yes}",
+            "fixture_civil_conflict={ideology=syn_new ruling_party=syn_old size=0.9 keep_unit_leaders=yes}",
             3,
             "",
             Some("party selected by ideology"),
         ),
         (
-            "start_civil_war={ideology=unresolved}",
+            "fixture_civil_conflict={ideology=unresolved}",
             1,
             "",
             Some("null-object identity"),
@@ -717,8 +712,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
 
 #[test]
 fn faction_influence_environment_keeps_links() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let count = 24;
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
@@ -773,22 +767,22 @@ fn faction_influence_environment_keeps_links() {
         }]));
     for (body, country, expected) in [
         (
-            "add_faction_influence_ratio=var:syn_amount",
+            "fixture_influence_ratio=var:syn_amount",
             count,
             "Last/Union/-12% Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
         ),
         (
-            "add_faction_influence_score=-1.25",
+            "fixture_influence_score=-1.25",
             count,
             "Last/Union/-1.25 Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
         ),
         (
-            "add_faction_influence_score=THIS",
+            "fixture_influence_score=THIS",
             count,
             "Last/Union/0.00 Union/ZZZ ZZZ/AAB/AAA  ZZZ/ZZZ/ZZZ/ZZZ",
         ),
         (
-            "add_faction_influence_ratio=0",
+            "fixture_influence_ratio=0",
             1,
             "Alpha/0% NULL AAA/AAB/AAA",
         ),
@@ -815,7 +809,7 @@ fn faction_influence_environment_keeps_links() {
     };
     let mut scopes = EventScopes::new(vec![EventScope::of(C(count))]);
     let out = fixture.render(
-        "add_faction_influence_score=1",
+        "fixture_influence_score=1",
         &mut scopes,
         Content::default(),
     );
@@ -830,8 +824,7 @@ fn faction_influence_environment_keeps_links() {
 
 #[test]
 fn diplomacy_output_branches() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -1016,1027 +1009,1027 @@ fn diplomacy_output_branches() {
         }]));
     for (body, object, mask, expected, refusal) in [
         (
-            "add_autonomy_score={value=9}",
+            "fixture_autonomy_points={value=9}",
             EventObject::Country(1),
             0,
             "",
             None,
         ),
         (
-            "add_autonomy_score={value=9}",
+            "fixture_autonomy_points={value=9}",
             EventObject::Country(1),
             1,
             "",
             None,
         ),
         (
-            "add_autonomy_score={value=-2 localization=unused}",
+            "fixture_autonomy_points={value=-2 localization=unused}",
             EventObject::Country(1),
             2,
             "score -2/1\n",
             None,
         ),
         (
-            "add_autonomy_score={value=3}",
+            "fixture_autonomy_points={value=3}",
             EventObject::Country(1),
             4,
             "score 3/1\n",
             None,
         ),
         (
-            "add_autonomy_score={}",
+            "fixture_autonomy_points={}",
             EventObject::Country(1),
             8,
             "score 0/1\n",
             None,
         ),
         (
-            "add_autonomy_score={value=4}",
+            "fixture_autonomy_points={value=4}",
             EventObject::Country(0),
             2,
             "detailed 4\n",
             None,
         ),
         (
-            "add_autonomy_score={value=4}",
+            "fixture_autonomy_points={value=4}",
             EventObject::State(1),
             2,
             "detailed 4\n",
             None,
         ),
         (
-            "add_autonomy_score={value=4}",
+            "fixture_autonomy_points={value=4}",
             EventObject::Character(11),
             2,
             "detailed 4\n",
             None,
         ),
         (
-            "add_autonomy_score={value=4}",
+            "fixture_autonomy_points={value=4}",
             leader,
             2,
             "detailed 4\n",
             None,
         ),
         (
-            "add_autonomy_score={value=var:ratio}",
+            "fixture_autonomy_points={value=var:ratio}",
             EventObject::Country(1),
             2,
             "score 0/1\n",
             None,
         ),
         (
-            "add_autonomy_score={value=3 value=var:ratio}",
+            "fixture_autonomy_points={value=3 value=var:ratio}",
             C(1),
             2,
             "score 3/1\n",
             None,
         ),
         (
-            "add_autonomy_score={value=var:ratio value=-2}",
+            "fixture_autonomy_points={value=var:ratio value=-2}",
             C(1),
             2,
             "score -2/1\n",
             None,
         ),
         (
-            "add_autonomy_ratio={value=var:missing}",
+            "fixture_autonomy_ratio={value=var:missing}",
             EventObject::Country(1),
             0,
             "",
             None,
         ),
         (
-            "add_autonomy_ratio={value=var:ratio}",
+            "fixture_autonomy_ratio={value=var:ratio}",
             EventObject::Country(1),
             2,
             "score 4/1\n",
             None,
         ),
         (
-            "add_autonomy_ratio={value=-0.5}",
+            "fixture_autonomy_ratio={value=-0.5}",
             EventObject::Country(1),
             2,
             "score -4/1\n",
             None,
         ),
         (
-            "add_autonomy_ratio={}",
+            "fixture_autonomy_ratio={}",
             EventObject::Country(1),
             2,
             "score 0/1\n",
             None,
         ),
         (
-            "add_autonomy_ratio={value=0.5}",
+            "fixture_autonomy_ratio={value=0.5}",
             EventObject::Country(2),
             2,
             "score 0/1\n",
             None,
         ),
         (
-            "add_autonomy_ratio={value=var:missing}",
+            "fixture_autonomy_ratio={value=var:missing}",
             EventObject::Country(3),
             2,
             "",
             None,
         ),
         (
-            "add_autonomy_ratio={value=var:missing}",
+            "fixture_autonomy_ratio={value=var:missing}",
             EventObject::State(1),
             2,
             "",
             None,
         ),
         (
-            "add_autonomy_ratio={value=var:missing}",
+            "fixture_autonomy_ratio={value=var:missing}",
             EventObject::Character(11),
             2,
             "",
             None,
         ),
         (
-            "become_exiled_in={target=BBB legitimacy=var:missing}",
+            "fixture_exile_host={target=BBB legitimacy=var:missing}",
             EventObject::Country(1),
             2,
             "host beta AAA\n",
             None,
         ),
         (
-            "become_exiled_in={target=event_target:absent}",
+            "fixture_exile_host={target=event_target:absent}",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "end_exile=BBB",
+            "fixture_end_exile_status=BBB",
             EventObject::Country(1),
             2,
             "return Beta",
             None,
         ),
         (
-            "end_exile=CCC",
+            "fixture_end_exile_status=CCC",
             EventObject::Country(1),
             2,
             "return éclair",
             None,
         ),
         (
-            "end_exile=event_target:absent",
+            "fixture_end_exile_status=event_target:absent",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "end_puppet=BBB",
+            "fixture_end_subject_status=BBB",
             EventObject::Country(1),
             2,
             "free Alpha/Beta\n",
             None,
         ),
         (
-            "end_puppet=event_target:absent",
+            "fixture_end_subject_status=event_target:absent",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "puppet=BBB",
-            EventObject::Country(1),
-            2,
-            "subject Alpha/Beta\n",
-            None,
-        ),
-        (
-            "puppet={target=BBB end_wars=no end_civil_wars=yes}",
+            "fixture_make_subject=BBB",
             EventObject::Country(1),
             2,
             "subject Alpha/Beta\n",
             None,
         ),
         (
-            "puppet={target=event_target:absent}",
+            "fixture_make_subject={target=BBB end_wars=no end_civil_wars=yes}",
+            EventObject::Country(1),
+            2,
+            "subject Alpha/Beta\n",
+            None,
+        ),
+        (
+            "fixture_make_subject={target=event_target:absent}",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "release_autonomy={target=BBB}",
+            "fixture_subject_release={target=BBB}",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "release_autonomy={target=event_target:absent autonomy_state=synthetic}",
+            "fixture_subject_release={target=event_target:absent autonomy_state=synthetic}",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=synthetic freedom_level=var:missing}",
+            "fixture_subject_release={target=BBB autonomy_state=synthetic freedom_level=var:missing}",
             EventObject::Country(1),
             2,
             "Autonomy Beta/Level AAA\n",
             None,
         ),
         (
-            "set_autonomy={target=BBB autonomy_state=synthetic freedom_level=var:missing}",
+            "fixture_subject_level={target=BBB autonomy_state=synthetic freedom_level=var:missing}",
             EventObject::Country(1),
             2,
             "Set Alpha/Beta/Level AAA\n",
             None,
         ),
         (
-            "set_autonomy={target=event_target:absent autonomy_state=synthetic}",
+            "fixture_subject_level={target=event_target:absent autonomy_state=synthetic}",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "release_autonomy={target=BBB autonomous_state=synthetic_other}",
+            "fixture_subject_release={target=BBB autonomous_state=synthetic_other}",
             C(1),
             2,
             "Autonomy Beta/Other\n",
             None,
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=synthetic_other autonomous_state=synthetic}",
+            "fixture_subject_release={target=BBB autonomy_state=synthetic_other autonomous_state=synthetic}",
             C(1),
             2,
             "Autonomy Beta/Level AAA\n",
             None,
         ),
         (
-            "release_autonomy={target=BBB autonomous_state=synthetic autonomy_state=synthetic_other}",
+            "fixture_subject_release={target=BBB autonomous_state=synthetic autonomy_state=synthetic_other}",
             C(1),
             2,
             "Autonomy Beta/Other\n",
             None,
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=synthetic autonomy_state=missing}",
+            "fixture_subject_release={target=BBB autonomy_state=synthetic autonomy_state=missing}",
             C(1),
             2,
             "",
             Some("not defined"),
         ),
         (
-            "release_autonomy={target=event_target:absent autonomy_state=missing}",
+            "fixture_subject_release={target=event_target:absent autonomy_state=missing}",
             C(1),
             2,
             "",
             Some("not defined"),
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=Synthetic}",
+            "fixture_subject_release={target=BBB autonomy_state=Synthetic}",
             C(1),
             2,
             "",
             Some("not defined"),
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=\"\"}",
+            "fixture_subject_release={target=BBB autonomy_state=\"\"}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "set_autonomy={target=BBB autonomous_state=synthetic_other autonomy_state=synthetic}",
+            "fixture_subject_level={target=BBB autonomous_state=synthetic_other autonomy_state=synthetic}",
             C(1),
             2,
             "Set Alpha/Beta/Level AAA\n",
             None,
         ),
         (
-            "set_autonomy={target=BBB autonomy_state=synthetic autonomous_state=synthetic_other}",
+            "fixture_subject_level={target=BBB autonomy_state=synthetic autonomous_state=synthetic_other}",
             C(1),
             2,
             "Set Alpha/Beta/Other\n",
             None,
         ),
         (
-            "set_autonomy={target=BBB autonomy_state=missing}",
+            "fixture_subject_level={target=BBB autonomy_state=missing}",
             C(1),
             2,
             "",
             Some("not defined"),
         ),
         (
-            "set_autonomy={target=event_target:absent autonomy_state=missing}",
+            "fixture_subject_level={target=event_target:absent autonomy_state=missing}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "set_autonomy={target=BBB}",
+            "fixture_subject_level={target=BBB}",
             C(1),
             2,
             "Set Alpha/Beta/\n",
             None,
         ),
         (
-            "set_autonomy={target=BBB autonomy_state=autonomy_free freedom_level=var:missing}",
+            "fixture_subject_level={target=BBB autonomy_state=autonomy_free freedom_level=var:missing}",
             C(1),
             2,
             "Free beta\n",
             None,
         ),
         (
-            "release_puppet=BBB",
+            "fixture_free_subject=BBB",
             EventObject::Country(1),
             2,
             "release Beta\n",
             None,
         ),
         (
-            "release_puppet=event_target:absent",
+            "fixture_free_subject=event_target:absent",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "release_puppet_on_controlled=BBB",
+            "fixture_free_controlled_subject=BBB",
             EventObject::Country(1),
             2,
             "release Beta\n",
             None,
         ),
         (
-            "release_puppet_on_controlled=event_target:absent",
+            "fixture_free_controlled_subject=event_target:absent",
             EventObject::Country(1),
             2,
             "",
             None,
         ),
         (
-            "remove_exile_tag=no",
+            "fixture_clear_exile_status=no",
             EventObject::Character(11),
             2,
             "exile [This.GetName]",
             None,
         ),
         (
-            "remove_exile_tag=yes",
+            "fixture_clear_exile_status=yes",
             leader,
             2,
             "exile [This.GetName]",
             None,
         ),
         (
-            "remove_exile_tag=yes",
+            "fixture_clear_exile_status=yes",
             EventObject::Character(12),
             2,
             "",
             None,
         ),
         (
-            "remove_exile_tag=yes",
+            "fixture_clear_exile_status=yes",
             EventObject::Character(13),
             2,
             "",
             None,
         ),
         (
-            "remove_exile_tag=yes",
+            "fixture_clear_exile_status=yes",
             EventObject::Character(15),
             2,
             "",
             None,
         ),
         (
-            "remove_exile_tag=yes",
+            "fixture_clear_exile_status=yes",
             EventObject::Character(14),
             2,
             "",
             Some("exile_country"),
         ),
         (
-            "create_faction=SYN_NAME",
+            "fixture_new_alliance=SYN_NAME",
             C(1),
             2,
             "Create Charter AAA\n",
             None,
         ),
         (
-            "create_faction=ROOT",
+            "fixture_new_alliance=ROOT",
             C(1),
             2,
             "Create Root literal\n",
             None,
         ),
-        ("create_faction=\"\"", C(1), 2, "", None),
-        ("create_faction=SYN_NAME", S(0), 2, "", None),
-        ("dismantle_faction=no", C(1), 2, "Dismantle Union\n", None),
-        ("dismantle_faction=yes", C(2), 2, "", None),
-        ("dismantle_faction=yes", C(3), 2, "", None),
-        ("leave_faction=ROOT", C(1), 2, "Remove alpha/Union\n", None),
-        ("leave_faction=yes", C(3), 2, "", None),
-        ("leave_faction=yes", S(1), 2, "", None),
+        ("fixture_new_alliance=\"\"", C(1), 2, "", None),
+        ("fixture_new_alliance=SYN_NAME", S(0), 2, "", None),
+        ("fixture_end_alliance=no", C(1), 2, "Dismantle Union\n", None),
+        ("fixture_end_alliance=yes", C(2), 2, "", None),
+        ("fixture_end_alliance=yes", C(3), 2, "", None),
+        ("fixture_exit_alliance=ROOT", C(1), 2, "Remove alpha/Union\n", None),
+        ("fixture_exit_alliance=yes", C(3), 2, "", None),
+        ("fixture_exit_alliance=yes", S(1), 2, "", None),
         (
-            "remove_from_faction=CCC",
+            "fixture_expel_member=CCC",
             C(1),
             2,
             "Remove Gamma/Union\n",
             None,
         ),
-        ("remove_from_faction=AAA", C(3), 2, "Remove Alpha\n", None),
+        ("fixture_expel_member=AAA", C(3), 2, "Remove Alpha\n", None),
         (
-            "remove_from_faction=AAA",
+            "fixture_expel_member=AAA",
             S(1),
             2,
             "",
             Some("current scope has no country"),
         ),
-        ("remove_from_faction=CCC", C(2), 2, "", None),
-        ("remove_from_faction=0", C(1), 2, "", None),
+        ("fixture_expel_member=CCC", C(2), 2, "", None),
+        ("fixture_expel_member=0", C(1), 2, "", None),
         (
-            "set_faction_name=SYN_NAME",
+            "fixture_alliance_title=SYN_NAME",
             C(1),
             2,
             "Rename Union/Charter AAA\n",
             None,
         ),
-        ("set_faction_name=ROOT", C(1), 2, "Rename Union/\n", None),
-        ("set_faction_name=SYN_NAME", C(3), 2, "", None),
-        ("set_faction_spymaster=no", C(2), 2, "Spy Union\n", None),
-        ("set_faction_spymaster=yes", C(3), 2, "", None),
+        ("fixture_alliance_title=ROOT", C(1), 2, "Rename Union/\n", None),
+        ("fixture_alliance_title=SYN_NAME", C(3), 2, "", None),
+        ("fixture_intelligence_lead=no", C(2), 2, "Spy Union\n", None),
+        ("fixture_intelligence_lead=yes", C(3), 2, "", None),
         (
-            "add_faction_goal_slot={category=short_term value=1.5}",
+            "fixture_goal_slot={category=short_term value=1.5}",
             C(1),
             2,
             "Slots Union/Short/2\n",
             None,
         ),
         (
-            "add_faction_goal_slot={category=medium_term value=syn_slots}",
+            "fixture_goal_slot={category=medium_term value=syn_slots}",
             C(1),
             2,
             "Slots Union/Medium/-2\n",
             None,
         ),
         (
-            "add_faction_goal_slot={category=long_term value=-1.49999}",
+            "fixture_goal_slot={category=long_term value=-1.49999}",
             C(1),
             2,
             "Slots Union/Long/-1\n",
             None,
         ),
         (
-            "add_faction_goal_slot={category=long_term value=2}",
+            "fixture_goal_slot={category=long_term value=2}",
             C(3),
             2,
             "SlotsOutside Long/2\n",
             None,
         ),
         (
-            "add_faction_goal_slot={category=short_term category=\"short_term\" value=3 value=4}",
+            "fixture_goal_slot={category=short_term category=\"short_term\" value=3 value=4}",
             C(1),
             2,
             "Slots Union//4\n",
             None,
         ),
         (
-            "add_faction_goal_slot={}",
+            "fixture_goal_slot={}",
             S(0),
             2,
             "SlotsOutside /0\n",
             None,
         ),
         (
-            "add_faction_goal_slot={category=short_term value=2 give_guarantee=BBB}",
+            "fixture_goal_slot={category=short_term value=2 fixture_guarantee_country=BBB}",
             C(1),
             2,
             "Slots Union/Short/2\nGuarantee Beta\n",
             None,
         ),
         (
-            "add_faction_initiative=syn_initiative",
+            "fixture_alliance_initiative=syn_initiative",
             C(1),
             2,
             "Initiative Union/1.25",
             None,
         ),
         (
-            "add_faction_initiative=-2.5",
+            "fixture_alliance_initiative=-2.5",
             C(3),
             2,
             "InitiativeOutside -2.50",
             None,
         ),
         (
-            "add_faction_initiative=ROOT",
+            "fixture_alliance_initiative=ROOT",
             C(1),
             2,
             "Initiative Union/0.00",
             None,
         ),
         (
-            "set_faction_military_unlocked=yes",
+            "fixture_alliance_access=yes",
             S(0),
             2,
             "Unlock Military",
             None,
         ),
         (
-            "set_faction_military_unlocked=no",
+            "fixture_alliance_access=no",
             C(1),
             2,
             "Lock Military",
             None,
         ),
         (
-            "set_faction_military_unlocked=YES",
+            "fixture_alliance_access=YES",
             C(1),
             2,
             "Lock Military",
             None,
         ),
         (
-            "set_faction_military_unlocked=\"yes\"",
+            "fixture_alliance_access=\"yes\"",
             C(1),
             2,
             "Unlock Military",
             None,
         ),
         (
-            "add_faction_initiative=2 set_faction_military_unlocked=yes",
+            "fixture_alliance_initiative=2 fixture_alliance_access=yes",
             C(1),
             2,
             "Initiative Union/2.00\nUnlock Military",
             None,
         ),
-        ("add_civil_war_target=BBB", C(1), 2, "Civil Beta\n", None),
+        ("fixture_civil_target=BBB", C(1), 2, "Civil Beta\n", None),
         (
-            "remove_civil_war_target=CCC",
+            "fixture_end_civil_target=CCC",
             C(1),
             2,
             "Uncivil Gamma\n",
             None,
         ),
-        ("give_guarantee=BBB", C(1), 2, "Guarantee Beta\n", None),
-        ("give_military_access=BBB", C(1), 2, "Access Beta\n", None),
-        ("give_market_access=BBB", C(1), 2, "Market beta\n", None),
+        ("fixture_guarantee_country=BBB", C(1), 2, "Guarantee Beta\n", None),
+        ("fixture_military_access=BBB", C(1), 2, "Access Beta\n", None),
+        ("fixture_market_access=BBB", C(1), 2, "Market beta\n", None),
         (
-            "remove_wargoal={target=BBB type=all}",
+            "fixture_revoke_objective={target=BBB type=all}",
             C(1),
             2,
             "Goal Alpha/Beta\n",
             None,
         ),
         (
-            "remove_wargoal={target=event_target:absent type=all}",
+            "fixture_revoke_objective={target=event_target:absent type=all}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "remove_wargoal={target=ROOT target=BBB}",
+            "fixture_revoke_objective={target=ROOT target=BBB}",
             C(1),
             2,
             "",
             Some("auxiliary reader replay is unavailable"),
         ),
         (
-            "add_to_war={enemy=BBB targeted_alliance=CCC}",
+            "fixture_join_war={enemy=BBB targeted_alliance=CCC}",
             C(1),
             2,
             "War Beta/Gamma\n",
             None,
         ),
         (
-            "add_to_war={enemy=ROOT.FROM targeted_alliance=PREV.ROOT}",
+            "fixture_join_war={enemy=ROOT.FROM targeted_alliance=PREV.ROOT}",
             C(1),
             2,
             "War Alpha/Alpha\n",
             None,
         ),
         (
-            "add_to_war={enemy=\"root.from\" targeted_alliance=PREV}",
+            "fixture_join_war={enemy=\"root.from\" targeted_alliance=PREV}",
             S(1),
             2,
             "War Alpha/Alpha\n",
             None,
         ),
         (
-            "add_to_war={enemy=ROOT enemy=FROM targeted_alliance=CCC}",
+            "fixture_join_war={enemy=ROOT enemy=FROM targeted_alliance=CCC}",
             C(1),
             2,
             "",
             Some("auxiliary reader replay is unavailable"),
         ),
         (
-            "add_to_war={enemy=ROOT.owner targeted_alliance=CCC}",
+            "fixture_join_war={enemy=ROOT.owner targeted_alliance=CCC}",
             C(1),
             2,
             "",
             Some("invalid scope-link component"),
         ),
         (
-            "add_to_war={enemy=var:ratio targeted_alliance=CCC}",
+            "fixture_join_war={enemy=var:ratio targeted_alliance=CCC}",
             C(1),
             2,
             "",
             Some("country specifier"),
         ),
-        ("set_war_support=0.25", C(1), 2, "Support 0\n", None),
+        ("fixture_war_support=0.25", C(1), 2, "Support 0\n", None),
         (
-            "set_border_war=yes",
+            "fixture_border_status=yes",
             S(1),
             2,
             "Border One [This.GetName]\n",
             None,
         ),
-        ("set_border_war=ROOT", S(1), 2, "End One\n", None),
-        ("set_border_war=yes", C(1), 2, "", None),
+        ("fixture_border_status=ROOT", S(1), 2, "End One\n", None),
+        ("fixture_border_status=yes", C(1), 2, "", None),
         (
-            "cancel_border_war={attacker=1 defender=2}",
+            "fixture_cancel_border={attacker=1 defender=2}",
             C(1),
             2,
             "Cancel One(\u{12}AAA)/Two(\u{12}AAA)\n",
             None,
         ),
         (
-            "cancel_border_war={attacker=0 defender=2}",
+            "fixture_cancel_border={attacker=0 defender=2}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "finalize_border_war={attacker=1 defender=2}",
+            "fixture_settle_border={attacker=1 defender=2}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "finalize_border_war={attacker=1 defender=2 attacker_win=yes defender_win=yes}",
+            "fixture_settle_border={attacker=1 defender=2 attacker_win=yes defender_win=yes}",
             C(1),
             2,
             "Final One(\u{12}AAA)/Two(\u{12}AAA)\n",
             None,
         ),
         (
-            "finalize_border_war={attacker=1 defender=2 defender_win=yes}",
+            "fixture_settle_border={attacker=1 defender=2 defender_win=yes}",
             C(1),
             2,
             "Final Two(\u{12}AAA)/One(\u{12}AAA)\n",
             None,
         ),
         (
-            "finalize_border_war={attacker=0 defender=2 attacker_win=yes}",
+            "fixture_settle_border={attacker=0 defender=2 attacker_win=yes}",
             C(1),
             2,
             "",
             Some("invalid state 0"),
         ),
         (
-            "set_border_war_data={attacker=1 defender=2 combat_width=2.5 change_state_after_war=yes max_attackers=3 attacker_modifier=-0.25 max_defenders=4 max_units=var:missing modifier=var:missing}",
+            "fixture_border_facts={attacker=1 defender=2 combat_width=2.5 change_state_after_war=yes max_attackers=3 attacker_modifier=-0.25 max_defenders=4 max_units=var:missing modifier=var:missing}",
             C(1),
             2,
             "Update One/Two\nWidth 2.50\nChange yes AAA\n\t\u{11}HOne\u{11}!:\nUnits 3\nModifier -0.25\n\t\u{11}HTwo\u{11}!:\nUnits 4\n",
             None,
         ),
         (
-            "set_border_war_data={attacker=0 defender=2 combat_width=var:missing}",
+            "fixture_border_facts={attacker=0 defender=2 combat_width=var:missing}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=military_access active=no}",
+            "fixture_bilateral_relation={country=BBB relation=military_access active=no}",
             C(1),
             2,
             "Cancel Access/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=guarantee give_guarantee=CCC}",
+            "fixture_bilateral_relation={country=BBB relation=guarantee fixture_guarantee_country=CCC}",
             C(1),
             2,
             "Enact Guarantee/beta\nGuarantee Gamma\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=guarantee give_guarantee=CCC}",
+            "fixture_bilateral_relation={country=BBB relation=guarantee fixture_guarantee_country=CCC}",
             S(1),
             2,
             "Guarantee Gamma\n",
             None,
         ),
         (
-            "diplomatic_relation={country=\"BBB\" relation=guarantee relation=military_access active=no}",
+            "fixture_bilateral_relation={country=\"BBB\" relation=guarantee relation=military_access active=no}",
             C(1),
             2,
             "Cancel Access/beta\n",
             None,
         ),
         (
-            "add_to_war={enemy=\"BBB\" targeted_alliance=CCC}",
+            "fixture_join_war={enemy=\"BBB\" targeted_alliance=CCC}",
             C(1),
             2,
             "War Beta/Gamma\n",
             None,
         ),
         (
-            "diplomatic_relation={country=event_target:absent relation=guarantee}",
+            "fixture_bilateral_relation={country=event_target:absent relation=guarantee}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=guarantee}",
+            "fixture_bilateral_relation={country=BBB relation=guarantee}",
             S(1),
             2,
             "",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=\"guarantee\"}",
+            "fixture_bilateral_relation={country=BBB relation=\"guarantee\"}",
             C(1),
             2,
             "BROKEN DIPLOMATIC RELATION EFFECT",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=synthetic_unknown}",
+            "fixture_bilateral_relation={country=BBB relation=synthetic_unknown}",
             C(1),
             2,
             "BROKEN DIPLOMATIC RELATION EFFECT",
             None,
         ),
         (
-            "diplomatic_relation={country=ROOT country=BBB relation=guarantee}",
+            "fixture_bilateral_relation={country=ROOT country=BBB relation=guarantee}",
             C(1),
             2,
             "",
             Some("auxiliary reader replay is unavailable"),
         ),
         (
-            "diplomatic_relation={country=BBB relation=boost_party_popularity}",
+            "fixture_bilateral_relation={country=BBB relation=boost_party_popularity}",
             C(1),
             2,
             "",
             Some("null ideology-group identifier"),
         ),
         (
-            "create_wargoal={target=BBB type=synthetic}",
+            "fixture_war_objective={target=BBB type=synthetic}",
             C(1),
             2,
             "",
             None,
         ),
         (
-            "start_civil_war={ideology=synthetic size=0.5}",
+            "fixture_civil_conflict={ideology=synthetic size=0.5}",
             C(1),
             2,
             "",
             Some("effect key names"),
         ),
         (
-            "create_purchase_contract={seller=AAA buyer=BBB civilian_factories=2}",
+            "fixture_purchase_order={seller=AAA buyer=BBB civilian_factories=2}",
             C(1),
             2,
             "Purchase \u{12}AAA Alpha/\u{12}BBB Beta/2/\n",
             None,
         ),
         (
-            "set_country_flag=synthetic_empty give_guarantee=BBB",
+            "fixture_empty_scalar=synthetic_empty fixture_guarantee_country=BBB",
             C(1),
             2,
             "Guarantee Beta\n",
             None,
         ),
         (
-            "end_exile=BBB give_guarantee=CCC",
+            "fixture_end_exile_status=BBB fixture_guarantee_country=CCC",
             C(1),
             2,
             "return Beta\nGuarantee Gamma\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=naval_blockade}",
+            "fixture_bilateral_relation={country=BBB relation=naval_blockade}",
             C(1),
             2,
             "Enact Blockade/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=air_base_access}",
+            "fixture_bilateral_relation={country=BBB relation=air_base_access}",
             C(1),
             2,
             "Enact Air/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=offer_air_base_access}",
+            "fixture_bilateral_relation={country=BBB relation=offer_air_base_access}",
             C(1),
             2,
             "Enact Air/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=guarantee}",
+            "fixture_bilateral_relation={country=BBB relation=guarantee}",
             C(1),
             2,
             "Enact Guarantee/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=military_access}",
+            "fixture_bilateral_relation={country=BBB relation=military_access}",
             C(1),
             2,
             "Enact Access/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=offer_military_access}",
+            "fixture_bilateral_relation={country=BBB relation=offer_military_access}",
             C(1),
             2,
             "Enact Access/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=improve_relation}",
+            "fixture_bilateral_relation={country=BBB relation=improve_relation}",
             C(1),
             2,
             "Enact Improve/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=non_aggression_pact}",
+            "fixture_bilateral_relation={country=BBB relation=non_aggression_pact}",
             C(1),
             2,
             "Enact Pact/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=embargo}",
+            "fixture_bilateral_relation={country=BBB relation=embargo}",
             C(1),
             2,
             "Enact Embargo/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=market_access_rights}",
+            "fixture_bilateral_relation={country=BBB relation=market_access_rights}",
             C(1),
             2,
             "Enact Market/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=war_relation}",
+            "fixture_bilateral_relation={country=BBB relation=war_relation}",
             C(1),
             2,
             "Enact Atwar/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=send_attache}",
+            "fixture_bilateral_relation={country=BBB relation=send_attache}",
             C(1),
             2,
             "Enact Attache/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=docking_rights}",
+            "fixture_bilateral_relation={country=BBB relation=docking_rights}",
             C(1),
             2,
             "Enact Docking/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=offer_docking_rights}",
+            "fixture_bilateral_relation={country=BBB relation=offer_docking_rights}",
             C(1),
             2,
             "Enact Docking/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=licence_production_access}",
+            "fixture_bilateral_relation={country=BBB relation=licence_production_access}",
             C(1),
             2,
             "Enact Licence/beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=puppet}",
+            "fixture_bilateral_relation={country=BBB relation=puppet}",
             C(1),
             2,
             "Enact /beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=lend_lease}",
+            "fixture_bilateral_relation={country=BBB relation=lend_lease}",
             C(1),
             2,
             "Enact /beta\n",
             None,
         ),
         (
-            "diplomatic_relation={country=BBB relation=equipment_purchase_contract_relation}",
+            "fixture_bilateral_relation={country=BBB relation=equipment_purchase_contract_relation}",
             C(1),
             2,
             "Enact /beta\n",
             None,
         ),
         (
-            "add_faction_goal=SYN_GOAL",
+            "fixture_alliance_goal=SYN_GOAL",
             C(1),
             2,
             "",
             Some("faction goal content"),
         ),
-        ("add_faction_goal=SYN_GOAL", C(3), 2, "", None),
+        ("fixture_alliance_goal=SYN_GOAL", C(3), 2, "", None),
         (
-            "remove_faction_goal=SYN_GOAL",
+            "fixture_end_alliance_goal=SYN_GOAL",
             C(1),
             2,
             "",
             Some("faction goal content"),
         ),
-        ("remove_faction_goal=SYN_GOAL", C(3), 2, "", None),
+        ("fixture_end_alliance_goal=SYN_GOAL", C(3), 2, "", None),
         (
-            "set_faction_manifest=SYN_GOAL",
+            "fixture_alliance_manifest=SYN_GOAL",
             C(1),
             2,
             "",
             Some("faction goal content"),
         ),
-        ("set_faction_manifest=SYN_GOAL", C(3), 2, "", None),
+        ("fixture_alliance_manifest=SYN_GOAL", C(3), 2, "", None),
         (
-            "create_faction_from_template=SYN_TEMPLATE",
+            "fixture_alliance_template=SYN_TEMPLATE",
             C(1),
             2,
             "",
             Some("faction template content"),
         ),
         (
-            "create_faction_from_template=SYN_TEMPLATE",
+            "fixture_alliance_template=SYN_TEMPLATE",
             C(3),
             2,
             "",
             Some("faction template content"),
         ),
         (
-            "set_faction_member_upgrade_min={upgrade=SYN_UPGRADE}",
+            "fixture_minimum_member_upgrade={upgrade=SYN_UPGRADE}",
             C(1),
             2,
             "",
             Some("faction upgrade content"),
         ),
         (
-            "set_faction_member_upgrade_min={upgrade=SYN_UPGRADE}",
+            "fixture_minimum_member_upgrade={upgrade=SYN_UPGRADE}",
             C(3),
             2,
             "",
             None,
         ),
         (
-            "set_faction_rule=SYN_RULE",
+            "fixture_alliance_rule=SYN_RULE",
             C(1),
             2,
             "",
             Some("faction rule content"),
         ),
-        ("set_faction_rule=SYN_RULE", C(3), 2, "", None),
+        ("fixture_alliance_rule=SYN_RULE", C(3), 2, "", None),
         (
-            "add_faction_influence_ratio=0.1",
+            "fixture_influence_ratio=0.1",
             C(1),
             2,
             "Influence Alpha/Union/10%",
             None,
         ),
         (
-            "add_faction_influence_ratio=0.1",
+            "fixture_influence_ratio=0.1",
             C(3),
             2,
             "Outside Gamma/10%",
             None,
         ),
         (
-            "add_faction_influence_score=1",
+            "fixture_influence_score=1",
             C(1),
             2,
             "Influence Alpha/Union/1.00",
             None,
         ),
         (
-            "add_faction_influence_score=1",
+            "fixture_influence_score=1",
             C(3),
             2,
             "Outside Gamma/1.00",
@@ -2087,11 +2080,11 @@ fn diplomacy_output_branches() {
         });
     for (body, expected) in [
         (
-            "set_autonomy={target=BBB autonomy_state=autonomy_free}",
+            "fixture_subject_level={target=BBB autonomy_state=autonomy_free}",
             "Set Alpha/Beta/Defined free\n",
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=autonomy_free}",
+            "fixture_subject_release={target=BBB autonomy_state=autonomy_free}",
             "Autonomy Beta/Defined free\n",
         ),
     ] {
@@ -2108,17 +2101,17 @@ fn diplomacy_output_branches() {
         assert!(out.refusals.is_empty(), "{body}: {:?}", out.refusals);
     }
     for (body, refused) in [
-        ("release_autonomy={target=BBB}", false),
+        ("fixture_subject_release={target=BBB}", false),
         (
-            "set_autonomy={target=event_target:absent autonomy_state=synthetic}",
+            "fixture_subject_level={target=event_target:absent autonomy_state=synthetic}",
             false,
         ),
         (
-            "release_autonomy={target=BBB autonomy_state=synthetic}",
+            "fixture_subject_release={target=BBB autonomy_state=synthetic}",
             true,
         ),
         (
-            "set_autonomy={target=BBB autonomy_state=autonomy_free}",
+            "fixture_subject_level={target=BBB autonomy_state=autonomy_free}",
             true,
         ),
     ] {
@@ -2134,11 +2127,11 @@ fn diplomacy_output_branches() {
     }
     for (body, expected) in [
         (
-            "add_to_war={enemy=ROOT.FROM targeted_alliance=FROM.ROOT}",
+            "fixture_join_war={enemy=ROOT.FROM targeted_alliance=FROM.ROOT}",
             "War Alpha/Beta\n",
         ),
         (
-            "add_to_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
+            "fixture_join_war={enemy=ROOT.ROOT targeted_alliance=BBB}",
             "War Beta/Beta\n",
         ),
     ] {
@@ -2192,7 +2185,7 @@ fn diplomacy_output_branches() {
             TableView::Complete(TableRows::LexicalTokens(vec![]))
         };
         let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
-        let out = fixture.render("set_faction_spymaster=yes", &mut graph, Content::default());
+        let out = fixture.render("fixture_intelligence_lead=yes", &mut graph, Content::default());
         assert_eq!(out.text, expected, "{:?}", out.refusals);
         assert_eq!(
             out.refusals.values().sum::<usize>(),
@@ -2210,8 +2203,7 @@ fn diplomacy_output_branches() {
 
 #[test]
 fn diplomacy_ordered_subjects() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = Fixture::new();
     let countries = synthetic_countries(24);
     let mut localisation = "\u{feff}l_english:\n EFFECT_ADD_TO_FACTION:0 \"Join $COUNTRY$\"\n EFFECT_GIVE_GUARANTEE:0 \"Guarantee $COUNTRY$\"\n"
@@ -2256,7 +2248,7 @@ fn diplomacy_ordered_subjects() {
     rows[1].subjects = subjects.into();
     let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
     let out = fixture.render(
-        &format!("add_to_faction={target} give_guarantee={last}"),
+        &format!("fixture_invite_country={target} fixture_guarantee_country={last}"),
         &mut graph,
         Content::default(),
     );
@@ -2271,7 +2263,7 @@ fn diplomacy_ordered_subjects() {
 
 #[test]
 fn create_wargoal_hover_reads_complete_unused_goal_membership() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    game::enter();
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::fixtures::folder_catalogue(&[
         (
@@ -2303,7 +2295,7 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
         TableView::Complete(TableRows::WargoalTargets(vec![]));
     let render = |fixture: &Fixture| {
         fixture.render_native(
-            "create_wargoal={target=BBB type=SynGoal}",
+            "fixture_war_objective={target=BBB type=SynGoal}",
             &mut EventScopes::new(vec![EventScope::of(C(1))]),
             content,
         )
@@ -2369,7 +2361,7 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
                 vec![]
             }));
         let out = fixture.render_native(
-            "create_wargoal={target=BBB type=SynGoal}",
+            "fixture_war_objective={target=BBB type=SynGoal}",
             &mut EventScopes::new(vec![EventScope::of(C(1))]),
             duplicate_content,
         );
@@ -2407,14 +2399,14 @@ fn create_wargoal_hover_reads_complete_unused_goal_membership() {
             },
         ]));
     let partial = fixture.render_native(
-        "create_wargoal={target=BBB type=SynGoal generator={1 2}}",
+        "fixture_war_objective={target=BBB type=SynGoal generator={1 2}}",
         &mut EventScopes::new(vec![EventScope::of(C(1))]),
         duplicate_content,
     );
     assert!(partial.refusals.is_empty(), "{:?}", partial.refusals);
     assert!(partial.text.contains("Custom goal"));
     let covered = fixture.render_native(
-        "create_wargoal={target=BBB type=SynGoal generator={1}}",
+        "fixture_war_objective={target=BBB type=SynGoal generator={1}}",
         &mut EventScopes::new(vec![EventScope::of(C(1))]),
         content,
     );

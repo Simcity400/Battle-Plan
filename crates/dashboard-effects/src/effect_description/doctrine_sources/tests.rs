@@ -1,6 +1,7 @@
 use super::*;
 use content_reader_military::doctrines::{Database, Name, RewardSource};
 use content_reader_script::localization_binding::BoundLocalization;
+use dashboard_text::catalogue::tests::script_game;
 
 fn bound(body: &str) -> BoundLocalization {
     BoundLocalization::from_value(
@@ -127,8 +128,7 @@ fn run(
 
 #[test]
 fn occurrences_order_nested_names_and_all_reward_mastery_are_preserved() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let (sources, refused) = run(&database(), 1);
     assert!(refused.is_empty(), "{refused:?}");
     let track = "Track Inner V [ROOT.GetName]";
@@ -152,8 +152,7 @@ fn occurrences_order_nested_names_and_all_reward_mastery_are_preserved() {
 
 #[test]
 fn local_refusals_preserve_known_sources_and_never_claim_unknown_empty() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut database = database();
     database.tactic_sources.sub_unread = Some("synthetic sub tail is unsettled".into());
     let (sources, refused) = run(&database, 1);
@@ -183,8 +182,7 @@ fn local_refusals_preserve_known_sources_and_never_claim_unknown_empty() {
 
 #[test]
 fn bound_name_failure_and_default_define_shortage_are_feature_local() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut database = database();
     let bad = Token::c_str(b"bad");
     database
@@ -211,8 +209,7 @@ fn bound_name_failure_and_default_define_shortage_are_feature_local() {
 
 #[test]
 fn unknown_available_gate_keeps_independent_sources_and_is_not_false() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    script_game::enter();
     let mut database = database();
     database
         .tactic_sources

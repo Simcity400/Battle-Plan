@@ -1729,12 +1729,11 @@ pub(super) fn pinned_source(image: &PeImage, keywords: &KeywordTables) -> io::Re
 
 fn write_class_rows(text: &mut String, classes: impl IntoIterator<Item = (u64, u64)>) {
     for (class, address) in classes {
-        let identity = match address {
-            super::effect_identity::CONTEXT => "super::super::effect_identity::CONTEXT".to_owned(),
-            super::effect_identity::SCRIPTED => "super::super::effect_identity::SCRIPTED".to_owned(),
-            _ => format!("{address:#x}"),
-        };
-        writeln!(text, "    ({class:#018x}, {identity}),").unwrap();
+        if let Some(name) = super::effect_identity::name(address) {
+            writeln!(text, "    ({class:#018x}, super::super::effect_identity::{name}),").unwrap();
+        } else {
+            writeln!(text, "    ({class:#018x}, {address:#x}),").unwrap();
+        }
     }
 }
 

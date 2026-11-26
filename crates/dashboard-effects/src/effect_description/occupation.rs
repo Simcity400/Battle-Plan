@@ -121,6 +121,7 @@ fn filter_registered(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_text::catalogue::tests::game;
     use crate::effect_description::tests::{Fixture, fresh};
 
     fn render(definition: &Definition) -> Description {
@@ -151,7 +152,7 @@ mod tests {
 
     #[test]
     fn occupation_badge_active_description_omits_detail_and_enable_effects() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        game::enter();
         let items = |body: &[u8]| content_reader_parser::parser::parse(body).unwrap().items;
         let definition = Definition {
             token: "mod_badge".into(),
@@ -176,7 +177,7 @@ mod tests {
 
     #[test]
     fn occupation_badge_failed_effect_keeps_independent_modifier_and_tail() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        game::enter();
         let definition = Definition {
             token: "mod_badge".into(),
             tooltip: "MOD_TAIL".into(),

@@ -3,6 +3,7 @@ use crate::effect_description::tests::{Fixture, fresh};
 use content_reader_politics::power_balance::{Database, Definition, Range};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> Fixture {
     let mut fixture = Fixture::new();
@@ -98,8 +99,7 @@ fn render(fixture: &Fixture, database: &Database, body: &str) -> Description {
 
 #[test]
 fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let database = database();
     let static_modifiers = content_reader_politics::static_modifiers::Descriptions::from_blocks([(
@@ -107,8 +107,8 @@ fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
         Modifiers::default(),
     )]);
     for (key, verb) in [
-        ("add_power_balance_modifier", "Add"),
-        ("remove_power_balance_modifier", "Remove"),
+        ("fixture_balance_bonus", "Add"),
+        ("fixture_revoke_balance_bonus", "Remove"),
     ] {
         let out = fixture.render(
             &format!("{key}={{id=SYN_BALANCE modifier=SYN_MOD}}"),
@@ -126,23 +126,22 @@ fn static_balance_modifiers_use_the_shared_raw_formatter_without_lf() {
 
 #[test]
 fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let database = database();
     assert_eq!(
-        render(&fixture, &database, "remove_power_balance={id=SYN_OTHER}").text,
+        render(&fixture, &database, "fixture_end_balance={id=SYN_OTHER}").text,
         ""
     );
     assert_eq!(
-        render(&fixture, &database, "remove_power_balance={id=syn_balance}").text,
+        render(&fixture, &database, "fixture_end_balance={id=syn_balance}").text,
         "Remove Balance\n"
     );
     assert_eq!(
         render(
             &fixture,
             &database,
-            "set_power_balance={id=SYN_OTHER set_default=yes}"
+            "fixture_begin_balance={id=SYN_OTHER set_default=yes}"
         )
         .text,
         "Remove Balance\nAdd Other:Left/Right/0.25/Left\n"
@@ -151,7 +150,7 @@ fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
         render(
             &fixture,
             &database,
-            "set_power_balance={id=SYN_BALANCE left_side=SYN_RIGHT set_value=0.5}"
+            "fixture_begin_balance={id=SYN_BALANCE left_side=SYN_RIGHT set_value=0.5}"
         )
         .text,
         "Remove Left/Balance\nAdd Right/Balance\nSet Balance/0.50/Right\n"
@@ -160,15 +159,14 @@ fn set_and_remove_compare_the_first_country_membership_and_keep_order() {
 
 #[test]
 fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let database = database();
     assert_eq!(
         render(
             &fixture,
             &database,
-            "add_power_balance_value={id=SYN_BALANCE value=0.4}"
+            "fixture_shift_balance={id=SYN_BALANCE value=0.4}"
         )
         .text,
         "Balance:\u{13}BoP_right_texticon 0.40/Right->0.20/Right\n\nBalance:\u{13}BoP_right_texticon High\n"
@@ -177,7 +175,7 @@ fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines()
         render(
             &fixture,
             &database,
-            "add_power_balance_value={id=SYN_BALANCE value=0.2 tooltip_side=SYN_LEFT}"
+            "fixture_shift_balance={id=SYN_BALANCE value=0.2 tooltip_side=SYN_LEFT}"
         )
         .text,
         "Balance:\u{13}BoP_right_texticon 0.20/Left->0.00/Right"
@@ -186,7 +184,7 @@ fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines()
         render(
             &fixture,
             &database,
-            "add_power_balance_value={id=SYN_BALANCE value=2}"
+            "fixture_shift_balance={id=SYN_BALANCE value=2}"
         )
         .text,
         "Balance:\u{13}BoP_right_texticon 2.00/Right->1.00/Right"
@@ -195,8 +193,7 @@ fn predicted_value_clamps_and_range_changes_use_strict_bounds_and_two_newlines()
 
 #[test]
 fn duplicate_runtime_range_identity_is_a_named_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = fixture();
     let definition = database().definition(b"SYN_BALANCE").unwrap().clone();
     let database = Database::from_parsed([(
@@ -217,7 +214,7 @@ fn duplicate_runtime_range_identity_is_a_named_refusal() {
         ],
     )]);
     let out = fixture.render(
-        "add_power_balance_value={id=SYN_BALANCE value=0}",
+        "fixture_shift_balance={id=SYN_BALANCE value=0}",
         &mut fresh(),
         Content {
             power_balances: Some(&database),
@@ -233,8 +230,7 @@ fn duplicate_runtime_range_identity_is_a_named_refusal() {
 
 #[test]
 fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     *fixture.frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
@@ -279,7 +275,7 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
         render(
             &fixture,
             &database,
-            "add_power_balance_value={id=SYN_BALANCE value=0.4}"
+            "fixture_shift_balance={id=SYN_BALANCE value=0.4}"
         )
         .text,
         "Balance:\u{13}BoP_right_texticon 0.40/Right->0.20/Right\n\nBalance:\u{13}BoP_right_texticon High\n Attack: \u{11}G+1.00\u{11}!\n"
@@ -288,8 +284,7 @@ fn moving_range_formats_the_numeric_difference_with_a_forced_plus() {
 
 #[test]
 fn changing_an_unnamed_recorded_side_refuses_its_lost_null_identity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut fixture = fixture();
     let TableView::Complete(TableRows::PowerBalances(rows)) =
         &mut *fixture.frame.tables[TableId::PowerBalances.index()]
@@ -301,7 +296,7 @@ fn changing_an_unnamed_recorded_side_refuses_its_lost_null_identity() {
     definition.sides.push(Vec::new());
     let database = Database::from_parsed([(definition, Vec::new())]);
     let out = fixture.render(
-        "set_power_balance={id=SYN_BALANCE left_side=SYN_RIGHT}",
+        "fixture_begin_balance={id=SYN_BALANCE left_side=SYN_RIGHT}",
         &mut fresh(),
         Content {
             power_balances: Some(&database),

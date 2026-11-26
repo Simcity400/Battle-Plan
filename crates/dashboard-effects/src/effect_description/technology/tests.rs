@@ -5,6 +5,7 @@ use crate::scripted_text::{EventObject, EventScope, EventScopes, Link};
 use crate::triggers::ContentFacts;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture() -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -87,7 +88,7 @@ fn fixture() -> (Fixture, Folder) {
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n mod_tactic:0 \"Tactic\"\n AAA_mod_tactic:0 \"Alpha tactic\"\n mod_lab:0 \"Lab\"\n",
                 " ZERO_mod_module:0 \"Zero module\"\n mod_second_module:0 \"Second module\"\n ZERO_mod_second_module:0 \"Zero second\"\n mod_denied_module:0 \"Denied module\"\n",
                 " mod_store:0 \"Store\"\n mod_other_tactic:0 \"Other tactic\"\n AAA_mod_other_tactic:0 \"Alpha other tactic\"\n",
-                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n BUILDING_LEVEL:0 \"Level $LEVEL|0$\"\n",
+                " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_SYNTHETIC_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n BUILDING_LEVEL:0 \"Level $LEVEL|0$\"\n",
                 " RESEARCH_UNLOCKS_EQUIPMENT_HEADER:0 \"Equipment:$EQUIPMENTS$\"\n RESEARCH_UNLOCKS_EQUIPMENT_MODULES_HEADER:0 \"Modules:$MODULES$\"\n RESEARCH_UNLOCKS_BUILDINGS_HEADER:0 \"Buildings:$BUILDINGS$\"\n RESEARCH_UNLOCKS_SUBUNITS_HEADER:0 \"Subunits:$SUBUNITS$\"\n RESEARCH_UNLOCKS_TACTICS_HEADER:0 \"Tactics:$TACTICS$\"\n",
                 " TECH_COMPLETE:0 \"Complete [Root.GetTag]/[Prev.GetTag]\"\n TECH_MODIFIER:0 \"Modifier [Root.GetTag]\"\n",
                 " mod_project:0 \"Project [Root.GetTag]\"\n AAA_mod_project:0 \"Alpha project [Root.GetTag]\"\n mod_constant_project:0 \"Project [Root.GetTag]\"\n",
@@ -229,8 +230,7 @@ fn fixture() -> (Fixture, Folder) {
 
 #[test]
 fn technology_description_cases() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -240,139 +240,139 @@ fn technology_description_cases() {
         .unwrap();
     for (case, body, expected) in [
         (
-            "add_tech_bonus",
-            "add_tech_bonus={category=mod_category uses=3 bonus=0.42 name=mod_name}",
+            "fixture_research_discount",
+            "fixture_research_discount={category=mod_category uses=3 bonus=0.42 name=mod_name}",
             "Bonus 0.42/3 uses:Alpha category [Root.GetTag]\n",
         ),
         (
-            "set_technology",
-            "set_technology={mod_tech=1 popup=no}",
+            "fixture_research_status",
+            "fixture_research_status={mod_tech=1 popup=no}",
             "Give Alpha parent\n",
         ),
         (
-            "add_research_slot",
-            "add_research_slot=4",
+            "fixture_extra_researchers",
+            "fixture_extra_researchers=4",
             "Add 4 [Root.GetTag]\n",
         ),
         (
-            "add_breakthrough_progress",
-            "add_breakthrough_progress={value=0.28 specialization=mod_science}",
+            "fixture_discovery_progress",
+            "fixture_discovery_progress={value=0.28 specialization=mod_science}",
             "Progress:\n  Alpha science [Root.GetTag]:0.28\n",
         ),
         (
-            "add_mastery_bonus",
-            "add_mastery_bonus={track=mod_track bonus=0.32 name=mod_bonus days=41}",
+            "fixture_mastery_boost",
+            "fixture_mastery_boost={track=mod_track bonus=0.32 name=mod_bonus days=41}",
             "Mastery bonus 0.32/41 track Track",
         ),
         (
-            "inherit_technology",
-            "inherit_technology=BBB",
+            "fixture_shared_research",
+            "fixture_shared_research=BBB",
             "Inherit Beta",
         ),
         (
-            "add_mio_research_bonus",
-            "add_mio_research_bonus=0.14",
+            "fixture_organisation_research_gain",
+            "fixture_organisation_research_gain=0.14",
             "MIO add 0.14 AAA\n",
         ),
         (
-            "steal_random_tech_bonus",
-            "steal_random_tech_bonus={instant=yes target=FROM dynamic=yes name=mod_name folder=mod_folder folder=sample_extra_folder bonus=1.8 uses=4}",
+            "fixture_capture_research",
+            "fixture_capture_research={instant=yes target=FROM dynamic=yes name=mod_name folder=mod_folder folder=sample_extra_folder bonus=1.8 uses=4}",
             "Steal instantly AAA",
         ),
         (
-            "set_sub_doctrine",
-            "set_sub_doctrine=mod_sub",
+            "fixture_select_branch_doctrine",
+            "fixture_select_branch_doctrine=mod_sub",
             "Set sub Sub",
         ),
         (
-            "add_daily_mastery",
-            "add_daily_mastery={days=73 track=mod_track name=mod_name amount=0.65}",
+            "fixture_daily_mastery_gain",
+            "fixture_daily_mastery_gain={days=73 track=mod_track name=mod_name amount=0.65}",
             "Daily 0.65/73 track Track",
         ),
-        ("set_research_slots", "set_research_slots=6", "Slots 6"),
+        ("fixture_research_capacity", "fixture_research_capacity=6", "Slots 6"),
         (
-            "add_breakthrough_points",
-            "add_breakthrough_points={specialization=mod_science value=1}",
+            "fixture_discovery_points",
+            "fixture_discovery_points={specialization=mod_science value=1}",
             "Points:\n  Alpha science [Root.GetTag]:1\n",
         ),
         (
-            "set_grand_doctrine",
-            "set_grand_doctrine=mod_grand",
+            "fixture_select_overall_doctrine",
+            "fixture_select_overall_doctrine=mod_grand",
             "Set grand Grand",
         ),
         (
-            "add_faction_power_projection",
-            "add_faction_power_projection=100",
+            "fixture_alliance_reach",
+            "fixture_alliance_reach=100",
             "Projection 100 AAA",
         ),
         (
-            "set_mio_research_bonus",
-            "set_mio_research_bonus=var:mod_bonus",
+            "fixture_organisation_research_value",
+            "fixture_organisation_research_value=var:mod_bonus",
             "MIO set 0.25 AAA\n",
         ),
         (
-            "set_faction_research_unlocked",
-            "set_faction_research_unlocked=yes",
+            "fixture_alliance_research_enabled",
+            "fixture_alliance_research_enabled=yes",
             "Unlock Research AAA",
         ),
         (
             "faction_research_quoted_yes_uses_raw_token_text",
-            "set_faction_research_unlocked=\"yes\"",
+            "fixture_alliance_research_enabled=\"yes\"",
             "Unlock Research AAA",
         ),
         (
             "faction_research_uppercase_yes_stays_locked",
-            "set_faction_research_unlocked=YES",
+            "fixture_alliance_research_enabled=YES",
             "Lock Research AAA",
         ),
         (
-            "complete_special_project",
-            "complete_special_project=sp:mod_project",
+            "fixture_finish_project",
+            "fixture_finish_project=sp:mod_project",
             "Complete Alpha project AAA\n  Output\n",
         ),
         (
             "complete_project_hidden_output",
-            "complete_special_project={project=sp:mod_project show_modifiers=no}",
+            "fixture_finish_project={project=sp:mod_project show_modifiers=no}",
             "Complete Alpha project AAA\n",
         ),
         (
             "complete_project_null_selector_keeps_literal",
-            "complete_special_project=sp:missing",
+            "fixture_finish_project=sp:missing",
             "Complete sp:missing\n",
         ),
         (
             "research_slot_removal_zero",
-            "add_research_slot=0",
+            "fixture_extra_researchers=0",
             "Remove 0\n",
         ),
         (
             "technology_handle_uses_handle_not_database_index",
-            "set_technology={var:mod_handle=0}",
+            "fixture_research_status={var:mod_handle=0}",
             "Give Alpha parent\n",
         ),
         (
             "technology_handle_keeps_its_recorded_template",
-            "set_technology={var:mod_second_handle=0}",
+            "fixture_research_status={var:mod_second_handle=0}",
             "Give Other\n",
         ),
         (
             "technology_bonus_runtime_equipment_name",
-            "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
+            "fixture_research_discount={technology=mod_tech bonus=0.5 uses=2}",
             "Bonus 0.50/2 uses:Alpha equipment\n",
         ),
         (
             "technology_bonus_both_passes_integer_uses",
-            "add_tech_bonus={technology=mod_small category=mod_category category=MOD_CATEGORY ahead_reduction=1 bonus=0.5 uses=2}",
+            "fixture_research_discount={technology=mod_small category=mod_category category=MOD_CATEGORY ahead_reduction=1 bonus=0.5 uses=2}",
             "Both 1.00/0.50/2:Alpha parent plus Alpha category [Root.GetTag]\n",
         ),
         (
             "mastery_complex_filter_order",
-            "add_daily_mastery={amount=1 folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=2}",
+            "fixture_daily_mastery_gain={amount=1 folder=mod_folder grand_doctrine=mod_grand sub_doctrine=mod_sub track=mod_track track_index=2}",
             "Daily 1.00/0 conditions:\nFolder Folder\nGrand Grand\nSub Sub\nTrack Track\nIndex 2",
         ),
         (
             "breakthrough_all_keeps_token_slot_order",
-            "add_breakthrough_points={specialization=all specialization=mod_science value=1}",
+            "fixture_discovery_points={specialization=all specialization=mod_science value=1}",
             "Points:\n  Other science:1\n  Alpha science [Root.GetTag]:1\n",
         ),
     ] {
@@ -489,7 +489,7 @@ fn render_raid_with(fixture: &Fixture, constants: &content_reader_politics::scri
         EventScope::of(EventObject::Raid(RAID)),
     ]);
     let items = content_reader_script::effect_keys::read_body(
-        b"raid_reduce_project_progress_ratio=0.03",
+        b"fixture_raid_project_loss=0.03",
         content.key_names.unwrap(),
     )
     .unwrap();
@@ -498,8 +498,7 @@ fn render_raid_with(fixture: &Fixture, constants: &content_reader_politics::scri
 
 #[test]
 fn raid_reduce_project_progress_ratio() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = raid_fixture();
     let output = render_raid(&fixture);
     assert_eq!(output.text, "Delay Project BBB 0.03/120 days");
@@ -508,8 +507,7 @@ fn raid_reduce_project_progress_ratio() {
 
 #[test]
 fn raid_project_progress_reads_scoped_constants_for_both_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::LexicalTokens(rows)) =
         &mut *fixture.frame.tables[TableId::LexicalTokens.index()]
@@ -529,8 +527,7 @@ fn raid_project_progress_reads_scoped_constants_for_both_operands() {
 
 #[test]
 fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::RaidFacilities(rows)) =
         &mut *fixture.frame.tables[TableId::RaidFacilities.index()]
@@ -544,8 +541,7 @@ fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
 
 #[test]
 fn raid_skips_friendly_facilities() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *fixture.frame.tables[TableId::WarRelations.index()]
@@ -559,8 +555,7 @@ fn raid_skips_friendly_facilities() {
 
 #[test]
 fn technology_catalogue_is_cached_once_per_stack() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, folder) = fixture();
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let content = scripted.effects().unwrap();
@@ -571,7 +566,7 @@ fn technology_catalogue_is_cached_once_per_stack() {
     .unwrap();
     assert!(std::ptr::eq(content, scripted.effects().unwrap()));
     let output = fixture.render_native(
-        "set_technology={mod_tech=1}",
+        "fixture_research_status={mod_tech=1}",
         &mut fresh(),
         content.view(None),
     );
@@ -581,8 +576,7 @@ fn technology_catalogue_is_cached_once_per_stack() {
 
 #[test]
 fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -623,8 +617,7 @@ fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
 fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
     use crate::effect_description::{EntityKind, Span, spans};
     use content_reader_localisation::localisation::Piece;
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -681,8 +674,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
     use crate::effect_description::entity_links::unmark;
     use crate::effect_description::{EntityKind, Span, spans};
     use content_reader_localisation::localisation::Piece;
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -691,10 +683,10 @@ fn technology_names_link_to_their_technology_only_when_asked() {
         .effects()
         .unwrap();
     for (body, expected, token, index, name) in [
-        ("set_technology={mod_tech=1}", "Give Alpha parent\n", "mod_tech", None, "Alpha parent"),
-        ("set_technology={var:mod_second_handle=0}", "Give Other\n", "MOD_TECH", Some(6), "Other"),
+        ("fixture_research_status={mod_tech=1}", "Give Alpha parent\n", "mod_tech", None, "Alpha parent"),
+        ("fixture_research_status={var:mod_second_handle=0}", "Give Other\n", "MOD_TECH", Some(6), "Other"),
         (
-            "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
+            "fixture_research_discount={technology=mod_tech bonus=0.5 uses=2}",
             "Bonus 0.50/2 uses:Alpha equipment\n",
             "mod_tech",
             None,
@@ -773,8 +765,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
 
 #[test]
 fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -793,8 +784,7 @@ fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
 
 #[test]
 fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_tag() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -826,8 +816,7 @@ fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_
 
 #[test]
 fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refuses() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
@@ -867,8 +856,7 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
 
 #[test]
 fn faction_power_projection_expands_with_recorded_membership() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
@@ -889,7 +877,7 @@ fn faction_power_projection_expands_with_recorded_membership() {
         .effects()
         .unwrap();
     let output = fixture.render_native(
-        "add_faction_power_projection=100",
+        "fixture_alliance_reach=100",
         &mut fresh(),
         content.view(None),
     );
@@ -899,8 +887,7 @@ fn faction_power_projection_expands_with_recorded_membership() {
 
 #[test]
 fn bound_technology_modifier_recording_failure_preserves_other_fragments() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "synthetic fault".into(),
@@ -940,8 +927,7 @@ fn bound_technology_modifier_recording_failure_preserves_other_fragments() {
 
 #[test]
 fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -977,8 +963,7 @@ fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
 
 #[test]
 fn bound_technology_repeated_building_and_tactic_compare_final_definition_pointer() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue

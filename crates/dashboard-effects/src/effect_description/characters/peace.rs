@@ -49,6 +49,7 @@ impl Renderer<'_, '_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::game;
     use crate::{
         fixtures::folder_catalogue,
         effect_description::tests::Fixture,
@@ -86,17 +87,16 @@ mod tests {
 
     #[test]
     fn peace_effect_targets_and_tooltip_overrides() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        game::enter();
         check(&[
-            ("white_peace=BBB", "Peace Beta AAA\n"),
-            ("white_peace={tag=missing tooltip=SYN_TIP}", "Tip AAA\n"),
+            ("fixture_agree_ceasefire=BBB", "Peace Beta AAA\n"),
+            ("fixture_agree_ceasefire={tag=missing tooltip=SYN_TIP}", "Tip AAA\n"),
             (
-                "start_peace_conference={score_factor=0.6 tag=BBB}",
+                "fixture_begin_conference={score_factor=0.6 tag=BBB}",
                 "Conference Beta AAA\n",
             ),
             (
-                "start_peace_conference={tag=missing tooltip=SYN_TIP}",
+                "fixture_begin_conference={tag=missing tooltip=SYN_TIP}",
                 "Tip AAA\n",
             ),
         ]);

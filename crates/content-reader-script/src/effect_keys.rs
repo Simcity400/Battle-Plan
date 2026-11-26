@@ -228,7 +228,7 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
     let mut game = game;
     for (index, &(name, keys, class)) in key_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
         let class = match (name, class) {
-            ("add_unit_bonus", _) => 0x1427F9180,
+            ("add_unit_bonus", _) => engine_executable::executable_tables::effect_identity::UNIT_STAT_BONUS,
             (_, 0) => 0x2_0000_0000 + index as u64 * 0x10,
             _ => class,
         };
@@ -251,10 +251,10 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
     }
     for (index, &(name, value, keys)) in value_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
         let class = match name {
-            "country_event" => 0x1427E9F80,
-            "custom_effect_tooltip" => 0x142A31FE8,
-            "operative_leader_event" => 0x1427BD720,
-            "remove_unit_leader_role" => 0x1427E9838,
+            "country_event" => engine_executable::executable_tables::effect_identity::ANNOUNCE_EVENT,
+            "custom_effect_tooltip" => engine_executable::executable_tables::effect_identity::WRITTEN_TOOLTIP,
+            "operative_leader_event" => engine_executable::executable_tables::effect_identity::AGENT_EVENT,
+            "remove_unit_leader_role" => engine_executable::executable_tables::effect_identity::REMOVE_COMMANDER_ROLE,
             _ => 0x3_0000_0000 + index as u64 * 0x10,
         };
         game = game.effect(name, value, keys, class);

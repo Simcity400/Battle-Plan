@@ -2,6 +2,7 @@ use super::*;
 use crate::fixtures::folder_catalogue;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use crate::triggers::ContentFacts;
+use crate::fixtures::game;
 
 fn fresh() -> EventScopes {
     EventScopes::new(vec![EventScope::of(EventObject::Country(1))])
@@ -9,8 +10,7 @@ fn fresh() -> EventScopes {
 
 #[test]
 fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = super::super::tests::fixture();
     let content = fixture
         .catalogue
@@ -19,22 +19,20 @@ fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
         .effects()
         .unwrap();
     let output = fixture.render(
-        "set_rule={can_create_factions=yes can_send_volunteers=no can_send_volunteers=yes desc=SYN_DESC override=no can_not_declare_war=yes}",
+        "fixture_country_rule={fixture_factions=yes fixture_volunteers=no fixture_volunteers=yes desc=SYN_DESC override=no fixture_truce=yes}",
         &mut fresh(),
         content.view(None),
     );
     assert_eq!(
         output.text,
-        "Rules AAA:[no] CAN_NOT_DECLARE_WAR.\n[yes] Volunteers.\n[yes] Factions.\n"
+        "Rules AAA:[no] FIXTURE_TRUCE.\n[yes] Volunteers.\n[yes] Factions.\n"
     );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
 }
 
 #[test]
 fn relation_uses_last_rule_and_explicit_target_before_trigger() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    assert_eq!(relation("add_relation_rule_override={target=BBB trigger=SYN_TRIGGER usage_desc=SYN_DESC can_send_volunteers=yes can_create_factions=no}").unwrap(), "Relation Alpha->Beta:[no]Factions");
+    assert_eq!(relation("fixture_grant_override={target=BBB trigger=SYN_TRIGGER usage_desc=SYN_DESC fixture_travel=yes fixture_alliance=no}").unwrap(), "Relation Alpha->Beta:[no]Factions");
 }
 
 fn target(body: &str, graph: EventScopes) -> Result<String, String> {
@@ -42,6 +40,12 @@ fn target(body: &str, graph: EventScopes) -> Result<String, String> {
 }
 
 fn relation(body: &str) -> Result<String, String> {
+    game::executable().auxiliary(|tables| {
+        tables.rules = Ok(vec![
+            ("fixture_travel", "FIXTURE_TRAVEL", false, false),
+            ("fixture_alliance", "FIXTURE_ALLIANCE", true, true),
+        ]);
+    }).enter();
     let template = Template {
         name: b"SYN_TRIGGER".to_vec(),
         body: Ok(content_reader_parser::parser::parse(
@@ -80,7 +84,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
                 " AAA_DEF:0 \"alpha\"\n BBB_DEF:0 \"beta\"\n CCC_DEF:0 \"gamma\"\n",
                 " TRIGGER_FULLFILLED_PREFIX:0 \"[yes]\"\n TRIGGER_UNFULLFILLED_PREFIX:0 \"[no]\"\n",
                 " TRIGGER_AND_STARTS:0 \"All\"\n TRIGGER_OR_STARTS:0 \"Any\"\n",
-                " EFFECT_ADD_RELATION_RULE_OVERRIDE:0 \"Relation $ORIGIN$->$TARGET$:\"\n CAN_SEND_VOLUNTEERS:0 \"Volunteers\"\n CAN_CREATE_FACTIONS:0 \"Factions\"\n",
+                " EFFECT_ADD_RELATION_RULE_OVERRIDE:0 \"Relation $ORIGIN$->$TARGET$:\"\n FIXTURE_TRAVEL:0 \"Volunteers\"\n FIXTURE_ALLIANCE:0 \"Factions\"\n",
                 " TRIGGER_CAPITAL:0 \"Capital\"\n TRIGGER_IS_ON_CONTINENT:0 \"On $CONTINENT$ [This.GetTag]\"\n TRIGGER_IS_NOT_ON_CONTINENT:0 \"Off $CONTINENT$\"\n",
                 " syn_cont:0 \"Continent\"\n AAA_syn_cont:0 \"Home [This.GetTag]\"\n syn_other_cont:0 \"Other continent\"\n",
                 " TRIGGER_COUNTRY_FLAG_SET:0 \"$COUNTRY$ flag: \"\n TRIGGER_COUNTRY_FLAG_NOT_SET:0 \"$COUNTRY$ no flag: \"\n",
@@ -146,17 +150,14 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
 
 #[test]
 fn empty_invalid_and_scope_targets_leave_template_precedence() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     for target in ["\"\"", "SYN_MISSING", "ROOT", "event_target:SYN_TARGET"] {
-        assert_eq!(relation(&format!("add_relation_rule_override={{target={target} trigger=SYN_TRIGGER can_send_volunteers=yes}}")).unwrap(), "Relation Alpha->Other\n:[yes]Volunteers");
+        assert_eq!(relation(&format!("fixture_grant_override={{target={target} trigger=SYN_TRIGGER fixture_travel=yes}}")).unwrap(), "Relation Alpha->Other\n:[yes]Volunteers");
     }
 }
 
 #[test]
 fn target_capital_continent_uses_perspective_localisation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -176,8 +177,7 @@ fn target_capital_continent_uses_perspective_localisation() {
 
 #[test]
 fn named_target_from_flag_uses_scope_name_and_marked_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -189,8 +189,7 @@ fn named_target_from_flag_uses_scope_name_and_marked_country() {
 
 #[test]
 fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_eq!(
         target(
             "custom_trigger_tooltip={tooltip=SYN_TIP always=no}",
@@ -219,8 +218,7 @@ fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
 
 #[test]
 fn target_context_and_or_keep_three_space_indentation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_eq!(target("BBB={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   Tip BBB\n   Other\n");
     assert_eq!(target("OR={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=no}}", fresh()).unwrap(), "Any:\n   Tip AAA\n   Other\n");
     assert_eq!(target("BBB={AND={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   All:\n      Tip BBB\n      Other\n   Other\n");
@@ -228,8 +226,7 @@ fn target_context_and_or_keep_three_space_indentation() {
 
 #[test]
 fn unported_target_trigger_fields_are_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     assert_eq!(
         target("has_country_flag={flag=SYN_SIGNAL days=2}", fresh()).unwrap_err(),
         "has_country_flag field days description is unavailable"

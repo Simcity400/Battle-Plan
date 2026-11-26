@@ -3,6 +3,7 @@ use crate::fixtures::{Folder, folder_catalogue};
 use crate::effect_description::tests::Fixture;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 fn fixture(event_argument: &str) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
@@ -138,12 +139,11 @@ fn event(key: &str) -> Arc<content_reader_events::events::Event> {
 
 #[test]
 fn operative_actions_resolve_country_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     for (body, expected) in [
         (
-            "capture_operative={captured_by=FROM}",
+            "fixture_capture_agent={captured_by=FROM}",
             "Capture Agent text by Beryl union AAA",
         ),
         (
@@ -163,11 +163,10 @@ fn operative_actions_resolve_country_operands() {
 
 #[test]
 fn explicit_operative_uses_country_roster_and_exact_leader_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
-        "capture_operative={operative=synthetic_other_agent captured_by=FROM}",
+        "fixture_capture_agent={operative=synthetic_other_agent captured_by=FROM}",
         &mut operative_scopes(),
         Content::default(),
     );
@@ -177,36 +176,34 @@ fn explicit_operative_uses_country_roster_and_exact_leader_name() {
 
 #[test]
 fn free_random_operative_refuses_the_missing_captured_reference_roster() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] = TableView::Unavailable {
         reason: "captured references not recorded".into(),
     };
     let out = fixture.render(
-        "free_random_operative={captured_by=FROM all=yes}",
+        "fixture_release_agent={captured_by=FROM all=yes}",
         &mut country_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect free_random_operative: key free_random_operative: hour 1 CapturedOperativeReferences is unavailable: captured references not recorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_release_agent: key fixture_release_agent: hour 1 CapturedOperativeReferences is unavailable: captured references not recorded".into(), 1)]));
 }
 
 #[test]
 fn hide_operative_refuses_codename_only_after_gates() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
-        "force_operative_leader_into_hiding=19",
+        "fixture_hide_agent=19",
         &mut operative_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect force_operative_leader_into_hiding: key force_operative_leader_into_hiding: operative codename not recorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_hide_agent: key fixture_hide_agent: operative codename not recorded".into(), 1)]));
     for days in ["0", "-1"] {
         let out = fixture.render(
-            &format!("force_operative_leader_into_hiding={days}"),
+            &format!("fixture_hide_agent={days}"),
             &mut operative_scopes(),
             Content::default(),
         );
@@ -217,26 +214,24 @@ fn hide_operative_refuses_codename_only_after_gates() {
 
 #[test]
 fn harm_operative_refuses_codename_only_after_gates() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let out = fixture.render(
-        "harm_operative_leader=43",
+        "fixture_injure_agent=43",
         &mut operative_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect harm_operative_leader: key harm_operative_leader: operative codename not recorded".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_injure_agent: key fixture_injure_agent: operative codename not recorded".into(), 1)]));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
-    let out = fixture.render("harm_operative_leader=43", &mut scopes, Content::default());
+    let out = fixture.render("fixture_injure_agent=43", &mut scopes, Content::default());
     assert_eq!(out.text, "");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn format98_codename_days_use_direct_and_referenced_roles() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture("EVENT");
     let codename = NameOperands {
         kind: 2,
@@ -268,11 +263,11 @@ fn format98_codename_days_use_direct_and_referenced_roles() {
         }
         for (source, expected) in [
             (
-                "force_operative_leader_into_hiding=19",
+                "fixture_hide_agent=19",
                 "Hide Agent text/Nightjar/19 AAA",
             ),
             (
-                "harm_operative_leader=43",
+                "fixture_injure_agent=43",
                 "Harm Agent text/Nightjar/43 AAA\n",
             ),
         ] {
@@ -288,10 +283,10 @@ fn format98_codename_days_use_direct_and_referenced_roles() {
             }
             for (source, effect_key) in [
                 (
-                    "force_operative_leader_into_hiding=19",
-                    "force_operative_leader_into_hiding",
+                    "fixture_hide_agent=19",
+                    "fixture_hide_agent",
                 ),
-                ("harm_operative_leader=43", "harm_operative_leader"),
+                ("fixture_injure_agent=43", "fixture_injure_agent"),
             ] {
                 let out = fixture.render(source, &mut operative_scopes(), Content::default());
                 assert_eq!(out.text, "");
@@ -312,8 +307,7 @@ fn format98_codename_days_use_direct_and_referenced_roles() {
 
 #[test]
 fn operative_actions_use_format98_registry_only_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -330,8 +324,8 @@ fn operative_actions_use_format98_registry_only_name() {
         ]));
     for (key, effect_key, field, expected) in [
         (
-            "capture_operative",
-            "capture_operative",
+            "fixture_capture_agent",
+            "fixture_capture_agent",
             "captured_by",
             "Capture Referenced agent by Beryl union AAA",
         ),
@@ -378,13 +372,12 @@ fn operative_actions_use_format98_registry_only_name() {
 
 #[test]
 fn unit_leader_event() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let lookup = |_: &[u8]| Ok(event("UNIT_TITLE"));
     let mut scopes = operative_scopes();
     let out = fixture.render(
-        "unit_leader_event={random_hours=11 id=synthetic.1 hours=7}",
+        "fixture_commander_event={random_hours=11 id=synthetic.1 hours=7}",
         &mut scopes,
         Content {
             events: Some(&lookup),
@@ -402,8 +395,7 @@ fn unit_leader_event() {
 
 #[test]
 fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     for (titles, expected) in [
         (
@@ -424,7 +416,7 @@ fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
         });
         let lookup = |_: &[u8]| Ok(event.clone());
         let out = fixture.render(
-            "unit_leader_event={id=synthetic.1}",
+            "fixture_commander_event={id=synthetic.1}",
             &mut operative_scopes(),
             Content {
                 events: Some(&lookup),
@@ -438,8 +430,7 @@ fn unit_event_conditional_titles_use_empty_scope_and_first_fallback() {
 
 #[test]
 fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let event = Arc::new(content_reader_events::events::Event {
         id: b"synthetic.1".to_vec(),
@@ -450,7 +441,7 @@ fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
     });
     let lookup = |_: &[u8]| Ok(event.clone());
     let out = fixture.render(
-        "unit_leader_event={id=synthetic.1}",
+        "fixture_commander_event={id=synthetic.1}",
         &mut operative_scopes(),
         Content {
             events: Some(&lookup),
@@ -458,23 +449,22 @@ fn unit_event_different_eligible_titles_have_named_counted_clock_refusal() {
         },
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect unit_leader_event: key unit_leader_event:  event synthetic.1 has different eligible title keys; title selection needs an unrecorded high-resolution seed".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_commander_event: key fixture_commander_event:  event synthetic.1 has different eligible title keys; title selection needs an unrecorded high-resolution seed".into(), 1)]));
 }
 
 #[test]
 fn operative_leader_event() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EFFECT");
     let events = content_reader_events::events::parse(
-        b"add_namespace=synthetic operative_leader_event={major=yes option={army_experience=7 name=CHOICE} is_triggered_only=yes desc=EXPLANATION title=OPERATIVE_TITLE id=synthetic.23}",
+        b"add_namespace=synthetic operative_leader_event={major=yes option={fixture_points=7 name=CHOICE} is_triggered_only=yes desc=EXPLANATION title=OPERATIVE_TITLE id=synthetic.23}",
         "events/synthetic.txt",
         &content_reader_script::key_names::KeyNames::default(),
     );
     let lookup = |id: &[u8]| events.get(id).map(|event| Arc::new(event.clone()));
     let mut scopes = operative_scopes();
     let out = fixture.render(
-        "operative_leader_event={set_from_from=BBB id=synthetic.23}",
+        "fixture_agent_event={set_from_from=BBB id=synthetic.23}",
         &mut scopes,
         Content {
             events: Some(&lookup),
@@ -489,12 +479,11 @@ fn operative_leader_event() {
 
 #[test]
 fn operative_event_set_root_evaluates_set_from_operand() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EFFECT");
     let lookup = |_: &[u8]| Ok(event("OPERATIVE_TITLE"));
     let out = fixture.render(
-        "operative_leader_event={id=synthetic.1 set_from=BBB set_from_from=CCC set_root=AAA}",
+        "fixture_agent_event={id=synthetic.1 set_from=BBB set_from_from=CCC set_root=AAA}",
         &mut operative_scopes(),
         Content {
             events: Some(&lookup),
@@ -507,11 +496,10 @@ fn operative_event_set_root_evaluates_set_from_operand() {
 
 #[test]
 fn event_tooltips_expand_raw_text_without_localising_it_or_drawing() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture("EVENT");
     let lookup = |_: &[u8]| Ok(event("UNIT_TITLE"));
-    for effect_key in ["unit_leader_event", "operative_leader_event"] {
+    for effect_key in ["fixture_commander_event", "fixture_agent_event"] {
         let mut scopes = operative_scopes();
         let out = fixture.render(
             &format!("{effect_key}={{id=synthetic.1 tooltip=\"RAW [Root.GetTag]\"}}"),
@@ -530,8 +518,7 @@ fn event_tooltips_expand_raw_text_without_localising_it_or_drawing() {
 
 #[test]
 fn format99_free_random_operative_requires_resolved_owner_in_captured_roster() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture("EVENT");
     *fixture.frame.tables[TableId::CapturedOperativeReferences.index()] =
         TableView::Complete(TableRows::CapturedOperativeReferences(vec![
@@ -549,7 +536,7 @@ fn format99_free_random_operative_requires_resolved_owner_in_captured_roster() {
             },
         ]));
     let out = fixture.render(
-        "free_random_operative={captured_by=FROM all=yes}",
+        "fixture_release_agent={captured_by=FROM all=yes}",
         &mut country_scopes(),
         Content::default(),
     );
@@ -562,7 +549,7 @@ fn format99_free_random_operative_requires_resolved_owner_in_captured_roster() {
     };
     rows[1].owner = Some(300);
     let out = fixture.render(
-        "free_random_operative={captured_by=FROM}",
+        "fixture_release_agent={captured_by=FROM}",
         &mut country_scopes(),
         Content::default(),
     );

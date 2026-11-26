@@ -4,6 +4,7 @@ use crate::effect_description::tests::Fixture;
 use crate::scripted_text::{EventObject, EventScope, Link};
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
+use crate::fixtures::game;
 
 pub(super) fn empty_variable_stores(fixture: &mut Fixture) {
     *fixture.frame.tables[TableId::ScriptVariables.index()] =
@@ -111,8 +112,7 @@ fn character_scopes() -> EventScopes {
 
 #[test]
 fn nationality_character_selector_uses_root_roster_then_current_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for (selector, name) in [
         ("synthetic_other", "Other name"),
@@ -120,7 +120,7 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
         ("THIS", "Current name"),
     ] {
         let out = fixture.render(
-            &format!("set_nationality={{character={selector} target_country=BBB}}"),
+            &format!("fixture_switch_allegiance={{character={selector} target_country=BBB}}"),
             &mut character_scopes(),
             Content::default(),
         );
@@ -136,21 +136,19 @@ fn nationality_character_selector_uses_root_roster_then_current_fallback() {
 
 #[test]
 fn retire() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
-    let out = fixture.render("retire=yes", &mut character_scopes(), Content::default());
+    let out = fixture.render("fixture_leave_service=yes", &mut character_scopes(), Content::default());
     assert_eq!(out.text, "Retire Current name/Aurora [Root.GetTag]\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn capture_by() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -160,15 +158,14 @@ fn capture_by() {
 
 #[test]
 fn capture_by_block_reads_country_without_target_leak() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for (body, expected) in [
         (
-            "capture_by={country=BBB province=29}",
+            "fixture_captured_leader={country=BBB province=29}",
             "Capture Army name/basin [Root.GetTag]",
         ),
-        ("capture_by={target=BBB province=29}", ""),
+        ("fixture_captured_leader={target=BBB province=29}", ""),
     ] {
         let out = fixture.render(body, &mut character_scopes(), Content::default());
         assert_eq!(out.text, expected, "{body}");
@@ -178,8 +175,7 @@ fn capture_by_block_reads_country_without_target_leak() {
 
 #[test]
 fn country_target_zero_and_state_owner_follow_character_gates() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     for category in [0, 3] {
         if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -188,9 +184,9 @@ fn country_target_zero_and_state_owner_follow_character_gates() {
             rows[0].category = category;
         }
         let key = if category == 0 {
-            "capture_by"
+            "fixture_captured_leader"
         } else {
-            "add_nationality"
+            "fixture_additional_allegiance"
         };
         for selector in ["capital", "random"] {
             let out = fixture.render(
@@ -218,15 +214,14 @@ fn country_target_zero_and_state_owner_follow_character_gates() {
         },
         EventScope::of(EventObject::State(2)),
     ]);
-    let out = fixture.render("capture_by=ROOT", &mut graph, Content::default());
+    let out = fixture.render("fixture_captured_leader=ROOT", &mut graph, Content::default());
     assert_eq!(out.text, "Capture Army name/aurora [Root.GetTag]");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
 #[test]
 fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CharacterOperatives.index()] =
         TableView::Complete(TableRows::CharacterOperatives(vec![
@@ -245,7 +240,7 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
         rows[0].character_id = 8;
     }
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -258,26 +253,25 @@ fn referenced_leader_uses_matching_recorded_handle_or_refuses_its_missing_name()
         rows[0].id = 6;
     }
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
     assert_eq!(out.refusals, BTreeMap::from([(
-        "synthetic effect capture_by: key capture_by: character 7 referenced unit leader name not recorded".to_owned(),
+        "synthetic effect fixture_captured_leader: key fixture_captured_leader: character 7 referenced unit leader name not recorded".to_owned(),
         1
     )]));
 }
 
 #[test]
 fn unit_leader_scope_resolves_its_character_role() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let mut leader = EventScope::of(EventObject::UnitLeader((5_u64 << 32) | 55));
     leader.root = Link::Scope(1);
     let out = fixture.render(
-        "retire=yes capture_by=BBB",
+        "fixture_leave_service=yes fixture_captured_leader=BBB",
         &mut EventScopes::new(vec![leader, EventScope::of(EventObject::Country(1))]),
         Content::default(),
     );
@@ -290,11 +284,10 @@ fn unit_leader_scope_resolves_its_character_role() {
 
 #[test]
 fn add_nationality() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     let out = fixture.render(
-        "add_nationality=BBB",
+        "fixture_additional_allegiance=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -304,8 +297,7 @@ fn add_nationality() {
 
 #[test]
 fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
@@ -317,14 +309,14 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "add_nationality=BBB",
+        "fixture_additional_allegiance=BBB",
         &mut character_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect add_nationality: key add_nationality: operative codename not recorded".to_owned(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_additional_allegiance: key fixture_additional_allegiance: operative codename not recorded".to_owned(), 1)]));
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -334,8 +326,7 @@ fn valid_operative_refuses_unrecorded_codename_by_class_and_field() {
 
 #[test]
 fn capture_by_uses_format98_referenced_name_and_capture_status() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::UnitLeaders.index()] =
         TableView::Complete(TableRows::UnitLeaders(vec![]));
@@ -351,7 +342,7 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
             },
         ]));
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -363,18 +354,17 @@ fn capture_by_uses_format98_referenced_name_and_capture_status() {
         rows[0].name = Recorded::Value(None);
     }
     let out = fixture.render(
-        "capture_by=BBB",
+        "fixture_captured_leader=BBB",
         &mut character_scopes(),
         Content::default(),
     );
     assert_eq!(out.text, "");
-    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect capture_by: key capture_by: character 7 referenced unit leader name capture unavailable".into(), 1)]));
+    assert_eq!(out.refusals, BTreeMap::from([("synthetic effect fixture_captured_leader: key fixture_captured_leader: character 7 referenced unit leader name capture unavailable".into(), 1)]));
 }
 
 #[test]
 fn add_nationality_uses_format98_selected_codename() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     for custom in [Vec::new(), b"Chosen name".to_vec()] {
         if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -391,7 +381,7 @@ fn add_nationality_uses_format98_selected_codename() {
             }));
         }
         let out = fixture.render(
-            "add_nationality=BBB",
+            "fixture_additional_allegiance=BBB",
             &mut character_scopes(),
             Content::default(),
         );
@@ -412,12 +402,11 @@ fn add_nationality_uses_format98_selected_codename() {
 
 #[test]
 fn history_entries_are_empty_without_their_reference() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (fixture, _folder) = fixture();
     for body in [
-        "add_history_entry={key=synthetic_history subject=\"Training record\" allow=yes}",
-        "add_raid_history_entry=yes",
+        "fixture_division_history={key=synthetic_history subject=\"Training record\" allow=yes}",
+        "fixture_raid_history=yes",
     ] {
         let out = fixture.render(body, &mut character_scopes(), Content::default());
         assert_eq!(out.text, "", "{body}");
@@ -427,12 +416,11 @@ fn history_entries_are_empty_without_their_reference() {
 
 #[test]
 fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let out = fixture.render(
-        "retire=yes capture_by=BBB add_nationality=BBB set_nationality=BBB",
+        "fixture_leave_service=yes fixture_captured_leader=BBB fixture_additional_allegiance=BBB fixture_switch_allegiance=BBB",
         &mut scopes,
         Content::default(),
     );
@@ -446,7 +434,7 @@ fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
             ..Default::default()
         }]));
     let out = fixture.render(
-        "set_nationality=BBB",
+        "fixture_switch_allegiance=BBB",
         &mut character_scopes(),
         Content::default(),
     );
@@ -456,12 +444,11 @@ fn absent_character_is_empty_and_stored_name_does_not_use_saved_key() {
 
 #[test]
 fn character_and_leader_names_keep_recording_language_rule() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     std::sync::Arc::make_mut(&mut fixture.catalogue.localisation).language =
         "synthetic_other_language".into();
-    for body in ["set_nationality=BBB", "retire=yes", "capture_by=BBB"] {
+    for body in ["fixture_switch_allegiance=BBB", "fixture_leave_service=yes", "fixture_captured_leader=BBB"] {
         let out = fixture.render(body, &mut character_scopes(), Content::default());
         assert_eq!(out.text, "");
         assert_eq!(out.refusals.values().sum::<usize>(), 1);
@@ -477,8 +464,7 @@ fn character_and_leader_names_keep_recording_language_rule() {
 
 #[test]
 fn named_character_selector_uses_retired_roster_after_active() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
         TableView::Complete(TableRows::CountryCharacters(vec![]));
@@ -491,7 +477,7 @@ fn named_character_selector_uses_retired_roster_after_active() {
             },
         ]));
     let out = fixture.render(
-        "set_nationality={character=synthetic_other target_country=BBB}",
+        "fixture_switch_allegiance={character=synthetic_other target_country=BBB}",
         &mut character_scopes(),
         Content::default(),
     );
@@ -501,12 +487,11 @@ fn named_character_selector_uses_retired_roster_after_active() {
 
 #[test]
 fn missing_executable_localisation_name_is_named_and_counted() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let fixture = Fixture::new();
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let out = fixture.render(
-        "add_ace={name=First surname=Last callsign=Nick type=synthetic_ace}",
+        "fixture_air_specialist={name=First surname=Last callsign=Nick type=synthetic_ace}",
         &mut scopes,
         Content::default(),
     );
@@ -514,7 +499,7 @@ fn missing_executable_localisation_name_is_named_and_counted() {
     assert_eq!(
         out.refusals,
         BTreeMap::from([(
-            "synthetic effect add_ace: key add_ace: native character localisation key EFFECT_ADD_ACE is not defined".into(),
+            "synthetic effect fixture_air_specialist: key fixture_air_specialist: native character localisation key EFFECT_ADD_ACE is not defined".into(),
             1,
         )]),
     );
@@ -522,8 +507,7 @@ fn missing_executable_localisation_name_is_named_and_counted() {
 
 #[test]
 fn character_lookup_keeps_a_late_country() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    game::enter();
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::Countries(countries)) =
         &mut *fixture.frame.tables[TableId::Countries.index()]
@@ -571,7 +555,7 @@ fn character_lookup_keeps_a_late_country() {
     stores.sort_by_key(|row| (row.scope_kind, row.scope_id));
     let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(24))]);
     let out = fixture.render(
-        "set_nationality={character=synthetic_other target_country=BBB}",
+        "fixture_switch_allegiance={character=synthetic_other target_country=BBB}",
         &mut scopes,
         Content::default(),
     );
