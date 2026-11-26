@@ -54,12 +54,19 @@ function battleRow(view: BoundedReadView, row: LandBattleLogRow, boundary: Ident
       ? slots.map(slot => ({ tag: countryKey(slot), atHour: row.countriesHour[i]! }))
       : [{ tag: null, atHour: row.countriesHour[i]! }]
   ));
+  const flagNames = sides.flatMap((side, i) => (
+    side.length
+      ? side.map(who => who.value.kind === 'known' ? who.value.value : (i === 0 ? 'Attacker' : 'Defender'))
+      : [i === 0 ? 'Attacker' : 'Defender']
+  ));
   const coalition = row.countries[0].length > 1 || row.countries[1].length > 1;
   const defenderStart = Math.max(1, row.countries[0].length);
   const countryCell = logCountryCell(view, flagEntries, row.hour, boundary);
-  const countryFlags = coalition && countryCell.flags
-    ? countryCell.flags.map((flag, idx) => idx === defenderStart ? { ...flag, separator: true } : flag)
-    : countryCell.flags;
+  const countryFlags = countryCell.flags?.map((flag, idx) => ({
+    ...flag,
+    artName: flagNames[idx],
+    ...(coalition && idx === defenderStart ? { separator: true } : {}),
+  }));
   const sideValues = sides.map((side, i) => sideParticipants(side, row.countriesUnknown[i]!));
   const title = name.kind === 'known' ? name.value : 'Battle name not recorded';
   const colors = sides.map(side => side[0]?.color);

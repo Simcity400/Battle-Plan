@@ -788,7 +788,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const fy = Math.round(middle - FLAG_SLOT_HEIGHT / 2);
     for (const fl of cell.flags) {
       if (fl.separator && fx > left) {
-        if ((column.narrow === 'flag' || column.display === 'flag') && fx + 7 + FLAG_SLOT_WIDTH > right) break;
+        if (column.narrow === 'flag' && fx + 7 + FLAG_SLOT_WIDTH > right) break;
         ctx.save();
         ctx.fillStyle = theme.gridLine ?? theme.muted;
         ctx.fillRect(fx, fy + 1, 1, FLAG_SLOT_HEIGHT - 2);
@@ -796,8 +796,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
         fx += 7;
       }
       if (column.narrow === 'flag' && fx + FLAG_SLOT_WIDTH > right) break;
-      if (column.display === 'flag' && fx > left && fx + FLAG_SLOT_WIDTH > right) break;
-      const state = slotOf(fl.art, fl.tag, rc);
+      const state = slotOf(fl.art, fl.artName ?? (fl.tag.startsWith('\u0000') ? '?' : fl.tag), rc);
       drawFlagSlot(ctx, fx, fy, state, theme, { dimmed: fl.dimmed });
       fx += FLAG_SLOT_WIDTH + 6;
     }
@@ -951,13 +950,16 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
         : isChild || column.textTone === 'secondary'
           ? tokens.textSecondary
           : theme.text;
-  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail, textFont, textColor);
-  if (cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined) {
-    const gap = 8;
+  const inline = cell?.inlineSubtext && !column.inlineFlags && narrowText === undefined ? cell.inlineSubtext : undefined;
+  const inlineFont = inline ? fontOf(theme, 12.5, 400) : '';
+  const gap = 8;
+  const maxReserve = Math.max(Math.floor((avail - gap) / 2), avail - gap - 72);
+  const reserve = inline && avail >= 60 ? Math.min(Math.ceil(measure(inline, inlineFont)), Math.max(0, maxReserve)) + gap : 0;
+  const drawnW = drawInlineRuns(rc, narrowText ?? formatted.text, left, middle, avail - reserve, textFont, textColor);
+  if (inline) {
     const rem = avail - drawnW - gap;
     if (rem >= 20) {
-      const inlineFont = fontOf(theme, 12.5, 400);
-      drawInlineRuns(rc, cell.inlineSubtext, left + drawnW + gap, middle, rem, inlineFont, theme.muted);
+      drawInlineRuns(rc, inline, left + drawnW + gap, middle, rem, inlineFont, theme.muted);
     }
   }
 }

@@ -3790,19 +3790,21 @@ test('declareTableProjection incremental cache keeps unchanged rows across ticks
   assert.equal(m3.rows[0]!.name, 'Alpha Renamed', 'country identity change invalidates the incremental snapshot');
 });
 
-test('flag columns widen for multi-country coalitions and inline subtext paints beside missing names and in compact density', () => {
+test('flag columns widen for multi-country coalitions past row 40, preserve two-flag narrow columns, and reserve inline subtext beside missing or long names in compact density', () => {
   const columns: TableColumnSpec[] = [
-    { key: 'country', label: '', as: 'flag', cellKind: 'country', offered: ['flagName', 'name', 'flag'], priority: 0, minWidth: 68, grow: 0 },
-    { key: 'name', label: 'Port', as: 'plain', cellKind: 'item', offered: ['plain'], priority: 0, text: true, minWidth: 160 },
+    { key: 'country', label: '', as: 'flag', cellKind: 'country', offered: ['flagName', 'name', 'flag'], priority: 0, minWidth: 52, grow: 0 },
+    { key: 'name', label: 'Port', as: 'plain', cellKind: 'item', offered: ['plain'], priority: 0, text: true, minWidth: 160, maxWidth: 220 },
   ];
   const settings = tableSettingsOf(undefined, columns, { density: 'compact', sort: { column: 'name', direction: 'ascending' } });
   const baseCols = buildColumnLayouts(columns, settings);
   const twoWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 2 } });
   const fourWidths = measureFixedColumnWidths(baseCols, settings, TEST_THEME, text => text.length * 7, undefined, { flags: { country: 4 } });
-  assert.equal(twoWidths.country, 68);
+  assert.equal(twoWidths.country, 52);
   assert.ok(fourWidths.country! > twoWidths.country!, 'four coalition flags widen a flag-only column');
+  const missingFlag = productArt({ status: 'confirmedMissing', reason: 'missing' });
   const model: TableModel = {
     hour: 1,
+    rhythm: 'log',
     columns,
     rows: [
       {
@@ -3812,33 +3814,58 @@ test('flag columns widen for multi-country coalitions and inline subtext paints 
           country: {
             value: knownValue('Alpha, Charlie · Bravo, Delta'),
             flags: [
-              { tag: 'AAA', art: PENDING_ART },
-              { tag: 'CCC', art: PENDING_ART },
-              { tag: 'BBB', art: PENDING_ART, separator: true },
-              { tag: 'DDD', art: PENDING_ART },
+              { tag: 'AA', art: missingFlag },
+              { tag: 'CC', art: missingFlag },
+              { tag: 'BB', art: missingFlag, separator: true },
+              { tag: 'DD', art: missingFlag },
             ],
           },
           name: { value: notRecorded('Port name unavailable'), inlineSubtext: 'No ships waiting' },
         },
       },
       {
-        key: 'named',
-        name: 'Harbour',
+        key: 'long-named',
+        name: 'Very Long Naval Repair Anchorage Name Filling The Column',
         cells: {
-          country: { value: knownValue('Alpha · Bravo'), flags: [{ tag: 'AAA', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART }] },
-          name: { value: knownValue('Harbour'), inlineSubtext: 'No ships waiting' },
+          country: { value: knownValue('Alpha · Bravo'), flags: [{ tag: 'AA', art: missingFlag }, { tag: 'BB', art: missingFlag }] },
+          name: { value: knownValue('Very Long Naval Repair Anchorage Name Filling The Column'), inlineSubtext: 'No ships waiting' },
         },
       },
     ],
   };
-  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, fourWidths), 480);
-  const grid = gridContext(480, 120);
-  drawFamilyTable(grid.ctx as unknown as CanvasRenderingContext2D, {
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, twoWidths), 272, { rhythm: 'log' });
+  const twoFlagGrid = gridContext(272, 120);
+  drawFamilyTable(twoFlagGrid.ctx as unknown as CanvasRenderingContext2D, {
     layout,
+    rows: resolveTableRows({ ...model, rows: [model.rows[1]!] }, settings),
+    settings,
+    hour: 1,
+    width: 272,
+    height: 120,
+    scrollLeft: 0,
+    scrollTop: 0,
+    rankShown: false,
+    rankWidth: 0,
+    theme: TEST_THEME,
+    now: 1,
+    glideDuration: 0,
+    glide: NO_GLIDE,
+    markers: new Map(),
+    dpr: 1,
+    rhythm: 'log',
+  });
+  const texts = [...twoFlagGrid.marks.values()];
+  assert.ok(texts.includes('AA') && texts.includes('BB'), 'a 52px two-flag column still draws both flags');
+  assert.ok(texts.includes('No ships waiting'), 'inline status remains visible beside a long recorded port name in compact density');
+
+  const wideLayout = layoutFamilyTable(buildColumnLayouts(columns, settings, fourWidths), 400);
+  const wideGrid = gridContext(400, 120);
+  drawFamilyTable(wideGrid.ctx as unknown as CanvasRenderingContext2D, {
+    layout: wideLayout,
     rows: resolveTableRows(model, settings),
     settings,
     hour: 1,
-    width: 480,
+    width: 400,
     height: 120,
     scrollLeft: 0,
     scrollTop: 0,
@@ -3851,6 +3878,50 @@ test('flag columns widen for multi-country coalitions and inline subtext paints 
     markers: new Map(),
     dpr: 1,
   });
-  const texts = [...grid.marks.values()];
-  assert.equal(texts.filter(text => text === 'No ships waiting').length, 2, 'inline status paints beside both a missing-name hatch and a compact named row');
+  const wideTexts = [...wideGrid.marks.values()];
+  assert.ok(['AA', 'CC', 'BB', 'DD'].every(code => wideTexts.includes(code)), 'all four coalition flags paint in the widened flag column');
+  assert.equal(wideTexts.filter(text => text === 'No ships waiting').length, 2, 'inline status paints beside both a missing-name hatch and a long named row');
+
+  const rows45 = Array.from({ length: 45 }, (_, idx) => ({
+    key: `r${idx}`,
+    name: `Battle ${idx}`,
+    cells: {
+      country: {
+        value: knownValue('Alpha · Bravo'),
+        flags: idx === 42
+          ? [{ tag: 'AAA', art: PENDING_ART }, { tag: 'CCC', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART, separator: true }]
+          : [{ tag: 'AAA', art: PENDING_ART }, { tag: 'BBB', art: PENDING_ART }],
+      },
+      name: { value: knownValue(`Battle ${idx}`) },
+    },
+  }));
+  const lateKind = 'test-late-coalition-flags';
+  registerFamilyProjection({
+    kind: lateKind,
+    family: 'table',
+    theme: TEST_THEME,
+    project: readView => ({ hour: readView.hour, columns, rows: rows45 }),
+  });
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = class {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return gridContext(this.width, this.height).ctx; }
+    transferToImageBitmap() { return { close() {} }; }
+  };
+  try {
+    const view = createLaneView(tableLane, () => {});
+    const state = new Map<string, unknown>();
+    const transport = new LaneTransport();
+    const painted = view.paint({
+      widget: 1, subs: [], pictures: [],
+      model: { family: 'table' as const, kind: lateKind, options: transport.carry({}), settings, sources: {}, staticPanels: { main: { at: 1 } }, width: 480, height: 200, scrollLeft: 0, scrollTop: 0, theme: TEST_THEME, reducedMotion: true },
+      hour: 1, seek: 0, speed: 0, binding: { generation: 1, surfaces: [{ width: 480, height: 200, dpr: 1 }], offset: 0, pin: null }, inspect: null, now: 1,
+    }, state, () => 'c1');
+    const countryW = (painted.fields.widths?.value as { widths: Record<string, number> }).widths.country!;
+    assert.ok(countryW > 52, `row 42 coalition widens the country column beyond 52px (got ${countryW})`);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
 });

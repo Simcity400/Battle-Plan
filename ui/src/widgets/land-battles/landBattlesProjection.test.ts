@@ -82,7 +82,17 @@ test('a coalition battle identifies every participant on both sides in the row a
   const defenders = tip.rows.find(entry => entry.label === 'Defenders');
   assert.equal(defenders?.rawValue?.kind, 'partial');
   assert.equal(defenders?.rawValue?.kind === 'partial' ? defenders.rawValue.value : null, 'Bravo');
+  assert.deepEqual(
+    tip.rows.filter(entry => entry.label.endsWith(' flag')).map(entry => entry.label),
+    ['Alpha flag', 'Charlie flag', 'Bravo flag', 'Defender flag'],
+  );
+  assert.equal(tip.rows.some(entry => entry.label.includes('\u0000')), false);
   const unresolvedTip = deriveRowTooltip({ kind: 'data', key: unresolved.key, name: unresolved.name, rank: 2, level: 1, parent: null, childCount: 0, isTreeGroup: false, isOpen: false, isTotal: false, row: unresolved }, model.columns);
   assert.equal(unresolvedTip.rows.find(entry => entry.label === 'Attackers')?.rawValue?.kind, 'notRecorded', 'an unresolved slot never prints its internal key as a known country');
   assert.equal(unresolvedTip.rows.find(entry => entry.label === 'Defenders')?.rawValue?.kind, 'partial');
+  assert.deepEqual(
+    unresolvedTip.rows.filter(entry => entry.label.endsWith(' flag')).map(entry => entry.label),
+    ['Attacker flag', 'Bravo flag'],
+  );
+  assert.equal(unresolvedTip.rows.some(entry => entry.label.includes('\u0000')), false);
 });
