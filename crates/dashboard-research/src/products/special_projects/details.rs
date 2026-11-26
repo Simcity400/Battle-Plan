@@ -1260,7 +1260,7 @@ fn assigned(reads: &Reads<'_, '_>, project: &ProjectRow) -> super::Program {
 
 fn effect_tables() -> Vec<TableId> {
     let mut tables: Vec<TableId> = dashboard_effects::effect_description::recorded_tables()
-        .chain([TableId::RaidFacilities, TableId::Provinces, TableId::Projects, TableId::ProjectPrograms, TableId::LexicalTokens, TableId::CountryLinks])
+        .chain([TableId::RaidFacilities, TableId::Provinces, TableId::Projects, TableId::ProjectPrograms, TableId::LexicalTokens, TableId::CountryLinks, TableId::SliceReads])
         .collect();
     tables.sort_unstable();
     tables.dedup();
@@ -1329,16 +1329,14 @@ impl AtHour for SpecialProjectEffectsAt {
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
-        let mut tables = effect_tables();
-        tables.push(TableId::SliceReads);
-        tables
+        effect_tables()
     }
 
     fn reads(_params: &Self::Params, _owner: Option<Owner>, step: usize, _held: &DecodedFrame) -> Vec<Read> {
         if step != 0 {
             return Vec::new();
         }
-        effect_tables().into_iter().map(Read::all).chain([Read::all(TableId::SliceReads)]).collect()
+        effect_tables().into_iter().map(Read::all).collect()
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

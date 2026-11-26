@@ -709,3 +709,34 @@ fn details_spell_a_project_from_the_read_that_supplies_it() {
     assert_eq!(reply["projects"][0]["label"]["token"], json!("project"), "R5-S4: the project read at 30 is spelled from that read, never from the playhead's rows: {reply}");
     assert!(!has(&reply, "lacks token 77"), "{reply}");
 }
+
+#[test]
+fn effects_and_iteration_request_slice_reads_once_without_duplicate_tables() {
+    let assert_unique = |label: &str, tables: &[TableId]| {
+        let mut sorted = tables.to_vec();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), before, "{label} has duplicate tables: {tables:?}");
+        assert_eq!(tables.iter().filter(|&&table| table == TableId::SliceReads).count(), 1, "{label} should request SliceReads once: {tables:?}");
+    };
+    let held = source(1, FIRST, None);
+    let effects_params: SpecialProjectEffectsParams = serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3 })).unwrap();
+    let effects_tables = SpecialProjectEffectsAt::tables(&effects_params);
+    assert_unique("SpecialProjectEffectsAt::tables", &effects_tables);
+    let effects_reads = SpecialProjectEffectsAt::reads(&effects_params, None, 0, &held);
+    let effects_read_tables: Vec<TableId> = effects_reads.iter().map(|read| read.table).collect();
+    assert_unique("SpecialProjectEffectsAt::reads", &effects_read_tables);
+
+    let iter_params: iteration::SpecialProjectIterationParams =
+        serde_json::from_value(json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "read": 30 })).unwrap();
+    let iter_tables = SpecialProjectIterationAt::tables(&iter_params);
+    assert_unique("SpecialProjectIterationAt::tables", &iter_tables);
+    assert!(iter_tables.contains(&TableId::ProjectHistory));
+    let iter_reads = SpecialProjectIterationAt::reads(&iter_params, None, 0, &held);
+    let iter_read_tables: Vec<TableId> = iter_reads.iter().map(|read| read.table).collect();
+    assert_unique("SpecialProjectIterationAt::reads", &iter_read_tables);
+    let first = u128::from(iter_params.owner) << 64 | u128::from(iter_params.project) << 32;
+    let history_read = iter_reads.iter().find(|read| read.table == TableId::ProjectHistory).expect("iteration reads ProjectHistory");
+    assert!(matches!(history_read.keys, dashboard_base::products::at_hour::Keys::Range(lo, hi) if lo == first && hi == (first | u128::from(u32::MAX))));
+}

@@ -299,7 +299,9 @@ impl AtHour for SpecialProjectIterationAt {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         let mut tables = effect_tables();
-        tables.extend([TableId::ProjectHistory, TableId::SliceReads]);
+        tables.push(TableId::ProjectHistory);
+        tables.sort_unstable();
+        tables.dedup();
         tables
     }
 
@@ -307,7 +309,7 @@ impl AtHour for SpecialProjectIterationAt {
         if step != 0 {
             return Vec::new();
         }
-        effect_tables().into_iter().map(Read::all).chain([history_range(params.owner, params.project), Read::all(TableId::SliceReads)]).collect()
+        effect_tables().into_iter().filter(|&table| table != TableId::ProjectHistory).map(Read::all).chain([history_range(params.owner, params.project)]).collect()
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
