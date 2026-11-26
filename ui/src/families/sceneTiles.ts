@@ -24,6 +24,7 @@ export interface SerializedTiledLine {
   readonly buckets: readonly (ChartBucket | null)[];
   readonly runs?: readonly Run[];
   readonly missing: readonly MissingSpan[];
+  readonly partial?: readonly MissingSpan[];
   readonly parts: readonly TilePart[];
 }
 
@@ -58,6 +59,7 @@ function serializeTiledLine(source: string, line: TiledLine): SerializedTiledLin
     buckets: line.summary.buckets,
     ...(line.summary.runs ? { runs: line.summary.runs } : {}),
     missing: line.missing,
+    ...(line.partial?.length ? { partial: line.partial } : {}),
     parts: line.parts,
   };
   serializedLines.set(line, serialized);
@@ -93,6 +95,7 @@ function hydrateTiledLine(raw: SerializedTiledLine): TiledLine {
       tiles: { binHours: raw.binHours, valueAt: () => null },
     },
     missing: [...raw.missing],
+    ...(raw.partial?.length ? { partial: [...raw.partial] } : {}),
     parts: [...raw.parts],
     marks: null,
   });

@@ -3,10 +3,11 @@ import test from 'node:test';
 import type { DashboardSource } from '../../dashboard/client';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import type { TiledLine } from '../../dashboard/tiles/view.ts';
-import { boundTiledSeries, createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
+import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { hoverAsks, readPlanExact } from '../../families/broker.ts';
 import type { ArtHandle, ArtProvider, FamilyPlanContext, IdentityProvider } from '../../families/contract.ts';
 import { buildTooltipContent } from '../../families/host/tooltips.ts';
+import { SceneTiles, serializeTiledBySource } from '../../families/sceneTiles.ts';
 import { ReadTarget, type TargetClock, type TargetConfig } from '../../families/readUnits.ts';
 import type { FrozenGate } from '../../families/sources.ts';
 import { deriveTimeChartTooltip, sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
@@ -365,7 +366,16 @@ test('partial tile spans keep drawing the witnessed subtotal and report partial 
     parts: [],
     marks: null,
   };
-  const bounded = boundTiledSeries(line, displayedHour(100));
+  const serialized = structuredClone(serializeTiledBySource({
+    taken: new Map([[k1, line]]),
+    dealt: new Map([[k1, line]]),
+  }));
+  const hydratedSeries = new SceneTiles().series(
+    { hour: 100, seek: 0, speed: 0, answers: new Map() } as never,
+    { sources: {} },
+    { tiledBySource: serialized },
+    100,
+  )!;
   const demandedFlags: ArtHandle[] = [];
   const flagUrl = 'asset://flags/ger-panel.png';
   const identity: IdentityProvider = {
@@ -403,7 +413,7 @@ test('partial tile spans keep drawing the witnessed subtotal and report partial 
     panels: new Map([['head', airReply({
       rows: [{ ...airReply().rows[0]!, complete: false, partial: reason, ratioHundredths: null }],
     })]]),
-    series: new Map([['taken', new Map([[k1, bounded]])], ['dealt', new Map([[k1, bounded]])]]),
+    series: hydratedSeries,
     identity,
     art,
   });

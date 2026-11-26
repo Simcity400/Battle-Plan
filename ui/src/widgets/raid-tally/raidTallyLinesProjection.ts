@@ -179,20 +179,6 @@ function runAtHour(runs: readonly RaidTallySlotRun[], hour: number): RaidTallySl
   return null;
 }
 
-function missingAtHour(reply: RaidTallyReply, hour: number): string | null {
-  for (const span of reply.missing) {
-    if (span.firstHour <= hour && hour <= span.lastHour) return span.reason;
-  }
-  return null;
-}
-
-function partialAtHour(reply: RaidTallyReply, hour: number): string | null {
-  for (const span of reply.partial ?? []) {
-    if (span.firstHour <= hour && hour <= span.lastHour) return span.reason;
-  }
-  return null;
-}
-
 function formatHoverRowValue(metric: RaidTallyMetric, launched: number, succeeded: number): string {
   if (metric === 'launched') return formatScalar(launched, 'integer');
   if (metric === 'succeeded') return formatScalar(succeeded, 'integer');
@@ -297,7 +283,14 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       };
     }
 
-    const hasEarlierGap = reply.missing.some(span => span.firstHour < floorHour);
+    const extendSpans = <T extends { readonly lastHour: number }>(spans: readonly T[]): readonly T[] => {
+      if (floorHour <= reply.hour || spans.length === 0) return spans;
+      const last = spans[spans.length - 1]!;
+      return last.lastHour === reply.hour ? [...spans.slice(0, -1), { ...last, lastHour: floorHour }] : spans;
+    };
+    const effectiveMissing = extendSpans(reply.missing);
+    const effectivePartial = extendSpans(reply.partial ?? []);
+    const hasEarlierGap = effectiveMissing.some(span => span.firstHour < floorHour);
     const warnings = [
       ...reply.warnings,
       ...(reply.unattributed > 0 ? [`${reply.unattributed} raids have no named raider and are not counted.`] : []),
@@ -305,7 +298,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
     ];
     const gaps: ChartGap[] = [
       ...options.gaps,
-      ...reply.missing.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: span.reason })),
+      ...effectiveMissing.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour, reason: span.reason })),
     ];
 
     if (reply.available === false) {
@@ -342,9 +335,11 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       };
     }
 
-    const headMissing = missingAtHour(reply, floorHour);
-    const headPartial = headMissing === null ? partialAtHour(reply, floorHour) : null;
-    const partialSpans = reply.partial?.length ? reply.partial : undefined;
+    const headMissing = effectiveMissing.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null;
+    const headPartial = headMissing === null
+      ? (effectivePartial.find(span => span.firstHour <= floorHour && floorHour <= span.lastHour)?.reason ?? null)
+      : null;
+    const partialSpans = effectivePartial.length ? effectivePartial : undefined;
     const orderedKeys = reply.series.map(item => countryKey(item.slot));
     const slotByKey = new Map(reply.series.map(item => [countryKey(item.slot), item.slot]));
     const rawLooks = countrySeriesLooks(orderedKeys, readView, {
@@ -374,12 +369,13 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
       const key = countryKey(item.slot);
       const isTail = rank >= COLOURED;
       const look = looks.get(key)!;
+      const rawRuns = extendSpans(item.runs);
       const effectiveRanges: readonly (readonly [number, number])[] | null = item.membership !== null
-        ? item.membership.map(span => [span.firstHour, span.lastHour] as const)
+        ? extendSpans(item.membership).map(span => [span.firstHour, span.lastHour] as const)
         : options.membership
           ? (options.membership[key] ?? [])
           : null;
-      const runs = effectiveRanges !== null ? clipRunsToRanges(item.runs, effectiveRanges) : item.runs;
+      const runs = effectiveRanges !== null ? clipRunsToRanges(rawRuns, effectiveRanges) : rawRuns;
       if (runs.length === 0) return;
 
       const headRun = headMissing === null ? runAtHour(runs, floorHour) : null;
@@ -418,7 +414,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
         identities: options.metric === 'both'
           ? look.identities.map(run => ({ ...run, name: `${run.name} · Launched` }))
           : look.identities,
-        missingSpans: reply.missing,
+        missingSpans: effectiveMissing,
         ...(partialSpans ? { partialSpans } : {}),
         endLabel: isTail || endLabelValue === null || !options.endLabels
           ? null
@@ -445,7 +441,7 @@ export const raidTallyLinesProjection: TimeChartProjection<RaidTallyLinesOptions
           headValue: headRun ? headRun.succeeded : null,
           headHour: hour,
           identities: look.identities.map(run => ({ ...run, name: `${run.name} · Succeeded` })),
-          missingSpans: reply.missing,
+          missingSpans: effectiveMissing,
           ...(partialSpans ? { partialSpans } : {}),
           endLabel: null,
         });

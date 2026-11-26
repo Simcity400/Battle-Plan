@@ -207,6 +207,7 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
           primary: options.metric === 'both'
             ? `${countText(item.launched)} \u00b7 ${countText(item.succeeded)}`
             : countText(primary),
+          ...(partialReason ? { secondary: '(partial)' } : {}),
         },
         tooltip: {
           title: pres.labelMissing ? 'Name not recorded' : pres.label,
@@ -222,6 +223,16 @@ export const raidTallyRaceProjection: BarsProjection<RaidTallyRaceOptions> = reg
         ...baseModel,
         rows: [],
         empty: `${formatScalar(reply.unattributed, { decimals: 0 })} raid(s) recorded up to this date with an unrecorded raider.`,
+        emptyKind: 'unavailable',
+        warnings,
+      };
+    }
+
+    if (!rows.length && reply.partial) {
+      return {
+        ...baseModel,
+        rows: [],
+        empty: reply.partial,
         emptyKind: 'unavailable',
         warnings,
       };

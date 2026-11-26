@@ -1529,15 +1529,19 @@ fn load_tally_branch(source: &Source, query: &Query<'_>, branch_id: u64, context
     let mut unattributed_events = Vec::new();
     for episode in episodes {
         if let Some(h) = episode.launched_hour {
-            match episode.launched_raider.as_ref().or(episode.raider.as_ref()) {
-                Some(tag) => events.push(TallyEvent { hour: h, succeeded: false, tag: tag.clone(), slot: episode.raider_slot }),
-                None => unattributed_events.push((h, false)),
+            let tag = episode.launched_raider.as_ref().or(episode.raider.as_ref());
+            if episode.raider_slot.is_some() || tag.is_some() {
+                events.push(TallyEvent { hour: h, succeeded: false, tag: tag.cloned().unwrap_or_default(), slot: episode.raider_slot });
+            } else {
+                unattributed_events.push((h, false));
             }
         }
         if let Some(h) = episode.succeeded_hour {
-            match episode.raider.as_ref().or(episode.launched_raider.as_ref()) {
-                Some(tag) => events.push(TallyEvent { hour: h, succeeded: true, tag: tag.clone(), slot: episode.raider_slot }),
-                None => unattributed_events.push((h, true)),
+            let tag = episode.raider.as_ref().or(episode.launched_raider.as_ref());
+            if episode.raider_slot.is_some() || tag.is_some() {
+                events.push(TallyEvent { hour: h, succeeded: true, tag: tag.cloned().unwrap_or_default(), slot: episode.raider_slot });
+            } else {
+                unattributed_events.push((h, true));
             }
         }
     }
@@ -1583,6 +1587,14 @@ fn tally_interval(branch: &CachedTallyBranch, hour: i32) -> (i32, i32) {
     (first.min(hour), last.max(hour))
 }
 
+pub(super) fn metric_unattributed(metric: RaidTallyMetric, launched: u32, succeeded: u32) -> u32 {
+    match metric {
+        RaidTallyMetric::Launched => launched,
+        RaidTallyMetric::Succeeded => succeeded,
+        RaidTallyMetric::Both => launched.max(succeeded),
+    }
+}
+
 impl Product for RaidTallyAt {
     const KEY: &'static str = "raid-tally-at";
     const CONTENT_DEPENDENT: bool = true;
@@ -1624,10 +1636,7 @@ impl Product for RaidTallyAt {
                 unattributed_launched = unattributed_launched.saturating_add(1);
             }
         }
-        let unattributed = match params.metric {
-            RaidTallyMetric::Succeeded => unattributed_succeeded,
-            RaidTallyMetric::Launched | RaidTallyMetric::Both => unattributed_launched.max(unattributed_succeeded),
-        };
+        let unattributed = metric_unattributed(params.metric, unattributed_launched, unattributed_succeeded);
         if cached.available == Some(false) {
             return Ok(RaidTallyAtReply {
                 branch_id: params.branch_id.clone(),

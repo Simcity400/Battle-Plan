@@ -337,7 +337,6 @@ function seriesTooltipItemsAt(model: TimeChartModel, hour: number, only?: string
             item: {
               label: look.name,
               value: formatExactFigure(s.exact.value, model, model.yAxis.format, s.exact.raw, s.exact.denominator),
-              ...(s.exact.partial ? { partialReason: s.exact.partial } : {}),
               swatch: negative ? NEGATIVE_SWATCH : look.color,
               tone: negative ? 'negative' : undefined,
               ...(flagUrl ? { countryFlag: { flag: flagUrl } } : {}),

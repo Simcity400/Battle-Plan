@@ -1070,6 +1070,46 @@ fn raid_tally_bounds_to_hour_answers_exact_hover_handles_unread_tables_and_keeps
     assert_eq!(slot9.series[0].runs.last().map(|r| r.launched), Some(1));
     assert_eq!(top_reuse.series.len(), 2, "reused tag keeps slots 7 and 9 separate");
     assert_eq!(top_reuse.series.iter().map(|s| s.slot).collect::<Vec<_>>(), vec![7, 9]);
+
+    let unnamed_slot_frames = vec![
+        make_frame(
+            1,
+            10,
+            vec![(10, 7, b"AAA".as_slice())],
+            20,
+            TableView::Complete(TableRows::Raids(vec![raid_row(1, 15, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE, Some(10))])),
+            vec![target_row(1, RaidScope { province: 10, ..Default::default() }, 40)],
+        ),
+        make_frame(1, 11, vec![(10, 7, b"AAA".as_slice())], 20, TableView::Complete(TableRows::Raids(vec![])), vec![]),
+    ];
+    let unnamed_source = make_source(unnamed_slot_frames);
+    let unnamed_lines = RaidTally::load(
+        &unnamed_source,
+        &RaidTallyParams { branch_id: "1".into(), countries: vec![Country::Slot(15)], top: None, metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let unnamed_at = RaidTallyAt::load(
+        &unnamed_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![Country::Slot(15)], group: None, top: None, metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    let unnamed_top = RaidTallyAt::load(
+        &unnamed_source,
+        &RaidTallyAtParams { branch_id: "1".into(), countries: vec![], group: None, top: Some(3), metric: RaidTallyMetric::Launched, hour: 11 },
+        &ctx,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(unnamed_lines.unattributed, 0);
+    assert_eq!(unnamed_at.unattributed, 0);
+    assert_eq!(unnamed_at.partial, None);
+    assert_eq!(unnamed_at.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
+    assert_eq!(unnamed_top.missing, None);
+    assert_eq!(unnamed_top.rows.first().map(|row| (row.country.clone(), row.launched)), Some((Country::Slot(15), 1)));
 }
 
 #[test]

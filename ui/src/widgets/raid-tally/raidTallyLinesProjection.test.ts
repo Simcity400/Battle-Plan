@@ -384,4 +384,25 @@ test('R3-S6 & raid labels: post-gap totals carry partial state across end labels
   assert.equal(topWithheld.empty?.kind, 'unavailable');
   assert.equal(topWithheld.empty?.message, partialReason);
   assert.deepEqual(topWithheld.auditRows?.map(r => [r.row, r.value]), [['__rank__', partialReason]]);
+
+  const provenQuiet = raidTallyLinesProjection.project(
+    createBoundedReadView({ hour: displayedHour(132), panels: new Map<string, unknown>([['tally', reply]]), identity }),
+    baseOpts,
+  );
+  const quietLaunched = provenQuiet.series.find(s => s.id === `${countryKey(7)}\u0000launched`)!;
+  assert.equal(quietLaunched.endLabel?.value, '3 / 2 (partial)', 'proven quiet playback hours keep the terminal run and partial marker');
+  assert.equal(
+    provenQuiet.auditRows?.find(r => r.row === `${countryKey(7)}\u0000launched`)?.value,
+    `3 (recorded subtotal: ${partialReason})`,
+  );
+  const quietTip = deriveTimeChartTooltip(provenQuiet, layoutTimeChart(provenQuiet, 600, 260, 'sans-serif', t => t.length * 6), 'plot:132');
+  const quietRow = buildTooltipContent(quietTip!.payload!).rows.find(r => r.label === 'Alpha Republic · Launched');
+  assert.deepEqual(quietRow?.valueState, { kind: 'partial', text: '3', reason: partialReason });
+
+  const leftGroup = raidTallyLinesProjection.project(
+    createBoundedReadView({ hour: displayedHour(132), panels: new Map<string, unknown>([['tally', reply]]), identity }),
+    { ...baseOpts, membership: { [countryKey(7)]: [[100, 130]] } },
+  );
+  const leftLaunched = leftGroup.series.find(s => s.id === `${countryKey(7)}\u0000launched`)!;
+  assert.equal(leftLaunched.endLabel, null, 'membership ending at 130 is not extended into 132');
 });

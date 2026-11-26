@@ -131,6 +131,19 @@ test('raidTallyRaceProjection sends group to Rust, keys by slot, never claims em
   const partialRows = partialModel.rows.filter((r): r is BarsDataRow => r.kind === 'data');
   assert.deepEqual(partialRows[0]!.value?.value, { kind: 'partial', value: 5, reason: partialReason });
   assert.deepEqual(partialRows[1]!.value?.value, { kind: 'partial', value: 0, reason: partialReason }, 'post-gap zero is partial, never exact zero');
+  assert.equal(partialRows[0]!.readout?.secondary, '(partial)', 'displayed readout marks partial subtotal');
+  assert.equal(partialRows[1]!.readout?.secondary, '(partial)', 'displayed zero readout marks partial subtotal');
   assert.equal(partialRows[0]!.tooltip?.items?.[0]?.partialReason, partialReason);
   assert.equal(partialRows[2]!.value?.value.kind, 'notRecorded');
+
+  const emptyAfterGap = raidTallyRaceProjection.project(
+    createBoundedReadView({
+      hour: displayedHour(300),
+      panels: new Map([['main', { ...reply, rows: [], partial: partialReason }]]),
+      identity: fakeIdentity({}),
+    }),
+    { ...OPTS, top: null, all: true },
+  );
+  assert.equal(emptyAfterGap.empty, partialReason, 'All countries with empty rows after a coverage gap reports the coverage reason');
+  assert.equal(emptyAfterGap.emptyKind, 'unavailable');
 });
