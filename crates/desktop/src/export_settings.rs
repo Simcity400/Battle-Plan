@@ -212,12 +212,6 @@ impl StageLease {
         &self.stage_path
     }
 
-    pub fn release_after_publish(mut self) {
-        let _ = remove_stage_with_sidecars(&self.stage_path);
-        drop(self.lock.take());
-        let _ = fs::remove_file(&self.record_path);
-    }
-
     pub fn cleanup_and_release(mut self) {
         let cleaned = remove_stage_with_sidecars(&self.stage_path);
         drop(self.lock.take());

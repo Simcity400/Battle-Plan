@@ -141,7 +141,7 @@ impl ExportJobs {
                 false
             }
         } else {
-            true
+            false
         };
         if let Some(lease) = active_lease {
             if joined {
@@ -454,7 +454,7 @@ pub fn start_map_video_export(
                         };
                         if publish_ok {
                             if let Some(lease) = active_lease {
-                                lease.release_after_publish();
+                                lease.cleanup_and_release();
                             }
                         } else {
                             if let Some(lease) = active_lease {
@@ -680,7 +680,7 @@ pub fn save_partial_video_export(
                 (inner.snapshot.clone(), lease)
             };
             if let Some(lease) = partial_lease {
-                lease.release_after_publish();
+                lease.cleanup_and_release();
             }
             jobs.emit(&app, updated);
             Ok(saved_path)
