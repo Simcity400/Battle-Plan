@@ -33,6 +33,7 @@ pub const NAMED_BONUS_VTABLE_RVA: Rva = Rva(0x029e_cff8);
 pub const COUNTRY_NAMED_BONUSES: usize = 0x178;
 pub const NAMED_BONUS_STRIDE: usize = 200;
 pub const NAMED_BONUS_HANDLE: usize = 0xc0;
+pub const NAMED_BONUS_SPECIFIC: usize = 8;
 pub const NAMED_BONUS_NAME: usize = 0x80;
 pub const NAMED_BONUS_DESCRIPTION: usize = 0xa0;
 
@@ -421,7 +422,7 @@ pub fn read_named_bonus_source(
     handle: u32,
 ) -> Result<VariantBonusSource, &'static str> {
     if word::<u64>(memory, pointer, 0)? != site(base, NAMED_BONUS_VTABLE_RVA)? as u64
-        || word::<u64>(memory, pointer, 8)? != site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
+        || word::<u64>(memory, pointer, NAMED_BONUS_SPECIFIC)? != site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
     {
         return Err("variant named source identity mismatch");
     }
@@ -438,7 +439,7 @@ pub fn read_named_bonus_source(
             name: text(NAMED_BONUS_NAME)?,
             description: text(NAMED_BONUS_DESCRIPTION)?,
         }),
-        stats: entries(memory, pointer, 8 + BONUS_STATS)?,
+        stats: entries(memory, pointer, NAMED_BONUS_SPECIFIC + BONUS_STATS)?,
         terrain_attrition: scalar_array(memory, pointer, 8 + BONUS_TERRAIN)?,
         ..Default::default()
     };
@@ -483,7 +484,7 @@ pub fn visit_named_sources(
                 .ok_or("variant named source address overflow")?;
             if word::<u32>(memory, pointer, NAMED_BONUS_HANDLE)? == handle {
                 if word::<u64>(memory, pointer, 0)? != site(base, NAMED_BONUS_VTABLE_RVA)? as u64
-                    || word::<u64>(memory, pointer, 8)?
+                    || word::<u64>(memory, pointer, NAMED_BONUS_SPECIFIC)?
                         != site(base, SPECIFIC_BONUS_VTABLE_RVA)? as u64
                 {
                     return Err("variant named source identity mismatch");

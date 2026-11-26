@@ -1604,7 +1604,285 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
 }
 
 #[test]
-fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_reliability_and_recovers_independent_operands()
+fn organisation_bonuses_multiply_the_lane_their_stat_token_names() {
+    struct World<'a> {
+        bytes: &'a [u8],
+        lexer: Option<[u8; 64]>,
+        moves: Option<(usize, std::ops::Range<usize>)>,
+        headers: Cell<usize>,
+    }
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let block = engine_native_memory::cpdx_lexer::INITIALIZED_RVA.0;
+            if let Some(mut header) = self.lexer
+                && let Some(at) = address.checked_sub(block).filter(|at| at + output.len() <= header.len())
+            {
+                if output.len() == header.len() {
+                    self.headers.set(self.headers.get() + 1);
+                }
+                if let Some((table, _)) = self.moves.clone().filter(|_| self.headers.get() > 1) {
+                    let at = engine_native_memory::cpdx_lexer::witness_offset(engine_native_memory::cpdx_lexer::TOKEN_NAMES_RVA);
+                    header[at..at + 8].copy_from_slice(&(table as u64).to_le_bytes());
+                }
+                output.copy_from_slice(&header[at..at + output.len()]);
+                return true;
+            }
+            if let Some((_, old)) = self.moves.clone().filter(|_| self.headers.get() > 0)
+                && old.contains(&address)
+            {
+                return false;
+            }
+            let Some(slice) = address
+                .checked_sub(self.bytes.as_ptr() as usize)
+                .and_then(|at| self.bytes.get(at..at.saturating_add(output.len())))
+            else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+    struct Quiet(Vec<(&'static str, &'static str)>);
+    impl StatWitness for Quiet {
+        fn quiet(&self) -> Result<QuietToken, &'static str> {
+            Ok(QuietToken::new(1, 7))
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.0.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = vec![0_u8; 0x2000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let (variant, def_off, bonuses_off, names_off, moved_names_off) = (0x0, 0xc00, 0x1200, 0x1400, 0x1900);
+    let base_values = [0_i64, 100_000, 0, 100_000, 400_000, 80_000, 0, 0, 0, 2_400_000];
+    bytes[def_off..def_off + 8].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[variant..variant + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[variant + TYPE..variant + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+    bytes[variant + ID..variant + ID + 4].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[variant + EQUIPMENT_TOKEN..variant + EQUIPMENT_TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+    bytes[variant + DEFINITION..variant + DEFINITION + 8].copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+    let mut cached = base_values;
+    cached[5] = 84_000;
+    cached[9] = 2_280_000;
+    for (lane, value) in STAT_LANES.into_iter().zip(cached) {
+        bytes[variant + lane.offset..variant + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[variant + BUILD_COST..variant + BUILD_COST + 8].copy_from_slice(&2_280_000_i64.to_le_bytes());
+    let bonuses = [(3_u32, -5_000_i64), (4, 5_000), (5, 25_000), (6, 0)];
+    bytes[variant + ORGANISATION_BONUSES..variant + ORGANISATION_BONUSES + 8]
+        .copy_from_slice(&((base_ptr + bonuses_off) as u64).to_le_bytes());
+    for offset in [8, 12] {
+        bytes[variant + ORGANISATION_BONUSES + offset..variant + ORGANISATION_BONUSES + offset + 4]
+            .copy_from_slice(&(bonuses.len() as u32).to_le_bytes());
+    }
+    for (index, (token, value)) in bonuses.into_iter().enumerate() {
+        let at = bonuses_off + index * 16;
+        bytes[at..at + 4].copy_from_slice(&token.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+    }
+    let names = ["", "", "", "build_cost_ic", "reliability", "soft_attack", "maximum_speed"];
+    for (token, name) in names.into_iter().enumerate().flat_map(|entry| [(names_off, entry), (moved_names_off, entry)]).map(|(table, (token, name))| (table + token * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE, name)) {
+        let at = token;
+        bytes[at..at + name.len()].copy_from_slice(name.as_bytes());
+        bytes[at + 16..at + 24].copy_from_slice(&(name.len() as u64).to_le_bytes());
+        bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
+    }
+    let mut lexer = [0_u8; 64];
+    lexer[0] = 1;
+    let mut put = |key: Rva, value: &[u8]| {
+        let at = engine_native_memory::cpdx_lexer::witness_offset(key);
+        lexer[at..at + value.len()].copy_from_slice(value);
+    };
+    let maximum = (names.len() - 1) as u32;
+    put(engine_native_memory::cpdx_lexer::MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, &maximum.to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_NAMES_RVA, &((base_ptr + names_off) as u64).to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_ALLOCATION_RVA, &(names.len() as u32).to_le_bytes());
+    put(engine_native_memory::cpdx_lexer::TOKEN_CAPACITY_RVA, &(names.len() as u32).to_le_bytes());
+    let row = RegistryRow {
+        id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: base_ptr + variant,
+    };
+    let moved = Some((base_ptr + moved_names_off, base_ptr + names_off..base_ptr + names_off + names.len() * engine_native_memory::cpdx_lexer::TOKEN_NAME_STRIDE));
+    let walk_moving = |bytes: &[u8], lexer: Option<[u8; 64]>, moves: Option<(usize, std::ops::Range<usize>)>| {
+        let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
+        let world = World { bytes, lexer, moves, headers: Cell::new(0) };
+        let outcome = walk_stats_carried(&world, 0, &[row], &mut rows, &mut (), &mut witness);
+        assert_eq!(outcome, Outcome::Rows { len: 1 });
+        (rows[0].values, witness.0)
+    };
+    let walk = |bytes: &[u8], lexer: Option<[u8; 64]>| walk_moving(bytes, lexer, None);
+
+    let (values, withheld) = walk(&bytes, Some(lexer));
+    assert_eq!(values, cached.map(Some), "every lane is published once its bonuses are applied: {withheld:?}");
+
+    let cost = variant + BUILD_COST_IC_STAT..variant + BUILD_COST_IC_STAT + 8;
+    bytes[cost.clone()].copy_from_slice(&2_400_000_i64.to_le_bytes());
+    let (values, _) = walk(&bytes, Some(lexer));
+    assert_eq!(values[9], None, "a cached cost that disagrees with its bonuses stays withheld");
+    assert_eq!(values[5], Some(84_000));
+    bytes[cost.clone()].copy_from_slice(&2_280_000_i64.to_le_bytes());
+
+    let (values, withheld) = walk(&bytes, None);
+    assert_eq!(values, [None; STAT_LANE_COUNT]);
+    assert_eq!(withheld.len(), STAT_LANE_COUNT);
+    assert!(withheld.iter().all(|(_, reason)| *reason == "variant stat organisation bonus names unreadable"));
+
+    let (values, withheld) = walk_moving(&bytes, Some(lexer), moved.clone());
+    assert_eq!(values, [None; STAT_LANE_COUNT], "a name read while the lexer moves is never trusted");
+    assert!(withheld.iter().all(|(_, reason)| *reason == "lexer changed during lookup"));
+
+    let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
+    let world = World { bytes: &bytes, lexer: Some(lexer), moves: moved, headers: Cell::new(0) };
+    assert_eq!(walk_stats_carried(&world, 0, &[row, row], &mut rows, &mut (), &mut witness), Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert!(witness.0[..STAT_LANE_COUNT].iter().all(|(_, reason)| *reason == "lexer changed during lookup"), "{:?}", witness.0);
+    assert_eq!(rows[1].values, cached.map(Some), "the next design reads the moved table afresh: {:?}", witness.0);
+
+    let (entries_off, module_off, module_stats_off) = (0x1600, 0x1700, 0x1800);
+    let module_add = engine_native_parts::cequipment_module::ADD_STATS;
+    bytes[variant + MODULES + 8..variant + MODULES + 16].copy_from_slice(&((base_ptr + entries_off) as u64).to_le_bytes());
+    for offset in [16, 20] {
+        bytes[variant + MODULES + offset..variant + MODULES + offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    bytes[entries_off + 8..entries_off + 16].copy_from_slice(&((base_ptr + module_off) as u64).to_le_bytes());
+    bytes[module_off..module_off + 8].copy_from_slice(&(engine_native_parts::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[module_off + module_add..module_off + module_add + 8].copy_from_slice(&((base_ptr + module_stats_off) as u64).to_le_bytes());
+    for offset in [8, 12] {
+        bytes[module_off + module_add + offset..module_off + module_add + offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    bytes[module_stats_off..module_stats_off + 4].copy_from_slice(&77_i32.to_le_bytes());
+    bytes[module_stats_off + 8..module_stats_off + 16].copy_from_slice(&1_000_000_i64.to_le_bytes());
+    bytes[cost].copy_from_slice(&3_230_000_i64.to_le_bytes());
+    let (values, withheld) = walk(&bytes, Some(lexer));
+    assert_eq!(values[9], Some(3_230_000), "a module-built design's cost carries its organisation bonus: {withheld:?}");
+    assert_eq!(values[5], Some(84_000));
+}
+
+#[test]
+fn named_bonuses_multiply_through_the_owner_and_empty_handles_need_no_owner() {
+    struct World<'a> {
+        bytes: &'a [u8],
+        state: Option<u64>,
+    }
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == crate::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
+                return self.state.is_some_and(|state| {
+                    output.copy_from_slice(&state.to_le_bytes());
+                    true
+                });
+            }
+            let Some(slice) = address
+                .checked_sub(self.bytes.as_ptr() as usize)
+                .and_then(|at| self.bytes.get(at..at.saturating_add(output.len())))
+            else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+    struct Quiet(Vec<&'static str>);
+    impl StatWitness for Quiet {
+        fn quiet(&self) -> Result<QuietToken, &'static str> {
+            Ok(QuietToken::new(1, 7))
+        }
+        fn record_withheld(&mut self, _: usize, reason: &'static str) {
+            self.0.push(reason);
+        }
+    }
+    fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+        bytes[at..at + value.len()].copy_from_slice(value);
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        put(bytes, at, &(data as u64).to_le_bytes());
+        put(bytes, at + 8, &count.to_le_bytes());
+        put(bytes, at + 12, &count.to_le_bytes());
+    }
+
+    let mut bytes = vec![0_u8; 0x3000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let (variant, def_off, handles_off, state_off, slots_off, links_off) = (0x0, 0xc00, 0x1200, 0x1300, 0x1800, 0x1820);
+    let (country_off, manager_off, named_off, named_stats_off) = (0x1900, 0x2900, 0x2c00, 0x2e00);
+    let base_values = [0_i64, 100_000, 0, 100_000, 400_000, 80_000, 0, 0, 0, 2_400_000];
+    put(&mut bytes, def_off, &(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, def_off + cequipment_type::TOKEN, &77_u32.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        put(&mut bytes, def_off + cequipment_type::STATS_BASE + lane.stat_index * 8, &value.to_le_bytes());
+    }
+    put(&mut bytes, variant, &(VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, variant + TYPE, &REFERENCE_TYPE.to_le_bytes());
+    put(&mut bytes, variant + ID, &1_u32.to_le_bytes());
+    put(&mut bytes, variant + EQUIPMENT_TOKEN, &77_u32.to_le_bytes());
+    put(&mut bytes, variant + CREATOR_LINK, &1_u32.to_le_bytes());
+    put(&mut bytes, variant + DEFINITION, &((base_ptr + def_off) as u64).to_le_bytes());
+    let set_cost = |bytes: &mut [u8], cost: i64| {
+        for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+            let value = if lane.offset == BUILD_COST_IC_STAT { cost } else { value };
+            put(bytes, variant + lane.offset, &value.to_le_bytes());
+        }
+        put(bytes, variant + BUILD_COST, &cost.to_le_bytes());
+    };
+    array(&mut bytes, variant + NAMED_BONUSES, base_ptr + handles_off, 2);
+    put(&mut bytes, handles_off, &u32::MAX.to_le_bytes());
+    put(&mut bytes, handles_off + 4, &u32::MAX.to_le_bytes());
+
+    array(&mut bytes, state_off + crate::cgame_state::COUNTRIES, base_ptr + slots_off, 2);
+    array(&mut bytes, state_off + crate::cgame_state::COUNTRY_LINKS, base_ptr + links_off, 2);
+    put(&mut bytes, slots_off + 8, &((base_ptr + country_off) as u64).to_le_bytes());
+    put(&mut bytes, links_off + 4, &1_u32.to_le_bytes());
+    put(&mut bytes, country_off, &(crate::ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, country_off + crate::ccountry::ID, &1_u32.to_le_bytes());
+    put(&mut bytes, country_off + crate::ccountry::PRODUCTION_STATUS, &((base_ptr + manager_off) as u64).to_le_bytes());
+    put(&mut bytes, manager_off, &(crate::cproduction_status::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, manager_off + crate::cproduction_status::COUNTRY, &((base_ptr + country_off) as u64).to_le_bytes());
+    array(&mut bytes, manager_off + COUNTRY_NAMED_BONUSES, base_ptr + named_off, 1);
+    put(&mut bytes, named_off, &(NAMED_BONUS_VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, named_off + NAMED_BONUS_SPECIFIC, &(SPECIFIC_BONUS_VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, named_off + NAMED_BONUS_HANDLE, &7_u32.to_le_bytes());
+    array(&mut bytes, named_off + NAMED_BONUS_SPECIFIC + BONUS_STATS, base_ptr + named_stats_off, 1);
+    put(&mut bytes, named_stats_off, &77_i32.to_le_bytes());
+    put(&mut bytes, named_stats_off + 8, &(-10_000_i64).to_le_bytes());
+
+    let row = RegistryRow {
+        id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: base_ptr + variant,
+    };
+    let walk = |bytes: &[u8], state: Option<u64>| {
+        let (mut rows, mut witness) = (Vec::new(), Quiet(Vec::new()));
+        let outcome = walk_stats_carried(&World { bytes, state }, 0, &[row], &mut rows, &mut (), &mut witness);
+        assert_eq!(outcome, Outcome::Rows { len: 1 });
+        (rows[0].values, witness.0)
+    };
+    let state = Some((base_ptr + state_off) as u64);
+
+    set_cost(&mut bytes, 2_400_000);
+    let (values, withheld) = walk(&bytes, None);
+    assert_eq!(values, base_values.map(Some), "handles that name no bonus need no owner: {withheld:?}");
+
+    put(&mut bytes, handles_off + 4, &7_u32.to_le_bytes());
+    set_cost(&mut bytes, 2_160_000);
+    let (values, withheld) = walk(&bytes, state);
+    assert_eq!(values[9], Some(2_160_000), "a live named bonus multiplies the cost: {withheld:?}");
+
+    set_cost(&mut bytes, 2_400_000);
+    let (values, _) = walk(&bytes, state);
+    assert_eq!(values[9], None, "a cost that ignores the named bonus stays withheld");
+
+    let (values, withheld) = walk(&bytes, None);
+    assert_eq!(values, [None; STAT_LANE_COUNT]);
+    assert!(!withheld.is_empty(), "a live handle whose owner cannot be read withholds the design");
+}
+
+#[test]
+fn walk_stats_witness_checks_timing_after_module_reads_accepts_either_reliability_cap_and_recovers_independent_operands()
 {
     struct SteppingWorld<'a> {
         bytes: &'a [u8],
@@ -1767,7 +2045,7 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
             .any(|(_, reason)| *reason == "variant stat writer crossed read")
     );
 
-    for cached_rel in [100_000_i64, 150_000_i64] {
+    for (cached_rel, published) in [(100_000_i64, true), (150_000, true), (120_000, false)] {
         let mut high_rel = bytes.clone();
         let hr_base = high_rel.as_ptr() as usize;
         high_rel[var_off + DEFINITION..var_off + DEFINITION + 8]
@@ -1801,14 +2079,12 @@ fn walk_stats_witness_checks_timing_after_module_reads_withholds_ambiguous_relia
             ),
             Outcome::Rows { len: 1 }
         );
-        assert_eq!(rows[0].values[5], None);
+        assert_eq!(rows[0].values[5], published.then_some(cached_rel), "either rebuild mode's reliability is the game's own value");
         assert_eq!(rows[0].values[4], Some(42_000_000));
-        assert!(
-            witness
-                .withheld
-                .iter()
-                .any(|(lane, reason)| *lane == "reliability"
-                    && *reason == "variant stat reliability rebuild cap mode ambiguous")
+        assert_eq!(
+            witness.withheld.iter().any(|(lane, reason)| *lane == "reliability"
+                && *reason == "variant stat reliability disagrees with base definition"),
+            !published
         );
     }
 
