@@ -19,7 +19,7 @@ fn defensive_war_uses_the_scope_country_at_the_frame_hour() {
         })
     };
     let rows = vec![
-        replay_data::rows::CountryStabilityInputRow { country: 100, defensive_war: 1, ..Default::default() },
+        replay_data::rows::CountryStabilityInputRow { country: 100, at_war: 0, defensive_war: 1, ..Default::default() },
         replay_data::rows::CountryStabilityInputRow { country: 200, ..Default::default() },
     ];
     set::<tables::CountryStabilityInputs>(&mut frame, rows);
@@ -27,8 +27,14 @@ fn defensive_war_uses_the_scope_country_at_the_frame_hour() {
     assert_eq!(check(&frame, 2, "has_defensive_war = yes"), Ok(false));
     assert_eq!(check(&frame, 2, "has_defensive_war = no"), Ok(true));
     frame.hour += 1;
-    assert!(check(&frame, 2, "has_defensive_war = no").unwrap_err().names("CountryStabilityInputs"));
-    set::<tables::CountryStabilityInputs>(&mut frame, Vec::new());
+    set::<tables::CountryStabilityInputs>(&mut frame, vec![
+        replay_data::rows::CountryStabilityInputRow { country: 200, defensive_war: 1, ..Default::default() },
+    ]);
+    assert_eq!(check(&frame, 2, "has_defensive_war = no"), Ok(false));
+    assert!(check(&frame, 1, "has_defensive_war = no").unwrap_err().names("CountryStabilityInputs"));
+    *frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Unavailable {
+        reason: "stability inputs unreadable".into(),
+    };
     assert!(check(&frame, 2, "has_defensive_war = no").unwrap_err().names("CountryStabilityInputs"));
 }
 

@@ -184,7 +184,6 @@ impl Evaluator<'_, '_> {
             "has_defensive_war" => {
                 const WAR: u64 = mask::<CountryStabilityInputRow>(&["defensive_war"]);
                 let row = self.country_stability_inputs(slot, WAR)?;
-                world.table_fresh(tables::CountryStabilityInputs::ID)?;
                 is(row.defensive_war != 0)
             }
             "is_ai" => is(self.country_is_ai(slot)?),
