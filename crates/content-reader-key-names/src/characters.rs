@@ -1500,8 +1500,8 @@ fn parse_role_visibility_templates(
 
 fn uses_constant(items: &[Item]) -> bool {
     items.iter().any(|item| {
-        item.key.as_deref().is_some_and(|key| key.starts_with(b"@"))
-            || item.value.scalar().is_some_and(|value| value.starts_with(b"@"))
+        (!item.key_quoted && item.key.as_deref().is_some_and(|key| key.starts_with(b"@")))
+            || (!item.quoted() && item.value.scalar().is_some_and(|value| value.starts_with(b"@")))
             || item.value.items().is_some_and(uses_constant)
     })
 }
@@ -1592,6 +1592,10 @@ effect={generate_character={
         let constant = super::parse_leader_visibility_templates(b"@gate = mobilized\ncorps_commander = {\n visible = { has_country_flag = @gate }\n}").unwrap();
         assert_eq!(constant[0].line, 3);
         assert_eq!(constant[0].triggers, Err("its visible uses a file-local @ constant, which is not read".into()), "an operand the reader cannot resolve is refused, not evaluated as written");
+        let quoted = super::parse_leader_visibility_templates(b"corps_commander = {
+ visible = { has_country_flag = \"@gate\" }
+}").unwrap();
+        assert_eq!(quoted[0].triggers.as_ref().map(Vec::len), Ok(1), "a quoted operand is literal text, not a constant");
     }
 
     use super::*;
