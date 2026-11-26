@@ -450,12 +450,15 @@ class FamilyKitPatterns(unittest.TestCase):
                 "export const y = (label: string, n: number) => <span>{label}: {n}%</span>;\n"
                 "export const z = (n: number) => <span>Share = {n}%</span>;\n"
                 "export const w = (label: string, n: number) => <span>{label}&nbsp;{n}%</span>;\n"
+                "export const m = (n: number) => <span>{n}\n%</span>;\n"
+                "export const q = (n: number) => <span>\"{n}%\"</span>;\n"
+                "export const lbl = (n: number) => { const width = `${Math.round(n)}%`; return <span>{width}</span>; };\n"
             ),
         })
         self.assertEqual(code, 1)
         self.assertIn("family-hand-percent", out)
         self.assertIn("ui/src/widgets/foo/fooProjection.ts: family-hand-percent: 0 at the base, 8 now", out)
-        self.assertIn("ui/src/widgets/foo/FooBad.tsx: family-hand-percent: 0 at the base, 4 now; new at line 1, 2, 3, 4", out)
+        self.assertIn("ui/src/widgets/foo/FooBad.tsx: family-hand-percent: 0 at the base, 7 now; new at line 1, 2, 3, 4, 5, 7, 8", out)
         self.assertIn("formatShare", out)
         self.assertIn("formatProgress", out)
         self.assertIn("formatRecordedPercent", out)
@@ -467,8 +470,9 @@ class FamilyKitPatterns(unittest.TestCase):
                 "const width = (value: bigint) => `${Number(value * 100_000n / axis) / 1000}%`;\n"
                 "const color = `hsl(${h} ${s}% ${l}%)`;\n"
                 "const sample = \"n + '%'\";\n"
+                "const box = { width: `${w}%` } satisfies React.CSSProperties;\n"
                 "el.style.width = active ? `${w}%` : 'auto';\n"
-                "export const x = (w: number, active: boolean) => <div style={{ width: active ? `${w}%` : 'auto', left: `${w}%`, height: (w * 100) + '%' }}>{width(1n)}{color}{sample}</div>;\n"
+                "export const x = (w: number, active: boolean) => <div style={{ width: width(1n), left: `${w}%`, height: (w * 100) + '%' }}><span style={active ? { width: `${w}%` } : undefined}>{color}{sample}{box.width}</span></div>;\n"
             ),
         })[0], 0)
 
@@ -484,11 +488,13 @@ class FamilyKitPatterns(unittest.TestCase):
                 "export const x = (n: number) => <b> / {n.toFixed(1)}</b>;\n"
                 "export const y = (label: string, n: number) => <span>{label} / {n.toFixed(1)} / day</span>;\n"
                 "export const z = (tag: string, n: number) => `${/>}/.test(tag) ? n.toFixed(1) : n}`;\n"
+                "export const w = (tag: string, n: number) => `${/}</i.test(tag) ? n.toFixed(1) : n}`;\n"
+                "export const d = (n: number) => <><Option default />{n.toFixed(1)}<br /></>;\n"
             ),
         })
         self.assertEqual(code, 1)
         self.assertIn("ui/src/widgets/foo/regexTemplate.ts: family-locale-string: 0 at the base, 4 now; new at line 1, 2, 3, 4", out)
-        self.assertIn("ui/src/widgets/foo/JsxSlash.tsx: family-locale-string: 0 at the base, 3 now; new at line 1, 2, 3", out)
+        self.assertIn("ui/src/widgets/foo/JsxSlash.tsx: family-locale-string: 0 at the base, 5 now; new at line 1, 2, 3, 4, 5", out)
         self.assertEqual(check({}, {
             "ui/src/widgets/foo/divTemplate.ts": "const s = `${a / b} plain .toFixed(1) ${c / d}`;\n",
         })[0], 0)

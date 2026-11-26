@@ -111,25 +111,24 @@ function isDeferredNestedDecl(node, rootNode) {
   if (node.kind === SyntaxKind.FunctionDeclaration) {
     return node.name?.kind === SyntaxKind.Identifier && Boolean(node.body);
   }
-  if (node.kind === SyntaxKind.VariableDeclaration && node.name?.kind === SyntaxKind.Identifier && node.initializer) {
+  if ((node.kind === SyntaxKind.VariableDeclaration
+    || node.kind === SyntaxKind.Parameter
+    || (node.kind === SyntaxKind.BindingElement && node.propertyName?.kind !== SyntaxKind.ComputedPropertyName))
+    && node.name?.kind === SyntaxKind.Identifier && node.initializer) {
     const init = unwrapTsExpr(node.initializer);
     return init?.kind === SyntaxKind.ArrowFunction || init?.kind === SyntaxKind.FunctionExpression;
   }
   return false;
 }
 
-function collectPatternExpressions(pattern, out) {
-  if (!pattern) return;
-  if (pattern.kind === SyntaxKind.ObjectBindingPattern || pattern.kind === SyntaxKind.ArrayBindingPattern) {
-    for (const el of pattern.elements ?? []) {
-      if (!el || el.kind === SyntaxKind.OmittedExpression) continue;
-      if (el.propertyName?.kind === SyntaxKind.ComputedPropertyName && el.propertyName.expression) {
-        out.push(el.propertyName.expression);
-      }
-      if (el.initializer) out.push(el.initializer);
-      collectPatternExpressions(el.name, out);
-    }
-  }
+function isTransparentExpr(node) {
+  return Boolean(node) && (
+    node.kind === SyntaxKind.ParenthesizedExpression
+    || node.kind === SyntaxKind.AsExpression
+    || node.kind === SyntaxKind.SatisfiesExpression
+    || node.kind === SyntaxKind.TypeAssertionExpression
+    || node.kind === SyntaxKind.NonNullExpression
+  );
 }
 
 function extractObjectBindingMembers(pattern, checker) {
@@ -157,13 +156,7 @@ function extractObjectBindingMembers(pattern, checker) {
 
 function unwrapTsExpr(node) {
   let cur = node;
-  while (cur && (
-    cur.kind === SyntaxKind.ParenthesizedExpression
-    || cur.kind === SyntaxKind.AsExpression
-    || cur.kind === SyntaxKind.SatisfiesExpression
-    || cur.kind === SyntaxKind.TypeAssertionExpression
-    || cur.kind === SyntaxKind.NonNullExpression
-  )) {
+  while (isTransparentExpr(cur)) {
     cur = cur.expression;
   }
   return cur;
@@ -992,7 +985,11 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       const sym = info.exportSymbolByName.get(expName);
       if (!sym) return;
       const declMeta = info.declaredExports.get(expName);
-      const effectiveType = isType || Boolean(declMeta?.isType) || (sym.flags & SymbolFlags.Value) === 0;
+      const resolvedSym = (sym.flags & SymbolFlags.Alias) ? checker.getAliasedSymbol(sym) : sym;
+      const isSymTypeOnly = !resolvedSym || checker.isUnknownSymbol(resolvedSym)
+        ? !(sym.flags & SymbolFlags.Alias) && (sym.flags & SymbolFlags.Value) === 0
+        : (resolvedSym.flags & SymbolFlags.Value) === 0;
+      const effectiveType = isType || Boolean(declMeta?.isType) || isSymTypeOnly;
       if (declMeta) {
         for (const idx of declMeta.unitIndices) {
           if (effectiveType) markTypeUnit(rel, idx, true);
@@ -1301,12 +1298,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           if (hitSyms[i]?.id !== sym.id) continue;
           let cur = identHits[i];
           let parent = localParentOf.get(cur);
-          while (parent && (
-            parent.kind === SyntaxKind.ParenthesizedExpression
-            || parent.kind === SyntaxKind.AsExpression
-            || parent.kind === SyntaxKind.SatisfiesExpression
-            || parent.kind === SyntaxKind.NonNullExpression
-          )) {
+          while (isTransparentExpr(parent)) {
             cur = parent;
             parent = localParentOf.get(cur);
           }
@@ -1317,7 +1309,9 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             const keys = stringLiteralsFromType(checker.getTypeAtLocation(parent.argumentExpression));
             if (!keys) return null;
             for (const k of keys) members.add(k);
-          } else if (parent.kind === SyntaxKind.VariableDeclaration && parent.initializer === cur) {
+          } else if ((parent.kind === SyntaxKind.VariableDeclaration
+            || parent.kind === SyntaxKind.Parameter
+            || parent.kind === SyntaxKind.BindingElement) && parent.initializer === cur) {
             if (parent.name.kind === SyntaxKind.ObjectBindingPattern) {
               const extracted = extractObjectBindingMembers(parent.name, checker);
               if (!extracted) return null;
@@ -1361,11 +1355,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
       for (const { declRel, fn } of fns) {
         const rawParams = fn.parameters ?? [];
         const params = rawParams.filter((p, i) => !(i === 0 && p.name?.kind === SyntaxKind.Identifier && p.name.text === 'this'));
-        const rootNodes = [fn.body];
-        for (const p of params) {
-          if (p.initializer) rootNodes.push(p.initializer);
-          collectPatternExpressions(p.name, rootNodes);
-        }
+        const rootNodes = [fn.body, ...params];
         if (functionUsesArguments(fn, rootNodes)) return null;
         for (let i = 0; i <= argIdx && i < params.length; i += 1) {
           if (params[i]?.dotDotDotToken) return null;
@@ -1420,6 +1410,9 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
         const nextInType = inType || TYPE_NODE_KINDS.has(node.kind);
 
         if (isDeferredNestedDecl(node, rootNode)) {
+          if (node.kind === SyntaxKind.Parameter && node.type) {
+            walk(node.type, node, true, rootNode, newlyDeferred);
+          }
           if (!deferredNodes.has(node)) {
             deferredNodes.add(node);
             deferredNames.add(node.name.text);
@@ -1596,7 +1589,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           addModuleEdge(rel, dyn.targetRel, dynIsType, null);
           let cur = dyn.node;
           let p = parentOf.get(cur);
-          while (p && (p.kind === SyntaxKind.ParenthesizedExpression || p.kind === SyntaxKind.AsExpression || p.kind === SyntaxKind.SatisfiesExpression)) {
+          while (isTransparentExpr(p)) {
             cur = p;
             p = parentOf.get(cur);
           }
@@ -1654,12 +1647,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
           )) {
             let cur = node;
             let parent = parentOf.get(cur);
-            while (parent && (
-              parent.kind === SyntaxKind.ParenthesizedExpression
-              || parent.kind === SyntaxKind.AsExpression
-              || parent.kind === SyntaxKind.SatisfiesExpression
-              || parent.kind === SyntaxKind.NonNullExpression
-            )) {
+            while (isTransparentExpr(parent)) {
               cur = parent;
               parent = parentOf.get(cur);
             }
@@ -1766,12 +1754,7 @@ export function analyzeUiSymbolGraph(root, allFiles, roleByRel, entryPoints) {
             if (directMod) {
               let cur = n;
               let p = parentOf.get(cur);
-              while (p && (
-                p.kind === SyntaxKind.ParenthesizedExpression
-                || p.kind === SyntaxKind.AsExpression
-                || p.kind === SyntaxKind.SatisfiesExpression
-                || p.kind === SyntaxKind.NonNullExpression
-              )) {
+              while (isTransparentExpr(p)) {
                 cur = p;
                 p = parentOf.get(cur);
               }

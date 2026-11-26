@@ -537,6 +537,7 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
   await withRepo(baseFiles({
     'ui/src/nestedDead.ts': 'export const deadFromNested = () => 1;',
     'ui/src/nestedArrowDead.ts': 'export const deadFromArrow = () => 2;',
+    'ui/src/nestedParamDead.ts': 'export const deadFromParam = () => 21;',
     'ui/src/nestedLive.ts': 'export const liveFromNested = () => 3;',
     'ui/src/nestedKeepDeadChild.ts': 'export const deadChildHelper = () => 4;',
     'ui/src/nestedNs.ts': 'export const usedNs = () => 5; export const deadNs = () => 6;',
@@ -551,13 +552,14 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       import { REQUEST_PATHS } from './generated/dashboard.ts';
       import { deadFromNested } from './nestedDead.ts';
       import { deadFromArrow } from './nestedArrowDead.ts';
+      import { deadFromParam } from './nestedParamDead.ts';
       import { liveFromNested } from './nestedLive.ts';
       import { deadChildHelper } from './nestedKeepDeadChild.ts';
       import { compute } from './typeThenRuntimeHelper.ts';
       import { draw as shorthandDraw } from './shorthandTypeOnly.ts';
       import * as nestedNs from './nestedNs.ts';
       import * as typeOnlyNs from './typeOnlyNs.ts';
-      function start() {
+      function start(onTick = () => deadFromParam()) {
         const result = usedHoisted();
         function unusedInner() {
           return deadFromNested() + nestedNs.deadNs();
@@ -611,6 +613,7 @@ test('R3-S18: uncalled nested functions inside a called function do not keep the
       'ui/src/nestedArrowDead.ts',
       'ui/src/nestedDead.ts',
       'ui/src/nestedKeepDeadChild.ts',
+      'ui/src/nestedParamDead.ts',
     ]);
     assert.equal(result.ui.runtimeLive.has('ui/src/typeThenRuntimeSideEffect.ts'), true);
     assert.equal(result.ui.runtimeLive.has('ui/src/typeOnlyDyn.ts'), false);
@@ -639,6 +642,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
     'ui/src/nsInnerOwnArgs.ts': 'export const draw = () => 25; export const spare = () => 26;',
     'ui/src/nsComputedKey.ts': 'export const key = "k"; export const spare = () => 27;',
     'ui/src/nsNestedOuterArgs.ts': 'export const draw = () => 28; export const spare = () => 29;',
+    'ui/src/nsParamDestructDefault.ts': 'export const draw = () => 30; export const spare = () => 31;',
+    'ui/src/nsAngleCast.ts': 'export const draw = () => 32; export const spare = () => 33;',
+    'ui/src/angleReader.ts': 'export function readAngle(m: unknown) { return (<{ draw(): number }>m).draw(); }\n',
     'ui/src/helperA.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.draw(); }\n',
     'ui/src/helperB.ts': 'export function read(m: { draw(): number; spare(): number }) { return m.spare(); }\n',
     'ui/src/aliasedMod.ts': `
@@ -650,7 +656,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       function draw() { return 11; }
       export { draw, draw as spare };
     `,
+    'ui/src/aliasBarrelSideEffect.ts': 'console.log("barrel-side-effect");',
     'ui/src/aliasBarrelSub.ts': `
+      import './aliasBarrelSideEffect.ts';
       function draw() { return 12; }
       export { draw, draw as spare };
     `,
@@ -674,7 +682,10 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       import * as nsInnerOwnArgs from './nsInnerOwnArgs.ts';
       import * as nsComputedKey from './nsComputedKey.ts';
       import * as nsNestedOuterArgs from './nsNestedOuterArgs.ts';
+      import * as nsParamDestructDefault from './nsParamDestructDefault.ts';
+      import * as nsAngleCast from './nsAngleCast.ts';
       import * as aliasBarrelNs from './aliasBarrel.ts';
+      import { readAngle } from './angleReader.ts';
       import { read as readA } from './helperA.ts';
       import { read as readB } from './helperB.ts';
       import { run } from './aliasedMod.ts';
@@ -701,6 +712,9 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
       }
       function readPatternDefault(m: { draw(): number }, [v = m.draw()]: number[] = []) {
         return v;
+      }
+      function readParamDestructDefault(m: { draw(): number }, { draw } = m) {
+        return draw();
       }
       function readComputedKey(m: { key: string }, { [m.key]: value }: Record<string, number> = {}) {
         return value ?? 0;
@@ -742,6 +756,7 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
         loadLazy, worker, used, ref, REQUEST_PATHS,
         forwardDraw((nsTarget)), callDestructured(nsDestructured), escapeAll(nsEscaped),
         api.read(nsMethod), readDefault(nsDefaultInit), readPatternDefault(nsPatternDefault),
+        readParamDestructDefault(nsParamDestructDefault), readAngle(nsAngleCast),
         readComputedKey(nsComputedKey), readWithThis(nsThisParam), readArguments(nsArgsObj),
         readArgsShorthand(nsArgsShorthand), readNestedOuterArgs(nsNestedOuterArgs),
         readWithInnerOwnArgs(nsInnerOwnArgs), forwardBoth(nsSameOffset),
@@ -752,17 +767,20 @@ test('R3-S19: namespace passed to a local reader credits only consumed members, 
   }), async root => {
     const result = await runDeadCodeCheck(root);
     assert.deepEqual(result.ui.deadProduction, []);
+    assert.equal(result.ui.runtimeLive.has('ui/src/aliasBarrelSideEffect.ts'), true);
     assert.deepEqual(
       result.exports.unusedExports.map(e => e.key),
       [
         'ui/src/aliasBarrelSub.ts:draw',
         'ui/src/aliasPair.ts:draw',
         'ui/src/aliasedMod.ts:spare',
+        'ui/src/nsAngleCast.ts:spare',
         'ui/src/nsComputedKey.ts:spare',
         'ui/src/nsDefaultInit.ts:spare',
         'ui/src/nsDestructured.ts:spare',
         'ui/src/nsDocComment.ts:spare',
         'ui/src/nsInnerOwnArgs.ts:spare',
+        'ui/src/nsParamDestructDefault.ts:spare',
         'ui/src/nsPatternDefault.ts:spare',
         'ui/src/nsTarget.ts:spare',
         'ui/src/nsThisParam.ts:spare',
