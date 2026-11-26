@@ -35,7 +35,7 @@ import { addPathCalls, pathAllocations, pathCalls } from './path2d.fixture.ts';
 import { parseFollowed } from '../../test-support/followMessage.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import { buildBoundedStack, countrySeriesLooks, headReading, headValueOf } from './seriesHelpers.ts';
-import { timeAxisLabels } from '../../draw/kit.ts';
+import { resolveKitTokens, timeAxisLabels } from '../../draw/kit.ts';
 import { sampleSeriesValueAt } from './hitTest.ts';
 import { politicalPowerDeclaration, politicalPowerProjection } from '../../widgets/political-power/politicalPowerProjection.ts';
 import { navyLinesDeclaration, navyLinesProjection } from '../../widgets/navy-size/navyLinesProjection.ts';
@@ -3226,5 +3226,352 @@ describe('time-chart PR 4 backdrop cache & hover layout reuse', () => {
     timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:B@${H1936 + 8}`, art } as never, [260, 120]);
     assert.equal(endLabelMaps, 2, 'switching to series B rebuilds the hovered layout');
     art.dispose();
+  });
+});
+
+describe('time-chart selectedHour pinned day marker', () => {
+  it('adds zero draw calls when absent, paints with theme.selectedHour distinct from playhead when present, and skips repaints when pinned', () => {
+    const baseModel = (mode: 'lines' | 'stack', selectedHour?: number | null): TimeChartModel => ({
+      kind: 'selected-hour-fixture',
+      measureTitle: 'Pinned fixture',
+      mode,
+      hour: 200,
+      ...(selectedHour !== undefined ? { selectedHour } : {}),
+      extent: [100, 200],
+      yAxis: { format: 'number' },
+      series: mode === 'lines'
+        ? [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', role: 'primary', points: [{ hour: 100, value: 10 }, { hour: 200, value: 20 }], headValue: 20, headHour: 200 }]
+        : [],
+      ...(mode === 'stack' ? { stack: { hours: [100, 200], bands: [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', values: [10, 20] }], step: true } } : {}),
+    });
+
+    for (const mode of ['lines', 'stack'] as const) {
+      const absent = baseModel(mode);
+      const absentLayout = layoutTimeChart(absent, 600, 220, FONT, measure);
+      assert.equal(absentLayout.selectedX, null);
+      const outOfViewLayout = layoutTimeChart(baseModel(mode, 50), 600, 220, FONT, measure);
+      assert.equal(outOfViewLayout.selectedX, null);
+
+      const present = baseModel(mode, 150);
+      const presentLayout = layoutTimeChart(present, 600, 220, FONT, measure);
+      assert.equal(presentLayout.selectedX, presentLayout.toX(150));
+
+      const paintStyles = (model: TimeChartModel, layout: ReturnType<typeof layoutTimeChart>) => {
+        const { ctx, ops } = mockCanvas(600, 220);
+        const strokes: string[] = [];
+        const fills: string[] = [];
+        const origStroke = ctx.stroke.bind(ctx);
+        const origFill = ctx.fill.bind(ctx);
+        ctx.stroke = () => { strokes.push(String(ctx.strokeStyle)); origStroke(); };
+        ctx.fill = () => { fills.push(String(ctx.fillStyle)); origFill(); };
+        drawTimeChart(ctx, model, layout, LANE_THEME, null, 1);
+        return { ops: ops.length, strokes, fills };
+      };
+      const withoutMarker = paintStyles(absent, absentLayout);
+      const withMarker = paintStyles(present, presentLayout);
+      const tokens = resolveKitTokens(LANE_THEME);
+      assert.ok(withMarker.ops > withoutMarker.ops);
+      assert.notEqual(tokens.selectedHour, tokens.playhead, 'selectedHour colour is distinct from playhead');
+      assert.ok(withMarker.strokes.includes(tokens.selectedHour), `${mode}: selectedHour line uses theme accent token`);
+      assert.ok(withMarker.fills.includes(LANE_THEME.accent), `${mode}: selectedHour caret uses theme accent`);
+      assert.ok(!withoutMarker.strokes.includes(tokens.selectedHour), `${mode}: absent selectedHour draws no marker`);
+    }
+
+    const counts = { paints: 0 };
+    registerFamilyProjection({
+      kind: 'selected-hour-pinned-fixture',
+      family: 'time-chart',
+      project: (view: { readonly hour: number }, opts: { readonly selectedHour: number }) => ({
+        kind: 'selected-hour-pinned-fixture',
+        measureTitle: 'Pinned',
+        mode: 'stack',
+        hour: view.hour,
+        selectedHour: opts.selectedHour,
+        extent: [100, 300],
+        yAxis: { format: 'number' },
+        series: [],
+        stack: { hours: [100, 300], bands: [{ id: 'a', key: 'a', name: 'A', color: '#3366cc', values: [10, 20] }], step: true },
+      }),
+    } as never);
+    const lane = {
+      ...timeChartLane,
+      paint: (...args: Parameters<typeof timeChartLane.paint>) => { counts.paints++; return timeChartLane.paint(...args); },
+    };
+    const recording = installRecordingCanvas();
+    try {
+      const view = createLaneView(lane, () => {});
+      const binding = new LaneTransport().carry({
+        family: 'time-chart',
+        kind: 'selected-hour-pinned-fixture',
+        options: { selectedHour: 150 },
+        sources: {},
+        extent: [100, 300],
+        width: 600,
+        height: 220,
+        scrollTop: 0,
+        theme: LANE_THEME,
+      } as TimeChartBinding);
+      const state = new Map<string, unknown>();
+      let seq = 0;
+      const paintAt = (hour: number) => view.paint({
+        widget: 1,
+        subs: [],
+        pictures: [],
+        model: binding,
+        hour,
+        seek: 0,
+        speed: 24,
+        binding: { generation: 1, surfaces: [{ width: 600, height: 220, dpr: 1 }], offset: 0, pin: 200 },
+        inspect: null,
+        now: 1000,
+      }, state, () => `c${++seq}`);
+      paintAt(200);
+      assert.equal(counts.paints, 1);
+      counts.paints = 0;
+      for (let h = 201; h <= 224; h++) paintAt(200);
+      assert.equal(counts.paints, 0, 'pinned chart with unchanged selectedHour does zero repaints across 24 played hours');
+    } finally {
+      recording.restore();
+    }
+  });
+
+  it('keeps zoomed step-stack y-domain anchored on held runs and exposes recorded change hours to keyboard navigation', () => {
+    const model: TimeChartModel = {
+      kind: 'step-stack-zoom-fixture',
+      measureTitle: 'Consumption',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      view: { x: [101, 200] },
+      yAxis: { format: 'number', min: 0 },
+      series: [],
+      stack: {
+        hours: [0, 145],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [0, 150] }],
+        step: true,
+      },
+    };
+    const constantZoom: TimeChartModel = {
+      ...model,
+      stack: {
+        hours: [0],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [123] }],
+        step: true,
+      },
+    };
+    const zoomedLayout = layoutTimeChart(constantZoom, 600, 220, FONT, measure);
+    assert.ok(zoomedLayout.yDomain[1] >= 123, `zoomed step-stack keeps held value 123 on y-axis (got ${zoomedLayout.yDomain.join('..')})`);
+
+    const navLayout = layoutTimeChart(model, 600, 220, FONT, measure);
+    const stops = chartNavStops(model, navLayout);
+    assert.ok(stops.some(([key]) => key === 'plot:145'), `keyboard navigation stops include recorded change hour 145 (got ${stops.map(s => s[0]).join(',')})`);
+    const structure = timeChartLane.structure!({ layout: { model, base: navLayout } } as Parameters<NonNullable<typeof timeChartLane.structure>>[0]);
+    assert.deepEqual(structure.nav, stops, 'lane structure exposes recorded change hour 145');
+
+    const reducedWorldTension: TimeChartModel = {
+      kind: 'world-tension-fixture',
+      measureTitle: 'World tension',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      yAxis: { format: 'percent' },
+      series: [],
+      stack: {
+        reduced: true,
+        hours: [0, 100, 200],
+        total: { values: [0, 25, 60] },
+        bands: [{ id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', values: [0, 25, 60] }],
+        step: true,
+      },
+      hoverDetail: { hour: 200, items: [{ label: 'World tension', value: '60%', strong: true }] },
+    };
+    const wtLayout = layoutTimeChart(reducedWorldTension, 600, 220, FONT, measure);
+    const totalTip = deriveTimeChartTooltip(reducedWorldTension, wtLayout, 'label:__total__');
+    const bandTip = deriveTimeChartTooltip(reducedWorldTension, wtLayout, 'label:GER');
+    assert.ok((totalTip?.payload?.items?.length ?? 0) >= 2, 'reduced World Tension total end-label keeps its tooltip items');
+    assert.ok((bandTip?.payload?.items?.length ?? 0) >= 1, 'reduced World Tension band end-label keeps its tooltip items');
+
+    const fractionalZoom: TimeChartModel = {
+      kind: 'fractional-zoom-end',
+      measureTitle: 'Fuel burned',
+      mode: 'stack',
+      hour: 200,
+      extent: [0, 200],
+      view: { x: [0, 15.6] },
+      yAxis: { format: 'compact' },
+      series: [],
+      stack: {
+        reduced: true,
+        bucketed: true,
+        hours: [0, 15],
+        bands: [{ id: 'a', key: 'a', name: 'Army', color: '#3366cc', values: [10, 20] }],
+        step: true,
+      },
+      hoverDetail: { hour: 15, items: [{ label: 'Army', value: '20' }], replacesSeries: true },
+    };
+    const fracLayout = layoutTimeChart(fractionalZoom, 600, 220, FONT, measure);
+    const fracTip = deriveTimeChartTooltip(fractionalZoom, fracLayout, 'plot:15.6');
+    assert.equal(fracTip?.payload?.items?.[0]?.value, '20', 'fractional plot key matches exact hoverDetail at floored integer hour 15');
+
+    const disjointLine = makeTiledLine('GER', [makeBucket(0, 17, 10, 10, 10, 10, 0)]);
+    const disjointBounded = boundTiledSeries(disjointLine, displayedHour(10), {
+      prefixRuns: [
+        { firstHour: 0, lastHour: 0, value: 10 },
+        { firstHour: 8, lastHour: 10, value: 10, breakBefore: true },
+      ],
+    });
+    const disjointSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: disjointBounded };
+    const disjointModel: TimeChartModel = {
+      kind: 'disjoint-open-bucket',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 10,
+      extent: [0, 17],
+      yAxis: { format: 'number' },
+      series: [disjointSeries],
+    };
+    const disjointLayout = layoutTimeChart(disjointModel, 600, 220, FONT, measure);
+    const { subpaths } = buildLineSubpaths(disjointSeries, disjointLayout, 10);
+    assert.equal(subpaths.length, 2, 'disjoint straddlingRuns paint as separate subpaths without connecting across the gap');
+    assert.equal(sampleSeriesValueAt(disjointSeries, 4, 10), null, 'hour 4 between disjoint straddlingRuns does not report an exact 10');
+    assert.equal(sampleSeriesValueAt(disjointSeries, 9, 10)?.value, 10);
+
+    const gappedRaw = makeTiledLine('GER', [
+      makeBucket(0, 17, 10, 10, 10, 10, 0),
+      { ...makeBucket(18, 35, 10, 10, 10, 10, 18), firstBreak: true },
+    ]);
+    const gappedLine = { ...gappedRaw, summary: { ...gappedRaw.summary, tiles: { binHours: 18, valueAt: () => null } } };
+    const gappedBounded = boundTiledSeries(gappedLine, displayedHour(35 - 1), {
+      prefixRuns: [{ firstHour: 30, lastHour: 34, value: 10 }],
+    });
+    const gappedSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: gappedBounded };
+    const gappedModel: TimeChartModel = {
+      kind: 'gapped-closed-to-open',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 34,
+      extent: [0, 35],
+      yAxis: { format: 'number' },
+      series: [gappedSeries],
+    };
+    const gappedLayout = layoutTimeChart(gappedModel, 600, 220, FONT, measure);
+    assert.equal(buildLineSubpaths(gappedSeries, gappedLayout, 34).subpaths.length, 2, 'closed bucket does not connect across gap to straddling run');
+
+    const flatBreakLine = makeTiledLine('GER', [{ ...makeBucket(0, 17, 3, 3, 3, 3, 0), hasBreak: true }]);
+    const flatBreakSeries = {
+      id: 'GER',
+      key: 'GER',
+      name: 'German Reich',
+      color: '#3366cc',
+      role: 'primary' as const,
+      bounded: boundTiledSeries(flatBreakLine, displayedHour(17)),
+    };
+    const flatBreakModel: TimeChartModel = {
+      kind: 'flat-break-tooltip',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 17,
+      extent: [0, 17],
+      yAxis: { format: 'number' },
+      series: [flatBreakSeries],
+    };
+    const flatBreakTip = deriveTimeChartTooltip(flatBreakModel, layoutTimeChart(flatBreakModel, 600, 220, FONT, measure), 'plot:5');
+    assert.equal(flatBreakTip?.payload?.items?.[0]?.value, undefined, 'flat bucket with internal break does not display exact value 3 before exact read');
+    assert.equal(flatBreakTip?.payload?.items?.[0]?.missingReason, 'This hour is inside a grouped span; its figures come from the read of this hour');
+
+    const continuousBuckets = [
+      makeBucket(0, 23, 10, 10, 10, 10, 0),
+      makeBucket(24, 47, 10, 10, 10, 10, 24),
+    ];
+    const continuousRaw = makeTiledLine('GER', continuousBuckets);
+    const continuousLine: TiledLine = {
+      ...continuousRaw,
+      summary: { ...continuousRaw.summary, tiles: { binHours: 24, valueAt: () => null } },
+    };
+    const continuousBounded = boundTiledSeries(continuousLine, displayedHour(30), {
+      prefixRuns: [{ firstHour: 0, lastHour: 47, value: 10, breakBefore: true }],
+    });
+    assert.notEqual(continuousBounded.straddlingRuns?.[0]?.breakBefore, true, 'clipping a run at bucket start drops an earlier segment-start break');
+    assert.equal(continuousBounded.buckets.at(1)?.firstBreak, false, 'cut straddling bucket drops an earlier segment-start break');
+    const continuousSeries = { id: 'GER', key: 'GER', name: 'German Reich', color: '#3366cc', role: 'primary' as const, bounded: continuousBounded };
+    const continuousModel: TimeChartModel = {
+      kind: 'continuous-straddle-boundary',
+      measureTitle: 'Political power',
+      mode: 'lines',
+      hour: 30,
+      extent: [0, 47],
+      yAxis: { format: 'number' },
+      series: [continuousSeries],
+    };
+    const continuousLayout = layoutTimeChart(continuousModel, 600, 220, FONT, measure);
+    assert.equal(buildLineSubpaths(continuousSeries, continuousLayout, 30).subpaths.length, 1, 'continuous 0-47 run does not split at hour 24 bucket boundary');
+  });
+
+  it('reuses coarse BoundedSeries and source maps across identical ticks when head produces prefixRuns', () => {
+    const continuousBuckets = [
+      makeBucket(0, 23, 10, 10, 10, 10, 0),
+      makeBucket(24, 47, 10, 10, 10, 10, 24),
+    ];
+    const sceneTiles = new SceneTiles();
+    const wireLine = {
+      source: 'main',
+      tag: 'GER',
+      head: 'h',
+      decimals: 0,
+      binHours: 24,
+      from: 0,
+      to: 47,
+      width: 2,
+      buckets: continuousBuckets,
+      missing: [],
+      parts: [],
+    };
+    const staticScene = {
+      widget: 1,
+      subs: [{ id: 1, product: 'series-state', channel: 'pinned' as const }],
+      pictures: [{
+        h: 30,
+        c: 30,
+        parts: [{
+          h: 30,
+          c: 30,
+          value: {
+            kind: 'panel' as const,
+            bytes: null,
+            data: {
+              decimals: 0,
+              states: [{ tag: 'GER', run: { firstHour: 0, lastHour: 47, valueRaw: '10', startsSegment: true } }],
+            },
+            refused: null,
+          },
+          refused: null,
+          cells: [],
+          seeds: new Map(),
+          channel: 'pinned' as const,
+          version: 1,
+          bytes: 0,
+        }],
+        value: {
+          kind: 'panel' as const,
+          bytes: null,
+          data: {
+            decimals: 0,
+            states: [{ tag: 'GER', run: { firstHour: 0, lastHour: 47, valueRaw: '10', startsSegment: true } }],
+          },
+          refused: null,
+        },
+        refused: null,
+      }],
+      model: null,
+    };
+    const staticSources = { sources: { main: 1 } };
+    const staticBinding = {
+      tiledBySource: { main: { GER: wireLine } },
+      headSourceBySeries: { main: { answerName: 'main', tags: ['GER'] } },
+    };
+    const firstSeries = sceneTiles.series(staticScene as never, staticSources, staticBinding, 30);
+    const secondSeries = sceneTiles.series(staticScene as never, staticSources, staticBinding, 30);
+    assert.strictEqual(secondSeries?.get('main')?.get('GER'), firstSeries?.get('main')?.get('GER'), 'unchanged coarse series reuses BoundedSeries across identical ticks');
+    assert.strictEqual(secondSeries, firstSeries, 'unchanged coarse series reuses source map across identical ticks');
   });
 });

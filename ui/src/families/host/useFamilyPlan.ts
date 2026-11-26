@@ -605,9 +605,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   const gateRecordedRef = useRef(gate.recorded);
   gateRecordedRef.current = gate.recorded;
 
+  const applySeriesViewportRef = useRef<((vp: TileViewport) => void) | null>(null);
+
   useEffect(() => {
     const currentPlan = planForTilesRef.current;
     if (!active || !pixelBinnedKey || !currentPlan) {
+      applySeriesViewportRef.current = null;
       for (const view of tileViewsRef.current.values()) view.close();
       tileViewsRef.current.clear();
       return;
@@ -617,18 +620,27 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     );
     const views = new Map<string, TileView>();
     let disposed = false;
+    let batching = false;
+    let dirty = false;
     let rev = 0;
     let heldSeries = NO_TILED_SERIES;
 
     const publish = () => {
       if (disposed) return;
-      heldSeries = reuseTiledSeries(heldSeries, views);
+      if (batching) {
+        dirty = true;
+        return;
+      }
       let firstError: unknown = null;
       let topRefused: string | null = null;
+      let allReady = views.size > 0;
       for (const tv of views.values()) {
+        if (!tv.settled) allReady = false;
         if (firstError === null && tv.error !== null) firstError = tv.error;
         topRefused ??= tv.top?.refused ?? null;
       }
+      if (!allReady && firstError === null && topRefused === null) return;
+      heldSeries = allReady ? reuseTiledSeries(heldSeries, views) : NO_TILED_SERIES;
       rev++;
       const snapshot = { key: pixelBinnedKey, series: heldSeries, revision: rev, error: firstError, topRefused };
       inFrame(() => {
@@ -696,11 +708,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         publish,
       );
       views.set(entry.name, tv);
-      if (seriesViewportRef.current) tv.setView(seriesViewportRef.current);
     }
     tileViewsRef.current = views;
+    const applyViewport = (vp: TileViewport) => {
+      batching = true;
+      dirty = false;
+      for (const tv of views.values()) tv.setView(vp);
+      batching = false;
+      if (dirty) publish();
+    };
+    applySeriesViewportRef.current = applyViewport;
+    if (seriesViewportRef.current) applyViewport(seriesViewportRef.current);
     return () => {
       disposed = true;
+      if (applySeriesViewportRef.current === applyViewport) applySeriesViewportRef.current = null;
       for (const tv of views.values()) tv.close();
       if (tileViewsRef.current === views) tileViewsRef.current = new Map();
     };
@@ -708,7 +729,8 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
 
   const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
     seriesViewportRef.current = nextViewport;
-    for (const tv of tileViewsRef.current.values()) tv.setView(nextViewport);
+    if (applySeriesViewportRef.current) applySeriesViewportRef.current(nextViewport);
+    else for (const tv of tileViewsRef.current.values()) tv.setView(nextViewport);
   }, []);
 
   const retryTiles = useCallback(() => {

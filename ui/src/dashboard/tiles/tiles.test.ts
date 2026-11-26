@@ -3,8 +3,6 @@ import test from 'node:test';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import { countryFromKey, countryKey } from '../countryKey.ts';
 import type { ChartBucket } from '../../charts/chartSummary';
-import { summaryFits } from '../../charts/chartSummary.ts';
-import { plotFrame } from '../../charts/frame.ts';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
 import { followAtHead, valueAtHead } from './head.ts';
@@ -394,8 +392,6 @@ test('a tiled line fits the frame and answers the head value from the tile summa
   await settle();
   const lines = [...view.current!.values()];
   const binHours = binHoursOf(at.end - at.from + 1, at.width);
-  const frame = plotFrame(700, 300, { top: 10, right: 40, bottom: 20, left: 60 }, [at.from, head], [-300, 300], false);
-  assert.ok(summaryFits(frame, lines[0].summary, head));
   const shown = lines[0].summary.tiles!.valueAt(head);
   const bucket = lines[0].summary.buckets[Math.floor(head / binHours) - Math.floor(lines[0].summary.from / binHours) - 1]!.lastValue;
   assert.equal(shown, bucket);

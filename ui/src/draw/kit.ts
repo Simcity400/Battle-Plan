@@ -90,6 +90,7 @@ function buildKitTokens(theme: KitTokenInput) {
     gridLine: theme.gridLine ?? veil(dark ? 0.055 : 0.07),
     zeroLine: theme.zeroLine ?? veil(dark ? 0.18 : 0.22),
     playhead: theme.playhead ?? veil(dark ? 0.28 : 0.34),
+    selectedHour: rgbaColor(theme.accent, dark ? 0.88 : 0.82),
     crosshair: theme.crosshair ?? veil(dark ? 0.5 : 0.52),
     dateTabBg: theme.dateTabBg ?? (theme.raised ?? theme.surface),
     dateTabText: theme.dateTabText ?? theme.text,
@@ -1220,6 +1221,33 @@ export function drawPlayheadLine(
   ctx.moveTo(px, top);
   ctx.lineTo(px, bottom);
   ctx.stroke();
+  ctx.restore();
+}
+
+export function drawSelectedHourLine(
+  ctx: Canvas2D,
+  x: number,
+  top: number,
+  bottom: number,
+  theme: FamilyTheme,
+): void {
+  if (bottom <= top) return;
+  const tokens = resolveKitTokens(theme);
+  const px = Math.floor(x) + 0.5;
+  ctx.save();
+  ctx.strokeStyle = tokens.selectedHour;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(px, top);
+  ctx.lineTo(px, bottom);
+  ctx.stroke();
+  ctx.fillStyle = theme.accent;
+  ctx.beginPath();
+  ctx.moveTo(px - 4, top);
+  ctx.lineTo(px + 4, top);
+  ctx.lineTo(px, top + 5);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
 }
 

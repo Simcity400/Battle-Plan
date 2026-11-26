@@ -99,6 +99,14 @@ export class TileView {
   }
 
   get current(): ReadonlyMap<string, TiledLine> | null { return this.lines; }
+  get settled(): boolean {
+    return this.lines !== null && this.wanted !== null && this.assembled !== null
+      && this.assembled.binHours === this.wanted.binHours
+      && this.assembled.first <= this.wanted.first
+      && this.wanted.last <= this.assembled.last
+      && this.assembled.width === this.wanted.width
+      && this.assembled.cell === this.wanted.cell;
+  }
   get error(): unknown { return this.failure; }
   get top(): TileRanked | null { return this.ranked; }
   get isTop(): boolean { return !!this.lane.top; }

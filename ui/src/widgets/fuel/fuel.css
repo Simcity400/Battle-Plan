@@ -1,0 +1,13 @@
+.fuel-detail-window { width: min(720px, calc(100vw - 24px)); height: min(680px, calc(100vh - 24px)); }
+.fuel-detail-body { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; }
+.fuel-detail-body > .segmented { align-self: flex-end; }
+.fuel-detail-section { display: flex; flex: 1; flex-direction: column; gap: var(--space-3); min-height: 0; overflow-y: auto; }
+.fuel-detail-bar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.fuel-detail-table { flex: 0 0 205px; min-height: 140px; }
+.fuel-detail-table-compact { flex: 0 0 132px; min-height: 132px; }
+.fuel-detail-table-single { flex: 0 0 56px; min-height: 44px; }
+.fuel-detail-chart { flex: 1 1 190px; min-height: 165px; }
+.fuel-detail-details { display: flex; flex-direction: column; gap: var(--space-2); }
+.fuel-detail-details > summary { cursor: pointer; font-size: var(--type-sm); font-weight: 500; color: var(--muted); }
+.fuel-detail-details .fuel-detail-table { height: 180px; }
+.fuel-detail-details .fuel-detail-chart { height: 180px; }

@@ -1,23 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveCell, liveKey, liveTexts } from './live.ts';
+import { liveKey, liveTexts } from './live.ts';
 import { valuesOf } from '../test-support/liveValues.ts';
 
-test('a key the values do not hold is missing with its reason, and a set cell tells its readers only when it changes', () => {
+test('a key the values do not hold is missing with its reason', () => {
   const values = valuesOf(new Map([[liveKey('GER', 'opinion'), 12]]), key => `no ${key.split('\u0000')[0]}`);
   assert.equal(values.get(liveKey('GER', 'opinion')), 12);
   assert.equal(values.get(liveKey('SOV', 'opinion')), undefined);
   assert.equal(values.missing(liveKey('SOV', 'opinion')), 'no SOV');
-  const cell = new LiveCell(1);
-  let told = 0;
-  const stop = cell.subscribe(() => { told++; });
-  cell.set(1);
-  cell.set(2);
-  assert.equal(told, 1);
-  assert.equal(cell.read(), 2);
-  stop();
-  cell.set(3);
-  assert.equal(told, 1);
 });
 
 test('live texts are read again when what they read lands though the hour stands still, and wake when it may have', () => {

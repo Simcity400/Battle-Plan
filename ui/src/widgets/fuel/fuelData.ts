@@ -1,5 +1,3 @@
-import type { ChartSummary } from '../../charts/chartSummary';
-import type { Run } from '../../charts/series';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatRational } from '../../families/valueFormat.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
@@ -158,13 +156,6 @@ export function fuelParts(reply: CountryFuelReply, read: FuelReadAt, measure: 'g
     transfer: null, reason: awards ? null : read.awardsReason };
 }
 
-export function partsStructure(reply: CountryFuelReply | undefined, measure: 'gain' | 'burn'): string {
-  const read = reply?.read;
-  const values = reply && read ? fuelParts(reply, read, measure) : null;
-  return JSON.stringify([reply?.missing ?? null, read?.leftOut ?? null, read?.day?.awards ? 1 : 0, values?.reason ?? null,
-    values?.parts.map(part => [part.id, part.label, part.reason ?? null]) ?? null, values?.transfer?.label ?? null, reply?.consumerNames ?? null]);
-}
-
 export function fuelTooltips(reply: CountryFuelReply, title: string,
   colors: { fuel: string; capacity: string; gained: string; burned: string }, digits: number): TooltipContent[] {
   const read = reply.read;
@@ -195,22 +186,4 @@ export function fuelTooltips(reply: CountryFuelReply, title: string,
   else if (day && BigInt(read.lendLeaseRaw) !== 0n) notes.push('Daily lend-lease total unavailable.');
   const note = notes.join(' ');
   return [{ title, rows, note }, { title, rows: [tank[0], rows.find(row => row.strong) ?? rows.at(-1)!], note }];
-}
-
-export function scaledSummary(summary: ChartSummary | undefined, scale: number): ChartSummary | undefined {
-  return summary && { ...summary, tiles: undefined, runs: summary.runs?.map(run => ({ ...run, value: run.value / scale })),
-    buckets: summary.buckets.map(bucket => bucket && ({ ...bucket, firstValue: bucket.firstValue / scale, lastValue: bucket.lastValue / scale,
-      minValue: bucket.minValue / scale, maxValue: bucket.maxValue / scale })) };
-}
-
-export function summaryRuns(summary: ChartSummary | undefined): Run[] {
-  if (!summary) return [];
-  if (summary.runs) return [...summary.runs];
-  return summary.buckets.flatMap(bucket => {
-    if (!bucket) return [];
-    const ordered = [...new Map([[bucket.firstHour, bucket.firstValue], [bucket.minHour, bucket.minValue], [bucket.maxHour, bucket.maxValue],
-      [bucket.lastValueHour, bucket.lastValue], [bucket.lastHour, bucket.lastValue]])].sort((a, b) => a[0] - b[0]);
-    return ordered.map(([hour, value], index) => ({ firstHour: hour, lastHour: bucket.hasBreak ? hour : ordered[index + 1] ? ordered[index + 1][0] - 1 : bucket.lastHour,
-      value, breakBefore: bucket.hasBreak || index === 0 && bucket.firstBreak }));
-  });
 }

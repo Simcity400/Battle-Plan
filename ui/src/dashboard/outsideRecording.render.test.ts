@@ -5,7 +5,6 @@ import type { ComponentType, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PlaybackController } from './playback.ts';
 import { createServer } from 'vite';
-import { tokensFromValues } from '../charts/tokens.ts';
 
 const OUTSIDE = 'This time is outside the recording.';
 type Host = typeof globalThis & { __stub?: Record<string, (...args: never[]) => unknown> };
@@ -14,7 +13,6 @@ const live = { read: () => ({ get: () => undefined, missing: () => 'Not recorded
 const head = (extra: Record<string, unknown> = {}) => ({ data: undefined, error: undefined, retry() {}, root() {}, live, outside: false, at: null, hour: null,
   atNow: () => null, shownAt: () => null, current: () => undefined, read: 'asked', ...extra });
 type Replacement = string | ((code: string) => string);
-const TOKENS = `export const useChartTokens = () => (${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}); export const useViewportHeight = () => 800;`;
 const wrapped = (name: string) => (code: string) => `${code.replace(new RegExp(`export function ${name}(?=[<(])`), `function real_${name}`)}
 export function ${name}(...args) { const stubbed = globalThis.__stub?.${name}?.(...args); return stubbed === undefined ? real_${name}(...args) : stubbed; }`;
 
@@ -35,27 +33,22 @@ const clockAt = (bounds: { firstHour: number; lastHour: number }, hour: number) 
   return clock;
 };
 const markup = (node: ReactNode) => renderToStaticMarkup(node as never);
-type Gated = { outside: { message: string; detail: string | undefined } | null };
-const gated = (_runtime: never, gate: Gated) => head(gate.outside ? { outside: true, outsideMessage: gate.outside.message, outsideDetail: gate.outside.detail } : {});
-
 test('a fuel consumption drill told to follow playback, in a widget pinned at 105, reads the playback hour: past its track it is outside the recording, never loading', async () => {
-  const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/widgets/fuel/fuelReads.ts': wrapped('usePartSeries'),
-    '/charts/drill/BreakdownChart.tsx': 'export default () => null;', '/charts/drill/DrillParts.tsx': 'export default () => null;', '/charts/useChartTokens.ts': TOKENS });
+  const { load, close } = await mount({
+    '/families/host/FamilyHost.tsx': 'export default ({ blockedState }) => blockedState ?? null;',
+  });
   try {
     const { default: Breakdown } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/fuel/FuelConsumptionBreakdown.tsx');
     const shortTrack = track(100, 109);
     const widget = { id: 'fuel', kind: 'fuel', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, options: {} };
     const clock = clockAt({ firstHour: 100, lastHour: 200 }, 110);
-    host.__stub = {
-      useHeadProduct: gated,
-      usePartSeries: () => ({ summaries: [], onSummaryView() {}, error: undefined, retry() {}, owner: null }),
-    };
     const shut = { recorded: () => null, within: () => null, span: () => null, follow: () => null };
+    const region = { widget, action: { kind: 'follow' } };
     const drawn = markup(createElement(Breakdown, { runtime: { tracks: [shortTrack], client: {}, clock }, gate: shut, widget, track: shortTrack, tag: 'GER', hour: null, follows: true,
-      digits: 2, campaign: 'campaign', selection: null, onSelection() {}, level: null, onLevel() {}, active: true, pickOwner: {}, extent: [100, 109], branchStart: 100,
-      within: undefined, detailHours: 24, onPick() {}, onContextMenu() {} }));
+      digits: 2, campaign: 'campaign', history: null, selection: null, onSelection() {}, level: null, onLevel() {}, active: true, pickOwner: {}, extent: [100, 109], playhead: 110,
+      within: null, detailHours: 24, region, onPick() {} }));
     assert.ok(drawn.includes(OUTSIDE) && !drawn.includes('data-state="loading"'), `following playback at 110, the drill is outside its track: ${drawn}`);
-  } finally { delete host.__stub; await close(); }
+  } finally { await close(); }
 });
 
 test('nested technology and entity-stat effect windows pin to their clicked hour instead of following playback', async () => {

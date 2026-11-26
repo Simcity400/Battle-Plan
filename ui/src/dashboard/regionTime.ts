@@ -220,6 +220,31 @@ export function lastRecordedHour(track: Branch | undefined): TrackHour | null {
   return hour === null ? null : hour as TrackHour;
 }
 
+export function coveredAtOrBefore(track: Branch, hour: number): number | null {
+  let h = Math.min(Math.floor(hour), track.branch.lastHour);
+  while (h >= track.branch.firstHour) {
+    const gap = gapAt(track, h);
+    if (!gap) return h;
+    h = gap.firstHour - 1;
+  }
+  return null;
+}
+
+export function pausedChartCutoff(
+  track: Branch,
+  parentPlayhead: number | null,
+  selectedAt: number | null,
+  extent: readonly [number, number],
+): number {
+  const fallback = lastRecordedHour(track) ?? extent[1];
+  const raw = selectedAt !== null && (selectedAt < extent[0] || selectedAt > extent[1])
+    ? fallback
+    : (parentPlayhead ?? fallback);
+  const covered = coveredAtOrBefore(track, raw);
+  if (selectedAt !== null) return covered !== null ? Math.max(covered, selectedAt) : selectedAt;
+  return covered ?? fallback;
+}
+
 export const at = (hour: number): RegionAction => ({ kind: 'at', hour: Math.floor(hour) });
 
 export function regionFollows(region: Region): boolean {

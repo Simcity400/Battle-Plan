@@ -86,11 +86,6 @@ export function demandBasis(branchId: string, reply: FuelDemandReply): FuelBasis
   return reply.countryInstance === null ? null : { branchId, tag: reply.tag, hour: reply.readHour, country: reply.country, countryInstance: reply.countryInstance };
 }
 
-export function demandGeometry(runs: readonly { firstHour: number; lastHour: number; startsSegment: boolean; amountRaw: string | null }[], scale: number) {
-  return runs.flatMap((run, i) => run.amountRaw === null ? [] : [{ firstHour: run.firstHour, lastHour: run.lastHour,
-    value: Math.max(0, Number(run.amountRaw) / scale), breakBefore: run.startsSegment || i === 0 || runs[i - 1].amountRaw === null || runs[i - 1].lastHour + 1 !== run.firstHour }]);
-}
-
 export function demandHistoryRange(
   extent: readonly [number, number],
   anchorHour: number | null | undefined,

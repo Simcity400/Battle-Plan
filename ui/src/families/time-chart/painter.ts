@@ -8,6 +8,7 @@ import {
   drawGapBand,
   drawLegendStrip,
   drawPlayheadLine,
+  drawSelectedHourLine,
   drawSeriesMissingStrip,
   drawTimeAxis,
   fitLegendStrip,
@@ -147,7 +148,23 @@ function traceBounded(trace: LineTrace, bounded: BoundedSeries, window: LineWind
   if (bounded.runs && bounded.runs.length > 0) {
     for (let i = from; i < bounded.runs.length; i++) trace.run(bounded.runs.at(i)!, window);
   } else {
-    for (let i = from; i < bounded.buckets.length; i++) trace.bucket(bounded.buckets.at(i), window);
+    const useStraddlingRuns = bounded.straddling === 'cut' && !!bounded.straddlingRuns?.length;
+    const limit = useStraddlingRuns ? bounded.buckets.closedLength : bounded.buckets.length;
+    for (let i = from; i < limit; i++) trace.bucket(bounded.buckets.at(i), window);
+    if (useStraddlingRuns && from <= bounded.buckets.closedLength) {
+      const tail = bounded.buckets.at(bounded.buckets.closedLength);
+      const runs = bounded.straddlingRuns!;
+      let prevEnd = trace.prevLastHour;
+      for (let r = 0; r < runs.length; r++) {
+        const run = runs[r]!;
+        if (trace.open && ((r === 0 && tail?.firstBreak) || run.firstHour > prevEnd + 1)) {
+          trace.open = false;
+        }
+        trace.run(run, window);
+        prevEnd = run.lastHour;
+      }
+      trace.prevLastHour = prevEnd;
+    }
   }
 }
 
@@ -1302,6 +1319,9 @@ function drawTimeChartBackdrop(
       }
     }
     drawPlayheadLine(ctx, layout.playheadX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
+    if (layout.selectedX !== null) {
+      drawSelectedHourLine(ctx, layout.selectedX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
+    }
   } else {
     const zeroY = layout.toY(0);
     const clipZeroY = layout.yDomain[0] < 0 ? zeroY : layout.baseY + 4;
@@ -1596,6 +1616,9 @@ function drawTimeChartBackdrop(
     }
 
     drawPlayheadLine(ctx, layout.playheadX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
+    if (layout.selectedX !== null) {
+      drawSelectedHourLine(ctx, layout.selectedX, layout.top - 2, layout.baseY + layout.markerLaneHeight, theme);
+    }
 
     for (const dot of endDots) {
       ctx.save();

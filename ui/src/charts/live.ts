@@ -7,38 +7,6 @@ export const liveKey = (...parts: readonly string[]) => parts.join('\u0000');
 
 export const noValues = (reason: string): LiveValues<never> => ({ get: () => undefined, missing: () => reason });
 
-export function mapLive<T, U>(source: Live<T>, make: (value: T) => U): Live<U> {
-  let made: { from: T; value: U } | null = null;
-  return {
-    read: () => {
-      const from = source.read();
-      if (!made || !Object.is(made.from, from)) made = { from, value: make(from) };
-      return made.value;
-    },
-    subscribe: source.subscribe,
-  };
-}
-
-export class LiveCell<T> implements Live<T> {
-  private value: T;
-  private readonly listeners = new Set<() => void>();
-
-  constructor(value: T) { this.value = value; }
-
-  read = (): T => this.value;
-
-  set(value: T): void {
-    if (Object.is(value, this.value)) return;
-    this.value = value;
-    for (const changed of [...this.listeners]) changed();
-  }
-
-  subscribe = (changed: () => void): (() => void) => {
-    this.listeners.add(changed);
-    return () => { this.listeners.delete(changed); };
-  };
-}
-
 export interface LiveTexts { text(key: string): string; subscribe(changed: () => void): () => void }
 
 export interface TextClock { subscribeFrame(listener: () => void): () => void; subscribe(listener: () => void): () => void }

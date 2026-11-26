@@ -453,8 +453,7 @@ test('FuelBranchesWidget keeps the detail window mounted across refusals, uses t
           return code
             .replace("from '../../charts/drill/useDrill'", "from 'fb-test-useDrill'")
             .replace("from '../../families/host/registry.tsx'", "from 'fb-test-familyWidget'")
-            .replace("from '../fuel/FuelConsumptionBreakdown'", "from 'fb-test-breakdown'")
-            .replace("from '../../components/ContextMenu'", "from 'fb-test-contextMenu'");
+            .replace("from '../fuel/FuelConsumptionBreakdown'", "from 'fb-test-breakdown'");
         }
         if (norm.endsWith('/host/DetailWindowHost.tsx')) {
           return code.replace("from '../../components/Popover'", "from 'fb-test-popover'");
@@ -468,9 +467,6 @@ test('FuelBranchesWidget keeps the detail window mounted across refusals, uses t
           return `import { createElement } from 'react';
             export const usePopover = () => ({ popup: { current: null }, openAt() {} });
             export const Popover = props => createElement('div', { 'data-popover': 'true', 'data-subject': props['data-subject'] }, props.children);`;
-        }
-        if (id === '\0fb-test-contextMenu') {
-          return `export const useContextMenu = () => ({ open() {}, menu: null });`;
         }
         if (id === '\0fb-test-familyWidget') {
           return `import { createElement } from 'react';
