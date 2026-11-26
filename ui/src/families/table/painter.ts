@@ -121,6 +121,7 @@ export interface DrawFamilyTableInput {
   readonly dateGrouped?: boolean;
   readonly dayDividersOnly?: boolean;
   readonly rhythm?: TableRhythm;
+  readonly hideHeader?: boolean;
   readonly endNote?: string;
   readonly precomputedMaxima?: Map<string, number>;
   readonly staticRowLooks?: boolean;
@@ -284,6 +285,7 @@ export function drawFamilyTable(
     dateGrouped = false,
     dayDividersOnly = false,
     rhythm,
+    hideHeader = false,
     endNote,
     rowHeightMode = 'standard',
     rowGeom = null,
@@ -398,7 +400,7 @@ export function drawFamilyTable(
       const col = layout.columns[c]!;
       colKey += `${col.key}:${col.width}:${col.narrowed ? 1 : 0}:${col.display}:${col.tone ?? ''}:${col.barEligible ? 1 : 0}|`;
     }
-    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${rhythm ?? ''}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${endNote ?? ''}|${colKey}`;
+    frameKey = `${width}|${height}|${uniformRowHeight}|${rowHeightMode}|${rhythm ?? ''}|${hideHeader ? 1 : 0}|${dateGrouped ? 1 : 0}|${settings.barsBehind ?? 'all'}|${settings.sort.column}|${rank}|${scrollTop}|${scrollLeft}|${layout.scrollable ? 1 : 0}|${layout.pinnedCount}|${layout.pinnedWidth}|${first}|${last}|${rows.length ? '' : empty ?? ''}|${endNote ?? ''}|${colKey}`;
   }
 
   const logRows = rhythm === 'log';
@@ -428,6 +430,7 @@ export function drawFamilyTable(
     treeColumn: treeColumnOf(layout.columns),
     treeLevels,
     hasActionColumn: layout.columns.some(col => col.cellKind === 'action'),
+    hideHeader,
     artCache,
     measure,
     fit,

@@ -114,10 +114,34 @@ export interface CellRenderContext {
   readonly treeColumn: number;
   readonly treeLevels: number;
   readonly hasActionColumn?: boolean;
+  readonly hideHeader?: boolean;
   readonly artCache?: LaneArtCache;
   readonly measure: (text: string, font: string) => number;
   readonly fit: (text: string, font: string, maxWidth: number) => string;
 }
+
+const UNIT_ART_SIZE = 14;
+const UNIT_ART_GAP = 5;
+
+function drawFigurePhrase(rc: CellRenderContext, figure: string, suffix: string, left: number, right: number, middle: number, figureFont: string, suffixFont: string, figureColor: string): void {
+  const { ctx, theme, measure, fit } = rc;
+  const shown = fit(figure, figureFont, Math.max(0, right - left));
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = figureFont;
+  ctx.fillStyle = figureColor;
+  ctx.fillText(shown, left, middle);
+  const after = left + measure(shown, figureFont);
+  if (suffix && after + measure(suffix, suffixFont) <= right) {
+    ctx.font = suffixFont;
+    ctx.fillStyle = theme.muted;
+    ctx.fillText(suffix, after, middle);
+  }
+  ctx.restore();
+}
+
+const endAligned = (column: FamilyColumnLayout, rc: CellRenderContext): boolean => !!column.numeric && rc.hideHeader !== true;
 
 export interface CellDrawArgs {
   readonly item: Extract<FlatTableRow, { kind: 'data' }>;
@@ -632,13 +656,13 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
   if (kind === 'date') {
     if (item.showDate === false) return;
     if (formatted.kind === 'notApplicable') {
-      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: endAligned(column, rc), muted: item.row.muted }, theme, measure, fit);
       return;
     }
     const hourVal = paintModel.value.kind === 'known' || paintModel.value.kind === 'zero' || paintModel.value.kind === 'partial'
       ? Number(paintModel.value.value)
       : null;
-    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width: Math.max(0, right - left), align: column.numeric ? 'right' : 'left' });
+    drawDateColumn(ctx, left, y, rowHeight, hourVal, theme, { width: Math.max(0, right - left), align: endAligned(column, rc) ? 'right' : 'left' });
     return;
   }
 
@@ -663,7 +687,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
 
   if (kind === 'track' || column.display === 'track' || column.display === 'meterAfter' || column.display === 'meterBefore') {
     if (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable') {
-      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: true, muted: item.row.muted }, theme, measure, fit);
+      drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: rc.hideHeader !== true, muted: item.row.muted }, theme, measure, fit);
       return;
     }
     const valFont = fontOf(theme, 13.5, 500);
@@ -673,10 +697,18 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     const textW = measure(formatted.text, valFont);
     const numSlot = Math.max(42, Math.ceil(textW + suffixW));
     const trackW = Math.min(56, Math.max(18, right - left - numSlot - 10));
-    const trackX = right - numSlot - 10 - trackW;
-    if (trackW >= 18 && fraction !== null) {
+    const tracked = trackW >= 18 && fraction !== null;
+    const figureColor = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
+    if (rc.hideHeader === true) {
+      if (tracked) {
+        drawTrackBar(ctx, left, middle, trackW, 6, fraction, paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme), theme);
+      }
+      drawFigurePhrase(rc, formatted.text, suffix, tracked ? left + trackW + 10 : left, right, middle, valFont, suffixFont, figureColor);
+      return;
+    }
+    if (tracked) {
       const barColor = paintModel.bar.alert ? CHART_MEASURE_COLOURS.short : trackFillOf(column, theme);
-      drawTrackBar(ctx, trackX, middle, trackW, 6, fraction, barColor, theme);
+      drawTrackBar(ctx, right - numSlot - 10 - trackW, middle, trackW, 6, fraction, barColor, theme);
     }
     let numRight = right;
     if (suffix && suffixW + 12 <= Math.max(0, right - left)) {
@@ -691,7 +723,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
     }
     ctx.save();
     ctx.font = valFont;
-    ctx.fillStyle = item.row.muted || formatted.kind === 'zero' ? theme.muted : theme.text;
+    ctx.fillStyle = figureColor;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.fillText(fit(formatted.text, valFont, Math.max(0, numRight - left)), numRight, middle);
@@ -785,7 +817,7 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       drawHatchRect(ctx, left, Math.round(middle - 6), hatchW, 12, 3, theme);
       return;
     }
-    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: !!column.numeric, muted: item.row.muted }, theme, measure, fit);
+    drawFormattedValue(ctx, formatted, { left, right, middle, endAligned: endAligned(column, rc), muted: item.row.muted }, theme, measure, fit);
     return;
   }
 
@@ -818,38 +850,46 @@ export function drawApprovedCell(rc: CellRenderContext, args: CellDrawArgs): voi
       : (isZero || item.row.muted)
         ? theme.muted
         : theme.text;
-    let numRight = right;
-    if (cell?.unitSuffix) {
-      const suffixFont = fontOf(theme, 11.5, 400);
-      const suffix = ` ${cell.unitSuffix}`;
-      const suffixW = measure(suffix, suffixFont);
-      if (suffixW + 12 <= avail) {
-        ctx.save();
-        ctx.font = suffixFont;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = theme.muted;
-        ctx.fillText(suffix, right, textMid);
-        ctx.restore();
-        numRight = right - suffixW;
+    if (rc.hideHeader === true) {
+      let at = left;
+      if (cell?.unitArt && avail >= UNIT_ART_SIZE + UNIT_ART_GAP) {
+        drawArtSlot(ctx, at, Math.round(textMid - UNIT_ART_SIZE / 2), UNIT_ART_SIZE, UNIT_ART_SIZE, slotOf(cell.unitArt, cell.unitSuffix ?? column.label, rc), theme, { radius: 2 });
+        at += UNIT_ART_SIZE + UNIT_ART_GAP;
       }
-    }
-    const numAvail = Math.max(0, numRight - left);
-    const shownNum = fit(formatted.text, font, numAvail);
-    ctx.save();
-    ctx.font = font;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = figureColor;
-    ctx.fillText(shownNum, numRight, textMid);
-    ctx.restore();
-    if (cell?.unitArt) {
-      const iconSize = 14;
-      const numW = measure(shownNum, font);
-      const iconX = Math.round(numRight - numW - iconSize - 5);
-      if (iconX >= left) {
-        const state = slotOf(cell.unitArt, cell.unitSuffix ?? column.label, rc);
-        drawArtSlot(ctx, iconX, Math.round(textMid - iconSize / 2), iconSize, iconSize, state, theme, { radius: 2 });
+      drawFigurePhrase(rc, formatted.text, cell?.unitSuffix ? ` ${cell.unitSuffix}` : '', at, right, textMid, font, fontOf(theme, 11.5, 400), figureColor);
+    } else {
+      let numRight = right;
+      if (cell?.unitSuffix) {
+        const suffixFont = fontOf(theme, 11.5, 400);
+        const suffix = ` ${cell.unitSuffix}`;
+        const suffixW = measure(suffix, suffixFont);
+        if (suffixW + 12 <= avail) {
+          ctx.save();
+          ctx.font = suffixFont;
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = theme.muted;
+          ctx.fillText(suffix, right, textMid);
+          ctx.restore();
+          numRight = right - suffixW;
+        }
+      }
+      const numAvail = Math.max(0, numRight - left);
+      const shownNum = fit(formatted.text, font, numAvail);
+      ctx.save();
+      ctx.font = font;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = figureColor;
+      ctx.fillText(shownNum, numRight, textMid);
+      ctx.restore();
+      if (cell?.unitArt) {
+        const numW = measure(shownNum, font);
+        const iconX = Math.round(numRight - numW - UNIT_ART_SIZE - UNIT_ART_GAP);
+        if (iconX >= left) {
+          const state = slotOf(cell.unitArt, cell.unitSuffix ?? column.label, rc);
+          drawArtSlot(ctx, iconX, Math.round(textMid - UNIT_ART_SIZE / 2), UNIT_ART_SIZE, UNIT_ART_SIZE, state, theme, { radius: 2 });
+        }
       }
     }
     if (hasSplit && cell?.splitBar) {

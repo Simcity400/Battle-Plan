@@ -872,6 +872,51 @@ test('dirty mirror and tooltip flush on cadence or pause, focus and hover stay i
   }
 });
 
+test('a figure under a header ends where its column ends; with no header row it starts at the column and its unit word follows', () => {
+  const columns: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
+    { key: 'days', label: 'Days', as: 'plain', offered: ['plain'], priority: 1, numeric: true },
+    { key: 'left', label: 'Left', as: 'plain', offered: ['plain'], priority: 2, numeric: true, cellKind: 'track' },
+  ];
+  const settings = tableSettingsOf(undefined, columns, { density: 'comfortable', barsBehind: 'off', sort: { column: 'name', direction: 'ascending' } });
+  const layout = layoutFamilyTable(buildColumnLayouts(columns, settings, { name: 100, days: 160, left: 200 }), 460);
+  const rows = resolveTableRows({
+    columns,
+    hour: 1,
+    rows: [['A', '7', 0.5], ['B', '1,234', null]].map(([key, figure, share]) => ({
+      key: key as string,
+      name: key as string,
+      cells: {
+        name: { value: knownValue(key as string) },
+        days: { value: knownValue(figure as string), unitSuffix: 'days' },
+        left: { value: knownValue(figure as string), unitSuffix: 'days left', ...(share === null ? {} : { bar: { fraction: knownValue(share as number) } }) },
+      },
+    })),
+  }, settings);
+  const paint = (hideHeader: boolean) => {
+    const drawn: { text: string; x: number; align: string }[] = [];
+    const target: Record<string, unknown> = {
+      font: '', fillStyle: '', textAlign: 'left', textBaseline: 'alphabetic',
+      fillText(this: { textAlign: string }, text: string, x: number) { drawn.push({ text, x, align: this.textAlign }); },
+      measureText: (text: string) => ({ width: String(text).length * 7 }),
+      createLinearGradient: () => ({ addColorStop() {} }),
+      getTransform: () => ({ a: 1, d: 1 }),
+    };
+    const ctx = new Proxy(target, { get: (t, k) => (k in t ? t[k as string] : () => {}) }) as unknown as CanvasRenderingContext2D;
+    drawFamilyTable(ctx, { layout, rows, settings, hour: 1, width: 460, height: 200, scrollLeft: 0, scrollTop: 0, rankShown: false, rankWidth: 0, theme: TEST_THEME, now: 1, glideDuration: 0, glide: NO_GLIDE, hideHeader, dpr: 1 }, createTablePicture());
+    return (text: string) => drawn.filter(item => item.text === text);
+  };
+  const headed = paint(false);
+  for (const figure of ['7', '1,234']) assert.deepEqual(headed(figure).map(item => item.align), ['right', 'right'], `under a header ${figure} ends at its column`);
+  assert.equal(headed(' days')[0]!.align, 'right');
+  const plain = paint(true);
+  const [short, long] = [plain('7'), plain('1,234')];
+  assert.deepEqual([...short, ...long].map(item => item.align), ['left', 'left', 'left', 'left'], 'with no header every figure is drawn from its left edge');
+  assert.equal(short[0]!.x, long[0]!.x, 'figures of different widths start together in the plain column');
+  assert.ok(short[1]!.x > long[1]!.x, 'a track cell with a bar starts its figure after the bar; one without starts at the column');
+  assert.equal(plain(' days')[0]!.x, short[0]!.x + 7, 'the unit word follows its figure');
+});
+
 test('round 2 regressions: canonical audit, snapshot store, retained static span, cadence trailing flush, density invalidation, off-screen focus index, long-distance glide hit/draw, dated country colours, missing occupation law, and meta/priority invalidation', () => {
   const cols: TableColumnSpec[] = [
     { key: 'name', label: 'Name', as: 'plain', offered: ['plain'], priority: 0, text: true },
