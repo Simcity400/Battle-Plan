@@ -424,7 +424,7 @@ pub fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ),
         (
             "gfx/mod/tiny.png",
-            vec![0, 0, 1],
+            b"DDS ".to_vec(),
             "does not determine what the game draws",
         ),
         ("gfx/mod/device.dds", device, "graphics device"),
