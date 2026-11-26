@@ -154,6 +154,24 @@ test('espionage projection renders running countdown track, preparing percent, c
   assert.equal(missing.cells.status?.value.kind, 'notRecorded');
 });
 
+test('frozen espionage snapshot keeps days remaining at source.at and suppresses progress wakes', () => {
+  const snapshotAt = 24 * 41;
+  const displayAt = snapshotAt + 24 * 5;
+  const runningRow = sampleRow({ key: 'op:1', status: 'running', live: true, startHour: 24 * 10, durationDays: 90 });
+  const baseSource = buildRowSourceFromHead('test:espionage-frozen', sampleReply([runningRow]), undefined, snapshotAt)!;
+  const frozenSource = { ...baseSource, frozen: true as const, at: snapshotAt };
+  const readView = createBoundedReadView({
+    hour: displayAt,
+    rows: new Map([['main', frozenSource]]),
+    identity: makeIdentity(),
+  });
+  const model = espionageLogProjection.project(readView, { artwork: false, selected: [] });
+  const running = model.rows[0]!;
+  assert.equal(running.cells.progress?.value.kind, 'known');
+  assert.equal(running.cells.progress?.value.kind === 'known' ? running.cells.progress.value.value : null, '59', 'elapsed countdown uses snapshot hour, not display hour');
+  assert.equal(model.nextChangeAt, Infinity, 'frozen snapshot suppresses progress wakes');
+});
+
 test('espionageLogDeclaration passes operationTypes, countryRole, runningOrder, and resolved slots', () => {
   const plan = espionageLogDeclaration.sources({
     widget: { id: 'w1', kind: 'espionage-log', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} } as never,
