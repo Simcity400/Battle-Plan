@@ -94,8 +94,7 @@ struct Held {
     notes: Vec<String>,
     art: Arc<AtomicBool>,
     read_ms: [f64; 2],
-    extent: [f32; 2],
-    owns_extent: bool,
+    _layout: viewer_native_gui::native_windows::NativeWindows,
     painted: bool,
     close_requests: u32,
     placed: Option<(egui::Rect, f32)>,
@@ -108,12 +107,7 @@ impl BattleView {
         if let Some(mut held) = self.held.take() {
             memory("battle_closing", frame);
             held.free(frame);
-            let cache = Arc::clone(&held.document.combat.window_cache);
-            let owned = held.owns_extent.then_some(held.extent.map(|side| side as u32));
             drop(held);
-            if let Some(viewport) = owned {
-                cache.release(viewport);
-            }
             memory("battle_closed", frame);
         }
         self.error = None;
@@ -323,7 +317,7 @@ impl Held {
         let navy = Arc::clone(content);
         window.set_navy_sources_of(Arc::new(move |frame, ours, region| navy.naval_dominance_sources(frame, ours, region)));
         window.open(Selection::Land(combat));
-        let held = content.combat.window_cache.largest();
+        let layout = content.combat.window_cache.at(EXTENT.map(|side| side as u32)).map_err(|error| format!("Could not lay out the battle window: {error}"))?;
         let tables = VISION_TABLES.to_vec();
         let replay = source.replay();
         let cursor = Arc::new(Mutex::new(HourCursor::new(Arc::clone(&replay), &tables, false)));
@@ -360,8 +354,7 @@ impl Held {
             notes: Vec::new(),
             art: Arc::default(),
             read_ms: [0.0; 2],
-            extent: held.map_or(EXTENT, |viewport| viewport.map(|side| side as f32)),
-            owns_extent: held.is_none(),
+            _layout: layout,
             painted: false,
             close_requests: 0,
             placed: None,
@@ -666,7 +659,7 @@ impl Held {
         let time = SETTLED + self.opened.elapsed().as_secs_f32();
         let mut drawn = self
             .window
-            .draw(&content, prepared, self.extent, true, time, true, input)
+            .draw(&content, prepared, EXTENT, true, time, true, input)
             .map_err(|error| format!("Could not draw the battle window: {error}"))?;
         let mut clicked = false;
         if let Some(pressed) = drawn.as_ref().filter(|drawn| !drawn.clicks.is_empty()) {
@@ -683,7 +676,7 @@ impl Held {
             }
             drawn = self
                 .window
-                .draw(&content, Prepared::Kept, self.extent, true, time, true, None)
+                .draw(&content, Prepared::Kept, EXTENT, true, time, true, None)
                 .map_err(|error| format!("Could not draw the battle window: {error}"))?;
         }
         let missing = drawn.as_ref().and_then(Drawn::missing);
