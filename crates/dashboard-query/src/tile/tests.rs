@@ -32,13 +32,13 @@ fn joined(spans: impl IntoIterator<Item = MissingSpan>) -> Vec<MissingSpan> {
 const LONG_SECOND: i32 = FIRST + 17 * UNIT_HOURS + GAP;
 const LONG_LAST: i32 = LONG_SECOND + 2 * UNIT_HOURS - 1;
 
-fn long_campaign() -> Fixture {
-    Fixture::with_gap(Data::Power, FIRST..=LONG_LAST, LONG_SECOND - GAP..=LONG_SECOND - 1)
+fn long_campaign(data: Data) -> Fixture {
+    Fixture::with_gap(data, FIRST..=LONG_LAST, LONG_SECOND - GAP..=LONG_SECOND - 1)
 }
 
 #[test]
 fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let query = fixture.query();
     let line = line(&query);
     let mut compared = 0;
@@ -295,7 +295,7 @@ fn an_hourly_tile_holds_the_runs_a_view_of_its_hours_reads() {
 
 #[test]
 fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let query = fixture.query();
     let line = line(&query);
     let held = |tag: &str, hour: i32| query.holders.at(tag, hour).is_some() && query.timeline.at(hour).is_some();
@@ -430,7 +430,7 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
 
 #[test]
 fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_earlier_holder_of_its_tag() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::Power);
     let mut query = fixture.query();
     let change = ITA_FROM + 5 * 97 + (91 - ITA_FROM.rem_euclid(97)).rem_euclid(97);
     let (ger, ita) = (query.holders.slot_at(&Country::from("GER"), change).unwrap(), query.holders.slot_at(&Country::from("ITA"), change).unwrap());
@@ -457,7 +457,7 @@ fn a_top_line_is_the_country_ranked_at_its_hour_through_its_history_never_an_ear
 
 #[test]
 fn a_top_of_tiles_names_the_countries_ranked_at_its_hour_and_how_long_they_stay_the_top() {
-    let fixture = long_campaign();
+    let fixture = long_campaign(Data::RankedPower);
     let query = fixture.query();
     let line = line(&query);
     let bin_hours = 96;
