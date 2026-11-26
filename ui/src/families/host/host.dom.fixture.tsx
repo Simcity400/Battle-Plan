@@ -227,6 +227,7 @@ let commits = 0;
 let bindCount = 0;
 let boundIds: number[] = [];
 let staticCommits = 0;
+const lastViewWindow = new Map<number, unknown>();
 let staticSupplies: { readonly id: number; readonly statics: boolean; readonly tiledHead?: string; readonly hoverHour?: number; readonly paged?: unknown; readonly art?: unknown }[] = [];
 let lastBoundModel: unknown = null;
 let activated: string[] = [];
@@ -242,6 +243,7 @@ let currentState = {
   tiled: undefined as Readonly<Record<string, ReadonlyMap<string, TiledLine>>> | undefined,
   hovers: undefined as Readonly<Record<string, { readonly hour: number; readonly data: unknown }>> | undefined,
   paged: undefined as PagedRows | undefined,
+  windowed: false,
   spanMounted: false,
 };
 
@@ -257,6 +259,8 @@ const origSupply = pipeline.supply.bind(pipeline);
 pipeline.supply = ((...args: Parameters<typeof pipeline.supply>) => {
   const statics = args[1].statics as { tiledBySource?: { main?: { GER?: { head?: string } } }; hovers?: { hover?: { hour?: number } }; pagedRows?: { log?: { mark?: unknown } }; artResolutions?: { mark?: unknown } } | null | undefined;
   const tiledHead = statics?.tiledBySource?.main?.GER?.head, hoverHour = statics?.hovers?.hover?.hour, paged = statics?.pagedRows?.log?.mark, art = statics?.artResolutions?.mark;
+  const viewWindow = (args[1].statics as { window?: unknown } | null | undefined)?.window;
+  if (viewWindow !== undefined) lastViewWindow.set(args[0], viewWindow);
   staticSupplies.push({ id: args[0], statics: args[1].statics !== undefined, ...(tiledHead !== undefined ? { tiledHead } : {}), ...(hoverHour !== undefined ? { hoverHour } : {}), ...(paged !== undefined ? { paged } : {}), ...(art !== undefined ? { art } : {}) });
   return origSupply(...args);
 }) as typeof pipeline.supply;
@@ -273,6 +277,13 @@ const staticArt = (() => {
     land(next: ArtResolutions) { resolutions = next; for (const listener of listeners) listener(); },
   };
 })();
+
+let windowFirst = 0;
+const WINDOWED_ADAPTER = { ...tableHostAdapter, rowWindow: () => ({ first: windowFirst, count: 4 }) };
+const WINDOWED_PLAN = {
+  owner: 'windowed',
+  entries: [{ name: 'log', source: sourceA, branch: '1', offset: 0, read: { shape: 'paged-rows', tailQuery: { product: 'event-feed', params: {}, limit: 64 }, followQuery: null } }],
+} as unknown as SourcePlan;
 
 const NO_EXACT = async () => null;
 const NO_SUBSCRIPTIONS: ReturnType<typeof makeSubs> = [];
@@ -366,7 +377,8 @@ function renderApp() {
         <Profiler id="host-dom" onRender={() => { commits++; }}>
           <div data-slot="primary" style={{ width: '460px', height: '240px', display: 'flex', flexDirection: 'column' }}>
             <FamilyHost
-              adapter={tableHostAdapter}
+              adapter={currentState.windowed ? WINDOWED_ADAPTER : tableHostAdapter}
+              {...currentState.windowed ? { plan: WINDOWED_PLAN } : {}}
               chrome={TableChrome}
               view="default"
               declaration={scoreboardProjection}
@@ -888,6 +900,45 @@ window.hostDom = {
     };
     currentState = { ...currentState, statics: null, tiled: undefined, hovers: undefined, paged: undefined };
     renderApp();
+    return result;
+  },
+
+  async testRowWindowCorrected() {
+    const frames = async (count: number) => {
+      for (let i = 0; i < count; i++) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    };
+    windowFirst = 0;
+    currentState = { ...currentState, windowed: true };
+    renderApp();
+    const pipeP = Number(container!.querySelector<HTMLCanvasElement>('[data-slot="primary"] canvas.fh-canvas')!.dataset.placement);
+    const bodyP = container!.querySelector<HTMLElement>('[data-slot="primary"] .fh-body')!;
+    bodyP.style.overflowY = 'scroll';
+    bodyP.style.flex = 'none';
+    bodyP.style.height = `${bodyP.clientHeight}px`;
+    const subs = subsForPipe(pipeP);
+    const hour = 600;
+    clock.seek(hour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(subs, hour, [90n, 70n, 50n, 30n], true);
+    await until(() => pipeline.view(pipeP)?.h === hour);
+    await frames(4);
+    const generation = pipeline.binding(pipeP);
+    boundIds = [];
+    const windows: unknown[] = [];
+    const rounds = 5;
+    for (let round = 1; round <= rounds; round++) {
+      windowFirst = round * 10;
+      sendHour(subs, hour, [BigInt(90 + round), 70n, 50n, 30n], true);
+      await until(() => ((lastViewWindow.get(pipeP) as { first?: number } | undefined)?.first ?? -1) === round * 10);
+      windows.push(lastViewWindow.get(pipeP));
+    }
+    const result = { rounds, binds: boundIds.filter(id => id === pipeP).length, generationKept: pipeline.binding(pipeP) === generation, windows };
+    bodyP.style.overflowY = '';
+    bodyP.style.flex = '';
+    bodyP.style.height = '';
+    currentState = { ...currentState, windowed: false };
+    renderApp();
+    await frames(2);
     return result;
   },
 

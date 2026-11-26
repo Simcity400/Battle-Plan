@@ -82,6 +82,10 @@ test('shared family host handles F1 campaign switch pin clear, F2 leave-then-dea
     assert.deepEqual(data.pagesSupplied, [null, ...rounds.filter(round => round % 3 === 0)], 'every row page set is supplied on its own');
     assert.deepEqual(data.artSupplied, rounds, 'every art arrival is supplied');
 
+    const corrected = await act<{ rounds: number; binds: number; generationKept: boolean; windows: unknown[] }>('testRowWindowCorrected()');
+    assert.deepEqual([corrected.binds, corrected.generationKept], [0, true], `a row window corrected by ${corrected.rounds} installed pictures is supplied, not bound (${corrected.binds} binds)`);
+    assert.deepEqual(corrected.windows, [10, 20, 30, 40, 50].map(first => ({ first, count: 4 })), 'each corrected window reaches the lane');
+
     const span = await act<{ hoursAdvanced: number; answers: number; binds: number; mode: string }>('testSpanEndOnly()');
     assert.ok(span.hoursAdvanced > 0 && span.answers >= 5, `playing a followed span read brings new answers (${span.answers} over ${span.hoursAdvanced} hours; ${span.mode})`);
     assert.equal(span.binds, 0, `${span.answers} new answers that only extend the span's end bind nothing (${span.binds} binds)`);

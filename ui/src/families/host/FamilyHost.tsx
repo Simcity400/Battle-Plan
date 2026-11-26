@@ -997,7 +997,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         windowRef.current = installedUpdate.report;
         cur.onWindowChange?.(installedUpdate.report.window, installedUpdate.report.hour);
       }
-      if (installedUpdate.changed) queueMicrotask(() => bindRef.current());
+      if (installedUpdate.changed) queueMicrotask(() => showViewRef.current());
 
       if (activeAdapter.chromeState) {
         const nextChrome = activeAdapter.chromeState(fields, chromeStateRef.current);
