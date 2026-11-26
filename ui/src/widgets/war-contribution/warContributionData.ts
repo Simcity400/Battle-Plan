@@ -21,4 +21,10 @@ export function chosenWar(reply: WarsReply, saved: string | null, at: number): W
 
 export const readHourFor = (war: WarTimeline, at: number) => Math.min(Math.floor(at), war.lastHour);
 
+export function warChipAt(wars: WarsReply | undefined, saved: string | null, at: number | null) {
+  const war = wars && at !== null ? chosenWar(wars, saved, at) : null;
+  const observation = war && at !== null ? labelObservationAt(war, at) : null;
+  return { at, observation, key: `${war?.id ?? ''}:${observation?.firstHour ?? ''}` };
+}
+
 export const warName = (observation: WarObservation | null) => observation?.name.known ? observation.name.text : 'Name not recorded';

@@ -6029,7 +6029,7 @@ export type WarContributionCountry = { tag: string, side: WarSide,
 equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
 export type WarMeasureKey = "participation" | "equipmentDamage" | "occupation" | "airDamage" | "shipDamage" | "casualties" | "strategicBombing" | "convoyDamage" | "lendLeaseSent" | "lendLeaseReceived";
 export type WarMeasureMember = { tag: string, value: string, shareOfSide: number | null, shareOfWar: number | null, partial: boolean, };
-export type WarMeasureSide = { total: string, shareOfWar: number | null, partial: boolean, members: Array<WarMeasureMember>, };
+export type WarMeasureSide = { total: string | null, shareOfWar: number | null, partial: boolean, members: Array<WarMeasureMember>, };
 export type WarMeasure = { key: WarMeasureKey, viewpoint: WarMeasureSide, opposing: WarMeasureSide, };
 export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, measures: Array<WarMeasure>, reason: string | null, };
 export type WarContributionsReply = { branchId: string, hour: number,

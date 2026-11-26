@@ -48,7 +48,7 @@ pub struct WarMeasureMember {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarMeasureSide {
-    pub total: String,
+    pub total: Option<String>,
     pub share_of_war: Option<u32>,
     pub partial: bool,
     pub members: Vec<WarMeasureMember>,
@@ -114,7 +114,7 @@ fn side(tags: &[String], scores: &HashMap<&str, &WarContributionCountry>, key: W
         })
         .collect();
     let partial = members.iter().any(|member| member.partial);
-    WarMeasureSide { total: total.to_string(), share_of_war: war_total.and_then(|whole| permyriad(magnitude, whole)), partial, members }
+    WarMeasureSide { total: (!members.is_empty()).then(|| total.to_string()), share_of_war: war_total.and_then(|whole| permyriad(magnitude, whole)), partial, members }
 }
 
 fn magnitude_of(tags: &[String], scores: &HashMap<&str, &WarContributionCountry>, key: WarMeasureKey) -> i128 {
@@ -137,10 +137,11 @@ pub(crate) fn measures(viewpoint: &[String], opposing: &[String], participants: 
     for row in participants {
         scores.entry(row.tag.as_str()).or_insert(row);
     }
+    let complete = viewpoint.iter().chain(opposing).all(|tag| scores.contains_key(tag.as_str()));
     MEASURES
         .iter()
         .map(|&key| {
-            let war_total = (key != WarMeasureKey::Participation)
+            let war_total = (complete && key != WarMeasureKey::Participation)
                 .then(|| magnitude_of(viewpoint, &scores, key) + magnitude_of(opposing, &scores, key))
                 .filter(|whole| *whole > 0);
             let viewpoint = side(viewpoint, &scores, key, war_total);
@@ -183,7 +184,7 @@ mod tests {
         assert_eq!(all.iter().map(|measure| measure.key).collect::<Vec<_>>(), MEASURES);
         let equipment = all.iter().find(|measure| measure.key == WarMeasureKey::EquipmentDamage).unwrap();
         assert_eq!(equipment.viewpoint.members.iter().map(|member| member.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"], "largest part first");
-        assert_eq!(equipment.viewpoint.total, "900000");
+        assert_eq!(equipment.viewpoint.total.as_deref(), Some("900000"));
         assert_eq!((equipment.viewpoint.share_of_war, equipment.opposing.share_of_war), (Some(9_000), Some(1_000)));
         assert_eq!(equipment.viewpoint.members[0].share_of_side, Some(6_667));
         assert_eq!(equipment.viewpoint.members[0].share_of_war, Some(6_000));
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!(participation.viewpoint.share_of_war, None, "participation is already a share of the side");
         assert_eq!(participation.viewpoint.members[0].share_of_side, Some(6_920));
         let received = all.iter().find(|measure| measure.key == WarMeasureKey::LendLeaseReceived).unwrap();
-        assert_eq!(received.viewpoint.total, "-600000", "the recorded sign is kept in totals; shares use magnitudes");
+        assert_eq!(received.viewpoint.total.as_deref(), Some("-600000"), "the recorded sign is kept in totals; shares use magnitudes");
         let nothing = all.iter().find(|measure| measure.key == WarMeasureKey::Occupation).unwrap();
         assert_eq!((nothing.viewpoint.share_of_war, nothing.viewpoint.members[0].share_of_side), (None, None), "no part anywhere is no share, not zero");
     }

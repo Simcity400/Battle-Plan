@@ -11,10 +11,9 @@ import { FamilyWidget } from '../../families/host/registry';
 import { useIdentity, useIdentityScope } from '../../families/identity/react.ts';
 import { countryTagKey } from '../../families/identity/types.ts';
 import { useHeadHour } from '../army-size/headHour';
-import { labelObservationAt } from '../wars/warsData';
 import { MEASURE_VIEW } from './measureProjection.ts';
-import { chosenWar } from './warContributionData.ts';
-import { savedWar } from './warContributionPlan.ts';
+import { warChipAt } from './warContributionData.ts';
+import { attackersFirst, savedWar } from './warContributionPlan.ts';
 
 const storedWar = (options: ResolvedViewOptions) => savedWar({ war: options.war });
 import { useWarChoices, useWars, useWarsReply } from './useWarChoices';
@@ -36,14 +35,9 @@ function useChosenWar(props: Pick<FamilyViewProps, 'widget' | 'runtime' | 'activ
   const wars = useWars(widget, runtime, active);
   const saved = storedWar(options);
   const shownHour = useCallback((clockHour: number) => (track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null), [track, widget, runtime.tracks]);
-  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
-    const at = shownHour(clockHour);
-    return at === null || !wars ? '' : chosenWar(wars, saved, at)?.id ?? 'none';
-  });
-  const at = shownHour(hour);
-  const war = at !== null && wars ? chosenWar(wars, saved, at) : null;
-  const observation = war && at !== null ? labelObservationAt(war, Math.min(at, war.lastHour)) : null;
-  return { track, war, observation, at };
+  const atClock = (clockHour: number) => warChipAt(wars, saved, shownHour(clockHour));
+  const hour = useHeadHour(runtime.clock, active && widget.time.mode === 'follow', clockHour => atClock(clockHour).key);
+  return { track, ...atClock(hour) };
 }
 
 function useLeader(props: Pick<FamilyViewProps, 'runtime' | 'active'>, track: ReturnType<typeof useChosenWar>['track'], tag: string | undefined, hour: number | null) {
@@ -57,14 +51,15 @@ function useLeader(props: Pick<FamilyViewProps, 'runtime' | 'active'>, track: Re
 function WarChip(props: FamilyViewCountryChipProps) {
   const { track, observation, at } = useChosenWar(props);
   const shown = observation && at !== null ? Math.min(at, observation.lastHour) : null;
-  const first = useLeader(props, track, observation?.viewpointSide[0], shown);
-  const second = useLeader(props, track, observation?.opposingSide[0], shown);
-  if (!observation || !observation.viewpointSide[0] || !observation.opposingSide[0]) return <span className="dash-widget-country war-chip"><span>Choose a war</span></span>;
+  const [firstTag, secondTag] = attackersFirst(observation, observation?.viewpointSide[0], observation?.opposingSide[0]);
+  const first = useLeader(props, track, firstTag, shown);
+  const second = useLeader(props, track, secondTag, shown);
+  if (!firstTag || !secondTag) return <span className="dash-widget-country war-chip"><span>Choose a war</span></span>;
   const name = `${first.name} – ${second.name}`;
   return <span className="dash-widget-country war-chip" data-tooltip={props.compact ? name : undefined}>
-    <CountryFlag image={first.flag?.image} tag={observation.viewpointSide[0]} name={first.name} pending={first.pending} decorative />
+    <CountryFlag image={first.flag?.image} tag={firstTag} name={first.name} pending={first.pending} decorative />
     <span className="war-chip-dash">–</span>
-    <CountryFlag image={second.flag?.image} tag={observation.opposingSide[0]} name={second.name} pending={second.pending} decorative />
+    <CountryFlag image={second.flag?.image} tag={secondTag} name={second.name} pending={second.pending} decorative />
     <span>{name}</span>
   </span>;
 }

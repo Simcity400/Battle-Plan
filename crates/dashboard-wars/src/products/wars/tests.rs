@@ -166,6 +166,18 @@ fn contributions_credit_each_member_its_own_ledgers_and_same_side_deliveries_for
         assert_eq!((row("TWO").participation.as_str(), row("THREE").participation.as_str()), ("50000", "50000"));
         assert_eq!(row("THREE").lend_lease_received, "-100000");
     }
+    let mut incomplete = frame;
+    let remaining = incomplete.complete::<rows::tables::WarParticipation>().unwrap().iter().filter(|row| row.direction == 1).cloned().collect();
+    incomplete.tables[TableId::WarParticipation.index()] = TableView::Complete(TableRows::WarParticipation(remaining)).into();
+    let group = contributions::groups(&incomplete, &held, Some(&Country::from("ONE")), Ok(FACTORS)).unwrap().remove(0);
+    assert_eq!(group.participants.len(), 2, "the opposite side still has both directional ledgers");
+    let equipment = group.measures.iter().find(|m| m.key == WarMeasureKey::EquipmentDamage).unwrap();
+    assert_eq!(group.reason.as_deref(), Some("Directional participation ledger not recorded"));
+    assert_eq!(equipment.viewpoint.total, None);
+    assert!(equipment.viewpoint.members.is_empty());
+    assert_eq!(equipment.opposing.members[0].value, "300000");
+    assert_eq!(equipment.opposing.members[0].share_of_side, Some(7500));
+    assert_eq!(equipment.opposing.members[0].share_of_war, None);
 }
 
 #[test]

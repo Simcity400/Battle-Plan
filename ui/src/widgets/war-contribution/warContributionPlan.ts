@@ -32,13 +32,16 @@ export function savedWar(options: Readonly<Record<string, unknown>>): string | n
   return typeof options.war === 'string' && options.war ? contentKey(options.war) : null;
 }
 
-export function attackersFirst(group: WarContributionGroup): readonly [WarSide, WarSide] {
-  const lead = group.participants.find(participant => participant.tag === group.viewpointSide[0]);
-  return lead?.side === 'defender' ? ['opposing', 'viewpoint'] : ['viewpoint', 'opposing'];
+export function attackersFirst<T>(observation: WarObservation | null, viewpoint: T, opposing: T): readonly [T, T] {
+  return observation?.attackersAreViewpoint === false ? [opposing, viewpoint] : [viewpoint, opposing];
 }
 
 export function leadOf(group: WarContributionGroup, side: WarSide): string {
   return (side === 'viewpoint' ? group.viewpointSide[0] : group.opposingSide[0]) ?? '';
+}
+
+export function sideCountries(group: WarContributionGroup, side: WarSide): string[] {
+  return [...new Set(side === 'viewpoint' ? group.viewpointSide : group.opposingSide)];
 }
 
 function replyFor(readView: BoundedReadView, war: WarTimeline, hour: number): WarContributionsReply | undefined {
@@ -59,8 +62,8 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   if (!reply) return { kind: 'loading' };
   const observation = observationAt(war, reply.hour);
   const group = observation ? warContributions(reply.contributions, observation) : null;
-  if (!observation || !group || group.reason) return { kind: 'blank', empty: group?.reason ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
-  return { kind: 'shown', war, reply, observation, group, sides: attackersFirst(group) };
+  if (!observation || !group || (group.reason && !group.measures.length)) return { kind: 'blank', empty: group?.reason ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
+  return { kind: 'shown', war, reply, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
 }
 
 function endedHour(wars: WarsReply | undefined, saved: string | null, hour: number): { readonly at: number; readonly until: number } {
