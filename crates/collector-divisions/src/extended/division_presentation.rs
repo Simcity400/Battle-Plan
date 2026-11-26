@@ -1495,6 +1495,11 @@ impl Captured {
             store.sources.capture_boundary();
         }
         if !self.prefetching && self.begin_preparation(&sources, store.as_deref_mut()) {
+            if self.preparation_store_loaned
+                && let Some(held) = self.preparation_store.as_mut().and_then(Arc::get_mut)
+            {
+                held.observations.take(changes);
+            }
             return;
         }
         self.restore_preparation_store(store.as_deref_mut());

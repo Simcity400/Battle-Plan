@@ -666,12 +666,17 @@ impl PendingBatch {
             {
                 return false;
             }
-            self.names.resize(start + name_required, 0);
-            match stored.copy(memory, &mut self.names[start..start + name_required]) {
-                Ok(()) => name = Some((start, name_required)),
-                Err(reason) => {
-                    self.names.truncate(start);
-                    name_reason = Some(reason);
+            if let Some(loaded) = stored.loaded_bytes() {
+                self.names.extend_from_slice(loaded);
+                name = Some((start, loaded.len()));
+            } else {
+                self.names.resize(start + name_required, 0);
+                match stored.copy(memory, &mut self.names[start..start + name_required]) {
+                    Ok(()) => name = Some((start, name_required)),
+                    Err(reason) => {
+                        self.names.truncate(start);
+                        name_reason = Some(reason);
+                    }
                 }
             }
         }
@@ -749,17 +754,18 @@ fn stamp() -> Stamp {
     )
 }
 
-fn held_for(pending: &Pending, epoch_current: bool) -> Option<native::Located> {
+#[inline(always)]
+fn held_ref(pending: &Pending, epoch_current: bool) -> Option<&native::Located> {
     (!pending.refused
         && epoch_current
         && pending.stamp == stamp()
         && !crate::world_lifetime::invalidating())
-    .then_some(pending.located)
+    .then_some(&pending.located)
 }
 
 #[cfg(test)]
 fn held(pending: &Pending) -> Option<native::Located> {
-    held_for(pending, pending.epoch == LOG.epoch.load(Ordering::Acquire))
+    held_ref(pending, pending.epoch == LOG.epoch.load(Ordering::Acquire)).copied()
 }
 
 pub fn presize(memory: &impl Memory, base: usize) {
@@ -1699,24 +1705,22 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     }
     THREAD_STATE.with(|state| {
         let state = &mut *state.borrow_mut();
-        let Some(pending) = state.pending.as_mut() else {
-            COUNTERS[1].fetch_add(1, Ordering::Relaxed);
-            return;
-        };
-        let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
-        if !epoch_current {
-            pending.refused = true;
-            pending.cause.get_or_insert(0);
-        }
-        let located = held_for(pending, epoch_current);
         if tag == 1 {
-            let mut pending = state.pending.take().unwrap();
+            let Some(mut pending) = state.pending.take() else {
+                COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+            if !epoch_current {
+                pending.refused = true;
+                pending.cause.get_or_insert(0);
+            }
             let settled = native::settle_held(
                 &memory,
                 base,
                 pending.started,
                 registers.rbx,
-                located.as_ref(),
+                held_ref(&pending, epoch_current),
             )
             .map(|(settled, taken)| {
                 if taken {
@@ -1747,6 +1751,15 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             );
             return;
         }
+        let Some(pending) = state.pending.as_mut() else {
+            COUNTERS[1].fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let epoch_current = pending.epoch == LOG.epoch.load(Ordering::Acquire);
+        if !epoch_current {
+            pending.refused = true;
+            pending.cause.get_or_insert(0);
+        }
         let (kind, pointer, host_ptr, amount) = match tag {
             2..=6 => (0, registers.rax, 0, registers.rdx as i64),
             7 => (2, registers.rcx, 0, registers.rdx as i64),
@@ -1760,40 +1773,43 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         pending.received[kind as usize] = pending.received[kind as usize].wrapping_add(amount);
         let coalesced = state.batch.try_coalesce(kind, pointer, host_ptr, amount);
         if coalesced == Some(true) {
-            if located.is_some() {
+            if held_ref(pending, epoch_current).is_some() {
                 HELD.increment(if kind == 1 { 1 } else { 2 });
             }
             return;
         }
         let insert_in_table = coalesced.is_none();
-        let recipient_and_name = if kind == 1 {
-            if let Some(located) = located.as_ref() {
-                native::air_held_with(
-                    &memory,
-                    base,
-                    pointer,
-                    registers.rdx,
-                    pending.started.country,
-                    Some(&located.country),
-                    Some(&mut state.registry),
-                )
+        let recipient_and_name = {
+            let located = held_ref(pending, epoch_current);
+            if kind == 1 {
+                if let Some(located) = located {
+                    native::air_held_with(
+                        &memory,
+                        base,
+                        pointer,
+                        registers.rdx,
+                        pending.started.country,
+                        Some(&located.country),
+                        Some(&mut state.registry),
+                    )
+                } else {
+                    native::air_held(
+                        &memory,
+                        base,
+                        pointer,
+                        registers.rdx,
+                        pending.started.country,
+                        None,
+                    )
+                }
+                .map(|(recipient, taken)| (recipient, None, taken))
+            } else if located.is_some() {
+                native::unit_with_name(&memory, base, pointer, kind, Some(&mut state.registry))
+                    .map(|(recipient, name, taken)| (recipient, Some(name), taken))
             } else {
-                native::air_held(
-                    &memory,
-                    base,
-                    pointer,
-                    registers.rdx,
-                    pending.started.country,
-                    None,
-                )
+                native::unit_with_name(&memory, base, pointer, kind, None)
+                    .map(|(recipient, name, taken)| (recipient, Some(name), taken))
             }
-            .map(|(recipient, taken)| (recipient, None, taken))
-        } else if located.is_some() {
-            native::unit_with_name(&memory, base, pointer, kind, Some(&mut state.registry))
-                .map(|(recipient, name, taken)| (recipient, Some(name), taken))
-        } else {
-            native::unit_with_name(&memory, base, pointer, kind, None)
-                .map(|(recipient, name, taken)| (recipient, Some(name), taken))
         };
         match recipient_and_name {
             Ok((recipient, name, taken)) => {

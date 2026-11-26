@@ -583,6 +583,9 @@ impl ArmyStatStore {
 
     pub fn may_carry_maxima(&self, shift: &mut isize, index: usize, seed: &DivisionSeed) -> bool {
         self.epoch.is_some()
+            && (!self.observations.is_taken()
+                || (self.observations.armies.epoch() == self.epoch
+                    && !self.observations.armies.touched(seed.pointer)))
             && Locator::find(&self.locator.order, shift, &self.divisions, index, seed.division)
                 .is_some_and(|at| {
                     let held = &self.held[at];

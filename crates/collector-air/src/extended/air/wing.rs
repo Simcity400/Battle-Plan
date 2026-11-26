@@ -368,12 +368,35 @@ impl<M: Memory> Memory for WingMemory<'_, M> {
         }
         ok
     }
+    fn prefetch(&self, address: usize, len: usize) {
+        self.inner.prefetch(address, len);
+    }
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        let copied = self.inner.copy_uninit(address, destination)?;
+        self.count(copied.len());
+        Some(copied)
+    }
     fn copy_scattered<const K: usize>(
         &self,
         addresses: [usize; K],
         destinations: &mut [&mut [u8]; K],
     ) -> usize {
         let completed = self.inner.copy_scattered(addresses, destinations);
+        for destination in destinations.iter().take(completed) {
+            self.count(destination.len());
+        }
+        completed
+    }
+    fn copy_scattered_prefetched<const K: usize>(
+        &self,
+        addresses: [usize; K],
+        destinations: &mut [&mut [u8]; K],
+    ) -> usize {
+        let completed = self.inner.copy_scattered_prefetched(addresses, destinations);
         for destination in destinations.iter().take(completed) {
             self.count(destination.len());
         }

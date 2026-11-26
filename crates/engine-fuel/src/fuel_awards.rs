@@ -692,7 +692,7 @@ pub fn air_held_with(
             container,
             container.checked_add(ccountry_air_container::COUNTRY)?,
         ];
-        (memory.copy_scattered(
+        (memory.copy_scattered_prefetched(
             addresses,
             &mut [
                 &mut base_vtable,
@@ -829,7 +829,7 @@ const EAGER_NAME_BYTES: usize = 128;
 pub enum StoredName {
     Deferred(msvc_string::Descriptor),
     Loaded {
-        bytes: [u8; EAGER_NAME_BYTES],
+        bytes: [std::mem::MaybeUninit<u8>; EAGER_NAME_BYTES],
         len: usize,
     },
 }
@@ -841,12 +841,24 @@ impl StoredName {
             Self::Loaded { len, .. } => *len,
         }
     }
+    pub fn loaded_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Deferred(_) => None,
+            Self::Loaded { bytes, len } => {
+                // SAFETY: `from_header_eager` initializes `bytes[..span]` with `span = *len + 1`.
+                Some(unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) })
+            }
+        }
+    }
     pub fn copy(&self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
         match self {
             Self::Deferred(desc) => desc.copy(memory, output),
             Self::Loaded { bytes, len } => {
                 let output = output.get_mut(..*len).ok_or("string output too short")?;
-                output.copy_from_slice(&bytes[..*len]);
+                // SAFETY: `from_header_eager` initializes `bytes[..span]` with `span = *len + 1`.
+                let source =
+                    unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) };
+                output.copy_from_slice(source);
                 Ok(())
             }
         }
@@ -860,9 +872,11 @@ impl StoredName {
             && span <= EAGER_NAME_BYTES
         {
             let len = span - 1;
-            let mut bytes = [0_u8; EAGER_NAME_BYTES];
-            if engine_native_memory::read_slice(memory, source, &mut bytes[..span]) {
-                if bytes[len] != 0 {
+            let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); EAGER_NAME_BYTES];
+            if let Some(copied) =
+                engine_native_memory::memory::read_slice_uninit(memory, source, &mut bytes[..span])
+            {
+                if copied[len] != 0 {
                     return Err("string terminator unreadable or invalid");
                 }
                 return Ok(Self::Loaded { bytes, len });

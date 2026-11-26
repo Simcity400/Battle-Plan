@@ -1066,13 +1066,24 @@ impl VariableStore {
 }
 
 fn same_entries(left: &[Row], left_names: &[u8], right: &[Row], right_names: &[u8]) -> bool {
-    left.len() == right.len()
+    if left.len() != right.len() {
+        return false;
+    }
+    if left_names.len() == right_names.len()
         && left.iter().zip(right).all(|(left, right)| {
             left.value_raw == right.value_raw
                 && left.name_len == right.name_len
-                && left_names.get(left.name_start..left.name_start + left.name_len)
-                    == right_names.get(right.name_start..right.name_start + right.name_len)
+                && left.name_start == right.name_start
         })
+    {
+        return left_names == right_names;
+    }
+    left.iter().zip(right).all(|(left, right)| {
+        left.value_raw == right.value_raw
+            && left.name_len == right.name_len
+            && left_names.get(left.name_start..left.name_start + left.name_len)
+                == right_names.get(right.name_start..right.name_start + right.name_len)
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]

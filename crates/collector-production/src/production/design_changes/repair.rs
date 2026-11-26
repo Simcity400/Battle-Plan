@@ -225,12 +225,38 @@ impl<M: Memory> Surviving<'_, M> {
     }
 }
 impl<M: Memory> Memory for Surviving<'_, M> {
+    fn prefetch(&self, address: usize, len: usize) {
+        if self.removed.is_empty() || !self.overlaps_removed(address, len) {
+            self.source.prefetch(address, len);
+        }
+    }
+
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
+        if self.overlaps_removed(address, std::mem::size_of::<T>()) {
+            self.consumed.set(true);
+            return None;
+        }
+        self.source.read_scalar(address)
+    }
+
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if self.overlaps_removed(address, output.len()) {
             self.consumed.set(true);
             return false;
         }
         self.source.copy(address, output)
+    }
+
+    fn copy_uninit<'a>(
+        &self,
+        address: usize,
+        destination: &'a mut [std::mem::MaybeUninit<u8>],
+    ) -> Option<&'a mut [u8]> {
+        if self.overlaps_removed(address, destination.len()) {
+            self.consumed.set(true);
+            return None;
+        }
+        self.source.copy_uninit(address, destination)
     }
 
     fn copy_scattered<const N: usize>(

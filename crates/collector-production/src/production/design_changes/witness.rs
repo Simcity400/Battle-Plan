@@ -469,6 +469,10 @@ impl<'a, M> Recording<'a, M> {
     }
 }
 impl<M: Memory> Memory for Recording<'_, M> {
+    fn prefetch(&self, address: usize, len: usize) {
+        self.source.prefetch(address, len);
+    }
+
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let ok = self.source.copy(address, output);
         if self.refused.get() {
