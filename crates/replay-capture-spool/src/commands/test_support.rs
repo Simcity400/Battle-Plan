@@ -36,6 +36,6 @@ pub fn session() -> SessionStart {
 pub fn control(batch: &Batch, lost: u64) -> ControlRecord {
     ControlRecord::PlayerCommands {
         session: 7,
-        packet: Packet::pack(4, 1, 2, 0, 100, 220, lost, batch).unwrap(),
+        packet: Box::new(Packet::pack(4, 1, 2, 0, 100, 220, lost, batch).unwrap()),
     }
 }

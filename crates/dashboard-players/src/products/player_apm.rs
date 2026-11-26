@@ -1068,7 +1068,7 @@ mod tests {
     fn packet(batch: &Batch, ordinal: u64, from: u64, to: u64, lost: u64) -> ControlRecord {
         ControlRecord::PlayerCommands {
             session: 7,
-            packet: Packet::pack(4, 1, 2, ordinal, from, to, lost, batch).unwrap(),
+            packet: Box::new(Packet::pack(4, 1, 2, ordinal, from, to, lost, batch).unwrap()),
         }
     }
 
@@ -1126,7 +1126,7 @@ mod tests {
         }
         let second = ControlRecord::PlayerCommands {
             session: 7,
-            packet: Packet::pack(4, 2, 2, 0, 1000, 1180, 0, &batch).unwrap(),
+            packet: Box::new(Packet::pack(4, 2, 2, 0, 1000, 1180, 0, &batch).unwrap()),
         };
         let index = commands::index(&[session], &[first, second], 4).unwrap();
         let mut registry = params(ApmGroup::Player, 100, 101);
@@ -1295,7 +1295,7 @@ mod tests {
         }
         let second = ControlRecord::PlayerCommands {
             session: 7,
-            packet: Packet::pack(4, 2, 2, 0, 600, 720, 0, &later).unwrap(),
+            packet: Box::new(Packet::pack(4, 2, 2, 0, 600, 720, 0, &later).unwrap()),
         };
         let index = commands::index(&[session], &[packet(&batch, 0, 0, 60, 0), second], 4).unwrap();
         let mut params = params(ApmGroup::Country, 100, 101);

@@ -30,7 +30,7 @@ fn recording(per_hour: impl Fn(i32) -> u64) -> Arc<Index> {
         spans,
         ..Default::default()
     };
-    let packet = ControlRecord::PlayerCommands { session: 7, packet: Packet::pack(4, 1, 2, 0, 0, HOURS as u64 * 60, 0, &batch).unwrap() };
+    let packet = ControlRecord::PlayerCommands { session: 7, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, HOURS as u64 * 60, 0, &batch).unwrap()) };
     Arc::new(commands::index(&[session], &[packet], 4).unwrap())
 }
 
@@ -89,7 +89,7 @@ fn player_display_tag_uses_only_versions_present_in_the_window() {
         spans,
         ..Default::default()
     };
-    let packet = ControlRecord::PlayerCommands { session: 9, packet: Packet::pack(4, 1, 2, 0, 0, 60 * 60, 0, &batch).unwrap() };
+    let packet = ControlRecord::PlayerCommands { session: 9, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 60 * 60, 0, &batch).unwrap()) };
     let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
     let mut head = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
         branch_id: "4".into(),
@@ -160,7 +160,7 @@ fn player_apm_head_carries_dated_name_long_utf8_tag_and_explicit_missing_name_re
         spans,
         ..Default::default()
     };
-    let packet = ControlRecord::PlayerCommands { session: 12, packet: Packet::pack(4, 1, 2, 0, 0, 40 * 60, 0, &batch).unwrap() };
+    let packet = ControlRecord::PlayerCommands { session: 12, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 40 * 60, 0, &batch).unwrap()) };
     let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
     let mut query_head = ApmHead::new(Arc::clone(&index), &ApmHeadParams {
         branch_id: "4".into(),
@@ -237,7 +237,7 @@ fn player_apm_ranks_by_apm_descending_and_tiles_accept_countries_with_unrecorded
         spans,
         ..Default::default()
     };
-    let packet = ControlRecord::PlayerCommands { session: 15, packet: Packet::pack(4, 1, 2, 0, 0, 20 * 60, 0, &batch).unwrap() };
+    let packet = ControlRecord::PlayerCommands { session: 15, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 20 * 60, 0, &batch).unwrap()) };
     let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
     let reply = query(&index, &ApmParams {
         branch_id: "4".into(),
@@ -310,7 +310,7 @@ fn multi_hour_apm_tile_preserves_hourly_min_max_endpoints_and_gap_breaks() {
         spans,
         ..Default::default()
     };
-    let packet = ControlRecord::PlayerCommands { session: 21, packet: Packet::pack(4, 1, 2, 0, 0, 300, 0, &batch).unwrap() };
+    let packet = ControlRecord::PlayerCommands { session: 21, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 300, 0, &batch).unwrap()) };
     let index = Arc::new(commands::index(&[session], &[packet], 4).unwrap());
 
     let h0 = query(&index, &ApmParams {
@@ -416,7 +416,7 @@ fn coverage_fixture() -> Index {
         let actor = Actor { id: 1, player: 1, country: 1, since_qpc: start, at_qpc: start,
             user: vec![], name: b"Sender".to_vec(), tag: b"AAA".to_vec() };
         let batch = Batch { kinds: vec![Kind { id: 1, token: 1, name: "synthetic order".into(), category: Category::Army }], actors: vec![actor], spans, ..Default::default() };
-        ControlRecord::PlayerCommands { session: 7, packet: Packet::pack(4, capture, 2, 0, start, end, 0, &batch).unwrap() }
+        ControlRecord::PlayerCommands { session: 7, packet: Box::new(Packet::pack(4, capture, 2, 0, start, end, 0, &batch).unwrap()) }
     };
     commands::index(&[session], &[packet(1, 0, &[0, 1, 2, 3]), packet(2, 600, &[3, 4, 5, 12])], 4).unwrap()
 }
@@ -470,7 +470,7 @@ fn an_unrepresentable_clock_sum_is_reported_by_the_exact_tile_and_followed_reads
     for (id, frequency) in frequencies.into_iter().enumerate() {
         let mut session = dashboard_base::test_fixtures::session(id as u64 + 1);
         session.qpc_frequency = frequency;
-        packets.push(ControlRecord::PlayerCommands { session: session.id, packet: Packet::pack(4, 1, 2, 0, 0, 60, 0, &batch).unwrap() });
+        packets.push(ControlRecord::PlayerCommands { session: session.id, packet: Box::new(Packet::pack(4, 1, 2, 0, 0, 60, 0, &batch).unwrap()) });
         sessions.push(session);
     }
     let index = Arc::new(commands::index(&sessions, &packets, 4).unwrap());
