@@ -133,13 +133,14 @@ function spec(extra: Partial<WidgetSpec> = {}): WidgetSpec {
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, contentScale: 100, ...extra };
 }
 
-test('unknown or removed widget options fall back to defaults and mismatched versions stay retained as unsupported', () => {
+test('unknown or removed widget options fall back to defaults, older versions load and newer versions stay unsupported', () => {
   const stored = parseStoredOptions({ breakdownOpens: 'drawer', order: 'removed', ticks: false, window: 30 });
   assert.ok(stored);
   assert.deepEqual(resolveOptions(FIELDS, stored), { order: 'game', ticks: false, window: 30, yMax: null });
   assert.equal('breakdownOpens' in resolveOptions(FIELDS, stored), false);
-  assert.match(widgetUnavailable(spec({ configVersion: 1 }))!, /version 1 is unsupported/);
+  assert.equal(widgetUnavailable(spec({ configVersion: 1 })), null);
   assert.equal(widgetUnavailable(spec()), null);
+  assert.match(widgetUnavailable(spec({ configVersion: 3 }))!, /version 3 is unsupported/);
 });
 
 test('view preferences save settings but leave unknown campaigns and pins as drafts', () => {

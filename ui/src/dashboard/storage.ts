@@ -100,7 +100,10 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
     const options = widget.options === undefined ? undefined : parseStoredOptions(widget.options);
     if (!countries || !time || options === null) return null;
     const campaign = widget.campaign === 'default' || (widget.campaign === undefined && widget.trackIds.length === 1 && widget.trackIds[0] === 'main' && time.mode !== 'pin') ? 'default' : 'tracks';
-    const stored: WidgetSpec = { campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
+    const definition = widgetDefinition(widget.kind);
+    const savedVersion = widget.configVersion ?? 1;
+    const configVersion = definition && savedVersion < definition.version ? definition.version : savedVersion;
+    const stored: WidgetSpec = { campaign, id: widget.id, kind: widget.kind, configVersion, title: widget.title,
       trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100,
       ...(options && Object.keys(options).length ? { options } : {}) };
     widgets.push(stored); widgetById.set(stored.id, stored);
