@@ -151,18 +151,17 @@ export function chartNavStops(model: TimeChartModel, layout: TimeChartLayout): r
 
 export const LOG_REFUSED = 'Log scale needs every value shown above zero, so the value axis is linear.';
 
-const hovered = new WeakMap<ChartLayout, { readonly inspect: string; readonly layout: TimeChartLayout }>();
+const hovered = new WeakMap<ChartLayout, { readonly seriesId: string; readonly layout: TimeChartLayout }>();
 
 function shownLayout(layout: ChartLayout, inspect: string | null): TimeChartLayout | null {
   if (!layout.base) return null;
   const parsed = parseChartInspect(inspect);
-  const hoverHour = parsed?.kind === 'plot' || parsed?.kind === 'line' ? parsed.hour : null;
   const seriesId = parsed?.kind === 'label' || parsed?.kind === 'line' ? parsed.seriesId : null;
-  if (!inspect || (hoverHour === null && seriesId === null)) return layout.base;
+  if (seriesId === null) return layout.base;
   const held = hovered.get(layout);
-  if (held && held.inspect === inspect) return held.layout;
+  if (held && held.seriesId === seriesId) return held.layout;
   const shown = hoverTimeChartLayout(layout.base, seriesId);
-  hovered.set(layout, { inspect, layout: shown });
+  hovered.set(layout, { seriesId, layout: shown });
   return shown;
 }
 

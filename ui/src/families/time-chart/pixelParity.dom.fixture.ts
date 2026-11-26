@@ -5,6 +5,7 @@ import type { ChartBucket } from '../../charts/chartSummary.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import type { MissingSpan } from '../../generated/dashboard';
 import { readyArt } from '../art/types.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { boundTiledSeries, BoundedSeriesCursor, displayedHour } from '../boundedView.ts';
 import type { ArtHandle, FamilyTheme, IdentityResult } from '../contract.ts';
 import { projectScene } from '../scene.ts';
@@ -13,7 +14,7 @@ import { drawGapBand, drawPlayheadLine, drawSeriesMissingStrip, drawTimeAxis, re
 import { DEFAULT_SEEDS, deriveColors, type ThemeMode } from '../../shell/appearance/themes.ts';
 import { timeChartCacheState } from './cacheControl.ts';
 import { chartNavStops } from './laneView.ts';
-import { layoutTimeChart } from './layout.ts';
+import { hoverTimeChartLayout, layoutTimeChart } from './layout.ts';
 import type { ChartMonthSlot, TimeChartModel } from './model.ts';
 import { drawTimeChart, fitTimeChartLegend } from './painter.ts';
 import { buildBoundedStack, countrySeriesLooks, missingSpansOf, partialSpansOf } from './seriesHelpers.ts';
@@ -65,7 +66,7 @@ export interface ParityFailure {
   readonly looksEqual: boolean;
 }
 
-function runParitySuite(): { readonly checked: number; readonly failures: ParityFailure[] } {
+async function runParitySuite(): Promise<{ readonly checked: number; readonly failures: ParityFailure[] }> {
   const H0 = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
   const BIN = 24;
   const TOTAL_DAYS = 900;
@@ -900,6 +901,119 @@ function runParitySuite(): { readonly checked: number; readonly failures: Parity
   let stepDiff = 0;
   for (let i = 0; i < stepProdImg.length; i++) if (stepProdImg[i] !== stepRefImg[i]) stepDiff++;
   if (stepDiff > 0) failures.push({ label: 'step-stack-signed-gaps-total-dpr125', diffBytes: stepDiff, firstDiff: null, navEqual: true, looksEqual: true });
+
+  const hoverModel = buildLineModel({
+    label: 'hover-base',
+    mode: 'lines',
+    hour: H0 + 200 * 24,
+    width: 640,
+    height: 320,
+    dpr: 1,
+    theme: darkTheme,
+    tags: ['GER', 'SOV', 'USA', 'ENG', 'FRA'],
+    inspect: null,
+  }, true).model;
+  const hoverLayBase = layoutTimeChart(hoverModel, 640, 320, darkTheme.font, cachedMeasure);
+  const hoverLayLine0 = hoverTimeChartLayout(hoverLayBase, 'GER');
+  const hoverLayLine1 = hoverTimeChartLayout(hoverLayBase, 'SOV');
+  const hoverFit = fitTimeChartLegend(hoverModel, hoverLayBase, darkTheme, cachedMeasure);
+  for (const hoverDpr of [1, 1.25] as const) {
+    const bw = Math.round(640 * hoverDpr);
+    const bh = Math.round(320 * hoverDpr);
+    const cachedHoverC = new OffscreenCanvas(bw, bh);
+    const cachedHoverCtx = cachedHoverC.getContext('2d', { willReadFrequently: true })!;
+    const refHoverC = new OffscreenCanvas(bw, bh);
+    const refHoverCtx = refHoverC.getContext('2d', { willReadFrequently: true })!;
+    let drawImages = 0;
+    let backdropStrokes = 0;
+    const origDrawImage = cachedHoverCtx.drawImage.bind(cachedHoverCtx);
+    cachedHoverCtx.drawImage = ((...args: Parameters<typeof cachedHoverCtx.drawImage>) => {
+      if (args[0] instanceof OffscreenCanvas) drawImages++;
+      return origDrawImage(...args);
+    }) as typeof cachedHoverCtx.drawImage;
+    const origProtoStroke = OffscreenCanvasRenderingContext2D.prototype.stroke;
+    OffscreenCanvasRenderingContext2D.prototype.stroke = function (this: OffscreenCanvasRenderingContext2D, ...args: unknown[]) {
+      if (this !== cachedHoverCtx && this !== refHoverCtx) backdropStrokes++;
+      return (origProtoStroke as (...a: unknown[]) => void).apply(this, args);
+    };
+
+    try {
+      const hoverFrames: readonly { readonly label: string; readonly lay: typeof hoverLayBase; readonly inspect: string | null; readonly theme: FamilyTheme; readonly expectMode: 'direct' | 'promote' | 'hit' }[] = [
+        { label: `backdrop-hover-direct-dpr${hoverDpr}`, lay: hoverLayBase, inspect: `plot:${H0 + 40 * 24}`, theme: darkTheme, expectMode: 'direct' },
+        { label: `backdrop-hover-promote-dpr${hoverDpr}`, lay: hoverLayBase, inspect: `plot:${H0 + 90 * 24}`, theme: darkTheme, expectMode: 'promote' },
+        { label: `backdrop-hover-hit-1-dpr${hoverDpr}`, lay: hoverLayBase, inspect: `plot:${H0 + 150 * 24}`, theme: darkTheme, expectMode: 'hit' },
+        { label: `backdrop-hover-off-hit-dpr${hoverDpr}`, lay: hoverLayBase, inspect: null, theme: darkTheme, expectMode: 'hit' },
+        { label: `backdrop-hover-line0-direct-dpr${hoverDpr}`, lay: hoverLayLine0, inspect: `line:GER@${H0 + 60 * 24}`, theme: darkTheme, expectMode: 'direct' },
+        { label: `backdrop-hover-line0-promote-dpr${hoverDpr}`, lay: hoverLayLine0, inspect: `line:GER@${H0 + 110 * 24}`, theme: darkTheme, expectMode: 'promote' },
+        { label: `backdrop-hover-line0-hit-dpr${hoverDpr}`, lay: hoverLayLine0, inspect: `line:GER@${H0 + 140 * 24}`, theme: darkTheme, expectMode: 'hit' },
+        { label: `backdrop-hover-line1-direct-dpr${hoverDpr}`, lay: hoverLayLine1, inspect: `line:SOV@${H0 + 110 * 24}`, theme: darkTheme, expectMode: 'direct' },
+        { label: `backdrop-hover-theme-direct-dpr${hoverDpr}`, lay: hoverLayBase, inspect: `plot:${H0 + 90 * 24}`, theme: lightTheme, expectMode: 'direct' },
+      ];
+      for (const hf of hoverFrames) {
+        const prevDrawImages = drawImages;
+        backdropStrokes = 0;
+        timeChartCacheState.enabled = true;
+        drawTimeChart(cachedHoverCtx, hoverModel, hf.lay, hf.theme, hf.inspect, hoverDpr, hoverFit);
+        const usedBlit = drawImages === prevDrawImages + 1;
+        const modeOk = hf.expectMode === 'direct'
+          ? !usedBlit && backdropStrokes === 0
+          : hf.expectMode === 'promote'
+            ? usedBlit && backdropStrokes > 0
+            : usedBlit && backdropStrokes === 0;
+        timeChartCacheState.enabled = false;
+        drawTimeChart(refHoverCtx, hoverModel, hf.lay, hf.theme, hf.inspect, hoverDpr, hoverFit);
+        timeChartCacheState.enabled = true;
+        const a = cachedHoverCtx.getImageData(0, 0, bw, bh).data;
+        const b = refHoverCtx.getImageData(0, 0, bw, bh).data;
+        let diff = 0;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+        if (diff > 0 || !modeOk) {
+          failures.push({ label: `${hf.label}(blit=${usedBlit},bgStrokes=${backdropStrokes})`, diffBytes: diff, firstDiff: null, navEqual: true, looksEqual: true });
+        }
+      }
+
+      const flagUrl = 'bp://flag/GER';
+      const flagArtC = new OffscreenCanvas(18, 12);
+      const flagArtCtx = flagArtC.getContext('2d')!;
+      flagArtCtx.fillStyle = darkTheme.red;
+      flagArtCtx.fillRect(0, 0, 18, 12);
+      const flagBitmap = flagArtC.transferToImageBitmap();
+      const artModel: TimeChartModel = {
+        ...hoverModel,
+        legend: [{ id: 'GER', label: 'GER', color: darkTheme.blue, flag: { art: readyArt(flagUrl), tag: 'GER', label: 'GER' } }],
+      };
+      const artLay = layoutTimeChart(artModel, 640, 320, darkTheme.font, cachedMeasure);
+      const artFit = fitTimeChartLegend(artModel, artLay, darkTheme, cachedMeasure);
+      const artCache = new LaneArtCache<ImageBitmap>({ fetchBitmap: async () => flagBitmap });
+      drawTimeChart(cachedHoverCtx, artModel, artLay, darkTheme, `plot:${H0 + 40 * 24}`, hoverDpr, artFit, artCache);
+      backdropStrokes = 0;
+      const beforeArtPromote = drawImages;
+      drawTimeChart(cachedHoverCtx, artModel, artLay, darkTheme, `plot:${H0 + 60 * 24}`, hoverDpr, artFit, artCache);
+      const artPromoted = drawImages === beforeArtPromote + 1 && backdropStrokes > 0;
+      await new Promise<void>(resolve => {
+        artCache.setOnSettle(resolve);
+        artCache.requestVisible([flagUrl]);
+      });
+      backdropStrokes = 0;
+      const beforeArtAfter = drawImages;
+      drawTimeChart(cachedHoverCtx, artModel, artLay, darkTheme, `plot:${H0 + 80 * 24}`, hoverDpr, artFit, artCache);
+      const artInvalidated = drawImages === beforeArtAfter && backdropStrokes === 0;
+      timeChartCacheState.enabled = false;
+      drawTimeChart(refHoverCtx, artModel, artLay, darkTheme, `plot:${H0 + 80 * 24}`, hoverDpr, artFit, artCache);
+      timeChartCacheState.enabled = true;
+      const aArt = cachedHoverCtx.getImageData(0, 0, bw, bh).data;
+      const bArt = refHoverCtx.getImageData(0, 0, bw, bh).data;
+      let artDiff = 0;
+      for (let i = 0; i < aArt.length; i++) if (aArt[i] !== bArt[i]) artDiff++;
+      flagBitmap.close();
+      artCache.dispose();
+      if (artDiff > 0 || !artPromoted || !artInvalidated) {
+        failures.push({ label: `backdrop-art-settle-dpr${hoverDpr}(prom=${artPromoted},inv=${artInvalidated})`, diffBytes: artDiff, firstDiff: null, navEqual: true, looksEqual: true });
+      }
+    } finally {
+      OffscreenCanvasRenderingContext2D.prototype.stroke = origProtoStroke;
+    }
+  }
 
   return { checked: steps.length, failures };
 }
