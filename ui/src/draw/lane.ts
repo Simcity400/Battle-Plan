@@ -385,6 +385,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.limitedSubs.delete(id);
     this.lost.delete(id);
     this.forget(id);
+    this.replyDecoder.forget(id);
     this.facts.fail(id);
     for (const cell of this.facts.drain()) {
       this.gone.add(cell);
@@ -529,6 +530,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   unfollow(sub: number) {
     const route = this.subs.get(sub)?.route ?? null;
     this.subs.delete(sub);
+    this.replyDecoder.forget(sub);
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
     this.failedSubs.delete(sub);
@@ -742,7 +744,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.toldConfirmedFollowed.delete(route);
     this.routeConfirmedPanel.delete(route);
     this.toldConfirmedPanel.delete(route);
+    const seeking = seek > this.facts.generation(route).seek;
     for (const [subId, sub] of this.subs) if (sub.route === route) {
+      if (seeking && sub.channel === 'panel') this.replyDecoder.forget(subId);
       this.limitedSubs.delete(subId);
       for (const cell of this.facts.usesOf(subId) ?? []) this.limitedSubs.delete(cell);
       if (!this.failedSubs.has(subId)) this.schedulePrune(subId);
@@ -1136,7 +1140,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
             this.freed += 2 * record.length;
             continue;
           }
-          const made = this.panel(record);
+          const made = this.panel(record, route);
           if (made) {
             this.facts.panels(route, item.seek, [made], undefined, only);
             this.markSub(item.id, made.kind !== 'stands');
@@ -1270,10 +1274,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
   }
 
-  private panel(record: Uint8Array): PanelRecord<Value> | null {
+  private panel(record: Uint8Array, route: number): PanelRecord<Value> | null {
     const size = 2 * record.length;
     const rawId = record.byteLength >= 4 ? new DataView(record.buffer, record.byteOffset, 4).getUint32(0, true) : -1;
-    if (rawId >= 0 && this.failedSubs.has(rawId)) {
+    const sub = this.subs.get(rawId);
+    if (rawId >= 0 && (this.failedSubs.has(rawId) || sub?.channel !== 'panel' || sub.route !== route)) {
       this.freed += size;
       return null;
     }
@@ -1295,8 +1300,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.freed += size;
       return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped };
     }
-    if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
-      value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
+    if (panel.panel.refused !== null) {
+      this.replyDecoder.forget(panel.id);
+      return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
+        value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
+    }
     for (const cell of cells) {
       if (this.lost.has(cell.id)) {
         this.freed += size;
@@ -1346,7 +1354,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         } else this.freed += 2 * size;
         continue;
       }
-      const made = this.panel(bytes.subarray(start, start + size));
+      const made = this.panel(bytes.subarray(start, start + size), route);
       if (made) {
         this.facts.panels(route, seek, [made]);
         this.markSub(made.id, made.kind !== 'stands');

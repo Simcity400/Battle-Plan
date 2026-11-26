@@ -87,6 +87,26 @@ test('1,000 decodes build each distinct short string once per lane', t => {
   assert.equal(built.mock.callCount(), 12);
 });
 
+test('the lane interns string values only while a current request uses them', t => {
+  const reader = new ReplyDecoder();
+  const built = t.mock.method(String, 'fromCharCode');
+  const values = encode(['yrljbjuz', 'jsldzojd', 'jsldzojd']);
+  assert.deepEqual(reader.decode(values, 1), ['yrljbjuz', 'jsldzojd', 'jsldzojd']);
+  assert.equal(built.mock.callCount(), 2, 'the second occurrence of a value is served by the lane table');
+  reader.decode(encode('jsldzojd'), 2);
+  reader.decode(encode(0), 1);
+  assert.equal(built.mock.callCount(), 2, 'a second request still uses the colliding value');
+  reader.decode(values, 1);
+  assert.equal(built.mock.callCount(), 3, 'only the retired collision entry was rebuilt');
+  reader.forget(1);
+  reader.forget(2);
+  assert.throws(() => reader.decode(Uint8Array.of(0x92, 0xa1, 65), 1));
+  assert.equal(reader.decode(encode('A'), 1), 'A');
+  assert.equal(built.mock.callCount(), 5, 'a partial reply does not keep its strings');
+  reader.decode(values, 2);
+  assert.equal(built.mock.callCount(), 7, 'closing the last request released its strings');
+});
+
 test('review 10: an answer\'s shape names its rows and columns, not their order', () => {
   const a = answerBody({ keys: [1n, 2n, 3n], columns: 1, values: [10n, 20n, 30n] });
   const swapped = answerBody({ keys: [2n, 1n, 3n], columns: 1, values: [20n, 10n, 30n] });
