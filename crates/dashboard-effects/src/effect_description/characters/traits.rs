@@ -232,13 +232,11 @@ impl Renderer<'_, '_, '_> {
         let empty = Scopes::empty();
         let mut targets = String::new();
         for target in &trait_.targeted {
-            let operand = target.operand.as_deref().ok_or_else(|| format!(
-                "country trait {} has no targeted-country operand", trait_.token,
-            ))?;
-            let country = self
-                .evaluator()?
-                .scoped_country(operand, empty)
+            let country = target.operand.as_deref()
+                .map(|operand| self.evaluator()?.scoped_country(operand, empty))
+                .transpose()
                 .map_err(|why| why.to_string())?
+                .flatten()
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
                 let name = content_reader_localisation::localisation::crt_case_text(
@@ -255,11 +253,6 @@ impl Renderer<'_, '_, '_> {
                     empty,
                     false,
                 )?
-            } else if target.tag.is_none() {
-                return Err(format!(
-                    "country trait {} target {} resolves to no country in the trait scope",
-                    trait_.token, String::from_utf8_lossy(operand)
-                ));
             } else {
                 String::new()
             };

@@ -402,10 +402,17 @@ fn targeted_trait_resolves_the_retained_operand_and_names_an_unavailable_target(
     game::enter();
     let (mut fixture, _folder) = fixture();
     let effect = "fixture_grant_ruling=syn_targeted_dynamic";
+    let unset = fixture.render(effect, &mut character(), Content::default());
+    assert!(unset.refusals.is_empty(), "{:?}", unset.refusals);
+    let expected = "country+<Current>\n    \u{11}Hsyn_targeted_dynamic\u{11}!\n  - Power: \u{11}G+0.10\u{11}!\n\nEND";
+    assert_eq!(unset.text, expected);
+    *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
+        TableView::Unavailable { reason: "synthetic target table unavailable".into() };
     let missing = fixture.render(effect, &mut character(), Content::default());
     assert!(missing.text.is_empty());
     assert_eq!(missing.refusals.len(), 1);
-    assert!(missing.refusals.keys().all(|why| why.contains("event_target:syn_target")), "{:?}", missing.refusals);
+    let reason = missing.refusals.keys().next().unwrap();
+    assert!(reason.contains("event_target:syn_target") && reason.contains("synthetic target table unavailable"), "{reason}");
     *fixture.frame.tables[TableId::GlobalSavedEventTargets.index()] =
         TableView::Complete(TableRows::GlobalSavedEventTargets(vec![GlobalSavedEventTargetRow {
             name: b"syn_target".to_vec(),
@@ -418,7 +425,7 @@ fn targeted_trait_resolves_the_retained_operand_and_names_an_unavailable_target(
         Content::default(),
     );
     assert!(result.refusals.is_empty(), "{:?}", result.refusals);
-    assert!(result.text.contains("\u{12}BBB/Beta: Power: \u{11}G+0.10\u{11}!"), "{}", result.text);
+    assert_eq!(result.text, expected.replace("Power:", "\u{12}BBB/Beta: Power:"));
 }
 
 #[test]
