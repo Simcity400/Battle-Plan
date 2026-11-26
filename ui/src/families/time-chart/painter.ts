@@ -751,34 +751,187 @@ function colourStretches(s: TimeChartSeriesModel, layout: TimeChartLayout, hour:
   return out;
 }
 
-export function drawTimeChart(
+interface BackdropArtSnapshot {
+  readonly status: string;
+  readonly bitmap: unknown;
+  readonly reason: string | undefined;
+}
+
+interface TimeChartBackdropEntry {
+  canvas: OffscreenCanvas | null;
+  ctx: OffscreenCanvasRenderingContext2D | null;
+  bw: number;
+  bh: number;
+  dpr: number;
+  colorSpace: PredefinedColorSpace;
+  model: TimeChartModel | null;
+  layout: TimeChartLayout | null;
+  hoveredSeriesId: string | null;
+  legendFit: LegendFit | null;
+  themeKey: string;
+  textRev: number;
+  artSnapshot: BackdropArtSnapshot[];
+}
+
+const backdropCache = new WeakMap<Canvas2D, TimeChartBackdropEntry>();
+
+export function clearTimeChartBackdrop(ctx: Canvas2D): void {
+  backdropCache.delete(ctx);
+}
+
+function backdropThemeKey(theme: FamilyTheme): string {
+  return [
+    theme.surface,
+    theme.raised ?? '',
+    theme.dark ? '1' : '0',
+    theme.text,
+    theme.muted,
+    theme.line,
+    theme.lineSoft,
+    theme.hairline ?? '',
+    theme.hairlineStrong ?? '',
+    theme.bandDivider ?? '',
+    theme.headerBand ?? '',
+    theme.rowHover ?? '',
+    theme.rowSelected ?? '',
+    theme.childTint ?? '',
+    theme.accent,
+    theme.blue,
+    theme.red,
+    theme.shortage ?? '',
+    theme.amber,
+    theme.green,
+    theme.grey,
+    theme.barMuted ?? '',
+    theme.barTrack ?? '',
+    theme.gridLine ?? '',
+    theme.zeroLine ?? '',
+    theme.tailLine ?? '',
+    theme.playhead ?? '',
+    theme.crosshair ?? '',
+    theme.dateTabBg ?? '',
+    theme.dateTabText ?? '',
+    theme.hoverTabBg ?? '',
+    theme.hoverTabText ?? '',
+    theme.hatch,
+    theme.hatchEdge ?? '',
+    theme.font,
+    String(theme.fontSize.small),
+    String(theme.fontSize.body),
+    String(theme.lineWidth),
+    String(theme.hatchSpacing),
+  ].join('\u0000');
+}
+
+function artResultEntry(art: Parameters<typeof resolveCachedArt>[0], artCache: LaneArtCache | undefined): BackdropArtSnapshot {
+  const res = resolveCachedArt(art, artCache);
+  return {
+    status: res.status,
+    bitmap: res.status === 'ready' ? res.bitmap : undefined,
+    reason: 'reason' in res ? res.reason : undefined,
+  };
+}
+
+function sameArtEntry(
+  snap: BackdropArtSnapshot,
+  art: Parameters<typeof resolveCachedArt>[0],
+  artCache: LaneArtCache | undefined,
+): boolean {
+  const res = resolveCachedArt(art, artCache);
+  if (snap.status !== res.status) return false;
+  const bitmap = res.status === 'ready' ? res.bitmap : undefined;
+  if (snap.bitmap !== bitmap) return false;
+  const reason = 'reason' in res ? res.reason : undefined;
+  return snap.reason === reason;
+}
+
+function collectBackdropArtSnapshot(
+  model: TimeChartModel,
+  layout: TimeChartLayout,
+  legendFit: LegendFit | null,
+  artCache: LaneArtCache | undefined,
+): BackdropArtSnapshot[] {
+  const out: BackdropArtSnapshot[] = [];
+  if (layout.legendTop !== null && model.legend) {
+    const legendLimit = legendFit ? Math.min(legendFit.shown.length, model.legend.length) : model.legend.length;
+    for (let i = 0; i < legendLimit; i++) {
+      const flag = model.legend[i]!.flag;
+      if (flag) out.push(artResultEntry(flag.art, artCache));
+    }
+  }
+  for (let i = 0; i < layout.endLabels.length; i++) {
+    const label = layout.endLabels[i]!;
+    if (label.flag && label.flag.art.status !== 'noArtExpected') {
+      out.push(artResultEntry(label.flag.art, artCache));
+    } else if (label.icon && label.icon.art.status !== 'noArtExpected') {
+      out.push(artResultEntry(label.icon.art, artCache));
+    }
+  }
+  for (let i = 0; i < layout.markers.length; i++) {
+    const m = layout.markers[i]!;
+    if (m.kind === 'flag' && m.marker.flag) {
+      out.push(artResultEntry(m.marker.flag.art, artCache));
+    } else if (m.kind === 'icon' && m.marker.icon) {
+      out.push(artResultEntry(m.marker.icon.art, artCache));
+    }
+  }
+  return out;
+}
+
+function sameBackdropArtSnapshot(
+  prev: readonly BackdropArtSnapshot[],
+  model: TimeChartModel,
+  layout: TimeChartLayout,
+  legendFit: LegendFit | null,
+  artCache: LaneArtCache | undefined,
+): boolean {
+  let idx = 0;
+  if (layout.legendTop !== null && model.legend) {
+    const legendLimit = legendFit ? Math.min(legendFit.shown.length, model.legend.length) : model.legend.length;
+    for (let i = 0; i < legendLimit; i++) {
+      const flag = model.legend[i]!.flag;
+      if (!flag) continue;
+      if (idx >= prev.length || !sameArtEntry(prev[idx++]!, flag.art, artCache)) return false;
+    }
+  }
+  for (let i = 0; i < layout.endLabels.length; i++) {
+    const label = layout.endLabels[i]!;
+    if (label.flag && label.flag.art.status !== 'noArtExpected') {
+      if (idx >= prev.length || !sameArtEntry(prev[idx++]!, label.flag.art, artCache)) return false;
+    } else if (label.icon && label.icon.art.status !== 'noArtExpected') {
+      if (idx >= prev.length || !sameArtEntry(prev[idx++]!, label.icon.art, artCache)) return false;
+    }
+  }
+  for (let i = 0; i < layout.markers.length; i++) {
+    const m = layout.markers[i]!;
+    if (m.kind === 'flag' && m.marker.flag) {
+      if (idx >= prev.length || !sameArtEntry(prev[idx++]!, m.marker.flag.art, artCache)) return false;
+    } else if (m.kind === 'icon' && m.marker.icon) {
+      if (idx >= prev.length || !sameArtEntry(prev[idx++]!, m.marker.icon.art, artCache)) return false;
+    }
+  }
+  return idx === prev.length;
+}
+
+function backdropColorSpaceOf(ctx: Canvas2D): PredefinedColorSpace | null {
+  const attrs = typeof (ctx as { readonly getContextAttributes?: () => CanvasRenderingContext2DSettings }).getContextAttributes === 'function'
+    ? (ctx as { readonly getContextAttributes: () => CanvasRenderingContext2DSettings }).getContextAttributes()
+    : null;
+  if (attrs && attrs.alpha === false) return null;
+  return attrs?.colorSpace ?? 'srgb';
+}
+
+function drawTimeChartBackdrop(
   ctx: Canvas2D,
   model: TimeChartModel,
   layout: TimeChartLayout,
   theme: FamilyTheme,
-  inspectKey: string | null | undefined,
-  dpr: number,
-  legendFit?: LegendFit | null,
-  artCache?: LaneArtCache,
+  tokens: ReturnType<typeof resolveKitTokens>,
+  parsedInspect: ReturnType<typeof parseChartInspect>,
+  hoveredSeriesId: string | null,
+  legendFit: LegendFit | null | undefined,
+  artCache: LaneArtCache | undefined,
 ): void {
-  const tokens = resolveKitTokens(theme);
-  const parsedInspect = parseChartInspect(inspectKey);
-  const hoverHour = parsedInspect?.kind === 'plot' || parsedInspect?.kind === 'line'
-    ? parsedInspect.hour
-    : parsedInspect?.kind === 'marker'
-      ? layout.markers[parsedInspect.index]?.marker.hour ?? null
-      : null;
-  const hoveredSeriesId = parsedInspect?.kind === 'label' || parsedInspect?.kind === 'line'
-    ? parsedInspect.seriesId
-    : null;
-
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, layout.width, layout.height);
-  if (layout.rows) {
-    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey), artCache);
-    return;
-  }
-
   const smallFont = `${theme.fontSize.small}px ${theme.font}`;
   const labelNameFont = `500 ${theme.fontSize.body}px ${theme.font}`;
   const labelValueFont = `600 ${theme.fontSize.body}px ${theme.font}`;
@@ -1571,7 +1724,145 @@ export function drawTimeChart(
   for (const g of layout.gaps) {
     drawSeriesMissingStrip(ctx, g.x0, layout.axisY - 2, g.x1 - g.x0, theme.hatch, theme, 5);
   }
+}
 
+export interface DrawTimeChartOptions {
+  readonly cacheBackdrop?: boolean;
+}
+
+export function drawTimeChart(
+  ctx: Canvas2D,
+  model: TimeChartModel,
+  layout: TimeChartLayout,
+  theme: FamilyTheme,
+  inspectKey: string | null | undefined,
+  dpr: number,
+  legendFit?: LegendFit | null,
+  artCache?: LaneArtCache,
+  options?: DrawTimeChartOptions,
+): void {
+  const tokens = resolveKitTokens(theme);
+  const parsedInspect = parseChartInspect(inspectKey);
+  const hoverHour = parsedInspect?.kind === 'plot' || parsedInspect?.kind === 'line'
+    ? parsedInspect.hour
+    : parsedInspect?.kind === 'marker'
+      ? layout.markers[parsedInspect.index]?.marker.hour ?? null
+      : null;
+  const hoveredSeriesId = parsedInspect?.kind === 'label' || parsedInspect?.kind === 'line'
+    ? parsedInspect.seriesId
+    : null;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, layout.width, layout.height);
+  if (layout.rows) {
+    backdropCache.delete(ctx);
+    drawChartRows(ctx, model, layout.rows, theme, parseRowsInspect(inspectKey), artCache);
+    return;
+  }
+
+  let usedBackdrop = false;
+  let trackedBackdrop = false;
+  if (
+    options?.cacheBackdrop === true
+    && timeChartCacheState.enabled
+    && model.mode !== 'columns'
+    && typeof OffscreenCanvas !== 'undefined'
+    && typeof (ctx as { readonly drawImage?: unknown }).drawImage === 'function'
+  ) {
+    const colorSpace = backdropColorSpaceOf(ctx);
+    const canvas = (ctx as { readonly canvas?: { readonly width?: number; readonly height?: number } }).canvas;
+    const bw = canvas && typeof canvas.width === 'number' ? canvas.width : 0;
+    const bh = canvas && typeof canvas.height === 'number' ? canvas.height : 0;
+    if (
+      colorSpace !== null
+      && bw > 0
+      && bh > 0
+      && Math.abs(bw - layout.width * dpr) <= 1
+      && Math.abs(bh - layout.height * dpr) <= 1
+    ) {
+      trackedBackdrop = true;
+      const themeKey = backdropThemeKey(theme);
+      const textRev = textWidthRevision();
+      const normLegendFit = legendFit ?? null;
+      let entry = backdropCache.get(ctx);
+      const sameKey = entry !== undefined
+        && entry.bw === bw
+        && entry.bh === bh
+        && Object.is(entry.dpr, dpr)
+        && entry.colorSpace === colorSpace
+        && entry.model === model
+        && entry.layout === layout
+        && entry.hoveredSeriesId === hoveredSeriesId
+        && entry.legendFit === normLegendFit
+        && entry.themeKey === themeKey
+        && entry.textRev === textRev
+        && sameBackdropArtSnapshot(entry.artSnapshot, model, layout, normLegendFit, artCache);
+      if (sameKey && entry) {
+        if (!entry.canvas || !entry.ctx) {
+          const off = new OffscreenCanvas(bw, bh);
+          const offCtx = off.getContext('2d', colorSpace !== 'srgb' ? { colorSpace } : undefined);
+          const offSpace = offCtx ? (backdropColorSpaceOf(offCtx) ?? null) : null;
+          if (offCtx && offSpace === colorSpace) {
+            entry.canvas = off;
+            entry.ctx = offCtx;
+            offCtx.save();
+            offCtx.setTransform(1, 0, 0, 1, 0, 0);
+            offCtx.clearRect(0, 0, bw, bh);
+            offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            drawTimeChartBackdrop(offCtx, model, layout, theme, tokens, null, hoveredSeriesId, legendFit, artCache);
+            offCtx.restore();
+          }
+        }
+        if (entry.canvas && entry.ctx) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.drawImage(entry.canvas, 0, 0);
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          usedBackdrop = true;
+        }
+      } else {
+        const artSnapshot = collectBackdropArtSnapshot(model, layout, normLegendFit, artCache);
+        if (!entry) {
+          entry = {
+            canvas: null,
+            ctx: null,
+            bw,
+            bh,
+            dpr,
+            colorSpace,
+            model,
+            layout,
+            hoveredSeriesId,
+            legendFit: normLegendFit,
+            themeKey,
+            textRev,
+            artSnapshot,
+          };
+          backdropCache.set(ctx, entry);
+        } else {
+          entry.canvas = null;
+          entry.ctx = null;
+          entry.bw = bw;
+          entry.bh = bh;
+          entry.dpr = dpr;
+          entry.colorSpace = colorSpace;
+          entry.model = model;
+          entry.layout = layout;
+          entry.hoveredSeriesId = hoveredSeriesId;
+          entry.legendFit = normLegendFit;
+          entry.themeKey = themeKey;
+          entry.textRev = textRev;
+          entry.artSnapshot = artSnapshot;
+        }
+      }
+    }
+  }
+  if (!usedBackdrop) {
+    if (!trackedBackdrop) backdropCache.delete(ctx);
+    drawTimeChartBackdrop(ctx, model, layout, theme, tokens, parsedInspect, hoveredSeriesId, legendFit, artCache);
+  }
+
+  const smallFont = `${theme.fontSize.small}px ${theme.font}`;
+  const textSecondary = tokens.textSecondary;
   const hoverInPlot = hoverHour != null && model.mode !== 'columns' && hoverHour >= layout.xDomain[0] && hoverHour <= model.hour;
 
   if (model.mode === 'columns') {

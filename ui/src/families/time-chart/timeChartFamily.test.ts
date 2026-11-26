@@ -8,6 +8,7 @@ import { countryKey } from '../../dashboard/countryKey.ts';
 import type { Run } from '../../charts/series.ts';
 import type { TiledLine } from '../../dashboard/tiles/view';
 import { readyArt } from '../art/types.ts';
+import { LaneArtCache } from '../art/laneCache.ts';
 import { boundTiledSeries, BoundedSeriesCursor, clipMissingSpans, createBoundedReadView, displayedHour } from '../boundedView.ts';
 import { projectScene, sceneReadRecorder } from '../scene.ts';
 import { computeTimeAxisTicks } from '../../draw/kit.ts';
@@ -3189,5 +3190,41 @@ describe('time-chart PR 3 incremental buildBoundedStack', () => {
     const wideAt4 = buildBoundedStack(wideInputs, H1936 + 4);
     assert.deepEqual(wideAt4.hours, [H1936, H1936 + 4]);
     assert.ok(wideReads < 20, `wide slice caps null-bucket scan at requested hour (reads=${wideReads})`);
+  });
+});
+
+describe('time-chart PR 4 backdrop cache & hover layout reuse', () => {
+  it('reuses hovered layout while scrubbing along one line and updates when switching series', () => {
+    const model: TimeChartModel = {
+      kind: 'hover-reuse',
+      measureTitle: 'Hover reuse',
+      mode: 'lines',
+      hour: H1936 + 10,
+      extent: [H1936, H1936 + 10],
+      yAxis: { format: 'number', fixed: [0, 100] },
+      series: [
+        { id: 'A', key: 'A', name: 'Alpha', color: LANE_THEME.blue, role: 'primary', points: [{ hour: H1936, value: 20 }, { hour: H1936 + 10, value: 40 }], headValue: 40, endLabel: { name: 'Alpha', fullName: 'Alpha', value: '40' } },
+        { id: 'B', key: 'B', name: 'Beta', color: LANE_THEME.amber, role: 'primary', points: [{ hour: H1936, value: 30 }, { hour: H1936 + 10, value: 60 }], headValue: 60, endLabel: { name: 'Beta', fullName: 'Beta', value: '60' } },
+      ],
+    };
+    const surface = { width: 520, height: 240, dpr: 1 };
+    const binding = { kind: 'hover-reuse' as const, zoom: null };
+    const measureCtx = { measureText: (s: string) => ({ width: s.length * 7 }) } as unknown as OffscreenCanvasRenderingContext2D;
+    const layout = timeChartLane.layout(model, binding as never, surface, LANE_THEME, measureCtx, null as never, null as never);
+    const art = new LaneArtCache();
+    const endLabels = layout.base!.endLabels;
+    let endLabelMaps = 0;
+    const origMap = endLabels.map.bind(endLabels);
+    (endLabels as { map: typeof endLabels.map }).map = ((...args: Parameters<typeof endLabels.map>) => {
+      endLabelMaps++;
+      return origMap(...args);
+    }) as typeof endLabels.map;
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:A@${H1936 + 2}`, art } as never, [200, 120]);
+    assert.equal(endLabelMaps, 1, 'first hover on series A builds faded endLabels once');
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:A@${H1936 + 8}`, art } as never, [260, 120]);
+    assert.equal(endLabelMaps, 1, 'scrubbing along series A reuses the cached hovered layout');
+    timeChartLane.hit({ layout, binding: binding as never, surface, theme: LANE_THEME, inspect: `line:B@${H1936 + 8}`, art } as never, [260, 120]);
+    assert.equal(endLabelMaps, 2, 'switching to series B rebuilds the hovered layout');
+    art.dispose();
   });
 });
