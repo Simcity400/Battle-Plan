@@ -1831,6 +1831,7 @@ pub trait StringSource {
 
 #[derive(Default)]
 pub struct Strings {
+    restored: Vec<crate::unit::restore::StringTable>,
     held: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
     pinned: HashMap<u32, Box<[u8]>, foldhash::fast::RandomState>,
     next: u32,
@@ -1887,8 +1888,12 @@ thread_local! {
 }
 
 impl Strings {
+    pub fn restored(tables: Vec<crate::unit::restore::StringTable>) -> Self {
+        Self { restored: tables, ..Self::default() }
+    }
+
     pub fn get(&self, id: u32) -> Option<&[u8]> {
-        self.held.get(&id).or_else(|| self.pinned.get(&id)).map(|text| &**text)
+        self.held.get(&id).or_else(|| self.pinned.get(&id)).map(|text| &**text).or_else(|| self.restored.iter().find_map(|table| table.get(id)))
     }
 
     pub fn hold(&mut self, id: u32, text: &[u8]) {
@@ -1903,7 +1908,8 @@ impl Strings {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, &[u8])> {
-        self.held.iter().chain(&self.pinned).map(|(&id, text)| (id, &**text))
+        let own = self.held.iter().chain(&self.pinned).map(|(&id, text)| (id, &**text));
+        own.chain(self.restored.iter().flat_map(|table| table.iter()).filter(|&(id, _)| !self.held.contains_key(&id) && !self.pinned.contains_key(&id)))
     }
 
     pub fn bytes(&self) -> usize {
@@ -1914,8 +1920,8 @@ impl Strings {
         if id < self.next {
             return Err(invalid(format!("A writer's string {id} is among the appends")));
         }
-        match self.pinned.get(&id) {
-            Some(held) if **held != *text => Err(invalid(format!("A writer's string {id} is held as another text"))),
+        match self.pinned.get(&id).map(|held| &**held).or_else(|| self.restored.iter().find_map(|table| table.get(id))) {
+            Some(held) if *held != *text => Err(invalid(format!("A writer's string {id} is held as another text"))),
             Some(_) => Ok(()),
             None => {
                 self.bytes += text.len();
@@ -2012,6 +2018,7 @@ impl Strings {
         self.bytes
             + (self.held.capacity() + self.pinned.capacity()) * (size_of::<u32>() + size_of::<Box<[u8]>>() + 1)
             + self.by_text.as_ref().map_or(0, TextIndex::bytes)
+            + self.restored.iter().map(crate::unit::restore::StringTable::held_bytes).sum::<usize>()
     }
 }
 

@@ -1524,17 +1524,23 @@ fn chunk_and_prefix(source: &dyn Extents, chunk: &super::restore::Chunk, reading
 }
 
 pub fn restore(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
-    restore_into(source, entry, kinds, columns, false)
+    restore_into(source, entry, kinds, columns, false, false).map(|(table, meta, _)| (table, meta))
 }
 
 pub fn restore_keyed(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize]) -> io::Result<(TableState, super::restore::Meta)> {
-    restore_into(source, entry, kinds, columns, true)
+    restore_into(source, entry, kinds, columns, true, false).map(|(table, meta, _)| (table, meta))
 }
 
-fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool) -> io::Result<(TableState, super::restore::Meta)> {
+pub fn restore_with_string_tables(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool) -> io::Result<(TableState, super::restore::Meta, Vec<super::restore::StringTable>)> {
+    restore_into(source, entry, kinds, columns, keyed, true)
+}
+
+type Restored = (TableState, super::restore::Meta, Vec<super::restore::StringTable>);
+
+fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kinds: &[Kind], columns: &[usize], keyed: bool, lazy: bool) -> io::Result<Restored> {
     use super::restore::{self as held, META, ROWS, ROWS_CHUNK};
     if entry.log {
-        return logs::log_restore(source, entry, kinds);
+        return logs::log_restore(source, entry, kinds).map(|(table, meta)| (table, meta, Vec::new()));
     }
     reading(|reading| {
         let mut table = TableState::new(kinds);
@@ -1542,13 +1548,28 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
         let (mut raw, mut prefix) = (Vec::new(), Vec::new());
         let meta_chunk = stream(META).first().ok_or_else(|| invalid("A restore holds no meta stream"))?;
         let against = chunk_and_prefix(source, meta_chunk, reading, &mut raw, &mut prefix)?;
-        let mut meta = held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?;
-        let whole_slots = if against {
-            let whole = held::read_meta(&prefix, kinds, &mut TableState::new(kinds))?;
-            meta.strings.extend(whole.strings);
-            Some(whole.slots)
+        let mut tables = Vec::new();
+        let (meta, whole_slots) = if lazy {
+            let (meta, strings) = held::read_meta_lazily(std::mem::take(&mut raw), meta_chunk.frame.raw as usize, kinds, &mut table)?;
+            tables.push(strings);
+            let whole_slots = if against {
+                let (whole, strings) = held::read_meta_lazily(prefix.clone(), prefix.len(), kinds, &mut TableState::new(kinds))?;
+                tables.push(strings);
+                Some(whole.slots)
+            } else {
+                None
+            };
+            (meta, whole_slots)
         } else {
-            None
+            let mut meta = held::read_meta(&raw[..meta_chunk.frame.raw as usize], kinds, &mut table)?;
+            let whole_slots = if against {
+                let whole = held::read_meta(&prefix, kinds, &mut TableState::new(kinds))?;
+                meta.strings.extend(whole.strings);
+                Some(whole.slots)
+            } else {
+                None
+            };
+            (meta, whole_slots)
         };
         table.set_slots(meta.slots);
         let range = |chunks: &[super::restore::Chunk], index: usize| {
@@ -1595,7 +1616,7 @@ fn restore_into(source: &dyn Extents, entry: &super::restore::RestoreEntry, kind
                 }
             }
         }
-        Ok((table, meta))
+        Ok((table, meta, tables))
     })
 }
 

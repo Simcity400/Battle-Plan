@@ -22,6 +22,7 @@ pub struct TableReadStats {
     pub stretches: u64,
     pub backward_seeks: u64,
     pub visited_ordinals: u64,
+    pub pinned: u64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -411,18 +412,16 @@ impl TableReader {
         };
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (cells, meta) = if self.keyed {
-            unit::reader::restore_keyed(source, restore, &self.kinds[..self.held], &self.columns)
-        } else {
-            unit::reader::restore(source, restore, &self.kinds[..self.held], &self.columns)
-        }
-        .map_err(|error| self.damaged(restored, error))?;
+        let (cells, meta, tables) = unit::reader::restore_with_string_tables(source, restore, &self.kinds[..self.held], &self.columns, self.keyed).map_err(|error| self.damaged(restored, error))?;
         drop(entry);
         self.cells = cells;
         self.restores += 1;
         #[cfg(any(test, feature = "test-support"))]
-        note_read(self.table(), |stats| stats.restores += 1);
-        self.strings = Strings::default();
+        note_read(self.table(), |stats| {
+            stats.restores += 1;
+            stats.pinned += meta.strings.len() as u64;
+        });
+        self.strings = Strings::restored(tables);
         for (id, text) in meta.strings {
             self.strings.pin(id, &text)?;
         }
