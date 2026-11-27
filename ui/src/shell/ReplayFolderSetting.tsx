@@ -40,6 +40,7 @@ export default function ReplayFolderSetting({ library, client }: { library: Repl
   const failure = shown ? actionFailure(shown.fallback, shown.message) : null;
   return <>{warning && !failure && <div className="notice warning" role="status" data-detail={warning}><Icon name="alert" /><span>Folder chosen, but Windows didn’t confirm the choice reached the disk.</span></div>}<FolderField label="Recordings folder" help="Recordings in this folder and its subfolders appear in your library." value={folder}
     placeholder={client.nativeMaps ? 'Folder containing your recordings' : 'Folder on the computer running BattlePlan'} disabled={library.loading || picking}
+    hint={library.loading && library.folder === null ? 'Reading your recordings folder…' : null}
     error={failure && { ...failure, field: null }} onRetry={failure?.detail ? shown?.retry : undefined}
     onChange={setFolder} onCommit={() => void save(folder)} onBrowse={client.chooseReplayFolder ? browse : undefined} /></>;
 }

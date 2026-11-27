@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, ReplayLibrary } from './client';
 import { errorMessage } from '../shell/errors';
 
-export function useReplayLibrary(client: DashboardClient) {
+export function useReplayLibrary(client: DashboardClient, shellReady: boolean) {
   const [library, setLibrary] = useState<ReplayLibrary>({ folder: null, files: [] });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!!client.replayLibrary);
   const [error, setError] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   const saving = useRef(false);
@@ -34,10 +34,14 @@ export function useReplayLibrary(client: DashboardClient) {
     } catch (error) { if (!request.signal.aborted) { setError(errorMessage(error)); throw error; } }
     finally { saving.current = false; if (!request.signal.aborted) setLoading(false); }
   }, [client]);
-  useEffect(() => { void refresh(); return () => controller.current?.abort(); }, [refresh]);
+  useEffect(() => () => {
+    controller.current?.abort();
+    controller.current = null;
+  }, [refresh]);
+  useEffect(() => { if (shellReady && !controller.current) void refresh(); }, [shellReady, refresh]);
   useEffect(() => {
     const stamp = client.replayLibraryStamp;
-    if (!stamp) return;
+    if (!shellReady || !stamp) return;
     let live = true, last: string | null = null, timer: ReturnType<typeof setTimeout>;
     const check = async () => {
       if (typeof document === 'undefined' || !document.hidden) {
@@ -50,7 +54,7 @@ export function useReplayLibrary(client: DashboardClient) {
     };
     timer = setTimeout(check, 2000);
     return () => { live = false; clearTimeout(timer); };
-  }, [client, refresh]);
+  }, [client, refresh, shellReady]);
   return useMemo(() => ({ ...library, loading, error, refresh, setFolder }), [library, loading, error, refresh, setFolder]);
 }
 export type ReplayLibraryState = ReturnType<typeof useReplayLibrary>;

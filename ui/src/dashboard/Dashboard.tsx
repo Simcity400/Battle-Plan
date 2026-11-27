@@ -588,6 +588,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     [shownTrack?.id, shownTrack?.branch.id, onMapBranch, onBranch]);
 
   const recordings = replayLibrary.files;
+  const recordingsLoading = replayLibrary.loading;
   const requestSeek = useCallback((trackId: string, rawHour: number) => {
     const track = tracks.find(item => item.id === trackId);
     const position = track ? seekPositionFor(track, rawHour) : null;
@@ -600,8 +601,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     update(previous => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItemBelow(previous.layouts, widget, sourceId) }));
   }, [update]);
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
-    campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow }),
-    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, assignCampaign, requestSeek, addWidgetBelow]);
+    campaigns, recordings, recordingsLoading, assignCampaign, requestSeek, addWidgetBelow }),
+    [onMapBranch, tracks, clock, maps, client, template.tracks, template.alignment, defaultRoleId, nativeHidden, campaigns, recordings, recordingsLoading, assignCampaign, requestSeek, addWidgetBelow]);
 
   const exportVideo = useExportVideo();
   const buildSurfaceContext = useCallback(

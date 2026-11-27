@@ -71,19 +71,14 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let _ = exiting.app.set(handle.clone());
-            if let Ok(settings) = replay_settings::recorder_settings::RecorderSettings::load() {
-                for root in std::iter::once(worker::save_folder(&settings)).chain(settings.earlier_save_folders.iter().cloned()) {
-                    jobs.take_up(&root, &settings);
-                }
-            }
+            tray::create(&handle, Arc::clone(&recorder))?;
             let changed = handle.clone();
             jobs.serve(move || worker::recordings_changed(&changed))?;
-            tray::create(&handle, Arc::clone(&recorder))?;
-            app_update::init(
+            app_update::prepare(
                 &handle,
                 app_update::Role::Recorder,
                 Arc::new(updates::Host(Arc::clone(&recorder))),
-            )?;
+            );
             if let Err(error) = app_update::session::watch(Arc::new(worker::SessionEnding(handle.clone(), &exiting.done)), app_update::recorder_name()) {
                 eprintln!("BattlePlan Recorder can’t hear Windows end the session, so a sign-out or shutdown may not wait for its recording to be saved: {error}");
             }
@@ -121,6 +116,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("Could not start BattlePlan Recorder");
     app.run(move |app, event| match event {
+        tauri::RunEvent::Ready => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || app_update::start(&app));
+        }
         tauri::RunEvent::ExitRequested {
             code: None, api, ..
         } => api.prevent_exit(),

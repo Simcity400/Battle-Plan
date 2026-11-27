@@ -32,7 +32,7 @@ pub fn start_recorder() {
     }
     let mut command = Command::new(&executable);
     command.arg(replay_settings::recorder_settings::STARTED_WITH_REPLAY);
-    if let Err(refusal) = launch_independently(&mut command) {
+    let _ = launch_reported(&mut command, |refusal| {
         eprintln!("{refusal}");
         std::thread::spawn(move || {
             rfd::MessageDialog::new()
@@ -42,6 +42,16 @@ pub fn start_recorder() {
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show()
         });
+    });
+}
+
+fn launch_reported(command: &mut Command, report: impl FnOnce(String)) -> Option<Child> {
+    match launch_independently(command) {
+        Ok(child) => Some(child),
+        Err(refusal) => {
+            report(refusal);
+            None
+        }
     }
 }
 
@@ -503,10 +513,9 @@ mod tests {
         stdin.read_line(&mut String::new()).unwrap();
         let mut recorder =
             this_test_binary("recorder", "recorder::tests::launched_recorder_stand_in");
-        let line = match launch_independently(&mut recorder) {
-            Ok(child) => format!("launched {}", child.id()),
-            Err(refusal) => format!("refused {refusal}"),
-        };
+        let mut refused = String::new();
+        let launched = launch_reported(&mut recorder, |reason| refused = format!("refused {reason}"));
+        let line = launched.map_or_else(|| refused, |child| format!("launched {}", child.id()));
         let mut out = std::io::stdout().lock();
         writeln!(out, "\n{line}").unwrap();
         out.flush().unwrap();

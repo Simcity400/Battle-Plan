@@ -32,6 +32,7 @@ export const browserTests = [
   'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/startupRecording.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
+  'ui/src/shell/desktopStartup.dom.test.ts',
   tabFullTest,
 ];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts', 'tools/native-page.test.ts']);

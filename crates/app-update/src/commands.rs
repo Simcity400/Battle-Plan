@@ -1,21 +1,17 @@
-use crate::{Channel, RELEASES, UpdateState, Updates, install};
+use crate::{Channel, RELEASES, UpdateState, Updates, install, updates};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
-
-fn updates(app: &AppHandle) -> Arc<Updates> {
-    Arc::clone(app.state::<Arc<Updates>>().inner())
-}
+use tauri::AppHandle;
 
 #[tauri::command]
-pub fn app_update_state(updates: State<'_, Arc<Updates>>) -> UpdateState {
-    updates.state()
+pub async fn app_update_state(app: AppHandle) -> Result<UpdateState, String> {
+    blocking(app, |updates| Ok(updates.state())).await
 }
 
 async fn blocking<T: Send + 'static>(
     app: AppHandle,
     work: impl FnOnce(Arc<Updates>) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(move || work(updates(&app)))
+    tauri::async_runtime::spawn_blocking(move || work(updates(&app)?))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -42,7 +38,7 @@ pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
 }
 
 pub fn install_now(app: &AppHandle) -> Result<(), String> {
-    updates(app).install()
+    updates(app)?.install()
 }
 
 #[tauri::command]

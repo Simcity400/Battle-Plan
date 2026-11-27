@@ -241,6 +241,24 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
     }
 }
 
+#[derive(Default)]
+struct ShellReady(std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+async fn shell_ready(webview: tauri::Webview) -> Result<(), String> {
+    if webview.label() != "main" {
+        return Err("Only the main window starts BattlePlan’s background services.".into());
+    }
+    if !webview.state::<ShellReady>().0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tauri::async_runtime::spawn_blocking(|| {
+            shader_pipeline::artwork::warm();
+            recorder::start_recorder();
+            export_settings::sweep_pending_stages();
+        }).await.map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 struct Receipt {
     app: tauri::AppHandle,
     seq: u64,
@@ -577,8 +595,7 @@ fn main() {
     if let Some(prefix) = perf::map_prefix() {
         viewer::host::log_map_frames(prefix);
     }
-    shader_pipeline::artwork::warm();
-    if let Err(error) = dashboard_text::artwork::configure_desktop() {
+    if let Err(error) = dashboard_text::artwork::prepare_desktop() {
         eprintln!("{error}");
     }
     let exiting: &'static Exiting = match start_exit_worker() {
@@ -642,13 +659,11 @@ fn main() {
                     .lock()
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
             }
-            app_update::init(
+            app_update::prepare(
                 app.handle(),
                 app_update::Role::Dashboard,
                 Arc::new(updates::Host(app.handle().clone())),
-            )?;
-            recorder::start_recorder();
-            export_settings::sweep_pending_stages();
+            );
             native::start_gamepad(app.handle().clone());
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload, session| {
@@ -680,6 +695,7 @@ fn main() {
         .manage(export_jobs::ExportJobs::default())
         .manage(export_webview::ExportWebviewState::default())
         .manage(Leaving::default())
+        .manage(ShellReady::default())
         .invoke_handler({
             let commands: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
             video::video_settings,
@@ -689,6 +705,7 @@ fn main() {
             video::map_muted,
             video::set_map_muted,
             desktop_state,
+            shell_ready,
             playback_pressure_merges,
             close_watch_document,
             watch_close_requests,
@@ -771,6 +788,10 @@ fn main() {
         .build(context)
         .expect("Couldn’t start BattlePlan");
     app.run(move |app, event| match event {
+        tauri::RunEvent::Ready => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || app_update::start(&app));
+        }
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },

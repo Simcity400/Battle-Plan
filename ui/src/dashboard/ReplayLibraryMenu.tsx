@@ -191,7 +191,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     if (!active || active === document.body) campaignRows.current.get(loaded.id)?.focus();
     if (needle && matches(loaded.path)) setQuery('');
   }, [libraryOpening, campaigns, bindings]);
-  const sole = needle && shown.length + found.length === 1 ? shown[0]?.path ?? found[0].path : null;
+  const sole = needle && !library.loading && !library.error && shown.length + found.length === 1 ? shown[0]?.path ?? found[0].path : null;
   const isSole = (path: string) => sole !== null && sameCampaignPath(sole, path);
   const searchKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); return; }
@@ -207,7 +207,8 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const idle = visible.length === 0;
   const emptyShown = idle && !needle;
   const offerOpen = !archived.length && !!client.chooseRecording;
-  const emptyText = archived.length ? 'Pick one from the library.' : library.loading ? 'Reading your recordings folder…'
+  const readingLibrary = library.loading && !archived.length;
+  const emptyText = archived.length ? 'Pick one from the library.' : readingLibrary ? 'Reading your recordings folder…'
     : library.error ? null : 'Recordings from BattlePlan Recorder appear here.';
   const shelfOpen = libraryOpen || idle && !libraryToggled;
   const toggleLibrary = () => {
@@ -251,7 +252,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
     {library.error && <FailureLine className="sidebar-failure" message="Couldn’t read the recordings folder." detail={library.error}
       onRetry={() => { void library.refresh(); }} retryDisabled={library.loading} />}
     <div className="sidebar-campaigns-empty" data-collapsed={!emptyShown || undefined} inert={!emptyShown}><div><div>
-      {emptyText && <p>{emptyText}</p>}
+      {emptyText && <p role={readingLibrary ? 'status' : undefined}>{emptyText}</p>}
       {offerOpen && <button type="button" className="button small" disabled={picking} onClick={() => { void pickRecording(); }}>
         <Icon name="folder-open" />Open a recording…</button>}
     </div></div></div>
@@ -285,8 +286,9 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
         </div>;
       })}
       {found.map(libraryRow)}
-      {needle && !shown.length && !found.length && !library.error && <p className="sidebar-search-empty" role="status">{library.loading ? 'Reading your recordings folder…' : 'No matching campaigns.'}</p>}
+      {needle && !library.error && (library.loading || !shown.length && !found.length) && <p className="sidebar-search-empty" role="status">{library.loading ? 'Reading your recordings folder…' : 'No matching campaigns.'}</p>}
     </div>}
+    {!needle && !emptyShown && readingLibrary && <p className="sidebar-search-empty" role="status">Reading your recordings folder…</p>}
     {archived.length > 0 && !needle && <div className="sidebar-library">
       <div className="sidebar-group-heading">
         <button type="button" className="sidebar-group-toggle" aria-expanded={shelfOpen} aria-label={`Library, ${archived.length} ${archived.length === 1 ? 'recording' : 'recordings'}`} onClick={toggleLibrary}>

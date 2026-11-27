@@ -46,6 +46,7 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
         {widget.campaign !== 'default' && roleId === campaign.id && <Icon name="check" />}
       </button>)}
       {loading.map(campaign => <div key={campaign.id} className="menu-item is-loading" role="status"><span className="spinner" /><span className="menu-item-label">Loading {displayName(campaign.path)}…</span></div>)}
+      {runtime.recordingsLoading && !library.length && <p className="field-hint" role="status">Reading your recordings folder…</p>}
       {runtime.recordings.length > 0 && <>
         <div className="group-label">Open another recording</div>
         {runtime.recordings.length > 6 && <label className="search-field campaign-picker-search"><Icon name="search" />
@@ -53,7 +54,7 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
         <div className="campaign-picker-library">{library.map(file => <button key={file.path} type="button" className="menu-item" data-tooltip-overflow={displayName(file.path)} onClick={() => choose(file.path)}>
           <Icon name="folder-open" /><span className="menu-item-label" data-overflow-label>{displayName(file.path)}{file.folder && <small>{file.folder}</small>}</span>
         </button>)}
-          {!library.length && <p className="field-hint">{words ? 'No matching recordings.' : 'Every recording in your folder is already open.'}</p>}</div>
+          {!library.length && !runtime.recordingsLoading && <p className="field-hint">{words ? 'No matching recordings.' : 'Every recording in your folder is already open.'}</p>}</div>
       </>}
     </Popover>
   </div>;

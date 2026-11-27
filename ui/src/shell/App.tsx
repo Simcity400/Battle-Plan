@@ -70,6 +70,7 @@ import {
 import { keepLatest } from './latest.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
+import { afterShellPaint, reportShellReady } from './ready';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -173,8 +174,8 @@ function useSidebarState() {
   return { hidden, peek: hidden && peek, openPeek: () => setPeek(true), aside, toggle, width, resizing, startResize, resetWidth, resizeByKey };
 }
 
-function SidebarUpdate() {
-  const { state } = useUpdateState();
+function SidebarUpdate({ shellReady }: { shellReady: boolean }) {
+  const { state } = useUpdateState(shellReady);
   return <UpdateButton state={state} />;
 }
 
@@ -219,6 +220,13 @@ function MapState({ icon = 'map', title, children, busy = false, alert = false }
 }
 
 export default function App() {
+  const [shellReady, setShellReady] = useState(false);
+  useEffect(() => afterShellPaint(() => {
+    if (desktopAvailable) {
+      void reportShellReady().catch(error => console.error('BattlePlan couldn’t start its background services:', error));
+    }
+    setShellReady(true);
+  }), []);
   const appearance = useAppearance();
   const iconMenu = useSidebarIconMenu(appearance);
   const widgetIconMenu = useWidgetIconMenu(appearance);
@@ -239,7 +247,7 @@ export default function App() {
   const lastView = useRef<Tab>(desktopAvailable ? 'map' : 'analytics');
   const clearSettingsTarget = useCallback(() => setSettingsTarget(null), []);
   const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
-  const replayLibrary = useReplayLibrary(client);
+  const replayLibrary = useReplayLibrary(client, shellReady);
   const [tab, setTab] = useState<Tab>(desktopAvailable ? 'map' : 'analytics');
   const [pages, setPages] = useState(loadPages);
   const [page, setPage] = useState<PageId>(() => { try { const saved = localStorage.getItem(PAGE_KEY); return pages.find(entry => entry.id === saved)?.id ?? pages[0].id; } catch { return pages[0].id; } });
@@ -605,7 +613,7 @@ export default function App() {
         <div className="sidebar-footer">
           {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
             onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour={iconMenu.custom('settings')} /></button>}
-          <RestartGuardContext.Provider value={guardRestart}><SidebarUpdate /></RestartGuardContext.Provider>
+          <RestartGuardContext.Provider value={guardRestart}><SidebarUpdate shellReady={shellReady} /></RestartGuardContext.Provider>
         </div>
         </div>
         {!sidebar.hidden && <div className="sidebar-rail" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"

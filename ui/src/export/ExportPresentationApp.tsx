@@ -986,6 +986,7 @@ export default function ExportPresentationApp() {
       nativeHidden: true,
       campaigns: session.campaigns,
       recordings: [],
+      recordingsLoading: false,
       assignCampaign: async () => undefined,
       requestSeek: () => false,
       addWidgetBelow: noop,
