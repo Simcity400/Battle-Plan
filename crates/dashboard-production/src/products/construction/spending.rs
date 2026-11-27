@@ -266,8 +266,8 @@ struct LineHistory {
 
 type ReasonSteps = HashMap<u64, LineHistory>;
 
-const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::BUILT, col::POSSIBLE, col::UNACCOUNTED_NEW, col::CONSTRUCTION_RAW];
-const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::REPAIRED, col::UNACCOUNTED_REPAIR, col::REPAIR_RAW];
+const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::UNACCOUNTED_NEW, col::BUILT, col::POSSIBLE, col::CONSTRUCTION_RAW];
+const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIRED, col::REPAIR_RAW];
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
     let columns = [
@@ -308,11 +308,13 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             }
             let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
             held.repair_tick = held.repair_tick.or(tick);
+            let (rep_now, rem_now) = (number(cells, rep_lvl).unwrap_or(0), number(cells, rem).unwrap_or(0));
+            let repair_ended = prev_repair[0] > 0 && rep_now == 0;
             let mut new_grew = false;
             for (slot, &column) in new_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
                     if value > 0 && held.first_new.is_none() { held.first_new = Some(step.hour); }
-                    if slot >= 2 && value > prev_new[slot] { new_grew = true; }
+                    if slot >= 3 && value > prev_new[slot] { new_grew = true; }
                     prev_new[slot] = value;
                 }
             }
@@ -320,13 +322,15 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             for (slot, &column) in repair_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
                     if value > 0 && held.first_repair.is_none() { held.first_repair = Some(step.hour); }
-                    if slot >= 2 && value > prev_repair[slot] { repair_grew = true; }
+                    if slot >= 3 && value > prev_repair[slot] { repair_grew = true; }
                     prev_repair[slot] = value;
                 }
             }
-            let active = if number(cells, rep_lvl).is_some_and(|v| v > 0) || (repair_grew && !new_grew) {
+            let active = if rep_now > 0 || (repair_grew && !new_grew) {
                 Some(true)
-            } else if (number(cells, rem).is_some_and(|v| v > 0) || new_grew) && !repair_grew {
+            } else if new_grew && !repair_grew {
+                Some(false)
+            } else if rem_now > 0 && !repair_grew && (repair_ended || held.purpose.last().is_none_or(|&(_, r)| !r)) {
                 Some(false)
             } else {
                 None

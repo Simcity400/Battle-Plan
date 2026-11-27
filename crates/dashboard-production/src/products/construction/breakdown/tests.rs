@@ -342,7 +342,8 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
         .map(|hour| {
             let mut frame = source(1, hour, Some(1));
             frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
-                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95, amount: if hour >= 115 { 2 } else { 1 }, repair_levels: 0, ..Default::default()
+                id: 2, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95,
+                amount: match hour { ..=114 => 1, 115 => 2, _ => 3 }, repair_levels: 0, ..Default::default()
             }]))
             .into();
             frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
