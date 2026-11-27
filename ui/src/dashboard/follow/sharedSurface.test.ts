@@ -736,6 +736,156 @@ test('round-2 regressions: direct uncovered hold, direct lastNow window tracking
     lane.clearCanvas(1);
     await tick(4, 15, 15, true);
     assert.equal(presented.at(-1)?.surfaces, 1);
+
+    lane.useCanvas(1);
+    await tick(5, 16, 16, true);
+    assert.equal(presented.at(-1)?.surfaces, 0);
+    assert.equal(paintedHours.at(-1), 16);
+  } finally {
+    Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
+  }
+});
+
+test('round-3 regressions: uncovered refusal restores installed model while parked, unmount clears slot rect, and multi-widget lane clips gutters', async () => {
+  const origOffscreen = (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+  Object.defineProperty(globalThis, 'OffscreenCanvas', {
+    value: class {
+      width: number;
+      height: number;
+      private readonly ctx: OffscreenCanvasRenderingContext2D;
+      constructor(w: number, h: number) {
+        this.width = w;
+        this.height = h;
+        this.ctx = fakeContext2D().ctx;
+      }
+      getContext() { return this.ctx; }
+    },
+    configurable: true,
+  });
+
+  try {
+    const geom = computeSharedLaneGeometry(
+      [
+        { widget: 1, lane: 0, rect: { x: 0, y: 0, w: 300, h: 200 }, inView: true, active: true },
+        { widget: 2, lane: 0, rect: { x: 320, y: 0, w: 300, h: 200 }, inView: true, active: true },
+      ],
+      { x: 0, y: 0, w: 800, h: 600 },
+      1,
+    );
+    assert.equal(geom.clipPathFallback, false);
+    assert.match(geom.lanes.get(0)!.clipPath, /^path\("M0 0H300V200H0Z M320 0H620V200H320Z"\)$/);
+
+    const kind = 'test-round3-uncovered-restore';
+    registerFamilyProjection({
+      family: 'bars',
+      kind,
+      project(view, options) {
+        return { hour: view.hour, tag: (options as { tag?: string }).tag ?? 'a' };
+      },
+    }, 'main');
+
+    const painted: { hour: number; tag: string }[] = [];
+    const family: LaneFamily<LaneBinding, { readonly hour: number; readonly tag: string }, { readonly key: string }> = {
+      family: 'bars',
+      boundary: (_model, hour) => hour + 1,
+      redraw: () => Infinity,
+      status: () => 'picture',
+      view: [],
+      layout: (model) => ({ key: `${model.hour}:${model.tag}` }),
+      paint(_ctx, frame) {
+        painted.push({ hour: frame.hour, tag: frame.model.tag });
+        return false;
+      },
+      hit: () => null,
+      tooltip: () => null,
+      structure: () => ({}),
+      mirror: null,
+      audit: () => [],
+      visibleArt: () => [],
+    };
+
+    const view: LaneView = createLaneView(family, () => {});
+    const presented: { id: number; widget: number; binding: number }[] = [];
+    const lane = new Lane<Bitmapped & { close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => view,
+      crop: async () => [],
+      present(p) {
+        for (const e of p.entries) presented.push({ id: e.id, widget: e.widget, binding: e.binding });
+      },
+      release() {},
+      fail(reason) { throw new Error(reason); },
+      later() {},
+      clock: () => 0,
+      budget: Infinity,
+    });
+
+    const sharedCanvas = fakeOffscreenCanvas(800, 600);
+    lane.setLaneSurface(sharedCanvas.canvas, true);
+    lane.mount(1, [], 'bars', {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: { tag: 'installed' },
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+    lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } });
+    lane.setLaneSlots({
+      width: 800,
+      height: 300,
+      dpr: 1,
+      scrollTop: 0,
+      scrollLeft: 0,
+      originX: 0,
+      originY: 0,
+      surfaceColor: TEST_THEME.surface,
+      clipPathFallback: false,
+      slots: [{ widget: 1, x: 40, y: 20, w: 300, h: 200, visible: true }],
+    });
+
+    const sendFrame = async (serial: number, now: number, exact: boolean, installed: { id: number; widget: number; binding: number }[], refused: { id: number; widget: number; reason: string }[]) => {
+      lane.frame({
+        type: 'frame',
+        serial,
+        seek: 1,
+        target: now,
+        now,
+        exact,
+        speed: exact ? 0 : 24,
+        inspect: [],
+        installed,
+        refused,
+      });
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    };
+
+    await sendFrame(1, 1, true, [], []);
+    assert.deepEqual(painted, [{ hour: 1, tag: 'installed' }]);
+    const entry1 = presented.splice(0);
+
+    await sendFrame(2, 5, false, entry1, []);
+    assert.deepEqual(painted.at(-1), { hour: 5, tag: 'installed' });
+    const entry5 = presented.splice(0);
+
+    lane.bind(1, { generation: 1, surfaces: [{ width: 300, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 1, c: 5 } }, {
+      family: 'bars',
+      kind,
+      view: 'main',
+      options: { tag: 'rebound' },
+      sources: {},
+      scrollTop: 0,
+      theme: TEST_THEME,
+    } satisfies LaneBinding);
+
+    await sendFrame(3, 6, true, [], [{ id: entry5[0]!.id, widget: 1, reason: 'uncovered' }]);
+    assert.deepEqual(painted.at(-1), { hour: 1, tag: 'installed' });
+
+    sharedCanvas.ops.length = 0;
+    lane.unmount(1);
+    assert.ok(sharedCanvas.ops.includes('fillRect:40,20,300,200'));
   } finally {
     Object.defineProperty(globalThis, 'OffscreenCanvas', { value: origOffscreen, configurable: true });
   }

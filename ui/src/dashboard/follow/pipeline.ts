@@ -237,6 +237,13 @@ export class Pipeline {
     this.postLane(widget.lane, { type: 'clear-canvas', widget: id });
   }
 
+  useCanvas(id: number) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    this.postLane(widget.lane, { type: 'use-canvas', widget: id });
+  }
+
   private readonly laneSurfaceFailedListeners = new Set<(lane: number) => void>();
 
   onLaneSurfaceFailed(listener: (lane: number) => void): () => void {

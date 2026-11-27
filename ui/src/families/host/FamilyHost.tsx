@@ -347,11 +347,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const sharedHost = useContext(SharedSurfaceContext);
   const spatialLanes = useContext(SpatialLaneContext);
   const preferredLane = spatialLanes?.get(widget.id);
-  const sharedSubscribe = useCallback((cb: () => void) => (sharedHost ? sharedHost.subscribe(cb) : () => {}), [sharedHost]);
-  const sharedRead = useCallback(() => Boolean(sharedHost?.laneAvailable(preferredLane ?? null)), [sharedHost, preferredLane]);
-  const sharedEnabled = useSyncExternalStore(sharedSubscribe, sharedRead, sharedRead);
   const exportSurface = useExportSurface();
-  const useShared = !prepared && !exportSurface.active && sharedEnabled;
   const exportReportRef = useRef(exportSurface.reportWidget);
   exportReportRef.current = exportSurface.reportWidget;
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
@@ -520,6 +516,11 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     }) : undefined;
     return () => { stop?.(); stopReset?.(); release(); };
   }, [strips, active, widget.id, pipeline, pipe, adapter.family, stripPlan?.key, stripPlan?.supported]);
+  const activeLane = pipeline && pipe !== null ? pipeline.lane(pipe) : (preferredLane ?? null);
+  const sharedSubscribe = useCallback((cb: () => void) => (sharedHost ? sharedHost.subscribe(cb) : () => {}), [sharedHost]);
+  const sharedRead = useCallback(() => Boolean(sharedHost?.laneAvailable(activeLane)), [sharedHost, activeLane]);
+  const sharedEnabled = useSyncExternalStore(sharedSubscribe, sharedRead, sharedRead);
+  const useShared = !prepared && !exportSurface.active && sharedEnabled;
 
   useEffect(() => {
     if (!exportSurface.active || !exportSurface.reportWidget || !active || prepared || enabled) return undefined;

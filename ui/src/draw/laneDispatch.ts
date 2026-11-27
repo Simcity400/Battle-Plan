@@ -216,6 +216,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'pointer': lane.pointer(m.widget, m.surface, m.point, m.installed); break;
       case 'canvas': lane.setCanvas(m.widget, m.canvas, m.opaque); break;
       case 'clear-canvas': lane.clearCanvas(m.widget); break;
+      case 'use-canvas': lane.useCanvas(m.widget); break;
       case 'lane-surface': lane.setLaneSurface(m.canvas, m.opaque); break;
       case 'lane-surface-dispose': lane.disposeLaneSurface(); break;
       case 'lane-slots': lane.setLaneSlots(m); break;

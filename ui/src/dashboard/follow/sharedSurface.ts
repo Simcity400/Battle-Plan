@@ -204,23 +204,31 @@ export function computeSharedLaneGeometry(
     const ch = overlap ? vpH : b.h;
     const slots: SharedSurfaceSlot[] = [];
     const clipParts: string[] = [];
+    let singleSlot: SharedSurfaceSlot | null = null;
     for (const item of list) {
       const sx = snapRound(item.rect.x - ox, dpr);
       const sy = snapRound(item.rect.y - oy, dpr);
       const sw = item.rect.w;
       const sh = item.rect.h;
-      slots.push({ widget: item.widget, x: sx, y: sy, w: sw, h: sh, visible: item.active });
-      if (overlap && item.active) {
+      const slot: SharedSurfaceSlot = { widget: item.widget, x: sx, y: sy, w: sw, h: sh, visible: item.active };
+      slots.push(slot);
+      if (item.active) {
         clipParts.push(`M${sx} ${sy}H${sx + sw}V${sy + sh}H${sx}Z`);
+        singleSlot = slot;
       }
     }
+    const needsClip = overlap
+      || clipParts.length > 1
+      || (clipParts.length === 1 && singleSlot !== null && (
+        singleSlot.x > 0.5 || singleSlot.y > 0.5 || singleSlot.w < cw - 0.5 || singleSlot.h < ch - 0.5
+      ));
     lanes.set(lane, {
       lane,
       left: ox,
       top: oy,
       width: cw,
       height: ch,
-      clipPath: overlap && clipParts.length ? `path("${clipParts.join(' ')}")` : '',
+      clipPath: needsClip && clipParts.length ? `path("${clipParts.join(' ')}")` : '',
       clipPathFallback: overlap,
       slots,
     });

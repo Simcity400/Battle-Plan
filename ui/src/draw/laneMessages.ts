@@ -49,6 +49,7 @@ export type ToLane =
   | { type: 'pointer'; widget: number; surface: number; point: [number, number] | null; installed?: number }
   | { type: 'canvas'; widget: number; canvas: OffscreenCanvas; opaque: boolean }
   | { type: 'clear-canvas'; widget: number }
+  | { type: 'use-canvas'; widget: number }
   | { type: 'lane-surface'; canvas: OffscreenCanvas; opaque: boolean }
   | ({ type: 'lane-slots' } & LaneSlotsPayload)
   | { type: 'lane-surface-dispose' }

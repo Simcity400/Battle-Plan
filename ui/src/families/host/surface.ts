@@ -284,6 +284,8 @@ export function mountFamilyCanvas(
   })!;
   if (!useSharedSurface && !drawn.workerPresented) {
     pipeline.clearCanvas(pipe);
+  } else if (!useSharedSurface && drawn.workerPresented) {
+    pipeline.useCanvas(pipe);
   }
   extent.className = extentClassName;
   extent.append(drawn.canvas);

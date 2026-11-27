@@ -168,6 +168,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly byRoute = new Map<number, Set<Widget<B>>>();
   private readonly earlyWidgets = new Set<Widget<B>>();
   private readonly inspectedByLane: Set<Widget<B>>[];
+  private readonly laneWidgetCounts: number[];
   private readonly bounded = new Set<Widget<B>>();
   private safeLo = -Infinity;
   private safeHi = Infinity;
@@ -188,6 +189,7 @@ export class Page<B extends Bitmap = Bitmap> {
     this.refusals = Array.from({ length: lanes }, () => []);
     this.laneConfirmed = Array.from({ length: lanes }, () => new Map());
     this.inspectedByLane = Array.from({ length: lanes }, () => new Set<Widget<B>>());
+    this.laneWidgetCounts = Array.from({ length: lanes }, () => 0);
   }
 
   private confirmedBox(lane: number, route: number, channel: 'followed' | 'panel'): { hour: number } {
@@ -282,6 +284,7 @@ export class Page<B extends Bitmap = Bitmap> {
       ...(dead !== undefined ? { reason: dead, failureOrigin: 'stream' as const } : {}), inspect: null, early: null, earlyMore: [],
       changed: mount.changed, dated: mount.dated, failed: dead !== undefined, face: '', drawn: 0 };
     this.widgets.set(id, widget);
+    this.laneWidgetCounts[mount.lane] = (this.laneWidgetCounts[mount.lane] ?? 0) + 1;
     this.routeSet(mount.route).add(widget);
     this.trackBounds(widget);
     if (dead !== undefined) { this.touched.add(widget); this.tell(); }
@@ -296,6 +299,7 @@ export class Page<B extends Bitmap = Bitmap> {
     this.bounded.delete(widget);
     this.safeDirty = true;
     this.drop(widget.installed);
+    this.laneWidgetCounts[widget.lane] = Math.max(0, (this.laneWidgetCounts[widget.lane] ?? 0) - 1);
     this.widgets.delete(id);
   }
 
@@ -373,6 +377,7 @@ export class Page<B extends Bitmap = Bitmap> {
       }
     }
     for (let lane = 0; lane < this.lanes; lane++) {
+      if (this.laneWidgetCounts[lane] === 0 && this.acks[lane]!.length === 0 && this.refusals[lane]!.length === 0) continue;
       const lead = Math.min(MAX_AHEAD, Math.max(1, Math.round(this.ahead[lane]!)));
       const target = exact ? this.T : Math.max(this.targets[lane]!, this.T + this.step * lead);
       this.targets[lane] = exact ? -Infinity : target;
