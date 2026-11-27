@@ -1,21 +1,12 @@
-import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import { selectedCountryKeys } from '../../dashboard/countrySelection.ts';
-import type { BoundTrack, CountrySelection } from '../../dashboard/model';
+import type { BoundTrack } from '../../dashboard/model';
 import type { PlaybackController } from '../../dashboard/playback';
 import { watchBoundary } from '../../dashboard/widgetTime.ts';
-import { groupSelection } from '../../families/groupSelection.ts';
 import type { HourRanges } from '../../families/holders.ts';
-import { resolveSelectedCountryRefs } from '../../families/table/logHelpers.ts';
-import type { CountryRef, EventFeedActivityReply, GroupSelection, MissingSpan } from '../../generated/dashboard';
+import type { occurrenceSelection } from '../../families/table/logHelpers.ts';
+import type { EventFeedActivityReply, MissingSpan } from '../../generated/dashboard';
 
 const STRIP_WINDOW_HOURS = 60 * 24;
 const DEFAULT_BIN_HOURS = 24;
-
-export type ActivityCountryFilter =
-  | { readonly kind: 'all' }
-  | { readonly kind: 'group'; readonly group: GroupSelection }
-  | { readonly kind: 'countries'; readonly countries: readonly CountryRef[] }
-  | { readonly kind: 'empty' };
 
 export interface StripState {
   readonly key: string;
@@ -199,23 +190,6 @@ export function subscribeActivityClock(
   };
 }
 
-export function activityCountryFilter(
-  selection: CountrySelection,
-  track: BoundTrack | undefined,
-  identities: CountryIdentityIndex | null = null,
-): ActivityCountryFilter {
-  if (selection.kind === 'all') return { kind: 'all' };
-  const group = groupSelection(selection);
-  if (group) return { kind: 'group', group };
-  if (selection.kind === 'tags' || selection.kind === 'selected') {
-    const keys = selectedCountryKeys(selection, track);
-    const refs = resolveSelectedCountryRefs(selection, keys, identities) ?? [];
-    if (!refs.length) return { kind: 'empty' };
-    return { kind: 'countries', countries: refs };
-  }
-  return { kind: 'empty' };
-}
-
 export function activityScopeKey(input: {
   readonly sourceId: string;
   readonly revision: string;
@@ -223,7 +197,7 @@ export function activityScopeKey(input: {
   readonly binHours: number;
   readonly categories: readonly string[];
   readonly excludedKinds?: readonly string[];
-  readonly countryFilter: ActivityCountryFilter;
+  readonly selection: ReturnType<typeof occurrenceSelection>;
 }): string {
   const excluded = input.excludedKinds?.length ? [...input.excludedKinds].sort() : [];
   return JSON.stringify([
@@ -233,7 +207,7 @@ export function activityScopeKey(input: {
     input.binHours,
     input.categories,
     excluded,
-    input.countryFilter,
+    input.selection,
   ]);
 }
 

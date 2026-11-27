@@ -136,20 +136,6 @@ function EventFeedView(props: FamilyViewProps) {
         onToggle={onToggleFilter}
         onSelectAll={onSelectAll}
       /></PickerContext.Provider>
-      {showStrip ? (
-        <EventFeedActivityStrip
-          widget={props.widget}
-          track={track}
-          runtime={props.runtime}
-          active={props.active}
-          categories={categories}
-          excludedKinds={excludedKinds}
-          from={stripFrom}
-          pinnedHour={pinnedHour}
-          frozenHour={frozenHour}
-          installedHour={installedHour}
-        />
-      ) : null}
       {props.manifestDeclaration ? <FamilyWidget
         {...props}
         options={familyOptions}
@@ -161,6 +147,20 @@ function EventFeedView(props: FamilyViewProps) {
         selectedKey={shown?.key ?? null}
         onToggle={groups.toggle}
         onActivate={onActivate}
+        beforeBody={showStrip ? (context, status) => <EventFeedActivityStrip
+          widget={props.widget}
+          track={track}
+          runtime={props.runtime}
+          active={props.active}
+          categories={categories}
+          excludedKinds={excludedKinds}
+          from={stripFrom}
+          pinnedHour={pinnedHour}
+          frozenHour={frozenHour}
+          installedHour={installedHour}
+          context={context}
+          refusal={status.kind === 'refused' ? status.reason : null}
+        /> : undefined}
       /> : null}
       <EventDetailWindow subject={shown} detail={detail} anchor={anchor} onClose={() => setOpened(null)} />
     </div>

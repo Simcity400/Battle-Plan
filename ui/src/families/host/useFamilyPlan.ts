@@ -10,7 +10,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
-import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchChangeHours, EVER_UNRECORDED, everBounds, everStateAt, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
 import { cumulativeEverMembership, datedIdentityMembership, incompleteGroupBodyStatus, incompleteHourStateAt, staticDatedGroupBodyStatus } from '../groupFilter.ts';
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
@@ -380,8 +380,11 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, [isMulti, effectiveMulti, slots, slotRevision]);
 
   const unobserved = useMemo(
-    () => effectiveCountryUnobserved(widget.countries, effectiveMulti?.unobserved),
-    [widget.countries, effectiveMulti?.unobserved],
+    () => effectiveCountryUnobserved(widget.countries,
+      isFilter && widget.countries.kind === 'group' && groups.data
+        ? groupUnobserved(groups.data, widget.countries.group)
+        : effectiveMulti?.unobserved),
+    [widget.countries, effectiveMulti?.unobserved, isFilter, groups.data],
   );
 
   const membership = useMemo<Readonly<Record<string, readonly (readonly [number, number])[]>> | null>(() => {

@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
-import type { BoundTrack, CountrySelection } from '../../dashboard/model';
+import type { BoundTrack } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
 import type { EngineTask, FrameEngine } from '../../engine/frame.ts';
 import type { EventFeedActivityReply } from '../../generated/dashboard';
 import {
-  activityCountryFilter,
   activityDisplayedHour,
   activityRequestPlan,
   activityScopeKey,
@@ -84,35 +82,6 @@ test('activityDisplayedHour adds track.axisOffset, clamps to branch bounds, caps
   assert.equal(activityStripStart(0, null, 2010), 552, 'and stays constant across hours within the same day');
 });
 
-test('activityCountryFilter resolves selected dashboard country and rejects empty selections (#823 R2-S12)', () => {
-  assert.deepEqual(activityCountryFilter({ kind: 'all' }, track(0)), { kind: 'all' });
-  assert.deepEqual(activityCountryFilter({ kind: 'selected' }, track(0, 12)), { kind: 'countries', countries: [12] });
-  assert.deepEqual(activityCountryFilter({ kind: 'selected' }, track(0, null)), { kind: 'empty' });
-  assert.deepEqual(activityCountryFilter({ kind: 'tags', tags: [] }, track(0)), { kind: 'empty' });
-  assert.deepEqual(activityCountryFilter({ kind: 'tags', tags: ['GER', 'ITA'] }, track(0)), { kind: 'countries', countries: ['GER', 'ITA'] });
-  assert.deepEqual(
-    activityCountryFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, track(0)),
-    { kind: 'group', group: { type: 'humans', membership: 'hour' } },
-  );
-  assert.deepEqual(
-    activityCountryFilter({ kind: 'group', group: { type: 'top', count: 5 }, membership: 'hour' } as CountrySelection, track(0)),
-    { kind: 'empty' },
-  );
-  const key12 = activityScopeKey({ sourceId: 's', revision: '1', branchId: '1', binHours: 24, categories: ['politics'], countryFilter: activityCountryFilter({ kind: 'selected' }, track(0, 12)) });
-  const key19 = activityScopeKey({ sourceId: 's', revision: '1', branchId: '1', binHours: 24, categories: ['politics'], countryFilter: activityCountryFilter({ kind: 'selected' }, track(0, 19)) });
-  assert.notEqual(key12, key19, 'changing the selected country slot on the track changes the strip scope key');
-
-  const identities = countryIdentityIndex([
-    { tag: 'AAA', identities: [{ slot: 7, countryId: 101, firstHour: 0, lastHour: 199 }] },
-    { tag: 'BBB', identities: [{ slot: 7, countryId: 101, firstHour: 200, lastHour: 400 }] },
-  ]);
-  assert.deepEqual(
-    activityCountryFilter({ kind: 'tags', tags: ['AAA'] }, track(0), identities),
-    { kind: 'countries', countries: [7, 'AAA'] },
-    'saved tag selection resolves slot 7 alongside AAA so renamed BBB events match the feed',
-  );
-});
-
 test('activityRequestPlan, mergeActivityStrip, and canDisplayStrip reuse historical bins on overlap and clear on disjoint seeks or null targets (#823 R2-S12)', () => {
   const scope = activityScopeKey({
     sourceId: 's',
@@ -120,7 +89,7 @@ test('activityRequestPlan, mergeActivityStrip, and canDisplayStrip reuse histori
     branchId: '1',
     binHours: 24,
     categories: ['politics', 'warsPeace'],
-    countryFilter: { kind: 'all' },
+    selection: undefined,
   });
   const initialPlan = activityRequestPlan(null, scope, 0, 70, 24);
   assert.equal(initialPlan.incremental, false);
@@ -218,7 +187,7 @@ test('activityRequestPlan, mergeActivityStrip, and canDisplayStrip reuse histori
     branchId: '1',
     binHours: 24,
     categories: ['politics'],
-    countryFilter: { kind: 'all' },
+    selection: undefined,
   });
   const scopeChanged = activityRequestPlan(merged, otherScope, 0, 120, 24);
   assert.equal(scopeChanged.incremental, false);
@@ -314,7 +283,7 @@ test('subscribeActivityClock advances across ordinary forward playback without p
     branchId: '1',
     binHours: 24,
     categories: ['politics'],
-    countryFilter: { kind: 'all' },
+    selection: undefined,
   });
   const render = (installedHour: number | null = null) => {
     renders++;

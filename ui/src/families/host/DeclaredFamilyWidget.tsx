@@ -1,7 +1,7 @@
 import ProductPicker from '../table/ProductPicker.tsx';
 import { PickerContext } from '../table/picker.ts';
 import { lineChartSettings } from '../time-chart/settings.ts';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import type { IconName } from '../../components/Icons';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -22,6 +22,7 @@ import type {
   InstalledAction,
   SourcePlan,
 } from '../contract.ts';
+import type { FamilyBodyStatus } from '../plan.ts';
 import type {
   FamilyArtDemand,
   FamilyContextHit,
@@ -100,6 +101,7 @@ export interface DeclaredFamilyWidgetProps<
   readonly onFrozenHour?: (hour: number | null) => void;
   readonly onInstalledHour?: (hour: number | null) => void;
   readonly extraWarnings?: readonly string[];
+  readonly beforeBody?: (context: FamilyPlanContext<TAux> | null, status: FamilyBodyStatus) => ReactNode;
 }
 
 export default function DeclaredFamilyWidget<
@@ -134,6 +136,7 @@ export default function DeclaredFamilyWidget<
   onFrozenHour,
   onInstalledHour,
   extraWarnings,
+  beforeBody,
 }: DeclaredFamilyWidgetProps<TModel, TProjectionOptions, TBinding, TAux, TSettings>) {
   useWidgetSkeleton(adapter.skeleton ?? 'chart');
 
@@ -429,11 +432,12 @@ export default function DeclaredFamilyWidget<
     return hour === null ? children([], { kind: 'unrecorded' })
       : <ProductPicker spec={picker} runtime={runtime} context={displayedCtx} hour={hour} selected={selected}>{children}</ProductPicker>;
   }}>{host}</PickerContext.Provider> : host;
-  if (!declaration.className && !bannerFailure) return regionChooser ? <>{widgetHost}{regionChooser}</> : widgetHost;
+  const body = <>{beforeBody?.(plan.plan ? plan.displayedCtx : null, plan.bodyStatus)}{widgetHost}</>;
+  if (!declaration.className && !bannerFailure) return regionChooser ? <>{body}{regionChooser}</> : body;
   return (
     <div className={declaration.className} data-detail={plan.nameFailureDetail}>
       {bannerFailure}
-      {widgetHost}
+      {body}
       {regionChooser}
     </div>
   );
