@@ -75,6 +75,7 @@ pub struct NavalBattleLogRow {
     pub hour: i32,
     pub detail_id: String,
     pub detail_hour: Option<i32>,
+    pub result_hour: Option<i32>,
     pub last_live_hour: Option<i32>,
     pub end_seen: bool,
     pub province: Option<u32>,
@@ -146,6 +147,7 @@ struct Snapshot {
     result: NavalBattleStatus,
     result_id: Option<u64>,
     detail_hour: Option<i32>,
+    result_hour: Option<i32>,
     live_last: Option<i32>,
     end_seen: bool,
 }
@@ -356,6 +358,7 @@ fn live_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, last_hour: i32,
                         result: NavalBattleStatus::Ongoing,
                         result_id: None,
                         detail_hour: None,
+                        result_hour: None,
                         live_last: None,
                         end_seen: false,
                     },
@@ -419,6 +422,14 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                     sides
                 };
                 let mut sides = named_at(date);
+                let result_hour = [&battle, &result]
+                    .into_iter()
+                    .filter_map(|of| lines.get(of))
+                    .flat_map(|line| &line.reads)
+                    .filter(|(at, read)| *at <= hour && read.result_id == Some(*key as u64))
+                    .filter_map(|(_, read)| read.result_hour)
+                    .min()
+                    .unwrap_or(hour);
                 let line = lines.entry(battle).or_default();
                 line.reads.truncate(line.reads.partition_point(|(at, _)| *at <= hour));
                 let mut late = None;
@@ -470,6 +481,7 @@ fn result_lines(lines: &mut BTreeMap<Battle, Line>, span: Stretch, links: &RunLi
                         result: status,
                         result_id: Some(*key as u64),
                         detail_hour: Some(hour),
+                        result_hour: Some(result_hour),
                         live_last,
                         end_seen,
                     },
@@ -656,6 +668,7 @@ fn reply(prepared: &Prepared, holders: &Holders, params: &NavalBattlesTailParams
                 result,
                 detail_id: read.result_id.map_or_else(|| line.key.clone(), |id| format!("result:{id}")),
                 detail_hour: read.detail_hour,
+                result_hour: read.result_hour,
                 last_live_hour: read.live_last,
                 end_seen: read.end_seen,
                 ships_sunk: read.sunk,
@@ -831,6 +844,7 @@ mod tests {
             result: NavalBattleStatus::Ongoing,
             result_id: None,
             detail_hour: None,
+            result_hour: None,
             live_last: None,
             end_seen: false,
         };
@@ -848,11 +862,25 @@ mod tests {
         let cut = Snapshot { result: NavalBattleStatus::Unknown, live_last: Some(17), ..read([1, 0], [Some(5), Some(0)]) };
         lines.insert(Battle::Live(7, 10), Line { reads: vec![(10, read([1, 0], [Some(5), Some(0)])), (18, cut), (20, read([1, 0], [Some(5), Some(0)]))], ..Line::default() });
         let results = History { keys: vec![(99, vec![step(21, Some(&[1, 21, 1]))])], ..History::default() };
-        let observations = History { keys: vec![(99, vec![step(21, Some(&[observed, 7, 10, 21, 5, 0, 1, 0, 5, 0, 0, 0]))])], ..History::default() };
+        let observations = History {
+            keys: vec![(99, vec![step(21, Some(&[observed, 7, 10, 21, 5, 0, 1, 0, 5, 0, 0, 0])), step(23, Some(&[observed, 7, 10, 21, 5, 0, 2, 0, 5, 0, 0, 0]))])],
+            ..History::default()
+        };
         let span = Stretch { run: 2, first: 20, last: 30, join: dashboard_query::timeline::Join::Start };
         result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
         let (hour, last) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
-        assert_eq!((*hour, last.live_last, last.end_seen), (21, Some(21), false), "a battle live again after a stretch ended takes its live bound from its newest read");
+        assert_eq!((*hour, last.live_last, last.end_seen), (23, Some(21), false), "a battle live again after a stretch ended takes its live bound from its newest read");
+        assert_eq!(last.result_hour, Some(21), "a refreshed result keeps the hour it was first read");
+        let mut lines = BTreeMap::new();
+        let results = History { keys: vec![(77, vec![step(20, Some(&[1, 20, 1]))])], ..History::default() };
+        let observations = History {
+            keys: vec![(77, vec![step(20, Some(&[0])), step(23, Some(&[observed, 7, 10, 20, 5, 0, 1, 0, 5, 0, 0, 0]))])],
+            ..History::default()
+        };
+        result_lines(&mut lines, span, &RunLinks::default(), &results, &observations, &History::default());
+        assert_eq!(lines[&Battle::Result(77, 20)].reads[0].1.result_hour, Some(20));
+        let (hour, linked) = lines[&Battle::Live(7, 10)].reads.last().unwrap();
+        assert_eq!((*hour, linked.result_hour), (23, Some(20)), "a result linked to its battle later keeps the hour it was first read on its own");
     }
 
     #[test]

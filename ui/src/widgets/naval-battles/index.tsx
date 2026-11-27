@@ -46,7 +46,7 @@ function NavalBattlesView(props: FamilyViewProps) {
     <FamilyWidget {...props} family="table" declaration={props.manifestDeclaration}
       selectedKey={shown?.subject.row.key} onActivate={action => {
         const subject = action.meta as NavalBattleSubject | undefined;
-        if (battleScope && subject?.row.key.startsWith('combat:')) setOpened({ scope: battleScope, subject, hour: action.hour });
+        if (battleScope && subject) setOpened({ scope: battleScope, subject, hour: action.hour });
       }}
       contextMenuItems={hit => track && hit.meta ? [jumpItem(props.runtime, track.id, (hit.meta as NavalBattleSubject).row.hour)] : []} />
     {shown && track && <NavalBattleWindow opened={shown} track={track} runtime={props.runtime} anchor={anchor} onClose={() => setOpened(null)} />}

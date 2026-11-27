@@ -439,7 +439,7 @@ fn air_entries(
     };
     let ambiguous = sort_air_groups(&mut groups);
     for side in &ambiguous {
-        out.refuse(format!("Naval combat {id} side {side} carrier grid is withheld: equal aircraft model and wing-hash sort keys require an unrecorded UI-address tie-break."));
+        out.refuse(format!("The {}'s carrier planes are not drawn: two plane groups sort equally, and the recording does not hold the game's order between them.", side_name(*side)));
     }
     let stacking_penalty = super::tactics::viewing_side(
         &detail.sides[0].summary.countries,
@@ -721,6 +721,19 @@ pub(super) fn bind(
     }
 }
 
+fn side_name(side: u8) -> &'static str {
+    if side == 0 { "attacker" } else { "defender" }
+}
+
+fn column_name(column: &str) -> &str {
+    match column {
+        "battle" => "capital ship",
+        "hidden" => "hidden submarine",
+        "visible" => "visible submarine",
+        other => other,
+    }
+}
+
 pub(super) fn column(row: &NavalCombatShipRow, pool_flags: u64) -> Option<&'static str> {
     match super::naval_air_groups::display_box(row, pool_flags) {
         1 => Some("screen"),
@@ -955,10 +968,7 @@ fn active(
             let owner = match roster_owner(row, &forces) {
                 Ok(owner) => owner,
                 Err(reason) => {
-                    out.refuse(format!(
-                        "NavalCombatShips slot {} incoming visibility is withheld: {reason}.",
-                        row.battle_slot
-                    ));
+                    out.refuse(format!("Incoming ships are left out where the recording does not settle whether the side can see them: {reason}."));
                     continue;
                 }
             };
@@ -1002,7 +1012,7 @@ fn active(
     }
     for (cause, ships) in &undecided {
         out.warnings.push(format!(
-            "NavalCombatShips: {ships} incoming ships of combat {id} omitted: whether the viewer sees them (their owner's shared vision) is unknown, {}.",
+            "{ships} incoming ships are left out: the recording does not settle whether the viewing side can see them ({}).",
             cause.describe()
         ));
     }
@@ -1015,7 +1025,7 @@ fn active(
         })
         .collect();
     for (side, column) in &ambiguous {
-        out.refuse(format!("Naval combat {id} side {side} {column} grid is withheld: equal ship sort keys require an unrecorded UI-address tie-break."));
+        out.refuse(format!("The {}'s {} group is not drawn: two ship groups sort equally, and the recording does not hold the game's order between them.", side_name(*side), column_name(column)));
     }
     out.naval_entries.clear();
     let ambiguous_air = air_entries(out, static_content, frame, id, flags, &aliases, vision)?;
