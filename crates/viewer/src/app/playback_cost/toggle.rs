@@ -336,7 +336,7 @@ fn open(
     viewer_runtime::load_record::begin(requested);
     shader_pipeline::gpu::stats::take();
     let before = Totals::now();
-    viewer.open(path.to_path_buf(), &ctx, Some(source.key().revision.clone()));
+    viewer.open(path.to_path_buf(), &ctx, Some(source.key().revision.clone()), None);
     let record = until_correct(&mut viewer, &ctx, state, &service, run, set, requested, before, output, name)?;
     Ok((record, viewer, service, ctx, key))
 }

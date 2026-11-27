@@ -39,6 +39,11 @@ pub fn cancel_game_window(renderer: State<'_, GameWindows>, request_id: String) 
 }
 
 #[tauri::command]
+pub fn forget_game_window_cancel(renderer: State<'_, GameWindows>, request_id: String) {
+    renderer.0.forget_cancel(&request_id);
+}
+
+#[tauri::command]
 pub async fn render_game_window(
     window: WebviewWindow,
     service: State<'_, DashboardService>,
@@ -46,10 +51,20 @@ pub async fn render_game_window(
     request: GameWindowRequest,
     request_id: Option<String>,
 ) -> Result<GameWindowRender, QueryError> {
+    let renderer = Arc::clone(&renderer.0);
+    let cancel_id = request_id.unwrap_or_else(|| {
+        format!(
+            "gw-fallback-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+    let registration = renderer.register_cancel(cancel_id);
+    if registration.token().load(Ordering::SeqCst) {
+        return Err(map_window_error(GameWindowError::Cancelled));
+    }
     let runtime = service
         .runtime(window.app_handle())
         .map_err(QueryError::from)?;
-    let renderer = Arc::clone(&renderer.0);
     let Some((source, admitted_gen)) = renderer
         .admit(&request.source_id, || runtime.source(&request.source_id))
         .map_err(QueryError::from)?
@@ -65,13 +80,6 @@ pub async fn render_game_window(
         .map_settings(source.replay_ref())
         .visual_mods
         .unwrap_or_default();
-    let cancel_id = request_id.unwrap_or_else(|| {
-        format!(
-            "gw-fallback-{}",
-            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-        )
-    });
-    let registration = renderer.register_cancel(cancel_id);
     tauri::async_runtime::spawn_blocking(move || {
         let (config, _) = host_config().map_err(QueryError::from)?;
         let result = source.in_scope(|| {
@@ -84,8 +92,11 @@ pub async fn render_game_window(
                 registration.token(),
             )
         });
-        drop(registration);
-        result.map_err(map_window_error)
+        if registration.token().load(Ordering::SeqCst) {
+            Err(map_window_error(GameWindowError::Cancelled))
+        } else {
+            result.map_err(map_window_error)
+        }
     })
     .await
     .map_err(|error| QueryError::from(error.to_string()))?

@@ -8,8 +8,6 @@ import {
   getSurfaceExportTimelines,
   previewMapVideo,
   previewSurfaceVideo,
-  startMapVideoExport,
-  startSurfaceVideoExport,
   type CropRect,
   type EmbeddedMapSpec,
   type MapExportSnapshot,
@@ -40,7 +38,7 @@ import {
 import type { ExportVideoTarget } from './ExportVideoContext';
 import './exportVideo.css';
 
-export type StartedExportDescriptor =
+export type ExportRequest =
   | { kind: 'map'; request: MapVideoRequest; destination: string; label: string }
   | { kind: 'surface'; request: SurfaceVideoRequest; destination: string; label: string };
 
@@ -57,12 +55,12 @@ export default function ExportVideoDialog({
   target,
   busyExport,
   onClose,
-  onStarted,
+  onStart,
 }: {
   target: ExportVideoTarget | null;
   busyExport: boolean;
   onClose: () => void;
-  onStarted: (started: StartedExportDescriptor) => void;
+  onStart: (request: ExportRequest) => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [mapSnapshot, setMapSnapshot] = useState<MapExportSnapshot | null>(null);
@@ -99,6 +97,11 @@ export default function ExportVideoDialog({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const submission = useRef<AbortController | null>(null);
+  const dismiss = () => {
+    submission.current?.abort();
+    onClose();
+  };
 
   const dragRef = useRef<{
     kind: 'move' | 'resize';
@@ -109,13 +112,18 @@ export default function ExportVideoDialog({
   } | null>(null);
 
   useLayoutEffect(() => {
+    setSubmitting(false);
+    setSubmitError(null);
     const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (target) {
-      if (!dialog.open) dialog.showModal();
-    } else if (dialog.open) {
+    if (dialog && target && !dialog.open) {
+      dialog.showModal();
+    } else if (dialog?.open && !target) {
       dialog.close();
     }
+    return () => {
+      submission.current?.abort();
+      submission.current = null;
+    };
   }, [target]);
 
   useEffect(() => {
@@ -665,29 +673,32 @@ export default function ExportVideoDialog({
   };
 
   const handleExport = async () => {
-    if (!target || !ready || dimensionError || busyExport) return;
+    if (!target || !ready || dimensionError || busyExport || submission.current) return;
+    const current = new AbortController();
+    submission.current = current;
     setSubmitting(true);
     setSubmitError(null);
     try {
       const safeName = target.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'battleplan-video';
       const destination = await chooseVideoExportPath(`${safeName}.mp4`);
-      if (!destination) return;
+      if (!destination || current.signal.aborted) return;
       if (target.kind === 'map') {
         const req = buildMapRequest(false);
         if (!req) return;
-        await startMapVideoExport(req, destination, target.label);
-        onStarted({ kind: 'map', request: req, destination, label: target.label });
+        await onStart({ kind: 'map', request: req, destination, label: target.label });
       } else {
         const req = buildSurfaceRequest();
         if (!req) return;
-        await startSurfaceVideoExport(req, destination, target.label);
-        onStarted({ kind: 'surface', request: req, destination, label: target.label });
+        await onStart({ kind: 'surface', request: req, destination, label: target.label });
       }
-      onClose();
+      if (!current.signal.aborted) onClose();
     } catch (cause) {
-      setSubmitError(errorMessage(cause));
+      if (!current.signal.aborted) setSubmitError(errorMessage(cause));
     } finally {
-      setSubmitting(false);
+      if (submission.current === current) {
+        submission.current = null;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -704,7 +715,7 @@ export default function ExportVideoDialog({
       aria-labelledby="export-video-title"
       onCancel={event => {
         event.preventDefault();
-        onClose();
+        dismiss();
       }}
     >
       {target && (
@@ -714,7 +725,7 @@ export default function ExportVideoDialog({
               <h2 id="export-video-title">Export video — {target.label}</h2>
               <small>Offline constant-frame-rate H.264 MP4</small>
             </div>
-            <button type="button" className="icon-button" aria-label="Close video export dialog" onClick={onClose}>
+            <button type="button" className="icon-button" aria-label="Close video export dialog" onClick={dismiss}>
               <Icon name="close" />
             </button>
           </header>
@@ -1166,7 +1177,7 @@ export default function ExportVideoDialog({
                 : 'Preparing…'}
             </span>
             <div className="export-video-footer-actions">
-              <button type="button" className="button quiet" onClick={onClose}>
+              <button type="button" className="button quiet" onClick={dismiss}>
                 Cancel
               </button>
               <button

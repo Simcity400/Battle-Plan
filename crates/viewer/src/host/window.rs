@@ -328,6 +328,19 @@ unsafe fn center(hwnd: HWND) -> POINT {
     point
 }
 
+fn text_unit(held: &mut Option<u16>, unit: u16) -> Option<String> {
+    if (0xd800..0xdc00).contains(&unit) {
+        *held = Some(unit);
+        return None;
+    }
+    let preceding = held.take();
+    if (0xdc00..0xe000).contains(&unit) {
+        preceding.and_then(|high| String::from_utf16(&[high, unit]).ok())
+    } else {
+        char::from_u32(u32::from(unit)).map(String::from)
+    }
+}
+
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // SAFETY: the link pointer is the window's own strong reference from WM_NCCREATE until
     // WM_NCDESTROY, read only on this, the window's, thread; the OS supplies each message's
@@ -426,20 +439,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             WM_CHAR => {
                 let unit = wparam as u16;
                 let mut held = link.surrogate.lock().unwrap_or_else(|error| error.into_inner());
-                let text = if (0xd800..0xdc00).contains(&unit) {
-                    *held = Some(unit);
-                    None
-                } else if (0xdc00..0xe000).contains(&unit) {
-                    held.take().and_then(|high| String::from_utf16(&[high, unit]).ok())
-                } else {
-                    char::from_u32(u32::from(unit)).map(String::from)
-                };
+                let text = text_unit(&mut held, unit);
                 if let Some(text) = text.filter(|text| text.chars().all(|c| !c.is_control())) {
                     link.send(Input::Event(egui::Event::Text(text)));
                 }
                 0
             }
             WM_SETFOCUS | WM_KILLFOCUS => {
+                *link.surrogate.lock().unwrap_or_else(|error| error.into_inner()) = None;
                 link.send(Input::Focus(message == WM_SETFOCUS));
                 if message == WM_SETFOCUS {
                     link.send(Input::Event(egui::Event::ModifiersChanged(modifiers())));
@@ -567,4 +574,13 @@ mod tests {
         dispatch_posted();
     }
 
+    #[test]
+    fn text_combines_only_adjacent_surrogate_units() {
+        let mut held = None;
+        assert_eq!(super::text_unit(&mut held, 0xd83d), None);
+        assert_eq!(super::text_unit(&mut held, 0xde00).as_deref(), Some("😀"));
+        assert_eq!(super::text_unit(&mut held, 0xd83d), None);
+        assert_eq!(super::text_unit(&mut held, u16::from(b'A')).as_deref(), Some("A"));
+        assert_eq!(super::text_unit(&mut held, 0xde00), None);
+    }
 }

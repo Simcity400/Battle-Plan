@@ -112,6 +112,7 @@ export interface PartialExportInfo {
 
 export interface ExportJobSnapshot {
   id: number;
+  revision: number;
   state: 'idle' | 'running' | 'completed' | 'cancelled' | 'failed';
   targetLabel: string;
   destination: string | null;
@@ -129,6 +130,7 @@ export interface ExportJobSnapshot {
 
 export const IDLE_EXPORT_JOB: ExportJobSnapshot = {
   id: 0,
+  revision: 0,
   state: 'idle',
   targetLabel: '',
   destination: null,
@@ -312,10 +314,11 @@ export function startSurfaceVideoExport(
   request: SurfaceVideoRequest,
   destination: string,
   targetLabel: string,
+  retryJobId?: number,
 ): Promise<ExportJobSnapshot> {
   requireDesktop();
   return invoke<ExportJobSnapshot>('start_surface_video_export', {
-    args: { request, destination, targetLabel },
+    args: { request, destination, targetLabel, retryJobId },
   });
 }
 
@@ -327,10 +330,11 @@ export function startMapVideoExport(
   request: MapVideoRequest,
   destination: string,
   targetLabel: string,
+  retryJobId?: number,
 ): Promise<ExportJobSnapshot> {
   requireDesktop();
   return invoke<ExportJobSnapshot>('start_map_video_export', {
-    args: { request, destination, targetLabel },
+    args: { request, destination, targetLabel, retryJobId },
   });
 }
 
@@ -357,4 +361,22 @@ export function revealExportFile(path: string): Promise<void> {
 export function onVideoExportProgress(callback: (job: ExportJobSnapshot) => void): Promise<() => void> {
   if (!isTauri()) return Promise.resolve(() => undefined);
   return listen<ExportJobSnapshot>('video-export-progress', event => callback(event.payload));
+}
+
+export function followVideoExportProgress(
+  show: (job: ExportJobSnapshot) => void,
+  read = getVideoExportState,
+  listenProgress = onVideoExportProgress,
+): () => void {
+  let active = true;
+  let revision = -1;
+  const accept = (job: ExportJobSnapshot) => {
+    if (!active || job.revision <= revision) return;
+    revision = job.revision;
+    show(job);
+  };
+  const listening = listenProgress(accept);
+  const hydrate = () => { if (active) void read().then(accept, () => {}); };
+  void listening.then(hydrate, hydrate);
+  return () => { active = false; void listening.then(stop => stop(), () => {}); };
 }

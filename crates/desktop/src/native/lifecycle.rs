@@ -402,28 +402,10 @@ impl NativeHost {
                 branch,
                 hour,
                 revision,
+                open_id,
                 error,
             } => {
-                if inner.requested_path.as_ref() == path.as_ref()
-                    && inner.requested_revision.as_ref() == revision.as_ref()
-                {
-                    inner.requested_path = None;
-                    inner.requested_revision = None;
-                }
-                inner.status.viewer = ViewerState {
-                    path,
-                    branch,
-                    hour,
-                    revision,
-                };
-                if inner.requested_path.is_none()
-                    && inner
-                        .requested_seek
-                        .as_ref()
-                        .is_some_and(|target| target.matches(&inner.status.viewer))
-                {
-                    inner.requested_seek = None;
-                }
+                inner.note_viewer_state(ViewerState { path, branch, hour, revision }, open_id);
                 inner.status.error = error;
             }
             NativeEvent::Error { message } => {
@@ -513,7 +495,7 @@ mod tests {
         assert_eq!(inner.generation, 4);
         assert!(!inner.status.running && !inner.status.ready && inner.status.error.is_none());
         inner.restore_commands();
-        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
+        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()), None)));
         assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(12));
         assert!(!inner.map_ended(Ending::DeviceLost("The map lost its graphics device: Hung".into())));
         assert_eq!(
@@ -532,7 +514,7 @@ mod tests {
         );
         assert!(!inner.status.running);
         inner.restore_commands();
-        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
+        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()), None)));
         let mut closing = showing("A");
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));

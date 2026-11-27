@@ -6259,6 +6259,7 @@ impl RefreshRequests {
             }
         }
         self.accepted.retain(|(token, _)| tokens.contains(token));
+        let mut removal_error = None;
         for token in tokens {
             let at = match self.accepted.iter().position(|(known, _)| *known == token) {
                 Some(at) => at,
@@ -6269,17 +6270,19 @@ impl RefreshRequests {
                     self.accepted.len() - 1
                 }
             };
-            if self.accepted[at].1 {
-                continue;
+            let just_acknowledged = !self.accepted[at].1;
+            if just_acknowledged {
+                fs::write(directory.join(format!("{token}.ack")), token.as_bytes())?;
+                self.accepted[at].1 = true;
             }
-            fs::write(directory.join(format!("{token}.ack")), token.as_bytes())?;
-            self.accepted[at].1 = true;
             match fs::remove_file(directory.join(format!("{token}.request"))) {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                Err(error) if just_acknowledged && error.kind() != io::ErrorKind::NotFound => {
+                    removal_error.get_or_insert(error);
+                }
                 _ => {}
             }
         }
-        Ok(())
+        removal_error.map_or(Ok(()), Err)
     }
 }
 
@@ -8222,10 +8225,14 @@ mod tests {
         assert!(requests.poll(&session, accept).is_err());
         assert_eq!(taken(), 1);
         assert_eq!(ack("token-8"), "token-8");
+        fs::write(request("while-locked"), "while-locked").unwrap();
         requests.poll(&session, accept).unwrap();
-        assert_eq!(taken(), 0);
+        assert_eq!(taken(), 1);
+        assert_eq!(ack("while-locked"), "while-locked");
         drop(held);
-        fs::remove_file(request("token-8")).unwrap();
+        requests.poll(&session, accept).unwrap();
+        assert!(!request("token-8").exists());
+        assert_eq!(taken(), 0);
         requests.poll(&session, accept).unwrap();
         assert!(requests.accepted.is_empty());
         fs::write(request("token-9"), "token-9").unwrap();

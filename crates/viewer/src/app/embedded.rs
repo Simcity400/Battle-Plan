@@ -153,7 +153,7 @@ impl Viewer {
             self.options.branch = None;
             self.options.hour = None;
             self.options.hour_fraction = 0.0;
-            self.open(request.path, ctx, request.revision);
+            self.open(request.path, ctx, request.revision, request.open_id);
             if self.loading.is_none() && !self.awaiting_folders {
                 self.embedded_seek = None;
             }
@@ -459,7 +459,7 @@ impl Viewer {
                 if self.error.is_none()
                     && let Some(path) = self.options.replay.clone()
                 {
-                    self.open(path, ctx, self.expected_revision.clone());
+                    self.open(path, ctx, self.expected_revision.clone(), self.expected_open_id);
                 }
                 self.report_map_details();
             }
@@ -514,6 +514,7 @@ impl Viewer {
             source.path().to_path_buf(),
             ctx,
             Some(source.key().revision.clone()),
+            self.installed_open_id,
         );
         self.source = Some(source);
     }
@@ -702,6 +703,7 @@ impl Viewer {
                 hour: shown.map(|(_, hour)| hour),
                 revision: self.document.as_ref().and(self.revision.clone()),
             },
+            self.installed_open_id,
             self.error
                 .as_deref()
                 .or(self.scene_error.as_deref())

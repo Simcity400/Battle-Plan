@@ -227,7 +227,9 @@ export class PerfRecorder {
     held = read();
     this.exactReads.set(key, held);
     if (this.exactReads.size > EXACT_READS_HELD) this.exactReads.delete(this.exactReads.keys().next().value!);
-    held.catch(() => this.exactReads.delete(key));
+    held.catch(() => {
+      if (this.exactReads.get(key) === held) this.exactReads.delete(key);
+    });
     return held;
   }
   ink(id: number, visible: boolean) {

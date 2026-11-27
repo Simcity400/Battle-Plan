@@ -13,6 +13,25 @@ use viewer_native_gui::{
     test_support::gui as gui_fixture,
 };
 
+#[test]
+fn game_window_cancellation_survives_early_delivery_and_retires_after_use() {
+    let service = Arc::new(Service::default());
+    service.cancel_request("early");
+    let early = service.register_cancel("early".into());
+    assert!(early.token().load(Ordering::SeqCst));
+    drop(early);
+
+    let current = service.register_cancel("current".into());
+    assert!(!current.token().load(Ordering::SeqCst));
+    service.cancel_request("current");
+    assert!(current.token().load(Ordering::SeqCst));
+    drop(current);
+    service.cancel_request("current");
+    service.forget_cancel("current");
+    assert!(service.cache.lock().unwrap().early_cancels.is_empty());
+    assert!(service.cache.lock().unwrap().cancels.is_empty());
+}
+
 const SYNTHETIC_BUTTON_SHADER: &str = r#"
 VertexStruct In {
     float3 at : POSITION;

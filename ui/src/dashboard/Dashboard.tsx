@@ -409,6 +409,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return source ? id : null;
   }, [roles.open, roles.remove, roles.bindings, template.tracks, clock]);
 
+  const campaignChoices = useRef(new Map<string, symbol>());
   const assignCampaign = useCallback(async (widgetId: string, chosen: string | null) => {
     const assign = (previous: DashboardTemplate, widget: WidgetSpec, roleId: string | null): WidgetSpec => {
       const track = roleId === null ? null : previous.tracks.find(item => item.roleId === roleId);
@@ -425,16 +426,25 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       update(previous => ({ ...previous, widgets: previous.widgets.map(item => item.id === widgetId ? changed : item) }));
       persistView(widget, changed);
     };
-    if (chosen === null) { pick(null); return; }
-    let failure: Failure | undefined;
-    const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id
-      ?? await openCampaign(chosen, undefined, undefined, false, undefined, error => { failure = error; });
-    if (!mounted.current) return;
-    if (roleId) { pick(roleId); return; }
-    if (failure) throw failure;
-    throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
-      ? 'That recording is still opening. Choose it again once it has loaded.'
-      : 'That recording couldn’t be opened. The notice above the dashboard or the sidebar shows why.');
+    const choices = campaignChoices.current;
+    const choice = Symbol();
+    choices.set(widgetId, choice);
+    try {
+      if (chosen === null) { pick(null); return; }
+      let failure: Failure | undefined;
+      const roleId = campaignsRef.current.find(item => item.id === chosen && !item.loading)?.id
+        ?? await openCampaign(chosen, undefined, undefined, false, undefined, error => { failure = error; });
+      if (!mounted.current || choices.get(widgetId) !== choice) return;
+      if (roleId) { pick(roleId); return; }
+      if (failure) throw failure;
+      throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
+        ? 'That recording is still opening. Choose it again once it has loaded.'
+        : 'That recording couldn’t be opened. The notice above the dashboard or the sidebar shows why.');
+    } catch (cause) {
+      if (mounted.current && choices.get(widgetId) === choice) throw cause;
+    } finally {
+      if (choices.get(widgetId) === choice) choices.delete(widgetId);
+    }
   }, [update, openCampaign, persistView]);
 
   const bindingsRef = useRef(roles.bindings);

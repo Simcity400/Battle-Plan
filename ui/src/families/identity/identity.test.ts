@@ -1094,7 +1094,7 @@ test('a failed branch read is not restarted by later demands: a transient failur
   broker.dispose();
 });
 
-test('a status is carried, not rebuilt: unresolved holders, failures across the worker snapshot, retried flags and refused art', async () => {
+for (const omitted of [false, true]) test(`a ${omitted ? 'missing' : 'failed'} flag response can retry without rebuilding carried status`, async () => {
   const index = new IdentityIndex(SCOPE, [0, 500]);
   index.setFacts(sampleFacts(), true);
   index.setIdentities({ ...sampleIdentities(), countries: [{ tag: 'GER', identities: [], unresolved: [{ firstHour: 0, lastHour: 500 }] }] });
@@ -1116,7 +1116,10 @@ test('a status is carried, not rebuilt: unresolved holders, failures across the 
     loadStyles: () => deferred<CountryStyleReply>().promise,
     loadFlags: async (_scope, size, choices) => {
       flagCalls++;
-      if (flagCalls === 1) throw new TypeError('connection reset');
+      if (flagCalls === 1) {
+        if (omitted) return { size, flags: [], unavailable: [], warnings: [] };
+        throw new TypeError('connection reset');
+      }
       return { size, flags: choices.map((choice, flag) => ({ flag, asset: 'a.tga', key: 'k', width: 41, height: 26, png: `flag://${choice.keys[0]}` })), unavailable: [], warnings: [] };
     },
   };

@@ -298,6 +298,21 @@ fn a_column_the_schema_lacks_refuses_the_layer_by_name() {
 }
 
 #[test]
+fn a_disconnected_compose_worker_returns_its_layers_and_mirrors() {
+    let (recording, _) = record(1, BLOCK, busy);
+    let entry = open(units(recording, "closed-compose-worker"), quick()).unwrap();
+    let count = Arc::new(Mutex::new(0));
+    let mut side = MapSide::new(entry, vec![Box::new(Sum::new(&count))], View::default()).unwrap();
+    let (jobs, receive) = mpsc::channel();
+    drop(receive);
+    side.worker.jobs = jobs;
+    assert_eq!(side.send_away(vec![true]).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    let (_, layers) = side.parts().expect("mirrors returned after the failed handoff");
+    assert_eq!(layers.len(), 1);
+    assert!(!side.composing());
+}
+
+#[test]
 fn a_hook_in_the_slot_runs_on_every_step_until_removed() {
     let (recording, _) = record(1, BLOCK, busy);
     let entry = open(units(Arc::clone(&recording), "hook"), quick()).unwrap();

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { followVideoExportProgress, IDLE_EXPORT_JOB, type ExportJobSnapshot } from './videoExportApi.ts';
 import {
   analyzeCadence,
   computeDurationSeconds,
@@ -26,6 +27,34 @@ import { TABLE_BASE as GAME_SCORE_TABLE_BASE } from '../widgets/game-score/defin
 import { TABLE_BASE as SCOREBOARD_TABLE_BASE } from '../widgets/scoreboard/definition.ts';
 import '../widgets/definitions.ts';
 import { widgetOptionFields } from '../widgets/manifest.ts';
+
+test('export progress retains newer snapshots and unregisters a listener that arrives after cleanup', async () => {
+  let receive!: (job: ExportJobSnapshot) => void;
+  let hydrate!: (job: ExportJobSnapshot) => void;
+  let stopped = 0;
+  const shown: ExportJobSnapshot[] = [];
+  const stop = followVideoExportProgress(job => shown.push(job), () => new Promise(resolve => { hydrate = resolve; }),
+    async accept => { receive = accept; return () => { stopped += 1; }; });
+  await Promise.resolve();
+  const terminal: ExportJobSnapshot = { ...IDLE_EXPORT_JOB, id: 1, revision: 2, state: 'completed' };
+  receive(terminal);
+  hydrate({ ...terminal, revision: 1, state: 'running' });
+  await Promise.resolve();
+  receive({ ...terminal, revision: 3, id: 2, state: 'running' });
+  receive(terminal);
+  assert.deepEqual(shown.map(job => [job.id, job.state]), [[1, 'completed'], [2, 'running']]);
+  stop();
+
+  let registered!: (unlisten: () => void) => void;
+  const retire = followVideoExportProgress(job => shown.push(job), async () => IDLE_EXPORT_JOB,
+    accept => { receive = accept; return new Promise(resolve => { registered = resolve; }); });
+  retire();
+  receive({ ...terminal, revision: 4 });
+  registered(() => { stopped += 1; });
+  await Promise.resolve();
+  assert.equal(stopped, 2);
+  assert.equal(shown.length, 2);
+});
 
 test('snapEven and validateDimensions enforce even bounds and GPU texture limits', () => {
   assert.equal(snapEven(1921), 1920);

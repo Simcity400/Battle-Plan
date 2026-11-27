@@ -91,15 +91,20 @@ function ImportTheme({ disabled, onImport }: { disabled: boolean; onImport: (tex
   const [dragging, setDragging] = useState(false);
   const file = useRef<HTMLInputElement>(null);
   const attempt = useRef('');
-  const run = (value: string) => { attempt.current = value; const failure = onImport(value); setError(failure); if (!failure) { setText(''); menu.close(); } };
+  const reading = useRef(0);
+  const run = (value: string) => { reading.current += 1; attempt.current = value; const failure = onImport(value); setError(failure); if (!failure) { setText(''); menu.close(); } };
   const read = (input: File | undefined) => {
     if (!input) return;
+    const sequence = ++reading.current;
     if (input.size > 512 * 1024) { setError({ text: 'Theme files must be smaller than 512 KB.' }); return; }
-    void input.text().then(run, () => setError({ text: 'This file couldn’t be read.' }));
+    const current = () => reading.current === sequence && menu.popup.current?.matches(':popover-open');
+    void input.text().then(value => { if (current()) run(value); }, () => {
+      if (current()) setError({ text: 'This file couldn’t be read.' });
+    });
   };
   return <>
     <button ref={menu.trigger} id="appearance-import-theme" type="button" className="button small quiet" disabled={disabled} popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open}><Icon name="upload" />Import…</button>
-    <Popover menu={menu} id={id} className="theme-import" aria-label="Import a theme" onToggle={event => { if (event.newState === 'closed') { setError(null); setDragging(false); } }}>
+    <Popover menu={menu} id={id} className="theme-import" aria-label="Import a theme" onToggle={event => { if (event.newState === 'closed') { reading.current += 1; setError(null); setDragging(false); } }}>
       <div className="ui-popover-heading"><strong>Import a theme</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close import" onClick={menu.close}><Icon name="close" /></button></div>
       <div className={`theme-dropzone${dragging ? ' is-dragging' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}
         onDrop={event => { event.preventDefault(); setDragging(false); read(event.dataTransfer.files[0]); }}>
@@ -109,7 +114,7 @@ function ImportTheme({ disabled, onImport }: { disabled: boolean; onImport: (tex
         <input ref={file} type="file" accept=".json,application/json" hidden onChange={event => { read(event.currentTarget.files?.[0]); event.currentTarget.value = ''; }} />
       </div>
       <textarea rows={5} value={text} spellCheck={false} placeholder={`…or paste theme JSON, e.g. ${THEME_JSON_EXAMPLE}`}
-        aria-label="Theme JSON" onChange={event => { setText(event.currentTarget.value); setError(null); }} />
+        aria-label="Theme JSON" onChange={event => { reading.current += 1; setText(event.currentTarget.value); setError(null); }} />
       {error && <FailureLine message={error.text} detail={error.detail} onRetry={error.retry ? () => run(attempt.current) : undefined} />}
       <div className="layout-save-actions"><button type="button" className="button primary" disabled={!text.trim()} onClick={() => run(text)}>Import theme</button></div>
     </Popover>

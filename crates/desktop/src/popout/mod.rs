@@ -140,11 +140,11 @@ impl PopOuts {
         self.shared.with(|_, popout| popout.host.clone())
     }
 
-    fn send(&self, app: &AppHandle, message: Message) {
+    fn send(&self, app: &AppHandle, message: Message) -> Result<(), String> {
         let mut owner = self.owner.lock().unwrap_or_else(|e| e.into_inner());
-        let sender = owner.get_or_insert_with(|| {
+        if owner.is_none() {
             let (sender, receiver) = mpsc::channel();
-            let owner = Owner {
+            let worker = Owner {
                 app: app.clone(),
                 shared: Arc::clone(&self.shared),
                 sender: sender.clone(),
@@ -160,12 +160,19 @@ impl PopOuts {
                 viewer: 0,
                 window_error: None,
             };
-            let _ = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name("popout-map-owner".into())
-                .spawn(move || owner.run(receiver));
-            sender
-        });
-        let _ = sender.send(message);
+                .spawn(move || worker.run(receiver))
+                .map_err(|error| format!("Couldn’t start the pop-out map: {error}"))?;
+            *owner = Some(sender);
+        }
+        if let Some(sender) = owner.as_ref()
+            && sender.send(message).is_err()
+        {
+            *owner = None;
+            return Err("The pop-out map stopped responding".into());
+        }
+        Ok(())
     }
 
     pub fn mirror(&self, action: &MapAction) {
@@ -210,7 +217,7 @@ impl PopOuts {
             && current == generation
             && shows(&host.recordings(), path)
         {
-            self.send(
+            let _ = self.send(
                 app,
                 Message::Close {
                     generation: Some(generation),
@@ -222,14 +229,15 @@ impl PopOuts {
 
     pub fn close(&self, app: &AppHandle) {
         let (done, closed) = mpsc::channel();
-        self.send(
+        if self.send(
             app,
             Message::Close {
                 generation: None,
                 done: Some(done),
             },
-        );
-        let _ = closed.recv_timeout(std::time::Duration::from_secs(10));
+        ).is_ok() {
+            let _ = closed.recv_timeout(std::time::Duration::from_secs(10));
+        }
     }
 }
 
@@ -592,13 +600,13 @@ pub async fn popout_open(
 ) -> Result<(), String> {
     let main = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
     let (reply, answered) = mpsc::channel();
-    popouts.send(window.app_handle(), Message::Open { main, reply });
+    popouts.send(window.app_handle(), Message::Open { main, reply })?;
     answer(answered).await
 }
 
 #[tauri::command]
 pub fn popout_close(app: AppHandle, popouts: State<'_, PopOuts>, generation: u64) {
-    popouts.send(
+    let _ = popouts.send(
         &app,
         Message::Close {
             generation: Some(generation),
@@ -614,13 +622,13 @@ pub async fn popout_restart(
     generation: u64,
 ) -> Result<(), String> {
     let (reply, answered) = mpsc::channel();
-    popouts.send(&app, Message::Restart { generation, reply });
+    popouts.send(&app, Message::Restart { generation, reply })?;
     answer(answered).await
 }
 
 #[tauri::command]
 pub fn popout_publish(app: AppHandle, popouts: State<'_, PopOuts>) {
-    popouts.send(&app, Message::Publish);
+    let _ = popouts.send(&app, Message::Publish);
 }
 
 #[tauri::command]

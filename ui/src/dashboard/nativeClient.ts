@@ -206,7 +206,8 @@ export const nativeDashboardClient: DashboardClient = {
     const done = busy('requests');
     try {
       const release = await admitted(signal);
-      const abort = () => { void invoke('cancel_game_window', { requestId }).catch(() => {}); };
+      let cancelling: Promise<unknown> | undefined;
+      const abort = () => { cancelling = invoke('cancel_game_window', { requestId }).catch(() => {}); };
       signal.addEventListener('abort', abort, { once: true });
       try {
         if (signal.aborted) throw cancelled();
@@ -218,6 +219,10 @@ export const nativeDashboardClient: DashboardClient = {
         );
       } finally {
         signal.removeEventListener('abort', abort);
+        if (cancelling) {
+          await cancelling;
+          await invoke('forget_game_window_cancel', { requestId }).catch(() => {});
+        }
         release();
       }
     } finally { done(); }

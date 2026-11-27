@@ -32,11 +32,13 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
     let scheduled = false;
     const commit = () => {
       scheduled = false;
-      if (!arrived.data.length && !arrived.errors.length) return;
-      const data = arrived.data.splice(0), errors = arrived.errors.splice(0);
+      if (controller.signal.aborted || (!arrived.data.length && !arrived.errors.length)) return;
       const want = new Set(latest.current.wanted());
+      const data = arrived.data.splice(0).filter(([window]) => want.has(window));
+      const errors = arrived.errors.splice(0).filter(([window]) => want.has(window));
       const keep = <V>(map: ReadonlyMap<number, V>) => new Map([...map].filter(([window]) => want.has(window)));
-      setHeld(previous => previous.owner !== owner ? { owner, data: withWindowEntries(new Map(), data), errors: withWindowEntries(new Map(), errors), attempt: 0 }
+      setHeld(previous => controller.signal.aborted ? previous
+        : previous.owner !== owner ? { owner, data: withWindowEntries(new Map(), data), errors: withWindowEntries(new Map(), errors), attempt: 0 }
         : { ...previous, data: withWindowEntries(keep(previous.data), data), errors: withWindowEntries(keep(previous.errors), errors) });
     };
     const pump = () => {
@@ -51,7 +53,7 @@ export function useFrameWindows<T>(client: DashboardClient, identity: string | n
           data => { if (!item.signal.aborted && !controller.signal.aborted) { arrived.data.push([window, data]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
           error => { if (!item.signal.aborted && !controller.signal.aborted) { arrived.errors.push([window, asFailure(error)]); if (!scheduled) { scheduled = true; inFrame(commit); } } },
         ).finally(() => {
-          inFlight.delete(window);
+          if (inFlight.get(window) === item) inFlight.delete(window);
           pump();
         });
       }

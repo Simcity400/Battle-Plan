@@ -1969,6 +1969,7 @@ struct CacheState {
     source_generations: HashMap<String, u64>,
     global_generation: u64,
     cancels: HashMap<String, Arc<AtomicBool>>,
+    early_cancels: VecDeque<String>,
 }
 
 impl Default for CacheState {
@@ -1981,6 +1982,7 @@ impl Default for CacheState {
             source_generations: HashMap::new(),
             global_generation: 0,
             cancels: HashMap::new(),
+            early_cancels: VecDeque::new(),
         }
     }
 }
@@ -2004,7 +2006,9 @@ impl Drop for CancelRegistration {
             .cache
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        cache.cancels.remove(&self.request_id);
+        if cache.cancels.get(&self.request_id).is_some_and(|token| Arc::ptr_eq(token, &self.token)) {
+            cache.cancels.remove(&self.request_id);
+        }
     }
 }
 
@@ -2037,8 +2041,10 @@ pub struct Service {
 
 impl Service {
     pub fn register_cancel(self: &Arc<Self>, request_id: String) -> CancelRegistration {
-        let token = Arc::new(AtomicBool::new(false));
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cancelled = cache.early_cancels.iter().position(|id| id == &request_id)
+            .and_then(|at| cache.early_cancels.remove(at)).is_some();
+        let token = Arc::new(AtomicBool::new(cancelled));
         cache.cancels.insert(request_id.clone(), Arc::clone(&token));
         CancelRegistration {
             service: Arc::clone(self),
@@ -2048,10 +2054,20 @@ impl Service {
     }
 
     pub fn cancel_request(&self, request_id: &str) {
-        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(token) = cache.cancels.get(request_id) {
             token.store(true, Ordering::SeqCst);
+        } else if !cache.early_cancels.iter().any(|id| id == request_id) {
+            cache.early_cancels.push_back(request_id.to_owned());
+            if cache.early_cancels.len() > dashboard_core::transport::MAX_PENDING_REQUESTS * 4 {
+                cache.early_cancels.pop_front();
+            }
         }
+    }
+
+    pub fn forget_cancel(&self, request_id: &str) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.early_cancels.retain(|id| id != request_id);
     }
 
     pub fn evict_source(&self, source_id: &str) {

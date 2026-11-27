@@ -23,6 +23,7 @@ pub enum NativeCommand {
     Open {
         path: String,
         revision: Option<String>,
+        open_id: Option<u64>,
     },
     Seek {
         path: String,
@@ -58,6 +59,7 @@ pub enum NativeEvent {
         branch: Option<String>,
         hour: Option<i32>,
         revision: Option<String>,
+        open_id: Option<u64>,
         error: Option<String>,
     },
     Error {
