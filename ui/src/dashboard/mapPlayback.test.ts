@@ -332,8 +332,8 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     } as unknown as DashboardClient;
     const playback = clock('page-C');
     const store = new MapViewsStore(client, playback);
-    const at = { hour: 260, sequence: 3, seek: 1, playing: false };
-    store.register('map-1', element, () => ({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1', branchId: '1', playing: at.playing,
+    const at = { hour: 260, sequence: 3, seek: 1, playing: false, outside: false };
+    store.register('map-1', element, () => at.outside ? null : ({ sourceId: 'source', path: 'campaign.battleplan', revision: 'rev-1', branchId: '1', playing: at.playing,
       hoursPerSecond: 24, hour: at.hour, fraction: 0, sequence: at.sequence, seekSequence: at.seek }));
     const gap = (requestedSequence: number): DashboardMapState => ({ id: 'map-1', clockId: 'page-C', sourceId: 'source', revision: 'rev-1', branchId: null,
       hour: null, fraction: null, sequence: 2, requestedSequence, loading: false, error: 'gap' });
@@ -366,8 +366,17 @@ test('MapViewsStore stamps clockId on populated and teardown snapshots and filte
     store.schedule();
     flushFrames();
     await tick();
+    Object.assign(at, { hour: 252, sequence: 7 });
+    store.schedule();
+    flushFrames();
+    await tick();
     assert.equal(sent.at(-1)![0].visible, true, 'R22: playing on across a gap keeps following, the error answering the run it was raised in');
     assert.equal(store.getState('map-1')?.error, 'gap');
+    Object.assign(at, { outside: true, playing: false });
+    playback.seek(90);
+    flushFrames();
+    await tick();
+    assert.equal(store.getState('map-1'), null, 'R22: a target outside the recording carries no error raised inside it');
     stop();
     await tick();
   } finally {
