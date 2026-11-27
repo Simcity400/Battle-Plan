@@ -25,6 +25,35 @@ fn titles(out: &Markers) -> Vec<(i32, &str)> {
 }
 
 #[test]
+fn a_war_with_an_unresolved_opponent_still_marks_the_known_countrys_history() {
+    for (attacking, defending) in [(Some("AAA"), None), (None, Some("AAA"))] {
+        let mut groups = groups();
+        groups.war_starts = serde_json::from_value(serde_json::json!([{
+            "hour": 275, "attacking": attacking, "defending": defending,
+            "attackingMissing": attacking.is_none().then_some("Attacking country link not resolved"),
+            "defendingMissing": defending.is_none().then_some("Defending country link not resolved")
+        }])).unwrap();
+        let holds = |tag: &str, _: i32| tag == "AAA";
+        let mut before = Markers { hour: 274, shown: Vec::new(), next: None };
+        war_markers(&mut before, &holds, &groups, &[]);
+        assert!(before.shown.is_empty());
+        assert_eq!(before.next, Some(275));
+        let mut at = Markers { hour: 275, shown: Vec::new(), next: None };
+        war_markers(&mut at, &holds, &groups, &[]);
+        assert_eq!(at.shown.len(), 1);
+        assert!(at.shown[0].title.contains("country link not resolved"));
+        assert_eq!(at.shown[0].other, None, "an unresolved opponent is never a made-up country");
+        let mut hidden = Markers { hour: 275, shown: Vec::new(), next: None };
+        war_markers(&mut hidden, &holds, &groups, &[HourSpan { first_hour: 275, last_hour: 275 }]);
+        assert!(hidden.shown.is_empty());
+        let mut other = Markers { hour: 275, shown: Vec::new(), next: None };
+        let notes = war_markers(&mut other, &|tag: &str, _: i32| tag == "BBB", &groups, &[]);
+        assert!(other.shown.is_empty());
+        assert!(notes.iter().any(|note| note.contains("any may be this country's, and none is marked")));
+    }
+}
+
+#[test]
 fn a_country_s_wars_and_factions_are_marked_up_to_the_hour_and_the_next_one_bounds_the_reply() {
     let groups = groups();
     let mut out = Markers { hour: 450, shown: Vec::new(), next: None };

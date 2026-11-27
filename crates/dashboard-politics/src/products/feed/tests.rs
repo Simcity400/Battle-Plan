@@ -33,6 +33,39 @@ fn party(reference: u32, slot: Slot) -> Party {
     Party { reference, id: Some(reference), slot }
 }
 
+#[test]
+fn a_war_start_keeps_the_known_participant_its_role_and_the_missing_reason() {
+    use dashboard_base::{products::LoadContext, test_fixtures::{CAMPAIGN, records, source}};
+    use replay_data::rows::{TableRows, WarRelationRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let frames = (100..=102).map(|hour| {
+        let mut frame = source(1, hour, Some(1));
+        let rows = if hour == 100 { Vec::new() } else {
+            vec![
+                WarRelationRow { first_country: 9001, second_country: 9002, start_hour: 101, end_hour: 0, first_was_instigator: 1, ..Default::default() },
+                WarRelationRow { first_country: 9001, second_country: 9003, start_hour: 101, end_hour: 0, first_was_instigator: 0, ..Default::default() },
+            ]
+        };
+        *frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(rows));
+        frame
+    }).collect();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "partial-war-feed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&held, 1).unwrap();
+    let (rows, notes, omitted) = families::group_rows(&held, &query, &LoadContext { content: None }, 100, 102, &[super::EventFeedCategory::WarsPeace], &AtomicBool::new(false)).unwrap();
+    assert_eq!(rows.iter().filter(|row| row.kind == EventFeedKind::WarStarted).map(|row| &row.id).collect::<std::collections::HashSet<_>>().len(), 2, "opposite partial starts at the same hour never share a row key");
+    let start = rows.iter().find(|row| row.kind == EventFeedKind::WarStarted && row.participants.as_ref().is_some_and(|roles| roles[0].is_some())).expect("the start exists even when its defender is unresolved");
+    assert_eq!(start.tags, ["GER"]);
+    assert_eq!(start.participants, Some([Some("GER".into()), None]));
+    let wire = serde_json::to_value(start).unwrap();
+    assert!(wire["participantsMissing"][0].is_null());
+    assert!(wire["participantsMissing"][1].as_str().unwrap().contains("defending"));
+    assert!(rows.iter().any(|row| row.participants == Some([None, Some("GER".into())])), "the known defender keeps its role as well");
+    assert!(notes.iter().any(|(hour, note)| *hour == 101 && note.contains("totals may be incomplete")), "country-filtered totals must not claim complete attribution: {notes:?}");
+    assert!(omitted.is_empty(), "a retained start is never reported as omitted");
+}
+
 fn event(code: u8, hour: i32, actor: Slot, target: Slot) -> FeedEvent {
     FeedEvent {
         generation: 1,
@@ -205,6 +238,7 @@ fn a_decisions_cost_is_listed_only_when_proven_and_only_the_currencies_it_charge
         kind: EventFeedKind::DecisionSelected,
         tags: Vec::new(),
         participants: None,
+        participants_missing: None,
         owner_missing: None,
         item: None,
         amount: None,
@@ -646,6 +680,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             kind: EventFeedKind::DecisionActivated,
             tags: Vec::new(),
             participants: None,
+            participants_missing: None,
             owner_missing: None,
             item: None,
             amount: None,
@@ -664,6 +699,7 @@ fn decision_failed_state_requires_container_and_decodes_each_container_without_g
             kind: EventFeedKind::DecisionTimedOut,
             tags: Vec::new(),
             participants: None,
+            participants_missing: None,
             owner_missing: None,
             item: None,
             amount: None,
@@ -1561,6 +1597,7 @@ fn a_listed_row_leaves_unexpanded_text_reasons_and_unshown_states_to_the_opened_
         kind: EventFeedKind::DecisionActivated,
         tags: Vec::new(),
         participants: None,
+        participants_missing: None,
         owner_missing: None,
         item: Some(super::EventFeedItem {
             name: Some(format!("Build in {}", dashboard_text::scripted_text::SCRIPTED_GAP)),
@@ -1876,6 +1913,7 @@ fn a_listed_choice_card_names_the_option_its_last_choice_took() {
             kind,
             tags: Vec::new(),
             participants: None,
+            participants_missing: None,
             owner_missing: None,
             item: None,
             amount: None,

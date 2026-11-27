@@ -1750,14 +1750,14 @@ leaders: Array<MembershipRun>,
  */
 incomplete: Array<HourSpan>, };
 export type WarPairRun = { first: string, second: string, firstHour: number, lastHour: number, };
-export type WarStart = { hour: number, attacking: string, defending: string, };
+export type WarStart = { hour: number, attacking: string | null, defending: string | null, attackingMissing: string | null, defendingMissing: string | null, };
 export type Capitulation = { hour: number, tag: string, };
 export type IdentityChange = { hour: number, from: string, to: string, };
 export type CountryIdentityHistory = { tag: string, identities: Array<CountryIdentityRun>, };
 export type CountryIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
 export type UnobservedHours = { humans: Array<HourSpan>, factions: Array<HourSpan>, wars: Array<HourSpan>,
 /**
- * The hour of each war start or capitulation read whose country no link resolved, in hour order:
+ * The hour of each war start or capitulation read with no resolved country, in hour order:
  * it is left out, and who it was is not known.
  */
 unattributed: Array<number>, };
@@ -2710,7 +2710,7 @@ nameHour: number, exact: boolean, category: EventFeedCategory, kind: EventFeedKi
  * Native action roles, actor then target. Null keeps a role that names no country or that
  * no link and holder witnessed.
  */
-participants?: [string | null, string | null], ownerMissing?: string, item: EventFeedItem | null, amount?: number | null,
+participants?: [string | null, string | null], participantsMissing?: [string | null, string | null], ownerMissing?: string, item: EventFeedItem | null, amount?: number | null,
 /**
  * A native event's recorded cause; absent when the recording holds none.
  */
