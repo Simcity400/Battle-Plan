@@ -497,10 +497,10 @@ fn a_family_failing_for_other_than_damage_or_a_refusal_is_read_again_at_the_next
         let reply = read.value.as_ref().as_ref().unwrap().clone();
         (reply["unavailable"].as_array().unwrap().iter().map(|notice| notice["kind"].as_str().unwrap().to_owned()).collect::<Vec<_>>(), reply["nextChange"].as_i64())
     };
-    assert_eq!(kinds(103, true), (vec!["contentStack".to_owned(), "subjects".to_owned()], Some(104)), "a panel opened on a failed read refuses the family, valid for its own hour only");
+    assert_eq!(kinds(103, true), (vec!["contentStack".to_owned(), "subjects".to_owned(), "factionMembership".to_owned()], Some(104)), "a panel opened on a failed read refuses the family, valid for its own hour only");
     FAULT.with(|held| held.set(None));
-    assert_eq!(kinds(103, false).0, ["contentStack"], "asked again at the same hour, the panel keeps no failed reply: it prepares the feed again and reads the family");
-    assert_eq!(kinds(102, true).0, ["contentStack"]);
+    assert_eq!(kinds(103, false).0, ["contentStack", "factionMembership"], "asked again at the same hour, the panel keeps no failed reply: it prepares the feed again and reads the family");
+    assert_eq!(kinds(102, true).0, ["contentStack", "factionMembership"]);
 }
 
 #[test]

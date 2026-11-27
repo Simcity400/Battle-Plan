@@ -19,23 +19,29 @@ use std::sync::{Arc, atomic::AtomicBool};
 fn base_frame(hour: i32, countries: Option<Vec<(u32, u32, &[u8])>>, links: Option<Vec<(u32, u32)>>) -> DecodedFrame {
     let mut frame = source(1, hour, Some(1));
     *frame.tables[TableId::Countries.index()] = match countries {
-        Some(rows) => TableView::Complete(TableRows::Countries(
-            rows.into_iter()
-                .map(|(id, canonical_slot, tag)| CountryRow {
-                    id,
-                    canonical_slot,
-                    tag: tag.to_vec(),
-                    border_land_doctrine_level: Recorded::Value(None),
-                    ..CountryRow::default()
-                })
-                .collect(),
-        )),
+        Some(mut rows) => {
+            rows.sort_by_key(|&(id, ..)| id);
+            TableView::Complete(TableRows::Countries(
+                rows.into_iter()
+                    .map(|(id, canonical_slot, tag)| CountryRow {
+                        id,
+                        canonical_slot,
+                        tag: tag.to_vec(),
+                        border_land_doctrine_level: Recorded::Value(None),
+                        ..CountryRow::default()
+                    })
+                    .collect(),
+            ))
+        }
         None => TableView::Unavailable { reason: "countries unread".into() },
     };
     *frame.tables[TableId::CountryLinks.index()] = match links {
-        Some(rows) => TableView::Complete(TableRows::CountryLinks(
-            rows.into_iter().map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot }).collect(),
-        )),
+        Some(mut rows) => {
+            rows.sort_by_key(|&(id, _)| id);
+            TableView::Complete(TableRows::CountryLinks(
+                rows.into_iter().map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot }).collect(),
+            ))
+        }
         None => TableView::Unavailable { reason: "links unread".into() },
     };
     *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(Vec::new()));
@@ -60,32 +66,41 @@ fn base_frame(hour: i32, countries: Option<Vec<(u32, u32, &[u8])>>, links: Optio
 
 fn set_factions(frame: &mut DecodedFrame, factions: Option<Vec<(u64, &[u8])>>, members: Option<Vec<(u32, u64, u32)>>) {
     *frame.tables[TableId::Factions.index()] = match factions {
-        Some(rows) => TableView::Complete(TableRows::Factions(
-            rows.into_iter().map(|(id, name)| FactionRow { id, name: name.to_vec(), ..FactionRow::default() }).collect(),
-        )),
+        Some(mut rows) => {
+            rows.sort_by_key(|&(id, _)| id);
+            TableView::Complete(TableRows::Factions(
+                rows.into_iter().map(|(id, name)| FactionRow { id, name: name.to_vec(), ..FactionRow::default() }).collect(),
+            ))
+        }
         None => TableView::Unavailable { reason: "factions unread".into() },
     };
     *frame.tables[TableId::FactionMembers.index()] = match members {
-        Some(rows) => TableView::Complete(TableRows::FactionMembers(
-            rows.into_iter().map(|(country, faction, ordinal)| FactionMemberRow { country, faction, ordinal }).collect(),
-        )),
+        Some(mut rows) => {
+            rows.sort_by_key(|&(country, ..)| country);
+            TableView::Complete(TableRows::FactionMembers(
+                rows.into_iter().map(|(country, faction, ordinal)| FactionMemberRow { country, faction, ordinal }).collect(),
+            ))
+        }
         None => TableView::Unavailable { reason: "faction members unread".into() },
     };
 }
 
 fn set_wars(frame: &mut DecodedFrame, wars: Option<Vec<(u32, u32, i32, i32)>>) {
     *frame.tables[TableId::WarRelations.index()] = match wars {
-        Some(rows) => TableView::Complete(TableRows::WarRelations(
-            rows.into_iter()
-                .map(|(first_country, second_country, start_hour, end_hour)| WarRelationRow {
-                    first_country,
-                    second_country,
-                    start_hour,
-                    end_hour,
-                    ..WarRelationRow::default()
-                })
-                .collect(),
-        )),
+        Some(mut rows) => {
+            rows.sort_by_key(|&(first_country, second_country, ..)| (first_country, second_country));
+            TableView::Complete(TableRows::WarRelations(
+                rows.into_iter()
+                    .map(|(first_country, second_country, start_hour, end_hour)| WarRelationRow {
+                        first_country,
+                        second_country,
+                        start_hour,
+                        end_hour,
+                        ..WarRelationRow::default()
+                    })
+                    .collect(),
+            ))
+        }
         None => TableView::Unavailable { reason: "wars unread".into() },
     };
 }
@@ -760,19 +775,21 @@ fn groups_shared_failure_still_emits_proven_raw_transitions() {
         })
         .collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    let entry = replay.recording().table_entry(0, 0, TableId::WarEvents.index()).unwrap();
+    let entry = replay.recording().table_entry(0, 0, TableId::GroupNames.index()).unwrap();
     let mut bytes = replay.bytes().to_vec();
     bytes[entry.unit.parts[0].frames[0].offset as usize] ^= 0xff;
     let damaged = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
     let src = Arc::new(Source::from_replay(SourceKey { source_id: "damaged-war-events".into(), revision: "1".into() }, "damaged-war-events.battleplan".into(), Arc::new(damaged), &AtomicBool::new(false)).unwrap());
-    let reply = tail(&src, 101, vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy]);
-    let rows = event_rows(&reply);
-    assert!(rows.iter().any(|r| r.kind == EventFeedKind::Peace && r.hour == 101 && r.tags == ["AAA", "BBB"]), "proven peace must survive damaged WarEvents: {rows:?}");
-    let join = rows.iter().find(|r| r.kind == EventFeedKind::FactionJoined && r.hour == 101 && r.tags == ["AAA"]).expect("proven join must survive damaged WarEvents");
-    assert!(join.item.as_ref().and_then(|i| i.name_missing.as_deref()).is_some_and(|r| r.contains("Faction names are unavailable")), "faction join must carry missing-name reason: {:?}", join.item);
-    assert!(reply.unavailable.iter().any(|u| u.kind == "countryGroups"), "countryGroups refusal must still be reported");
     let load = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
+    let query = dashboard_base::queries::query(&src, 1).unwrap();
+    assert!(dashboard_world::products::groups::shared(&src, &query, &load, &cancelled).is_err(), "damaged GroupNames must fail groups::shared");
+    let reply = tail(&src, 101, vec![EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy]);
+    let rows = event_rows(&reply);
+    assert!(rows.iter().any(|r| r.kind == EventFeedKind::Peace && r.hour == 101 && r.tags == ["AAA", "BBB"]), "proven peace must survive damaged GroupNames: {rows:?}");
+    let join = rows.iter().find(|r| r.kind == EventFeedKind::FactionJoined && r.hour == 101 && r.tags == ["AAA"]).expect("proven join must survive damaged GroupNames");
+    assert!(join.item.as_ref().and_then(|i| i.name_missing.as_deref()).is_some_and(|r| r.contains("Faction names are unavailable")), "faction join must carry missing-name reason: {:?}", join.item);
+    assert!(reply.unavailable.iter().any(|u| u.kind == "countryGroups"), "countryGroups refusal must still be reported");
     let wars_act = EventFeedActivity::load(
         &src,
         &EventFeedActivityParams { branch_id: "1".into(), hour: 101, from: 100, bin_hours: 24, categories: vec![EventFeedCategory::WarsPeace], exclude: None, countries: None, group: None },
