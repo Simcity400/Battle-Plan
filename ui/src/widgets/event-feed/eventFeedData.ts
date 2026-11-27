@@ -4,6 +4,7 @@ import { int, object, opaqueTag } from '../../dashboard/validation.ts';
 import type { EventFeedItem, EventFeedKindInfo, EventFeedRow, ScriptEdge } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
 import { isEventFeedGap } from './scriptedGaps.ts';
+import type { LogKindFilterItem } from '../../families/table/pickerList.ts';
 
 const SCRIPT_KINDS = new Set(['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected', 'decisionRemoved', 'decisionCancelled',
   'decisionTimedOut', 'decisionActivated', 'decisionCompleted', 'decisionReenabled', 'decisionRemovalEffect', 'decisionCancellationEffect',
@@ -93,7 +94,9 @@ export function kindsRequest(track: { source: { id: string; revision: string }; 
 
 export function validateKinds(value: unknown): readonly EventFeedKindInfo[] {
   if (!object(value) || !Array.isArray(value.kinds)
-    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && typeof kind.category === 'string' && CATEGORY_NAMES.has(kind.category))) {
+    || !value.kinds.every(kind => object(kind) && typeof kind.kind === 'string' && KINDS.has(kind.kind) && typeof kind.category === 'string' && CATEGORY_NAMES.has(kind.category)
+      && (int(kind.firstObserved) && kind.unavailable === null
+        || kind.firstObserved === null && typeof kind.unavailable === 'string' && kind.unavailable.length > 0))) {
     throw new Error('The event feed kinds reply is malformed.');
   }
   return value.kinds as unknown as EventFeedKindInfo[];
@@ -139,6 +142,17 @@ export function feedKindLabel(kind: string): string {
   if (known) return known;
   const spaced = kind.replace(/([A-Z])/g, ' $1').trim();
   return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1).toLowerCase() : kind;
+}
+
+export function feedKindItems(kinds: readonly EventFeedKindInfo[], categories: readonly { value: string; label: string }[], enabled: readonly string[], excluded: readonly string[], hour: number | null): LogKindFilterItem[] {
+  return kinds.flatMap(item => {
+    const checked = item.firstObserved !== null && enabled.includes(item.category) && !excluded.includes(item.kind);
+    const future = item.firstObserved !== null && (hour === null || item.firstObserved > hour);
+    if (future && !checked) return [];
+    const unavailable = item.unavailable ?? (future ? 'No events of this kind recorded by the shown hour.' : undefined);
+    return [{ value: `kind:${item.kind}`, label: feedKindLabel(item.kind), group: categories.find(category => category.value === item.category)?.label ?? item.category,
+      checked, ...(unavailable ? { unavailable } : {}) }];
+  });
 }
 
 export function effectiveEventItem(event: EventFeedRow, choice: ScriptEdge | null): EventFeedItem | null {

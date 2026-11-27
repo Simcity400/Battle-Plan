@@ -1091,6 +1091,35 @@ fn feed_tails_answer_one_occurrence_query_by_observation_cutoff_and_occurrence_d
     );
     let cancel = AtomicBool::new(false);
     let context = LoadContext { content: None };
+    let kinds = super::EventFeedKinds::load(&replay_source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancel).unwrap();
+    let kind = |wanted| kinds.kinds.iter().find(|item| item.kind == wanted).unwrap();
+    assert_eq!(kind(EventFeedKind::ScriptEventFired).first_observed, Some(100));
+    assert_eq!(kind(EventFeedKind::NewsEventFired).first_observed, Some(105));
+    assert_eq!(kind(EventFeedKind::EventOptionSelected).first_observed, Some(102));
+    assert_eq!(kind(EventFeedKind::WarDeclared).first_observed, None);
+    assert!(kind(EventFeedKind::WarDeclared).unavailable.as_deref().unwrap().contains("No events"));
+    assert!(kind(EventFeedKind::LawChanged).unavailable.as_deref().unwrap().contains("does not read"));
+    let mut unrecorded_frame = source(1, 100, Some(1));
+    *unrecorded_frame.tables[TableId::EventFeedHistory.index()] = TableView::Unavailable { reason: "Synthetic native history unavailable".into() };
+    let unrecorded = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![unrecorded_frame])])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let unrecorded = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "unrecorded-kinds".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(unrecorded), &cancel,
+    ).unwrap();
+    let unrecorded = super::EventFeedKinds::load(&unrecorded, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancel).unwrap();
+    let declaration = unrecorded.kinds.iter().find(|item| item.kind == EventFeedKind::WarDeclared).unwrap();
+    assert_eq!(declaration.first_observed, None);
+    assert!(declaration.unavailable.as_deref().unwrap().contains("Synthetic native history unavailable"));
+    let interrupted = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, [100, 102].map(|hour| source(1, hour, Some(1))).into())])
+        .unwrap().into_timelines(&Default::default()).unwrap();
+    let interrupted = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey { source_id: "interrupted-kinds".into(), revision: "1".into() },
+        "synthetic.battleplan".into(), Arc::new(interrupted), &cancel,
+    ).unwrap();
+    let interrupted = super::EventFeedKinds::load(&interrupted, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &cancel).unwrap();
+    let declaration = interrupted.kinds.iter().find(|item| item.kind == EventFeedKind::WarDeclared).unwrap();
+    assert!(!declaration.unavailable.as_deref().unwrap().starts_with("No events"));
     let selection = |tag: &str| Some(vec![Country::Tag(tag.into())]);
     let feed = |hour: i32, from: Option<i32>, countries: Option<Vec<Country>>| EventFeedTailParams {
         branch_id: "1".into(),
@@ -1821,6 +1850,10 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     }]));
     let (replay_source, options) = machine.open_frames(vec![frame]);
     let context = LoadContext { content: Some(options) };
+    let kinds = super::EventFeedKinds::load(&replay_source, &dashboard_base::products::BranchParams { branch_id: "1".into() }, &context, &AtomicBool::new(false)).unwrap();
+    let project = kinds.kinds.iter().find(|item| item.kind == EventFeedKind::ProjectFinished).unwrap();
+    assert_eq!(project.first_observed, None);
+    assert_eq!(project.unavailable.as_deref(), Some("missing NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU"));
     let ask = |row: Option<&str>| EventFeedTailParams {
         branch_id: "1".into(),
         hour: Some(hour),
@@ -1898,6 +1931,20 @@ fn scripted_feed_text_keeps_resolved_parts_dates_and_every_gap_across_events_and
     assert_eq!(orders_listed.gaps.len(), 1);
     assert_eq!(orders_listed.gaps[0].key, "FROM.GetName");
     assert!(orders_listed.gaps[0].reason.contains("unregistered_trigger_key"), "{:?}", orders_listed.gaps[0]);
+}
+
+#[test]
+fn feed_kinds_name_missing_project_history_after_content_prerequisites_are_met() {
+    use dashboard_base::{products::{BranchParams, LoadContext, Product}, test_fixtures::visual_mods::Machine};
+    use std::sync::atomic::AtomicBool;
+
+    let machine = Machine::new("feed_project_history_gap");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    let (source, options) = machine.open();
+    let kinds = super::EventFeedKinds::load(&source, &BranchParams { branch_id: "1".into() }, &LoadContext { content: Some(options) }, &AtomicBool::new(false)).unwrap();
+    let project = kinds.kinds.iter().find(|item| item.kind == EventFeedKind::ProjectFinished).unwrap();
+    assert_eq!(project.first_observed, None);
+    assert_eq!(project.unavailable.as_deref(), Some("Events of this kind may not be listed: project histories were not recorded then."));
 }
 
 #[test]

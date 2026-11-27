@@ -143,6 +143,8 @@ dashboard_base::reply_warnings!(EventFeedActivityReply);
 pub struct EventFeedKindInfo {
     pub kind: EventFeedKind,
     pub category: EventFeedCategory,
+    pub first_observed: Option<i32>,
+    pub unavailable: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1080,7 +1082,8 @@ pub struct EventFeedKinds;
 
 impl Product for EventFeedKinds {
     const KEY: &'static str = "event-feed-kinds";
-    const CONTENT_DEPENDENT: bool = false;
+    const CONTENT_DEPENDENT: bool = true;
+    const REPLAYS: bool = true;
     type Params = dashboard_base::products::BranchParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = EventFeedKindsReply;
@@ -1090,11 +1093,68 @@ impl Product for EventFeedKinds {
         vec![EventFeedKindInfo::decl(), EventFeedKindsReply::decl()]
     }
 
-    fn load(_source: &Source, _params: &Self::Params, _context: &LoadContext, _cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        Ok(EventFeedKindsReply {
-            kinds: EventFeedKind::ALL.iter().filter(|kind| !super::index::internal(**kind)).map(|&kind| EventFeedKindInfo { kind, category: kind.category() }).collect(),
-            warnings: Vec::new(),
-        })
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        branch(&params.branch_id)
+    }
+
+    fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        let branch = branch_id(&params.branch_id)?;
+        let query = dashboard_base::queries::query(source, branch)?;
+        let scanned = index::scanned_for(source, &query, branch, cancelled)?;
+        let content = super::resolve_content(source, context);
+        let feed = index::feed_for(source, &query, branch, context, content.as_ref().ok(), cancelled)?;
+        let mut first = scanned.observed_kinds();
+        for at in 0..feed.index.len() {
+            let row = feed.index.get(at as u32);
+            let hour = &mut first[usize::from(row.kind)];
+            *hour = Some(hour.map_or(row.observed, |held| held.min(row.observed)));
+        }
+        let mut unread = Notices::default();
+        families::unread(&[EventFeedCategory::WarsPeace, EventFeedCategory::Diplomacy, EventFeedCategory::Politics, EventFeedCategory::Milestones], &mut unread);
+        let unread = unread.into_list();
+        let kinds = EventFeedKind::ALL.into_iter().filter(|kind| !index::internal(*kind)).map(|kind| {
+            use EventFeedKind::*;
+            let first_observed = first[kind as usize];
+            let unavailable = first_observed.is_none().then(|| {
+                let key = match kind {
+                    LawChanged | AdvisorHired => "lawChanged",
+                    RulingPartyChanged => "rulingPartyChanged",
+                    FocusCompleted => "focusCompleted",
+                    NukesIncreased => "nukesIncreased",
+                    WarStarted | Peace | Capitulated | FactionJoined | FactionLeft => "countryGroups",
+                    BecameSubject => "subjects",
+                    ProjectFinished => "projectFinished",
+                    NuclearStrike => "nuclearStrike",
+                    _ => "feed-events",
+                };
+                if let Some(notice) = unread.iter().find(|notice| notice.kind == key) {
+                    return notice.reason.clone();
+                }
+                if let Some((_, _, _, reason, _)) = feed.notices.iter().find(|(_, name, ..)| name == key) {
+                    return reason.clone();
+                }
+                if let Some(family) = feed.unrecorded.iter().find(|family| family.kind == key && !family.spans.is_empty()) {
+                    return format!("Events of this kind {}.", family.why);
+                }
+                let table = match key {
+                    "feed-events" => Some(replay_data::rows::TableId::FeedEvents),
+                    "nuclearStrike" => Some(replay_data::rows::TableId::NuclearStrikes),
+                    _ => None,
+                };
+                if let Some(reason) = table.and_then(|table| query.replay.recording().predates(table.index())) {
+                    return reason.to_owned();
+                }
+                if key == "feed-events" && let Some(gap) = scanned.gaps.first() {
+                    return gap.reason.clone();
+                }
+                if let Some(gap) = query.timeline.unheld.first() {
+                    return gap.reason.clone();
+                }
+                "No events of this kind were recorded in this branch.".to_owned()
+            });
+            EventFeedKindInfo { kind, category: kind.category(), first_observed, unavailable }
+        }).collect();
+        Ok(EventFeedKindsReply { kinds, warnings: Vec::new() })
     }
 }
 

@@ -138,6 +138,15 @@ fn presented_key(event: &FeedEvent, effects: bool) -> (u64, u64, i32, bool) {
 }
 
 impl Scanned {
+    pub(crate) fn observed_kinds(&self) -> [Option<i32>; EventFeedKind::ALL.len()] {
+        let mut first = [None::<i32>; EventFeedKind::ALL.len()];
+        for brief in &self.briefs {
+            let hour = &mut first[brief.kind as usize];
+            *hour = Some(hour.map_or(brief.at.hour, |held| held.min(brief.at.hour)));
+        }
+        first
+    }
+
     pub(crate) fn partial_read(&self, read_hour: i32) -> bool {
         self.partial_reads.binary_search(&read_hour).is_ok()
     }

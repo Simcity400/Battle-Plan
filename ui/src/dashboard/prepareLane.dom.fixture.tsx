@@ -90,9 +90,9 @@ const fixture = {
       if (request.product !== 'event-feed-kinds') throw new Error(`Unexpected product ${request.product}`);
       count++;
       return { sourceId: request.sourceId, revision: request.revision, product: request.product,
-        data: { kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] } };
+        data: { kinds: [{ kind: 'warDeclared', category: 'warsPeace', firstObserved: START, unavailable: null }] } };
     } } as unknown as DashboardClient;
-    const track = { id: 'main', source: { id: 'kinds', revision: '1' }, branch: { id: 'branch', firstHour: START, lastHour: START + 1000 } } as BoundTrack;
+    const track = { id: 'main', source: { id: 'kinds', revision: '1' }, axisOffset: 0, branch: { id: 'branch', firstHour: START, lastHour: START + 1000 } } as BoundTrack;
     const runtime = { client: counting, tracks: [track], clock } as unknown as WidgetRuntime;
     const prepared = [{ id: 'feed', template: { widgets: [] } as unknown as DashboardTemplate,
       runtime: { ...runtime, client: preparingClient(counting) } }];
@@ -123,6 +123,7 @@ const fixture = {
     await prepare();
     draw(true);
     await frame(); await frame();
+    const before = count;
     clock.playing = true; clock.anchor();
     for (let at = 0; at < 12; at++) { clock.step(15); await frame(); }
     clock.playing = false; clock.anchor();
@@ -132,7 +133,7 @@ const fixture = {
       await prepare();
     }
     root.unmount(); root = null; host.remove(); host = null;
-    return count;
+    return { before, after: count };
   },
   async eventFeedKindsState(state: 'pending' | 'failed' | 'missing' | 'ready') {
     let deliver = () => {};
@@ -142,15 +143,15 @@ const fixture = {
       await delivered;
       if (state === 'failed') throw new Error('Kinds read failed');
       return { sourceId: request.sourceId, revision: request.revision, product: request.product,
-        data: state === 'missing' ? {} : { kinds: [{ kind: 'warDeclared', category: 'warsPeace' }] } };
+        data: state === 'missing' ? {} : { kinds: [{ kind: 'warDeclared', category: 'warsPeace', firstObserved: START, unavailable: null }] } };
     } } as unknown as DashboardClient;
     const slot = document.body.appendChild(document.createElement('div'));
     const container = document.body.appendChild(document.createElement('div'));
     const view = createRoot(container);
     view.render(<EventFeed.render {...{
       widget: { id: 'state', trackIds: ['main'], time: { mode: 'follow' }, countries: { kind: 'all' } },
-      runtime: { client: reading, tracks: [{ id: 'main', source: { id: 'state', revision: '1' }, branch: { id: 'branch' } }], clock },
-      active: true, options: { activityStrip: false }, filterSlot: slot,
+      runtime: { client: reading, tracks: [{ id: 'main', source: { id: 'state', revision: '1' }, axisOffset: 0, branch: { id: 'branch' } }], clock },
+      active: true, options: { activityStrip: false, politics: false }, filterSlot: slot,
     } as unknown as FamilyViewProps} />);
     for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
     slot.querySelector('button')?.click();
@@ -161,10 +162,78 @@ const fixture = {
     const expected = state === 'pending' ? '[role="status"]' : state === 'ready' ? '[role="option"]' : '[role="alert"]';
     for (let at = 0; at < 300 && !panel()?.querySelector(expected); at++) await frame();
     if (!panel()?.querySelector(expected)) throw new Error(`The kinds picker did not reach ${state}`);
-    const result = { status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
+    const result = { chip: slot.querySelector('button')?.textContent?.trim(), status: panel()?.querySelector('[role="status"], [role="alert"]')?.textContent ?? null,
       choices: [...(panel()?.querySelectorAll('[role="option"]') ?? [])].map(item => item.textContent) };
     view.unmount(); slot.remove(); container.remove();
     return result;
+  },
+  async eventFeedKindsAvailability() {
+    clock = new Clock();
+    let requests = 0;
+    let deliver = () => {};
+    let kindsDelivered = false;
+    const delivered = new Promise<void>(resolve => { deliver = resolve; });
+    const changes: string[] = [];
+    let excludedKinds = 'newsEventFired';
+    const reading = { available: true, product: async (request: ProductRequest) => {
+      requests++;
+      await delivered;
+      return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { kinds: [
+        { kind: 'warDeclared', category: 'warsPeace', firstObserved: START, unavailable: null },
+        { kind: 'newsEventFired', category: 'politics', firstObserved: START + 90, unavailable: null },
+        { kind: 'lawChanged', category: 'politics', firstObserved: null, unavailable: 'Ideas were not recorded.' },
+      ] } };
+    } } as unknown as DashboardClient;
+    const track = { id: 'main', source: { id: 'kind-availability', revision: '1' }, axisOffset: -100,
+      branch: { id: 'branch', firstHour: START, lastHour: START + 1000 } } as BoundTrack;
+    clock.hour = START - track.axisOffset;
+    const slot = document.body.appendChild(document.createElement('div'));
+    const container = document.body.appendChild(document.createElement('div'));
+    const view = createRoot(container);
+    const draw = () => view.render(<EventFeed.render {...{
+      widget: { id: 'availability', trackIds: ['main'], time: { mode: 'follow' }, countries: { kind: 'all' } },
+      runtime: { client: reading, tracks: [track], clock }, active: true, options: { activityStrip: false, excludedKinds }, filterSlot: slot,
+      setOption: (key: string, value: string) => { if (key === 'excludedKinds') { changes.push(value); excludedKinds = value; draw(); } },
+    } as unknown as FamilyViewProps} />);
+    draw();
+    const panel = () => document.querySelector('[role="dialog"][aria-label="Filter kinds"]');
+    const options = () => [...(panel()?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+    const open = async () => {
+      slot.querySelector('button')!.click();
+      if (!kindsDelivered) {
+        for (let at = 0; at < 300 && !panel()?.querySelector('[role="status"]'); at++) await frame();
+        if (!panel()?.querySelector('[role="status"]')) throw new Error('The availability picker did not show its loading state');
+        deliver();
+        kindsDelivered = true;
+      }
+      for (let at = 0; at < 300 && !options().length; at++) await frame();
+      if (!options().length) throw new Error('The availability picker did not reach its ready state');
+    };
+    const close = async () => { slot.querySelector('button')!.click(); await frame(); };
+    const snapshot = () => options().map(item => ({ label: item.querySelector('.tf-picker-label')?.textContent,
+      disabled: item.getAttribute('aria-disabled') === 'true', checked: item.getAttribute('aria-selected') === 'true',
+      reason: item.querySelector('[data-value-state="missing"]')?.getAttribute('aria-label') ?? null }));
+    for (let at = 0; at < 300 && !slot.querySelector('button'); at++) await frame();
+    await open();
+    const before = snapshot();
+    const resetBefore = !!panel()?.querySelector('.tf-picker-reset');
+    const beforeRequests = requests;
+    options().find(item => item.textContent?.includes('Law changed'))!.click();
+    await close();
+    clock.playing = true; clock.anchor();
+    clock.step(100);
+    await open();
+    const later = snapshot();
+    options().find(item => item.textContent?.includes('News events'))!.click();
+    await frame();
+    await close();
+    clock.hour = START - track.axisOffset; clock.seekSequence++; clock.anchor();
+    await open();
+    const soughtBack = snapshot();
+    options().find(item => item.textContent?.includes('News events'))!.click();
+    const afterRequests = requests;
+    view.unmount(); slot.remove(); container.remove();
+    return { before, later, soughtBack, changes, beforeRequests, afterRequests, resetBefore };
   },
   async mount(lane: boolean) {
     root?.unmount(); host?.remove();
