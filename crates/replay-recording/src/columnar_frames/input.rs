@@ -3,9 +3,9 @@ use super::invalid;
 use replay_columnar::{
     container::{self, Open, ReadAt},
     envelope::{self, Extent},
-    unit::reader::Extents,
+    unit::reader::{Extents, SpareUser},
 };
-use std::{fmt, fs::File, io};
+use std::{fmt, fs::File, io, sync::Arc};
 
 #[derive(Debug)]
 pub struct NotSaved;
@@ -80,6 +80,7 @@ impl ReadAt for Held {
 pub struct Source {
     held: Held,
     end: u64,
+    spare: Arc<SpareUser>,
 }
 
 impl Source {
@@ -88,7 +89,7 @@ impl Source {
         if let Held::Memory(bytes) = &mut held {
             bytes.truncate(end as usize);
         }
-        Ok((Self { held, end }, root))
+        Ok((Self { held, end, spare: SpareUser::acquire() }, root))
     }
 
     pub fn len(&self) -> u64 {
@@ -130,6 +131,8 @@ impl Source {
 }
 
 impl Extents for Source {
+    fn spare_user(&self) -> Arc<SpareUser> { Arc::clone(&self.spare) }
+
     fn read_at(&self, offset: u64, length: usize, out: &mut Vec<u8>) -> io::Result<()> {
         if offset.checked_add(length as u64).is_none_or(|end| end > self.end) {
             return Err(invalid("A unit frame lies past the revision"));
