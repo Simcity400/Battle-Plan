@@ -28,6 +28,7 @@ export type FromLane =
   | { type: 'failure'; lane: number; reason: string }
   | { type: 'prepared'; lane: number; ask: number }
   | { type: 'sub-failed'; lane: number; sub: number; reason: string }
+  | { type: 'sub-waiting'; lane: number; sub: number; waiting: boolean }
   | { type: 'widget-failed'; lane: number; widget: number; reason: string; stamp?: number }
   | { type: 'hit'; widget: number; key: string | null; installedId?: number; owner?: string }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; cancelled?: boolean; costs?: [widget: number, cost: number][] };

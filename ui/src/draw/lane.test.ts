@@ -41,10 +41,10 @@ interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c:
 function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop']; clock?: () => number; earlyBuffer?: number } = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
-  const subFailures: [number, string][] = [], widgetFailures: [number, string][] = [];
+  const subFailures: [number, string][] = [], widgetFailures: [number, string][] = [], waits: [number, boolean][] = [];
   const widgetSubs = new Map<number, number[]>();
   const presented: Presented<Fake>[] = [];
-  const shown = new Map<number, (string | null)[]>();
+  const shown = new Map<number, (string | null)[]>(), changes = new Map<number, number>();
   const lane: Lane<Fake> = new Lane<Fake>({
     lane: 0, lanes: 1,
     views: kind => views[kind] ?? fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape)),
@@ -54,6 +54,7 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
     release: bytes => released.push(bytes),
     fail: reason => failures.push(reason),
     failSub: (sub, reason) => { subFailures.push([sub, reason]); for (const [w, list] of widgetSubs) if (list.includes(sub)) page.name(w, 'failed', reason); },
+    waitSub: (sub, waiting) => { waits.push([sub, waiting]); for (const [w, list] of widgetSubs) if (list.includes(sub)) page.waiting(w, waiting); },
     failWidget: (widget, reason) => { widgetFailures.push([widget, reason]); page.name(widget, 'failed', reason); },
     later: run => later.push(run),
     hit: (_widget, key) => hits.push(key),
@@ -64,13 +65,13 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
     lane.mount(widget, subs.map(sub => sub.id), view);
     const list: (string | null)[] = [];
     shown.set(widget, list);
-    page.mount(widget, { route: ROUTE, lane: 0, offset: timing.offset ?? 0, pin: timing.pin ?? null,
+    page.mount(widget, { route: ROUTE, lane: 0, offset: timing.offset ?? 0, pin: timing.pin ?? null, changed: () => changes.set(widget, (changes.get(widget) ?? 0) + 1),
       surfaces: Array.from({ length: surfaces }, (_, k) => ({ install: (b: Fake) => { list[k] = b.content; }, clear: () => { list[k] = null; } })) });
     lane.bind(widget, { generation: 1, surfaces: Array.from({ length: surfaces }, () => ({ width: 1, height: 1, dpr: 1 })), offset: timing.offset ?? 0, pin: timing.pin ?? null,
       ...timing.dated ? { dated: timing.dated } : {} });
   };
   const step = async (T: number, options: Parameters<Page<Fake>['publish']>[1] = {}) => { page.publish(T, options); await flush(); await flush(); page.frame(); await flush(); };
-  return { page, lane, posted, released, failures, subFailures, widgetFailures, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
+  return { page, lane, posted, released, failures, subFailures, widgetFailures, waits, changes, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
 }
 
 const rows = (keys: bigint[], values: bigint[], extra: { changed?: boolean } = {}) => ({ keys, columns: 1, values, ...extra });
@@ -116,6 +117,32 @@ test('a stopped panel shows a failure with its reason, a refusal stays a refusal
   lane.receive('panels', at({ id: 3, hour: 18, kind: 'refused', stepped: true, text: 'Countries was not recorded at this hour' }));
   await step(18);
   assert.deepEqual([page.view(1).mode, page.view(1).reason], ['refused', 'Countries was not recorded at this hour'], 'a refusal by the recording stays a refusal');
+});
+
+test('a panel whose latest record is WAITING marks its widget only while it has no picture, and the mark goes with the next reading', async () => {
+  const { page, lane, waits, changes, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  const before = changes.get(1) ?? 0;
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'waiting' }]));
+  assert.equal(changes.get(1), before + 1, 'the widget hears of it at once, without another frame');
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'waiting' }]));
+  await step(10, { playing: false });
+  assert.deepEqual([page.view(1).mode, page.view(1).waiting], ['reading', true], 'nothing to show yet and its reading is due');
+  assert.deepEqual(waits, [[3, true]], 'told once');
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', data: { shape: 'A' } }]));
+  await step(10);
+  assert.deepEqual([page.view(1).mode, page.view(1).waiting], ['picture', undefined]);
+  assert.deepEqual(waits, [[3, true], [3, false]]);
+  lane.receive('panels', panels([{ id: 3, hour: 11, kind: 'waiting' }]));
+  await step(11);
+  assert.equal(page.view(1).waiting, undefined, 'a widget showing a picture is not marked');
+  mount(2, [{ id: 4, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(4, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 4, hour: 12, kind: 'waiting' }]));
+  lane.receive('panels', panels([{ id: 4, hour: 12, kind: 'stopped', stepped: true, text: 'the recording file was closed' }, { id: 0, hour: 20, kind: 'completed' }]));
+  await step(12);
+  assert.deepEqual([page.view(2).mode, page.view(2).waiting], ['failed', undefined], 'a stopped reading ends the wait: it shows the failure, not Reading');
 });
 
 test('identical panel bytes decode once within the subscription and seek', t => {

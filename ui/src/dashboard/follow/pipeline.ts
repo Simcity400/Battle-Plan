@@ -50,7 +50,7 @@ export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
-  widgets: Map<number, number>; released: boolean;
+  widgets: Map<number, number>; released: boolean; waiting?: boolean;
 }
 
 interface RouteState {
@@ -430,6 +430,14 @@ export class Pipeline {
       }
       return;
     }
+    if (message.type === 'sub-waiting') {
+      const held = this.byId.get(message.sub);
+      if (!held) return;
+      held.waiting = message.waiting;
+      for (const id of held.widgets.keys()) { const widget = this.widgets.get(id); if (widget) this.markWaiting(widget); }
+      this.flush();
+      return;
+    }
     if (message.type === 'widget-failed') {
       if (this.widgets.has(message.widget)) {
         const failure = asFailure(new Error(message.reason));
@@ -690,8 +698,13 @@ export class Pipeline {
     if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
+  private markWaiting(widget: WidgetState) {
+    this.page.waiting(widget.id, [...widget.subs.values()].some(sub => this.byId.get(sub)?.waiting));
+  }
+
   private remount(widget: WidgetState) {
     const subs = [...new Set(widget.subs.values())];
+    this.markWaiting(widget);
     const laneFailure = this.laneErrors[widget.lane];
     this.postLane(widget.lane, { type: 'mount', widget: widget.id, subs, view: widget.view, model: widget.wire });
     this.page.rebind(widget.id, { subscription: true });

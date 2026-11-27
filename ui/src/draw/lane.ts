@@ -90,6 +90,7 @@ export interface LaneHost<B extends Bitmap> {
   release(bytes: number): void;
   fail(reason: string): void;
   failSub?(sub: number, reason: string): void;
+  waitSub?(sub: number, waiting: boolean): void;
   failWidget?(widget: number, reason: string, stamp?: number): void;
   later(run: () => void): void;
   schedule?(run: () => void): void;
@@ -235,6 +236,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private minPruneHour = Infinity;
   private readonly limitedSubs = new Set<number>();
   private readonly failedSubs = new Set<number>();
+  private readonly waitingSubs = new Set<number>();
   private readonly failedWidgets = new Set<number>();
   private readonly routes = new Map<number, number>();
   private readonly natives = new Map<number, number>();
@@ -549,6 +551,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
     this.failedSubs.delete(sub);
+    this.waitingSubs.delete(sub);
     this.prunableNow.delete(sub);
     this.prunableAt.delete(sub);
     for (const [native, ov] of [...this.overflowedSubs]) {
@@ -780,6 +783,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.limitedSubs.delete(subId);
       for (const cell of this.facts.usesOf(subId) ?? []) this.limitedSubs.delete(cell);
       if (!this.failedSubs.has(subId)) this.schedulePrune(subId);
+      this.noteWaiting(subId, false);
     }
     const native = this.natives.get(route);
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
@@ -1174,6 +1178,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           if (made) {
             this.facts.panels(route, item.seek, [made], undefined, only);
             this.markSub(item.id, made.kind !== 'stands');
+            this.noteWaiting(made.id, made.kind === 'waiting');
           }
         }
         if (this.failedSubs.has(item.id)) continue;
@@ -1346,6 +1351,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       value: { kind: 'panel', bytes: panel.panel.bytes ?? null, data: panel.panel.data, refused: null } };
   }
 
+  private noteWaiting(id: number, waiting: boolean) {
+    if (waiting === this.waitingSubs.has(id)) return;
+    if (waiting) this.waitingSubs.add(id); else this.waitingSubs.delete(id);
+    this.host.waitSub?.(id, waiting);
+  }
+
   private panels(bytes: Uint8Array) {
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const native = data.getUint32(16, true), seek = data.getUint32(20, true), count = data.getUint32(8, true);
@@ -1387,6 +1398,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (made) {
         this.facts.panels(route, seek, [made]);
         this.markSub(made.id, made.kind !== 'stands');
+        this.noteWaiting(made.id, made.kind === 'waiting');
       }
     }
     this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
