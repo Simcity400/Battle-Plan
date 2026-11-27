@@ -425,14 +425,21 @@ pub fn writing_project(project: usize) -> ProjectWrite {
     }
 }
 
-pub struct Reset;
+pub struct Reset {
+    _flight: FlightGuard<'static>,
+}
 pub fn resetting() -> Reset {
+    let flight = FLIGHT.enter(false);
+    CONTENDED_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    GLOBAL_ACTIVE.fetch_add(1, Ordering::SeqCst);
     invalidate();
-    Reset
+    Reset { _flight: flight }
 }
 impl Drop for Reset {
     fn drop(&mut self) {
         invalidate();
+        CONTENDED_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -440,9 +447,11 @@ impl Drop for Reset {
 mod tests {
     use super::*;
 
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn contended_project_and_variable_writers_withhold_stamps_until_drop_and_invalidate() {
-        let _serial = crate::test_support::SERIAL.lock().unwrap();
+        let _serial = SERIAL.lock().unwrap();
         let was_enabled = ENABLED.load(Ordering::SeqCst);
         let was_hooks = PROJECT_HOOKS.load(Ordering::SeqCst);
         enabled(true);
@@ -488,6 +497,21 @@ mod tests {
         let after_var_pending =
             pending_stamp(store_a).expect("pending stamp after contended var drop");
         assert_ne!(after_var_pending, after_project);
+
+        let reset = resetting();
+        assert!(register(store_a, 11, 1).is_none());
+        assert!(pending_stamp(store_a).is_none());
+        assert_eq!(
+            stamp_reader().unwrap().stamps(store_a, 11, 1),
+            Some((None, None))
+        );
+        assert!(global_quiet().is_none());
+        drop(reset);
+
+        let after_reset = register(store_a, 11, 1).expect("var stamp after reset drop");
+        assert_ne!(after_reset, after_var);
+        let after_reset_pending = pending_stamp(store_a).expect("pending stamp after reset drop");
+        assert_ne!(after_reset_pending, after_var_pending);
 
         retain_live(|owner, id| owner != 11 || id != 1);
         enabled(was_enabled);

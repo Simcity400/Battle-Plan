@@ -98,7 +98,7 @@ pub struct Owner {
     accumulators: Vec<bool>,
     image_base: usize,
     references_dirty: bool,
-    pub cached_contributions: Option<std::sync::Arc<Vec<IntelContributionRow>>>,
+    pub cached_contributions: Option<allocation::SharedBox<Vec<IntelContributionRow>>>,
 }
 
 impl Owner {
@@ -518,14 +518,15 @@ impl Owner {
 
     pub fn contribution_arc(
         &mut self,
-    ) -> Result<std::sync::Arc<Vec<IntelContributionRow>>, &'static str> {
+    ) -> Result<allocation::SharedBox<Vec<IntelContributionRow>>, &'static str> {
         if let Some(cached) = &self.cached_contributions {
-            return Ok(std::sync::Arc::clone(cached));
+            return Ok(allocation::SharedBox::clone(cached));
         }
         let mut rows = Vec::new();
         self.contribution_rows(&mut rows)?;
-        let shared = std::sync::Arc::new(rows);
-        self.cached_contributions = Some(std::sync::Arc::clone(&shared));
+        let shared = allocation::shared(rows)
+            .map_err(|_| "intel contribution snapshot allocation failed")?;
+        self.cached_contributions = Some(allocation::SharedBox::clone(&shared));
         Ok(shared)
     }
 

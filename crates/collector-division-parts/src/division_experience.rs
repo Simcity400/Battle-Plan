@@ -1,8 +1,6 @@
+use engine_allocation::SharedBox;
 use engine_native::carmy::{self, DivisionSeed};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering::Relaxed},
-};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 #[cfg(test)]
 mod oracle;
@@ -111,7 +109,10 @@ pub struct DivisionIndex {
 }
 
 impl DivisionIndex {
-    pub fn for_seeds(prev: Option<&Arc<Self>>, seeds: &[DivisionSeed]) -> Option<Arc<Self>> {
+    pub fn for_seeds(
+        prev: Option<&SharedBox<Self>>,
+        seeds: &[DivisionSeed],
+    ) -> Option<SharedBox<Self>> {
         u32::try_from(seeds.len()).ok()?;
         if let Some(prev) = prev
             && prev.divisions.len() == seeds.len()
@@ -121,7 +122,7 @@ impl DivisionIndex {
                 .zip(seeds)
                 .all(|(&division, seed)| division == seed.division)
         {
-            return Some(Arc::clone(prev));
+            return Some(SharedBox::clone(prev));
         }
         let baseline = next_baseline()?;
         let mut divisions = Vec::new();
@@ -143,14 +144,16 @@ impl DivisionIndex {
             sorted.sort_unstable();
         }
         let unique = held_sorted || sorted.windows(2).all(|pair| pair[0].0 != pair[1].0);
-        engine_allocation::advisory(|| engine_allocation::allocation_attempt()).ok()?;
-        Some(Arc::new(Self {
-            baseline,
-            divisions,
-            sorted,
-            held_sorted,
-            unique,
-        }))
+        engine_allocation::advisory(|| {
+            engine_allocation::shared(Self {
+                baseline,
+                divisions,
+                sorted,
+                held_sorted,
+                unique,
+            })
+        })
+        .ok()
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -193,7 +196,7 @@ pub struct Store<T = i64> {
     baseline: Option<u64>,
     next: Vec<Held<T>>,
     sorted: Vec<(u64, usize)>,
-    shared: Option<Arc<DivisionIndex>>,
+    shared: Option<SharedBox<DivisionIndex>>,
     sorted_ready: bool,
     held_sorted: bool,
     unique: bool,
@@ -587,7 +590,7 @@ impl<T: Clone> Store<T> {
         self.finish_with_index(complete, None);
     }
 
-    pub fn finish_with_index(&mut self, complete: bool, shared: Option<&Arc<DivisionIndex>>) {
+    pub fn finish_with_index(&mut self, complete: bool, shared: Option<&SharedBox<DivisionIndex>>) {
         if !complete {
             self.forget();
             return;
@@ -608,7 +611,7 @@ impl<T: Clone> Store<T> {
             self.held_sorted = shared.held_sorted;
             self.unique = shared.unique;
             self.sorted_ready = true;
-            self.shared = Some(Arc::clone(shared));
+            self.shared = Some(SharedBox::clone(shared));
             return;
         }
         self.baseline = next_baseline();

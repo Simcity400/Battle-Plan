@@ -1870,3 +1870,28 @@ fn unmatched_temporary_template_receiver_reuses_clean_state_without_rereading() 
     assert_eq!(fast.tables(), reference.tables());
     assert_eq!(fast.country_state(), reference.country_state());
 }
+
+#[test]
+fn lazy_clean_materialization_refuses_allocation_failure_without_caching_none() {
+    let changes = CoreChanges::new();
+    let source = gridded_fixture();
+    let mut fast = Captured::with_capacities(&capacity());
+    let mut reference = Captured::with_capacities(&capacity());
+    for hour in 0..3 {
+        // SAFETY: Isolated unit test fixture owns both captures and mock memories.
+        unsafe {
+            fast.capture_original(&source, 0, 0x1000, hour, hour == 0, &changes);
+            reference.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        }
+    }
+    let clean = &fast.fast_clean.as_ref().expect("clean snapshot").clean;
+    for ordinal in 1..=3 {
+        let guard = collector_test_support::NullGuard::new(ordinal);
+        let materialized = clean.tables();
+        drop(guard);
+        assert!(materialized.is_none(), "ordinal {ordinal}");
+        assert!(!collector_memory::terminal::failed(), "ordinal {ordinal}");
+    }
+    assert!(clean.tables().is_some());
+    assert_eq!(fast.tables(), reference.tables());
+}

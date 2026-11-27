@@ -80,6 +80,10 @@ pub struct StabilityDispatch<'a> {
     pub acquire: &'a mut dyn FnMut(Vec<StabilityPart>) -> Result<Vec<StabilityPart>, &'static str>,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "serial capture keeps Context inline without heap allocation while partitioned capture shares it via SharedBox"
+)]
 enum ContextSlot {
     Owned(native::Context),
     Shared(SharedBox<native::Context>),

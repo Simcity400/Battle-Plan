@@ -156,13 +156,16 @@ struct RawClean {
 
 impl RawClean {
     fn materialize(&self) -> Option<[std::sync::Arc<replay_data::rows::TableRows>; 2]> {
-        engine_allocation::advisory(|| {
-            let dictionary = match build_templates(&self.rows, &self.bytes, None) {
-                TableInput::Sampled(TableView::Complete(rows)) => Some(std::sync::Arc::new(rows)),
-                _ => None,
-            }?;
-            let names = dictionary.rows::<tables::DivisionTemplates>();
-            let icons = match build_icons(
+        let (dictionary, refused) =
+            engine_allocation::contained(|| build_templates(&self.rows, &self.bytes, None));
+        let TableInput::Sampled(TableView::Complete(dictionary)) = dictionary else {
+            return None;
+        };
+        if refused {
+            return None;
+        }
+        let (icons, refused) = engine_allocation::contained(|| {
+            build_icons(
                 &self.icon_rows,
                 &self.icon_bytes,
                 &self.name_bytes,
@@ -173,25 +176,33 @@ impl RawClean {
                 &self.speed_keys,
                 &self.speed_spans,
                 None,
-                names,
-            ) {
-                TableInput::Sampled(TableView::Complete(rows)) => Some(std::sync::Arc::new(rows)),
-                _ => None,
-            }?;
-            Some([dictionary, icons])
-        })
+                dictionary.rows::<tables::DivisionTemplates>(),
+            )
+        });
+        let TableInput::Sampled(TableView::Complete(icons)) = icons else {
+            return None;
+        };
+        if refused {
+            return None;
+        }
+        Some([std::sync::Arc::new(dictionary), std::sync::Arc::new(icons)])
     }
 }
 
 struct LazyClean {
     raw: RawClean,
     country: std::sync::Arc<replay_data::rows::TableRows>,
-    tables: std::sync::OnceLock<Option<[std::sync::Arc<replay_data::rows::TableRows>; 2]>>,
+    tables: std::sync::OnceLock<[std::sync::Arc<replay_data::rows::TableRows>; 2]>,
 }
 
 impl LazyClean {
     fn tables(&self) -> Option<&[std::sync::Arc<replay_data::rows::TableRows>; 2]> {
-        self.tables.get_or_init(|| self.raw.materialize()).as_ref()
+        if let Some(tables) = self.tables.get() {
+            return Some(tables);
+        }
+        let built = self.raw.materialize()?;
+        let _ = self.tables.set(built);
+        self.tables.get()
     }
 }
 
@@ -211,9 +222,9 @@ struct CleanState {
     generation: u64,
     model_failures: ModelFailures,
     required: [usize; 8],
-    country_slots: std::sync::Arc<Vec<countries::CleanCountry>>,
-    pointer_index: std::sync::Arc<Vec<(usize, u32)>>,
-    clean: std::sync::Arc<LazyClean>,
+    country_slots: engine_allocation::SharedBox<Vec<countries::CleanCountry>>,
+    pointer_index: engine_allocation::SharedBox<Vec<(usize, u32)>>,
+    clean: engine_allocation::SharedBox<LazyClean>,
 }
 
 #[derive(Default)]
@@ -1571,8 +1582,8 @@ impl Captured {
                 .filter(|prev| prev.digest == digest)
                 .map(|prev| {
                     (
-                        std::sync::Arc::clone(&prev.country_slots),
-                        std::sync::Arc::clone(&prev.pointer_index),
+                        engine_allocation::SharedBox::clone(&prev.country_slots),
+                        engine_allocation::SharedBox::clone(&prev.pointer_index),
                     )
                 });
             let dead_bytes = if self.dirty_patched {
@@ -1611,7 +1622,10 @@ impl Captured {
                                 index.push((row.pointer, u32::try_from(at).ok()?));
                             }
                             index.sort_unstable_by_key(|&(pointer, _)| pointer);
-                            (std::sync::Arc::new(slots), std::sync::Arc::new(index))
+                            (
+                                engine_allocation::shared(slots).ok()?,
+                                engine_allocation::shared(index).ok()?,
+                            )
                         }
                     };
                     let mut payloads = Vec::new();
@@ -1635,11 +1649,12 @@ impl Captured {
                         country_rows,
                     };
                     Some((
-                        std::sync::Arc::new(LazyClean {
+                        engine_allocation::shared(LazyClean {
                             raw,
                             country,
                             tables: std::sync::OnceLock::new(),
-                        }),
+                        })
+                        .ok()?,
                         country_slots,
                         pointer_index,
                         dead_bytes,

@@ -571,7 +571,6 @@ impl WatchRegistry {
     pub fn touch(&self, receiver: usize) {
         let admit = self.enter();
         if receiver != 0
-            && self.registered.load(Acquire) != 0
             && let Some(table) = self.table()
             && let Lookup::Watched(index, sequence) = table.find_read(receiver)
         {
@@ -592,8 +591,7 @@ impl WatchRegistry {
         }
         let admit = self.admit(false);
         let mut marked = false;
-        if self.registered.load(Acquire) != 0
-            && let Some(table) = self.table()
+        if let Some(table) = self.table()
             && let Lookup::Watched(index, sequence) = table.find_read(receiver)
         {
             let mark = table.mark_of(index);
@@ -629,10 +627,7 @@ impl WatchRegistry {
     #[inline]
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
         let admit = self.enter();
-        let (sequence, mark) = match (receiver != 0 && self.registered.load(Acquire) != 0)
-            .then(|| self.table())
-            .flatten()
-        {
+        let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
             Some(table) => match table.find_read(receiver) {
                 Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
                 _ => (None, None),
@@ -662,17 +657,16 @@ impl WatchRegistry {
         may_watch: impl FnOnce() -> bool,
     ) -> Notification<'_> {
         let admit = self.enter();
-        let (sequence, mark) =
-            match (receiver != 0 && self.registered.load(Acquire) != 0 && may_watch())
-                .then(|| self.table())
-                .flatten()
-            {
-                Some(table) => match table.find_read(receiver) {
-                    Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
-                    _ => (None, None),
-                },
-                None => (None, None),
-            };
+        let (sequence, mark) = match (receiver != 0 && may_watch())
+            .then(|| self.table())
+            .flatten()
+        {
+            Some(table) => match table.find_read(receiver) {
+                Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
+                _ => (None, None),
+            },
+            None => (None, None),
+        };
         if self.sequences
             && let Some(sequence) = sequence
         {
@@ -693,9 +687,7 @@ impl WatchRegistry {
     pub fn notify_pair(&self, first: usize, second: usize) -> NotificationPair<'_> {
         let admit = self.enter();
         let mut marks = [None, None];
-        if self.registered.load(Acquire) != 0
-            && let Some(table) = self.table()
-        {
+        if let Some(table) = self.table() {
             for (slot, receiver) in [first, second].into_iter().enumerate() {
                 if receiver == 0 || (slot == 1 && receiver == first) {
                     continue;

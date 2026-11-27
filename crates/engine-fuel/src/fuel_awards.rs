@@ -898,7 +898,7 @@ const EAGER_NAME_BYTES: usize = 128;
 enum StoredNameInner {
     Deferred(msvc_string::Descriptor),
     Loaded {
-        bytes: [std::mem::MaybeUninit<u8>; EAGER_NAME_BYTES],
+        bytes: [u8; EAGER_NAME_BYTES],
         len: usize,
     },
 }
@@ -915,11 +915,7 @@ impl StoredName {
     pub fn loaded_bytes(&self) -> Option<&[u8]> {
         match &self.0 {
             StoredNameInner::Deferred(_) => None,
-            StoredNameInner::Loaded { bytes, len } => {
-                // SAFETY: `StoredNameInner` is private; only `from_header_eager` constructs
-                // `Loaded`, initializing `bytes[..*len + 1]` with `*len < EAGER_NAME_BYTES`.
-                Some(unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) })
-            }
+            StoredNameInner::Loaded { bytes, len } => Some(&bytes[..*len]),
         }
     }
     pub fn copy(&self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
@@ -927,11 +923,7 @@ impl StoredName {
             StoredNameInner::Deferred(desc) => desc.copy(memory, output),
             StoredNameInner::Loaded { bytes, len } => {
                 let output = output.get_mut(..*len).ok_or("string output too short")?;
-                // SAFETY: `StoredNameInner` is private; only `from_header_eager` constructs
-                // `Loaded`, initializing `bytes[..*len + 1]` with `*len < EAGER_NAME_BYTES`.
-                let source =
-                    unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) };
-                output.copy_from_slice(source);
+                output.copy_from_slice(&bytes[..*len]);
                 Ok(())
             }
         }
@@ -956,26 +948,17 @@ impl StoredName {
             if header[len] != 0 {
                 return Err("string terminator unreadable or invalid");
             }
-            let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); EAGER_NAME_BYTES];
-            // SAFETY: `len + 1 <= 16 <= EAGER_NAME_BYTES`, and `header` is initialized.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    header.as_ptr(),
-                    bytes.as_mut_ptr().cast::<u8>(),
-                    len + 1,
-                );
-            }
+            let mut bytes = [0u8; EAGER_NAME_BYTES];
+            bytes[..len].copy_from_slice(&header[..len]);
             return Ok(Self(StoredNameInner::Loaded { bytes, len }));
         }
         if let Some((source, span)) = msvc_string::heap_span(&header)
             && span <= EAGER_NAME_BYTES
         {
             let len = span - 1;
-            let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); EAGER_NAME_BYTES];
-            if let Some(copied) =
-                engine_native_memory::memory::read_slice_uninit(memory, source, &mut bytes[..span])
-            {
-                if copied[len] != 0 {
+            let mut bytes = [0u8; EAGER_NAME_BYTES];
+            if engine_native_memory::memory::read_slice(memory, source, &mut bytes[..span]) {
+                if bytes[len] != 0 {
                     return Err("string terminator unreadable or invalid");
                 }
                 return Ok(Self(StoredNameInner::Loaded { bytes, len }));

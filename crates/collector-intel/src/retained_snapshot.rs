@@ -24,7 +24,7 @@ pub(crate) struct ContributionsDelta {
     pub(crate) generation: u64,
     pub(crate) dirty_owners: Vec<u32>,
     pub(crate) dirty_rows: Vec<rows::IntelContributionRow>,
-    pub(crate) all_owners: Vec<Arc<Vec<rows::IntelContributionRow>>>,
+    pub(crate) all_owners: Vec<engine_allocation::SharedBox<Vec<rows::IntelContributionRow>>>,
     pub(crate) total_len: usize,
 }
 
@@ -73,7 +73,7 @@ impl AcquiredRows {
                 delta.dirty_owners.capacity() * size_of::<u32>()
                     + delta.dirty_rows.capacity() * size_of::<rows::IntelContributionRow>()
                     + delta.all_owners.capacity()
-                        * size_of::<Arc<Vec<rows::IntelContributionRow>>>()
+                        * size_of::<engine_allocation::SharedBox<Vec<rows::IntelContributionRow>>>()
             }
             Self::Sources(rows) => rows.capacity() * size_of::<rows::IntelSourceRow>(),
             Self::NetworkAuxiliaries(rows) => {

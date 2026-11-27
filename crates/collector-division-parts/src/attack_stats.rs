@@ -165,7 +165,7 @@ pub struct KeptName<'a> {
 #[derive(Default)]
 struct Locator {
     order: Vec<(u64, u32)>,
-    shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
+    shared: Option<engine_allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     shift: isize,
 }
 
@@ -201,13 +201,13 @@ impl Locator {
     fn index_with(
         &mut self,
         divisions: &[u64],
-        shared: Option<&std::sync::Arc<crate::division_experience::DivisionIndex>>,
+        shared: Option<&engine_allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     ) -> bool {
         if let Some(shared) = shared
             && divisions == shared.divisions.as_slice()
         {
             self.order.clear();
-            self.shared = Some(std::sync::Arc::clone(shared));
+            self.shared = Some(engine_allocation::SharedBox::clone(shared));
             return true;
         }
         self.shared = None;
@@ -264,7 +264,7 @@ pub struct ArmyStatStore {
     pub history: crate::division_history::Store,
     pub sources: crate::panel_sources::Store,
     pub observations: crate::observations::HourObservations,
-    shared_index: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
+    shared_index: Option<engine_allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     epoch: Option<u64>,
     held: Vec<Held>,
     divisions: Vec<u64>,
@@ -655,12 +655,12 @@ pub struct Captured {
     pub sources: Option<Result<std::sync::Arc<crate::panel_sources::SourceSnapshot>, &'static str>>,
     pub selected_sources: Vec<(u64, Option<[u64; 3]>)>,
     selected_order: Vec<(u64, u32)>,
-    selected_shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
+    selected_shared: Option<engine_allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     pub history:
         Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
     rows: Vec<Row>,
     order: Vec<(u64, u32)>,
-    order_shared: Option<std::sync::Arc<crate::division_experience::DivisionIndex>>,
+    order_shared: Option<engine_allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     slabs: Vec<std::sync::Arc<TerrainSlab>>,
     terrain: Vec<i64>,
     movement: Vec<i64>,
@@ -1469,7 +1469,7 @@ impl Captured {
                 .zip(&shared.divisions)
                 .all(|(row, &division)| row.division == division)
         {
-            self.order_shared = Some(std::sync::Arc::clone(shared));
+            self.order_shared = Some(engine_allocation::SharedBox::clone(shared));
         } else if engine_allocation::advisory(|| {
             engine_allocation::reserve(&mut self.order, self.rows.len())
         })
@@ -1535,7 +1535,7 @@ impl Captured {
                 .zip(&shared.divisions)
                 .all(|(&(division, _), &expected)| division == expected)
         {
-            self.selected_shared = Some(std::sync::Arc::clone(shared));
+            self.selected_shared = Some(engine_allocation::SharedBox::clone(shared));
             return;
         }
         if engine_allocation::advisory(|| {

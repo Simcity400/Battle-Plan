@@ -28,7 +28,7 @@ pub struct Store {
     baseline: Option<u64>,
     next: Vec<Held>,
     sorted: Vec<(u64, usize)>,
-    shared: Option<Arc<crate::division_experience::DivisionIndex>>,
+    shared: Option<allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     sorted_ready: bool,
     held_sorted: bool,
     unique: bool,
@@ -630,7 +630,7 @@ impl Store {
     }
     pub fn finish_with_index(
         &mut self,
-        shared: Option<&Arc<crate::division_experience::DivisionIndex>>,
+        shared: Option<&allocation::SharedBox<crate::division_experience::DivisionIndex>>,
     ) -> Result<Arc<HistorySnapshot>, &'static str> {
         self.defer_edits = false;
         let mut pending = std::mem::take(&mut self.pending);
@@ -688,7 +688,7 @@ impl Store {
             self.held_sorted = shared.held_sorted;
             self.unique = shared.unique;
             self.sorted_ready = true;
-            self.shared = Some(Arc::clone(shared));
+            self.shared = Some(allocation::SharedBox::clone(shared));
         } else {
             self.baseline = crate::division_experience::next_baseline();
             self.held_sorted = self
