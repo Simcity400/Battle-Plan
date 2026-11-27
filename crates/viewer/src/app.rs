@@ -3116,7 +3116,6 @@ impl Viewer {
                                 preferences.visual_mods.as_deref(),
                                 preferences.graphics.texture_quality,
                                 recording.as_deref().zip(decisions.as_ref()),
-                                crate::document::LoadTarget::Content,
                             ),
                         },
                         None => match &video_preload {
