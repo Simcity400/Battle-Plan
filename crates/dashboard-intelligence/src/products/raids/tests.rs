@@ -1317,6 +1317,7 @@ fn cached_raid_icons_keep_their_overlay_notes() {
 
     let machine = Machine::new("raid_icon_notes");
     machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23}}");
+    machine.write("common/buildings/fixture.txt", b"buildings={fixture_building={}}");
     machine.write("common/raids/fixture.txt", b"types={fixture_raid={custom_map_icon=GFX_fixture_raid}}");
     machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_raid textureFile=gfx/fixture_raid.png}}");
     machine.write("gfx/fixture_raid.png", &png(RED));

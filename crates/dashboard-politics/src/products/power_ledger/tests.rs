@@ -1396,6 +1396,8 @@ fn cached_power_items_keep_their_overlay_notes() {
 
     let machine = Machine::new("power_item_art_notes");
     machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("common/buildings/fixture.txt", b"buildings={fixture_building={}}");
+    machine.write("common/terrain/fixture.txt", b"categories={fixture_terrain={}}");
     machine.write("common/abilities/fixture.txt", b"ability={fixture_ability={icon=GFX_fixture_ability}}");
     machine.write("interface/fixture.gfx", b"spriteTypes={spriteType={name=GFX_fixture_ability textureFile=gfx/fixture_ability.png}}");
     machine.write("gfx/fixture_ability.png", &png(RED));
