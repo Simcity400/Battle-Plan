@@ -125,6 +125,39 @@ fn recording() -> (Source, Arc<dyn Pages>) {
 }
 
 #[test]
+fn a_dated_panel_projects_the_same_changed_rows_from_the_step_and_the_recording() {
+    let (source, _) = recording();
+    let source = Arc::new(source);
+    let replay = source.replay();
+    let panel = dated_interval(source.tables(), move |hour, _, step| {
+        let query = crate::queries::query(&source, 1)?;
+        let reads = [Read::all(TableId::Countries)];
+        let mut step = step;
+        let cold;
+        let frame = match &mut step {
+            Some(step) => step.frame(&source, &query, hour, &reads, |_| None)?,
+            None => {
+                cold = super::frame(&query, hour, &reads, "Countries")?;
+                &cold
+            }
+        };
+        let rows: Vec<_> = frame.complete::<tables::Countries>()?.iter().map(|row| (row.id, row.political_power_raw)).collect();
+        Ok((json!(rows), hour..=hour, 0))
+    }, |_, _| {});
+    let exact = panel.exact().unwrap();
+    let cancelled = AtomicBool::new(false);
+    let seed = (exact.advance)(FIRST, true, &cancelled, None);
+    assert!(seed.lanes.iter().any(|lane| lane.table == TableId::Countries.index()));
+    let steps = crate::test_fixtures::played(&replay, exact, FIRST, LAST);
+    let quiet = steps.iter().find(|read| read.hour == ITA_LEAVES + 1).unwrap();
+    assert_eq!(quiet.visited, 0, "no country row changed at this hour");
+    for read in steps {
+        assert!(!read.pending);
+        assert_eq!(*read.value, (exact.cold)(read.hour, &cancelled), "hour {}", read.hour);
+    }
+}
+
+#[test]
 fn strip_pools_are_dropped_and_restore_the_interactive_pool() {
     let (source, _) = recording();
     let interactive = placed::Pool::of(&source).unwrap();
