@@ -4858,7 +4858,11 @@ fn scope_edit(
                     .saturating_add(current.len() * 12)
                     <= SCOPE_CACHE_MAX_BYTES;
             if can_insert {
+                let is_new = !scratch.scope_cache.contains_key(&identity);
                 let built_cache = engine_allocation::advisory(|| {
+                    if is_new {
+                        engine_allocation::reserve_map(&mut scratch.scope_cache, 1).ok()?;
+                    }
                     let mut cached_names = Vec::new();
                     let mut cached_lens = Vec::new();
                     let mut sorted_ids = Vec::new();

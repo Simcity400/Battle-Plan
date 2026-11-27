@@ -544,6 +544,7 @@ struct BatchedRecipient {
     name_reason: Option<&'static str>,
 }
 
+#[derive(Clone, Copy)]
 enum CandidateName<'a> {
     None,
     Slice(&'a [u8]),

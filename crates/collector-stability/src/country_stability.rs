@@ -5,7 +5,7 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
-use engine_allocation::{copy_vec, owned_vec};
+use engine_allocation::{SharedBox, copy_vec, owned_vec};
 use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::ccountry;
 use engine_stability::country_stability as native;
@@ -14,10 +14,7 @@ use replay_data::{
     rows::CountryStabilityLineRow, rows::TableId, rows::tables,
 };
 use replay_frame::frame::TableView;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static BATCH_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
@@ -83,10 +80,26 @@ pub struct StabilityDispatch<'a> {
     pub acquire: &'a mut dyn FnMut(Vec<StabilityPart>) -> Result<Vec<StabilityPart>, &'static str>,
 }
 
+enum ContextSlot {
+    Owned(native::Context),
+    Shared(SharedBox<native::Context>),
+}
+
+impl std::ops::Deref for ContextSlot {
+    type Target = native::Context;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(context) => context,
+            Self::Shared(context) => context,
+        }
+    }
+}
+
 pub struct StabilityPart {
     ordinal: usize,
     countries: Vec<(engine_native_memory::country_identity::Country, Option<u64>)>,
-    context: Option<Arc<native::Context>>,
+    context: Option<SharedBox<native::Context>>,
     memo: native::Memo,
     scratch: native::Scratch,
     inputs: Vec<native::InputRow>,
@@ -285,7 +298,7 @@ pub struct Captured {
     lines_changed: Changed,
     lines_carried: Vec<u32>,
     keys: Option<native::Keys>,
-    context: Option<Arc<native::Context>>,
+    context: Option<ContextSlot>,
     phase_ticks: [u64; 4],
     demand: native::Demand,
     parts: Vec<StabilityPart>,
@@ -358,10 +371,11 @@ impl Captured {
             + self.scratch.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.lines_carried.capacity() * size_of::<u32>()
-            + self
-                .context
-                .as_ref()
-                .map_or(0, |context| context.language.capacity())
+            + self.context.as_ref().map_or(0, |context| {
+                context.language.capacity()
+                    + usize::from(matches!(context, ContextSlot::Shared(_)))
+                        * SharedBox::<native::Context>::BYTES
+            })
             + self
                 .parts
                 .iter()
@@ -628,7 +642,8 @@ impl Captured {
         if let Some(dispatch) = dispatch
             .filter(|d| d.lanes > 1 && (full_walks >= 4 || self.selected_countries.len() >= 32))
         {
-            let context = Arc::new(context);
+            let context = engine_allocation::shared(context)
+                .map_err(|_| "stability context allocation failed")?;
             let count = dispatch.lanes.min(self.selected_countries.len() / 2);
             let width = self.selected_countries.len().div_ceil(count);
             let prepared = engine_allocation::advisory(|| {
@@ -640,7 +655,7 @@ impl Captured {
                         .unwrap_or_else(|| StabilityPart::new(self.demand));
                     part.reset();
                     part.ordinal = ordinal;
-                    part.context = Some(Arc::clone(&context));
+                    part.context = Some(SharedBox::clone(&context));
                     engine_allocation::reserve(&mut part.countries, chunk.len()).ok()?;
                     part.countries.extend_from_slice(chunk);
                     parts.push(part);
@@ -741,7 +756,7 @@ impl Captured {
                     self.bytes.len = byte_at;
                     self.inputs.outcome = Outcome::Rows { len: input_at };
                     self.lines.outcome = lines;
-                    self.context = Some(context);
+                    self.context = Some(ContextSlot::Shared(context));
                     if fingerprints.is_some() {
                         let carried = self.lines_carried.len() as u64;
                         changes::record(
@@ -780,7 +795,7 @@ impl Captured {
                 memory,
                 base,
                 &countries,
-                context,
+                ContextSlot::Shared(context),
                 fingerprints,
                 ids,
                 timing,
@@ -790,7 +805,7 @@ impl Captured {
             memory,
             base,
             &countries,
-            Arc::new(context),
+            ContextSlot::Owned(context),
             fingerprints,
             ids,
             timing,
@@ -799,14 +814,14 @@ impl Captured {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "serial stability walk receives memory, country reader, shared context, fingerprints and timing"
+        reason = "serial stability walk receives memory, country reader, context slot, fingerprints and timing"
     )]
     fn walk_serial<M: Memory>(
         &mut self,
         memory: &M,
         base: usize,
         countries: &ccountry::Reader<'_, M>,
-        context: Arc<native::Context>,
+        context: ContextSlot,
         mut fingerprints: Option<&mut SliceFingerprints>,
         ids: Option<usize>,
         timing: &mut native::WalkTiming,

@@ -76,7 +76,21 @@ static OWNERS: RwLock<Option<FastMap<usize, Entry>>> = RwLock::new(None);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_CHANGE: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static CONTENDED_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn certified_stamp(revision: &AtomicU64, active: &AtomicUsize) -> Option<(u64, u64)> {
+    if CONTENDED_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return None;
+    }
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let rev = revision.load(Ordering::SeqCst);
+    (CONTENDED_ACTIVE.load(Ordering::SeqCst) == 0
+        && active.load(Ordering::SeqCst) == 0
+        && EPOCH.load(Ordering::SeqCst) == epoch)
+        .then_some((epoch, rev))
+}
 
 pub fn global_quiet() -> Option<(u64, u64)> {
     if !ENABLED.load(Ordering::Acquire)
@@ -110,11 +124,7 @@ fn finalize_born_quiet(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> 
         return None;
     }
     entry.born_quiet.store(true, Ordering::SeqCst);
-    let stamp = (
-        EPOCH.load(Ordering::SeqCst),
-        entry.revision.load(Ordering::SeqCst),
-    );
-    (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp)
+    certified_stamp(&entry.revision, &entry.active)
 }
 
 pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
@@ -127,11 +137,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
         && entry.id == id
     {
         if entry.born_quiet.load(Ordering::SeqCst) {
-            let stamp = (
-                EPOCH.load(Ordering::SeqCst),
-                entry.revision.load(Ordering::SeqCst),
-            );
-            return (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp);
+            return certified_stamp(&entry.revision, &entry.active);
         }
         drop(entries);
         return finalize_born_quiet(store, owner, id);
@@ -165,11 +171,7 @@ pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
         }
         if entry.born_quiet.load(Ordering::SeqCst) {
-            let stamp = (
-                EPOCH.load(Ordering::SeqCst),
-                entry.revision.load(Ordering::SeqCst),
-            );
-            return (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp);
+            return certified_stamp(&entry.revision, &entry.active);
         }
     }
     finalize_born_quiet(store, owner, id)
@@ -179,6 +181,7 @@ pub struct Write {
     _flight: FlightGuard<'static>,
     entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
+    contended: bool,
     _marks: Marks<'static>,
 }
 impl Drop for Write {
@@ -193,6 +196,11 @@ impl Drop for Write {
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             entry.active.fetch_sub(1, Ordering::SeqCst);
             GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        } else if self.contended {
+            EPOCH.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
+            CONTENDED_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -205,6 +213,7 @@ pub fn writing(store: usize) -> Write {
             _flight: flight,
             entries: None,
             store,
+            contended: false,
             _marks: Marks::none(),
         };
     }
@@ -226,6 +235,7 @@ fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
                     _flight: flight,
                     entries: Some(entries),
                     store,
+                    contended: false,
                     _marks: marks,
                 }
             } else {
@@ -234,17 +244,21 @@ fn writing_slow(flight: FlightGuard<'static>, store: usize) -> Write {
                     _flight: flight,
                     entries: None,
                     store,
+                    contended: false,
                     _marks: Marks::none(),
                 }
             }
         }
         Err(_) => {
+            CONTENDED_ACTIVE.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_add(1, Ordering::SeqCst);
             EPOCH.fetch_add(1, Ordering::SeqCst);
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             Write {
                 _flight: flight,
                 entries: None,
                 store,
+                contended: true,
                 _marks: country_input_changes::project_variables_written(None),
             }
         }
@@ -296,11 +310,6 @@ impl StampReader {
         let enabled = ENABLED.load(Ordering::Acquire);
         let project_hooks = PROJECT_HOOKS.load(Ordering::Acquire);
         let entry = self.0.as_ref().and_then(|entries| entries.get(&store));
-        let epoch = if enabled || project_hooks {
-            EPOCH.load(Ordering::SeqCst)
-        } else {
-            0
-        };
         let stamp = if !enabled {
             None
         } else {
@@ -309,19 +318,14 @@ impl StampReader {
                     && entry.id == id
                     && entry.born_quiet.load(Ordering::SeqCst)
             })?;
-            let stamp = (epoch, entry.revision.load(Ordering::SeqCst));
-            (entry.active.load(Ordering::SeqCst) == 0).then_some(stamp)
+            certified_stamp(&entry.revision, &entry.active)
         };
         let pending_stamp = if !project_hooks {
             None
         } else {
-            entry.and_then(|entry| {
-                if !entry.born_quiet.load(Ordering::SeqCst) {
-                    return None;
-                }
-                let stamp = (epoch, entry.pending_revision.load(Ordering::SeqCst));
-                (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
-            })
+            entry
+                .filter(|entry| entry.born_quiet.load(Ordering::SeqCst))
+                .and_then(|entry| certified_stamp(&entry.pending_revision, &entry.pending_active))
         };
         Some((stamp, pending_stamp))
     }
@@ -342,16 +346,13 @@ pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
     if !entry.born_quiet.load(Ordering::SeqCst) {
         return None;
     }
-    let stamp = (
-        EPOCH.load(Ordering::SeqCst),
-        entry.pending_revision.load(Ordering::SeqCst),
-    );
-    (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
+    certified_stamp(&entry.pending_revision, &entry.pending_active)
 }
 pub struct ProjectWrite {
     _flight: FlightGuard<'static>,
     entries: Option<RwLockReadGuard<'static, Option<FastMap<usize, Entry>>>>,
     store: usize,
+    contended: bool,
 }
 impl Drop for ProjectWrite {
     fn drop(&mut self) {
@@ -364,6 +365,11 @@ impl Drop for ProjectWrite {
             entry.pending_revision.fetch_add(1, Ordering::SeqCst);
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             entry.pending_active.fetch_sub(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        } else if self.contended {
+            EPOCH.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
+            CONTENDED_ACTIVE.fetch_sub(1, Ordering::SeqCst);
             GLOBAL_ACTIVE.fetch_sub(1, Ordering::SeqCst);
         }
     }
@@ -378,6 +384,7 @@ pub fn writing_project(project: usize) -> ProjectWrite {
             _flight: flight,
             entries: None,
             store,
+            contended: false,
         };
     }
     match OWNERS.try_read() {
@@ -391,6 +398,7 @@ pub fn writing_project(project: usize) -> ProjectWrite {
                     _flight: flight,
                     entries: Some(entries),
                     store,
+                    contended: false,
                 }
             } else {
                 drop(entries);
@@ -398,16 +406,20 @@ pub fn writing_project(project: usize) -> ProjectWrite {
                     _flight: flight,
                     entries: None,
                     store,
+                    contended: false,
                 }
             }
         }
         Err(_) => {
+            CONTENDED_ACTIVE.fetch_add(1, Ordering::SeqCst);
+            GLOBAL_ACTIVE.fetch_add(1, Ordering::SeqCst);
             EPOCH.fetch_add(1, Ordering::SeqCst);
             GLOBAL_CHANGE.fetch_add(1, Ordering::SeqCst);
             ProjectWrite {
                 _flight: flight,
                 entries: None,
                 store,
+                contended: true,
             }
         }
     }
@@ -421,5 +433,64 @@ pub fn resetting() -> Reset {
 impl Drop for Reset {
     fn drop(&mut self) {
         invalidate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contended_project_and_variable_writers_withhold_stamps_until_drop_and_invalidate() {
+        let _serial = crate::test_support::SERIAL.lock().unwrap();
+        let was_enabled = ENABLED.load(Ordering::SeqCst);
+        let was_hooks = PROJECT_HOOKS.load(Ordering::SeqCst);
+        enabled(true);
+        project_hooks_enabled(true);
+        let project_a = 0x2000_usize;
+        let store_a = project_a + engine_projects::nproject_cproject::VARIABLES;
+        let initial_var = register(store_a, 11, 1).expect("registered project A");
+        let initial_pending = pending_stamp(store_a).expect("pending stamp for project A");
+
+        let owner_write_lock = OWNERS.try_write().unwrap();
+        let contended_project = writing_project(project_a);
+        drop(owner_write_lock);
+
+        assert!(pending_stamp(store_a).is_none());
+        assert!(register(store_a, 11, 1).is_none());
+        assert_eq!(
+            stamp_reader().unwrap().stamps(store_a, 11, 1),
+            Some((None, None))
+        );
+        assert!(global_quiet().is_none());
+        drop(contended_project);
+
+        let after_project = pending_stamp(store_a).expect("pending stamp after contended drop");
+        assert_ne!(after_project, initial_pending);
+        let after_project_var = register(store_a, 11, 1).expect("var stamp after contended drop");
+        assert_ne!(after_project_var, initial_var);
+
+        let owner_write_lock = OWNERS.try_write().unwrap();
+        let contended_var = writing(store_a);
+        drop(owner_write_lock);
+
+        assert!(register(store_a, 11, 1).is_none());
+        assert!(pending_stamp(store_a).is_none());
+        assert_eq!(
+            stamp_reader().unwrap().stamps(store_a, 11, 1),
+            Some((None, None))
+        );
+        assert!(global_quiet().is_none());
+        drop(contended_var);
+
+        let after_var = register(store_a, 11, 1).expect("var stamp after contended var drop");
+        assert_ne!(after_var, after_project_var);
+        let after_var_pending =
+            pending_stamp(store_a).expect("pending stamp after contended var drop");
+        assert_ne!(after_var_pending, after_project);
+
+        retain_live(|owner, id| owner != 11 || id != 1);
+        enabled(was_enabled);
+        project_hooks_enabled(was_hooks);
     }
 }

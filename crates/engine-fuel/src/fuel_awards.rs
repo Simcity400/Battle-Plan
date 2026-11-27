@@ -895,7 +895,7 @@ pub struct Demand {
 
 const EAGER_NAME_BYTES: usize = 128;
 
-pub enum StoredName {
+enum StoredNameInner {
     Deferred(msvc_string::Descriptor),
     Loaded {
         bytes: [std::mem::MaybeUninit<u8>; EAGER_NAME_BYTES],
@@ -903,28 +903,32 @@ pub enum StoredName {
     },
 }
 
+pub struct StoredName(StoredNameInner);
+
 impl StoredName {
     pub fn byte_len(&self) -> usize {
-        match self {
-            Self::Deferred(desc) => desc.len,
-            Self::Loaded { len, .. } => *len,
+        match &self.0 {
+            StoredNameInner::Deferred(desc) => desc.len,
+            StoredNameInner::Loaded { len, .. } => *len,
         }
     }
     pub fn loaded_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Self::Deferred(_) => None,
-            Self::Loaded { bytes, len } => {
-                // SAFETY: `from_header_eager` initializes `bytes[..span]` with `span = *len + 1`.
+        match &self.0 {
+            StoredNameInner::Deferred(_) => None,
+            StoredNameInner::Loaded { bytes, len } => {
+                // SAFETY: `StoredNameInner` is private; only `from_header_eager` constructs
+                // `Loaded`, initializing `bytes[..*len + 1]` with `*len < EAGER_NAME_BYTES`.
                 Some(unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) })
             }
         }
     }
     pub fn copy(&self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
-        match self {
-            Self::Deferred(desc) => desc.copy(memory, output),
-            Self::Loaded { bytes, len } => {
+        match &self.0 {
+            StoredNameInner::Deferred(desc) => desc.copy(memory, output),
+            StoredNameInner::Loaded { bytes, len } => {
                 let output = output.get_mut(..*len).ok_or("string output too short")?;
-                // SAFETY: `from_header_eager` initializes `bytes[..span]` with `span = *len + 1`.
+                // SAFETY: `StoredNameInner` is private; only `from_header_eager` constructs
+                // `Loaded`, initializing `bytes[..*len + 1]` with `*len < EAGER_NAME_BYTES`.
                 let source =
                     unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), *len) };
                 output.copy_from_slice(source);
@@ -961,7 +965,7 @@ impl StoredName {
                     len + 1,
                 );
             }
-            return Ok(Self::Loaded { bytes, len });
+            return Ok(Self(StoredNameInner::Loaded { bytes, len }));
         }
         if let Some((source, span)) = msvc_string::heap_span(&header)
             && span <= EAGER_NAME_BYTES
@@ -974,10 +978,11 @@ impl StoredName {
                 if copied[len] != 0 {
                     return Err("string terminator unreadable or invalid");
                 }
-                return Ok(Self::Loaded { bytes, len });
+                return Ok(Self(StoredNameInner::Loaded { bytes, len }));
             }
         }
-        msvc_string::Descriptor::from_header(memory, address, header).map(Self::Deferred)
+        msvc_string::Descriptor::from_header(memory, address, header)
+            .map(|desc| Self(StoredNameInner::Deferred(desc)))
     }
 }
 const TASK_FORCE_NAME: usize = 0x258;
@@ -1000,7 +1005,8 @@ pub fn stored_name(
             .ok_or("fuel recipient name address overflow")?,
         _ => return Err("fuel recipient has no native unit name"),
     };
-    msvc_string::Descriptor::read(memory, address).map(StoredName::Deferred)
+    msvc_string::Descriptor::read(memory, address)
+        .map(|desc| StoredName(StoredNameInner::Deferred(desc)))
 }
 
 pub fn demand(

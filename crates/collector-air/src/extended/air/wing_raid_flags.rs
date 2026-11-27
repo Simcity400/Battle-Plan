@@ -231,7 +231,8 @@ impl Store {
                 },
             },
         };
-        if sequence(receiver, slot).map(|(c, _)| c) != certificate
+        if value.is_none()
+            || sequence(receiver, slot).map(|(c, _)| c) != certificate
             || quiet() != Some(token)
             || lifetime
                 .is_some_and(|(key, held, key_slot)| sequence(key, key_slot).map(|(c, _)| c) != Some(held))
@@ -607,5 +608,68 @@ mod tests {
             ),
             Some(false)
         );
+    }
+
+    #[test]
+    fn transient_read_or_resolve_failure_is_not_cached_under_unchanged_certificate() {
+        let mut store = Store::default();
+        store.begin(1, true);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |_| Some((1, 0)),
+                || Some((1, 0)),
+                || None,
+                |_| panic!("failed read should not resolve")
+            ),
+            None
+        );
+        assert!(store.current.is_empty());
+        store.finish();
+
+        store.begin(1, false);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |_| Some((1, 0)),
+                || Some((1, 0)),
+                || Some(77),
+                |_| None
+            ),
+            None
+        );
+        assert!(store.current.is_empty());
+        store.finish();
+
+        store.begin(1, false);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |at| (at == 0x1000 + sites::RAID_REFERENCE).then_some((1, 0)),
+                || Some((1, 0)),
+                || Some(77),
+                |_| Some(Some(0x9000))
+            ),
+            None
+        );
+        assert!(store.current.is_empty());
+        store.finish();
+
+        store.begin(1, false);
+        assert_eq!(
+            store.capture_with(
+                0x1000,
+                1,
+                |_| Some((1, 0)),
+                || Some((1, 0)),
+                || Some(77),
+                |_| Some(Some(0x9000))
+            ),
+            Some(true)
+        );
+        assert_eq!(store.current.len(), 1);
     }
 }

@@ -283,7 +283,8 @@ mod tests {
                 dirty: true,
             })
             .collect();
-        let witnesses: Vec<Option<Witness>> = vec![None; watches.len()];
+        let witnesses: Vec<Option<Witness>> =
+            std::iter::repeat_with(|| None).take(watches.len()).collect();
         let mut run = |mut parts: Vec<Part>| {
             assert!(parts.len() >= 2);
             for part in &mut parts {
@@ -318,7 +319,7 @@ mod tests {
             0,
             1,
             &watches,
-            vec![None; watches.len()],
+            std::iter::repeat_with(|| None).take(watches.len()).collect(),
             &[],
         )
         .unwrap();
