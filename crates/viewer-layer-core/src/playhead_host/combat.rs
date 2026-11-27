@@ -70,20 +70,21 @@ pub struct Combat<A: Asking> {
     generation: u64,
     asked: Option<Key<A::Key>>,
     handed: Option<Key<A::Key>>,
+    pending: Option<Key<A::Key>>,
     made: Option<A::Made>,
     loading: Vec<String>,
 }
 
 impl<A: Asking> Default for Combat<A> {
     fn default() -> Self {
-        Self { asking: None, maker: None, learned: Vec::new(), generation: 0, asked: None, handed: None, made: None, loading: Vec::new() }
+        Self { asking: None, maker: None, learned: Vec::new(), generation: 0, asked: None, handed: None, pending: None, made: None, loading: Vec::new() }
     }
 }
 
 impl<A: Asking> Combat<A> {
     pub fn ask(&mut self, asking: Option<A>) {
         if asking.is_none() {
-            (self.maker, self.asked, self.handed, self.made) = (None, None, None, None);
+            (self.maker, self.asked, self.handed, self.pending, self.made) = (None, None, None, None, None);
             self.loading.clear();
         }
         self.asking = asking;
@@ -91,7 +92,11 @@ impl<A: Asking> Combat<A> {
 
     pub fn reset(&mut self) {
         self.generation += 1;
-        (self.asked, self.handed, self.made) = (None, None, None);
+        (self.asked, self.handed, self.pending, self.made) = (None, None, None, None);
+    }
+
+    pub fn wants_turn(&self) -> bool {
+        self.pending.as_ref().zip(self.maker.as_ref()).is_some_and(|(key, maker)| maker.reads.wait(|done| done == key, Duration::ZERO))
     }
 
     pub fn ask_step(&mut self, store: &views::Store, applied: Option<Hour>, branch: Option<BranchId>, epoch: u64, engaged: Option<Arc<History>>) -> bool {
@@ -121,6 +126,7 @@ impl<A: Asking> Combat<A> {
             },
             || {},
         );
+        self.pending = Some(key.clone());
         self.asked = Some(key);
         true
     }
@@ -147,10 +153,13 @@ impl<A: Asking> Combat<A> {
         let mut made = false;
         match maker.reads.take(|done| *done == key) {
             Some((_, Ok(read))) => {
-                (self.made, self.handed) = (Some(read), Some(key));
+                (self.made, self.handed, self.pending) = (Some(read), Some(key), None);
                 made = true;
             }
-            Some((_, Err(why))) => self.loading.push(why),
+            Some((_, Err(why))) => {
+                self.loading.push(why);
+                (self.handed, self.pending) = (Some(key), None);
+            }
             None if answered => self.loading.push(format!("its read of hour {}", key.hour)),
             None => {}
         }

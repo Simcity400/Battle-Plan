@@ -628,7 +628,7 @@ pub(crate) fn measure(
     }
     let at = crate::playhead_host::At { branch, hour: start, playing: false, speed: schedule.paced.unwrap_or(0.0) };
     let side = viewer_playback::map_open::for_document_at(&document, Some(at)).map_err(io::Error::other)?;
-    viewer.playhead_map = Some(viewer_playback::side::SideThread::new(side).map_err(io::Error::other)?);
+    viewer.playhead_map = Some(viewer_playback::side::SideThread::new(side, std::sync::Arc::new(|| {})).map_err(io::Error::other)?);
     if let Some(side) = &viewer.playhead_map {
         document.playback.read_rosters_of(side.entry());
     }

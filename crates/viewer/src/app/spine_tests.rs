@@ -101,7 +101,7 @@ fn viewer(side: MapSide, hour: Hour) -> Viewer {
     viewer.playhead = Some(at(hour));
     viewer.rendered_sequence = 1;
     viewer.playhead_opened = true;
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, std::sync::Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     viewer
@@ -309,21 +309,45 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     let mut viewer = viewer(side, 2);
     map(&mut viewer).anchor(2, false, 0.0, true);
     shown(map(&mut viewer), 2);
+    drawn(&mut viewer);
+    whole_at(&mut viewer, 2);
     assert_eq!(*viewer.shown_mode(), MapMode::default());
+    assert!(viewer.picture_whole(at(2), false));
     let diplomacy = MapMode::Stock(Stock::Diplomacy);
     viewer.map_mode = diplomacy.clone();
+    assert!(!viewer.picture_whole(at(2), false), "picture is not whole until the asked mode is on screen");
+    assert!(viewer.map_state(&target(2, false)).loading, "map state stays loading while the old mode is still shown");
     gate.store(false, Ordering::Release);
-    let at = View { map_mode: diplomacy.clone(), ..View::default() };
+    let at_view = View { map_mode: diplomacy.clone(), ..View::default() };
     map(&mut viewer).with_side_mut(|side| {
-        side.set_view(at).unwrap();
+        side.set_view(at_view).unwrap();
         side.frame(2).unwrap();
         side.frame(2).unwrap();
     });
     map(&mut viewer).driven(|_| ());
     assert_eq!(*viewer.shown_mode(), MapMode::default(), "the layer has not settled the new mode");
+    assert!(!viewer.picture_whole(at(2), false));
     gate.store(true, Ordering::Release);
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));
     assert_eq!(*viewer.shown_mode(), diplomacy);
+    assert!(viewer.picture_whole(at(2), false));
+    assert!(!viewer.map_state(&target(2, false)).loading);
+    let resistance = MapMode::Stock(Stock::Resistance);
+    let compliance = MapMode::Stock(Stock::Compliance);
+    let mut resistance_overlay = viewer.counter_view.clone();
+    resistance_overlay.set_mode(&resistance);
+    viewer.overlay_view = Some(resistance_overlay);
+    viewer.map_mode = compliance.clone();
+    let compliance_view = View { map_mode: compliance.clone(), ..View::default() };
+    map(&mut viewer).with_side_mut(|side| side.set_view(compliance_view).unwrap());
+    frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&compliance));
+    assert!(!viewer.picture_whole(at(2), false), "picture stays incomplete while the installed overlay still has the previous mode");
+    assert!(viewer.map_state(&target(2, false)).loading, "map state stays loading until the new mode's overlay installs");
+    let mut compliance_overlay = viewer.counter_view.clone();
+    compliance_overlay.set_mode(&compliance);
+    viewer.overlay_view = Some(compliance_overlay);
+    assert!(viewer.picture_whole(at(2), false));
+    assert!(!viewer.map_state(&target(2, false)).loading);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use viewer_layer_core::playhead_host::{Head, open};
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -14,7 +14,7 @@ use std::{
 fn side(name: &str, layer: Box<dyn Layer>) -> SideThread {
     let (recording, _) = record(1, 8, busy);
     let entry = open(units(recording, name), quick()).unwrap();
-    let side = SideThread::new(MapSide::with_products(entry, vec![layer], View::default()).unwrap()).unwrap();
+    let side = SideThread::new(MapSide::with_products(entry, vec![layer], View::default()).unwrap(), Arc::new(|| {})).unwrap();
     side.anchor(0, false, 1.0, true);
     side
 }
@@ -123,4 +123,122 @@ fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
     window.take(Default::default());
     drop(window);
     assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
+}
+
+#[derive(Default)]
+struct Answering {
+    answer: Option<(replay_data::Hour, bool)>,
+    joined: Option<(replay_data::Hour, bool)>,
+}
+
+struct Answers(Arc<Mutex<Answering>>);
+
+impl viewer_layer_core::playhead_host::Overlaying<crate::map_open::Products> for Answers {
+    fn ask(&mut self, _: crate::overlay::Ask) {}
+    fn ask_step(&mut self, _: viewer_layer_core::playhead_host::OverlayStep<'_>, _: bool, _: bool, _: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool {
+        false
+    }
+    fn join(&mut self, _: &[Box<dyn Layer>], _: &viewer_foundation::perspective::Choice, _: Option<replay_data::BranchId>, _: viewer_layer_core::layers::Settling) -> bool {
+        let mut held = self.0.lock().unwrap();
+        held.joined = held.answer;
+        true
+    }
+    fn stepped(&mut self) {}
+    fn stands_at(&self, hour: replay_data::Hour) -> bool {
+        self.hour().is_some_and(|held| held >= hour)
+    }
+    fn take(&mut self) -> Option<crate::overlay::Made> {
+        None
+    }
+    fn reset(&mut self) {}
+    fn generation(&self) -> u64 {
+        0
+    }
+    fn hour(&self) -> Option<replay_data::Hour> {
+        self.0.lock().unwrap().joined.map(|(hour, _)| hour)
+    }
+    fn loading(&self) -> &[String] {
+        &[]
+    }
+    fn missed(&self) -> &[replay_data::rows::TableId] {
+        &[]
+    }
+    fn wants_turn(&mut self) -> bool {
+        let held = self.0.lock().unwrap();
+        held.answer != held.joined
+    }
+    fn refused(&self) -> bool {
+        self.0.lock().unwrap().joined.is_some_and(|(_, refused)| refused)
+    }
+}
+
+fn still(name: &str, overlay: Option<Answers>) -> (SideThread, Arc<AtomicUsize>) {
+    let composes = Arc::new(Mutex::new(0));
+    let (recording, _) = record(1, 8, busy);
+    let entry = open(units(recording, name), quick()).unwrap();
+    let mut side = MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
+    if let Some(overlay) = overlay {
+        side.set_overlay(Box::new(overlay));
+    }
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let woken = Arc::clone(&wakes);
+    let side = SideThread::new(side, Arc::new(move || {
+        woken.fetch_add(1, Ordering::AcqRel);
+    })).unwrap();
+    side.anchor(0, false, 1.0, true);
+    (side, wakes)
+}
+
+fn settled(side: &mut SideThread, hour: replay_data::Hour, mode: &viewer_map_modes::map_mode::MapMode) {
+    side.wait_window(|side| side.applied() == Some(hour) && side.mode_on_screen() == Some(mode) && side.on_screen().is_some_and(|on| on.settled && on.drawn == Some(hour))).unwrap();
+}
+
+fn rests(side: &mut SideThread, wakes: &AtomicUsize, view: &View, why: &str) -> usize {
+    let (made, woken) = (side.with_side(|side| side.last_frame().made), wakes.load(Ordering::Acquire));
+    for _ in 0..3 {
+        side.ask(view.clone(), Head::Clock, None, None);
+        side.looked(8);
+    }
+    assert_eq!(side.with_side(|side| side.last_frame().made), made, "{why}: the side made no turn while nothing changed");
+    assert_eq!(wakes.load(Ordering::Acquire), woken, "{why}: and gave the window no frame");
+    woken
+}
+
+#[test]
+fn a_still_map_is_given_a_frame_for_each_change_and_none_while_nothing_changes() {
+    use viewer_map_modes::map_mode::{MapMode, Stock};
+    let (mut side, wakes) = still("still map", None);
+    let view = View::default();
+    side.ask(view.clone(), Head::Clock, None, None);
+    settled(&mut side, 0, &MapMode::default());
+    let woken = rests(&mut side, &wakes, &view, "the first picture");
+    assert!(woken > 0, "the first picture reached the window through the side's wakes");
+    let factions = View { map_mode: MapMode::Stock(Stock::Factions), ..View::default() };
+    side.ask(factions.clone(), Head::Clock, None, None);
+    settled(&mut side, 0, &factions.map_mode);
+    let changed = rests(&mut side, &wakes, &factions, "a paused mode change");
+    assert!(changed > woken, "a paused mode change woke the window");
+    side.anchor(5, false, 1.0, true);
+    settled(&mut side, 5, &factions.map_mode);
+    let sought = rests(&mut side, &wakes, &factions, "a paused seek");
+    assert!(sought > changed, "a paused seek woke the window with no new ask from it");
+}
+
+#[test]
+fn a_late_overlay_answer_and_a_refusal_each_give_one_frame_and_then_none() {
+    use viewer_map_modes::map_mode::MapMode;
+    let answering = Arc::new(Mutex::new(Answering::default()));
+    let (mut side, wakes) = still("late overlay", Some(Answers(Arc::clone(&answering))));
+    let view = View::default();
+    side.ask(view.clone(), Head::Clock, None, None);
+    settled(&mut side, 0, &MapMode::default());
+    let woken = rests(&mut side, &wakes, &view, "no overlay answer yet");
+    answering.lock().unwrap().answer = Some((0, false));
+    side.wait_window(|side| side.products().overlay_hour == Some(0)).unwrap();
+    assert_eq!(rests(&mut side, &wakes, &view, "the late answer, shown"), woken + 1, "the late answer gave the window one frame");
+    assert!(side.products().overlay_coming());
+    answering.lock().unwrap().answer = Some((0, true));
+    side.wait_window(|side| side.products().overlay_refused).unwrap();
+    assert_eq!(rests(&mut side, &wakes, &view, "the refusal, shown"), woken + 2, "the refusal gave the window one frame");
+    assert!(!side.products().overlay_coming(), "a refused overlay is not waited for: the layers make the picture whole");
 }

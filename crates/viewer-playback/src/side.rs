@@ -71,12 +71,15 @@ struct Turn {
     looks: u64,
     stop: bool,
     refused: Option<(u64, Hour, String)>,
+    answered: Option<Ready>,
+    rest: Option<(u64, Head, Hour)>,
 }
 
 struct Shared {
     held: Mutex<Turn>,
     ask: Mutex<Option<Ask>>,
     signal: Condvar,
+    wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Shared {
@@ -104,7 +107,7 @@ pub struct SideThread {
 }
 
 impl SideThread {
-    pub fn new(mut side: MapSide) -> io::Result<Self> {
+    pub fn new(mut side: MapSide, wake: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let (entry, sight, views) = (Arc::clone(side.entry()), side.sight().cloned(), side.views().handle());
         let doing = Arc::clone(side.doing());
         let composed = Arc::clone(side.composed());
@@ -112,9 +115,10 @@ impl SideThread {
         let products = Products { branch: side.branch(), ..Products::default() };
         let tables = sight.as_ref().and_then(|content| content.tables);
         let shared = Arc::new(Shared {
-            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None }),
+            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None, answered: None, rest: None }),
             ask: Mutex::new(None),
             signal: Condvar::new(),
+            wake,
         });
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let shared = Arc::clone(&shared);
@@ -350,6 +354,14 @@ impl SideThread {
         change(&mut lock(&self.shared.held).side)
     }
 
+    #[cfg(test)]
+    fn looked(&self, more: u64) {
+        let until = lock(&self.shared.held).looks + more;
+        while lock(&self.shared.held).looks < until {
+            std::thread::yield_now();
+        }
+    }
+
     pub fn views(&self) -> &views::Views {
         &self.views
     }
@@ -444,7 +456,7 @@ impl Window<'_> {
 
 impl Drop for Window<'_> {
     fn drop(&mut self) {
-        self.turn.framed = true;
+        (self.turn.framed, self.turn.rest) = (true, None);
         self.signal.notify_all();
     }
 }
@@ -459,6 +471,13 @@ fn advance(shared: &Shared) {
         if turn.stop {
             return;
         }
+        if let Some(rest) = turn.rest
+            && rests(shared, &mut turn, rest)
+        {
+            turn = wait(shared, turn);
+            continue;
+        }
+        turn.rest = None;
         let Some(ask) = shared.asked().filter(|_| turn.side.failure().is_none()) else {
             turn = wait(shared, turn);
             continue;
@@ -487,6 +506,19 @@ fn advance(shared: &Shared) {
             }
             at => {
                 let (now, interval) = (Instant::now(), rate::interval());
+                let still = match at {
+                    Head::Clock => turn.side.head(now),
+                    Head::Paced(hour) | Head::Stepped(hour) => hour,
+                };
+                let still = turn.side.head_from(still, interval).is_none().then_some(still);
+                if let Some(hour) = still
+                    && turn.answered.as_ref().is_some_and(|answered| answered.answers(hour, &ask))
+                    && !turn.side.unsettled(&ask.view, hour)
+                {
+                    turn.rest = Some((ask.serial, at, hour));
+                    turn = wait(shared, turn);
+                    continue;
+                }
                 let viewpoint = ask.view.perspective != turn.side.view().perspective;
                 let Some(late) = pace.late(now).or((viewpoint || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
                     turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
@@ -518,10 +550,22 @@ fn advance(shared: &Shared) {
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
                 }
+                turn.answered = still.map(|hour| Ready::of(hour, &ask));
                 shared.signal.notify_all();
+                if still.is_some() {
+                    drop(turn);
+                    (shared.wake)();
+                    turn = lock(&shared.held);
+                }
             }
         }
     }
+}
+
+fn rests(shared: &Shared, turn: &mut Turn, (serial, at, hour): (u64, Head, Hour)) -> bool {
+    lock(&shared.ask).as_ref().is_some_and(|ask| ask.serial == serial)
+        && (at != Head::Clock || turn.side.head(Instant::now()) == hour)
+        && !turn.side.answers_waiting()
 }
 
 fn wait<'a>(shared: &'a Shared, turn: MutexGuard<'a, Turn>) -> MutexGuard<'a, Turn> {
@@ -684,6 +728,7 @@ pub struct Products {
     pub overlay_hour: Option<Hour>,
     pub overlay_loading: Vec<String>,
     pub overlay_missed: Vec<replay_data::rows::TableId>,
+    pub overlay_refused: bool,
     pub vision: Result<Arc<viewer_foundation::perspective::Vision>, String>,
     pub combat_loading: Vec<String>,
     pub combat_whole: Option<Result<(), String>>,
@@ -733,6 +778,7 @@ impl Default for Products {
             overlay_hour: None,
             overlay_loading: Vec::new(),
             overlay_missed: Vec::new(),
+            overlay_refused: false,
             vision: Err("the playhead's map is not open".to_owned()),
             combat_loading: Vec::new(),
             combat_whole: None,
@@ -771,7 +817,7 @@ impl Products {
     }
 
     pub fn overlay_coming(&self) -> bool {
-        self.vision_refused.is_none() && self.failure.is_none()
+        self.vision_refused.is_none() && self.failure.is_none() && !self.overlay_refused
     }
 
     fn take(&mut self, side: &mut MapSide, wants: Wants) {
@@ -797,6 +843,7 @@ impl Products {
             if self.overlay_missed != overlay.missed() {
                 self.overlay_missed = overlay.missed().to_vec();
             }
+            self.overlay_refused = overlay.refused();
         }
         let side = &*side;
         self.labels = viewer_layers_political::labels::stamped(side);

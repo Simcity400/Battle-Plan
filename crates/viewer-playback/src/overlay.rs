@@ -6,7 +6,7 @@ use viewer_layers_political::left_to_layers::LeftToLayers;
 use replay_data::{BranchId, Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, atomic::{AtomicU64, Ordering}},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -266,6 +266,10 @@ fn joins_on(whole: bool, answered: bool, out: bool) -> bool {
     whole && !answered && !out
 }
 
+fn turns(pending: bool, laid: Option<(bool, bool)>, answered_anew: bool, missed: bool) -> bool {
+    !pending && (laid.is_some_and(|(made, later)| made || later) || answered_anew || missed)
+}
+
 fn stands(hour: Option<Hour>, missed: usize, head: Hour) -> bool {
     hour.is_some_and(|hour| hour >= head) && missed == 0
 }
@@ -428,6 +432,7 @@ struct Held {
 struct Shared {
     held: Mutex<Held>,
     signal: Condvar,
+    answers: AtomicU64,
 }
 
 pub struct Lend<'a> {
@@ -465,6 +470,9 @@ pub struct Overlay {
     hour: Option<Hour>,
     loading: Vec<String>,
     missed: Vec<TableId>,
+    answer: (bool, Vec<String>),
+    refused: bool,
+    seen: u64,
     maker: timeline::Maker,
 }
 
@@ -473,7 +481,7 @@ impl Overlay {
         Self {
             content,
             ask: None,
-            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new() }),
+            shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new(), answers: AtomicU64::new(0) }),
             worker: None,
             generation: 0,
             stamp: 0,
@@ -487,6 +495,9 @@ impl Overlay {
             hour: None,
             loading: Vec::new(),
             missed: Vec::new(),
+            answer: (false, Vec::new()),
+            refused: false,
+            seen: 0,
             maker: timeline::maker("overlay"),
         }
     }
@@ -634,8 +645,42 @@ impl Overlay {
         }
     }
 
+    pub fn wants_turn(&mut self) -> bool {
+        let answers = self.shared.answers.load(Ordering::Acquire);
+        if answers == self.seen && self.missed.is_empty() {
+            return false;
+        }
+        let held = lock(&self.shared.held);
+        let laid = held.laid_out.as_ref().filter(|laid| installs((laid.generation, laid.hour), self.generation, self.hour)).map(|laid| (laid.made.is_some(), Some(laid.hour) != self.hour));
+        let anew = (held.failed, &held.loading, &held.missed) != (self.answer.0, &self.answer.1, &self.missed);
+        let pending = held.answered < self.stamp;
+        let turns = turns(pending, laid, anew, !held.missed.is_empty());
+        drop(held);
+        if !turns && !pending {
+            self.seen = answers;
+        }
+        turns
+    }
+
+    pub fn refused(&self) -> bool {
+        self.refused
+    }
+
+    fn joined(&mut self, held: &Held) {
+        self.seen = self.shared.answers.load(Ordering::Acquire);
+        self.answer = (held.failed, held.loading.clone());
+        self.refused = held.failed && held.missed.is_empty();
+        if self.missed != held.missed {
+            self.missed.clone_from(&held.missed);
+        }
+    }
+
     pub fn join(&mut self, settling: Settling) -> bool {
-        let Some(Asked { stamp, hour, lay }) = self.asked else { return false };
+        let Some(Asked { stamp, hour, lay }) = self.asked else {
+            let shared = Arc::clone(&self.shared);
+            self.joined(&lock(&shared.held));
+            return false;
+        };
         let began = Instant::now();
         timeline::mark(self.maker, Mark::JoinBegan);
         let until = began + WHOLE;
@@ -657,9 +702,7 @@ impl Overlay {
         timeline::mark(self.maker, Mark::Waited);
         let failed = fails(settling.strict(), held.answered, stamp, held.failed);
         self.loading.extend(held.loading.iter().cloned());
-        if self.missed != held.missed {
-            self.missed.clone_from(&held.missed);
-        }
+        self.joined(&held);
         drop(held);
         shared.signal.notify_all();
         timeline::mark(self.maker, Mark::Joined);
@@ -915,6 +958,7 @@ impl Maker {
         let (made, missed) = replay_frame::frame::discovering(|| {
             at.hour_tables_at_head(&want.perspective, Arc::clone(&want.vision), raids, engaged, tabled.left_out, want.left, tabled.labels, tabled.need, &mut spans)
         });
+        lock(&self.shared.held).missed.clone_from(&missed);
         if !missed.is_empty() {
             self.learn(&missed);
             if want.whole {
@@ -1077,6 +1121,7 @@ impl Maker {
         let mut held = lock(&self.shared.held);
         held.loading = loading;
         (held.answered, held.failed) = (want.stamp, failed);
+        self.shared.answers.fetch_add(1, Ordering::AcqRel);
         drop(held);
         self.shared.signal.notify_all();
     }
@@ -1139,6 +1184,14 @@ impl Overlaying<Products> for Overlay {
 
     fn missed(&self) -> &[TableId] {
         Overlay::missed(self)
+    }
+
+    fn wants_turn(&mut self) -> bool {
+        Overlay::wants_turn(self)
+    }
+
+    fn refused(&self) -> bool {
+        Overlay::refused(self)
     }
 }
 
@@ -1294,6 +1347,17 @@ mod tests {
             assert!(stands(hour, 0, head), "hour {head}: the frame is given its picture");
             assert_eq!(untaken.take(), laid, "hour {head}");
         }
+    }
+
+    #[test]
+    fn the_side_turns_for_an_answer_it_has_not_joined_and_never_for_one_it_has() {
+        assert!(!turns(true, Some((true, true)), true, true), "its latest ask is unanswered: the side waits for the answer");
+        assert!(turns(false, Some((true, false)), false, false), "a layout to hand over");
+        assert!(turns(false, Some((false, true)), false, false), "the same layout standing at a later hour");
+        assert!(!turns(false, Some((false, false)), false, false), "the same layout at the same hour: nothing new");
+        assert!(turns(false, None, true, false), "an answer unlike the one joined, a refusal among them, is shown once");
+        assert!(!turns(false, None, false, false), "the answer already joined, a refusal among them, is not shown again");
+        assert!(turns(false, None, false, true), "tables still missed are asked for again until the rows hold them");
     }
 
     #[test]

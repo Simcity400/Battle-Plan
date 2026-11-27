@@ -651,6 +651,8 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn hour(&self) -> Option<Hour>;
     fn loading(&self) -> &[String];
     fn missed(&self) -> &[TableId];
+    fn wants_turn(&mut self) -> bool;
+    fn refused(&self) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -773,6 +775,8 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     epoch: u64,
     cancel: Arc<AtomicBool>,
     superseded: bool,
+    demand: u64,
+    whole: bool,
     fresh: Vec<bool>,
     reset_shown: bool,
     judged_shown: Vec<Option<Hour>>,
@@ -926,6 +930,8 @@ impl<P: PlaybackProducts> MapSide<P> {
             epoch: 0,
             cancel: Arc::default(),
             superseded: false,
+            demand: 0,
+            whole: false,
             fresh: Vec::new(),
             reset_shown: false,
             judged_shown: Vec::new(),
@@ -1245,6 +1251,7 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     fn frame_step(&mut self, head: Hour, settling: crate::layers::Settling, lay: bool, wait_compose: bool) -> io::Result<Frame> {
         self.frame += 1;
+        self.demand = self.views.demand();
         let stepping = Instant::now();
         let doing = Arc::clone(&self.doing);
         let mut watch = Watch::new(&doing);
@@ -1637,6 +1644,7 @@ impl<P: PlaybackProducts> MapSide<P> {
                 None => whole = false,
             }
         }
+        self.whole = whole;
         if whole {
             self.drawn = if drawn == 0 { self.applied } else { oldest };
             self.oldest = match (self.drawn, every) {
@@ -2232,6 +2240,22 @@ impl<P: PlaybackProducts> MapSide<P> {
 
     pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.mode.as_ref()
+    }
+
+    pub fn unsettled(&mut self, view: &View, head: Hour) -> bool {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.settles_held.load(Ordering::Acquire) {
+            return true;
+        }
+        self.view_shown != *view
+            || self.mode.as_ref() != Some(&view.map_mode)
+            || !self.whole
+            || !self.on_screen().is_some_and(|on| on.settled && on.drawn == Some(head))
+            || self.answers_waiting()
+    }
+
+    pub fn answers_waiting(&mut self) -> bool {
+        self.views.demand() != self.demand || self.overlay.as_deref_mut().is_some_and(Overlaying::wants_turn) || self.combat.wants_turn()
     }
 }
 

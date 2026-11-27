@@ -2613,11 +2613,11 @@ impl Viewer {
 
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
-            side.on_screen().is_some_and(|on| {
+            side.mode_on_screen() == Some(&self.map_mode) && side.on_screen().is_some_and(|on| {
                 if !side.products().overlay_coming() {
                     return layers_show(&on, target.hour, playing);
                 }
-                whole_picture(&on, self.overlay_hour(), target.hour, playing)
+                self.overlay_view.as_ref().is_none_or(|view| view.matches_mode(&self.map_mode)) && whole_picture(&on, self.overlay_hour(), target.hour, playing)
             })
         })
     }
@@ -4286,12 +4286,80 @@ impl Viewer {
     ) -> Result<(), String> {
         let tables = document.content.tables;
         let result = engine_executable::executable_tables::scope(tables, || {
-            self.draw_map(ui, state, document, view_id)
+            let drawn = self.draw_map(ui, state, document, view_id);
+            self.ask_live(document);
+            drawn
         });
         if !self.drew_frame {
             self.silence_unshown();
         }
         result
+    }
+
+    fn side_head(&self) -> crate::playhead_host::Head {
+        let drawing = self.last_view.is_some() && self.picture_ready();
+        head_wanted(self.capture.as_ref().map(|capture| capture.paced), self.playhead.map(|head| head.hour), self.options.window_dump, drawing)
+    }
+
+    fn ask_side(&mut self, document: &Document, at: crate::playhead_host::Head) {
+        let drawing = self.last_view.is_some() && self.picture_ready();
+        let view = viewer_layer_core::layers::View {
+            map_mode: self.map_mode.clone(),
+            perspective: self.perspective.clone(),
+            camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
+            camera: self.last_view.as_ref().map(|view| view.camera.placement()),
+            target: self.zoom.target(),
+            viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
+            fog: self.perspective.fog,
+            graphics: self.graphics,
+            sound: self.audio_focus,
+            audio: self.volumes,
+            overlay: self.overlay_layers.clone(),
+            counters: self.counter_filter.clone(),
+            player_counters: self.player_counters,
+            selected: self.diplomatic_selected,
+        };
+        let shown_mode = match at {
+            crate::playhead_host::Head::Stepped(_) => self.map_mode.clone(),
+            _ => self.shown_mode().clone(),
+        };
+        let overlay_view = {
+            let mut view = self.counter_view.clone();
+            view.set_mode(&shown_mode);
+            view
+        };
+        let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
+            camera: last.camera,
+            target: self.zoom.target().map(|target| target.height),
+            pixels: last.viewport,
+            ui_scale: last.ui_scale,
+            view: overlay_view.clone(),
+            rosters: document.playback.air_rosters(),
+        });
+        self.combat.set_playing(self.playing);
+        self.combat.set_settled(self.settles_windows());
+        let content_at = Arc::as_ptr(&document.content) as usize;
+        if self.combat_inputs != Some(content_at) {
+            self.combat_inputs = Some(content_at);
+            let raids = Arc::clone(&document.icons.raids);
+            self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
+                viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+            }));
+            let content = Arc::clone(&document.content);
+            self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+        }
+        let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
+        self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
+        if let Some(side) = self.playhead_map.as_ref() {
+            side.ask(view, at, overlay_ask, combat_ask);
+        }
+    }
+
+    fn ask_live(&mut self, document: &Document) {
+        let at = self.side_head();
+        if self.playhead_map.is_some() && !matches!(at, crate::playhead_host::Head::Stepped(_)) {
+            self.ask_side(document, at);
+        }
     }
 
     fn draw_map(
@@ -4362,7 +4430,9 @@ impl Viewer {
         }
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
-            match made.and_then(viewer_playback::side::SideThread::new) {
+            let ctx = ui.ctx().clone();
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()));
+            match made.and_then(|side| viewer_playback::side::SideThread::new(side, wake)) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
@@ -4385,60 +4455,10 @@ impl Viewer {
         }
         self.hover_rows.playing = self.playing && !self.saves_a_frame();
         if self.playhead_map.is_some() {
-            let drawing = self.last_view.is_some() && self.picture_ready();
-            let at = head_wanted(
-                self.capture.as_ref().map(|capture| capture.paced),
-                self.playhead.map(|head| head.hour),
-                self.options.window_dump,
-                drawing,
-            );
-            let view = viewer_layer_core::layers::View {
-                map_mode: self.map_mode.clone(),
-                perspective: self.perspective.clone(),
-                camera_height: self.last_view.as_ref().map_or(0.0, |view| view.camera.height),
-                camera: self.last_view.as_ref().map(|view| view.camera.placement()),
-                target: self.zoom.target(),
-                viewport: self.last_view.as_ref().map_or([0, 0], |view| view.viewport),
-                fog: self.perspective.fog,
-                graphics: self.graphics,
-                sound: self.audio_focus,
-                audio: self.volumes,
-                overlay: self.overlay_layers.clone(),
-                counters: self.counter_filter.clone(),
-                player_counters: self.player_counters,
-                selected: self.diplomatic_selected,
-            };
-            let shown_mode = match at {
-                crate::playhead_host::Head::Stepped(_) => self.map_mode.clone(),
-                _ => self.shown_mode().clone(),
-            };
-            let overlay_view = {
-                let mut view = self.counter_view.clone();
-                view.set_mode(&shown_mode);
-                view
-            };
-            let overlay_ask = self.last_view.as_ref().filter(|_| drawing).map(|last| viewer_playback::overlay::Ask {
-                camera: last.camera,
-                target: self.zoom.target().map(|target| target.height),
-                pixels: last.viewport,
-                ui_scale: last.ui_scale,
-                view: overlay_view.clone(),
-                rosters: document.playback.air_rosters(),
-            });
-            self.combat.set_playing(self.playing);
-            self.combat.set_settled(self.settles_windows());
-            let content_at = Arc::as_ptr(&document.content) as usize;
-            if self.combat_inputs != Some(content_at) {
-                self.combat_inputs = Some(content_at);
-                let raids = Arc::clone(&document.icons.raids);
-                self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
-                    viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
-                }));
-                let content = Arc::clone(&document.content);
-                self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+            let at = self.side_head();
+            if matches!(at, crate::playhead_host::Head::Stepped(_)) {
+                self.ask_side(document, at);
             }
-            let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
-            self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();
             let through = shown_head.map(|head| head.hour).filter(|_| !saved && self.playing);
@@ -4448,7 +4468,6 @@ impl Viewer {
             {
                 let presentation = Arc::clone(&self.counter_view.presentation);
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
-                side.ask(view, at, overlay_ask, combat_ask);
                 let window = match at {
                     crate::playhead_host::Head::Stepped(hour) => side.stepped_window(hour),
                     _ => side.window(),
@@ -4578,11 +4597,6 @@ impl Viewer {
         let map_error = self.map_error_of(document);
         self.hour_error(map_error, ui.ctx());
         self.follow_continuity(&document.playback.replay().gaps);
-        if self.playhead.is_some_and(|head| {
-            self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn != Some(head.hour) || !on.settled))
-        }) {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
-        }
         if let Some(error) = self.map_error.clone() {
             self.rendered = None;
             ui.centered_and_justified(|ui| {
@@ -5560,7 +5574,6 @@ impl Viewer {
                 if let Some(texture) = self.scene_target.kept(self.scene.as_ref().map(|scene| scene.generation())) {
                     ui.painter().image(texture, rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
                 }
-                ui.ctx().request_repaint();
                 return Ok(());
             }
             if self.drop_overlay_drawn()

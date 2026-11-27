@@ -19,7 +19,7 @@ fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
     });
     let side = MapSide::with_products(open(units, hourly_steps()).unwrap(), vec![Box::new(Strikes::new(Arc::new(|_| None)))], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, std::sync::Arc::new(|| {})).unwrap();
     side.driven(|_| ());
     viewer.playhead_map = Some(side);
     let [lines, _] = viewer.hour_lines().expect("the open map's lines, though it shows no hour");
@@ -51,7 +51,7 @@ fn a_refused_vision_is_named_on_the_map_without_diagnostics() {
     let side = MapSide::with_products(open(units, hourly_steps()).unwrap(), vec![Box::new(vision)], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     assert!(!viewer.diagnostics, "the diagnostics are off");
-    let mut side = viewer_playback::side::SideThread::new(side).unwrap();
+    let mut side = viewer_playback::side::SideThread::new(side, std::sync::Arc::new(|| {})).unwrap();
     side.anchor(2, false, 0.0, true);
     let deadline = Instant::now() + Duration::from_secs(120);
     while side.products().vision_refused.is_none() || side.on_screen().is_none() {
