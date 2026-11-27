@@ -79,7 +79,7 @@ pub struct PushCounters {
 enum Stream {
     Notice,
     Steps { route: u32, seek: u32, due: i32 },
-    Panels { route: u32, seek: u32, due: i32 },
+    Panels { route: u32, seek: u32, due: i32, shown: i32 },
 }
 
 impl Stream {
@@ -95,14 +95,16 @@ impl Stream {
             }
             Self::Steps { route: word(4) >> 1, seek: word(16), due }
         } else if kind == PANEL && let Some((route, seek)) = panel::dated::stamp(bytes) {
-            let mut due = i32::MIN;
+            let (mut due, mut shown) = (i32::MIN, None::<i32>);
             let mut at = 24;
             while let Some(header) = bytes.get(at..).and_then(|tail| tail.get(..16)) {
-                due = due.max(i32::from_le_bytes(header[4..8].try_into().expect("panel hour")));
+                let hour = i32::from_le_bytes(header[4..8].try_into().expect("panel hour"));
+                due = due.max(hour);
+                if header[8] != panel::dated::WAITING { shown = Some(shown.map_or(hour, |shown| shown.max(hour))); }
                 let size = u32::from_le_bytes(header[12..16].try_into().expect("panel length")) as usize;
                 at += (16 + size).next_multiple_of(8);
             }
-            Self::Panels { route, seek, due }
+            Self::Panels { route, seek, due, shown: shown.unwrap_or(due) }
         } else {
             Self::Notice
         }
@@ -117,8 +119,23 @@ impl Stream {
     }
 }
 
+fn panels_of(kind: u8, bytes: &[u8]) -> Option<Vec<u32>> {
+    if kind != PANEL || panel::dated::stamp(bytes).is_none() { return None; }
+    let mut ids = Vec::new();
+    let mut at = 24;
+    while let Some(header) = bytes.get(at..).and_then(|tail| tail.get(..16)) {
+        if header[8] == panel::dated::COMPLETED { return None; }
+        let id = u32::from_le_bytes(header[..4].try_into().expect("panel id"));
+        if !ids.contains(&id) { ids.push(id); }
+        let size = u32::from_le_bytes(header[12..16].try_into().expect("panel length")) as usize;
+        at += (16 + size).next_multiple_of(8);
+    }
+    Some(ids)
+}
+
 struct Queued {
     stream: Stream,
+    panels: Option<Vec<u32>>,
     kind: u8,
     bytes: Vec<u8>,
     sequence: u32,
@@ -165,8 +182,15 @@ impl State {
 
     fn reached(&self, stream: Stream) -> bool {
         match stream {
-            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
+            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due, .. } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
             Stream::Notice => false,
+        }
+    }
+
+    fn shown(&self, stream: Stream) -> bool {
+        match stream {
+            Stream::Panels { route, seek, shown, .. } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && shown <= head),
+            stream => self.reached(stream),
         }
     }
 
@@ -179,14 +203,22 @@ impl State {
     }
 
     fn sendable(&self) -> Option<usize> {
-        let mut blocked: Vec<u32> = Vec::new();
+        let (mut routes, mut panels): (Vec<u32>, Vec<(u32, u32)>) = (Vec::new(), Vec::new());
         for (at, queued) in self.queue.iter().enumerate() {
             let route = queued.stream.version().map(|(route, _)| route);
-            if route.is_some_and(|route| blocked.contains(&route)) { continue; }
-            if queued.stream == Stream::Notice || self.in_flight() == 0 || self.in_flight() + answer::charge(&queued.bytes) <= self.credit || (self.reached(queued.stream) && (!self.charge.full() || self.pressed.is_none_or(|at| self.released > at))) {
+            let waits = route.is_some_and(|route| routes.contains(&route) || match &queued.panels {
+                Some(ids) => ids.iter().any(|&id| panels.contains(&(route, id))),
+                None => panels.iter().any(|&(held, _)| held == route),
+            });
+            if !waits && (queued.stream == Stream::Notice || self.in_flight() == 0 || self.in_flight() + answer::charge(&queued.bytes) <= self.credit || (self.shown(queued.stream) && (!self.charge.full() || self.pressed.is_none_or(|at| self.released > at)))) {
                 return Some(at);
             }
-            if let Some(route) = route { blocked.push(route); }
+            if let Some(route) = route {
+                match &queued.panels {
+                    Some(ids) => panels.extend(ids.iter().map(|&id| (route, id))),
+                    None => routes.push(route),
+                }
+            }
         }
         None
     }
@@ -233,6 +265,7 @@ impl State {
                 self.bytes -= answer::charge(&older.bytes) + answer::charge(&newer.bytes);
                 self.bytes += answer::charge(&bytes);
                 newer.stream = Stream::of(newer.kind, &bytes);
+                newer.panels = panels_of(newer.kind, &bytes);
                 newer.bytes = bytes;
                 newer.offered = older.offered;
                 self.counters.superseded += u64::from(superseded);
@@ -312,7 +345,8 @@ impl Push {
         }
         state.bytes += answer::charge(&bytes);
         let session = state.session;
-        state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
+        let panels = panels_of(kind, &bytes);
+        state.queue.push_back(Queued { stream, panels, kind, bytes, sequence, offered: Instant::now(), kept: false, session });
         state.compact(stream);
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);

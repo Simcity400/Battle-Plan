@@ -2140,6 +2140,43 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     push.offer(routed(1, 11, 4, 0));
     push.head(1, 0, 11);
     assert!(push.try_take().is_none(), "route 1's later update never overtakes route 1's waiting one");
+
+    use crate::{panel::dated, push::PANEL};
+    let record = |id, hour, kind, body: &[u8]| dated::encoded(0, 3, 0, id, hour, kind, body);
+    let sent = |bytes: &[u8]| dated::records(bytes).unwrap().into_iter().map(|r| (r.id, r.hour, r.kind)).collect::<Vec<_>>();
+    let shown = record(39, 5, dated::DATA, &[1; 1000]);
+    let one = crate::answer::charge(&shown);
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    let session = push.session();
+    push.head(3, 0, 10);
+    push.offer_kind(PANEL, shown);
+    assert!(push.try_take().is_some(), "a picture the page keeps");
+    push.offer_kind(PANEL, record(40, 60, dated::DATA, &[2; 1000]));
+    assert!(push.try_take().is_none(), "panel 40's lead record waits for credit");
+    push.offer_kind(PANEL, record(41, 10, dated::DATA, &[3; 8]));
+    let (_, bytes, ..) = push.try_take().expect("panel 41's reached record goes past panel 40's lead record on the same route");
+    assert_eq!(sent(&bytes), [(41, 10, dated::DATA)]);
+    push.offer_kind(PANEL, record(40, 10, dated::DATA, &[4; 8]));
+    assert!(push.try_take().is_none(), "panel 40's later record never overtakes panel 40's waiting one");
+    push.offer_kind(PANEL, dated::ProductBatch::new((0, 3, 0)).finish(Some(10)));
+    assert!(push.try_take().is_none(), "a route completion never overtakes a waiting record of any panel on its route");
+    push.credit(session, one as u64 * 2);
+    let order: Vec<_> = std::iter::from_fn(|| push.try_take()).flat_map(|(_, bytes, ..)| sent(&bytes)).collect();
+    assert_eq!(order, [(40, 60, dated::DATA), (40, 10, dated::DATA), (0, 10, dated::COMPLETED)], "released, the line leaves in its own order");
+    push.credit(session, u64::MAX);
+    assert_eq!(push.in_flight(), 0, "every charge sent is released once");
+
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
+    push.head(3, 0, 10);
+    push.offer_kind(PANEL, record(39, 5, dated::DATA, &[1; 1000]));
+    assert!(push.try_take().is_some());
+    push.offer_kind(PANEL, record(38, 10, dated::DATA, &[2; 1000]));
+    assert!(push.try_take().is_some(), "a reached record leaves past credit while the budget has room");
+    let seed = dated::at_one_hour((0, 3, 0), 44, 10, dated::DATA, &[7; 8]);
+    assert!(push.in_flight() + crate::answer::charge(&seed) > one * 3 / 2, "the credit is spent");
+    push.offer_kind(PANEL, seed);
+    let (_, bytes, ..) = push.try_take().expect("a seed for the hour on screen leaves although its open end is the next hour");
+    assert_eq!(sent(&bytes), [(44, 10, dated::DATA), (44, 11, dated::WAITING)]);
 }
 
 #[test]
