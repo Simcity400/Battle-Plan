@@ -1,4 +1,4 @@
-use super::spending::{ConstructionSpendingParams, Facts, facts, gap_assignment, place_buildings};
+use super::spending::{ConstructionSpendingParams, Facts, facts, place_buildings};
 use super::{COST_SCALE, SpendingGap};
 use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownPart, Dated, Exact, History, HistoryBuilder, Node, counted};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
@@ -140,15 +140,15 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     let mut early_gaps: Vec<(i32, SpendingGap)> = Vec::new();
     for line in &facts.lines {
         let (railway, building, state, to_state) = line.leaf;
-        for &(hour, until, gap) in &line.gaps {
-            match gap_assignment(line.new_from, line.repair_from, hour, until) {
-                Some((repair, at)) => {
-                    if hour < at {
-                        early_gaps.push((hour, gap));
-                    }
-                    events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
+        for &(hour, _, gap, kind) in &line.gaps {
+            if !kind.new && !kind.repair {
+                early_gaps.push((hour, gap));
+                continue;
+            }
+            for (repair, active) in [(false, kind.new), (true, kind.repair)] {
+                if active {
+                    events.push((hour, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
                 }
-                None => early_gaps.push((hour, gap)),
             }
         }
     }
