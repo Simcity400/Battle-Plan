@@ -1,7 +1,7 @@
 use crate::products::focus::{self, Fold, FocusHourParams, FocusMissing};
 use crate::products::focus_artwork::{self, DatedFocusArtwork, FocusArtworkParams};
-use dashboard_base::Source;
-use dashboard_base::products::{LoadContext, Product, check_reply_budget, validate_country};
+use dashboard_base::{Source, catalogue};
+use dashboard_base::products::{LoadContext, Product, at_hour::{self, DatedStep}, check_reply_budget, validate_country};
 use dashboard_core::dto::FocusDatabase;
 use serde::Serialize;
 use std::{
@@ -188,12 +188,23 @@ pub(crate) fn progress_figures(progress: Option<(i64, Option<i64>)>, total_days:
 }
 
 type Shown = BTreeMap<String, DatedFocusArtwork>;
-type Resolved = Arc<(Shown, Vec<String>, i32)>;
-type ArtKey = (FocusDatabase, i32, Vec<String>);
+type Resolved = (Shown, Vec<String>, i32, bool);
 type Gallery = Mutex<HashMap<(i32, String), (FocusCardArt, Arc<[String]>)>>;
 
-fn gallery_art(source: &Source, context: &LoadContext, params: &FocusHourParams, branch: u64, shape: &CardShape, cancelled: &AtomicBool) -> io::Result<(HashMap<(i32, String), FocusCardArt>, Vec<String>)> {
-    let gallery = dashboard_base::products::breakdown::held(source, context, (branch, params.country.clone()), || Ok::<Gallery, io::Error>(Mutex::new(HashMap::new())))?;
+#[derive(Default)]
+struct CardArtwork {
+    gallery: Gallery,
+    current: Mutex<Option<CurrentArtwork>>,
+}
+
+struct CurrentArtwork {
+    database: FocusDatabase,
+    token: String,
+    hours: std::ops::RangeInclusive<i32>,
+    value: Arc<catalogue::Drawn<Resolved>>,
+}
+
+fn gallery_art(source: &Source, context: &LoadContext, params: &FocusHourParams, gallery: &Gallery, shape: &CardShape, cancelled: &AtomicBool) -> io::Result<(HashMap<(i32, String), FocusCardArt>, Vec<String>)> {
     let wanted = observed_hours(shape);
     let missing: Vec<(i32, Vec<String>)> = {
         let held = gallery.lock().unwrap_or_else(PoisonError::into_inner);
@@ -206,7 +217,8 @@ fn gallery_art(source: &Source, context: &LoadContext, params: &FocusHourParams,
             .collect()
     };
     for (hour, tokens) in missing {
-        let (shown, warnings, _) = shown(source, context, params, hour, FocusDatabase::National, tokens.clone(), cancelled)?;
+        let asked = artwork_params(params, hour, FocusDatabase::National, tokens.clone());
+        let (shown, warnings, ..) = shown(source, context, &asked, cancelled, None)?;
         let warnings: Arc<[String]> = warnings.into();
         let mut held = gallery.lock().unwrap_or_else(PoisonError::into_inner);
         for token in tokens {
@@ -228,9 +240,21 @@ fn gallery_art(source: &Source, context: &LoadContext, params: &FocusHourParams,
     Ok((found, warnings))
 }
 
-fn resolved_at(source: &Source, context: &LoadContext, params: &FocusHourParams, branch: u64, key: ArtKey, cancelled: &AtomicBool) -> io::Result<Resolved> {
-    let (database, at, tokens) = key.clone();
-    dashboard_base::products::breakdown::held(source, context, (branch, params.country.clone(), key), || shown(source, context, params, at, database, tokens, cancelled))
+fn current_art(source: &Source, context: &LoadContext, asked: &FocusArtworkParams, cache: &CardArtwork, cancelled: &AtomicBool, step: Option<DatedStep<'_>>) -> io::Result<Arc<catalogue::Drawn<Resolved>>> {
+    let token = &asked.tokens[0];
+    if let Some(held) = cache.current.lock().unwrap_or_else(PoisonError::into_inner).as_ref().filter(|held| {
+        held.database == asked.database && &held.token == token && held.hours.contains(&asked.hour)
+    }) {
+        return Ok(Arc::clone(&held.value));
+    }
+    let value = Arc::new(catalogue::Drawn::try_new(|| shown(source, context, asked, cancelled, step))?);
+    let (_, _, through, reusable) = value.get();
+    if *reusable {
+        *cache.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(CurrentArtwork {
+            database: asked.database, token: token.clone(), hours: asked.hour..=*through, value: Arc::clone(&value),
+        });
+    }
+    Ok(value)
 }
 
 pub(crate) fn observed_hours(shape: &CardShape) -> BTreeMap<i32, Vec<String>> {
@@ -245,24 +269,24 @@ pub(crate) fn observed_hours(shape: &CardShape) -> BTreeMap<i32, Vec<String>> {
     by_hour
 }
 
-fn shown(source: &Source, context: &LoadContext, params: &FocusHourParams, at: i32, database: FocusDatabase, tokens: Vec<String>, cancelled: &AtomicBool) -> io::Result<(Shown, Vec<String>, i32)> {
-    if tokens.is_empty() {
-        return Ok((Shown::new(), Vec::new(), at));
-    }
-    let asked = FocusArtworkParams {
+fn artwork_params(params: &FocusHourParams, hour: i32, database: FocusDatabase, tokens: Vec<String>) -> FocusArtworkParams {
+    FocusArtworkParams {
         branch_id: params.branch_id.clone(),
-        hour: at,
+        hour,
         country: params.country.clone(),
         database,
         tokens,
         text_only: None,
         include_descriptions: Some(false),
         icons_only: None,
-    };
-    match focus_artwork::load(source, &asked, context, cancelled) {
-        Ok(reply) => Ok((reply.items.into_iter().map(|item| (item.artwork.token.clone(), item)).collect(), reply.warnings, reply.valid_through)),
-        Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
-        Err(error) => Ok((Shown::new(), vec![format!("Focus names and icons refused: {error}")], at)),
+    }
+}
+
+fn shown(source: &Source, context: &LoadContext, asked: &FocusArtworkParams, cancelled: &AtomicBool, step: Option<DatedStep<'_>>) -> io::Result<Resolved> {
+    match focus_artwork::load(source, asked, context, cancelled, step) {
+        Ok(reply) => Ok((reply.items.into_iter().map(|item| (item.artwork.token.clone(), item)).collect(), reply.warnings, reply.valid_through, reply.reusable)),
+        Err(error) if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => Err(error),
+        Err(error) => Ok((Shown::new(), vec![format!("Focus names and icons refused: {error}")], asked.hour, false)),
     }
 }
 
@@ -300,10 +324,24 @@ impl Product for FocusCard {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
+        Self::read(source, params, context, cancelled, None)
+    }
+}
+
+pub(crate) fn panel(source: &Arc<Source>, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    at_hour::dated_product::<FocusCard>(source, load, asked, at_hour::at_hour, |_, reply| reply.valid_through, |_, _| {},
+        |source, params, context, cancelled, step| FocusCard::read(source, params, context, cancelled, Some(step)))
+}
+
+impl FocusCard {
+    fn read(source: &Source, params: &FocusHourParams, context: &LoadContext, cancelled: &AtomicBool, step: Option<DatedStep<'_>>) -> io::Result<FocusCardReply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let fold = focus::fold(source, branch, &params.country, cancelled)?;
         let shape = card_at(&fold, params.hour);
-        let (completed_art, mut warnings) = gallery_art(source, context, params, branch, &shape, cancelled)?;
+        let binding = context.content.as_ref().map(catalogue::binding);
+        let mode = content_reader_layers::content::artwork_mode();
+        let cache = dashboard_base::products::breakdown::held(source, context, (branch, params.country.clone(), binding, mode), || Ok(CardArtwork::default()))?;
+        let (completed_art, mut warnings) = gallery_art(source, context, params, &cache.gallery, &shape, cancelled)?;
         let completed = shape
             .completed
             .iter()
@@ -316,14 +354,16 @@ impl Product for FocusCard {
         let current = match shape.current.as_ref() {
             None => None,
             Some((token, is_continuous, paused)) => {
-            let database = if *is_continuous { FocusDatabase::Continuous } else { FocusDatabase::National };
-            let held = resolved_at(source, context, params, branch, (database, params.hour, vec![token.clone()]), cancelled)?;
-            warnings.extend(held.1.iter().cloned());
-            valid_through = valid_through.min(held.2);
-            let total_days = held.0.get(token).and_then(|item| item.artwork.base_duration_days);
-            let (elapsed_days, permyriad, days_left, progress_missing) =
-                if *is_continuous { (None, None, None, None) } else { progress_figures(shape.progress, total_days, *paused) };
-            Some(FocusCardCurrent { art: art_of(token, &held.0, UNNAMED), continuous: *is_continuous, paused: *paused, total_days, elapsed_days, permyriad, days_left, progress_missing })
+                let database = if *is_continuous { FocusDatabase::Continuous } else { FocusDatabase::National };
+                let asked = artwork_params(params, params.hour, database, vec![token.clone()]);
+                let held = current_art(source, context, &asked, &cache, cancelled, step)?;
+                let (shown, art_warnings, through, _) = held.get();
+                warnings.extend(art_warnings.iter().cloned());
+                valid_through = valid_through.min(*through);
+                let total_days = shown.get(token).and_then(|item| item.artwork.base_duration_days);
+                let (elapsed_days, permyriad, days_left, progress_missing) =
+                    if *is_continuous { (None, None, None, None) } else { progress_figures(shape.progress, total_days, *paused) };
+                Some(FocusCardCurrent { art: art_of(token, shown, UNNAMED), continuous: *is_continuous, paused: *paused, total_days, elapsed_days, permyriad, days_left, progress_missing })
             }
         };
         warnings.sort_unstable();
