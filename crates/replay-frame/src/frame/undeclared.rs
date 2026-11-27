@@ -197,7 +197,7 @@ pub fn column_read(at: usize, column: usize) {
 
 #[cold]
 pub(super) fn outside(table: TableId, held: Projection) -> Option<&'static TableView> {
-    let asked = READING.with(Cell::get)? & table.full_mask();
+    let asked = READING.with(Cell::get)?;
     let missing = match held {
         Projection::Status => asked,
         Projection::Fields(held) => asked & !held,
