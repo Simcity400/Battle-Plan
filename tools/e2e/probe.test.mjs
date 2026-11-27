@@ -173,3 +173,56 @@ test('probe ignores aria-busy on hidden screen-reader mirrors and the library ro
   assert.ok(flagged.ms > 0, 'visible loading widget and campaign row spinner must still record placeholder time');
   assert.deepEqual([...flagged.where], ['Fuel', 'spinner']);
 });
+
+test('probe countryRows and revealCountry handle both named and unnamed country options', async () => {
+  const namedName = { tagName: 'SPAN', textContent: 'Germany', getAttribute: () => null, matches: s => s === '[data-overflow-label]' || s === 'span', querySelector: () => null, querySelectorAll: () => [], __children: [] };
+  const namedTag = { tagName: 'SMALL', textContent: 'GER', previousElementSibling: namedName, getAttribute: () => null, matches: s => s === 'small', querySelector: () => null, querySelectorAll: () => [], __children: [] };
+  const namedOpt = makeEl({ tag: 'div', attrs: { role: 'option', 'aria-posinset': '1', 'aria-setsize': '3', 'aria-selected': 'true' } });
+  namedOpt.__children = [namedName, namedTag];
+
+  const makeUnnamed = (pos, tag) => {
+    const note = { tagName: 'SMALL', nodeType: 1, textContent: 'name not recorded', matches: s => s === 'small', querySelector: () => null, querySelectorAll: () => [], __children: [] };
+    const span = {
+      tagName: 'SPAN', nodeType: 1, className: 'country-picker-unnamed',
+      childNodes: [{ nodeType: 3, textContent: tag }, note],
+      textContent: `${tag}name not recorded`,
+      matches: s => s === '.country-picker-unnamed' || s === 'span',
+      querySelector: s => (s === 'small' ? note : null),
+      querySelectorAll: s => (s === 'small' ? [note] : []),
+      __children: [note],
+    };
+    const opt = makeEl({ tag: 'div', attrs: { role: 'option', 'aria-posinset': String(pos), 'aria-setsize': '3', 'aria-selected': 'false' } });
+    opt.__children = [span];
+    opt.scrollIntoView = () => {};
+    return opt;
+  };
+  namedOpt.scrollIntoView = () => {};
+  const unnamedA = makeUnnamed(2, 'AAA');
+  const unnamedB = makeUnnamed(3, 'BBB');
+  const list = {
+    scrollTop: 0, clientHeight: 100, scrollHeight: 100,
+    querySelector: s => (s === '[role=option]' ? namedOpt : null),
+    querySelectorAll: s => (s === '[role=option]' ? [namedOpt, unnamedA, unnamedB] : []),
+  };
+  const host = loadProbe({ querySelector: s => (s.includes('country-picker-list') ? list : null) });
+  const pump = async (promise, limit = 10) => {
+    let settled = false, value;
+    promise.then(v => { settled = true; value = v; });
+    for (let i = 0; i < limit && !settled; i++) {
+      await Promise.resolve();
+      host.stepFrame(16);
+      await Promise.resolve();
+    }
+    assert.equal(settled, true, 'probe async helper must settle');
+    return value;
+  };
+  const rows = await pump(host.probe.countryRows());
+  assert.equal(rows.size, 3);
+  assert.deepEqual([...rows.rows].map(r => ({ name: r.name, tag: r.tag, selected: r.selected })), [
+    { name: 'Germany', tag: 'GER', selected: true },
+    { name: '', tag: 'AAA', selected: false },
+    { name: '', tag: 'BBB', selected: false },
+  ]);
+
+  assert.equal(await pump(host.probe.revealCountry('BBB')), true);
+});

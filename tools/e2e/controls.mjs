@@ -4,12 +4,106 @@ import path from 'node:path';
 import { sleep } from './cdp.mjs';
 import { assertValidPng } from './map.mjs';
 import { Coverage, controlBase, placementKey } from './coverage.mjs';
-import { Session, TOOLTIP_DELAY_MS } from './session.mjs';
+import { BUDGET_MS, Session, TOOLTIP_DELAY_MS } from './session.mjs';
 
+const CHART_TOOLTIP_DELAY_MS = 150;
 const OPEN_POPOVER = sel => `document.querySelector(${JSON.stringify(`${sel}:popover-open`)})`;
 const CLOSED_POPOVER = sel => `!document.querySelector(${JSON.stringify(`${sel}:popover-open`)})`;
 const LABELLED = label => `button[aria-label=${JSON.stringify(label)}]`;
-const widgetSel = title => `article.dash-widget[aria-label=${JSON.stringify(title)}]`;
+
+const countryMatches = (row, query) => {
+  const wanted = query.toLowerCase();
+  return (row.name ?? '').toLowerCase().includes(wanted) || (row.tag ?? '').toLowerCase().includes(wanted);
+};
+
+export function countryQuery(rows, target) {
+  const name = (target?.name ?? '').trim();
+  const tag = (target?.tag ?? '').trim();
+  if (name && rows.some(row => !countryMatches(row, name))) return name;
+  if (tag && rows.some(row => !countryMatches(row, tag))) return tag;
+  return name || tag || null;
+}
+
+export function pickOtherCountry(rows, chosen) {
+  const others = rows.filter(row => !row.selected && (row.name || row.tag));
+  if (!others.length) return null;
+  const narrowing = others.find(row => {
+    const query = countryQuery(rows, row);
+    return query !== null && rows.some(other => !countryMatches(other, query));
+  });
+  const row = narrowing ?? others.find(item => item.name && item.name !== chosen?.name) ?? others[0];
+  const query = countryQuery(rows, row);
+  return query ? { row, query } : null;
+}
+
+async function clickCountryOption(s, tag) {
+  if (!await s.app.evaluate(`__e2e.revealCountry(${JSON.stringify(tag)})`)) throw new Error(`no row for ${tag} in its results`);
+  const at = await s.app.evaluate(`(() => {
+    const row = [...document.querySelectorAll('.country-picker:popover-open [role=option]')].find(o => __e2e.countryRowInfo(o).tag === ${JSON.stringify(tag)});
+    if (!row) return null;
+    row.scrollIntoView({ block: 'nearest' });
+    const r = row.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  if (!at) throw new Error(`row for ${tag} is not on screen`);
+  await s.app.click(at.x, at.y);
+}
+
+export const countryDoneExpr = (trigger, expectedLabel) =>
+  `${CLOSED_POPOVER('.country-picker')} && (document.querySelector(${JSON.stringify(`${trigger} strong`)})?.textContent.trim() ?? document.querySelector(${JSON.stringify(trigger)})?.textContent.trim()) === ${JSON.stringify(expectedLabel)}`;
+
+export function readRegionFieldInDom(root) {
+  if (!root) return { picks: [], automatic: true, hiddenCount: 0 };
+  const picks = [...root.querySelectorAll('.regions-field-label')].map(e => e.textContent.trim());
+  const automatic = !root.querySelector('.regions-field-actions button:not([aria-haspopup=dialog])');
+  const labelEl = root.querySelector('.setting-label[data-tooltip]');
+  const hint = (labelEl?.getAttribute('data-tooltip') ?? root.querySelector('.setting-label .sr-only')?.textContent ?? '').trim();
+  const hiddenMatch = hint.match(/^([\d,]+)\s+removed from the most active\b/);
+  const hiddenCount = hiddenMatch ? Number(hiddenMatch[1].replaceAll(',', '')) : 0;
+  return { picks, automatic, hiddenCount };
+}
+
+export function checkRegionRestoreProbe(names, probeState) {
+  if (probeState.kind === 'error') return { ok: false, fail: probeState.message };
+  if (probeState.kind !== 'ready') return { ok: false, fail: 'the region chooser did not load its list before restoring could be verified' };
+  const rows = probeState.rows ?? [];
+  for (const label of new Set(names)) {
+    const matches = rows.filter(r => r.name === label);
+    if (matches.length > 1) return { ok: false, skip: `region label "${label}" is ambiguous in the chooser` };
+    if (matches.length !== 1 || !matches[0].inChart) return { ok: false, skip: `region "${label}" cannot be restored unambiguously through the chooser` };
+  }
+  return { ok: true };
+}
+
+export function regionActionPlan({ automatic, picks, rows }) {
+  if (!rows.length) return null;
+  if (automatic) {
+    const row = rows.find(r => !r.inChart) ?? rows[0];
+    return { row, restore: 'reset' };
+  }
+  if (picks.length > 0) {
+    const last = picks.at(-1);
+    const uniqueInChart = name => rows.filter(r => r.name === name).length === 1 && rows.some(r => r.inChart && r.name === name);
+    if (!uniqueInChart(last)) return null;
+    const row = rows.find(r => r.inChart && r.name === last);
+    if (row) return { row, restore: 'readd' };
+  }
+  return null;
+}
+
+export function readRegionChooserState(popover) {
+  if (!popover) return { kind: 'closed' };
+  const alert = popover.querySelector('.region-chooser-empty[role="alert"]');
+  if (alert) {
+    const detail = alert.getAttribute('data-detail')?.trim() ?? '';
+    const text = [...alert.childNodes].filter(n => n.tagName !== 'BUTTON').map(n => n.textContent ?? '').join('').trim() || alert.textContent.trim();
+    return { kind: 'error', message: detail ? `${text} (${detail})` : text };
+  }
+  const rows = [...popover.querySelectorAll('.region-chooser-row')].filter(e => e.getClientRects().length)
+    .map((e, index) => ({ index, name: e.querySelector('.region-chooser-name')?.textContent?.trim() ?? '', inChart: e.hasAttribute('data-in-chart') }));
+  if (rows.length) return { kind: 'ready', rows };
+  return { kind: 'empty', rows: [] };
+}
 
 const press = (s, id, label, selector, done, options = {}) =>
   s.step('controls', id, label, () => s.click(selector, options.locate ?? {}), { done, ...options });
@@ -67,8 +161,8 @@ export const CASES = [
     const was = await s.app.evaluate(`document.querySelector(${JSON.stringify(trigger)})?.textContent.trim() ?? null`);
     if (was === null) throw new Error('no country picker');
     const listed = `Number(document.querySelector('.country-picker:popover-open [role=option]')?.getAttribute('aria-setsize') ?? 0)`;
-    const names = `[...document.querySelectorAll('.country-picker:popover-open [role=option] small')].map(e => e.previousElementSibling?.textContent.trim() ?? '')`;
-    const narrowed = (query, all) => `(${listed}) > 0 && (${listed}) < ${all} && ${names}.some(name => name.includes(${JSON.stringify(query)}))`;
+    const entries = `[...document.querySelectorAll('.country-picker:popover-open [role=option]')].map(o => { const info = __e2e.countryRowInfo(o); return (info.name + ' ' + info.tag).toLowerCase(); })`;
+    const narrowed = (query, all) => `(${listed}) > 0 && (${listed}) < ${all} && ${entries}.some(text => text.includes(${JSON.stringify(query.toLowerCase())}))`;
     const onlyMatches = async (query, label) => {
       const rows = await s.app.evaluate('__e2e.countryRows()');
       const wanted = query.toLowerCase();
@@ -78,23 +172,28 @@ export const CASES = [
         if (stray.length) await s.fail('controls', this.id, label, `it also lists ${stray.length} countries not matching "${query}" (${stray.slice(0, 3).map(row => row.name || row.tag).join(', ')})`);
       }
     };
-    const shownName = `document.querySelector(${JSON.stringify(trigger)})?.textContent.trim()`;
     await press(s, this.id, 'open', trigger, OPEN_POPOVER('.country-picker'));
     const all = await s.app.evaluate(listed);
-    const chosen = (await s.app.evaluate('__e2e.countryRows()'))?.rows.find(row => row.selected) ?? null;
+    const rows = (await s.app.evaluate('__e2e.countryRows()'))?.rows ?? [];
+    const chosen = rows.find(row => row.selected) ?? null;
     if (!chosen) throw new Error(`the picker marks no row as the country shown (${was})`);
+    const other = pickOtherCountry(rows, chosen);
+    if (!other) throw new Error('the recording has no other country to switch to');
     const { name, tag } = chosen;
-    await s.step('controls', this.id, 'search', () => s.type('Italy'), { done: narrowed('Italy', all) });
-    await onlyMatches('Italy', 'search');
-    await press(s, this.id, 'choose', '.country-picker:popover-open [role=option] span:has(+ small)', `${CLOSED_POPOVER('.country-picker')} && ${shownName}.includes('Italy')`,
-      { timeout: 8000, locate: { text: 'Italy' } });
+    const backQuery = countryQuery(rows, chosen) || name || tag;
+    const otherLabel = other.row.name || other.row.tag;
+    const chosenLabel = name || tag;
+    await s.step('controls', this.id, 'search', () => s.type(other.query), { done: narrowed(other.query, all) });
+    await onlyMatches(other.query, 'search');
+    await s.step('controls', this.id, 'choose', () => clickCountryOption(s, other.row.tag),
+      { done: countryDoneExpr(trigger, otherLabel), timeout: 8000 });
     await press(s, this.id, 'open again', trigger, OPEN_POPOVER('.country-picker'), back('open'));
-    await s.step('controls', this.id, 'search back', () => s.type(name), { done: narrowed(name, all), ...back('search') });
-    await onlyMatches(name, 'search back');
-    await s.step('controls', this.id, 'choose back', async () => {
-      if (!await s.app.evaluate(`__e2e.revealCountry(${JSON.stringify(tag)})`)) throw new Error(`no row for ${tag} in its results`);
-      await s.click('.country-picker:popover-open [role=option] small', { text: tag });
-    }, { done: `${CLOSED_POPOVER('.country-picker')} && ${shownName} === ${JSON.stringify(was)}`, timeout: 8000, ...back('choose') });
+    const switched = (await s.app.evaluate('__e2e.countryRows()'))?.rows.find(row => row.selected) ?? null;
+    if (switched?.tag !== other.row.tag) await s.fail('controls', this.id, 'choose', `the picker marks ${switched?.tag ?? 'no country'} chosen, not ${other.row.tag}`);
+    await s.step('controls', this.id, 'search back', () => s.type(backQuery), { done: narrowed(backQuery, all), ...back('search') });
+    await onlyMatches(backQuery, 'search back');
+    await s.step('controls', this.id, 'choose back', () => clickCountryOption(s, tag),
+      { done: countryDoneExpr(trigger, chosenLabel), timeout: 8000, ...back('choose') });
     await s.click(trigger);
     await s.until(`document.querySelector('.country-picker:popover-open [role=option]')`, 3000);
     const back_ = (await s.app.evaluate('__e2e.countryRows()'))?.rows.find(row => row.selected) ?? null;
@@ -169,15 +268,6 @@ export const CASES = [
   } },
   { id: 'widget/settings', page: '*', run: settingsSweep },
   { id: 'widget/live-toggle', page: '*', async run(s, page) {
-    const legacy = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].filter(a => a.querySelector('.live-toggle'))
-      .map(a => ({ key: a.dataset.widget, title: a.getAttribute('aria-label'), live: a.querySelector('.live-toggle').getAttribute('aria-checked') }))`);
-    for (const { key, title, live } of legacy) {
-      const selector = `article.dash-widget[data-widget=${JSON.stringify(key)}] .live-toggle`;
-      const is = value => `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-checked') === ${JSON.stringify(value)}`;
-      const other = live === 'true' ? 'false' : 'true';
-      await press(s, this.id, `${page}: ${title} ${live === 'true' ? 'off' : 'on'}`, selector, is(other), { widget: key, control: `${page}: ${title}` });
-      await press(s, this.id, `${page}: ${title} ${live === 'true' ? 'on' : 'off'}`, selector, is(live), { widget: key, ...back(`${page}: ${title}`) });
-    }
     const chips = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].filter(a => a.querySelector('button.dash-time-chip'))
       .map(a => ({ key: a.dataset.widget, title: a.getAttribute('aria-label') }))`);
     for (const { key, title } of chips) {
@@ -200,15 +290,22 @@ export const CASES = [
 ];
 
 const SETTINGS_MENU = '.widget-settings-menu:popover-open, .map-controls-menu:popover-open';
-const IN_MENU = selector => SETTINGS_MENU.split(', ').map(menu => `${menu} ${selector}`).join(', ');
-const CONTROL = {
-  switch: IN_MENU('input[role=switch]'),
+export const IN_MENU = selector => SETTINGS_MENU.split(', ').flatMap(menu => selector.split(',').map(part => `${menu} ${part.trim()}`)).join(', ');
+export const CONTROL = {
+  switch: IN_MENU('input[role=switch], button[role=switch]'),
+  press: IN_MENU('button.table-settings-eye'),
   select: IN_MENU('.select-trigger'),
   number: IN_MENU('.option-number input[type=number]'),
   title: IN_MENU('label.field input:not([type])'),
   'content-set': IN_MENU('.content-set-picker > button[aria-haspopup=dialog]'),
   range: IN_MENU('input[type=range]'),
   check: IN_MENU('input[type=checkbox]:not([role=switch])'),
+  'table-action': IN_MENU('button.table-settings-link'),
+  regions: IN_MENU('.regions-field-actions button[aria-haspopup=dialog]'),
+  'regions-reset': IN_MENU('.regions-field-actions button:not([aria-haspopup=dialog])'),
+  'regions-move': IN_MENU('.regions-field-item button[aria-label^="Move "]'),
+  'regions-remove': IN_MENU('.regions-field-item button[aria-label^="Remove "]'),
+  'video-export': IN_MENU('.widget-settings-footer button, button.map-menu-action:not(.map-appearance *)'),
 };
 const SAVING = `document.querySelector('.map-appearance[data-saving]')`;
 const RESET_CONFIRM = IN_MENU('.map-appearance .graphics-reset-confirm .is-danger');
@@ -222,16 +319,21 @@ const MAP_EXPECTED = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('[d
   .map(e => [e.getAttribute('data-map-setting'), e.getAttribute('data-map-value')]).filter(([setting, value]) => value !== 'null' || setting.startsWith('graphics.'))`;
 const shown = (selector, index) => `[...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.getClientRects().length)[${index}]`;
 
-const discover = s => s.app.evaluate(`(() => {
-  const menu = document.querySelector(${JSON.stringify(SETTINGS_MENU)}); if (!menu) return [];
+export function discoverInMenu(menu) {
+  if (!menu) return [];
   const text = e => e && [...e.childNodes].filter(n => !n.classList?.contains('sr-only')).map(n => n.textContent).join('');
   const out = [], label = e => (text(e.closest('label, .setting-row')?.querySelector('.setting-label, span')) || e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 60);
   const all = selector => [...menu.querySelectorAll(selector)].filter(e => e.getClientRects().length);
   const draft = e => !!e.closest('.map-appearance');
   const context = e => e.closest('[data-setting]')?.getAttribute('data-setting') ?? '';
   const overridden = e => !!e.closest('.map-option-row, .map-mod-list')?.hasAttribute('data-overridden');
-  all('input[role=switch]').forEach((e, i) => out.push({ kind: 'switch', index: i, label: label(e), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled, state: e.checked,
-    mod: !!e.closest('.map-mod-row') }));
+  all('input[role=switch], button[role=switch]').forEach((e, i) => {
+    const isButton = e.matches('button[role=switch]');
+    const swLabel = isButton ? (e.getAttribute('aria-label') || text(e) || '').trim().slice(0, 60) : label(e);
+    const swState = isButton ? e.getAttribute('aria-checked') === 'true' : e.checked;
+    out.push({ kind: 'switch', index: i, label: swLabel, context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled, state: swState,
+      mod: !!e.closest('.map-mod-row') });
+  });
   all('input[type=range]').forEach((e, i) => out.push({ kind: 'range', index: i, label: e.getAttribute('aria-label') || label(e), context: context(e), draft: draft(e), overridden: overridden(e),
     disabled: e.disabled, value: Number(e.value), max: Number(e.max), state: Number(e.value) }));
   all('.segmented').forEach((g, i) => { const b = [...g.querySelectorAll('button')]; const on = b.findIndex(x => x.getAttribute('aria-pressed') === 'true');
@@ -247,12 +349,23 @@ const discover = s => s.app.evaluate(`(() => {
       disabled: x.getAttribute('aria-disabled') === 'true', reason: x.getAttribute('data-tooltip') })) }));
   if (menu.querySelector('[aria-label="Widget size"] button[aria-label=Larger]:not([disabled])')) out.push({ kind: 'size', label: 'size' });
   const fieldLabel = e => (e.closest('.date-time-field')?.querySelector(':scope > span')?.textContent ?? '').trim();
+  const eyeLabel = e => {
+    const col = e.closest('.table-settings-column')?.querySelector('.table-settings-col-name')?.textContent?.trim();
+    return col ? col + ' column' : (e.getAttribute('aria-label') ?? '').replace(/^(Hide|Show)\s+/i, '');
+  };
   const special = [
     ['check', 'input[type=checkbox]:not([role=switch])', e => label(e)],
+    ['press', 'button.table-settings-eye', eyeLabel],
+    ['table-action', 'button.table-settings-link', e => e.textContent.trim()],
+    ['regions', '.regions-field-actions button[aria-haspopup=dialog]', e => label(e) || e.textContent.trim()],
+    ['regions-reset', '.regions-field-actions button:not([aria-haspopup=dialog])', e => e.textContent.trim()],
+    ['regions-move', '.regions-field-item button[aria-label^="Move "]', e => e.getAttribute('aria-label')?.trim() ?? ''],
+    ['regions-remove', '.regions-field-item button[aria-label^="Remove "]', e => e.getAttribute('aria-label')?.trim() ?? ''],
     ['reset', '.map-appearance button.map-menu-action', e => e.textContent.trim()],
     ['search', 'input.map-mod-search', e => e.getAttribute('aria-label')],
     ['refresh', '.map-mod-tools > button', e => e.textContent.trim()],
     ['export', 'button.map-menu-action:not(.map-appearance *)', e => e.textContent.trim()],
+    ['video-export', '.widget-settings-footer button, button.map-menu-action:not(.map-appearance *)', e => e.textContent.trim()],
     ['country', 'button.widget-country-trigger', e => { const named = e.getAttribute('aria-label') ?? '';
       return named.startsWith('Widget campaign:') ? 'Widget campaign' : named.startsWith('Up to ') || / add or remove$/.test(named) ? 'Add or remove a country' : named; }],
     ['pin', '.setting-row button.button.small', e => e.textContent.trim()],
@@ -262,36 +375,46 @@ const discover = s => s.app.evaluate(`(() => {
     ['icon', '[aria-label="Header icon"] button', e => e.getAttribute('aria-label')],
   ];
   const claimed = new Set();
-  for (const [kind, selector, name] of special) all(selector).filter(e => kind !== 'pin' || /^Pin to now$/.test(e.textContent.trim()))
-    .filter(e => kind !== 'export' || /^Export map image$/.test(e.textContent.trim()))
-    .forEach((e, i) => claimed.add(e) && out.push({ kind, index: i, label: (name(e) || kind).slice(0, 80), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled,
-      ...(kind === 'check' ? { state: e.checked } : {}), ...(kind === 'country' ? { trigger: e.getAttribute('aria-label') } : {}) }));
-  const handled = 'input[role=switch], input[type=range], .segmented button, .select-trigger, .option-number input[type=number], label.field input:not([type]), '
+  const tableActionRank = e => e.textContent.trim() === 'Reset widths' ? 0 : e.textContent.trim() === 'Fit all columns' ? 1 : 2;
+  for (const [kind, selector, name] of special) {
+    const matched = all(selector)
+      .filter(e => kind !== 'pin' || /^Pin to now$/.test(e.textContent.trim()))
+      .filter(e => kind !== 'export' || /^Export map image$/.test(e.textContent.trim()))
+      .filter(e => kind !== 'video-export' || /^Export .*video/i.test(e.textContent.trim()));
+    if (kind === 'table-action') matched.sort((a, b) => tableActionRank(a) - tableActionRank(b));
+    matched.forEach((e, i) => claimed.add(e) && out.push({ kind, index: i, label: (name(e) || kind).slice(0, 80), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled,
+      ...(kind === 'check' ? { state: e.checked } : {}), ...(kind === 'press' ? { state: e.getAttribute('aria-pressed') === 'true' } : {}),
+      ...(kind === 'country' ? { trigger: e.getAttribute('aria-label') } : {}) }));
+  }
+  const handled = 'input[role=switch], button[role=switch], input[type=range], .segmented button, .select-trigger, .option-number input[type=number], label.field input:not([type]), '
     + '.content-set-picker > button[aria-haspopup=dialog], .chip-set button.chip, [aria-label="Widget size"] button';
-  const frame = '.ui-popover-heading, summary, .map-option-inherit, .select-menu, .content-picker, .country-picker, .campaign-picker, .date-time-popover';
+  const frame = '.ui-popover-heading, summary, .map-option-inherit, .select-menu, .content-picker, .country-picker, .campaign-picker, .date-time-popover, .region-chooser-popover';
   all('button, input, select, textarea, [role=switch], [tabindex="0"]').filter(e => !e.matches(handled) && !claimed.has(e) && !e.closest(frame) && !e.matches('.folder-info'))
     .forEach(e => out.push({ kind: 'unsupported', label: label(e), what: e.tagName.toLowerCase() + (typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : '') }));
   const seen = new Map();
   for (const c of out) { const name = c.kind + '|' + c.label + '|' + (c.context ?? ''); c.nth = seen.get(name) ?? 0; seen.set(name, c.nth + 1); }
   return out;
-})()`);
+}
+
+const discover = (s, widget = null) => s.app.evaluate(`(${discoverInMenu.toString()})(${widget ? ownedMenuExpr(widget) : `document.querySelector(${JSON.stringify(SETTINGS_MENU)})`})`);
 const identity = c => `${c.kind}|${c.label}|${c.context ?? ''}|${c.nth}|${(c.buttons ?? c.chips)?.map(b => b.label).join('/') ?? ''}`;
 function stateOf(c) {
   const at = selector => shown(IN_MENU(selector), c.kind === 'segment' || c.kind === 'chips' ? c.group : c.index);
   switch (c.kind) {
-    case 'switch': return `${at('input[role=switch]')}?.checked`;
+    case 'switch': return `(e => e && (e.matches('input') ? e.checked : e.getAttribute('aria-checked') === 'true'))(${at('input[role=switch], button[role=switch]')})`;
+    case 'press': return `${at('button.table-settings-eye')}?.getAttribute('aria-pressed') === 'true'`;
     case 'range': return `(e => e && Number(e.value))(${at('input[type=range]')})`;
     case 'segment': return `(g => g ? [...g.querySelectorAll('button')].findIndex(x => x.getAttribute('aria-pressed') === 'true') : undefined)(${at('.segmented')})`;
     case 'select': return `${at('.select-trigger')}?.textContent.trim()`;
     case 'number': return `${at('.option-number input[type=number]')}?.value`;
     case 'title': return `${at('label.field input:not([type])')}?.value`;
     case 'chips': return `(g => g ? [...g.querySelectorAll('button.chip')].map(x => x.getAttribute('aria-pressed') === 'true') : undefined)(${at('.chip-set')})`;
-    case 'check': return `${at(CONTROL.check)}?.checked`;
+    case 'check': return `${at('input[type=checkbox]:not([role=switch])')}?.checked`;
     default: return 'undefined';
   }
 }
 
-const QUICK_KINDS = ['switch', 'segment', 'select', 'check', 'chips'];
+const QUICK_KINDS = ['switch', 'press', 'segment', 'select', 'check', 'chips'];
 
 async function settingsSweep(s, page) {
   const widgets = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].map(a => { const r = a.getBoundingClientRect();
@@ -303,11 +426,12 @@ async function settingsSweep(s, page) {
   for (const widget of widgets) {
     if (quick && s.quickKinds.has(widget.kind)) continue;
     const placement = `${page}: ${widget.title}`;
+    await closeMenu(s);
     await inView(s, widget);
-    const opened = await press(s, 'widget/settings', `${placement}: open`, triggerOf(widget), `document.querySelector(${JSON.stringify(SETTINGS_MENU)})`, { control: `${placement}: open` });
+    const opened = await press(s, 'widget/settings', `${placement}: open`, triggerOf(widget), ownedMenuExpr(widget), { control: `${placement}: open` });
     if (!opened.pass && opened.reasons.some(r => r.startsWith('could not act') || r.startsWith('never finished'))) continue;
     const graphics = await reopen(s, widget);
-    let controls = await discover(s);
+    let controls = await discover(s, widget);
     if (graphics !== 'none' && graphics !== 'ready') {
       await s.fail('controls', 'widget/settings', `${placement}: graphics`, graphics === 'loading' ? 'its graphics settings never loaded within 8 s' : `its graphics settings ${graphics}`);
       controls = controls.filter(c => !c.draft);
@@ -317,7 +441,7 @@ async function settingsSweep(s, page) {
     if (same && !quick && !s.everFailed('controls', 'widget/settings', `${placement}: `)) {
       await s.record({ area: 'controls', item: 'widget/settings', label: `${placement}: the same case as ${same} (kind, size, settings and neighbours): not exercised again`,
         control: `${placement}: open`, ms: null, pass: true, reasons: [], screenshot: false });
-      await s.escape();
+      await closeMenu(s);
       continue;
     }
     if (!same) s.placements.set(key, placement);
@@ -334,7 +458,7 @@ async function settingsSweep(s, page) {
     }
     if (ctx.cover.skipped && !quick) await s.record({ area: 'controls', item: 'widget/settings', label: `${placement}: ${ctx.cover.skipped} values already exercised under another setting of its menu, not repeated`,
       control: `${placement}: open`, ms: null, pass: true, reasons: [], screenshot: false });
-    await s.escape();
+    await closeMenu(s);
   }
 }
 
@@ -342,7 +466,7 @@ async function reconcile(s, page, widget, before, exercised) {
   const fixed = [];
   for (let pass = 0; pass <= before.length; pass++) {
     await reopen(s, widget);
-    const now = new Map((await discover(s)).map(c => [identity(c), c]));
+    const now = new Map((await discover(s, widget)).map(c => [identity(c), c]));
     const wrong = before.filter(c => JSON.stringify(now.get(identity(c))?.state) !== JSON.stringify(c.state));
     if (!wrong.length) break;
     const target = wrong.find(c => now.has(identity(c)));
@@ -366,7 +490,7 @@ async function reconcile(s, page, widget, before, exercised) {
 async function putBack(s, target, current) {
   const centre = expression => s.app.evaluate(`(() => { const e = ${expression}; if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   const press = async expression => { const at = await centre(expression); if (!at) throw new Error('it is not on screen'); await s.app.click(at.x, at.y); await s.frames(2); };
-  if (target.kind === 'switch' || target.kind === 'check') await press(shown(CONTROL[target.kind], current.index));
+  if (target.kind === 'switch' || target.kind === 'check' || target.kind === 'press') await press(shown(CONTROL[target.kind], current.index));
   else if (target.kind === 'segment') await press(`(${shown(IN_MENU('.segmented'), current.group)}?.querySelectorAll('button') ?? [])[${target.state}]`);
   else if (target.kind === 'chips') {
     for (const [index, pressed] of target.state.entries())
@@ -398,6 +522,29 @@ const inView = (s, widget) => s.app.evaluate(`(() => { const a = document.queryS
   if (!a || !grid) return; const r = a.getBoundingClientRect(), g = grid.getBoundingClientRect();
   if (r.top < g.top || r.bottom > g.bottom) grid.scrollBy({ top: r.top - g.top, behavior: 'instant' }); })()`).then(() => s.frames(2));
 const triggerOf = widget => `${widgetAt(widget.key)} [data-widget-settings], ${widgetAt(widget.key)} button[aria-label="Map settings"]`;
+export const ownedMenuExpr = widget => `(() => {
+  const trigger = document.querySelector(${JSON.stringify(triggerOf(widget))});
+  if (!trigger || trigger.getAttribute('aria-expanded') !== 'true') return null;
+  const id = trigger.getAttribute('popovertarget');
+  const menu = id ? document.getElementById(id) : null;
+  if (!menu || !menu.matches(${JSON.stringify(SETTINGS_MENU)})) return null;
+  const loading = [...menu.children].some(e => e.tagName === 'P' && e.getAttribute('role') === 'status' && !e.className);
+  return loading ? null : menu;
+})()`;
+
+export async function dismissTooltip(s) {
+  await s.hover(5, 5);
+  await s.frames(2);
+  if (await s.holds(`document.querySelector('.app-tooltip:popover-open')`)) await s.escape();
+}
+
+export async function closeMenu(s) {
+  await dismissTooltip(s);
+  for (let tries = 0; tries < 4 && await s.holds(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`); tries++) {
+    await s.escape();
+  }
+}
+
 async function openSections(s) {
   for (let open = 0; open < 50; open++) {
     const summary = await s.locate(IN_MENU('details:not([open]) > summary'));
@@ -406,21 +553,29 @@ async function openSections(s) {
     await s.frames(2);
   }
 }
-const graphicsState = `(() => { const section = document.querySelector('.map-controls-menu:popover-open .map-appearance');
-  if (!section) return 'none'; const alert = section.querySelector('[role=alert]');
-  return alert ? 'failed: ' + alert.textContent.trim() : section.querySelector('.graphics-inheritance') ? 'ready' : 'loading'; })()`;
+
+export function graphicsStateInMenu(menu) {
+  const section = menu?.querySelector('.map-appearance');
+  if (!section) return 'none';
+  const alert = section.querySelector('[role=alert]');
+  return alert ? 'failed: ' + alert.textContent.trim() : section.querySelector('.graphics-inheritance') ? 'ready' : 'loading';
+}
+
 const reopen = async (s, widget) => {
-  if (!await s.holds(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`)) {
+  const menuExpr = ownedMenuExpr(widget);
+  if (!await s.holds(menuExpr)) {
+    if (await s.holds(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`)) await closeMenu(s);
     await inView(s, widget);
     await s.click(triggerOf(widget));
-    await s.until(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`, 2000);
+    await s.until(menuExpr, 5000);
   }
   await openSections(s);
-  if (await s.app.evaluate(graphicsState) === 'loading') await s.until(`${graphicsState} !== 'loading'`, 8000);
-  return s.app.evaluate(graphicsState);
+  const gfx = `(${graphicsStateInMenu.toString()})(${menuExpr})`;
+  if (await s.app.evaluate(gfx) === 'loading') await s.until(`${gfx} !== 'loading'`, 8000);
+  return s.app.evaluate(gfx);
 };
 
-async function exercise(s, page, widget, c, ctx, under) {
+export async function exercise(s, page, widget, c, ctx, under) {
   try { await exerciseOnce(s, page, widget, c, ctx, under); } catch (error) {
     if (!error.gone) throw error;
     await s.fail('controls', 'widget/settings', `${page}: ${widget.title}: ${c.label}${under ? ` (with ${under})` : ''}`, 'the control left its menu after a change elsewhere in it');
@@ -440,15 +595,16 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     if (!c.draft && !widget.view) return step(label, action, { changes, timeout: 3000, ...options });
     if (!c.draft) {
       const since = s.app.lastSent('set_dashboard_maps');
-      const was = (await discover(s)).find(x => identity(x) === identity(c))?.state;
+      const was = (await discover(s, widget)).find(x => identity(x) === identity(c))?.state;
       const changedState = was === undefined ? null : `(() => { const now = ${stateOf(c)}; return now !== undefined && JSON.stringify(now) !== ${JSON.stringify(JSON.stringify(was))}; })()`;
       const result = await step(label, action, { timeout: 3000, awaits: false, ...options,
         done: options.done && changedState ? `(${options.done}) && ${changedState}` : options.done ?? changedState });
-      const now = (await discover(s)).find(x => identity(x) === identity(c))?.state;
+      const now = (await discover(s, widget)).find(x => identity(x) === identity(c))?.state;
       if (was !== undefined && JSON.stringify(now) === JSON.stringify(was)) await s.fail('controls', 'widget/settings', label, 'its control did not change');
-      if (await s.holds(`document.querySelector(${JSON.stringify(SETTINGS_MENU)})`))
-        await step(`${label}: drawn`, () => s.key('Escape'), { changes: { key, view: widget.view, since }, timeout: 3000, check: options.check, control: `${options.control ?? name}: drawn` });
-      else await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu closed by itself, so the map could not be timed from its dismissal');
+      if (await s.holds(ownedMenuExpr(widget))) {
+        await dismissTooltip(s);
+        await step(`${label}: drawn`, () => s.key('Escape'), { changes: { key, view: widget.view, since }, done: `!${ownedMenuExpr(widget)}`, timeout: 3000, check: options.check, control: `${options.control ?? name}: drawn` });
+      } else await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu closed by itself, so the map could not be timed from its dismissal');
       return result;
     }
     const saved = await step(label, action, { ...options, done: options.done ? `(${options.done}) && !${SAVING}` : `!${SAVING}`, timeout: 8000 });
@@ -456,11 +612,12 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     if (!widget.view) { await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu saves map graphics, but its widget shows no map to draw them'); return saved; }
     await reopen(s, widget);
     const expected = await s.app.evaluate(MAP_EXPECTED);
-    await step(`${label}: drawn`, () => s.key('Escape'), { drew: { view: widget.view, expected }, timeout: 20_000, check: options.check, control: `${options.control ?? name}: drawn` });
+    await dismissTooltip(s);
+    await step(`${label}: drawn`, () => s.key('Escape'), { drew: { view: widget.view, expected }, done: `!${ownedMenuExpr(widget)}`, timeout: 20_000, check: options.check, control: `${options.control ?? name}: drawn` });
     return saved;
   };
   const alreadyBack = async label => {
-    const now = (await discover(s)).find(x => identity(x) === identity(c));
+    const now = (await discover(s, widget)).find(x => identity(x) === identity(c));
     if (!now || now.state === undefined || JSON.stringify(now.state) !== JSON.stringify(c.state) || (c.draft && !!now.overridden !== !!c.overridden)) return false;
     await s.record({ area: 'controls', item: 'widget/settings', label: `${label}: already back`, ...id, ms: null, pass: true, reasons: [], screenshot: false });
     return true;
@@ -485,7 +642,7 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
   const revealed = async change => {
     if (cover.full) return;
     await reopen(s, widget);
-    for (const fresh of await discover(s)) {
+    for (const fresh of await discover(s, widget)) {
       if (cover.full) return;
       if (known.has(identity(fresh))) continue;
       known.add(identity(fresh));
@@ -495,7 +652,7 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
   };
   const reopenHere = async () => {
     await reopen(s, widget);
-    const now = (await discover(s)).find(x => identity(x) === identity(c));
+    const now = (await discover(s, widget)).find(x => identity(x) === identity(c));
     if (!now) throw Object.assign(new Error('the control left its menu'), { gone: true });
     Object.assign(c, { index: now.index, group: now.group });
   };
@@ -598,6 +755,171 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await revealed(`${c.label} ${c.state ? 'cleared' : 'ticked'}`);
     await reopenHere();
     await restore(`${name} back`, () => set(`${name} back`, () => s.click(CONTROL.check, { index: c.index }), { check: false }));
+  } else if (c.kind === 'press') {
+    await set(name, () => s.click(CONTROL.press, { index: c.index }));
+    await revealed(`${c.label} toggled`);
+    await reopenHere();
+    await restore(`${name} back`, () => set(`${name} back`, () => s.click(CONTROL.press, { index: c.index }), { check: false }));
+  } else if (c.kind === 'table-action') {
+    const gone = `![...document.querySelectorAll(${JSON.stringify(CONTROL['table-action'])})].some(e => e.getClientRects().length && e.textContent.trim() === ${JSON.stringify(c.label)})`;
+    await step(name, () => s.click(CONTROL['table-action'], { text: c.label }), { awaits: false, ...(c.label.startsWith('Reset') ? { done: gone } : {}) });
+  } else if (c.kind === 'regions') {
+    const chooser = '.region-chooser-popover:popover-open';
+    const ready = `document.querySelector('${chooser} .region-chooser-row, ${chooser} .region-chooser-empty:not([role="status"])')`;
+    const fieldSel = c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}]`) : IN_MENU('.setting-row:has(.regions-field-actions)');
+    const scopeSel = sub => c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}] ${sub}`) : IN_MENU(sub);
+    const resetSel = scopeSel('.regions-field-actions button:not([aria-haspopup=dialog])');
+    const readField = () => s.app.evaluate(`(${readRegionFieldInDom.toString()})(document.querySelector(${JSON.stringify(fieldSel)}))`);
+    const before = await readField();
+    if (!before.automatic && !before.picks.length) {
+      await NO_OTHER(s, id, `${name}: hidden-only selection cannot be restored without changing exclusions`);
+      return;
+    }
+    const open = (label, options = {}) => step(`${name}: ${label}`, () => s.click(CONTROL.regions, { index: c.index }),
+      { done: ready, control: `${name}: open`, timeout: 8000, awaits: false, ...options });
+    const clickUnchartedByName = rowName => async () => {
+      const idx = await s.app.evaluate(`(() => {
+        const rows = [...document.querySelectorAll('${chooser} .region-chooser-row')].filter(e => e.getClientRects().length);
+        return rows.findIndex(e => !e.hasAttribute('data-in-chart') && (e.querySelector('.region-chooser-name')?.textContent?.trim() ?? '') === ${JSON.stringify(rowName)});
+      })()`);
+      if (idx < 0) throw new Error(`uncharted region "${rowName}" is not in the list`);
+      await s.click(`${chooser} .region-chooser-row`, { index: idx });
+    };
+    if (couldNotAct(await open('open'))) { await s.escape(); return; }
+    const chooserState = await s.app.evaluate(`(${readRegionChooserState.toString()})(document.querySelector('${chooser}'))`);
+    if (chooserState.kind === 'closed') { await s.fail('controls', 'widget/settings', name, 'the region chooser closed before its list could be read'); return; }
+    if (chooserState.kind === 'error') { await s.escape(); await s.fail('controls', 'widget/settings', name, chooserState.message); return; }
+    const plan = chooserState.kind === 'ready' ? regionActionPlan({ automatic: before.automatic, picks: before.picks, rows: chooserState.rows }) : null;
+    if (!plan) { await s.escape(); await NO_OTHER(s, id, `${name}: offers no unambiguous restorable region`); return; }
+    await set(`${name}: ${plan.row.name || 'first region'}`, () => s.click(`${chooser} .region-chooser-row`, { index: plan.row.index }),
+      { done: CLOSED_POPOVER('.region-chooser-popover') });
+    if (s.tier === 'quick') return;
+    await reopen(s, widget);
+    if (plan.restore === 'reset' && await s.holds(`document.querySelector(${JSON.stringify(resetSel)})`)) {
+      await set(`${name}: back`, () => s.click(resetSel), { done: `!document.querySelector(${JSON.stringify(resetSel)})`, check: false });
+    } else if (!couldNotAct(await open('open again', { check: false }))) {
+      await set(`${name}: back`, clickUnchartedByName(plan.row.name), { done: CLOSED_POPOVER('.region-chooser-popover'), check: false });
+    }
+    await reopen(s, widget);
+    const after = await readField();
+    if (JSON.stringify(after) !== JSON.stringify(before))
+      await s.fail('controls', 'widget/settings', `${name}: back`, `its saved regions did not come back (${JSON.stringify(before)} became ${JSON.stringify(after)})`);
+  } else if (c.kind === 'regions-move') {
+    const scopeSel = sub => c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}] ${sub}`) : IN_MENU(sub);
+    const readPicks = () => s.app.evaluate(`[...document.querySelectorAll(${JSON.stringify(scopeSel('.regions-field-label'))})].map(e => e.textContent.trim())`);
+    const beforePicks = await readPicks();
+    const opposite = c.label.endsWith(' up') ? c.label.slice(0, -3) + ' down' : c.label.endsWith(' down') ? c.label.slice(0, -5) + ' up' : null;
+    await set(name, () => s.click(scopeSel('.regions-field-item button[aria-label^="Move "]'), { text: c.label }));
+    if (s.tier === 'quick' || !opposite) return;
+    await reopen(s, widget);
+    await set(`${name}: back`, () => s.click(scopeSel('.regions-field-item button[aria-label^="Move "]'), { text: opposite }), { check: false });
+    await reopen(s, widget);
+    const afterPicks = await readPicks();
+    if (JSON.stringify(afterPicks) !== JSON.stringify(beforePicks))
+      await s.fail('controls', 'widget/settings', `${name}: back`, `its region order did not come back (${JSON.stringify(beforePicks)} became ${JSON.stringify(afterPicks)})`);
+  } else if (c.kind === 'regions-remove') {
+    const chooser = '.region-chooser-popover:popover-open';
+    const ready = `document.querySelector('${chooser} .region-chooser-row, ${chooser} .region-chooser-empty:not([role="status"])')`;
+    const fieldSel = c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}]`) : IN_MENU('.setting-row:has(.regions-field-actions)');
+    const scopeSel = sub => c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}] ${sub}`) : IN_MENU(sub);
+    const readField = () => s.app.evaluate(`(${readRegionFieldInDom.toString()})(document.querySelector(${JSON.stringify(fieldSel)}))`);
+    const before = await readField();
+    const regionName = c.label.replace(/^Remove\s+/, '');
+    const origIdx = before.picks.indexOf(regionName);
+    if (s.tier !== 'quick' && origIdx >= 0) {
+      await s.click(scopeSel('.regions-field-actions button[aria-haspopup=dialog]'));
+      await s.until(ready, 8000);
+      const probeState = await s.app.evaluate(`(${readRegionChooserState.toString()})(document.querySelector('${chooser}'))`);
+      await s.escape();
+      await reopen(s, widget);
+      const check = checkRegionRestoreProbe([regionName], probeState);
+      if (!check.ok) {
+        if (check.fail) await s.fail('controls', 'widget/settings', name, check.fail);
+        else await NO_OTHER(s, id, `${name}: ${check.skip}`);
+        return;
+      }
+    }
+    await set(name, () => s.click(scopeSel('.regions-field-item button[aria-label^="Remove "]'), { text: c.label }));
+    if (s.tier === 'quick' || origIdx < 0) return;
+    await reopen(s, widget);
+    const open = await step(`${name}: open`, () => s.click(scopeSel('.regions-field-actions button[aria-haspopup=dialog]')), { done: ready, control: `${name}: open`, timeout: 8000, awaits: false, check: false });
+    if (!couldNotAct(open)) {
+      await set(`${name}: back`, async () => {
+        const idx = await s.app.evaluate(`(() => {
+          const rows = [...document.querySelectorAll('${chooser} .region-chooser-row')].filter(e => e.getClientRects().length);
+          return rows.findIndex(e => !e.hasAttribute('data-in-chart') && (e.querySelector('.region-chooser-name')?.textContent?.trim() ?? '') === ${JSON.stringify(regionName)});
+        })()`);
+        if (idx < 0) throw new Error(`uncharted region "${regionName}" is not in the list`);
+        await s.click(`${chooser} .region-chooser-row`, { index: idx });
+      }, { done: CLOSED_POPOVER('.region-chooser-popover'), check: false });
+      for (let moves = before.picks.length - 1 - origIdx; moves > 0; moves--) {
+        await reopen(s, widget);
+        await set(`${name}: restore order`, () => s.click(scopeSel('.regions-field-item button[aria-label^="Move "]'), { text: `Move ${regionName} up` }), { check: false });
+      }
+    }
+    await reopen(s, widget);
+    const after = await readField();
+    if (JSON.stringify(after) !== JSON.stringify(before))
+      await s.fail('controls', 'widget/settings', `${name}: back`, `its saved regions did not come back (${JSON.stringify(before)} became ${JSON.stringify(after)})`);
+  } else if (c.kind === 'regions-reset') {
+    const chooser = '.region-chooser-popover:popover-open';
+    const ready = `document.querySelector('${chooser} .region-chooser-row, ${chooser} .region-chooser-empty:not([role="status"])')`;
+    const fieldSel = c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}]`) : IN_MENU('.setting-row:has(.regions-field-actions)');
+    const scopeSel = sub => c.context ? IN_MENU(`[data-setting=${JSON.stringify(c.context)}] ${sub}`) : IN_MENU(sub);
+    const resetSel = scopeSel('.regions-field-actions button:not([aria-haspopup=dialog])');
+    const readField = () => s.app.evaluate(`(${readRegionFieldInDom.toString()})(document.querySelector(${JSON.stringify(fieldSel)}))`);
+    const before = await readField();
+    if (before.hiddenCount > 0) {
+      await NO_OTHER(s, id, `${name}: has ${before.hiddenCount} hidden exclusions that cannot be restored through the chooser`);
+      return;
+    }
+    if (s.tier !== 'quick' && before.picks.length) {
+      await s.click(scopeSel('.regions-field-actions button[aria-haspopup=dialog]'));
+      await s.until(ready, 8000);
+      const probeState = await s.app.evaluate(`(${readRegionChooserState.toString()})(document.querySelector('${chooser}'))`);
+      await s.escape();
+      await reopen(s, widget);
+      const check = checkRegionRestoreProbe(before.picks, probeState);
+      if (!check.ok) {
+        if (check.fail) await s.fail('controls', 'widget/settings', name, check.fail);
+        else await NO_OTHER(s, id, `${name}: ${check.skip}`);
+        return;
+      }
+    }
+    await set(name, () => s.click(resetSel), { done: `!document.querySelector(${JSON.stringify(resetSel)})` });
+    if (s.tier === 'quick') return;
+    for (const regionName of before.picks) {
+      await reopen(s, widget);
+      const open = await step(`${name}: restore ${regionName}`, () => s.click(scopeSel('.regions-field-actions button[aria-haspopup=dialog]')), { done: ready, control: `${name}: open`, timeout: 8000, awaits: false, check: false });
+      if (couldNotAct(open)) break;
+      await set(`${name}: restore ${regionName}`, async () => {
+        const idx = await s.app.evaluate(`(() => {
+          const rows = [...document.querySelectorAll('${chooser} .region-chooser-row')].filter(e => e.getClientRects().length);
+          return rows.findIndex(e => !e.hasAttribute('data-in-chart') && (e.querySelector('.region-chooser-name')?.textContent?.trim() ?? '') === ${JSON.stringify(regionName)});
+        })()`);
+        if (idx < 0) throw new Error(`uncharted region "${regionName}" is not in the list`);
+        await s.click(`${chooser} .region-chooser-row`, { index: idx });
+      }, { done: CLOSED_POPOVER('.region-chooser-popover'), check: false });
+    }
+    await reopen(s, widget);
+    const after = await readField();
+    if (JSON.stringify(after) !== JSON.stringify(before))
+      await s.fail('controls', 'widget/settings', `${name}: back`, `its saved regions did not come back (${JSON.stringify(before)} became ${JSON.stringify(after)})`);
+  } else if (c.kind === 'video-export') {
+    const dialog = 'dialog.export-video-dialog[open]';
+    const opened = await step(`${name}: open`, () => s.click(CONTROL['video-export'], { text: c.label }), { done: `document.querySelector('${dialog}')`, awaits: false, timeout: 5000 });
+    if (!opened.pass && couldNotAct(opened)) return;
+    await s.until(`document.querySelector('${dialog} img.export-video-preview-img, ${dialog} .export-video-error')`, 8000);
+    const preview = await s.app.evaluate(`(() => { const d = document.querySelector('${dialog}'); if (!d) return null;
+      const err = d.querySelector('.export-video-error')?.textContent?.trim() ?? null;
+      return { err, hasPreview: !!d.querySelector('img.export-video-preview-img') }; })()`);
+    if (!preview) await s.fail('controls', 'widget/settings', `${name}: preview`, 'the video export dialog closed before its preview rendered');
+    else if (preview.err) await s.fail('controls', 'widget/settings', `${name}: preview`, preview.err);
+    else if (!preview.hasPreview) await s.fail('controls', 'widget/settings', `${name}: preview`, 'video export preview never rendered within 8 s');
+    if (await s.holds(`document.querySelector('${dialog}')`)) {
+      await step(`${name}: close`, () => s.click(`${dialog} button[aria-label="Close video export dialog"]`),
+        { done: `!document.querySelector('${dialog}')`, awaits: false, check: false, control: `${name}: open` });
+    }
   } else if (c.kind === 'reset') {
     const button = IN_MENU('.map-appearance button.map-menu-action');
     const inherited = await s.app.evaluate(`!!${shown(button, c.index)}?.classList.contains('map-mods-inherit')`) ? MODS_INHERITED : GRAPHICS_INHERITED;
@@ -730,10 +1052,10 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       }, { done: `document.querySelector(${JSON.stringify(widgetAt(key))})?.getAttribute('aria-label') === ${JSON.stringify(to)}`, from: 'last', ...options });
     };
     const result = await rename(`${title} (renamed)`, `${name}: rename`);
-    await s.escape();
+    await closeMenu(s);
     if (result.reasons.some(reason => reason.startsWith('could not act'))) return;
     await rename(title, `${name}: rename back`, { check: false });
-    await s.escape();
+    await closeMenu(s);
   } else if (c.kind === 'content-set') {
     const picker = '.content-picker:popover-open';
     const isOpen = `document.querySelector('${picker}')`;
@@ -826,10 +1148,7 @@ async function exerciseCountry(s, c, name, id, step, set, reopenHere) {
   const choice = full ? chosen[0] : rows.find(row => !row.selected && row.tag);
   if (!choice) { await s.escape(); await NO_OTHER(s, id, `${name}: offers no other country`); return; }
   const back = multi ? choice.tag : chosen[0]?.tag;
-  const pick = tag => async () => {
-    if (!await s.app.evaluate(`__e2e.revealCountry(${JSON.stringify(tag)})`)) throw new Error(`no row for ${tag} in its list`);
-    await s.click(`${picker} [role=option] small`, { text: tag });
-  };
+  const pick = tag => () => clickCountryOption(s, tag);
   await set(`${name}: ${choice.name || choice.tag}`, pick(choice.tag));
   if (!back) { await s.fail('controls', 'widget/settings', `${name}: back`, 'its picker marked no country chosen, so there is none to choose again'); return; }
   await reopenHere();
@@ -883,19 +1202,30 @@ async function exerciseIcon(s, c, name, id, step, reopenHere, key) {
 }
 const opened = picker => `document.querySelector('${picker}')`;
 
-const CHART_SURFACE = '.dash-widget-content .time-chart canvas';
+export const CHART_SURFACE = '.dash-widget-content canvas.fh-canvas[data-surface="time-chart"]';
 
-async function chartTooltips(s, page) {
-  const titles = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].map(a => a.getAttribute('aria-label'))`);
-  for (const title of titles) {
-    const box = await s.app.evaluate(`(() => { const a = document.querySelector(${JSON.stringify(widgetSel(title))}); a?.scrollIntoView({ block: 'center' });
-      const c = a?.querySelector(${JSON.stringify(CHART_SURFACE)}); if (!c) return null; const r = c.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+export async function chartTooltips(s, page) {
+  const widgets = await s.app.evaluate(`[...document.querySelectorAll('article.dash-widget')].map(a => ({ key: a.dataset.widget, title: a.getAttribute('aria-label') }))`);
+  for (const { key, title } of widgets) {
+    const sel = widgetAt(key);
+    await s.app.evaluate(`document.querySelector(${JSON.stringify(sel)})?.scrollIntoView({ block: 'center' })`);
+    await s.frames(2);
+    const settled = await s.until(`(() => { const a = document.querySelector(${JSON.stringify(sel)}); return !a || __e2e.stateOf(a).state !== 'loading'; })()`, 3000);
+    if (!settled) {
+      await s.fail('controls', 'tooltips/chart', `${page}: ${title}`, 'its widget stayed loading after scrolling into view');
+      continue;
+    }
+    const box = await s.app.evaluate(`(() => { const a = document.querySelector(${JSON.stringify(sel)});
+      if (!a || a.querySelector('.fh-overlay')) return null;
+      const c = a.querySelector(${JSON.stringify(CHART_SURFACE)}); if (!c || !c.getClientRects().length) return null;
+      const r = c.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return null;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     if (!box) continue;
     await s.hover(5, 5);
     await s.until(`!document.querySelector('.chart-tooltip:popover-open')`, 1000);
     await s.frames(2);
     await s.step('controls', 'tooltips/chart', `${page}: ${title}`, () => s.hover(box.x, box.y),
-      { done: `document.querySelector('.chart-tooltip:popover-open')`, timeout: 2000, quiet: 50, widget: title });
+      { done: `document.querySelector('.chart-tooltip:popover-open')`, budget: CHART_TOOLTIP_DELAY_MS + BUDGET_MS, timeout: 2000, quiet: 50, widget: key });
   }
   await s.hover(5, 5);
 }
