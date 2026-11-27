@@ -103,3 +103,99 @@ fn spending_no_longer_read_makes_the_part_a_lower_bound_never_zero() {
     assert_eq!((part.state, part.amount.clone()), (BreakdownState::AtLeast, Some(BreakdownAmount { numerator: "5".into(), denominator: "1".into() })));
     assert_eq!(at.breakdown.total.state, BreakdownState::AtLeast);
 }
+
+#[test]
+fn repeated_breakdown_answers_reuse_the_held_index_without_rereading_storage() {
+    use super::{ConstructionBreakdown, ConstructionBreakdownParams};
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{Country, LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_columnar::unit::reader::{DecodeCounts, count_decodes};
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames = (100..=110)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let spent = match hour {
+                100..=103 => 100_000,
+                104..=107 => 300_000,
+                _ => 600_000,
+            };
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
+                id: 1,
+                country: 9001,
+                building_type: 7,
+                target_state: 12,
+                cost: 500_000,
+                created_hour: 90,
+                ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![ConstructionLineOutputRow {
+                line: 1,
+                since_hour: 100,
+                construction_raw: spent,
+                country: Recorded::Value(Some(9001)),
+                building_type: Recorded::Value(Some(7)),
+                target_state: Recorded::Value(Some(12)),
+                exact: true,
+                ..Default::default()
+            }]))
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "construction-breakdown".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let ask = |hour: i32| {
+        count_decodes(|| {
+            ConstructionBreakdown::load(
+                &source,
+                &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour },
+                &load,
+                &cancel,
+            )
+            .unwrap()
+        })
+    };
+
+    let (cold, cold_counts) = ask(105);
+    assert_ne!(cold_counts, DecodeCounts::default(), "the first breakdown answer reads columnar storage to build the index");
+    assert_eq!(cold.breakdown.total.state, BreakdownState::Known);
+    assert_eq!(cold.breakdown.total.amount, Some(BreakdownAmount { numerator: "3".into(), denominator: "1".into() }));
+    assert_eq!(cold.through, 107);
+
+    let (same, same_counts) = ask(105);
+    assert_eq!(same_counts, DecodeCounts::default(), "repeating the same hour reuses the held index without reading storage");
+    assert_eq!(same, cold);
+
+    let (earlier, earlier_counts) = ask(102);
+    assert_eq!(earlier_counts, DecodeCounts::default(), "an earlier hour reuses the held index without reading storage");
+    assert_eq!(earlier.breakdown.total.state, BreakdownState::Known);
+    assert_eq!(earlier.breakdown.total.amount, Some(BreakdownAmount { numerator: "1".into(), denominator: "1".into() }));
+    assert_eq!(earlier.through, 103);
+
+    let (later, later_counts) = ask(109);
+    assert_eq!(later_counts, DecodeCounts::default(), "a later hour reuses the held index without reading storage");
+    assert_eq!(later.breakdown.total.state, BreakdownState::Known);
+    assert_eq!(later.breakdown.total.amount, Some(BreakdownAmount { numerator: "6".into(), denominator: "1".into() }));
+    assert_eq!(later.through, 110);
+}
