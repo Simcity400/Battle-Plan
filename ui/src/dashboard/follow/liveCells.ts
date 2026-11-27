@@ -2,6 +2,7 @@ import { liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
 import type { FollowedAnswer } from './message';
+import type { KeyedLiveSection } from '../../generated/dashboard';
 
 export const CELLS = 0x8000_0000;
 export const isCellsId = (id: number) => id >= CELLS;
@@ -13,8 +14,8 @@ export const ZERO_DIVISOR = 'Its divisor is zero at this hour';
 export const NOT_LIVE_CELL = 'Not a live cell of this reply';
 
 export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
-export interface LiveKind { id: string; op: LiveOp; scale: number }
-export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; rawValues?: (string | null)[]; follow?: number; seedHour?: number; unavailable?: string }
+export interface LiveKind { ref?: string; id: string; op: LiveOp; scale: number }
+export interface LiveGroupSpec { ref?: string; table: number; columns: number[]; keys: string[]; values?: (number | string)[]; rawValues?: (string | null)[]; follow?: number; seedHour?: number; unavailable?: string }
 export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: LiveKind[]; cells: number[] }
 
 const OPS = new Set<LiveOp>(['value', 'sum', 'difference', 'ratio']);
@@ -23,15 +24,50 @@ const COUNT_STRING = /^\d+$/;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
+function indexKeyedCells(groups: LiveGroupSpec[], kinds: LiveKind[], byRow: KeyedLiveSection['cellsByRow']): LiveSection {
+  const malformed = () => new Error("A reply's keyed live cells are malformed.");
+  if (!byRow || typeof byRow !== 'object' || Array.isArray(byRow)) throw malformed();
+  const namedGroups = new Map(groups.map((group, at) => [
+    group.ref, { at, rows: new Map(group.keys.map((key, row) => [key, row])) },
+  ]));
+  if (namedGroups.size !== groups.length || groups.some(group => typeof group.ref !== 'string')) throw malformed();
+  const namedKinds = new Map(kinds.map((kind, at) => [kind.ref, at]));
+  if (namedKinds.size !== kinds.length || kinds.some(kind => typeof kind.ref !== 'string')) throw malformed();
+  const rows: string[] = [], cells: number[] = [];
+  for (const [row, rowCells] of Object.entries(byRow)) {
+    if (!rowCells || typeof rowCells !== 'object' || Array.isArray(rowCells)) throw malformed();
+    const rowAt = rows.push(row) - 1;
+    for (const [id, cell] of Object.entries(rowCells)) {
+      if (!Array.isArray(cell) || cell.length !== 2) throw malformed();
+      const [kind, sources] = cell;
+      const kindAt = namedKinds.get(kind);
+      if (kindAt === undefined || kinds[kindAt]!.id !== id || !Array.isArray(sources) || sources.length === 0) throw malformed();
+      cells.push(rowAt, kindAt, sources.length);
+      for (const source of sources) {
+        if (!Array.isArray(source) || source.length !== 3) throw malformed();
+        const [group, key, column] = source;
+        const named = namedGroups.get(group);
+        const keyAt = named?.rows.get(key);
+        if (!named || keyAt === undefined) throw malformed();
+        const colAt = groups[named.at]!.columns.indexOf(column);
+        if (colAt < 0) throw malformed();
+        cells.push(named.at, keyAt, colAt);
+      }
+    }
+  }
+  return { groups, kinds, rows, cells };
+}
+
 export function liveSection(reply: unknown): LiveSection | null {
   const obj = reply && typeof reply === 'object' ? (reply as Record<string, unknown>) : null;
   const live = obj?.live;
   if (live === undefined || live === null) return null;
   if (typeof live === 'string' && COUNT_STRING.test(live) && typeof obj!.total === 'string' && Array.isArray(obj!.rows)) return null;
-  const section = live as LiveSection;
-  if (typeof live !== 'object' || !Array.isArray(section.groups) || !texts(section.rows) || !Array.isArray(section.kinds) || !Array.isArray(section.cells))
+  const wire = live as LiveSection | KeyedLiveSection;
+  if (typeof live !== 'object' || !Array.isArray(wire.groups) || !Array.isArray(wire.kinds)
+    || !('cellsByRow' in wire) && (!texts(wire.rows) || !Array.isArray(wire.cells)))
     throw new Error('A reply\'s live cells are malformed.');
-  for (const group of section.groups) {
+  for (const group of wire.groups) {
     const size = Array.isArray(group?.keys) && Array.isArray(group.columns) ? group.keys.length * group.columns.length : -1;
     if (!group || !integer(group.table) || !group.columns.every(integer) || !texts(group.keys)
       || (group.values !== undefined || group.follow !== undefined) === (group.unavailable !== undefined)
@@ -44,8 +80,10 @@ export function liveSection(reply: unknown): LiveSection | null {
       || group.unavailable !== undefined && typeof group.unavailable !== 'string')
       throw new Error('A live cells group is malformed.');
   }
-  if (!section.kinds.every(kind => kind && typeof kind.id === 'string' && OPS.has(kind.op) && Number.isFinite(kind.scale)))
+  if (!wire.kinds.every(kind => kind && typeof kind.id === 'string' && OPS.has(kind.op) && Number.isFinite(kind.scale)))
     throw new Error('A live cell kind is malformed.');
+  if ('cellsByRow' in wire) return indexKeyedCells(wire.groups, wire.kinds, wire.cellsByRow);
+  const section = wire;
   for (let at = 0; at < section.cells.length;) {
     const [row, kind, count] = [section.cells[at], section.cells[at + 1], section.cells[at + 2]];
     if (!integer(row) || row >= section.rows.length || !integer(kind) || kind >= section.kinds.length || !integer(count) || count < 1) throw new Error('A live cell is malformed.');

@@ -857,6 +857,7 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
         reply.missing = Some(why);
         return Ok(reply);
     }
+    live.key_rows();
     let tags = Tags::read(frame)?;
     let links = frame.complete::<tables::CountryLinks>()?;
     let states = frame.complete::<tables::States>()?;
@@ -1030,7 +1031,11 @@ impl AtHour for OccupiedStates {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![OccupiedStatesParams::decl(), OccupiedStatesReply::decl(), OccupiedState::decl(), OccupationLawInfo::decl()]
+        vec![
+            OccupiedStatesParams::decl(), OccupiedStatesReply::decl(), OccupiedState::decl(), OccupationLawInfo::decl(),
+            dashboard_follow::live::Live::KEYED_TYPESCRIPT.into(),
+            "type OccupiedStatesWireReply = OccupiedStatesReply & { live?: KeyedLiveSection };".into(),
+        ]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
