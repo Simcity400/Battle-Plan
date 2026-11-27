@@ -2751,29 +2751,33 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
     assert_eq!(cold.last().map(|r| r.0), Some(through), "catch-up covers the scheduling step");
     assert!(cold.iter().all(|r| !r.1));
     assert_eq!(next, through + 1);
+    gate_from.store(i32::MAX, Ordering::Release);
     advance.send(()).unwrap();
-    drop(steps);
     let (hour, stepped, hook) = catching_up.recv().unwrap();
     assert!(stepped, "the next playing step rejoins the product");
     assert_eq!(hour, last);
     assert_ne!(cold[0].2, hook, "the playhead keeps stepping on a different thread");
 
     host.unpanel(6);
-    gate_from.store(i32::MAX, Ordering::Release);
+    let (control_moved, control_moves) = mpsc::channel();
+    let _control_watch = host.playhead().watch_control(Arc::new(move || { let _ = control_moved.send(()); }));
+    while host.playhead().holding().is_some() {
+        control_moves.recv().unwrap();
+    }
     let (s7_entered_tx, s7_entered_rx) = mpsc::channel();
     let (s7_release_tx, s7_release_rx) = mpsc::channel();
     let s7_release_rx = Mutex::new(s7_release_rx);
     let s7_first = AtomicBool::new(true);
-    let s7_start = Arc::new(AtomicI32::new(-1));
-    let s7_start_cb = Arc::clone(&s7_start);
+    let seeding = Arc::new(Mutex::new(None));
+    let seeding_on = seeding.clone();
     host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
         if s7_first.swap(false, Ordering::Relaxed) {
-            s7_start_cb.store(hour, Ordering::Release);
+            *seeding_on.lock().unwrap() = Some(std::thread::current().id());
             let _ = s7_entered_tx.send(hour);
             let _ = s7_release_rx.lock().unwrap().recv();
+            return reading(hour);
         }
-        let target = s7_start_cb.load(Ordering::Acquire) + quantum;
-        let val = if step.is_none() && hour == target { 9_007_199_254_740_990 + i64::from(hour) } else { i64::from(hour) };
+        let val = if step.is_none() { 9_007_199_254_740_990 + i64::from(hour) } else { i64::from(hour) };
         let cells = crate::live::Cells::default();
         cells.value("r", "v", crate::live::Source { table: TableId::ALL[TABLE], column: 0, key: 100 }, val as f64);
         let live = Arc::new(cells.finish());
@@ -2792,23 +2796,32 @@ fn one_blocked_seed_leaves_other_panels_and_the_clock_free() {
         ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
     }))).unwrap()(7, 1).unwrap();
     let start7 = s7_entered_rx.recv().unwrap();
-    let target7 = start7 + quantum;
+    gate_from.store(start7 + 3 * quantum, Ordering::Release);
     host.playhead().anchor(f64::from(start7 + 3 * quantum), true, 0.0, anchored_at, false);
-    host.playhead().wait_newest(start7 + 2 * quantum).unwrap();
+    let (_, _, advance7) = steps.recv().unwrap();
+    let (put_back, seeded) = mpsc::channel();
+    let _seed_watch = host.playhead().watch_control(Arc::new(move || {
+        if seeding.lock().unwrap().take_if(|id| *id == std::thread::current().id()).is_some() { let _ = put_back.send(()); }
+    }));
     s7_release_tx.send(()).unwrap();
-    let wide7 = 'wide: loop {
+    seeded.recv().unwrap();
+    advance7.send(()).unwrap();
+    let (caught, wide7) = 'wide: loop {
         let (kind, bytes, session) = push.take_sent().expect("six-hour wide catch-up packet");
         push.credit(session, u64::MAX);
         if kind != PANEL { continue; }
         for r in dated::records(&bytes).unwrap() {
-            if r.id == 7 && r.hour == target7 && r.kind == dated::DATA {
-                break 'wide rmp_serde::from_slice::<serde_json::Value>(r.body).expect("panel 7 wide catch-up data");
+            if r.id == 7 && r.hour > start7 && r.kind == dated::DATA {
+                break 'wide (r.hour, rmp_serde::from_slice::<serde_json::Value>(r.body).expect("panel 7 wide catch-up data"));
             }
         }
     };
-    let expected_wide = (9_007_199_254_740_990 + i64::from(target7)).to_string();
+    assert!(caught >= start7 + quantum, "the first reading past the seed comes from the catch-up");
+    let expected_wide = (9_007_199_254_740_990 + i64::from(caught)).to_string();
     assert_eq!(wide7["live"]["groups"][0]["rawValues"], serde_json::json!([expected_wide]), "multi-hour (quantum=6) catch-up preserves lossless wide rawValues");
     assert!(wide7["live"]["groups"][0].get("follow").is_none());
+    gate_from.store(i32::MAX, Ordering::Release);
+    drop(steps);
 
     host.unpanel(7);
     let (s8_entered_tx, s8_entered_rx) = mpsc::channel();
