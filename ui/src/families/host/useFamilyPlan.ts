@@ -1141,7 +1141,6 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         const msg = nameFailureDetail ? 'This country does not exist at this date.' : `${countryName} does not exist at this date.`;
         return { kind: 'absent', message: s.reason ?? msg, detail: nameFailureDetail };
       }
-      if (s.stage === 'no-members') return { kind: 'no-members', reason: s.reason };
     } else if (!isSingle && coverage.outside) {
       return {
         kind: 'outside',

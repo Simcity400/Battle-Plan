@@ -392,7 +392,6 @@ test('FuelBranchesWidget keeps the detail window mounted across refusals, uses t
       history: { key: 'slot:1', spans: [{ firstHour: H1936, lastHour: H1936 + 5000 }] },
       aliases: null,
     },
-    members: null,
     groups: {} as never,
     held: null,
     hourAt: () => null,

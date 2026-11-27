@@ -18,6 +18,7 @@ import {
   type CareerTimelineOptions,
 } from './careerTimelineProjection.ts';
 import { dossierDeclaration } from './dossierProjection.ts';
+import { choicesSelection, leaderChoices } from './choicesData.ts';
 
 const H = (year: number, month = 1, day = 1) => engineHour({ year, month, day, hour: 1 })!;
 const FIRST = H(1936, 1, 1);
@@ -89,7 +90,7 @@ const careerReply = (hour = AT, nextChange: number | null = AT + 500): LeaderCar
 
 const OPTIONS: CareerTimelineOptions = { reference: '42', firstHour: FIRST, surface: '#161616' };
 
-test('the career and hour requests keep the faction and its membership rule', () => {
+test('the career, hour and leader choices requests keep the faction and its membership rule', () => {
   for (const membership of ['hour', 'ever'] as const) {
     const group = { type: 'faction', id: '9' };
     const ctx = {
@@ -106,7 +107,18 @@ test('the career and hour requests keep the faction and its membership rule', ()
         if (read.shape === 'point') assert.deepEqual(read.followQuery?.selection, selection);
       }
     }
+    assert.deepEqual(choicesSelection({ kind: 'group', group: { type: 'faction', id: '9' }, membership, aggregate: false }, []), selection,
+      'the picker asks for the group, so its members are followed by country identity, never by the tags they held');
   }
+  assert.deepEqual(choicesSelection({ kind: 'group', group: { type: 'top', count: 5 }, membership: 'hour', aggregate: false }, []), { kind: 'all' });
+  assert.deepEqual(choicesSelection({ kind: 'tags', tags: ['AAA'] }, ['AAA']), { kind: 'countries', countries: ['AAA'] });
+  assert.equal(choicesSelection({ kind: 'selected' }, []), null);
+  const named = (_hour: number, tag: string) => ({ name: `Country ${tag}` });
+  assert.deepEqual(leaderChoices([['7', 'Known', 'AAA', 10, null], ['8', 'Unsure', 'BBB', 20, 'Membership of this group is not recorded at this hour']], 'c', named)
+    .map(choice => [choice.label, choice.detail]), [
+    ['Known · Country AAA', undefined],
+    ['Unsure · Country BBB · Membership not recorded', 'Membership of this group is not recorded at this hour'],
+  ], 'a general whose owner’s membership falls in a roster gap is offered as not recorded, never as a known member');
 });
 
 test('general career timeline projects leader header KPIs, command bars, battle histogram, trait diamonds, and training meters', () => {

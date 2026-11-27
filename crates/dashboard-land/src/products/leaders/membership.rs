@@ -6,6 +6,12 @@ use dashboard_query::{
 use dashboard_world::products::group_members::{UNKNOWN, dated};
 use std::{collections::HashMap, io, sync::{Arc, atomic::AtomicBool}};
 
+pub(super) enum Served<'a> {
+    Member,
+    Unknown(&'a str),
+    Never,
+}
+
 #[derive(Default)]
 pub(super) struct Roster {
     slots: HashMap<u32, Vec<HourSpan>>,
@@ -77,6 +83,16 @@ impl Roster {
         roster.edges.sort_unstable();
         roster.edges.dedup();
         Ok(roster)
+    }
+
+    pub(super) fn served(&self, slot: u32, life: &[(i32, i32)]) -> Served<'_> {
+        let spans = self.slots.get(&slot).map(Vec::as_slice).unwrap_or_default();
+        if life.iter().any(|&(first, last)| spans.get(spans.partition_point(|span| span.last_hour < first)).is_some_and(|span| span.first_hour <= last)) {
+            return Served::Member;
+        }
+        life.iter()
+            .find_map(|&(first, last)| self.unknown.get(self.unknown.partition_point(|gap| gap.last_hour < first)).filter(|gap| gap.first_hour <= last))
+            .map_or(Served::Never, |gap| Served::Unknown(&gap.reason))
     }
 
     pub(super) fn includes(&self, slot: u32, hour: i32) -> bool {
