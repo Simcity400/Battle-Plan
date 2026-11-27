@@ -59,6 +59,7 @@ pub enum NativeEvent {
         branch: Option<String>,
         hour: Option<i32>,
         revision: Option<String>,
+        drawn: Option<DrawnMapFrame>,
         open_id: Option<u64>,
         error: Option<String>,
     },
@@ -746,6 +747,16 @@ pub struct ViewerState {
     pub branch: Option<String>,
     pub hour: Option<i32>,
     pub revision: Option<String>,
+    pub drawn: Option<DrawnMapFrame>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DrawnMapFrame {
+    pub branch: String,
+    pub hour: i32,
+    pub drawn_at: f64,
+    pub frame: u64,
 }
 
 pub fn replay_revision(path: impl AsRef<Path>) -> io::Result<String> {

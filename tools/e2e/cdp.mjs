@@ -181,7 +181,7 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   const sent = new Map();
   on('Network.requestWillBeSent', ({ requestId, request }) => {
     const command = /^http:\/\/ipc\.localhost\/([^/?]+)/.exec(request.url)?.[1];
-    if (command !== 'set_dashboard_maps') return;
+    if (!['set_dashboard_maps', 'seek_map', 'popout_seek'].includes(command)) return;
     const read = request.postData !== undefined ? Promise.resolve(request.postData)
       : send('Network.getRequestPostData', { requestId }).then(reply => reply.postData, () => null);
     read.then(body => { if (body) sent.set(command, { at: Date.now(), args: JSON.parse(body) }); }, () => {});

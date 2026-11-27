@@ -383,10 +383,11 @@ impl NativeHost {
                 branch,
                 hour,
                 revision,
+                drawn,
                 open_id,
                 error,
             } => {
-                inner.note_viewer_state(ViewerState { path, branch, hour, revision }, open_id);
+                inner.note_viewer_state(ViewerState { path, branch, hour, revision, drawn }, open_id);
                 inner.status.error = error;
             }
             NativeEvent::Error { message } => {
@@ -439,6 +440,7 @@ mod tests {
                     revision: Some("v1".into()),
                     branch: Some("1".into()),
                     hour: Some(12),
+                    drawn: None,
                 },
                 ..Default::default()
             },

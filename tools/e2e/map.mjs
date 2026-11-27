@@ -254,7 +254,8 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
           } else if (moves && drawn?.states === 0) reasons.push('the map acknowledged no frame during it: it was still loading or had stalled');
           else if (moves && drawn[moves] < 2) reasons.push(`the map did not ${moves === 'zooms' ? 'zoom' : 'pan'} (${drawn[moves]} ${moves === 'zooms' ? 'zoom levels' : 'camera centres'} drawn${drawn.loading ? ', while loading' : ''})`);
           const zooms = drawn?.zooms ?? null;
-          await s.record({ area: label ? 'mapfps' : 'map', item, label: while_, pass: reasons.length === 0, reasons, from, to, view: area.view, zoomLevels: zooms, screenshot: false });
+          const branch = where === 'campaign' && entry.id === 'playback' ? s.app.lastSent('seek_map')?.args.branch : null;
+          await s.record({ area: label ? 'mapfps' : 'map', item, label: while_, pass: reasons.length === 0, reasons, from, to, view: area.view, branch, zoomLevels: zooms, screenshot: false });
         } catch (error) {
           await s.fail(label ? 'mapfps' : 'map', item, while_, `could not send its input: ${error.message}`);
         } finally {

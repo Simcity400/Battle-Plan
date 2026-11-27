@@ -16,6 +16,7 @@ export interface ViewerState {
   revision: string | null;
   branch: string | null;
   hour: number | null;
+  drawn?: { branch: string; hour: number; drawnAt: number; frame: number } | null;
 }
 
 export interface DesktopState {

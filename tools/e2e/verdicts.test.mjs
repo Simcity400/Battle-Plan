@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, presentedHours, framesLate, handledAt, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, firstPopoutFrame, presentedHours, presentedMapFrames, framesLate, handledAt, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -409,4 +409,30 @@ test('map playback counts the acknowledged hours actually presented, never missi
   assert.equal(presentedHours([], frames, window), null);
   assert.equal(presentedHours(readings, [], window), null);
   assert.equal(presentedHours(readings, frames, { ...window, view: null }), null);
+});
+
+test('full maps report the drawn branch and hour of their own presented frames', () => {
+  const open = (map, role) => ({ t: 'map_open', session: 'map', map, role });
+  const draw = (map, frame, branch, hour) => ({ t: 'map', session: 'map', map, frame, branch, hour, drawn_at: 110, requested_hour: 99 });
+  const paint = (map, frame, at) => ({ t: 'map_present', session: 'map', map, frame, at });
+  const records = [
+    open(1, 'main'), open(2, 'popout'),
+    draw(1, 1, 'a', 3), paint(1, 1, 111),
+    draw(1, 2, 'a', 3), paint(1, 2, 112),
+    draw(1, 3, 'b', 3), paint(1, 3, 113),
+    draw(1, 4, 'a', 4),
+    draw(2, 4, 'c', 5), paint(2, 4, 114),
+    draw(2, 5, 'c', 6), { ...paint(2, 5, 115), session: 'other' },
+  ];
+  const window = { session: 'map', view: null, from: 110, to: 120, branch: 'a' };
+  assert.equal(presentedHours([], records, window), 1);
+  assert.equal(presentedHours([], records, { ...window, branch: 'b' }), 1);
+  assert.equal(presentedHours([], records, { ...window, branch: 'c' }), null);
+  assert.equal(presentedHours([], records, { ...window, from: 114 }), null);
+  assert.deepEqual(presentedMapFrames(records, window, 'popout'), [{ at: 114, branch: 'c', hour: 5 }]);
+  assert.deepEqual(presentedMapFrames(records.filter(record => record.t !== 'map_present'), window, 'popout'), []);
+  const opened = { session: 'map', input: 110, at: 120, popoutTarget: { branch: 'c', hour: 5 } };
+  assert.equal(firstPopoutFrame(records, opened).reason, null);
+  assert.match(firstPopoutFrame(records, { ...opened, popoutTarget: { branch: 'd', hour: 5 } }).reason, /drew branch c hour 5, expected branch d hour 5/);
+  assert.match(firstPopoutFrame(records, { ...opened, popoutTarget: { branch: 'c', hour: 99 } }).reason, /drew branch c hour 5, expected branch c hour 99/);
 });

@@ -66,6 +66,7 @@ fn restart_restores_the_latest_path_only_open_even_after_an_old_state_for_it() {
                 branch: Some("2".into()),
                 hour: Some(123),
                 revision: Some("old-version".into()),
+                drawn: None,
             },
             ..Default::default()
         },
@@ -119,6 +120,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
                 branch: Some("2".into()),
                 hour: Some(123),
                 revision: Some("old-version".into()),
+                drawn: None,
             },
             ..Default::default()
         },
@@ -164,6 +166,7 @@ fn seek_acknowledgement_requires_the_same_recording_and_revision() {
         revision: Some("v1".into()),
         branch: Some("3".into()),
         hour: Some(42),
+        drawn: None,
     };
     assert!(!target.matches(&state));
     state.path = Some(target.path.clone());
