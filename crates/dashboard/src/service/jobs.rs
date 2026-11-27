@@ -670,7 +670,7 @@ impl Inner {
             crate::answer::open_all(&source).map_err(|error| error.to_string())?;
             read_key_names_ahead(&source, self.content());
             read_naming_ahead(&source);
-            read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Recorded));
+            read_feed_scope_ahead(&source, self.content_for(&source, dashboard_base::source::Work::Ahead));
             read_air_observed_ahead(&source);
             source
                 .name_countries(self.content().as_ref())
