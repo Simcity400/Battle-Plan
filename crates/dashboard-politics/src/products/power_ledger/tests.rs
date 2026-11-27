@@ -945,14 +945,15 @@ fn command_power_allocation_clamps_and_capped_refunds_record_cap_losses() {
     let query = dashboard_base::queries::query(&src, 1).unwrap();
     let naming = naming::context(&src, &LoadContext { content: None }).unwrap();
     let reply = spending(&query, &PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Command, from: 102, to: 112 }, &naming, &AtomicBool::new(false)).unwrap();
-    let gains: Vec<_> = reply.gains.iter().map(|gain| (gain.read, gain.hour, gain.gained_raw.as_deref(), gain.capped_raw.as_deref())).collect();
+    assert!(reply.payments.is_empty() && reply.days.is_empty(), "ground-crew holds, allocation clamps, and capped refunds are not spending");
+    let gains: Vec<_> = reply.gains.iter().map(|gain| (gain.read, gain.hour, gain.gained_raw.as_deref(), gain.capped_raw.as_deref(), gain.unknown_days, gain.unmatched)).collect();
     assert_eq!(
         gains,
         [
-            (108, Some(108), Some("0"), Some("1500000")),
-            (110, Some(110), Some("0"), Some("1500000")),
+            (108, Some(108), Some("0"), Some("1500000"), 0, 0),
+            (110, Some(110), Some("0"), Some("1500000"), 0, 0),
         ],
-        "allocation clamp and capped allocation refund record their cap losses without counting ground-crew holds as gains"
+        "allocation clamp and capped allocation refund record exact cap losses without counting ground-crew holds as gains or spending"
     );
 }
 
