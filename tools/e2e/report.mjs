@@ -5,7 +5,7 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, classifyPerfFile, costSessionConfinement, machineLine, profileLines, sessionConfinement, framesLate, handledAt, freshnessByKind, presentedHours, losses, mapFrames, phaseSeconds, presentedAt, playbackPace, windowLosses } from './verdicts.mjs';
 import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
@@ -54,7 +54,7 @@ async function perfRecords(folder, { keepQueries = false } = {}) {
   }
   for (const { name, info: { session } } of viewers) {
     await read(name, line => {
-      if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
+      if (/^\{"t":"map(_open)?"/.test(line)) mapRecords.push({ ...JSON.parse(line), session });
       else if (lost(line)) records.push({ ...JSON.parse(line), session });
     });
   }
@@ -83,7 +83,7 @@ const quantileCells = q => [q.n, fmt(q.p50), fmt(q.p95), fmt(q.max)];
 
 const results = sweep?.results ?? [];
 for (const result of results.filter(result => result.drawnAt != null)) {
-  if (result.item.startsWith('hover: ') && result.delay) result.deadline = handledAt(mapRecords, result.posted) === null ? null : handledAt(mapRecords, result.posted) + result.delay;
+  if (result.item.startsWith('hover: ') && result.delay) result.deadline = handledAt(mapRecords, result.posted, result.session) === null ? null : handledAt(mapRecords, result.posted, result.session) + result.delay;
   else if (result.item.startsWith('hover: ')) result.deadline = result.delay === null ? null : result.posted;
   const start = result.item.startsWith('mode: ') ? result.sent : result.item.startsWith('hover: ') ? result.deadline : result.input;
   if (result.item.startsWith('hover: ') && result.delay && result.deadline === null) {
@@ -91,7 +91,7 @@ for (const result of results.filter(result => result.drawnAt != null)) {
     continue;
   }
   if (start == null) continue;
-  const at = presentedAt(mapRecords, result.drawnAt);
+  const at = presentedAt(mapRecords, result.drawnAt, result.session);
   const budget = result.budget ?? BUDGET_MS;
   const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
   if (at === null) Object.assign(result, { ms: null, reasons: [...reasons, UNPRESENTED] });
@@ -104,12 +104,9 @@ for (const result of results.filter(result => result.drawnAt != null)) {
   result.pass = result.reasons.length === 0;
 }
 for (const result of results.filter(result => result.item === 'pop-out' && result.label === 'open pop-out' && result.input != null)) {
-  const at = popoutPresented(mapRecords, result.input, result.hour);
   const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
-  if (at === null) reasons.push(`the pop-out's viewer logged no presented frame of hour ${result.hour}, so its first frame is unobservable`);
-  const ms = at === null ? null : at - result.input;
-  if (ms !== null && ms > (result.budget ?? BUDGET_MS)) reasons.push(`${Math.round(ms)} ms, over ${result.budget ?? BUDGET_MS} ms`);
-  Object.assign(result, { ms, reasons, presentedAt: at, pass: reasons.length === 0 });
+  reasons.push('the pop-out viewer reports no drawn time for its hour, so its first frame is unobservable');
+  Object.assign(result, { ms: null, reasons, presentedAt: null, pass: false });
 }
 if (!sweep) section('Sweep', ['Area', 'Result'], [{ cells: ['Sweep', `**FAIL**: not run: ${run.sweepNotRun ?? 'it did not run'}`], pass: false }]);
 const area = name => results.filter(result => result.area === name);
@@ -254,7 +251,7 @@ if (sweep) {
     area('catalogue').filter(result => result.label === 'add').map(result => {
       const from = result.shownFrom ?? result.input;
       const hour = records ? catalogueHour(records, { ...result, input: from }) : { pass: false, reason: 'no perf log' };
-      const presented = hour.pass && result.shownFrom != null ? presentedAt(mapRecords, hour.drawnAt) : null;
+      const presented = hour.pass && result.shownFrom != null ? presentedAt(mapRecords, hour.drawnAt, result.session) : null;
       const ms = !hour.pass ? result.ms : result.shownFrom != null ? (presented === null ? null : presented - from) : Math.max(result.ms ?? 0, hour.at - from);
       const reasons = [...result.reasons.filter(reason => !reason.includes(' ms, over ')), ...(hour.pass ? [] : [hour.reason])];
       if (hour.pass && result.shownFrom != null && presented === null) reasons.push(UNPRESENTED);
@@ -296,11 +293,12 @@ if (sweep) {
   section(`Map interactions (the viewer's frames at 120 Hz: window-thread work and GPU time per frame within ${MAP_FRAME_MS.toFixed(2)} ms, p99 within ${MAP_P99_MS} ms; a frame over ${MAP_FRAME_MS.toFixed(2)} ms is a dropped frame)`,
     ['Interaction', 'While', 'Frames', 'Work p50', 'Work p99', 'Work max', 'GPU p99', 'GPU max', 'Dropped', 'Result', 'Why'],
     area('map').filter(result => result.item.startsWith('interaction: ')).map(result => {
-      const frames = result.from ? mapFrames(mapRecords, result.from, result.to) : null;
+      const frames = result.from ? mapFrames(mapRecords, result.from, result.to, result.session) : null;
       const reasons = [...result.reasons, ...(frames ? frames.reasons : ['no window measured'])];
       if (result.item.startsWith('interaction: playback') && result.from) {
-        const hours = hoursInstalled(mapRecords, result.view ?? null, result.from, result.to);
-        if (hours < 2) reasons.push(`the map installed ${hours} hours while playing: it did not play`);
+        const hours = presentedHours(records ?? [], mapRecords, result);
+        if (hours === null) reasons.push('the viewer reported no presented hours for this map, so playback is unobservable');
+        else if (hours < 2) reasons.push(`the map presented ${hours} distinct hours while playing: it did not play`);
       }
       const pass = reasons.length === 0;
       const ms = value => value?.toFixed(1) ?? '–';
@@ -311,7 +309,7 @@ if (sweep) {
   const uncapped = area('mapfps');
   section('Map frame rate achieved, presented uncapped (the viewer without vsync, in a session of its own)', ['Interaction', 'While', 'Frames', 'FPS', 'Work p99', 'Note'],
     uncapped.length ? uncapped.map(result => {
-      const frames = result.from ? mapFrames(mapRecords, result.from, result.to) : null;
+      const frames = result.from ? mapFrames(mapRecords, result.from, result.to, result.session) : null;
       const ran = result.pass && !!frames?.frames;
       return { pass: ran, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', frames?.frames ? Math.round(frames.fps) : '–', frames?.work.p99?.toFixed(1) ?? '–',
         ran ? '' : `**FAIL**: ${why([...result.reasons, ...(frames?.frames ? [] : ['no frames recorded'])])}`] };
@@ -321,7 +319,7 @@ if (sweep) {
     area('map').filter(result => result.item.startsWith('hover presence: ') || result.item.startsWith('hover: ')).map(result => {
       const isPresence = result.item.startsWith('hover presence: ');
       const target = isPresence ? result.item.slice(16) : result.item.slice(7);
-      const late = !isPresence && result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt) : null;
+      const late = !isPresence && result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt, result.session) : null;
       const reasons = [...result.reasons, ...(late ? [`${late} frames drawn before the highlight`] : [])];
       const pass = result.pass && !late;
       return { pass, cells: [target, isPresence ? 'presence' : 'timing', result.label ?? '–', isPresence ? '–' : fmt(result.ms), late ?? '–', verdict(pass), why(reasons)] };
