@@ -71,9 +71,9 @@ test('installed War contribution rows open a cancellable history and keep its re
       await act('nextFrames()');
       assert.equal(await act<{ pick: string }>('read()').then(value => value.pick), 'equipmentDamage');
       await mouse('.fh-body', 0.47, 43);
-      assert.match(await act<{ title: string }>('loading(3)').then(reply => reply.title), /AAA/);
+      assert.match(await act<{ title: string }>('loading(3)').then(reply => reply.title), /Accord/);
       await mouse('.fh-body', 0.85, 43);
-      assert.match(await act<{ title: string }>('loading(3,"GGG")').then(reply => reply.title), /GGG/);
+      assert.match(await act<{ title: string }>('loading(3,"Grove")').then(reply => reply.title), /Grove/);
       await act('answer(2,true)');
       await act('chart()');
       const missing = await act<{ text: string; count: number }>('read()');

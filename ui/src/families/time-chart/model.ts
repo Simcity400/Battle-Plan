@@ -231,6 +231,7 @@ export interface ChartHoverDetail {
   readonly items: readonly TooltipListItem[];
   readonly itemsBySeries?: ReadonlyMap<string, readonly TooltipListItem[]>;
   readonly replacesSeries?: boolean;
+  readonly replacesMarkerSeries?: boolean;
 }
 
 export type ChartValueFormat = 'number' | 'share' | 'percent' | 'signedPercent' | 'compact' | 'signed1' | 'power';

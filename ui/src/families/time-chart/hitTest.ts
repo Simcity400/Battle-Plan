@@ -600,7 +600,7 @@ export function deriveTimeChartTooltip(
       }
     }
     const detail = model.hoverDetail;
-    const valueItems = detail?.hour === m.hour && detail.replacesSeries ? [...detail.items] : seriesTooltipItemsAt(model, m.hour);
+    const valueItems = detail?.hour === m.hour && detail.replacesMarkerSeries ? [...detail.items] : seriesTooltipItemsAt(model, m.hour);
     if (valueItems.length > 0 && eventItems.length > 0) {
       valueItems[0] = { ...valueItems[0]!, divider: true };
     }

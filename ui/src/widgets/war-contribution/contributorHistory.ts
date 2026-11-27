@@ -7,10 +7,8 @@ import type { WarContributionHistoryReply, WarHistoryContributor, WarMeasureKey,
 import { observationAt } from '../wars/warsData.ts';
 import { MEASURE_LIST } from './definition.ts';
 import { contributionPartial, groupCoverageReason } from './warContributionPlan.ts';
-
 const coverage = new WeakMap<WarObservation, { listed: readonly Set<string>[]; reason?: string }>();
 export const HISTORY_SCALES = ['Recorded amount', 'Share of side', 'Share of war'] as const;
-
 export function permyriad(part: bigint | null, whole: bigint | null): bigint | null {
   if (part === null || whole === null || whole <= 0n) return null;
   const rounded = ((part < 0n ? -part : part) * 20_000n + whole) / (whole * 2n);
@@ -107,7 +105,7 @@ export function historyChart(history: WarContributionHistoryReply, people: reado
   return { kind: 'war-contribution-history', measureTitle: MEASURE_LIST.find(item => item.key === measure)!.label, mode: 'lines', hour: until,
     extent: [Math.min(firstHour, until - 1), until], yAxis: scale ? { format: 'percent' } : { format: 'number', exactDecimals: 5 },
     series, gaps: history.gaps, markers, legend: series.length > 1 ? series.map(({ id, name, color }) => ({ id, label: name, color })) : undefined,
-    detailAt: (hour: number, nameAt?: (person: WarHistoryContributor, at: number) => { label: string; reason?: string }): ChartHoverDetail => ({ hour, replacesSeries: true, items: people.map((person, i) => {
+    detailAt: (hour: number, nameAt?: (person: WarHistoryContributor, at: number) => { label: string; reason?: string }): ChartHoverDetail => ({ hour, replacesSeries: true, replacesMarkerSeries: true, items: people.map((person, i) => {
       const name = nameAt?.(person, hour) ?? { label: memberAt(person, hour)?.[3] ?? series[i]!.name };
       const value = readingText(detailAt(history, person, index, hour)[scale]!, scale);
       return { label: name.label, swatch: series[i]!.color, value: name.reason ? `${value} · Name not recorded. ${name.reason}` : value };

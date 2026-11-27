@@ -32,19 +32,16 @@ export interface OpenedContributor {
   readonly side: number;
   readonly measure: WarMeasureKey;
 }
-
 const keyAt = (person: WarHistoryContributor, hour: number) => {
   const member = memberAt(person, hour);
   return member ? countryTagKey(member[3]) : countryHolderKey(person.slot, person.id);
 };
-
 function countryName(identity: CountryIdentityResult, tag: string) {
   const field = identity.kind === 'known' ? identity.name : identity;
   const fallback = identity.kind === 'known' && identity.tag.kind === 'known' ? identity.tag.value : tag;
   return { label: field.kind === 'known' ? field.value : fallback, reason: field.kind === 'failed' ? field.failure.message : 'reason' in field ? field.reason : undefined };
 }
-type Heading = ReturnType<typeof countryName> & { tag: string };
-
+type Inspection = { opened: OpenedContributor; hour: number; subjects: readonly WarHistoryContributor[]; focused?: WarHistoryContributor };
 function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model: ReturnType<typeof historyChart>; readonly hour: number; readonly first: number; readonly inspect: (hour: number) => void; readonly theme: FamilyTheme }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const lastVisit = useRef<[string, number, number] | null>(null);
@@ -113,7 +110,7 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     }} />;
 }
 
-function HistoryBody({ history, opened, track, runtime, setHeading }: { readonly history: WarContributionHistoryReply; readonly opened: OpenedContributor; readonly track: BoundTrack; readonly runtime: WidgetRuntime; readonly setHeading: (heading: Heading) => void }) {
+function HistoryBody({ history, opened, identities, setInspection }: { readonly history: WarContributionHistoryReply; readonly opened: OpenedContributor; readonly identities: ReturnType<typeof useIdentities>; readonly setInspection: (inspection: Inspection) => void }) {
   const { theme } = useFamilyTheme();
   const [measure, setMeasure] = useState(opened.measure);
   const [scale, setScale] = useState(1);
@@ -131,10 +128,9 @@ function HistoryBody({ history, opened, track, runtime, setHeading }: { readonly
   const hidden = compare ? side.length - people.length : 0;
   const tag = focused && memberAt(focused, hour)?.[3];
   const openingTag = focused && memberAt(focused, opened.at)?.[3];
-  const scope = useIdentityScope(runtime.client, track.source, track.branch.id);
-  const subjects = focused && !people.includes(focused) ? [...people, focused] : people;
-  const { resolve, flagFor } = useIdentities(runtime.client, track.source, scope, subjects.map(person => ({ key: keyAt(person, hour), hour })),
-    { needFlags: true, flagSize: 'small', branchBounds: [track.branch.firstHour, track.branch.lastHour] });
+  const { resolve, flagFor } = identities;
+  useLayoutEffect(() => setInspection({ opened, hour, focused, subjects: focused && !people.includes(focused) ? [...people, focused] : people }),
+    [opened, hour, focused, people, setInspection]);
   const nameAt = useCallback((person: WarHistoryContributor, at: number) => countryName(resolve(keyAt(person, at), at), memberAt(person, at)?.[3] ?? memberAt(person, opened.at)![3]), [resolve, opened.at]);
   const labelsKey = JSON.stringify(people.map(person => nameAt(person, hour).label));
   const model = useMemo(() => {
@@ -147,7 +143,6 @@ function HistoryBody({ history, opened, track, runtime, setHeading }: { readonly
   const identity = focused && resolve(keyAt(focused, hour), hour);
   const { label: name, reason } = identity ? countryName(identity, (tag ?? openingTag)!) : { label: undefined, reason: undefined };
   const flag = identity && identity.kind === 'known' && identity.flagChoice.kind === 'known' ? flagFor(identity.flagChoice.value) : null;
-  useLayoutEffect(() => { if (opened.tag && name) setHeading({ tag: opened.tag, label: name, reason }); }, [opened.tag, name, reason, setHeading]);
   const unread = history.gaps.find(gap => gap.firstHour <= hour && hour <= gap.lastHour)?.reason ?? 'The contributor’s history was not recorded for this selection.';
   return <>
     <div className="war-history-options">
@@ -181,7 +176,7 @@ export default function ContributorWindow({ opened, track, runtime, anchor, onCl
   readonly onClose: () => void;
 }) {
   const [result, setResult] = useState<WarContributionHistoryReply | string>();
-  const [heading, setHeading] = useState<Heading>();
+  const [inspection, setInspection] = useState<Inspection>();
   const [request] = useState(opened.request);
   useEffect(() => {
     const controller = new AbortController();
@@ -194,11 +189,18 @@ export default function ContributorWindow({ opened, track, runtime, anchor, onCl
     );
     return () => controller.abort();
   }, [runtime.client, request]);
-  const title = heading?.tag === opened.tag ? heading : undefined;
+  const scope = useIdentityScope(runtime.client, track.source, track.branch.id);
+  const shown = inspection?.opened === opened ? inspection : undefined;
+  const at = shown?.hour ?? opened.at;
+  const titleKey = shown?.focused ? keyAt(shown.focused, at) : opened.tag ? countryTagKey(opened.tag) : null;
+  const asks = shown?.subjects.map(person => ({ key: keyAt(person, at), hour: at })) ?? [];
+  if (titleKey && !shown?.focused) asks.push({ key: titleKey, hour: opened.at });
+  const identities = useIdentities(runtime.client, track.source, scope, asks, { needFlags: true, flagSize: 'small', branchBounds: [track.branch.firstHour, track.branch.lastHour] });
+  const title = opened.tag && titleKey ? countryName(identities.resolve(titleKey, shown?.focused ? at : opened.at), opened.tag) : undefined;
   return <DetailWindowHost open subject={String(request.params.warId)} hour={opened.at} anchor={anchor} returnFocus=".fh-body[tabindex], .fh-sr-only[tabindex='0'], .fh-sr-only [tabindex='0']"
     className="war-history" settled={result !== undefined} onClose={onClose}
     title={<>{opened.tag && <span data-tooltip={title?.reason}>{title?.label ?? opened.tag} · </span>}Contributor history · {opened.warName}</>}>
-    {typeof result === 'object' ? <HistoryBody key={`${opened.side}:${opened.tag}:${opened.measure}`} history={result} opened={opened} track={track} runtime={runtime} setHeading={setHeading} />
+    {typeof result === 'object' ? <HistoryBody key={`${opened.side}:${opened.tag}:${opened.measure}`} history={result} opened={opened} identities={identities} setInspection={setInspection} />
       : <p role="status">{result ?? 'Reading contributor history…'}</p>}
   </DetailWindowHost>;
 }
