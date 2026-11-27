@@ -58,7 +58,11 @@ const cause = (row: Record<string, unknown>): boolean => {
   return CAUSED_KINDS.has(row.kind as string) && object(value) && optionalText(value.how) && optionalText(value.within) && optionalText(value.conference) && optionalText(value.reason)
     && (value.state === null || value.state === undefined || (int(value.state) && value.state > 0)) && (value.ally === null || value.ally === undefined || opaqueTag(value.ally))
     && Array.isArray(value.notes) && value.notes.every(note => typeof note === 'string')
-    && (value.selectedOption === undefined || int(value.selectedOption)) && typeof value.targetRecorded === 'boolean';
+    && (value.selectedOption === undefined || int(value.selectedOption))
+    && (value.target === undefined || (object(value.target) && (
+      value.target.kind === 'country'
+      || (value.target.kind === 'state' && (value.target.id === null || (int(value.target.id) && value.target.id > 0)))
+    )));
 };
 
 const decisionState = (row: Record<string, unknown>): boolean => {

@@ -2605,6 +2605,7 @@ nameMissing?: string,
  * field, each with its original key and reason.
  */
 gaps?: Array<EventFeedGap>, };
+export type EventFeedScriptTarget = { "kind": "country" } | { "kind": "state", id: number | null, };
 export type EventFeedCause = {
 /**
  * The native operation the event happened in.
@@ -2637,11 +2638,7 @@ notes: Array<string>,
 /**
  * A scripted event's selected native option ordinal, where recorded.
  */
-selectedOption?: number,
-/**
- * Whether a scripted event recorded a country or numeric target.
- */
-targetRecorded: boolean, };
+selectedOption?: number, target?: EventFeedScriptTarget, };
 export type DecisionLifecycleState = { "kind": "active" } | { "kind": "available" } | { "kind": "completed" } | { "kind": "failed", observedHour: number, } | { "kind": "aborted" } | { "kind": "reEnableCooldown" } | { "kind": "unsupported", raw: number, } | { "kind": "notApplicable", reason: string, } | { "kind": "notRecorded", reason: string, };
 export type EventWindowDecision = "requested" | "aiControlled" | "hiddenOrAiControlled" | "notViewingCountry" | "senderExcluded" | "playerRestrictedNotMajor" | "playerRestrictedOptionTrigger" | "existingInstance" | "alreadyOpen";
 export type EventWindowKind = "normal" | "news" | "leader" | "operative";

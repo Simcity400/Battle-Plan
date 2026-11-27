@@ -337,9 +337,17 @@ pub struct EventFeedCause {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub selected_option: Option<i32>,
-    #[doc = " Whether a scripted event recorded a country or numeric target."]
-    #[serde(default)]
-    pub target_recorded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub target: Option<EventFeedScriptTarget>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EventFeedScriptTarget {
+    Country,
+    State { id: Option<u32> },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

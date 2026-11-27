@@ -487,10 +487,10 @@ test('S3: a malformed decision row becomes a refused slot with its reason instea
   }
 });
 
-test('a decision targeting a state whose name is still loading keeps pending in the Place cell instead of emitting State N', () => {
+test('a state-targeted decision shows one country flag and resolves the target in Place', () => {
   const start = day(3, 1);
   const stateEdge = edge('decisionSelected', start);
-  const occ = card([{ ...stateEdge, row: { ...stateEdge.row, cause: { state: 77, notes: [], targetRecorded: false } } }]);
+  const occ = card([{ ...stateEdge, row: { ...stateEdge.row, cause: { notes: [], target: { kind: 'state', id: 77 } } } }]);
   const source = buildRowSourceFromHead('test:decisions-pending-state', {
     branchId: '1', log: 'feed-events', columns: [], baseOrdinal: '0', firstOrdinal: '0', offset: '0', total: '1', counts: [],
     rows: [{ hour: start, key: 'k-state', ordinal: '0', cells: [], occurrence: occ }],
@@ -512,5 +512,6 @@ test('a decision targeting a state whose name is still loading keeps pending in 
     createBoundedReadView({ hour: start + 1, rows: new Map([['main', source]]), identity: pendingIdentity }),
     { artwork: false, breaks: [] },
   );
+  assert.deepEqual(model.rows[0]?.cells.country?.flags?.map(flag => flag.tag), ['GER']);
   assert.deepEqual(model.rows[0]?.cells.place?.value, { kind: 'pending', reason: 'Name is loading' });
 });

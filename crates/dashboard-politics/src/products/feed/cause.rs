@@ -1,5 +1,5 @@
 
-use super::{EventFeedCause, row::FeedEvent};
+use super::{EventFeedCause, EventFeedScriptTarget, row::FeedEvent};
 use replay_data::event_feed_rows::EventFeedRoute;
 
 fn route(code: u8) -> EventFeedRoute {
@@ -27,14 +27,18 @@ pub(super) fn words(event: &FeedEvent, ally: Option<String>) -> Option<EventFeed
             }),
             notes: notes.into_iter().filter(|(held, _)| *held && cause.flags & 1 != 0).map(|(_, note)| note.to_owned()).collect(),
             selected_option: None,
-            target_recorded: false,
+            target: None,
         }
     });
     if event.scripted() {
-        let words = words.get_or_insert_with(|| EventFeedCause { how: None, within: None, conference: None, state: None, ally: None, reason: None, notes: Vec::new(), selected_option: None, target_recorded: false });
+        let words = words.get_or_insert_with(|| EventFeedCause { how: None, within: None, conference: None, state: None, ally: None, reason: None, notes: Vec::new(), selected_option: None, target: None });
         words.notes.extend(script_notes(event));
         words.selected_option = event.option;
-        words.target_recorded = event.country_target.is_some() || event.numeric_target.is_some();
+        words.target = if event.country_target.is_some_and(|country| country as i32 > 0) {
+            Some(EventFeedScriptTarget::Country)
+        } else {
+            event.numeric_target.map(|numeric| EventFeedScriptTarget::State { id: (numeric > 0).then_some(numeric as u32) })
+        };
     }
     words
 }
