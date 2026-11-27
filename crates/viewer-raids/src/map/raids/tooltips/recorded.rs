@@ -744,17 +744,29 @@ impl<'a> Context<'a, '_> {
     fn flag(
         &self,
         country: u32,
-        flags: &OnceCell<Result<Vec<dashboard_text::flag_choices::FlagChoice>>>,
+        flags: &OnceCell<Result<dashboard_text::flag_choices::Choices>>,
     ) -> Result<String> {
-        let choice = flags
+        let choices = flags
             .get_or_init(|| {
                 dashboard_text::flag_choices::choices(self.world.frame()).map_err(|e| e.to_string())
             })
             .as_ref()
-            .map_err(Clone::clone)?
+            .map_err(Clone::clone)?;
+        let (choices, incomplete) = match choices {
+            dashboard_text::flag_choices::Choices::Unavailable(why) => return Err(why.clone()),
+            dashboard_text::flag_choices::Choices::Available {
+                choices,
+                incomplete,
+            } => (choices, incomplete),
+        };
+        let choice = choices
             .iter()
             .find(|choice| self.world.slot(choice.raw) == Some(country))
-            .ok_or("controller flag operands are absent")?;
+            .ok_or_else(|| {
+                incomplete
+                    .clone()
+                    .unwrap_or_else(|| "controller flag operands are absent".into())
+            })?;
         choice.key(self.flag_exists)?;
         if choice.tag.chars().count() != 3 {
             return Err("controller flag tag is not three codepoints".into());

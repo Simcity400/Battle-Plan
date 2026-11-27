@@ -757,14 +757,29 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         good_above: GOOD_ABOVE,
         warnings,
     };
-    let rows = match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame) {
-        Ok(rows) => rows,
-        Err(error) => return Ok(reply(format!("Air scores are not recorded at this hour: {error}"), warnings)),
+    let (rows, complete) = match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(frame)? {
+        dashboard_text::metadata::RecordedRows::Complete(rows) => (rows, true),
+        dashboard_text::metadata::RecordedRows::Truncated { rows, missing } => {
+            if rows.is_empty() {
+                return Ok(reply(format!("Air scores were read only in part at this hour ({missing} rows not read)"), warnings));
+            }
+            (rows, false)
+        }
+        dashboard_text::metadata::RecordedRows::Unavailable { reason } => {
+            let message = if reason.is_empty() {
+                "Air scores were not available at this hour".to_owned()
+            } else {
+                format!("Air scores were not available at this hour: {reason}")
+            };
+            return Ok(reply(message, warnings));
+        }
+        dashboard_text::metadata::RecordedRows::NotRecorded { mode } => {
+            return Ok(reply(
+                format!("Air scores are not recorded at this hour: {}", dashboard_text::metadata::not_recorded(hour, TableId::RaidAirScores, mode)),
+                warnings,
+            ));
+        }
     };
-    let complete = frame.complete::<tables::RaidAirScores>().is_ok();
-    if !complete && rows.is_empty() {
-        return Ok(reply("Air scores were not available at this hour".into(), warnings));
-    }
     let epoch = index.epoch(hour);
     let empty = Arc::default();
     let present = epoch.map_or(&empty, |epoch| &epoch.present);
@@ -795,8 +810,15 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
         }
         _ => None,
     };
-    let wings_whole = dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err();
-    let wings: Option<BTreeMap<u32, i64>> = dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame).ok().map(|rows| rows.iter().map(|row| (row.region, row.wings)).collect());
+    let (wings, wings_whole): (Option<BTreeMap<u32, i64>>, Option<String>) =
+        match dashboard_text::metadata::recorded_rows::<tables::AirRegionWings>(frame)?.into_rows(TableId::AirRegionWings, hour) {
+            Ok((rows, None)) => (
+                Some(rows.iter().map(|row| (row.region, row.wings)).collect()),
+                dashboard_query::coverage::population::<tables::AirRegionWings>(frame, &replay_frame::frame::Keys::All).err(),
+            ),
+            Ok((rows, Some(why))) => (Some(rows.iter().map(|row| (row.region, row.wings)).collect()), Some(why)),
+            Err(why) => (None, Some(why)),
+        };
     let unlisted = dashboard_query::coverage::population::<tables::RaidAirScores>(frame, &replay_frame::frame::Keys::All).err().or_else(|| wings_whole.clone());
     let pinned: Vec<u32> = {
         let mut seen = HashSet::new();
@@ -983,8 +1005,12 @@ impl AtHour for AirSuperiorityAt {
                 reads
             }
             1 => {
-                let rows = dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(held).unwrap_or_default();
-                let countries: BTreeSet<_> = rows.iter().map(|row| u128::from(row.country)).collect();
+                let countries: BTreeSet<_> = match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(held) {
+                    Ok(dashboard_text::metadata::RecordedRows::Complete(rows) | dashboard_text::metadata::RecordedRows::Truncated { rows, .. }) => {
+                        rows.iter().map(|row| u128::from(row.country)).collect()
+                    }
+                    _ => BTreeSet::new(),
+                };
                 let mut reads = vec![Read::these(TableId::CountryLinks, countries)];
                 if theatres { reads.extend(member_wings(held)); }
                 reads
@@ -1033,7 +1059,10 @@ impl AtHour for AirSuperiorityAt {
     }
 
     fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, _partial: bool) -> i32 {
-        if matches!(frame.tables[TableId::RaidAirScores.index()].held(), replay_frame::frame::TableView::NotRecorded { .. }) {
+        if [TableId::RaidAirScores, TableId::AirRegionWings]
+            .into_iter()
+            .any(|table| matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::NotRecorded { .. }))
+        {
             return at.hour;
         }
         let through = valid_through(at.context, at.hour).min(at_hour::before(at.holders.next_change(at.hour)));

@@ -170,4 +170,4 @@ impl BranchParams {
     }
 }
 
-pub use crate::metadata::recorded_rows;
+pub use crate::metadata::{RecordedRows, recorded_rows};

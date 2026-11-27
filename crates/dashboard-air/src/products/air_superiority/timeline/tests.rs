@@ -413,6 +413,7 @@ fn a_history_extended_by_later_days_is_the_history_composed_whole() {
             regions: regions.into_iter().zip(cells).collect(),
             absent,
             unread: Vec::new(),
+            truncated: Vec::new(),
             used: 0,
         }
     };

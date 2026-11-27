@@ -2,7 +2,7 @@
 use crate::metadata::recorded_rows_in;
 use replay_data::rows::{
     CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded,
-    mask, tables,
+    TableSchema, mask, tables,
 };
 use replay_frame::frame::{DecodedSource, HourFrame, Rowset};
 use std::{borrow::Cow, collections::BTreeMap, io};
@@ -26,11 +26,30 @@ fn by<'a, R: replay_data::rows::RowCodec + Clone, K: Ord>(
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlagChoice {
     pub raw: u32,
     pub tag: String,
     pub candidates: Vec<String>,
     pub refusal: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RulingGroups {
+    Available {
+        groups: BTreeMap<u32, Result<Option<String>, String>>,
+        incomplete: Option<String>,
+    },
+    Unavailable(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Choices {
+    Available {
+        choices: Vec<FlagChoice>,
+        incomplete: Option<String>,
+    },
+    Unavailable(String),
 }
 
 impl FlagChoice {
@@ -141,67 +160,134 @@ fn group(
         .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
 }
 
+enum TableRead<T> {
+    Rows {
+        values: T,
+        incomplete: Option<String>,
+    },
+    Missing(String),
+}
+
+fn read_rows<'a, T: TableSchema, V>(
+    frame: HourFrame<'a>,
+    mask: u64,
+    build: impl FnOnce(Rowset<'a, T::Row>) -> io::Result<V>,
+) -> io::Result<TableRead<V>>
+where
+    T::Row: 'a,
+{
+    match recorded_rows_in::<T>(frame, mask)?.into_rows(T::ID, frame.hour()) {
+        Ok((rows, incomplete)) => Ok(TableRead::Rows {
+            values: build(rows)?,
+            incomplete,
+        }),
+        Err(why) => Ok(TableRead::Missing(why)),
+    }
+}
+
+fn group_from<'a>(
+    owner: u32,
+    politics: &TableRead<BTreeMap<u32, Option<u32>>>,
+    parties: &'a TableRead<BTreeMap<(u32, u32), Cow<'a, PoliticalPartyRow>>>,
+) -> Result<Option<&'a str>, String> {
+    let ruling = match politics {
+        TableRead::Missing(why) => return Err(why.clone()),
+        TableRead::Rows { values, incomplete } => match values.get(&owner).copied() {
+            Some(ruling) => ruling,
+            None => {
+                return Err(incomplete
+                    .clone()
+                    .unwrap_or_else(|| format!("country {owner} flag needs its Politics row")));
+            }
+        },
+    };
+    let Some(party) = ruling else {
+        return Err(format!("country {owner} flag has a null ruling-party pointer"));
+    };
+    let token = match parties {
+        TableRead::Missing(why) => return Err(why.clone()),
+        TableRead::Rows { values, incomplete } => match values.get(&(owner, party)) {
+            Some(row) => row.token.as_slice(),
+            None => {
+                return Err(incomplete.clone().unwrap_or_else(|| {
+                    format!("country {owner} flag needs political parties ruling group {party}")
+                }));
+            }
+        },
+    };
+    std::str::from_utf8(token)
+        .map(Some)
+        .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
+}
+
 fn ruling_rows(
     frame: HourFrame<'_>,
 ) -> io::Result<(
-    BTreeMap<u32, Option<u32>>,
-    BTreeMap<(u32, u32), Cow<'_, PoliticalPartyRow>>,
+    TableRead<BTreeMap<u32, Option<u32>>>,
+    TableRead<BTreeMap<(u32, u32), Cow<'_, PoliticalPartyRow>>>,
 )> {
-    let parties = by(
-        recorded_rows_in::<tables::PoliticalParties>(frame, PARTY_TOKEN)?,
-        |row| (row.country, row.id),
-    )?;
-    let politics = recorded_rows_in::<tables::Politics>(frame, RULING)?
-        .iter()
-        .map(|row| row.map(|row| (row.country, row.ruling_party)))
-        .collect::<io::Result<_>>()?;
+    let parties = read_rows::<tables::PoliticalParties, _>(frame, PARTY_TOKEN, |rows| {
+        by(rows, |row| (row.country, row.id))
+    })?;
+    let politics = read_rows::<tables::Politics, _>(frame, RULING, |rows| {
+        rows.iter()
+            .map(|row| row.map(|row| (row.country, row.ruling_party)))
+            .collect()
+    })?;
     Ok((politics, parties))
 }
 
-pub fn ruling_groups(
-    frame: &dyn DecodedSource,
-) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
+pub fn ruling_groups(frame: &dyn DecodedSource) -> io::Result<RulingGroups> {
     ruling_groups_in(HourFrame::Decoded(frame))
 }
 
-pub fn ruling_groups_in(
-    frame: HourFrame<'_>,
-) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
+pub fn ruling_groups_in(frame: HourFrame<'_>) -> io::Result<RulingGroups> {
+    let (countries, incomplete) = match recorded_rows_in::<tables::Countries>(frame, 0)?
+        .into_rows(replay_data::rows::TableId::Countries, frame.hour())
+    {
+        Ok(pair) => pair,
+        Err(why) => return Ok(RulingGroups::Unavailable(why)),
+    };
     let (politics, parties) = ruling_rows(frame)?;
-    Ok(recorded_rows_in::<tables::Countries>(frame, 0)?
+    let groups = countries
         .keys()
         .map(|key| {
             let id = key as u32;
-            let ruling = politics.get(&id).copied();
-            let token = ruling
-                .flatten()
-                .and_then(|party| parties.get(&(id, party)))
-                .map(|party| party.token.as_slice());
-            let group = group(id, ruling, token).map(|group| group.map(str::to_owned));
+            let group =
+                group_from(id, &politics, &parties).map(|group| group.map(str::to_owned));
             (id, group)
         })
-        .collect())
+        .collect();
+    Ok(RulingGroups::Available { groups, incomplete })
 }
 
-pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
+pub fn choices(frame: &dyn DecodedSource) -> io::Result<Choices> {
     choices_in(HourFrame::Decoded(frame))
 }
 
-pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
-    let links: BTreeMap<_, _> = recorded_rows_in::<tables::CountryLinks>(frame, LINK)?
-        .iter()
-        .map(|r| r.map(|r| (r.id, r.canonical_slot)))
-        .collect::<io::Result<_>>()?;
-    let countries = by(
-        recorded_rows_in::<tables::Countries>(frame, COUNTRY)?,
-        |r| r.canonical_slot,
-    )?;
+pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Choices> {
+    let (links, links_incomplete) =
+        match read_rows::<tables::CountryLinks, _>(frame, LINK, |rows| {
+            rows.iter()
+                .map(|r| r.map(|r| (r.id, r.canonical_slot)))
+                .collect::<io::Result<BTreeMap<_, _>>>()
+        })? {
+            TableRead::Rows { values, incomplete } => (values, incomplete),
+            TableRead::Missing(why) => return Ok(Choices::Unavailable(why)),
+        };
+    let (countries, countries_incomplete) =
+        match read_rows::<tables::Countries, _>(frame, COUNTRY, |rows| {
+            by(rows, |r| r.canonical_slot)
+        })? {
+            TableRead::Rows { values, incomplete } => (values, incomplete),
+            TableRead::Missing(why) => return Ok(Choices::Unavailable(why)),
+        };
+    let incomplete = links_incomplete.or(countries_incomplete);
     let (politics, parties) = ruling_rows(frame)?;
-    let appearances = by(
-        recorded_rows_in::<tables::CountryAppearance>(frame, LOOK)?,
-        |r| r.country,
-    )?;
-    Ok(links
+    let appearances = read_rows::<tables::CountryAppearance, _>(frame, LOOK, |rows| {
+        by(rows, |r| r.country)
+    })?;
+    let choices = links
         .into_iter()
         .filter_map(|(raw, slot)| {
             let country =
@@ -215,23 +301,41 @@ pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
                 return None;
             }
             let owner = country.id;
-            let appearance = appearances.get(&owner).map(|row| Appearance {
-                cosmetic: &row.cosmetic_tag,
-                reference: row.original_tag_reference,
-                original: match &row.original_tag {
-                    Recorded::NotRecorded => Recorded::NotRecorded,
-                    Recorded::Value(original) => Recorded::Value(original.as_deref()),
+            let (cosmetic, original) = match &appearances {
+                TableRead::Missing(why) => (Err(why.clone()), Err(why.clone())),
+                TableRead::Rows { values, incomplete } => match values.get(&owner) {
+                    Some(row) => {
+                        let appearance = Appearance {
+                            cosmetic: &row.cosmetic_tag,
+                            reference: row.original_tag_reference,
+                            original: match &row.original_tag {
+                                Recorded::NotRecorded => Recorded::NotRecorded,
+                                Recorded::Value(original) => Recorded::Value(original.as_deref()),
+                            },
+                        };
+                        (
+                            std::str::from_utf8(appearance.cosmetic)
+                                .map_err(|_| "country cosmetic tag is not UTF-8".to_owned()),
+                            original(&country.tag, appearance),
+                        )
+                    }
+                    None => {
+                        let why = incomplete.clone().unwrap_or_else(|| {
+                            format!("country {owner} flag needs its country appearance row")
+                        });
+                        (Err(why.clone()), Err(why))
+                    }
                 },
-            });
-            let ruling = politics.get(&owner).copied();
-            let token = ruling
-                .flatten()
-                .and_then(|party| parties.get(&(owner, party)))
-                .map(|party| party.token.as_slice());
+            };
             let Chain {
                 candidates,
                 refusal,
-            } = Operands::of(owner, &country.tag, appearance, ruling, token).chain();
+            } = Operands {
+                cosmetic,
+                original,
+                group: group_from(owner, &politics, &parties),
+            }
+            .chain();
             Some(FlagChoice {
                 raw,
                 tag: String::from_utf8_lossy(&country.tag).into_owned(),
@@ -239,7 +343,11 @@ pub fn choices_in(frame: HourFrame<'_>) -> io::Result<Vec<FlagChoice>> {
                 refusal,
             })
         })
-        .collect())
+        .collect();
+    Ok(Choices::Available {
+        choices,
+        incomplete,
+    })
 }
 
 #[cfg(test)]

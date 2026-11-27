@@ -185,7 +185,7 @@ fn law<'l>(
     let controller = facts.slot(facts.state.controller)?;
     let occupied = facts.slot(resistance.country)?;
     let overrides = frame.complete::<tables::StateOccupationLaws>();
-    let overrides_complete = overrides.is_ok();
+    let overrides_missing = overrides.as_ref().err().map(ToString::to_string);
     let mut state_law = None;
     for row in overrides.unwrap_or_default() {
         if row.state == state && facts.slot(row.controller) == Ok(controller) && facts.slot(row.occupied) == Ok(occupied) {
@@ -227,7 +227,7 @@ fn law<'l>(
     let inputs = LawInputs {
         state: state_law,
         key_resolved: true,
-        overrides_complete,
+        overrides_missing,
         group,
         default: settings.map(|row| (row.default_law_present != 0, row.law.as_slice())),
         fallback,

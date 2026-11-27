@@ -5,7 +5,6 @@ use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
 use dashboard_intelligence::products::intelligence::{Tags, branch, missing};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::identity::Holder;
-use dashboard_text::metadata::recorded_rows;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -73,12 +72,12 @@ pub(super) fn occupied_by(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, BTre
             out.entry(occupier).or_default().entry(occupied).or_insert(raw);
         }
     };
-    for row in recorded_rows::<tables::StateResistance>(frame)?.iter().filter(|row| occupied(row)) {
+    for row in frame.complete::<tables::StateResistance>()?.iter().filter(|row| occupied(row)) {
         if let Some(&controller) = controllers.get(&row.state) {
             add(controller, row.country);
         }
     }
-    for row in recorded_rows::<tables::StateGarrisons>(frame)? {
+    for row in frame.complete::<tables::StateGarrisons>()? {
         add(row.controller, row.occupied);
     }
     Ok(out)

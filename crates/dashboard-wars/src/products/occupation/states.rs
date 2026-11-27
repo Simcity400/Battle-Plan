@@ -5,7 +5,7 @@ use super::{
 use dashboard_base::{Source, catalogue::Refusals, products::{LoadContext, at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_mask}}};
 use dashboard_intelligence::products::intelligence::{Tags, branch, missing};
 use dashboard_follow::live::{Cells, Source as Cell};
-use dashboard_text::{metadata::recorded_rows, triggers::inputs::{Since, TableChange, TableChanges}};
+use dashboard_text::{metadata::{RecordedRows, recorded_rows}, triggers::inputs::{Since, TableChange, TableChanges}};
 use replay_data::rows::{
     CountryLinkRow, DeltaRow, GarrisonEquipment, GarrisonEquipmentInputs, GarrisonStrengthRow, OccupationSettingsRow, Recorded, StateAssignedManpowerRow, StateGarrisonRow, StateResistanceRow, StateRow,
     TableId, full_mask, tables,
@@ -102,23 +102,36 @@ type Key = (u32, u32, u32);
 
 pub(super) struct Joins<'f> {
     garrisons: HashMap<Key, &'f StateGarrisonRow>,
+    garrisons_missing: Option<String>,
     overrides: HashMap<Key, &'f [u8]>,
-    overrides_complete: bool,
+    overrides_missing: Option<String>,
     settings: HashMap<u32, &'f OccupationSettingsRow>,
+    settings_missing: Option<String>,
     groups: HashMap<(u32, u32), (Option<&'f [u8]>, Option<u32>)>,
     group_failures: HashMap<u32, String>,
     assigned: HashMap<Key, (i32, Vec<u128>)>,
     unresolved_assigned: HashSet<u32>,
-    assigned_complete: bool,
+    assigned_missing: Option<String>,
     strengths: HashMap<u128, &'f GarrisonStrengthRow>,
     strengths_missing: Option<String>,
+}
+
+fn present_rows<'f, T: replay_data::rows::TableSchema>(frame: &'f DecodedFrame) -> io::Result<(&'f [T::Row], Option<String>)> {
+    let read = recorded_rows::<T>(frame)?;
+    let reason = read.missing_reason(T::ID, frame.hour);
+    let rows = match read {
+        RecordedRows::Complete(rows) | RecordedRows::Truncated { rows, .. } => rows,
+        RecordedRows::Unavailable { .. } | RecordedRows::NotRecorded { .. } => &[],
+    };
+    Ok((rows, reason))
 }
 
 impl<'f> Joins<'f> {
     pub(super) fn read(frame: &'f DecodedFrame, links: &[CountryLinkRow], refused: &mut Refusals) -> io::Result<Self> {
         let key = |controller, occupied, state| Some((slot(links, controller)?, slot(links, occupied)?, state));
         let mut garrisons = HashMap::new();
-        for row in recorded_rows::<tables::StateGarrisons>(frame)? {
+        let (garrison_rows, garrisons_missing) = present_rows::<tables::StateGarrisons>(frame)?;
+        for row in garrison_rows {
             match key(row.controller, row.occupied, row.state) {
                 Some(key) => {
                     garrisons.insert(key, row);
@@ -127,7 +140,8 @@ impl<'f> Joins<'f> {
             }
         }
         let mut overrides = HashMap::new();
-        for row in recorded_rows::<tables::StateOccupationLaws>(frame)? {
+        let (override_rows, overrides_missing) = present_rows::<tables::StateOccupationLaws>(frame)?;
+        for row in override_rows {
             match key(row.controller, row.occupied, row.state) {
                 Some(key) => {
                     overrides.insert(key, row.name.as_slice());
@@ -137,7 +151,8 @@ impl<'f> Joins<'f> {
         }
         let mut settings = HashMap::new();
         let mut group_failures = HashMap::new();
-        for row in recorded_rows::<tables::OccupationSettings>(frame)? {
+        let (setting_rows, settings_missing) = present_rows::<tables::OccupationSettings>(frame)?;
+        for row in setting_rows {
             let Some(slot) = slot(links, row.country) else {
                 refused.note("occupation settings name a country with no recorded country link", format!("raw link {}", row.country));
                 continue;
@@ -176,7 +191,8 @@ impl<'f> Joins<'f> {
         }
         let mut assigned = HashMap::<Key, (i32, Vec<u128>)>::new();
         let mut unresolved_assigned = HashSet::new();
-        for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
+        let (assigned_rows, assigned_missing) = present_rows::<tables::StateAssignedManpower>(frame)?;
+        for row in assigned_rows {
             match key(row.controller, row.occupied, row.state) {
                 Some(key) => {
                     let (total, keys) = assigned.entry(key).or_default();
@@ -189,21 +205,20 @@ impl<'f> Joins<'f> {
                 }
             }
         }
-        let strengths_missing = missing(frame, TableId::GarrisonStrengths);
-        let strengths = match strengths_missing {
-            Some(_) => HashMap::new(),
-            None => recorded_rows::<tables::GarrisonStrengths>(frame)?.iter().map(|row| (GarrisonStrengthRow::key_of(row.controller, row.state), row)).collect(),
-        };
+        let (strength_rows, strengths_missing) = present_rows::<tables::GarrisonStrengths>(frame)?;
+        let strengths = strength_rows.iter().map(|row| (GarrisonStrengthRow::key_of(row.controller, row.state), row)).collect();
         Ok(Self {
             garrisons,
+            garrisons_missing,
             overrides,
-            overrides_complete: frame.complete::<tables::StateOccupationLaws>().is_ok(),
+            overrides_missing,
             settings,
+            settings_missing,
             groups,
             group_failures,
             assigned,
             unresolved_assigned,
-            assigned_complete: frame.complete::<tables::StateAssignedManpower>().is_ok(),
+            assigned_missing,
             strengths,
             strengths_missing,
         })
@@ -222,20 +237,22 @@ impl<'f> Joins<'f> {
                 } else if settings.is_some() {
                     GroupLaw::Missing
                 } else {
-                    GroupLaw::Unknown("The occupier's occupation settings are missing".into())
+                    GroupLaw::Unknown(self.settings_missing.clone().unwrap_or_else(|| "The occupier's occupation settings are missing".into()))
                 }
             }
             None => GroupLaw::Unknown("Occupation country links are unresolved".into()),
         };
-        let fallback = settings.ok_or_else(|| "The native database fallback law is missing".to_owned()).and_then(|row| match &row.fallback_law {
-            Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
-            Recorded::Value(None) => Err("The native database fallback-law capture failed".into()),
-            Recorded::NotRecorded => Err("The native database fallback law is not recorded".into()),
-        });
+        let fallback = settings
+            .ok_or_else(|| self.settings_missing.clone().unwrap_or_else(|| "The native database fallback law is missing".to_owned()))
+            .and_then(|row| match &row.fallback_law {
+                Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
+                Recorded::Value(None) => Err("The native database fallback-law capture failed".into()),
+                Recorded::NotRecorded => Err("The native database fallback law is not recorded".into()),
+            });
         let inputs = LawInputs {
             state: key.and_then(|key| self.overrides.get(&key).copied()),
             key_resolved: key.is_some(),
-            overrides_complete: self.overrides_complete,
+            overrides_missing: self.overrides_missing.clone(),
             group,
             default: settings.map(|row| (row.default_law_present != 0, row.law.as_slice())),
             fallback,
@@ -261,8 +278,13 @@ fn needs_world(frame: &DecodedFrame) -> bool {
     (|| -> io::Result<bool> {
         let links = frame.complete::<tables::CountryLinks>()?;
         let joins = Joins::read(frame, links, &mut Refusals::default())?;
-        let states = recorded_rows::<tables::States>(frame)?;
-        Ok(occupied_states(recorded_rows::<tables::StateResistance>(frame)?, states, links)
+        let (RecordedRows::Complete(states) | RecordedRows::Truncated { rows: states, .. }) = recorded_rows::<tables::States>(frame)? else {
+            return Ok(false);
+        };
+        let (RecordedRows::Complete(resistance) | RecordedRows::Truncated { rows: resistance, .. }) = recorded_rows::<tables::StateResistance>(frame)? else {
+            return Ok(false);
+        };
+        Ok(occupied_states(resistance, states, links)
             .into_iter()
             .any(|(_, state, key)| joins.law_inputs(state.and_then(|state| slot(links, state.controller)), key).0.reaches_default()))
     })()
@@ -366,8 +388,14 @@ fn eligibility(frame: &DecodedFrame, content: &Content) -> (Judgements, WorldRea
     (|| -> io::Result<(Judgements, WorldReads)> {
         let links = frame.complete::<tables::CountryLinks>()?;
         let joins = Joins::read(frame, links, &mut Refusals::default())?;
+        let (RecordedRows::Complete(resistance) | RecordedRows::Truncated { rows: resistance, .. }) = recorded_rows::<tables::StateResistance>(frame)? else {
+            return Ok(Default::default());
+        };
+        let (RecordedRows::Complete(states) | RecordedRows::Truncated { rows: states, .. }) = recorded_rows::<tables::States>(frame)? else {
+            return Ok(Default::default());
+        };
         let mut admission = Admission::new(frame, content, links);
-        for (_, state, key) in occupied_states(recorded_rows::<tables::StateResistance>(frame)?, recorded_rows::<tables::States>(frame)?, links) {
+        for (_, state, key) in occupied_states(resistance, states, links) {
             let Some(state) = state else { continue };
             let (inputs, scope) = joins.law_inputs(slot(links, state.controller), key);
             let _ = law::law_for(inputs, |token| admission.admit(token, key, scope));
@@ -423,10 +451,12 @@ struct Garrison {
     missing: Option<String>,
 }
 
-fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
+fn not_recorded(row: &StateGarrisonRow, reason: u8, assigned_missing: Option<&str>) -> String {
     match reason {
         GarrisonStrengthRow::UNRESOLVED => "The controller or occupied-country link is unresolved; the garrison's assigned manpower cannot be joined".into(),
-        GarrisonStrengthRow::ASSIGNED => "state assigned manpower is incomplete or unresolved at this read".into(),
+        GarrisonStrengthRow::ASSIGNED => assigned_missing
+            .map(str::to_owned)
+            .unwrap_or_else(|| "state assigned manpower is incomplete or unresolved at this read".into()),
         GarrisonStrengthRow::OPERANDS => "This recording lacks the garrison equipment strength operands".into(),
         GarrisonStrengthRow::FAILED => match &row.equipment {
             Recorded::Value(inputs) if inputs.failure.is_some() => String::from_utf8_lossy(inputs.failure.as_deref().unwrap_or_default()).into_owned(),
@@ -437,13 +467,13 @@ fn not_recorded(row: &StateGarrisonRow, reason: u8) -> String {
 }
 
 fn strength(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, row: &StateGarrisonRow, assigned: Option<i32>) -> Result<u128, String> {
-    if let Some(why) = &joins.strengths_missing {
-        return Err(format!("Garrison strength is not recorded at this read: {why}"));
-    }
     let key = GarrisonStrengthRow::key_of(row.controller, row.state);
-    let derived = joins.strengths.get(&key).ok_or_else(|| "No garrison strength was derived for this garrison at this read".to_owned())?;
+    let derived = joins.strengths.get(&key).ok_or_else(|| match &joins.strengths_missing {
+        Some(why) => format!("Garrison strength is not recorded at this read: {why}"),
+        None => "No garrison strength was derived for this garrison at this read".to_owned(),
+    })?;
     if derived.strength == Recorded::NotRecorded {
-        return Err(not_recorded(row, derived.reason));
+        return Err(not_recorded(row, derived.reason, joins.assigned_missing.as_deref()));
     }
     if let Recorded::Value(inputs) = &row.equipment
         && row.serialized_flag == 0
@@ -475,14 +505,17 @@ fn defined(frame: &DecodedFrame, content: &Content, entry: &GarrisonEquipment) -
 
 fn garrison(frame: &DecodedFrame, content: &Content, joins: &Joins<'_>, state: u32, key: Option<Key>, refused: &mut Refusals) -> Garrison {
     let row = key.and_then(|key| joins.garrisons.get(&key).copied());
-    let assigned = key.filter(|_| row.is_some() && joins.assigned_complete && !joins.unresolved_assigned.contains(&state)).map(|key| joins.assigned.get(&key).cloned().unwrap_or_default());
+    let assigned = key.filter(|_| row.is_some() && joins.assigned_missing.is_none() && !joins.unresolved_assigned.contains(&state)).map(|key| joins.assigned.get(&key).cloned().unwrap_or_default());
     let alert = row.is_some_and(|row| row.serialized_flag != 0);
     let mut missing = if key.is_none() {
         Some("The controller or occupied-country link is unresolved; the garrison key cannot be established".into())
     } else if row.is_none() {
-        Some("No state garrisons row was recorded for the controller, occupied country and state".into())
+        Some(joins.garrisons_missing.clone().unwrap_or_else(|| "No state garrisons row was recorded for the controller, occupied country and state".into()))
     } else if !alert && assigned.is_none() {
-        Some("state assigned manpower is incomplete or its links are unresolved; a zero manpower total cannot be established".into())
+        Some(match &joins.assigned_missing {
+            Some(why) => format!("{why}; a zero manpower total cannot be established"),
+            None => "state assigned manpower links are unresolved; a zero manpower total cannot be established".into(),
+        })
     } else {
         None
     };
@@ -545,10 +578,22 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     let amount = dashboard_declare::field(TableId::StateAssignedManpower, "amount")?;
     let strength_field = dashboard_declare::field(TableId::GarrisonStrengths, "strength")?;
     let mut admission = Admission::new(frame, content, links);
-    let mut complete = frame.complete::<tables::StateResistance>().is_ok();
+    let (resistance_rows, mut complete) = match recorded_rows::<tables::StateResistance>(frame)?.into_rows(TableId::StateResistance, frame.hour) {
+        Ok((rows, incomplete)) => {
+            let complete = incomplete.is_none();
+            if let Some(why) = incomplete {
+                reply.warnings.push(why);
+            }
+            (rows, complete)
+        }
+        Err(why) => {
+            reply.missing = Some(why);
+            return Ok(reply);
+        }
+    };
     let mut tokens = BTreeSet::new();
     let mut rows = BTreeMap::new();
-    for (resistance, state, key) in occupied_states(recorded_rows::<tables::StateResistance>(frame)?, states, links) {
+    for (resistance, state, key) in occupied_states(resistance_rows, states, links) {
         let Some(state) = state else {
             complete = false;
             refused.note("active resistance names a state absent from States", resistance.state.to_string());
@@ -763,6 +808,14 @@ impl AtHour for OccupiedStates {
             0 => false,
             1 => !edits.tables.is_empty() || !edits.replaced.is_empty(),
             _ => !(moving_only(edits) && judged_through(at.context, held, at.since, edits)),
+        }
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, _reply: &Self::Reply, partial: bool) -> i32 {
+        if partial || TABLES.into_iter().any(|table| matches!(frame.tables[table.index()].held(), replay_frame::frame::TableView::NotRecorded { .. })) {
+            at.hour
+        } else {
+            i32::MAX
         }
     }
 

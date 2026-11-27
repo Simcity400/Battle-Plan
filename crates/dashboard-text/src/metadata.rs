@@ -1451,41 +1451,91 @@ mod local_player_tests {
     }
 }
 
-pub fn not_recorded(hour: i32, table: TableId, mode: impl std::fmt::Display) -> String {
-    format!("{} is not recorded at hour {hour} in a {mode} recording", table.words())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordedRows<'a, R> {
+    Complete(R),
+    Truncated { rows: R, missing: u32 },
+    Unavailable { reason: &'a str },
+    NotRecorded { mode: replay_data::scope::CaptureMode },
 }
 
-pub fn recorded_rows<T: replay_data::rows::TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> io::Result<&[T::Row]> {
-    use replay_frame::frame::TableView;
-    match frame.view(T::ID.index()) {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            rows.rows::<T>().ok_or_else(|| {
-                crate::invalid(format!("{} holds rows of another kind", T::ID.words()))
-            })
+impl<R> RecordedRows<'_, R> {
+    pub fn missing_reason(&self, table: TableId, hour: i32) -> Option<String> {
+        let what = table.words();
+        match self {
+            Self::Complete(_) => None,
+            Self::Truncated { missing, .. } => {
+                Some(format!("{what}: read only in part ({missing} rows not read)"))
+            }
+            Self::Unavailable { reason } => Some(unavailable_reason(&what, reason)),
+            Self::NotRecorded { mode } => Some(not_recorded(hour, table, mode)),
         }
-        TableView::Unavailable { .. } => Ok(&[]),
-        TableView::NotRecorded { mode } => {
-            Err(crate::invalid(not_recorded(frame.hour(), T::ID, mode)))
+    }
+
+    pub fn into_rows(self, table: TableId, hour: i32) -> Result<(R, Option<String>), String> {
+        let what = table.words();
+        match self {
+            Self::Complete(rows) => Ok((rows, None)),
+            Self::Truncated { rows, missing } => Ok((
+                rows,
+                Some(format!("{what}: read only in part ({missing} rows not read)")),
+            )),
+            Self::Unavailable { reason } => Err(unavailable_reason(&what, reason)),
+            Self::NotRecorded { mode } => Err(not_recorded(hour, table, mode)),
         }
     }
 }
 
-pub fn recorded_rows_in<T: replay_data::rows::TableSchema>(
-    frame: replay_frame::frame::HourFrame<'_>,
+fn unavailable_reason(what: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        format!("{what}: not available")
+    } else {
+        format!("{what}: not available ({reason})")
+    }
+}
+
+pub fn not_recorded(hour: i32, table: TableId, mode: impl std::fmt::Display) -> String {
+    format!("{} is not recorded at hour {hour} in a {mode} recording", table.words())
+}
+
+pub fn recorded_rows<'a, T: replay_data::rows::TableSchema>(
+    frame: &'a dyn replay_frame::frame::DecodedSource,
+) -> io::Result<RecordedRows<'a, &'a [T::Row]>> {
+    use replay_frame::frame::TableView;
+    match frame.view(T::ID.index()) {
+        TableView::Complete(rows) => rows.rows::<T>().map(RecordedRows::Complete).ok_or_else(|| {
+            crate::invalid(format!("{} holds rows of another kind", T::ID.words()))
+        }),
+        TableView::Truncated { rows, missing } => rows
+            .rows::<T>()
+            .map(|rows| RecordedRows::Truncated {
+                rows,
+                missing: *missing,
+            })
+            .ok_or_else(|| {
+                crate::invalid(format!("{} holds rows of another kind", T::ID.words()))
+            }),
+        TableView::Unavailable { reason } => Ok(RecordedRows::Unavailable { reason }),
+        TableView::NotRecorded { mode } => Ok(RecordedRows::NotRecorded { mode: *mode }),
+    }
+}
+
+pub fn recorded_rows_in<'a, T: replay_data::rows::TableSchema>(
+    frame: replay_frame::frame::HourFrame<'a>,
     mask: u64,
-) -> io::Result<replay_frame::frame::Rowset<'_, T::Row>> {
-    use replay_frame::frame::{OperandStatus, Rowset};
+) -> io::Result<RecordedRows<'a, replay_frame::frame::Rowset<'a, T::Row>>> {
+    use replay_frame::frame::OperandStatus;
     match frame.status(T::ID) {
         OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => {
             Err(crate::invalid(format!("{} holds rows of another kind", T::ID.words())))
         }
-        OperandStatus::Unavailable(_) => Ok(Rowset::Decoded(&[])),
-        OperandStatus::NotRecorded(mode) => {
-            Err(crate::invalid(not_recorded(frame.hour(), T::ID, mode)))
-        }
-        OperandStatus::Complete | OperandStatus::Truncated(_) => Ok(frame.held::<T>(mask)),
+        OperandStatus::Complete => Ok(RecordedRows::Complete(frame.held::<T>(mask))),
+        OperandStatus::Truncated(missing) => Ok(RecordedRows::Truncated {
+            rows: frame.held::<T>(mask),
+            missing,
+        }),
+        OperandStatus::Unavailable(reason) => Ok(RecordedRows::Unavailable { reason }),
+        OperandStatus::NotRecorded(mode) => Ok(RecordedRows::NotRecorded { mode }),
     }
 }
 

@@ -13,6 +13,20 @@ const TABLES: [TableId; 5] = [
     TableId::PoliticalParties,
 ];
 
+fn available_choices(frame: &dyn DecodedSource) -> Vec<FlagChoice> {
+    match choices(frame).unwrap() {
+        Choices::Available { choices, .. } => choices,
+        Choices::Unavailable(why) => panic!("expected available choices, got {why}"),
+    }
+}
+
+fn available_groups(frame: &dyn DecodedSource) -> BTreeMap<u32, Result<Option<String>, String>> {
+    match ruling_groups(frame).unwrap() {
+        RulingGroups::Available { groups, .. } => groups,
+        RulingGroups::Unavailable(why) => panic!("expected available ruling groups, got {why}"),
+    }
+}
+
 #[test]
 fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
     let mut frame = DecodedFrame {
@@ -60,7 +74,7 @@ fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
             ..Default::default()
         }]));
     let source: &dyn DecodedSource = &frame;
-    let flags = choices(source).unwrap();
+    let flags = available_choices(source);
     assert_eq!(
         flags.iter().map(|flag| flag.raw).collect::<Vec<_>>(),
         [100, 150]
@@ -79,7 +93,7 @@ fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
     {
         rows[0].original_tag_reference = Recorded::Value(None);
     }
-    for flag in choices(&frame).unwrap() {
+    for flag in available_choices(&frame) {
         assert_eq!(flag.candidates, ["MOD_COS_mod_group", "MOD_COS"]);
         assert_eq!(flag.key(|key| key == "MOD_COS"), Ok("MOD_COS"));
         assert_eq!(
@@ -141,7 +155,7 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
         (Recorded::Value(Some(b"ORI".to_vec())), "ORI"),
         (Recorded::Value(Some(Vec::new())), ""),
     ] {
-        let choices = choices(&flag_frame(captured, b"COS")).unwrap();
+        let choices = available_choices(&flag_frame(captured, b"COS"));
         assert_eq!(
             choices[0].candidates,
             [
@@ -165,7 +179,7 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
         ),
         (Recorded::Value(Some(vec![0xff])), "not UTF-8"),
     ] {
-        let choices = choices(&flag_frame(captured, b"COS")).unwrap();
+        let choices = available_choices(&flag_frame(captured, b"COS"));
         assert_eq!(choices[0].candidates, ["COS_group", "COS"]);
         assert_eq!(choices[0].key(|key| key == "COS"), Ok("COS"));
         assert!(
@@ -175,7 +189,7 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
                 .contains(reason)
         );
     }
-    let invalid = choices(&flag_frame(Recorded::Value(Some(b"ORI".to_vec())), &[0xff])).unwrap();
+    let invalid = available_choices(&flag_frame(Recorded::Value(Some(b"ORI".to_vec())), &[0xff]));
     assert!(invalid[0].candidates.is_empty());
     assert!(
         invalid[0]
@@ -190,7 +204,7 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
             _ => unreachable!(),
         };
         appearance.original_tag_reference = Recorded::Value(Some(reference));
-        let choice = choices(&frame).unwrap().remove(0);
+        let choice = available_choices(&frame).remove(0);
         assert_eq!(choice.candidates, ["COS_group", "COS", "OWN_group", "OWN"]);
         assert!(choice.refusal.is_none());
     }
@@ -210,7 +224,7 @@ fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusal
             _ => unreachable!(),
         };
         appearance.original_tag_reference = reference;
-        let choice = choices(&frame).unwrap().remove(0);
+        let choice = available_choices(&frame).remove(0);
         assert_eq!(choice.candidates, ["COS_group", "COS"]);
         assert_eq!(choice.key(|key| key == "COS"), Ok("COS"));
         assert!(choice.key(|key| key == "ORI").unwrap_err().contains(reason));
@@ -242,7 +256,7 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
                     .into_iter()
                     .collect(),
             ));
-        let choice = choices(&frame).unwrap().remove(0);
+        let choice = available_choices(&frame).remove(0);
         assert!(choice.candidates.is_empty());
         assert!(
             choice
@@ -259,7 +273,7 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
             ..Default::default()
         }]));
     assert_eq!(
-        choices(&frame).unwrap()[0].candidates,
+        available_choices(&frame)[0].candidates,
         ["COS_group", "COS", "ORI_group", "ORI"]
     );
     let mut selected = frame.clone();
@@ -271,7 +285,7 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
         }
     }
     assert_eq!(
-        choices(&selected).unwrap()[0].candidates,
+        available_choices(&selected)[0].candidates,
         ["COS_group", "COS", "ORI_group", "ORI"]
     );
     *frame.tables[TableId::PoliticalParties.index()] =
@@ -281,9 +295,9 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
             token: Vec::new(),
             ..Default::default()
         }]));
-    assert_eq!(ruling_groups(&frame).unwrap()[&10], Ok(Some(String::new())));
+    assert_eq!(available_groups(&frame)[&10], Ok(Some(String::new())));
     assert_eq!(
-        choices(&frame).unwrap()[0].candidates,
+        available_choices(&frame)[0].candidates,
         ["COS_", "COS", "ORI_", "ORI"]
     );
     *frame.tables[TableId::Politics.index()] =
@@ -293,7 +307,7 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
             ..Default::default()
         }]));
     assert!(
-        choices(&frame).unwrap()[0]
+        available_choices(&frame)[0]
             .key(|key| key == "COS")
             .unwrap_err()
             .contains("null ruling-party pointer")
@@ -301,11 +315,62 @@ fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
     *frame.tables[TableId::Politics.index()] = TableView::Unavailable {
         reason: "read failed".into(),
     };
+    let error = available_choices(&frame)[0]
+        .key(|key| key == "COS")
+        .unwrap_err();
+    assert!(error.contains("read failed"), "{error}");
     assert!(
-        choices(&frame).unwrap()[0]
-            .key(|key| key == "COS")
+        available_groups(&frame)[&10]
+            .as_ref()
             .unwrap_err()
-            .contains("needs its Politics row")
+            .contains("read failed")
+    );
+}
+
+#[test]
+fn unavailable_tables_carry_their_reason_through_flag_choices_and_ruling_groups() {
+    let base = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
+    for table in [TableId::CountryLinks, TableId::Countries] {
+        let mut frame = base.clone();
+        *frame.tables[table.index()] = TableView::Unavailable {
+            reason: "damaged block".into(),
+        };
+        let Choices::Unavailable(why) = choices(&frame).unwrap() else {
+            panic!("{table:?} unavailable must not return empty choices");
+        };
+        assert!(why.contains("damaged block"), "{why}");
+    }
+    let mut no_countries = base.clone();
+    *no_countries.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "older format".into(),
+    };
+    let RulingGroups::Unavailable(why) = ruling_groups(&no_countries).unwrap() else {
+        panic!("Countries unavailable must not return empty ruling groups");
+    };
+    assert!(why.contains("older format"), "{why}");
+
+    let mut no_appearance = base.clone();
+    *no_appearance.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
+        reason: "appearance unread".into(),
+    };
+    let error = available_choices(&no_appearance)[0]
+        .key(|_| true)
+        .unwrap_err();
+    assert!(error.contains("appearance unread"), "{error}");
+
+    let mut no_parties = base;
+    *no_parties.tables[TableId::PoliticalParties.index()] = TableView::Unavailable {
+        reason: "parties unread".into(),
+    };
+    let error = available_choices(&no_parties)[0]
+        .key(|_| true)
+        .unwrap_err();
+    assert!(error.contains("parties unread"), "{error}");
+    assert!(
+        available_groups(&no_parties)[&10]
+            .as_ref()
+            .unwrap_err()
+            .contains("parties unread")
     );
 }
 
@@ -323,7 +388,7 @@ fn flag_aliases_use_the_resolved_country_objects_operands() {
                 canonical_slot: 2,
             },
         ]));
-    let choices = choices(&frame).unwrap();
+    let choices = available_choices(&frame);
     assert_eq!(
         choices.iter().map(|choice| choice.raw).collect::<Vec<_>>(),
         [10, 11]
@@ -335,7 +400,7 @@ fn flag_aliases_use_the_resolved_country_objects_operands() {
             id: 11,
             canonical_slot: 2,
         }]));
-    let alias_only = super::choices(&frame).unwrap();
+    let alias_only = available_choices(&frame);
     assert_eq!(alias_only[0].candidates, choices[0].candidates);
     assert!(alias_only[0].refusal.is_none());
 }

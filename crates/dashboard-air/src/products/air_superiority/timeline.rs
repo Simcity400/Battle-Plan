@@ -805,6 +805,7 @@ struct Window {
     reads: Vec<Option<DayRead>>,
     theatres: Option<Vec<Option<Result<HashSet<u32>, ()>>>>,
     unread: Vec<(usize, i32, String)>,
+    truncated: Vec<(usize, i32, String)>,
 }
 
 impl Window {
@@ -840,38 +841,60 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     dashboard_text::metadata::check_cancel(cancelled)?;
     let links: Vec<Option<Links>> = stretches.par_iter().map(|stretch| links(query, stretch)).collect();
 
+    let recording = query.replay.recording();
+    let status_runs: Vec<(Vec<replay_lanes::lanes::StatusRun>, HashMap<u32, String>)> = stretches
+        .iter()
+        .map(|stretch| {
+            let held = dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))?;
+            let reasons = dashboard_query::cost::storage(|| replay_lanes::lanes::status_reasons(recording, stretch.run, TableId::RaidAirScores, &held))?;
+            Ok((held, reasons))
+        })
+        .collect::<io::Result<_>>()?;
     let mut at_hours: HashMap<usize, DayRows> = HashMap::new();
     let mut unread: HashSet<usize> = HashSet::new();
     let mut unread_notes: Vec<(usize, i32, String)> = Vec::new();
+    let mut truncated_notes: Vec<(usize, i32, String)> = Vec::new();
     for (at, read) in days.iter().enumerate() {
         let Some(read) = read else { continue };
-        if read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour) {
+        let (runs, reasons) = &status_runs[read.part];
+        let bucket_start = read.hour - read.hour.rem_euclid(BUCKET);
+        let needs_exact = match runs.iter().find(|run| run.first <= read.hour && read.hour <= run.last) {
+            Some(run) => match crate::products::status_rows(run.status, reasons, query.replay.capture_mode).into_rows(TableId::RaidAirScores, read.hour) {
+                Ok(((), None)) => runs.iter().any(|run| {
+                    run.first <= read.hour
+                        && run.last >= bucket_start
+                        && !replay_recording::columnar_frames::complete(run.status)
+                }),
+                Ok(((), Some(_))) => true,
+                Err(why) => {
+                    unread_notes.push((at, read.hour, why));
+                    unread.insert(at);
+                    continue;
+                }
+            },
+            None => false,
+        };
+        if !needs_exact && (read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour)) {
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];
         let frame = at_hour::frame_with(query, read.hour, &reads, AirSuperiorityAt::columns, "Air superiority")?;
-        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame) {
-            Ok(rows) => {
-                let complete = frame.complete::<tables::RaidAirScores>().is_ok();
+        match dashboard_text::metadata::recorded_rows::<tables::RaidAirScores>(&frame)?.into_rows(TableId::RaidAirScores, read.hour) {
+            Ok((rows, incomplete)) => {
+                let complete = incomplete.is_none();
+                if let Some(why) = incomplete {
+                    truncated_notes.push((at, read.hour, why));
+                }
                 let links = frame.complete::<tables::CountryLinks>().ok().map(|links| Arc::new(links.to_vec()));
                 at_hours.insert(at, (rows.to_vec(), complete, links));
             }
-            Err(error) => {
-                unread_notes.push((at, read.hour, error.to_string()));
+            Err(why) => {
+                unread_notes.push((at, read.hour, why));
                 unread.insert(at);
             }
         }
     }
     let charted = Charted { parts: &parts, days: &days, first_day, at_hour: &at_hours };
-    let recording = query.replay.recording();
-    let statuses: Vec<Vec<(i32, i32, bool)>> = stretches
-        .iter()
-        .map(|stretch| {
-            dashboard_query::cost::storage(|| replay_lanes::lanes::statuses(recording, stretch.run, TableId::RaidAirScores, stretch.first, stretch.last))
-                .map(|held| held.into_iter().map(|status| (status.first, status.last, replay_recording::columnar_frames::complete(status.status))).collect())
-        })
-        .collect::<io::Result<_>>()?;
-    let whole = |part: usize, hour: i32| statuses[part].iter().any(|&(first, last, complete)| complete && first <= hour && hour <= last);
     let mut held_links: HashMap<(usize, usize), Arc<Vec<CountryLinkRow>>> = HashMap::new();
     let mut reads: Vec<Option<DayRead>> = Vec::with_capacity(count);
     for (at, day) in days.iter().enumerate() {
@@ -887,15 +910,19 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             reads.push(None);
             continue;
         }
+        let complete = status_runs[day.part]
+            .0
+            .iter()
+            .any(|run| replay_recording::columnar_frames::complete(run.status) && run.first <= day.hour && day.hour <= run.last);
         let links = links[day.part].as_ref().map(|links| {
             let cut = links.cuts.partition_point(|cut| *cut <= day.hour);
             Arc::clone(held_links.entry((day.part, cut)).or_insert_with(|| Arc::new(links.at(day.hour))))
         });
-        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete: whole(day.part, day.hour), links }));
+        reads.push(Some(DayRead { hour: day.hour, witnesses: charted.witnesses(at), complete, links }));
     }
     dashboard_text::metadata::check_cancel(cancelled)?;
     let theatres = params.theatres.as_deref().filter(|ids| !ids.is_empty()).map(|ids| theatre_days(query, &stretches, &reads, &days, ids));
-    Ok(Window { first_day, days, parts, at_hours, reads, theatres, unread: unread_notes })
+    Ok(Window { first_day, days, parts, at_hours, reads, theatres, unread: unread_notes, truncated: truncated_notes })
 }
 
 #[derive(Clone)]
@@ -909,6 +936,7 @@ struct AirHistory {
     regions: BTreeMap<u32, DayRuns>,
     absent: DayRuns,
     unread: Vec<(usize, i32, String)>,
+    truncated: Vec<(usize, i32, String)>,
     used: u64,
 }
 
@@ -933,6 +961,7 @@ impl AirHistory {
             regions: regions.into_iter().zip(cells).collect(),
             absent,
             unread: window.unread,
+            truncated: window.truncated,
             used: 0,
         })
     }
@@ -969,6 +998,7 @@ impl AirHistory {
             held.extend(theatres);
         }
         self.unread.extend(next.unread.into_iter().map(|(at, hour, error)| (at + offset, hour, error)));
+        self.truncated.extend(next.truncated.into_iter().map(|(at, hour, error)| (at + offset, hour, error)));
         self.dictionary = next.dictionary;
         self.through = next.through;
     }
@@ -1016,7 +1046,17 @@ fn unread_warnings(unread: &[(usize, i32, String)], count: usize) -> Vec<String>
         .iter()
         .map(|(at, hour, error)| match at + 1 == count {
             true => format!("Air scores are not recorded at the view's last hour: {error}"),
-            false => format!("Air scores are not recorded at hour {hour}, where a stretch of the timeline ends: {error}"),
+            false => format!("Air scores are not recorded at hour {hour}: {error}"),
+        })
+        .collect()
+}
+
+fn truncated_warnings(truncated: &[(usize, i32, String)], count: usize) -> Vec<String> {
+    truncated
+        .iter()
+        .map(|(at, hour, error)| match at + 1 == count {
+            true => format!("Air scores were read only in part at the view's last hour: {error}"),
+            false => format!("Air scores were read only in part at hour {hour}: {error}"),
         })
         .collect()
 }
@@ -1067,6 +1107,7 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
         let mut resolver = RecordedSideResolver::new(source, &query, load, cancelled, &mut resolved)?;
         let history = history(source, &query, &index, params, load, &mut resolver, cancelled)?;
         warnings.extend(unread_warnings(&history.unread, history.hours.len()));
+        warnings.extend(truncated_warnings(&history.truncated, history.hours.len()));
         let mut shown: Vec<u32> = history.regions.keys().copied().collect();
         shown.push(ABSENT);
         let cells = history.regions.values().cloned().chain([history.absent.clone()]).collect();
@@ -1076,12 +1117,22 @@ fn timeline(source: &Source, params: &AirTimelineParams, load: &LoadContext, can
     } else {
         let shown_window = window(&query, params, view_first, view_last, cancelled)?;
         warnings.extend(unread_warnings(&shown_window.unread, shown_window.reads.len()));
+        warnings.extend(truncated_warnings(&shown_window.truncated, shown_window.reads.len()));
         let charted = shown_window.charted();
         let composer = Days { index: &index, holders: &query.holders, days: &shown_window.reads, rows: &charted, params, theatres: shown_window.theatres.as_deref() };
         let candidates: Vec<u32> = shown_window.candidates().into_iter().filter(|region| !pinned_set.contains(region)).collect();
         let ranked = composer.rank_at(&candidates, cancelled)?;
         filtered = (ranked.regions.iter().filter(|region| hidden_set.contains(region)).count() as u32, ranked.outside);
-        rank_missing = ranked.missing;
+        let last_day_note = |notes: &[(usize, i32, String)]| {
+            notes
+                .iter()
+                .rev()
+                .find(|(at, _, _)| *at + 1 == shown_window.reads.len())
+                .map(|(_, _, reason)| format!("{reason}; the most active regions are not known"))
+        };
+        rank_missing = last_day_note(&shown_window.unread)
+            .or_else(|| last_day_note(&shown_window.truncated))
+            .or(ranked.missing);
         let chosen = automatic(ranked.regions, &hidden_set, params.top.unwrap_or(TOP), rank_missing.clone());
         active_unlisted = chosen.active_unlisted;
         let mut shown = pinned_list;

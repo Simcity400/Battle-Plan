@@ -39,8 +39,11 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
         }
     }
     if (142..147).contains(&hour) {
-        let rows = TableRows::RaidAirScores(vec![RaidAirScoreRow { country: 9001, region: 17, friendly: 5, enemy: 4, ..Default::default() }]);
-        *frame.tables[TableId::RaidAirScores.index()] = TableView::Truncated { rows, missing: 1 };
+        let mut rows = vec![RaidAirScoreRow { country: 9001, region: 17, friendly: 5, enemy: 4, ..Default::default() }];
+        if matches!(hour, 142 | 146) {
+            rows.push(RaidAirScoreRow { country: 9001, region: 22, friendly: 9, enemy: 4, ..Default::default() });
+        }
+        *frame.tables[TableId::RaidAirScores.index()] = TableView::Truncated { rows: TableRows::RaidAirScores(rows), missing: 1 };
     }
     frame
 }
@@ -117,6 +120,31 @@ fn aces_follow_the_recorded_roster() {
 #[test]
 fn superiority_follows_the_scores_and_reseeds_its_live_values() {
     follows::<crate::products::air_superiority::AirSuperiorityAt>(AIR_SUPERIORITY_AIRSUPERIORITYAT, json!({"mode":"viewpoint","viewpointCountry":true,"viewpoint":"GER","pinnedRegions":[17]}), true);
+    let frames: Vec<_> = (100..=102)
+        .map(|hour| {
+            let mut frame = frame(1, hour);
+            *frame.tables[TableId::AirRegionWings.index()] = TableView::NotRecorded { mode: replay_data::scope::CaptureMode::Full };
+            frame
+        })
+        .collect();
+    let current: Vec<usize> = TableId::ALL.into_iter().map(TableId::field_count).collect();
+    let mut without_wings = current.clone();
+    without_wings[TableId::AirRegionWings.index()] = 0;
+    let writers = recorder_derive::writers_within(&without_wings, &current);
+    let replay = Replay::from_records(writers, CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Arc::new(Source::from_replay(SourceKey { source_id: "air-unrecorded-wings".into(), revision: "1".into() }, "air.battleplan".into(), Arc::new(replay), &false.into()).unwrap());
+    let load = LoadContext { content: None };
+    let request = json!({"branchId":"1","panel":"air-superiority","mode":"sides","pinnedRegions":[17]});
+    let panel = (AIR_SUPERIORITY_AIRSUPERIORITYAT.panel.unwrap().open)(&source, &load, &request).unwrap();
+    let mut original = frame_panel::<crate::products::air_superiority::AirSuperiorityAt>(&source, &load, &request).unwrap();
+    let reads = played(source.replay_ref(), panel.exact().unwrap(), 100, 102);
+    for read in &reads {
+        let expected = materialized_frame(&mut *original, source.replay_ref(), 1, read.hour);
+        assert_eq!(dashboard_base::test_fixtures::streamed(&read.value, read.fresh), dashboard_base::test_fixtures::streamed(&expected, read.fresh), "hour {}", read.hour);
+        let reply = read.value.as_ref().as_ref().unwrap();
+        assert!(reply["unlisted"].as_str().is_some_and(|why| why.contains(&format!("hour {}", read.hour))), "{reply}");
+        assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains(&format!("hour {}", read.hour)))), "{reply}");
+    }
 }
 
 #[test]
@@ -140,6 +168,42 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
             assert_eq!(*read.value, (exact.cold)(read.hour, &false.into()), "{request} at {}", read.hour);
             if read.hour < 110 && request["theatres"].is_null() {
                 assert_eq!(read.product_calls, u64::from(read.hour == 107), "{request} at {}", read.hour);
+            }
+            if matches!(read.hour, 110 | 113) {
+                let reply = read.value.as_ref().as_ref().unwrap();
+                assert_eq!(reply["days"], json!([null]), "{request} at {} must not treat unavailable scores as recorded", read.hour);
+                assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains("damaged air table"))), "{reply}");
+                if request["every"].is_null() {
+                    assert!(reply["rankMissing"].as_str().is_some_and(|why| why.contains("damaged air table")), "{reply}");
+                }
+            }
+            if matches!(read.hour, 142 | 143) {
+                let reply = read.value.as_ref().as_ref().unwrap();
+                assert_eq!(reply["days"], json!([read.hour]), "{request} at {} keeps witnessed truncated scores", read.hour);
+                assert!(reply["warnings"].as_array().unwrap().iter().any(|line| line.as_str().is_some_and(|line| line.contains("1 rows not read"))), "{reply}");
+                if request["every"].is_null() {
+                    assert!(reply["rankMissing"].as_str().is_some_and(|why| why.contains("1 rows not read")), "{reply}");
+                } else {
+                    let row_22 = reply["rows"].as_array().unwrap().iter().find(|row| row["region"] == 22);
+                    if read.hour == 142 {
+                        assert_eq!(row_22.and_then(|row| row["readout"]["kind"].as_str()), Some("leading"), "{reply}");
+                    } else {
+                        assert_ne!(
+                            row_22.and_then(|row| row["readout"]["kind"].as_str()),
+                            Some("leading"),
+                            "{request} at 143 must not carry omitted region 22's score from hour 142 into truncated bucket end 143: {reply}",
+                        );
+                    }
+                }
+            }
+            if read.hour == 149 && !request["every"].is_null() {
+                let reply = read.value.as_ref().as_ref().unwrap();
+                let row_22 = reply["rows"].as_array().unwrap().iter().find(|row| row["region"] == 22);
+                assert_ne!(
+                    row_22.and_then(|row| row["readout"]["kind"].as_str()),
+                    Some("leading"),
+                    "{request} at 149 must not carry region 22's score from truncated hour 146 into complete bucket end 149: {reply}",
+                );
             }
         }
         assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));

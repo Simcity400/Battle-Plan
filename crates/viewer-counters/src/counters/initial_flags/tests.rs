@@ -526,3 +526,24 @@ fn overlay_hour_tables_reuse_settled_country_index_and_preserve_partial_appearan
         },
     );
 }
+
+#[test]
+fn ideology_groups_preserve_unavailable_table_reasons() {
+    let base = frame(0);
+    let source = core::<tables::Countries>(&base).unwrap();
+    let country_rows: BTreeMap<_, _> = source.iter().map(|r| (r.canonical_slot, r)).collect();
+
+    let mut no_politics = base.clone();
+    *no_politics.tables[TableId::Politics.index()] = TableView::Unavailable {
+        reason: "politics damaged".into(),
+    };
+    let groups = ideology_groups(&no_politics, &country_rows).unwrap();
+    assert!(groups[&1].as_ref().unwrap_err().contains("politics damaged"));
+
+    let mut no_countries = base.clone();
+    *no_countries.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "countries damaged".into(),
+    };
+    let groups = ideology_groups(&no_countries, &country_rows).unwrap();
+    assert!(groups[&1].as_ref().unwrap_err().contains("countries damaged"));
+}
