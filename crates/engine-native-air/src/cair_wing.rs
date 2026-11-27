@@ -685,10 +685,7 @@ const STEP_BATCH: usize = 4 * ROW_BATCH;
 const MANDATORY_FIELDS: usize = 14;
 
 const _: () = {
-    assert!(GROUP_HANDLE == POOL + 8);
-    assert!(BASE_OVERRIDE == POOL + 16);
     assert!(ACQUIRED_MANPOWER == PLANE_COUNT + 4);
-    assert!(AIR_ACCIDENTS == PLANE_COUNT + 8);
     assert!(air_mission::ENABLED_MASK == 0x10);
     assert!(air_mission::CURRENT_TYPE == 0x14);
     assert!(air_mission::CONTEXT_MODE == 0x18);
@@ -703,13 +700,13 @@ const _: () = {
 const ROW_SPANS: [(usize, usize); 15] = [
     (0, 8),
     (SECONDARY, 16),
-    (POOL, 24),
-    (PLANE_COUNT, 12),
+    (POOL, 8),
+    (BASE_OVERRIDE, 8),
+    (PLANE_COUNT, 8),
     (MISSION, 56),
     (MISSION + air_mission::EFFECTIVE_AIRCRAFTS, 4),
     (ELIGIBILITY_VETO, 1),
     (ELIGIBILITY_COUNTER, 8),
-    (EXPERIENCE, 8),
     (ACE_REFERENCE, 8),
     (BASE_RANGE, 8),
     (BASE_FUEL, 8),
@@ -1211,7 +1208,6 @@ fn walk_projected(
 fn hint_wing(memory: &impl Memory, wing: usize) {
     for (offset, len) in [
         (0, MISSION + air_mission::REGION + 8),
-        (EXPERIENCE, 8),
         (ACE_REFERENCE, 8),
         (BASE_RANGE, 8),
         (BASE_FUEL, 8),
@@ -1252,25 +1248,23 @@ impl RowFields {
             let at = ROW_FIELDS[field].destination_offset;
             record[at..at + N].try_into().unwrap()
         }
-        let pool_block: [u8; 24] = take(record, 2);
-        let planes_block: [u8; 12] = take(record, 3);
-        let mission_block: [u8; 56] = take(record, 4);
-        let effective_aircraft: [u8; 4] = take(record, 5);
-        let experience: [u8; 8] = take(record, 8);
+        let planes_block: [u8; 8] = take(record, 4);
+        let mission_block: [u8; 56] = take(record, 5);
+        let effective_aircraft: [u8; 4] = take(record, 6);
         let base_fuel: [u8; 8] = take(record, 11);
         let country_block: [u8; 9] = take(record, 14);
         Self {
             completed: MANDATORY_FIELDS,
             primary: take(record, 0),
             secondary_and_handle: take(record, 1),
-            pool: pool_block[..8].try_into().unwrap(),
+            pool: take(record, 2),
             planes: planes_block[..4].try_into().unwrap(),
-            base_override: pool_block[16..24].try_into().unwrap(),
+            base_override: take(record, 3),
             mask: mission_block[16..20].try_into().unwrap(),
             region: mission_block[48..56].try_into().unwrap(),
             active: [mission_block[32]],
-            veto: take(record, 6),
-            eligibility: take(record, 7),
+            veto: take(record, 7),
+            eligibility: take(record, 8),
             country_override: country_block[..4].try_into().unwrap(),
             base_range: take(record, 10),
             ace: take(record, 9),
@@ -1289,11 +1283,8 @@ impl RowFields {
                 wing_backlink: u64::from_le_bytes(mission_block[40..48].try_into().unwrap()),
                 capacity_class: i32::from_le_bytes(mission_block[28..32].try_into().unwrap()),
             }),
-            cumulative: Some((
-                i32::from_le_bytes(planes_block[8..12].try_into().unwrap()),
-                i64::from_le_bytes(experience),
-            )),
-            group_handle: Some(u64::from_le_bytes(pool_block[8..16].try_into().unwrap())),
+            cumulative: None,
+            group_handle: None,
             replacement_setting: Some(country_block[8]),
         }
     }

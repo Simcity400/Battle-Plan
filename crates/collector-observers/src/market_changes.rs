@@ -1808,7 +1808,8 @@ mod tests {
         refresh_coverage();
         LEDGER.reset();
         let base_cap = VARIABLES_WATCH.capacity().max(8);
-        VARIABLES_WATCH.offer(base_cap);
+        // SAFETY: Isolated serial unit test owns market observer sizing state.
+        unsafe { presize(8, base_cap) };
         let clock = |hour| {
             Some(engine_native::cgame_state::Clock {
                 hour,

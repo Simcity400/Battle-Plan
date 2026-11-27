@@ -397,14 +397,14 @@ fn parts_start_at_the_owners_holding_each_share_and_never_split_an_owner() {
     let starts = |census: &AirWingJob, parts: &[AirWingJob]| {
         part_starts(census, parts).map(|(starts, split)| starts[..split].to_vec())
     };
-    assert_eq!(starts(&census, &[]), Some(vec![2]));
+    assert_eq!(starts(&census, &[]), Some(vec![2, 3]));
     let part = AirWingJob {
         owner_costs: vec![(4, 0), (5, 500)],
         cost: 1_000,
         ..Default::default()
     };
-    assert_eq!(starts(&census, &[part]), Some(vec![2, 4, 5]));
-    census.cost = 300;
+    assert_eq!(starts(&census, &[part]), Some(vec![2, 3, 4, 5]));
+    census.cost = 192;
     assert_eq!(starts(&census, &[]), Some(vec![]));
     census.map_outcome = NO_WING_SOURCE;
     assert_eq!(starts(&census, &[]), None);
