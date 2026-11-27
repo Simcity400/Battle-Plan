@@ -92,6 +92,43 @@ struct Kept {
     decoded: Arc<[OnceLock<Box<Result<SpriteType, String>>>]>,
 }
 
+struct Packed {
+    table: Table,
+    refused_names: BTreeMap<String, String>,
+    refused: Vec<String>,
+}
+
+impl Packed {
+    fn read(bytes: &Arc<Vec<u8>>, at: usize) -> std::io::Result<(Self, usize)> {
+        let mut input = Input::new(bytes, at);
+        let names = input.u64()?;
+        let mut refused_names = BTreeMap::new();
+        for _ in 0..names {
+            let name = input.text()?;
+            refused_names.insert(name, input.text()?);
+        }
+        let refused = input.texts()?;
+        let (table, end) = Table::read(bytes, input.at())?;
+        Ok((
+            Self {
+                table,
+                refused_names,
+                refused,
+            },
+            end,
+        ))
+    }
+}
+
+fn read_record(table: &Table, index: usize, decode: Decode) -> Result<SpriteType, String> {
+    let name = table
+        .key(index)
+        .and_then(|name| std::str::from_utf8(name).ok())
+        .ok_or_else(Kept::damaged)?;
+    let body = table.value(index).ok_or_else(Kept::damaged)?;
+    decode(name, body)
+}
+
 impl Kept {
     fn damaged() -> String {
         "the kept sprites are damaged".to_owned()
@@ -99,16 +136,7 @@ impl Kept {
 
     fn decoded(&self, index: usize) -> Result<&SpriteType, String> {
         let cell = self.decoded.get(index).ok_or_else(Self::damaged)?;
-        let read = || {
-            let name = self
-                .table
-                .key(index)
-                .and_then(|name| std::str::from_utf8(name).ok())
-                .ok_or_else(Self::damaged)?;
-            let body = self.table.value(index).ok_or_else(Self::damaged)?;
-            (self.decode)(name, body)
-        };
-        cell.get_or_init(|| Box::new(read()))
+        cell.get_or_init(|| Box::new(read_record(&self.table, index, self.decode)))
             .as_ref()
             .as_ref()
             .map_err(|why| format!("its kept declaration cannot be read: {why}"))
@@ -236,15 +264,7 @@ impl SpriteSet {
         at: usize,
         decode: Decode,
     ) -> std::io::Result<(Self, usize)> {
-        let mut input = Input::new(bytes, at);
-        let names = input.u64()?;
-        let mut refused_names = BTreeMap::new();
-        for _ in 0..names {
-            let name = input.text()?;
-            refused_names.insert(name, input.text()?);
-        }
-        let refused = input.texts()?;
-        let (table, end) = Table::read(bytes, input.at())?;
+        let (Packed { table, refused_names, refused }, end) = Packed::read(bytes, at)?;
         let decoded = (0..table.len()).map(|_| OnceLock::new()).collect();
         Ok((
             Self {
@@ -258,6 +278,26 @@ impl SpriteSet {
             },
             end,
         ))
+    }
+
+    pub fn validates_kept(&self, bytes: &Arc<Vec<u8>>, at: usize, decode: Decode) -> bool {
+        let Ok((packed, end)) = Packed::read(bytes, at) else {
+            return false;
+        };
+        if end != bytes.len()
+            || packed.refused_names != self.refused_names
+            || packed.refused != self.refused
+            || packed.table.len() != self.sprites.len()
+        {
+            return false;
+        }
+        let mut expected = self.iter();
+        (0..packed.table.len()).all(|index| {
+            expected.next().is_some_and(|(name, sprite)| {
+                packed.table.key(index) == Some(name.as_bytes())
+                    && read_record(&packed.table, index, decode).is_ok_and(|read| read == *sprite)
+            })
+        })
     }
 
     pub fn lookup(&self, name: &str) -> Result<&SpriteType, String> {
