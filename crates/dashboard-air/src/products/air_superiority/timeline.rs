@@ -857,9 +857,14 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
     for (at, read) in days.iter().enumerate() {
         let Some(read) = read else { continue };
         let (runs, reasons) = &status_runs[read.part];
-        let truncated = match runs.iter().find(|run| run.first <= read.hour && read.hour <= run.last) {
+        let bucket_start = read.hour - read.hour.rem_euclid(BUCKET);
+        let needs_exact = match runs.iter().find(|run| run.first <= read.hour && read.hour <= run.last) {
             Some(run) => match crate::products::status_rows(run.status, reasons, query.replay.capture_mode).into_rows(TableId::RaidAirScores, read.hour) {
-                Ok(((), None)) => false,
+                Ok(((), None)) => runs.iter().any(|run| {
+                    run.first <= read.hour
+                        && run.last >= bucket_start
+                        && !replay_recording::columnar_frames::complete(run.status)
+                }),
                 Ok(((), Some(_))) => true,
                 Err(why) => {
                     unread_notes.push((at, read.hour, why));
@@ -869,7 +874,7 @@ fn window(query: &Query<'_>, params: &AirTimelineParams, view_first: i32, view_l
             },
             None => false,
         };
-        if !truncated && (read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour)) {
+        if !needs_exact && (read.hour != stretches[read.part].last || read.hour == bucket_end(read.hour)) {
             continue;
         }
         let reads = [Read::all(TableId::RaidAirScores), Read::all(TableId::CountryLinks)];

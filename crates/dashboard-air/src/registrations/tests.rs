@@ -40,7 +40,7 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
     }
     if (142..147).contains(&hour) {
         let mut rows = vec![RaidAirScoreRow { country: 9001, region: 17, friendly: 5, enemy: 4, ..Default::default() }];
-        if hour == 142 {
+        if matches!(hour, 142 | 146) {
             rows.push(RaidAirScoreRow { country: 9001, region: 22, friendly: 9, enemy: 4, ..Default::default() });
         }
         *frame.tables[TableId::RaidAirScores.index()] = TableView::Truncated { rows: TableRows::RaidAirScores(rows), missing: 1 };
@@ -195,6 +195,15 @@ fn the_current_air_day_follows_score_changes_and_dates_the_held_readouts() {
                         );
                     }
                 }
+            }
+            if read.hour == 149 && !request["every"].is_null() {
+                let reply = read.value.as_ref().as_ref().unwrap();
+                let row_22 = reply["rows"].as_array().unwrap().iter().find(|row| row["region"] == 22);
+                assert_ne!(
+                    row_22.and_then(|row| row["readout"]["kind"].as_str()),
+                    Some("leading"),
+                    "{request} at 149 must not carry region 22's score from truncated hour 146 into complete bucket end 149: {reply}",
+                );
             }
         }
         assert_eq!(*(exact.advance)(101, true, &false.into(), None).value, (exact.cold)(101, &false.into()));
