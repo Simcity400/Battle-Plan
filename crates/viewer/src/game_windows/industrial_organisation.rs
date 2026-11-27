@@ -1,9 +1,11 @@
 use super::{
-    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRender,
-    GameWindowRequest, GameWindowTooltip, Prepared, RenderParams, Service, WindowCacheKey,
-    container_holder,
+    ComposedPlan, ComposedSubWindow, DEFAULT_VIEWPORT, GameWindowError, GameWindowRegion,
+    GameWindowRender, GameWindowRequest, GameWindowScroll, GameWindowScrollControl,
+    GameWindowTooltip, Prepared, RenderParams, SETTLE_TICK, STEADY_TICK, Service, SharedInterface,
+    WindowCacheKey, blank, container_holder,
     equipment_designer::{
-        RenderContext, compute_read_hour, script_tables, witnessed_rows, witnessed_single_key,
+        RenderContext, compute_read_hour, designer_database, script_tables, witnessed_rows,
+        witnessed_single_key,
     },
     layout_window, missing_window_refusal, strip_markup,
 };
@@ -12,6 +14,7 @@ use super::compose::{
     set_sprite_by_name, set_text_by_name, spell,
 };
 use content_reader_defines::defines;
+use content_reader_image::native::Decode;
 use content_reader_key_names::key_name_products::KeyNamesExt as _;
 use content_reader_parser::parser::c_string;
 use content_reader_gui::gui::native::{self, Element, Fields};
@@ -21,6 +24,10 @@ use content_reader_military::{
     industrial_organisations::{self, Database as OrganisationDatabase, policies::Policy},
     mio_traits::{self, Bonus, TraitName, Tree, is_production_stat},
 };
+use dashboard_base::products::{
+    artwork::resolver::{NativeIconResolution, resolve_native_equipment_icon},
+    equipment_icon::{Icon, IconHour, variant_icon},
+};
 use dashboard_text::metadata::link_slot;
 use content_reader_layers::content::ResolvedContent;
 use dashboard_effects::effect_description::{Content, Context, MioText, mio_text};
@@ -28,7 +35,6 @@ use content_reader_parser::parser::Item;
 use dashboard_text::organisation_quote;
 use dashboard_text::scripted_text::{EventScopes, ScriptedContent, ScriptedText};
 use dashboard_text::triggers::{Evaluator, OrganisationCondition, Undecided};
-use replay::campaign::SeekResult;
 use replay_frame::frame::DecodedFrame;
 use std::cell::RefCell;
 use replay_data::rows::{
@@ -42,7 +48,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use viewer_native_gui::native_gui::{
-    self, Assets, Layout, Resources, lifecycle::Instance,
+    self, Assets, Layout, Resources, TextureFile, lifecycle::Instance,
 };
 
 #[cfg(test)]
@@ -51,7 +57,6 @@ mod tests;
 const FIXED5_SCALE: f64 = 100_000.0;
 const UNSELECTED_POLICY: u32 = 0x4c17;
 const NOT_RECORDED_VALUE: &str = "n/a";
-const UNKNOWN_ICON_SPRITE: &str = "GFX_idea_unknown";
 const DETAIL_WINDOW_NAME: &str = "industrial_organisation_detail_window";
 const POLICY_WINDOW_NAME: &str = "industrial_organisation_policy_window";
 const TREE_STEP_X: i32 = 88;
@@ -63,15 +68,43 @@ const TRAIT_ICON_LEFT_X: i32 = 14;
 const TRAIT_ICON_RIGHT_X: i32 = 72;
 const TRAIT_ICON_MID_Y: i32 = 58;
 
-const REQUIRED_TABLES: &[TableId] = &[
+const TRAITS_TABLES: &[TableId] = &[
+    TableId::IndustrialOrganisations,
+    TableId::IndustrialOrganisationDetails,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::LexicalTokens,
+    TableId::ModifierDefinitions,
+    TableId::SimulationFeatures,
+];
+
+const POLICY_TABLES: &[TableId] = &[
+    TableId::IndustrialOrganisations,
+    TableId::IndustrialOrganisationDetails,
+    TableId::IndustrialOrganisationPolicies,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::LexicalTokens,
+    TableId::ModifierDefinitions,
+    TableId::SimulationFeatures,
+];
+
+const HISTORY_TABLES: &[TableId] = &[
     TableId::IndustrialOrganisations,
     TableId::IndustrialOrganisationDetails,
     TableId::IndustrialOrganisationHistory,
-    TableId::IndustrialOrganisationPolicies,
     TableId::VariantDefinitions,
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
+    TableId::PoliticalParties,
+    TableId::Politics,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::States,
     TableId::LexicalTokens,
     TableId::ModifierDefinitions,
     TableId::SimulationFeatures,
@@ -93,6 +126,14 @@ impl SubView {
             other => Err(GameWindowError::refused(format!(
                 "Unsupported military industrial organisation sub-view '{other}'."
             ))),
+        }
+    }
+
+    pub fn required_tables(self) -> &'static [TableId] {
+        match self {
+            Self::Traits => TRAITS_TABLES,
+            Self::History => HISTORY_TABLES,
+            Self::Policy => POLICY_TABLES,
         }
     }
 
@@ -165,11 +206,18 @@ fn spell_token(lexical: &Result<&[LexicalTokenRow], String>, token: u32) -> Spel
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DesignDate {
     Designed(i32),
     Absent,
     NotRecorded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryRecord {
+    pub variant_id: u64,
+    pub units: i32,
+    pub design: DesignDate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,9 +235,17 @@ pub enum HistoryList<'h> {
     Missing(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryRecordList {
+    Entries(Vec<HistoryRecord>),
+    Missing(String),
+}
+
+const MISSING_DESIGN_DATES: &str = "Not recorded: this recording does not hold the organisation's design dates, so its research and designer history cannot be told apart from its production line history.";
+
 pub fn history_lists(entries: &[HistoryEntry]) -> [HistoryList<'_>; 2] {
     if entries.iter().any(|entry| entry.design == DesignDate::NotRecorded) {
-        let reason = "Not recorded: this recording does not hold the organisation's design dates, so its research and designer history cannot be told apart from its production line history.".to_owned();
+        let reason = MISSING_DESIGN_DATES.to_owned();
         return [HistoryList::Missing(reason.clone()), HistoryList::Missing(reason)];
     }
     let designed = entries
@@ -201,6 +257,24 @@ pub fn history_lists(entries: &[HistoryEntry]) -> [HistoryList<'_>; 2] {
         .filter(|entry| entry.design == DesignDate::Absent)
         .collect();
     [HistoryList::Entries(designed), HistoryList::Entries(produced)]
+}
+
+pub fn split_history_records(records: &[HistoryRecord]) -> [HistoryRecordList; 2] {
+    if records.iter().any(|record| record.design == DesignDate::NotRecorded) {
+        let reason = MISSING_DESIGN_DATES.to_owned();
+        return [HistoryRecordList::Missing(reason.clone()), HistoryRecordList::Missing(reason)];
+    }
+    let designed = records
+        .iter()
+        .copied()
+        .filter(|record| matches!(record.design, DesignDate::Designed(_)))
+        .collect();
+    let produced = records
+        .iter()
+        .copied()
+        .filter(|record| record.design == DesignDate::Absent)
+        .collect();
+    [HistoryRecordList::Entries(designed), HistoryRecordList::Entries(produced)]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,7 +354,7 @@ pub struct OrganisationViewData {
     pub recorded_icon: String,
     pub details: RecordedDetails,
     pub policy_costs: Result<BTreeMap<String, PolicySummary>, String>,
-    pub history: Option<Vec<HistoryEntry>>,
+    pub history: Option<Vec<HistoryRecord>>,
     pub history_reason: Option<String>,
     pub funds_defines: Result<FundsDefines, String>,
     pub warnings: Vec<String>,
@@ -484,53 +558,81 @@ pub fn owner_policy_roster(
     Ok(out)
 }
 
+pub fn organisation_history_slice(
+    rows: &[IndustrialOrganisationHistoryRow],
+    org_id: u64,
+) -> &[IndustrialOrganisationHistoryRow] {
+    let first = rows.partition_point(|row| row.organisation < org_id);
+    let count = rows[first..].partition_point(|row| row.organisation == org_id);
+    &rows[first..first + count]
+}
+
+pub fn extract_history_records(
+    rows: &[IndustrialOrganisationHistoryRow],
+    org_id: u64,
+) -> Vec<HistoryRecord> {
+    organisation_history_slice(rows, org_id)
+        .iter()
+        .map(|row| HistoryRecord {
+            variant_id: row.variant,
+            units: row.units,
+            design: match row.design_hour {
+                Recorded::Value(Some(hour)) => DesignDate::Designed(hour),
+                Recorded::Value(None) => DesignDate::Absent,
+                Recorded::NotRecorded => DesignDate::NotRecorded,
+            },
+        })
+        .collect()
+}
+
+pub fn resolve_history_entry(
+    record: HistoryRecord,
+    variants: &Result<&[VariantDefinitionRow], String>,
+    lexical: &Result<&[LexicalTokenRow], String>,
+) -> HistoryEntry {
+    let definition = variants.as_ref().map_err(Clone::clone).and_then(|defs| {
+        defs.binary_search_by_key(&record.variant_id, |v| v.id)
+            .map(|idx| &defs[idx])
+            .map_err(|_| "VariantDefinitions has no row for this design at this hour".to_owned())
+    });
+    let (name, archetype) = match definition {
+        Ok(def) => {
+            let equipment = spell_token(lexical, def.equipment_token);
+            let recorded = String::from_utf8_lossy(c_string(&def.display_name))
+                .trim()
+                .to_owned();
+            let name = if !recorded.is_empty() {
+                Ok(recorded)
+            } else {
+                equipment.text().map(str::to_owned).ok_or_else(|| {
+                    equipment.missing("design's equipment").unwrap_or_default()
+                })
+            };
+            (name, equipment.text().unwrap_or_default().to_owned())
+        }
+        Err(reason) => (
+            Err(format!("Not recorded: the design's name is unavailable ({reason}).")),
+            String::new(),
+        ),
+    };
+    HistoryEntry {
+        variant_id: record.variant_id,
+        name,
+        archetype,
+        units: record.units,
+        design: record.design,
+    }
+}
+
 pub fn extract_history(
     rows: &[IndustrialOrganisationHistoryRow],
     org_id: u64,
     variants: &Result<&[VariantDefinitionRow], String>,
     lexical: &Result<&[LexicalTokenRow], String>,
 ) -> Vec<HistoryEntry> {
-    let first = rows.partition_point(|row| row.organisation < org_id);
-    rows[first..]
-        .iter()
-        .take_while(|row| row.organisation == org_id)
-        .map(|row| {
-            let definition = variants.as_ref().map_err(Clone::clone).and_then(|defs| {
-                defs.binary_search_by_key(&row.variant, |v| v.id)
-                    .map(|idx| &defs[idx])
-                    .map_err(|_| "VariantDefinitions has no row for this design at this hour".to_owned())
-            });
-            let (name, archetype) = match definition {
-                Ok(def) => {
-                    let equipment = spell_token(lexical, def.equipment_token);
-                    let recorded = String::from_utf8_lossy(c_string(&def.display_name)).trim().to_owned();
-                    let name = if !recorded.is_empty() {
-                        Ok(recorded)
-                    } else {
-                        equipment.text().map(str::to_owned).ok_or_else(|| {
-                            equipment.missing("design's equipment").unwrap_or_default()
-                        })
-                    };
-                    (name, equipment.text().unwrap_or_default().to_owned())
-                }
-                Err(reason) => (
-                    Err(format!("Not recorded: the design's name is unavailable ({reason}).")),
-                    String::new(),
-                ),
-            };
-            let design = match row.design_hour {
-                Recorded::Value(Some(hour)) => DesignDate::Designed(hour),
-                Recorded::Value(None) => DesignDate::Absent,
-                Recorded::NotRecorded => DesignDate::NotRecorded,
-            };
-            HistoryEntry {
-                variant_id: row.variant,
-                name,
-                archetype,
-                units: row.units,
-                design,
-            }
-        })
+    extract_history_records(rows, org_id)
+        .into_iter()
+        .map(|record| resolve_history_entry(record, variants, lexical))
         .collect()
 }
 
@@ -759,33 +861,52 @@ impl<'a> Loc<'a> {
     }
 }
 
-fn resolve_org_icon(
+fn has_declared_sprite(shared: &SharedInterface, name: &str) -> bool {
+    let bytes = name.as_bytes();
+    shared.registry.sprite(bytes).is_some()
+        || shared
+            .recorded_registry
+            .as_deref()
+            .is_some_and(|reg| reg.sprite(bytes).is_some())
+}
+
+fn want_sprite(shared: &SharedInterface, assets: &mut Assets, name: &str) {
+    if !name.is_empty() && has_declared_sprite(shared, name) {
+        assets.sprites.insert(name.as_bytes().to_vec());
+    }
+}
+
+pub fn sprite_ready(resources: &dyn Resources, name: &str) -> Result<(), String> {
+    match resources.sprite_info(name.as_bytes()) {
+        None => Err(format!(
+            "sprite '{name}' is not defined in the installed interface"
+        )),
+        Some(info) => match &info.missing {
+            Some(why) => Err(format!("sprite '{name}': {why}")),
+            None => Ok(()),
+        },
+    }
+}
+
+pub fn chosen_org_emblem(
     data: &OrganisationViewData,
     tree: Option<&Tree<'_>>,
-    has_sprite: impl Fn(&str) -> bool,
-) -> String {
-    let mut candidates = Vec::new();
+) -> Result<String, (String, String)> {
     if !data.recorded_icon.is_empty() {
-        candidates.push(data.recorded_icon.clone());
+        return Ok(data.recorded_icon.clone());
     }
-    if let Some(icon) = tree.and_then(|t| t.icon)
-        && !icon.is_empty()
-    {
-        candidates.push(icon.to_owned());
+    if let Some(icon) = tree.and_then(|t| t.icon).filter(|icon| !icon.is_empty()) {
+        return Ok(icon.to_owned());
     }
-    if let Ok(token) = &data.token {
-        if let Some(tag) = &data.owner_tag {
-            candidates.push(format!("GFX_{tag}_{token}"));
-        }
-        candidates.push(format!("GFX_{token}"));
-    }
-    candidates.push(UNKNOWN_ICON_SPRITE.to_owned());
-    for candidate in candidates {
-        if has_sprite(&candidate) {
-            return candidate;
-        }
-    }
-    UNKNOWN_ICON_SPRITE.to_owned()
+    let why = match &data.token {
+        Ok(token) => format!(
+            "no emblem was recorded for '{token}' and none is declared in its organisation script"
+        ),
+        Err(reason) => format!(
+            "no emblem was recorded and the organisation's script key cannot be named ({reason})"
+        ),
+    };
+    Err(("organisation emblem".to_owned(), why))
 }
 
 fn resolve_policy_name(token: &str, policy: Option<&Policy>, loc: &Loc<'_>) -> String {
@@ -800,16 +921,143 @@ fn resolve_policy_name(token: &str, policy: Option<&Policy>, loc: &Loc<'_>) -> S
     loc.get(token)
 }
 
-fn resolve_policy_icon(policy: Option<&Policy>, has_sprite: impl Fn(&str) -> bool) -> String {
-    if let Some(def) = policy
-        && !def.icon.is_empty()
-    {
-        let sprite = String::from_utf8_lossy(&def.icon).into_owned();
-        if has_sprite(&sprite) {
-            return sprite;
-        }
+pub fn chosen_policy_icon(
+    token: &str,
+    policy: Option<&Policy>,
+    resources: &dyn Resources,
+) -> Result<String, (String, String)> {
+    let Some(def) = policy else {
+        return Err((
+            "policy icon".to_owned(),
+            format!("policy '{token}' is not defined in the recorded mod stack"),
+        ));
+    };
+    if def.icon.is_empty() {
+        return Err((
+            "policy icon".to_owned(),
+            format!("policy '{token}' declares no icon in the recorded mod stack"),
+        ));
     }
-    UNKNOWN_ICON_SPRITE.to_owned()
+    let sprite = String::from_utf8_lossy(&def.icon).into_owned();
+    sprite_ready(resources, &sprite)
+        .map(|()| sprite.clone())
+        .map_err(|why| (sprite, why))
+}
+
+pub fn chosen_trait_icon(
+    trait_def: &TraitName,
+    resources: &dyn Resources,
+) -> Result<String, (String, String)> {
+    if trait_def.icon.is_empty() {
+        return Err((
+            "trait icon".to_owned(),
+            format!(
+                "trait '{}' declares no icon in the recorded mod stack",
+                trait_def.token
+            ),
+        ));
+    }
+    sprite_ready(resources, &trait_def.icon)
+        .map(|()| trait_def.icon.clone())
+        .map_err(|why| (trait_def.icon.clone(), why))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ResolvedHistoryIcon {
+    Ready { icon: Icon },
+    Missing { asset: String, reason: String },
+    NoneExpected,
+}
+
+fn clip_rect(rect: [f32; 4], clip: Option<[i32; 4]>) -> Option<[f32; 4]> {
+    let [x, y, w, h] = rect;
+    let (left, top, right, bottom) = match clip {
+        Some([cl, ct, cr, cb]) => (
+            x.max(cl as f32),
+            y.max(ct as f32),
+            (x + w).min(cr as f32),
+            (y + h).min(cb as f32),
+        ),
+        None => (x, y, x + w, y + h),
+    };
+    (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
+}
+
+fn intersect_clips(a: Option<[i32; 4]>, b: Option<[i32; 4]>) -> Option<[i32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0].max(b[0]),
+            a[1].max(b[1]),
+            a[2].min(b[2]),
+            a[3].min(b[3]),
+        ]),
+        (Some(clip), None) | (None, Some(clip)) => Some(clip),
+        (None, None) => None,
+    }
+}
+
+fn visible_list_indices(
+    list: &Element,
+    item_size: [i32; 2],
+    count: usize,
+    scroll: &BTreeMap<String, f32>,
+) -> std::ops::Range<usize> {
+    if count == 0 {
+        return 0..0;
+    }
+    let Fields::ListBox(fields) = &list.fields else {
+        return 0..count;
+    };
+    let smooth = list.kind == native::Kind::SmoothListBox;
+    let vertical = !(smooth && fields.horizontal != 0);
+    let axis = usize::from(vertical);
+    let step = item_size[axis].max(1);
+    let extent = fields.size[axis].max(0);
+    if smooth {
+        let total = i64::from(step) * count as i64;
+        let max_scroll = (total - i64::from(extent)).max(0) as f32;
+        let pos = scroll
+            .get(&list.path)
+            .copied()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, max_scroll);
+        let border = fields.border_size[axis] as f32;
+        let start = ((pos - border) / step as f32).floor().max(0.0) as usize;
+        let end = (((pos + extent as f32 - border) / step as f32).ceil().max(0.0) as usize)
+            .saturating_add(1)
+            .min(count);
+        start.min(count)..end
+    } else {
+        let fit = (extent / step).max(0) as usize;
+        let max_scroll = count.saturating_sub(fit) as f32;
+        let first = scroll
+            .get(&list.path)
+            .copied()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, max_scroll)
+            .floor() as usize;
+        let end = first.saturating_add(fit).min(count);
+        first.min(count)..end
+    }
+}
+
+fn control_fallback_rect(
+    container_holder: Option<&native_gui::Holder>,
+    element: &Element,
+    fallback_size: [f32; 2],
+) -> Option<[f32; 4]> {
+    let holder = container_holder?;
+    let (pos, centered) = match &element.fields {
+        Fields::Icon(icon) => (icon.position, icon.center_position),
+        Fields::Button(btn) => ([btn.position[0] as f32, btn.position[1] as f32], btn.center_position),
+        _ => ([0.0, 0.0], false),
+    };
+    let [w, h] = fallback_size;
+    let x = holder.origin[0] + pos[0] - if centered { w * 0.5 } else { 0.0 };
+    let y = holder.origin[1] + pos[1] - if centered { h * 0.5 } else { 0.0 };
+    clip_rect([x, y, w, h], holder.clip)
 }
 
 fn resolve_trait_name(
@@ -949,9 +1197,11 @@ struct PreparedMio {
     sub_view: SubView,
     catalog: Result<Arc<mio_traits::Catalog>, String>,
     org_db: Result<Arc<OrganisationDatabase>, String>,
-    emblem_sprite: String,
+    emblem: Result<String, (String, String)>,
     tree_background: Option<String>,
-    attached_policy_sprite: Option<String>,
+    history_icons: HashMap<u64, ResolvedHistoryIcon>,
+    history_art_label: Option<String>,
+    scroll: BTreeMap<String, f32>,
 }
 
 fn organisation_tree<'c>(
@@ -1074,6 +1324,7 @@ const HISTORY_LIST_PATH: &str = "history_window/variants_window/variant_history_
 const PRODUCTION_LIST_PATH: &str = "history_window/prod_lines_window/prod_line_history_list";
 const POLICY_LIST_PATH: &str = "policy_list_window/policy_list";
 const TREE_WINDOW: &str = "industrial_organisation_tree_window";
+const TREE_SCROLLBAR_PATH: &str = "scrollbar_window";
 const TREE_TRAITS_PATH: &str = "scrollbar_window/traits_window";
 const TREE_HEADER_PATH: &str = "tree_header";
 
@@ -1108,6 +1359,7 @@ fn tab_requirements(
             require_path(root, window, TREE_LIST_PATH)?;
             require_template(guis, "industrial_organisation_trait_entry")?;
             let tree_root = require_template(guis, TREE_WINDOW)?;
+            require_path(tree_root, TREE_WINDOW, TREE_SCROLLBAR_PATH)?;
             require_path(tree_root, TREE_WINDOW, TREE_TRAITS_PATH)?;
             if let Some(tree) = tree {
                 if !tree.tree_header_texts.is_empty() {
@@ -1131,6 +1383,7 @@ fn tab_requirements(
 
 fn configure_detail_main(
     root: &Element,
+    resources: &dyn Resources,
     loc: &Loc<'_>,
     instance: &mut Instance,
     tooltips: &mut BTreeMap<String, GameWindowTooltip>,
@@ -1146,16 +1399,20 @@ fn configure_detail_main(
     set_frame_by_name(instance, root, "tabs/traits_tab", traits_frame);
     set_frame_by_name(instance, root, "tabs/history_tab", history_frame);
 
-    set_sprite_by_name(instance, root, "top_left_window/icon", &prepared.emblem_sprite);
-    if let Some(icon_el) = find_direct(root, "top_left_window/icon") {
-        tooltips.insert(
-            icon_el.path.clone(),
-            GameWindowTooltip {
-                title: display_name,
-                body: Some(data.token.clone().unwrap_or_else(|why| why)),
-                detail: None,
-            },
-        );
+    if let Ok(emblem) = &prepared.emblem
+        && sprite_ready(resources, emblem).is_ok()
+    {
+        set_sprite_by_name(instance, root, "top_left_window/icon", emblem);
+        if let Some(icon_el) = find_direct(root, "top_left_window/icon") {
+            tooltips.insert(
+                icon_el.path.clone(),
+                GameWindowTooltip {
+                    title: display_name,
+                    body: Some(data.token.clone().unwrap_or_else(|why| why)),
+                    detail: None,
+                },
+            );
+        }
     }
 
     match &data.details {
@@ -1243,12 +1500,12 @@ fn configure_detail_main(
                     "open_policies_window/attached_policy_name",
                     policy_name.clone(),
                 );
-                if let Some(sprite) = &prepared.attached_policy_sprite {
+                if let Ok(sprite) = chosen_policy_icon(policy_token, policy_def, resources) {
                     set_sprite_by_name(
                         instance,
                         root,
                         "open_policies_window/attached_policy_icon",
-                        sprite,
+                        &sprite,
                     );
                 }
                 if let Some(btn) = find_direct(root, "open_policies_window/open_policies") {
@@ -1404,6 +1661,184 @@ fn configure_detail_main(
     }
 }
 
+fn compose_detail_chrome(
+    main_layout: &Layout,
+    root: &Element,
+    resources: &dyn Resources,
+    loc: &Loc<'_>,
+    prepared: &PreparedMio,
+    plan: &mut ComposedPlan,
+) {
+    let data = &prepared.data;
+    let display_name = loc.organisation_name();
+    let org_name = if display_name.is_empty() {
+        Err(data
+            .token
+            .as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "the organisation has no recorded name".to_owned()))
+    } else {
+        Ok(display_name.clone())
+    };
+    plan.text("industrial_org_name", "Organisation", org_name);
+
+    let emblem_missing = match &prepared.emblem {
+        Ok(sprite) => sprite_ready(resources, sprite)
+            .err()
+            .map(|why| (sprite.clone(), why)),
+        Err((asset, why)) => Some((asset.clone(), why.clone())),
+    };
+    if let Some((asset, why)) = emblem_missing
+        && let Some(icon_el) = find_direct(root, "top_left_window/icon")
+    {
+        let fallback = (!main_layout.regions.iter().any(|r| r.path == icon_el.path)).then(|| {
+            let parent = find_direct(root, "top_left_window")
+                .and_then(|el| container_holder(main_layout, &el.path));
+            control_fallback_rect(parent.as_ref(), icon_el, [52.0, 52.0])
+        }).flatten();
+        plan.placeholder(&icon_el.path, fallback, &display_name, &asset, &why);
+    }
+
+    match &data.details {
+        RecordedDetails::Available(details) => {
+            plan.text(
+                "top_left_window/size_icon_window/size",
+                "Size",
+                Ok(details.size.to_string()),
+            );
+            plan.text(
+                "top_left_window/points",
+                "Trait points",
+                Ok(details.points.to_string()),
+            );
+            match &details.policy {
+                Some(Spelled::Text(policy_token)) => {
+                    let policy_def = prepared
+                        .org_db
+                        .as_deref()
+                        .ok()
+                        .and_then(|db| db.policies.policy(policy_token.as_bytes()).ok());
+                    let policy_name = resolve_policy_name(policy_token, policy_def, loc);
+                    let value = match format_days_remaining(details.cooldown_hour, data.request_hour)
+                    {
+                        Some(days) => format!("{policy_name} (cooldown: {days} days remaining)"),
+                        None => policy_name.clone(),
+                    };
+                    plan.text(
+                        "open_policies_window/attached_policy_name",
+                        "Attached policy",
+                        Ok(value),
+                    );
+                    if let Err((asset, why)) =
+                        chosen_policy_icon(policy_token, policy_def, resources)
+                        && let Some(icon_el) =
+                            find_direct(root, "open_policies_window/attached_policy_icon")
+                    {
+                        let fallback = (!main_layout.regions.iter().any(|r| r.path == icon_el.path))
+                            .then(|| {
+                                let parent = find_direct(root, "open_policies_window")
+                                    .and_then(|el| container_holder(main_layout, &el.path));
+                                control_fallback_rect(parent.as_ref(), icon_el, [52.0, 52.0])
+                            })
+                            .flatten();
+                        plan.placeholder(&icon_el.path, fallback, &policy_name, &asset, &why);
+                    }
+                }
+                Some(unspelled) => {
+                    plan.text(
+                        "open_policies_window/attached_policy_name",
+                        "Attached policy",
+                        Err(unspelled.missing("attached policy").unwrap_or_default()),
+                    );
+                }
+                None => {
+                    plan.text(
+                        "open_policies_window/attached_policy_name",
+                        "Attached policy",
+                        Ok("None".to_owned()),
+                    );
+                }
+            }
+            if details.queued.is_empty() {
+                plan.text(
+                    "aggregated_bonuses_window/open_queue_button",
+                    "Trait queue",
+                    Ok("None".to_owned()),
+                );
+            } else {
+                let tree = organisation_tree(&prepared.catalog, &data.token).ok();
+                let org_token = data.token.as_deref().unwrap_or_default();
+                for (idx, queued) in details.queued.iter().enumerate() {
+                    let path = format!("aggregated_bonuses_window/open_queue_button:{idx}");
+                    let label = format!("Queued trait #{}", idx + 1);
+                    match queued {
+                        Spelled::Text(tok) => {
+                            let name = tree
+                                .as_ref()
+                                .and_then(|t| {
+                                    t.traits
+                                        .iter()
+                                        .find(|tr| tr.token.eq_ignore_ascii_case(tok))
+                                })
+                                .map_or_else(
+                                    || loc.get(tok),
+                                    |tr| {
+                                        resolve_trait_name(
+                                            tr,
+                                            org_token,
+                                            data.owner_tag.as_deref(),
+                                            loc,
+                                        )
+                                    },
+                                );
+                            plan.text(&path, &label, Ok(name));
+                        }
+                        Spelled::Unspelled { .. } => {
+                            plan.text(
+                                &path,
+                                &label,
+                                Err(queued.missing("queued trait").unwrap_or_default()),
+                            );
+                        }
+                    }
+                }
+            }
+            if prepared.sub_view == SubView::Traits {
+                plan.text(
+                    "toggle_auto_designs",
+                    "Auto-upgrade designs",
+                    Ok(if details.auto_upgrade { "On" } else { "Off" }.to_owned()),
+                );
+            }
+        }
+        RecordedDetails::Unavailable(reason) => {
+            let missing = format!(
+                "Not recorded: organisation details are unavailable at this hour ({reason})."
+            );
+            plan.text(
+                "top_left_window/size_icon_window/size",
+                "Size",
+                Err(missing.clone()),
+            );
+            plan.text("top_left_window/points", "Trait points", Err(missing.clone()));
+            plan.text(
+                "open_policies_window/attached_policy_name",
+                "Attached policy",
+                Err(missing.clone()),
+            );
+            plan.text(
+                "aggregated_bonuses_window/open_queue_button",
+                "Trait queue",
+                Err(missing.clone()),
+            );
+            if prepared.sub_view == SubView::Traits {
+                plan.text("toggle_auto_designs", "Auto-upgrade designs", Err(missing));
+            }
+        }
+    }
+}
+
 fn configure_policy_main(
     root: &Element,
     loc: &Loc<'_>,
@@ -1453,16 +1888,27 @@ fn compose_funds_progressbar(
             );
             let pct = progress.percent.unwrap_or(0);
             let body = match (progress.threshold, progress.percent) {
-                (Some(limit), Some(p)) => format!(
-                    "{:.0} / {:.0} ({p}%)",
-                    progress.funds.max(0.0),
-                    limit
-                ),
-                _ => format!(
-                    "{:.0} / {NOT_RECORDED_VALUE}\n{}",
-                    progress.funds.max(0.0),
-                    progress.threshold_reason.unwrap_or_default()
-                ),
+                (Some(limit), Some(p)) => {
+                    let text = format!("{:.0} / {:.0} ({p}%)", progress.funds.max(0.0), limit);
+                    plan.text("funds_progressbar", "Funds", Ok(text.clone()));
+                    text
+                }
+                _ => {
+                    let missing = progress.threshold_reason.unwrap_or_else(|| {
+                        "Not recorded: funds threshold is unavailable.".to_owned()
+                    });
+                    plan.text(
+                        "funds_progressbar",
+                        "Funds",
+                        Ok(format!("{:.0}", progress.funds.max(0.0))),
+                    );
+                    plan.text(
+                        "funds_progressbar/threshold",
+                        "Size-up threshold",
+                        Err(missing.clone()),
+                    );
+                    format!("{:.0} / {NOT_RECORDED_VALUE}\n{missing}", progress.funds.max(0.0))
+                }
             };
             (
                 pct,
@@ -1473,16 +1919,18 @@ fn compose_funds_progressbar(
                 },
             )
         }
-        RecordedDetails::Unavailable(reason) => (
-            0,
-            GameWindowTooltip {
-                title: loc.get("INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER"),
-                body: Some(format!(
-                    "Not recorded: funds are unavailable at this hour ({reason})."
-                )),
-                detail: None,
-            },
-        ),
+        RecordedDetails::Unavailable(reason) => {
+            let missing = format!("Not recorded: funds are unavailable at this hour ({reason}).");
+            plan.text("funds_progressbar", "Funds", Err(missing.clone()));
+            (
+                0,
+                GameWindowTooltip {
+                    title: loc.get("INDUSTRIAL_ORG_DETAIL_TOOLTIP_FUNDS_HEADER"),
+                    body: Some(missing),
+                    detail: None,
+                },
+            )
+        }
     };
 
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
@@ -1524,6 +1972,8 @@ struct BonusRow<'a> {
     child: &'static str,
     text: String,
     tooltip: Option<GameWindowTooltip>,
+    label: &'static str,
+    missing: Option<String>,
 }
 
 struct BonusRows<'a> {
@@ -1533,30 +1983,61 @@ struct BonusRows<'a> {
     rows: Vec<BonusRow<'a>>,
 }
 
+#[derive(Clone, Copy)]
+enum BonusRowKind {
+    Separator,
+    Modifier,
+    Bonus,
+}
+
 impl<'a> BonusRows<'a> {
     fn push(
         &mut self,
-        template: Option<&'a Element>,
-        window: &'static str,
-        child: &'static str,
+        kind: BonusRowKind,
         text: String,
         tooltip: Option<GameWindowTooltip>,
+        missing: Option<String>,
     ) -> Result<(), GameWindowError> {
+        let (template, window, child, label) = match kind {
+            BonusRowKind::Separator => (
+                self.separator,
+                "industrial_organisation_detail_separator",
+                "separator_name",
+                "Section",
+            ),
+            BonusRowKind::Modifier => (
+                self.modifier,
+                "industrial_organisation_detail_modifier_item",
+                "modifier_text",
+                "Modifier",
+            ),
+            BonusRowKind::Bonus => (
+                self.bonus,
+                "industrial_organisation_detail_bonus_item",
+                "bonus_text",
+                "Bonus",
+            ),
+        };
         let template = template.ok_or_else(|| GameWindowError::refused(missing_window_refusal(window)))?;
-        self.rows.push(BonusRow { template, window, child, text, tooltip });
+        self.rows.push(BonusRow { template, window, child, text, tooltip, label, missing });
         Ok(())
     }
 
     fn separator(&mut self, title: String) -> Result<(), GameWindowError> {
-        self.push(self.separator, "industrial_organisation_detail_separator", "separator_name", title, None)
+        self.push(BonusRowKind::Separator, title, None, None)
     }
 
-    fn modifier(&mut self, text: String, tooltip: Option<GameWindowTooltip>) -> Result<(), GameWindowError> {
-        self.push(self.modifier, "industrial_organisation_detail_modifier_item", "modifier_text", text, tooltip)
+    fn modifier(
+        &mut self,
+        text: String,
+        tooltip: Option<GameWindowTooltip>,
+        missing: Option<String>,
+    ) -> Result<(), GameWindowError> {
+        self.push(BonusRowKind::Modifier, text, tooltip, missing)
     }
 
     fn bonus(&mut self, text: String) -> Result<(), GameWindowError> {
-        self.push(self.bonus, "industrial_organisation_detail_bonus_item", "bonus_text", text, None)
+        self.push(BonusRowKind::Bonus, text, None, None)
     }
 
     fn compose(
@@ -1575,7 +2056,12 @@ impl<'a> BonusRows<'a> {
         let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
         for (index, (row, place)) in self.rows.into_iter().zip(places).enumerate() {
             let Some(place) = place else { continue };
-            let BonusRow { template, window, child, text, tooltip } = row;
+            let BonusRow { template, window, child, text, tooltip, label, missing } = row;
+            let text_value = match missing {
+                Some(reason) => Err(reason),
+                None => Ok(text.clone()),
+            };
+            plan.text(&format!("bonus:{index}"), label, text_value);
             let layout = layout_window(template, resources, viewport, |instance| {
                 set_text_by_name(instance, template, child, text);
             })?;
@@ -1621,15 +2107,17 @@ fn compose_aggregated_bonuses(
             rows.separator(
                 loc.get("INDUSTRIAL_ORG_DETAIL_MIO_MODIFIERS"),
             )?;
+            let missing = format!(
+                "Not recorded: organisation modifiers and unlocked traits are unavailable at this hour ({reason})."
+            );
             rows.modifier(
                 NOT_RECORDED_VALUE.to_owned(),
                 Some(GameWindowTooltip {
                     title: "Not recorded".to_owned(),
-                    body: Some(format!(
-                        "Not recorded: organisation modifiers and unlocked traits are unavailable at this hour ({reason})."
-                    )),
+                    body: Some(missing.clone()),
                     detail: None,
                 }),
+                Some(missing),
             )?;
         }
         RecordedDetails::Available(details) => {
@@ -1643,6 +2131,7 @@ fn compose_aggregated_bonuses(
                     &format_signed_percent_fixed5(details.research_bonus_raw),
                 ),
                 None,
+                None,
             )?;
             if details.funds_gain_factor_raw != 0 {
                 rows.modifier(
@@ -1651,6 +2140,7 @@ fn compose_aggregated_bonuses(
                         "MODIFIER_MIO_FUNDS_GAIN",
                         &format_signed_percent_fixed5(details.funds_gain_factor_raw),
                     ),
+                    None,
                     None,
                 )?;
             }
@@ -1662,6 +2152,7 @@ fn compose_aggregated_bonuses(
                         &format_signed_percent_fixed5(details.size_cost_factor_raw),
                     ),
                     None,
+                    None,
                 )?;
             }
             if details.task_capacity != 0 {
@@ -1671,6 +2162,7 @@ fn compose_aggregated_bonuses(
                         "MODIFIER_MIO_TASK_CAPACITY",
                         &details.task_capacity.to_string(),
                     ),
+                    None,
                     None,
                 )?;
             }
@@ -1691,6 +2183,7 @@ fn compose_aggregated_bonuses(
                     loc.fill("INDUSTRIAL_ORG_DETAIL_MIO_INITIAL_TRAIT_ITEM",
                         &[("NAME", &initial_name)],
                     ),
+                    None,
                     None,
                 )?;
             }
@@ -1720,14 +2213,18 @@ fn compose_aggregated_bonuses(
                             for line in loc.mio_lines(MioText::Bonuses(&bonuses)) {
                                 match line {
                                     Ok(text) => rows.bonus(text)?,
-                                    Err(reason) => rows.modifier(
-                                        NOT_RECORDED_VALUE.to_owned(),
-                                        Some(GameWindowTooltip {
-                                            title: "Not available".to_owned(),
-                                            body: Some(format!("This bonus cannot be described: {reason}.")),
-                                            detail: None,
-                                        }),
-                                    )?,
+                                    Err(reason) => {
+                                        let missing = format!("This bonus cannot be described: {reason}.");
+                                        rows.modifier(
+                                            NOT_RECORDED_VALUE.to_owned(),
+                                            Some(GameWindowTooltip {
+                                                title: "Not available".to_owned(),
+                                                body: Some(missing.clone()),
+                                                detail: None,
+                                            }),
+                                            Some(missing),
+                                        )?;
+                                    }
                                 }
                             }
                         }
@@ -1737,15 +2234,17 @@ fn compose_aggregated_bonuses(
                     rows.separator(
                         loc.get("INDUSTRIAL_ORG_DETAIL_EQUIPMENT_BONUSES"),
                     )?;
+                    let missing = format!(
+                        "The initial trait and equipment bonuses cannot be shown: {reason}."
+                    );
                     rows.modifier(
                         NOT_RECORDED_VALUE.to_owned(),
                         Some(GameWindowTooltip {
                             title: "Not available".to_owned(),
-                            body: Some(format!(
-                                "The initial trait and equipment bonuses cannot be shown: {reason}."
-                            )),
+                            body: Some(missing.clone()),
                             detail: None,
                         }),
+                        Some(missing),
                     )?;
                 }
             }
@@ -1905,6 +2404,127 @@ fn format_trait_tooltip(
     }
 }
 
+fn scrollbar_track_path(
+    guis: &native::Guis,
+    scrollbar_el: &Element,
+    vertical: bool,
+) -> Option<String> {
+    let container = scrollbar_el.container()?;
+    let name = if vertical {
+        c_string(&container.vertical_scrollbar)
+    } else {
+        c_string(&container.horizontal_scrollbar)
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let bar = guis.template(name)?;
+    let Fields::ExtendedScrollbar(fields) = &bar.fields else {
+        return None;
+    };
+    fields.track.as_deref().map(|track| track.path.clone())
+}
+
+fn push_tree_scroll_regions(
+    plan: &mut ComposedPlan,
+    viewport_rect: [f32; 4],
+    placed_tree_regions: &[native_gui::Region],
+    tracks: [Option<&str>; 2],
+    axes: [Option<TreeScrollAxis>; 2],
+) {
+    for vertical in [false, true] {
+        let Some(axis) = axes[usize::from(vertical)].as_ref() else {
+            continue;
+        };
+        plan.extra_regions.push(GameWindowRegion {
+            path: axis.key.clone(),
+            rect: viewport_rect,
+            clip: None,
+            disabled: false,
+            close: false,
+            passthrough: true,
+            view: None,
+            tooltip: None,
+            alpha_mask: None,
+            scroll: Some(GameWindowScroll {
+                list: axis.key.clone(),
+                vertical,
+                position: axis.position,
+                range: axis.range,
+                step: axis.step,
+                page: axis.page,
+                control: GameWindowScrollControl::List,
+            }),
+        });
+    }
+    for region in placed_tree_regions {
+        let matched = if let Some((vertical, direction)) = region.scroll {
+            axes[usize::from(vertical)]
+                .as_ref()
+                .map(|axis| (vertical, axis, GameWindowScrollControl::Step { direction }))
+        } else if let Some(slide) = region.slide {
+            axes[usize::from(slide.vertical)].as_ref().map(|axis| {
+                (
+                    slide.vertical,
+                    axis,
+                    GameWindowScrollControl::Thumb {
+                        travel: slide.travel,
+                        thumb: slide.thumb,
+                    },
+                )
+            })
+        } else if tracks[1].is_some_and(|track| track == region.path) {
+            axes[1]
+                .as_ref()
+                .map(|axis| (true, axis, GameWindowScrollControl::Track))
+        } else if tracks[0].is_some_and(|track| track == region.path) {
+            axes[0]
+                .as_ref()
+                .map(|axis| (false, axis, GameWindowScrollControl::Track))
+        } else {
+            None
+        };
+        let Some((vertical, axis, control)) = matched else {
+            continue;
+        };
+        plan.extra_regions.push(GameWindowRegion {
+            path: format!("{}:scrollbar/{}", axis.key, region.path),
+            rect: region.rect,
+            clip: region.clip.map(|[left, top, right, bottom]| {
+                [
+                    left as f32,
+                    top as f32,
+                    (right - left).max(0) as f32,
+                    (bottom - top).max(0) as f32,
+                ]
+            }),
+            disabled: region.disabled,
+            close: false,
+            passthrough: false,
+            view: None,
+            tooltip: None,
+            alpha_mask: None,
+            scroll: Some(GameWindowScroll {
+                list: axis.key.clone(),
+                vertical,
+                position: axis.position,
+                range: axis.range,
+                step: axis.step,
+                page: axis.page,
+                control,
+            }),
+        });
+    }
+}
+
+struct TreeScrollAxis {
+    key: String,
+    position: f32,
+    range: f32,
+    step: f32,
+    page: f32,
+}
+
 fn compose_trait_tree(
     main_layout: &Layout,
     root: &Element,
@@ -1918,25 +2538,242 @@ fn compose_trait_tree(
     let tree = organisation_tree(&prepared.catalog, &prepared.data.token)
         .map_err(|reason| tab_refusal(&named, SubView::Traits, &reason))?;
     let org_token = prepared.data.token.as_deref().unwrap_or_default();
-    let positions = trait_positions(&prepared.catalog, &tree, org_token)
+    let raw_positions = trait_positions(&prepared.catalog, &tree, org_token)
         .map_err(|reason| tab_refusal(&named, SubView::Traits, &reason))?;
     let tree_list = require_path(root, DETAIL_WINDOW_NAME, TREE_LIST_PATH)?;
     let tree_holder = require_holder(main_layout, tree_list)?;
     let tree_tpl = require_template(guis, TREE_WINDOW)?;
-    let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
-    let tree_layout = layout_window(tree_tpl, resources, viewport, |instance| {
-        if let Some(bg) = &prepared.tree_background
-            && let Ok(bound) = instance.control(tree_tpl, tree_tpl)
-        {
-            bound.sprite = Some(bg.as_bytes().to_vec());
-        }
-    })?;
+    let scrollbar_el = require_path(tree_tpl, TREE_WINDOW, TREE_SCROLLBAR_PATH)?;
     let traits_el = require_path(tree_tpl, TREE_WINDOW, TREE_TRAITS_PATH)?;
+    let trait_tpl = require_template(guis, "industrial_organisation_trait_entry")?;
+    let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
+
+    let organisation = prepared.data.organisation_id;
+    let status_of = |token: &str| match trait_status(&prepared.data.details, token) {
+        TraitStatus::Locked => {
+            match loc.trait_condition(organisation, token, OrganisationCondition::Available) {
+                Ok(true) => TraitStatus::Available,
+                Ok(false) => TraitStatus::Locked,
+                Err(why) => TraitStatus::Unknown(format!(
+                    "Not decided: whether the trait can be unlocked cannot be evaluated at this hour ({why})."
+                )),
+            }
+        }
+        recorded => recorded,
+    };
+    let mut hidden_why: HashMap<String, String> = HashMap::new();
+    let positions: Vec<(&TraitName, [i32; 2])> = raw_positions
+        .into_iter()
+        .filter(|(trait_def, _)| {
+            if matches!(
+                trait_status(&prepared.data.details, &trait_def.token),
+                TraitStatus::Unlocked | TraitStatus::Queued(_)
+            ) {
+                return true;
+            }
+            match loc.trait_condition(organisation, &trait_def.token, OrganisationCondition::Visible)
+            {
+                Ok(visible) => visible,
+                Err(why) => {
+                    hidden_why.insert(
+                        trait_def.token.to_ascii_lowercase(),
+                        format!(
+                            "Not decided: whether the trait is visible cannot be evaluated at this hour ({why})."
+                        ),
+                    );
+                    true
+                }
+            }
+        })
+        .collect();
+
+    let [trait_w, trait_h] = trait_tpl
+        .container()
+        .map(|c| [c.size.size[0].value.max(1), c.size.size[1].value.max(1)])
+        .unwrap_or([TREE_STEP_X, TREE_STEP_Y]);
+    let step_x = TREE_STEP_X.max(trait_w);
+    let step_y = TREE_STEP_Y.max(trait_h);
+    let min_x = positions.iter().map(|(_, p)| p[0]).min().unwrap_or(0);
+    let min_y = positions.iter().map(|(_, p)| p[1]).min().unwrap_or(0);
+    let max_x = positions.iter().map(|(_, p)| p[0]).max().unwrap_or(0);
+    let max_y = positions.iter().map(|(_, p)| p[1]).max().unwrap_or(0);
+    let cols = (max_x - min_x + 1).max(1);
+    let rows = (max_y - min_y + 1).max(1);
+    let content_w = ((cols - 1) * step_x + trait_w).max(0);
+    let content_h = ((rows - 1) * step_y + trait_h).max(0);
+
+    let template_bg = tree_tpl
+        .container()
+        .and_then(|c| c.backgrounds.first())
+        .and_then(|bg| bg.button())
+        .and_then(|button| std::str::from_utf8(&button.sprite).ok())
+        .filter(|s| !s.is_empty());
+    let chosen_bg = prepared.tree_background.as_deref().or(template_bg);
+    let bg_state: Option<Result<&str, (&str, String)>> = chosen_bg.map(|bg| {
+        sprite_ready(resources, bg)
+            .map(|()| bg)
+            .map_err(|why| (bg, why))
+    });
+
+    let tree_viewport = find_direct(root, "tree_scrollbar_window/tree_window")
+        .and_then(|el| container_holder(main_layout, &el.path))
+        .map(|h| h.content)
+        .filter(|&[w, h]| w > 0 && h > 0)
+        .unwrap_or(viewport);
+    let mut tree_instance = Instance::construct(tree_tpl, tree_viewport, resources)
+        .map_err(GameWindowError::failed)?;
+    tree_instance.set_size_cornered_buttons(true);
+    tree_instance
+        .gui_show(tree_tpl, tree_tpl)
+        .map_err(GameWindowError::failed)?;
+    if prepared.tree_background.is_some()
+        && let Some(Ok(bg)) = bg_state
+        && let Some(container) = tree_tpl.container()
+    {
+        for background in &container.backgrounds {
+            if let Ok(bound) = tree_instance.control(tree_tpl, background) {
+                bound.sprite = Some(bg.as_bytes().to_vec());
+            }
+        }
+    }
+    let _ = tree_instance.set_size(tree_tpl, traits_el, [content_w, content_h], resources);
+    let _ = tree_instance.synchronize_scroll(tree_tpl, scrollbar_el, resources, true);
+    tree_instance
+        .tick(tree_tpl, resources, SETTLE_TICK)
+        .map_err(GameWindowError::failed)?;
+    tree_instance
+        .tick(tree_tpl, resources, STEADY_TICK)
+        .map_err(GameWindowError::failed)?;
+
+    let view_size = tree_instance
+        .content_size(tree_tpl, scrollbar_el)
+        .unwrap_or([0, 0]);
+    let traits_local_pos = traits_el
+        .container()
+        .map(|c| [c.position.x.value, c.position.y.value])
+        .unwrap_or([0, 0]);
+    let content_size = [content_w, content_h];
+    let steps = [step_x as f32, step_y as f32];
+    let mut scroll_axes: [Option<TreeScrollAxis>; 2] = [None, None];
+    let mut manual_shift = [0i32; 2];
+    let mut scroll_offset = [0i32; 2];
+    for (axis, (vertical, suffix)) in [(false, "h"), (true, "v")].into_iter().enumerate() {
+        let key = format!("{}:{suffix}", scrollbar_el.path);
+        let requested = prepared
+            .scroll
+            .get(&key)
+            .copied()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0);
+        let native = tree_instance
+            .scroll_to(
+                tree_tpl,
+                scrollbar_el,
+                vertical,
+                |[min, max]| Some((min + requested.round() as i32).clamp(min, max)),
+                resources,
+            )
+            .ok()
+            .flatten();
+        if let Some(([min, max], pos)) = native
+            && max > min
+        {
+            let range = (max - min) as f32;
+            let position = (pos - min).clamp(0, max - min) as f32;
+            scroll_offset[axis] = pos;
+            scroll_axes[axis] = Some(TreeScrollAxis {
+                key,
+                position,
+                range,
+                step: steps[axis],
+                page: view_size[axis].max(1) as f32,
+            });
+        } else {
+            let overflow = (traits_local_pos[axis] + content_size[axis] - view_size[axis]).max(0);
+            if overflow > 0 {
+                let range = overflow as f32;
+                let position = requested.clamp(0.0, range);
+                let shift = position.round() as i32;
+                manual_shift[axis] = shift;
+                scroll_offset[axis] = shift;
+                scroll_axes[axis] = Some(TreeScrollAxis {
+                    key,
+                    position,
+                    range,
+                    step: steps[axis],
+                    page: view_size[axis].max(1) as f32,
+                });
+            }
+        }
+    }
+
+    let mut tree_layout = tree_instance
+        .layout_with_regions(tree_tpl, resources, None, true)
+        .map_err(|refusals| {
+            GameWindowError::failed(
+                refusals
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?
+        .ok_or_else(|| {
+            GameWindowError::refused(format!(
+                "Game window '{TREE_WINDOW}' did not produce a layout."
+            ))
+        })?;
+
+    let mut tree_tooltips = BTreeMap::new();
+    let display_name = loc.organisation_name();
+    if let Some(Err((bg_name, why))) = &bg_state {
+        let bg_paths: BTreeSet<String> = tree_tpl
+            .container()
+            .map(|c| c.backgrounds.iter().map(|bg| bg.path.clone()).collect())
+            .unwrap_or_default();
+        tree_layout.parts.retain(|part| !bg_paths.contains(&part.path));
+        let tip = GameWindowTooltip {
+            title: format!("{display_name} background"),
+            body: Some(format!("{bg_name}: {why}")),
+            detail: None,
+        };
+        for path in bg_paths {
+            tree_tooltips.insert(path, tip.clone());
+        }
+        let tree_size = tree_layout.size;
+        let scrollbar_top = container_holder(&tree_layout, &scrollbar_el.path)
+            .map(|h| h.logical[1])
+            .unwrap_or(0);
+        let badge_h = if scrollbar_top >= 22 {
+            22.0
+        } else {
+            22.0f32.min(tree_size[1].max(1) as f32)
+        };
+        let badge_w = (tree_size[0] - 8).clamp(40, 260) as f32;
+        let badge_rect = clip_rect(
+            [
+                tree_holder.origin[0] + 4.0,
+                tree_holder.origin[1] + 2.0,
+                badge_w,
+                badge_h,
+            ],
+            tree_holder.clip,
+        );
+        plan.placeholder(
+            "mio_tree/background",
+            badge_rect,
+            &format!("{display_name} background"),
+            bg_name,
+            why,
+        );
+    }
+
     let mut traits_box = container_holder(&tree_layout, &traits_el.path).ok_or_else(|| {
         GameWindowError::refused(format!(
             "'{TREE_WINDOW}/{TREE_TRAITS_PATH}' produced no layout holder, so the traits cannot be placed."
         ))
     })?;
+    let scrollbar_holder = container_holder(&tree_layout, &scrollbar_el.path);
     let header_holder = find_direct(tree_tpl, TREE_HEADER_PATH)
         .and_then(|el| container_holder(&tree_layout, &el.path));
 
@@ -1945,35 +2782,53 @@ fn compose_trait_tree(
     let tree_origin = tree_holder.origin;
     let tree_before = tree_holder.before;
 
+    let translate_clip = |clip: [i32; 4]| {
+        [
+            clip[0] + tree_holder.logical[0],
+            clip[1] + tree_holder.logical[1],
+            clip[2] + tree_holder.logical[0],
+            clip[3] + tree_holder.logical[1],
+        ]
+    };
+    let scrollbar_clip = traits_box.clip.map(translate_clip).or_else(|| {
+        scrollbar_holder.as_ref().map(|holder| {
+            [
+                tree_holder.logical[0] + holder.logical[0],
+                tree_holder.logical[1] + holder.logical[1],
+                tree_holder.logical[0] + holder.logical[0] + holder.content[0],
+                tree_holder.logical[1] + holder.logical[1] + holder.content[1],
+            ]
+        })
+    });
+    let viewport_clip = intersect_clips(tree_holder.clip, scrollbar_clip);
+
+    let v_track = scrollbar_track_path(guis, scrollbar_el, true);
+    let h_track = scrollbar_track_path(guis, scrollbar_el, false);
+    if let Some([left, top, right, bottom]) = viewport_clip {
+        push_tree_scroll_regions(
+            plan,
+            [
+                left as f32,
+                top as f32,
+                (right - left).max(0) as f32,
+                (bottom - top).max(0) as f32,
+            ],
+            &tree_regions,
+            [h_track.as_deref(), v_track.as_deref()],
+            scroll_axes,
+        );
+    }
+
     plan.sub_windows.push(ComposedSubWindow {
         before_part: tree_before,
         parts: tree_parts,
         regions: tree_regions,
         diagnostics: tree_layout.diagnostics,
-        root_window: "industrial_organisation_tree_window".to_owned(),
+        root_window: TREE_WINDOW.to_owned(),
         path_prefix: "mio_tree/".to_owned(),
         close_paths: Vec::new(),
-        tooltip_overrides: BTreeMap::new(),
+        tooltip_overrides: tree_tooltips,
     });
-
-    let min_x = positions.iter().map(|(_, p)| p[0]).min().unwrap_or(0);
-    let min_y = positions.iter().map(|(_, p)| p[1]).min().unwrap_or(0);
-    let max_x = positions.iter().map(|(_, p)| p[0]).max().unwrap_or(0);
-    let max_y = positions.iter().map(|(_, p)| p[1]).max().unwrap_or(0);
-    let cols = (max_x - min_x + 1).max(1);
-    let rows = (max_y - min_y + 1).max(1);
-    let avail_w = 870i32;
-    let avail_h = 600i32;
-    let step_x = if cols * TREE_STEP_X > avail_w {
-        (avail_w / cols).max(66)
-    } else {
-        TREE_STEP_X
-    };
-    let step_y = if rows * TREE_STEP_Y > avail_h {
-        (avail_h / rows).max(88)
-    } else {
-        TREE_STEP_Y
-    };
 
     if !tree.tree_header_texts.is_empty() {
         let mut hdr = header_holder.ok_or_else(|| {
@@ -1987,13 +2842,18 @@ fn compose_trait_tree(
             tree_holder.logical[0] + hdr.logical[0],
             tree_holder.logical[1] + hdr.logical[1],
         ];
+        hdr.clip = intersect_clips(tree_holder.clip, hdr.clip.map(translate_clip));
         hdr.before = tree_before;
+        let traits_left = scrollbar_holder
+            .as_ref()
+            .map(|h| h.logical[0] + traits_local_pos[0])
+            .unwrap_or(0);
         for (idx, header_text) in tree.tree_header_texts.iter().enumerate() {
             let label = loc.get(&header_text.text);
             let layout = layout_window(flavor_tpl, resources, viewport, |instance| {
                 set_text_by_name(instance, flavor_tpl, "flavortext", label);
             })?;
-            let px = (header_text.x - min_x) * step_x + 45;
+            let px = (header_text.x - min_x) * step_x + traits_left - scroll_offset[0];
             plan.sub_windows.push(ComposedSubWindow {
                 before_part: tree_before,
                 parts: hdr.place([px, 0], &layout),
@@ -2008,48 +2868,15 @@ fn compose_trait_tree(
     }
 
     traits_box.origin = [
-        tree_origin[0] + traits_box.origin[0],
-        tree_origin[1] + traits_box.origin[1],
+        tree_origin[0] + traits_box.origin[0] - manual_shift[0] as f32,
+        tree_origin[1] + traits_box.origin[1] - manual_shift[1] as f32,
     ];
     traits_box.logical = [
-        tree_holder.logical[0] + traits_box.logical[0],
-        tree_holder.logical[1] + traits_box.logical[1],
+        tree_holder.logical[0] + traits_box.logical[0] - manual_shift[0],
+        tree_holder.logical[1] + traits_box.logical[1] - manual_shift[1],
     ];
-    traits_box.clip = Some([
-        (tree_origin[0] + 45.0).round() as i32,
-        (tree_origin[1] + 25.0).round() as i32,
-        (tree_origin[0] + 950.0).round() as i32,
-        (tree_origin[1] + 665.0).round() as i32,
-    ]);
+    traits_box.clip = viewport_clip;
     traits_box.before = tree_before;
-
-    let organisation = prepared.data.organisation_id;
-    let status_of = |token: &str| match trait_status(&prepared.data.details, token) {
-        TraitStatus::Locked => match loc.trait_condition(organisation, token, OrganisationCondition::Available) {
-            Ok(true) => TraitStatus::Available,
-            Ok(false) => TraitStatus::Locked,
-            Err(why) => TraitStatus::Unknown(format!(
-                "Not decided: whether the trait can be unlocked cannot be evaluated at this hour ({why})."
-            )),
-        },
-        recorded => recorded,
-    };
-    let mut hidden_why: HashMap<String, String> = HashMap::new();
-    let positions: Vec<(&TraitName, [i32; 2])> = positions
-        .into_iter()
-        .filter(|(trait_def, _)| {
-            match loc.trait_condition(organisation, &trait_def.token, OrganisationCondition::Visible) {
-                Ok(visible) => visible,
-                Err(why) => {
-                    hidden_why.insert(
-                        trait_def.token.to_ascii_lowercase(),
-                        format!("Not decided: whether the trait is visible cannot be evaluated at this hour ({why})."),
-                    );
-                    true
-                }
-            }
-        })
-        .collect();
 
     let pixel_of = |grid: [i32; 2]| -> [i32; 2] {
         [(grid[0] - min_x) * step_x, (grid[1] - min_y) * step_y]
@@ -2122,11 +2949,17 @@ fn compose_trait_tree(
         }
     }
 
-    let trait_tpl = require_template(guis, "industrial_organisation_trait_entry")?;
-    let has_sprite = |name: &str| resources.sprite_info(name.as_bytes()).is_some();
-
     for (idx, (trait_def, grid)) in positions.iter().enumerate() {
         let px = pixel_of(*grid);
+        let trait_rect = [
+            traits_box.origin[0] + px[0] as f32,
+            traits_box.origin[1] + px[1] as f32,
+            trait_w as f32,
+            trait_h as f32,
+        ];
+        let Some(visible_trait_rect) = clip_rect(trait_rect, traits_box.clip) else {
+            continue;
+        };
         let status = match hidden_why.get(&trait_def.token.to_ascii_lowercase()) {
             Some(why) => TraitStatus::Unknown(why.clone()),
             None => status_of(&trait_def.token),
@@ -2141,18 +2974,13 @@ fn compose_trait_tree(
             TraitStatus::Available | TraitStatus::Locked => Some(3),
             TraitStatus::Unknown(_) => None,
         };
-        let frame_sprite = if trait_def.special_background
-            && has_sprite("GFX_country_spefific_org_trait_button")
-        {
+        let chosen_frame = if trait_def.special_background {
             "GFX_country_spefific_org_trait_button"
         } else {
             "GFX_industrial_org_trait_button"
         };
-        let trait_sprite = if !trait_def.icon.is_empty() && has_sprite(&trait_def.icon) {
-            trait_def.icon.as_str()
-        } else {
-            UNKNOWN_ICON_SPRITE
-        };
+        let frame_ready = frame.map(|f| (f, sprite_ready(resources, chosen_frame)));
+        let icon_choice = chosen_trait_icon(trait_def, resources);
         let trait_name =
             resolve_trait_name(trait_def, org_token, prepared.data.owner_tag.as_deref(), loc);
         let status_line = match &status {
@@ -2162,23 +2990,33 @@ fn compose_trait_tree(
             TraitStatus::Available => "Status: Available".to_owned(),
             TraitStatus::Locked => "Status: Locked".to_owned(),
         };
+        let text_status = match &status {
+            TraitStatus::Unknown(reason) => Err(reason.clone()),
+            TraitStatus::Unlocked => Ok("Unlocked".to_owned()),
+            TraitStatus::Queued(pos) => Ok(format!("Queued (#{pos})")),
+            TraitStatus::Available => Ok("Available".to_owned()),
+            TraitStatus::Locked => Ok("Locked".to_owned()),
+        };
+        plan.text(&format!("trait:{idx}"), &trait_name, text_status);
 
-        let trait_layout = layout_window(trait_tpl, resources, viewport, |instance| {
+        let mut trait_layout = layout_window(trait_tpl, resources, viewport, |instance| {
             hide_by_name(instance, trait_tpl, "ai_value");
-            set_sprite_by_name(
-                instance,
-                trait_tpl,
-                "industrial_organisation_trait_icon/icon_frame",
-                frame_sprite,
-            );
-            match frame {
-                Some(frame) => set_frame_by_name(
-                    instance,
-                    trait_tpl,
-                    "industrial_organisation_trait_icon/icon_frame",
-                    frame,
-                ),
-                None => hide_by_name(
+            match &frame_ready {
+                Some((frame_num, Ok(()))) => {
+                    set_sprite_by_name(
+                        instance,
+                        trait_tpl,
+                        "industrial_organisation_trait_icon/icon_frame",
+                        chosen_frame,
+                    );
+                    set_frame_by_name(
+                        instance,
+                        trait_tpl,
+                        "industrial_organisation_trait_icon/icon_frame",
+                        *frame_num,
+                    );
+                }
+                _ => hide_by_name(
                     instance,
                     trait_tpl,
                     "industrial_organisation_trait_icon/icon_frame",
@@ -2189,12 +3027,19 @@ fn compose_trait_tree(
                 trait_tpl,
                 "industrial_organisation_trait_icon/icon_frame",
             );
-            set_sprite_by_name(
-                instance,
-                trait_tpl,
-                "industrial_organisation_trait_icon/trait_icon",
-                trait_sprite,
-            );
+            match &icon_choice {
+                Ok(sprite) => set_sprite_by_name(
+                    instance,
+                    trait_tpl,
+                    "industrial_organisation_trait_icon/trait_icon",
+                    sprite,
+                ),
+                Err(_) => hide_by_name(
+                    instance,
+                    trait_tpl,
+                    "industrial_organisation_trait_icon/trait_icon",
+                ),
+            }
             if let Some(pos) = queue_pos {
                 set_text_by_name(
                     instance,
@@ -2211,15 +3056,66 @@ fn compose_trait_tree(
             }
         })?;
 
+        let frame_placed_rect = find_direct(trait_tpl, "industrial_organisation_trait_icon/icon_frame")
+            .and_then(|el| trait_layout.regions.iter().find(|r| r.path == el.path))
+            .map(|region| traits_box.place_regions(px, std::slice::from_ref(region))[0].rect);
+        if let Err((asset, why)) = &icon_choice {
+            if let Some(icon_el) =
+                find_direct(trait_tpl, "industrial_organisation_trait_icon/trait_icon")
+            {
+                let _ = blank(&mut trait_layout, &icon_el.path);
+            }
+            let raw_rect = frame_placed_rect
+                .map(|[x, y, w, h]| {
+                    if w > 24.0 && h > 24.0 {
+                        [x + 6.0, y + 6.0, w - 12.0, h - 12.0]
+                    } else {
+                        [x, y, w, h]
+                    }
+                })
+                .unwrap_or([
+                    traits_box.origin[0] + (px[0] + TRAIT_ICON_LEFT_X) as f32,
+                    traits_box.origin[1] + (px[1] + TRAIT_ICON_TOP_Y) as f32,
+                    (TRAIT_ICON_RIGHT_X - TRAIT_ICON_LEFT_X).max(16) as f32,
+                    (TRAIT_ICON_BOTTOM_Y - TRAIT_ICON_TOP_Y).min(58).max(16) as f32,
+                ]);
+            let placed_rect = clip_rect(raw_rect, traits_box.clip).or(Some(visible_trait_rect));
+            plan.placeholder(
+                &format!("trait:{idx}/trait_icon"),
+                placed_rect,
+                &trait_name,
+                asset,
+                why,
+            );
+        }
+        if let Some((_, Err(why))) = &frame_ready {
+            plan.placeholder(
+                &format!("trait:{idx}/icon_frame"),
+                Some(visible_trait_rect),
+                &format!("{trait_name} frame"),
+                chosen_frame,
+                why,
+            );
+        }
+
         let mut overrides = BTreeMap::new();
-        let tooltip_path = if frame.is_some() {
+        let tooltip_path = if matches!(frame_ready, Some((_, Ok(())))) {
             "industrial_organisation_trait_icon/icon_frame"
-        } else {
+        } else if icon_choice.is_ok() {
             "industrial_organisation_trait_icon/trait_icon"
+        } else {
+            ""
         };
-        if let Some(btn) = find_direct(trait_tpl, tooltip_path) {
+        if !tooltip_path.is_empty()
+            && let Some(btn) = find_direct(trait_tpl, tooltip_path)
+        {
             overrides.insert(
                 btn.path.clone(),
+                format_trait_tooltip(trait_def, &trait_name, &status_line, loc),
+            );
+        } else if icon_choice.is_err() && !matches!(frame_ready, Some((_, Ok(())))) {
+            overrides.insert(
+                trait_tpl.path.clone(),
                 format_trait_tooltip(trait_def, &trait_name, &status_line, loc),
             );
         }
@@ -2254,7 +3150,7 @@ fn compose_trait_tree(
             let start_x = px[0] + TRAIT_ICON_CENTER_X - total_w / 2;
             let badge_y = px[1] + 74;
             for (b_idx, badge_sprite) in badges.into_iter().enumerate() {
-                if !has_sprite(badge_sprite) {
+                if sprite_ready(resources, badge_sprite).is_err() {
                     continue;
                 }
                 let b_layout = layout_window(icon_tpl, resources, viewport, |instance| {
@@ -2276,9 +3172,26 @@ fn compose_trait_tree(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HistoryKind {
     Designed,
     Produced,
+}
+
+impl HistoryKind {
+    fn section_label(self) -> &'static str {
+        match self {
+            Self::Designed => "Designed equipment",
+            Self::Produced => "Produced equipment",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HistoryResolveCounts {
+    pub variant_lookups: usize,
+    pub name_resolutions: usize,
+    pub row_layouts: usize,
 }
 
 struct HistoryRowText {
@@ -2286,6 +3199,7 @@ struct HistoryRowText {
     archetype: String,
     fact: String,
     tooltip: Option<GameWindowTooltip>,
+    missing_name: Option<String>,
 }
 
 fn history_row_text(entry: &HistoryEntry, kind: &HistoryKind, loc: &Loc<'_>) -> HistoryRowText {
@@ -2294,9 +3208,9 @@ fn history_row_text(entry: &HistoryEntry, kind: &HistoryKind, loc: &Loc<'_>) -> 
     } else {
         loc.get(&entry.archetype)
     };
-    let (name, tooltip) = match &entry.name {
-        Ok(name) if *name == entry.archetype => (loc.get(name), None),
-        Ok(name) => (name.clone(), None),
+    let (name, tooltip, missing_name) = match &entry.name {
+        Ok(name) if *name == entry.archetype => (loc.get(name), None, None),
+        Ok(name) => (name.clone(), None, None),
         Err(reason) => (
             NOT_RECORDED_VALUE.to_owned(),
             Some(GameWindowTooltip {
@@ -2304,6 +3218,7 @@ fn history_row_text(entry: &HistoryEntry, kind: &HistoryKind, loc: &Loc<'_>) -> 
                 body: Some(reason.clone()),
                 detail: None,
             }),
+            Some(reason.clone()),
         ),
     };
     let fact = match (kind, &entry.design) {
@@ -2316,7 +3231,23 @@ fn history_row_text(entry: &HistoryEntry, kind: &HistoryKind, loc: &Loc<'_>) -> 
             &[("NUMBER", &entry.units.to_string())],
         ),
     };
-    HistoryRowText { name, archetype, fact, tooltip }
+    HistoryRowText {
+        name,
+        archetype,
+        fact,
+        tooltip,
+        missing_name,
+    }
+}
+
+struct HistoryListInput<'a> {
+    path: &'a str,
+    prefix: &'a str,
+    kind: HistoryKind,
+    rows: &'a HistoryRecordList,
+    variants: &'a Result<&'a [VariantDefinitionRow], String>,
+    lexical: &'a Result<&'a [LexicalTokenRow], String>,
+    icons: &'a HashMap<u64, ResolvedHistoryIcon>,
 }
 
 fn compose_history_list(
@@ -2325,57 +3256,197 @@ fn compose_history_list(
     item_tpl: &Element,
     resources: &dyn Resources,
     loc: &Loc<'_>,
-    list: (&str, &str, HistoryKind, &HistoryList<'_>),
+    input: HistoryListInput<'_>,
     plan: &mut ComposedPlan,
-) -> Result<(), GameWindowError> {
-    let (path, prefix, kind, rows) = list;
+) -> Result<HistoryResolveCounts, GameWindowError> {
+    let HistoryListInput {
+        path,
+        prefix,
+        kind,
+        rows,
+        variants,
+        lexical,
+        icons,
+    } = input;
     let list_el = require_path(root, DETAIL_WINDOW_NAME, path)?;
     let holder = require_holder(main_layout, list_el)?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
     let size = row_size(item_tpl, "industrial_organisation_history_item")?;
-    let texts: Vec<HistoryRowText> = match rows {
-        HistoryList::Missing(reason) => vec![HistoryRowText {
-            name: NOT_RECORDED_VALUE.to_owned(),
-            archetype: "Not recorded".to_owned(),
-            fact: reason.clone(),
-            tooltip: Some(GameWindowTooltip {
-                title: "Not recorded".to_owned(),
-                body: Some(reason.clone()),
-                detail: None,
-            }),
-        }],
-        HistoryList::Entries(entries) => entries
-            .iter()
-            .map(|entry| history_row_text(entry, &kind, loc))
-            .collect(),
-    };
-    let places = plan.list_rows(list_el, holder, &vec![size; texts.len()], resources)?;
-    for (idx, (text, place)) in texts.into_iter().zip(places).enumerate() {
-        let Some(place) = place else { continue };
-        let HistoryRowText { name, archetype, fact, tooltip } = text;
-        let layout = layout_window(item_tpl, resources, viewport, |instance| {
-            hide_by_name(instance, item_tpl, "equipment_icon");
-            set_text_by_name(instance, item_tpl, "equipment_name", name);
-            set_text_by_name(instance, item_tpl, "equipment_archetype_name", archetype);
-            set_text_by_name(instance, item_tpl, "flavor_fact", fact);
-            disable_by_name(instance, item_tpl, "upgrade_variant_button");
-        })?;
-        let mut overrides = BTreeMap::new();
-        if let Some(tooltip) = tooltip {
-            overrides.insert(item_tpl.path.clone(), tooltip);
+    let mut counts = HistoryResolveCounts::default();
+
+    match rows {
+        HistoryRecordList::Missing(reason) => {
+            plan.text(path, kind.section_label(), Err(reason.clone()));
+            let Some(place) = plan.list_rows(list_el, holder, &[size], resources)?[0] else {
+                return Ok(counts);
+            };
+            counts.row_layouts += 1;
+            let layout = layout_window(item_tpl, resources, viewport, |instance| {
+                hide_by_name(instance, item_tpl, "equipment_icon");
+                set_text_by_name(instance, item_tpl, "equipment_name", NOT_RECORDED_VALUE.to_owned());
+                set_text_by_name(
+                    instance,
+                    item_tpl,
+                    "equipment_archetype_name",
+                    "Not recorded".to_owned(),
+                );
+                set_text_by_name(instance, item_tpl, "flavor_fact", reason.clone());
+                disable_by_name(instance, item_tpl, "upgrade_variant_button");
+            })?;
+            let mut overrides = BTreeMap::new();
+            overrides.insert(
+                item_tpl.path.clone(),
+                GameWindowTooltip {
+                    title: "Not recorded".to_owned(),
+                    body: Some(reason.clone()),
+                    detail: None,
+                },
+            );
+            plan.sub_windows.push(ComposedSubWindow {
+                before_part: holder.before,
+                parts: holder.place(place, &layout),
+                regions: holder.place_regions(place, &layout.regions),
+                diagnostics: layout.diagnostics,
+                root_window: "industrial_organisation_history_item".to_owned(),
+                path_prefix: format!("{prefix}:missing/"),
+                close_paths: Vec::new(),
+                tooltip_overrides: overrides,
+            });
+            return Ok(counts);
         }
-        plan.sub_windows.push(ComposedSubWindow {
-            before_part: holder.before,
-            parts: holder.place(place, &layout),
-            regions: holder.place_regions(place, &layout.regions),
-            diagnostics: layout.diagnostics,
-            root_window: "industrial_organisation_history_item".to_owned(),
-            path_prefix: format!("{prefix}:{idx}/"),
-            close_paths: Vec::new(),
-            tooltip_overrides: overrides,
-        });
+        HistoryRecordList::Entries(records) => {
+            if records.is_empty() {
+                plan.text(path, kind.section_label(), Ok("None".to_owned()));
+                return Ok(counts);
+            }
+            let places = plan.list_rows(list_el, holder, &vec![size; records.len()], resources)?;
+            for (idx, (&record, place)) in records.iter().zip(places).enumerate() {
+                let Some(place) = place else { continue };
+                counts.variant_lookups += 1;
+                counts.name_resolutions += 1;
+                counts.row_layouts += 1;
+                let entry = resolve_history_entry(record, variants, lexical);
+                let HistoryRowText {
+                    name,
+                    archetype,
+                    fact,
+                    tooltip,
+                    missing_name,
+                } = history_row_text(&entry, &kind, loc);
+                let row_path = format!("{prefix}:{idx}");
+                match missing_name {
+                    Some(why) => plan.text(
+                        &row_path,
+                        kind.section_label(),
+                        Err(format!("{why} ({fact})")),
+                    ),
+                    None => {
+                        let summary = if archetype.is_empty() {
+                            fact.clone()
+                        } else {
+                            format!("{archetype} — {fact}")
+                        };
+                        plan.text(&row_path, &name, Ok(summary));
+                    }
+                }
+                let icon_state = icons.get(&record.variant_id);
+                let mut missing_icon: Option<(String, String)> = None;
+                let mut ready_sprite: Option<&str> = None;
+                let mut ready_texture: Option<native_gui::Texture> = None;
+                let mut hide_icon = false;
+                match icon_state {
+                    Some(ResolvedHistoryIcon::Ready {
+                        icon: Icon::Sprite(sprite),
+                    }) => match sprite_ready(resources, sprite) {
+                        Ok(()) => ready_sprite = Some(sprite.as_str()),
+                        Err(why) => missing_icon = Some((sprite.clone(), why)),
+                    },
+                    Some(ResolvedHistoryIcon::Ready {
+                        icon: Icon::Path(path),
+                    }) => match resources.texture_file(path.as_bytes()) {
+                        Some(TextureFile::Loaded(tex)) => ready_texture = Some(tex),
+                        Some(TextureFile::Failed(why)) | Some(TextureFile::Refused(_, why)) => {
+                            missing_icon = Some((path.clone(), why));
+                        }
+                        None => {
+                            missing_icon = Some((
+                                path.clone(),
+                                format!("texture '{path}' was not loaded in the installed interface"),
+                            ));
+                        }
+                    },
+                    Some(ResolvedHistoryIcon::NoneExpected) => hide_icon = true,
+                    Some(ResolvedHistoryIcon::Missing { asset, reason }) => {
+                        missing_icon = Some((asset.clone(), reason.clone()));
+                    }
+                    None => {
+                        missing_icon = Some((
+                            "equipment icon".to_owned(),
+                            "the design's equipment icon was not resolved".to_owned(),
+                        ));
+                    }
+                }
+                let mut layout = layout_window(item_tpl, resources, viewport, |instance| {
+                    if hide_icon {
+                        hide_by_name(instance, item_tpl, "equipment_icon");
+                    } else if let Some(sprite) = ready_sprite {
+                        set_sprite_by_name(instance, item_tpl, "equipment_icon", sprite);
+                    } else if let Some(texture) = ready_texture
+                        && let Some(icon_el) = find_direct(item_tpl, "equipment_icon")
+                        && let Ok(bound) = instance.control(item_tpl, icon_el)
+                    {
+                        bound.texture = Some(texture);
+                    }
+                    set_text_by_name(instance, item_tpl, "equipment_name", name.clone());
+                    set_text_by_name(instance, item_tpl, "equipment_archetype_name", archetype);
+                    set_text_by_name(instance, item_tpl, "flavor_fact", fact);
+                    disable_by_name(instance, item_tpl, "upgrade_variant_button");
+                })?;
+                if let Some((asset, why)) = missing_icon {
+                    let icon_rect = find_direct(item_tpl, "equipment_icon")
+                        .and_then(|icon_el| {
+                            let blanked = blank(&mut layout, &icon_el.path)
+                                .map(|region| holder.place_regions(place, &[region])[0].rect);
+                            let raw = blanked.or_else(|| {
+                                let (pos, centered) = match &icon_el.fields {
+                                    Fields::Icon(icon) => (icon.position, icon.center_position),
+                                    _ => ([0.0, 0.0], false),
+                                };
+                                let [w, h] = [64.0f32, 48.0f32];
+                                let x = holder.origin[0] + place[0] as f32 + pos[0]
+                                    - if centered { w * 0.5 } else { 0.0 };
+                                let y = holder.origin[1] + place[1] as f32 + pos[1]
+                                    - if centered { h * 0.5 } else { 0.0 };
+                                Some([x, y, w, h])
+                            })?;
+                            clip_rect(raw, holder.clip)
+                        });
+                    plan.placeholder(
+                        &format!("{row_path}/equipment_icon"),
+                        icon_rect,
+                        &format!("{name} icon"),
+                        &asset,
+                        &why,
+                    );
+                }
+                let mut overrides = BTreeMap::new();
+                if let Some(tooltip) = tooltip {
+                    overrides.insert(item_tpl.path.clone(), tooltip);
+                }
+                plan.sub_windows.push(ComposedSubWindow {
+                    before_part: holder.before,
+                    parts: holder.place(place, &layout),
+                    regions: holder.place_regions(place, &layout.regions),
+                    diagnostics: layout.diagnostics,
+                    root_window: "industrial_organisation_history_item".to_owned(),
+                    path_prefix: format!("{row_path}/"),
+                    close_paths: Vec::new(),
+                    tooltip_overrides: overrides,
+                });
+            }
+        }
     }
-    Ok(())
+    Ok(counts)
 }
 
 fn compose_history_lists(
@@ -2386,10 +3457,15 @@ fn compose_history_lists(
     loc: &Loc<'_>,
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
-) -> Result<(), GameWindowError> {
+) -> Result<HistoryResolveCounts, GameWindowError> {
     let item_tpl = require_template(guis, "industrial_organisation_history_item")?;
+    let variants = loc
+        .frame
+        .complete::<tables::VariantDefinitions>()
+        .map_err(|error| format!("VariantDefinitions is unavailable: {error}"));
+    let lexical = witnessed_rows::<tables::LexicalTokens>(loc.frame).map(|(rows, _)| rows);
     let lists = match &prepared.data.history {
-        Some(entries) => history_lists(entries),
+        Some(records) => split_history_records(records),
         None => {
             let reason = format!(
                 "Not recorded: the organisation's history is unavailable at this hour ({}).",
@@ -2399,28 +3475,52 @@ fn compose_history_lists(
                     .as_deref()
                     .unwrap_or("not read")
             );
-            [HistoryList::Missing(reason.clone()), HistoryList::Missing(reason)]
+            [
+                HistoryRecordList::Missing(reason.clone()),
+                HistoryRecordList::Missing(reason),
+            ]
         }
     };
     let [designed, produced] = lists;
-    compose_history_list(
+    let first = compose_history_list(
         main_layout,
         root,
         item_tpl,
         resources,
         loc,
-        (HISTORY_LIST_PATH, "history", HistoryKind::Designed, &designed),
+        HistoryListInput {
+            path: HISTORY_LIST_PATH,
+            prefix: "history",
+            kind: HistoryKind::Designed,
+            rows: &designed,
+            variants: &variants,
+            lexical: &lexical,
+            icons: &prepared.history_icons,
+        },
         plan,
     )?;
-    compose_history_list(
+    let second = compose_history_list(
         main_layout,
         root,
         item_tpl,
         resources,
         loc,
-        (PRODUCTION_LIST_PATH, "production", HistoryKind::Produced, &produced),
+        HistoryListInput {
+            path: PRODUCTION_LIST_PATH,
+            prefix: "production",
+            kind: HistoryKind::Produced,
+            rows: &produced,
+            variants: &variants,
+            lexical: &lexical,
+            icons: &prepared.history_icons,
+        },
         plan,
-    )
+    )?;
+    Ok(HistoryResolveCounts {
+        variant_lookups: first.variant_lookups + second.variant_lookups,
+        name_resolutions: first.name_resolutions + second.name_resolutions,
+        row_layouts: first.row_layouts + second.row_layouts,
+    })
 }
 
 fn compose_policy_list(
@@ -2432,6 +3532,20 @@ fn compose_policy_list(
     prepared: &PreparedMio,
     plan: &mut ComposedPlan,
 ) -> Result<(), GameWindowError> {
+    let display_name = loc.organisation_name();
+    let org_name = if display_name.is_empty() {
+        Err(prepared
+            .data
+            .token
+            .as_ref()
+            .err()
+            .cloned()
+            .unwrap_or_else(|| "the organisation has no recorded name".to_owned()))
+    } else {
+        Ok(display_name)
+    };
+    plan.text("title/title", "Organisation", org_name);
+
     let item_tpl = require_template(guis, "policy_item")?;
     let list_el = require_path(root, POLICY_WINDOW_NAME, POLICY_LIST_PATH)?;
     let holder = require_holder(main_layout, list_el)?;
@@ -2447,12 +3561,16 @@ fn compose_policy_list(
         })?;
     let size = row_size(item_tpl, "policy_item")?;
     let viewport = DEFAULT_VIEWPORT.map(|value| value as i32);
-    let has_sprite = |name: &str| resources.sprite_info(name.as_bytes()).is_some();
 
     match &prepared.data.details {
         RecordedDetails::Unavailable(reason) => {
+            let missing = format!(
+                "Not recorded: allowed policies are unavailable at this hour ({reason})."
+            );
+            plan.text(POLICY_LIST_PATH, "Policies", Err(missing.clone()));
             let layout = layout_window(item_tpl, resources, viewport, |instance| {
                 hide_by_name(instance, item_tpl, "ai_value");
+                hide_by_name(instance, item_tpl, "icon");
                 set_text_by_name(instance, item_tpl, "name", NOT_RECORDED_VALUE.to_owned());
                 set_text_by_name(
                     instance,
@@ -2460,7 +3578,6 @@ fn compose_policy_list(
                     "attach_cost",
                     NOT_RECORDED_VALUE.to_owned(),
                 );
-                set_sprite_by_name(instance, item_tpl, "icon", UNKNOWN_ICON_SPRITE);
                 disable_by_name(instance, item_tpl, "background_button");
             })?;
             let mut overrides = BTreeMap::new();
@@ -2469,9 +3586,7 @@ fn compose_policy_list(
                     btn.path.clone(),
                     GameWindowTooltip {
                         title: "Not recorded".to_owned(),
-                        body: Some(format!(
-                            "Not recorded: allowed policies are unavailable at this hour ({reason})."
-                        )),
+                        body: Some(missing),
                         detail: None,
                     },
                 );
@@ -2522,13 +3637,19 @@ fn compose_policy_list(
             {
                 entries.insert(0, attached.clone());
             }
+            if entries.is_empty() {
+                plan.text(POLICY_LIST_PATH, "Policies", Ok("None".to_owned()));
+                return Ok(());
+            }
             let quote = loc.policy_cost(&prepared.catalog, &org_db.policies);
             let places = plan.list_rows(list_el, holder, &vec![size; entries.len()], resources)?;
             for (idx, (entry, place)) in entries.iter().zip(places).enumerate() {
                 let Some(place) = place else { continue };
                 let is_attached = details.policy.as_ref() == Some(entry);
+                let row_path = format!("policy:{idx}");
                 let Spelled::Text(token) = entry else {
                     let reason = entry.missing("allowed policy").unwrap_or_default();
+                    plan.text(&row_path, "Policy", Err(reason.clone()));
                     let layout = layout_window(item_tpl, resources, viewport, |instance| {
                         hide_by_name(instance, item_tpl, "ai_value");
                         hide_by_name(instance, item_tpl, "icon");
@@ -2564,7 +3685,7 @@ fn compose_policy_list(
                         regions: holder.place_regions(place, &layout.regions),
                         diagnostics: layout.diagnostics,
                         root_window: "policy_item".to_owned(),
-                        path_prefix: format!("policy:{idx}/"),
+                        path_prefix: format!("{row_path}/"),
                         close_paths: Vec::new(),
                         tooltip_overrides: overrides,
                     });
@@ -2573,7 +3694,7 @@ fn compose_policy_list(
                 let key = token.to_ascii_lowercase();
                 let policy_def = org_db.policies.policy(token.as_bytes()).ok();
                 let name = resolve_policy_name(token, policy_def, loc);
-                let icon = resolve_policy_icon(policy_def, has_sprite);
+                let icon_choice = chosen_policy_icon(token, policy_def, resources);
                 let base = match &prepared.data.policy_costs {
                     Ok(costs) => costs.get(&key).and_then(|summary| summary.cost).ok_or_else(|| {
                         "Not recorded: this policy's base cost is not in its owner's recorded policy roster at this hour.".to_owned()
@@ -2595,7 +3716,21 @@ fn compose_policy_list(
                     ),
                     Err(reason) => (NOT_RECORDED_VALUE.to_owned(), Some(reason), true),
                 };
-                let layout = layout_window(item_tpl, resources, viewport, |instance| {
+                let visibility_why = undecided.get(&key);
+                let text_value = match (visibility_why, &cost_missing) {
+                    (Some(v), Some(c)) => Err(format!("{v} {c}")),
+                    (Some(v), None) => Err(v.clone()),
+                    (None, Some(c)) => Err(c.clone()),
+                    (None, None) => Ok(match (is_attached, cost_shown) {
+                        (true, true) => format!("Attached, cost {cost_str}"),
+                        (true, false) => "Attached".to_owned(),
+                        (false, true) => format!("Cost {cost_str}"),
+                        (false, false) => "Available".to_owned(),
+                    }),
+                };
+                plan.text(&row_path, &name, text_value);
+
+                let mut layout = layout_window(item_tpl, resources, viewport, |instance| {
                     hide_by_name(instance, item_tpl, "ai_value");
                     set_frame_by_name(
                         instance,
@@ -2604,14 +3739,43 @@ fn compose_policy_list(
                         if is_attached { 2 } else { 1 },
                     );
                     disable_by_name(instance, item_tpl, "background_button");
-                    set_sprite_by_name(instance, item_tpl, "icon", &icon);
+                    match &icon_choice {
+                        Ok(sprite) => set_sprite_by_name(instance, item_tpl, "icon", sprite),
+                        Err(_) => hide_by_name(instance, item_tpl, "icon"),
+                    }
                     set_text_by_name(instance, item_tpl, "name", name.clone());
                     if cost_shown {
-                        set_text_by_name(instance, item_tpl, "attach_cost", cost_str.clone());
+                        set_text_by_name(instance, item_tpl, "attach_cost", cost_str);
                     } else {
                         hide_by_name(instance, item_tpl, "attach_cost");
                     }
                 })?;
+                if let Err((asset, why)) = &icon_choice {
+                    let icon_rect = find_direct(item_tpl, "icon").and_then(|icon_el| {
+                        let blanked = blank(&mut layout, &icon_el.path)
+                            .map(|region| holder.place_regions(place, &[region])[0].rect);
+                        let raw = blanked.or_else(|| {
+                            let (pos, centered) = match &icon_el.fields {
+                                Fields::Icon(icon) => (icon.position, icon.center_position),
+                                _ => ([0.0, 0.0], false),
+                            };
+                            let side = (size[1] as f32 - pos[1] - 8.0).clamp(24.0, 52.0);
+                            let x = holder.origin[0] + place[0] as f32 + pos[0]
+                                - if centered { side * 0.5 } else { 0.0 };
+                            let y = holder.origin[1] + place[1] as f32 + pos[1]
+                                - if centered { side * 0.5 } else { 0.0 };
+                            Some([x, y, side, side])
+                        })?;
+                        clip_rect(raw, holder.clip)
+                    });
+                    plan.placeholder(
+                        &format!("{row_path}/icon"),
+                        icon_rect,
+                        &format!("{name} icon"),
+                        asset,
+                        why,
+                    );
+                }
                 let mut overrides = BTreeMap::new();
                 if let Some(btn) = find_direct(item_tpl, "background_button") {
                     let mut lines = Vec::new();
@@ -2635,7 +3799,7 @@ fn compose_policy_list(
                     regions: holder.place_regions(place, &layout.regions),
                     diagnostics: layout.diagnostics,
                     root_window: "policy_item".to_owned(),
-                    path_prefix: format!("policy:{idx}/"),
+                    path_prefix: format!("{row_path}/"),
                     close_paths: Vec::new(),
                     tooltip_overrides: overrides,
                 });
@@ -2645,9 +3809,174 @@ fn compose_policy_list(
     Ok(())
 }
 
+struct HistoryIconPrep<'a> {
+    shared: &'a SharedInterface,
+    layers: &'a ResolvedLayers,
+    content: Option<&'a Arc<ResolvedContent>>,
+    frame: &'a DecodedFrame,
+    language: &'a str,
+    decode: Decode,
+}
+
+fn prepare_visible_history_icons(
+    prep: &HistoryIconPrep<'_>,
+    records: &[HistoryRecord],
+    root: &Element,
+    item_tpl: &Element,
+    scroll: &BTreeMap<String, f32>,
+    assets: &mut Assets,
+) -> (HashMap<u64, ResolvedHistoryIcon>, Option<String>) {
+    let HistoryIconPrep {
+        shared,
+        layers,
+        content,
+        frame,
+        language,
+        decode,
+    } = *prep;
+    let mut resolved = HashMap::new();
+    let mut art_label = None;
+    let Ok(item_size) = row_size(item_tpl, "industrial_organisation_history_item") else {
+        return (resolved, art_label);
+    };
+    let [designed, produced] = split_history_records(records);
+    let mut visible_ids = BTreeSet::new();
+    for (list_path, list) in [
+        (HISTORY_LIST_PATH, &designed),
+        (PRODUCTION_LIST_PATH, &produced),
+    ] {
+        if let HistoryRecordList::Entries(entries) = list
+            && let Some(list_el) = find_direct(root, list_path)
+        {
+            let range = visible_list_indices(list_el, item_size, entries.len(), scroll);
+            for record in &entries[range] {
+                visible_ids.insert(record.variant_id);
+            }
+        }
+    }
+    if visible_ids.is_empty() {
+        return (resolved, art_label);
+    }
+    let variants = frame
+        .complete::<tables::VariantDefinitions>()
+        .map_err(|error| format!("VariantDefinitions is unavailable: {error}"));
+    let lexical = witnessed_rows::<tables::LexicalTokens>(frame).map(|(rows, _)| rows);
+    let equipment_db = designer_database(layers, "history equipment").map_err(|err| err.to_string());
+    let icon_content = equipment_db.and_then(|db| {
+        shared.icon_content(layers, &db, || {
+            let content = content
+                .ok_or_else(|| "recorded content handle is unavailable for equipment icons".to_owned())?;
+            dashboard_base::catalogue::read_scripted_content(
+                Arc::clone(content),
+                language.to_owned(),
+            )
+        })
+    });
+    let icon_hour = icon_content.as_ref().map_err(Clone::clone).and_then(|ic| {
+        IconHour::read(frame, ic)
+            .map_err(|error| format!("equipment icon hour context is unavailable: {error}"))
+    });
+    for variant_id in visible_ids {
+        let state = match (&variants, &icon_content, &icon_hour) {
+            (Err(why), _, _) => ResolvedHistoryIcon::Missing {
+                asset: "equipment icon".to_owned(),
+                reason: why.clone(),
+            },
+            (Ok(_), Err(why), _) | (Ok(_), _, Err(why)) => ResolvedHistoryIcon::Missing {
+                asset: "equipment icon".to_owned(),
+                reason: why.clone(),
+            },
+            (Ok(defs), Ok(ic), Ok(ih)) => {
+                match defs.binary_search_by_key(&variant_id, |v| v.id) {
+                    Err(_) => ResolvedHistoryIcon::Missing {
+                        asset: "equipment icon".to_owned(),
+                        reason: "VariantDefinitions has no row for this design at this hour"
+                            .to_owned(),
+                    },
+                    Ok(idx) => {
+                        let def = &defs[idx];
+                        match spell_token(&lexical, def.equipment_token) {
+                            Spelled::Unspelled { .. } => ResolvedHistoryIcon::Missing {
+                                asset: "equipment icon".to_owned(),
+                                reason: spell_token(&lexical, def.equipment_token)
+                                    .missing("design's equipment")
+                                    .unwrap_or_default(),
+                            },
+                            Spelled::Text(equipment_key) => {
+                                match variant_icon(ic, ih, def, &equipment_key) {
+                                    Ok(Some(selected)) => {
+                                        let asset_name = match &selected {
+                                            Icon::Sprite(name) | Icon::Path(name) => name.clone(),
+                                        };
+                                        match resolve_native_equipment_icon(
+                                            layers,
+                                            shared.registry.as_ref(),
+                                            shared.recorded_registry.as_deref(),
+                                            language,
+                                            &selected,
+                                            decode,
+                                        ) {
+                                            NativeIconResolution::Ready {
+                                                icon, provenance, ..
+                                            } => {
+                                                match &icon {
+                                                    Icon::Sprite(sprite) => {
+                                                        want_sprite(shared, assets, sprite);
+                                                    }
+                                                    Icon::Path(path) => {
+                                                        if !path.is_empty() {
+                                                            assets
+                                                                .textures
+                                                                .insert(path.as_bytes().to_vec());
+                                                        }
+                                                    }
+                                                }
+                                                if art_label.is_none() {
+                                                    art_label = Some(provenance.label);
+                                                }
+                                                ResolvedHistoryIcon::Ready { icon }
+                                            }
+                                            NativeIconResolution::ConfirmedMissing {
+                                                reason, ..
+                                            }
+                                            | NativeIconResolution::Failed { reason, .. } => {
+                                                ResolvedHistoryIcon::Missing {
+                                                    asset: asset_name,
+                                                    reason,
+                                                }
+                                            }
+                                            NativeIconResolution::Refused {
+                                                reason,
+                                                construct,
+                                                ..
+                                            } => ResolvedHistoryIcon::Missing {
+                                                asset: asset_name,
+                                                reason: format!("refused ({construct}): {reason}"),
+                                            },
+                                        }
+                                    }
+                                    Ok(None) => ResolvedHistoryIcon::NoneExpected,
+                                    Err(why) => ResolvedHistoryIcon::Missing {
+                                        asset: "equipment icon".to_owned(),
+                                        reason: why,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        resolved.insert(variant_id, state);
+    }
+    (resolved, art_label)
+}
+
+#[expect(clippy::too_many_arguments, reason = "window render entry mirrors the host's request parts")]
 pub fn render_data(
     service: &Service,
     layers: &ResolvedLayers,
+    content: Option<&Arc<ResolvedContent>>,
     key: WindowCacheKey,
     data: OrganisationViewData,
     text: (&DecodedFrame, &Result<Arc<ScriptedContent>, String>),
@@ -2683,6 +4012,10 @@ pub fn render_data(
     let read_hour = Some(data.read_hour);
     let extra_warnings = data.warnings.clone();
     let failures = RefCell::new(Vec::new());
+    let language = key.language.clone();
+    let decode = Decode {
+        force_pow2_textures: key.force_pow2_textures,
+    };
 
     service.render_composed_from_layers(
         key,
@@ -2729,33 +4062,41 @@ pub fn render_data(
             );
             let tree = organisation_tree(&catalog, &data.token).ok();
             tab_requirements(shared.guis.as_ref(), sub_view, tree.as_ref())?;
-            let has_sprite = |name: &str| shared.registry.sprite(name.as_bytes()).is_some();
-            let emblem_sprite = resolve_org_icon(&data, tree.as_ref(), has_sprite);
-            assets.sprites.insert(emblem_sprite.as_bytes().to_vec());
 
-            let tree_background = tree
-                .as_ref()
-                .and_then(|t| t.background)
-                .filter(|bg| !bg.is_empty() && has_sprite(bg))
-                .map(str::to_owned);
+            let emblem = chosen_org_emblem(&data, tree.as_ref());
+            if sub_view != SubView::Policy
+                && let Ok(sprite) = &emblem
+            {
+                want_sprite(shared, &mut assets, sprite);
+            }
+
+            let tree_background = (sub_view == SubView::Traits)
+                .then(|| {
+                    tree.as_ref()
+                        .and_then(|t| t.background)
+                        .filter(|bg| !bg.is_empty())
+                        .map(str::to_owned)
+                })
+                .flatten();
             if let Some(bg) = &tree_background {
-                assets.sprites.insert(bg.as_bytes().to_vec());
+                want_sprite(shared, &mut assets, bg);
             }
 
-            let attached_policy_sprite = match &data.details {
-                RecordedDetails::Available(details) => details.policy.as_ref().and_then(Spelled::text).map(|tok| {
-                    let def = org_db
-                        .as_deref()
-                        .ok()
-                        .and_then(|db| db.policies.policy(tok.as_bytes()).ok());
-                    resolve_policy_icon(def, has_sprite)
-                }),
-                RecordedDetails::Unavailable(_) => None,
-            };
-            if let Some(sprite) = &attached_policy_sprite {
-                assets.sprites.insert(sprite.as_bytes().to_vec());
+            if sub_view != SubView::Policy
+                && let RecordedDetails::Available(details) = &data.details
+                && let Some(Spelled::Text(tok)) = &details.policy
+                && let Some(def) = org_db
+                    .as_deref()
+                    .ok()
+                    .and_then(|db| db.policies.policy(tok.as_bytes()).ok())
+                && !def.icon.is_empty()
+            {
+                let sprite = String::from_utf8_lossy(&def.icon);
+                want_sprite(shared, &mut assets, &sprite);
             }
 
+            let mut history_icons = HashMap::new();
+            let mut history_art_label = None;
             if sub_view == SubView::Traits {
                 for sprite in [
                     "GFX_industrial_org_trait_button",
@@ -2767,33 +4108,53 @@ pub fn render_data(
                     "GFX_focus_link_left_right",
                     "GFX_focus_exclusive_line1",
                     "GFX_focus_link_exclusive",
-                    UNKNOWN_ICON_SPRITE,
                 ] {
-                    if has_sprite(sprite) {
-                        assets.sprites.insert(sprite.as_bytes().to_vec());
-                    }
+                    want_sprite(shared, &mut assets, sprite);
                 }
                 if let Some(tree) = tree {
                     for trait_def in tree.traits {
-                        if !trait_def.icon.is_empty() && has_sprite(&trait_def.icon) {
-                            assets.sprites.insert(trait_def.icon.as_bytes().to_vec());
-                        }
+                        want_sprite(shared, &mut assets, &trait_def.icon);
                     }
                 }
             } else if sub_view == SubView::Policy {
-                assets
-                    .sprites
-                    .insert(UNKNOWN_ICON_SPRITE.as_bytes().to_vec());
                 if let RecordedDetails::Available(details) = &data.details {
                     for tok in details.allowed_policies.iter().filter_map(Spelled::text) {
-                        let def = org_db
+                        if let Some(def) = org_db
                             .as_deref()
                             .ok()
-                            .and_then(|db| db.policies.policy(tok.as_bytes()).ok());
-                        let sprite = resolve_policy_icon(def, has_sprite);
-                        assets.sprites.insert(sprite.as_bytes().to_vec());
+                            .and_then(|db| db.policies.policy(tok.as_bytes()).ok())
+                            && !def.icon.is_empty()
+                        {
+                            let sprite = String::from_utf8_lossy(&def.icon);
+                            want_sprite(shared, &mut assets, &sprite);
+                        }
                     }
                 }
+            } else if sub_view == SubView::History
+                && let Some(records) = &data.history
+                && let Some(root) = shared.guis.template(DETAIL_WINDOW_NAME.as_bytes())
+                && let Some(item_tpl) = shared
+                    .guis
+                    .template(b"industrial_organisation_history_item")
+            {
+                let prep = HistoryIconPrep {
+                    shared,
+                    layers,
+                    content,
+                    frame,
+                    language: &language,
+                    decode,
+                };
+                let (icons, label) = prepare_visible_history_icons(
+                    &prep,
+                    records,
+                    root,
+                    item_tpl,
+                    scroll,
+                    &mut assets,
+                );
+                history_icons = icons;
+                history_art_label = label;
             }
 
             Ok(Prepared::uncached(
@@ -2803,17 +4164,19 @@ pub fn render_data(
                     sub_view,
                     catalog,
                     org_db,
-                    emblem_sprite,
+                    emblem,
                     tree_background,
-                    attached_policy_sprite,
+                    history_icons,
+                    history_art_label,
+                    scroll: scroll.clone(),
                 },
             ))
         },
-        |root, _, _, localisation, instance, tooltips, prepared| {
+        |root, _, resources, localisation, instance, tooltips, prepared| {
             let loc = Loc::new(localisation, frame, scripted, &prepared.data, &failures);
             match prepared.sub_view {
                 SubView::Traits | SubView::History => {
-                    configure_detail_main(root, &loc, instance, tooltips, prepared);
+                    configure_detail_main(root, resources, &loc, instance, tooltips, prepared);
                 }
                 SubView::Policy => {
                     configure_policy_main(root, &loc, instance);
@@ -2824,6 +4187,7 @@ pub fn render_data(
             let loc = Loc::new(localisation, frame, scripted, &prepared.data, &failures);
             match prepared.sub_view {
                 SubView::Traits => {
+                    compose_detail_chrome(main_layout, root, resources, &loc, prepared, plan);
                     compose_funds_progressbar(
                         main_layout,
                         root,
@@ -2853,6 +4217,7 @@ pub fn render_data(
                     )?;
                 }
                 SubView::History => {
+                    compose_detail_chrome(main_layout, root, resources, &loc, prepared, plan);
                     compose_funds_progressbar(
                         main_layout,
                         root,
@@ -2871,7 +4236,7 @@ pub fn render_data(
                         prepared,
                         plan,
                     )?;
-                    compose_history_lists(
+                    let _ = compose_history_lists(
                         main_layout,
                         root,
                         guis,
@@ -2880,6 +4245,9 @@ pub fn render_data(
                         prepared,
                         plan,
                     )?;
+                    if let Some(label) = &prepared.history_art_label {
+                        plan.art_label = Some(label.clone());
+                    }
                 }
                 SubView::Policy => {
                     compose_policy_list(
@@ -2944,23 +4312,13 @@ pub fn render(
         GameWindowError::refused(format!("Invalid branch id '{}'.", request.branch_id))
     })?;
 
-    let frame = match source
-        .replay_ref()
-        .seek_selected(branch_id, request.hour, Some(REQUIRED_TABLES))
-        .map_err(|error| {
-            GameWindowError::failed(format!(
-                "Could not seek recording to hour {}: {error}",
-                request.hour
-            ))
-        })? {
-        SeekResult::Frame(frame) => frame,
-        SeekResult::Gap { reason, .. } => {
-            return Err(GameWindowError::refused(format!(
-                "Hour {} is not recorded on this branch: {reason}",
-                request.hour
-            )));
-        }
-    };
+    let frame = service.frame_at(
+        source,
+        &request,
+        admitted_gen,
+        branch_id,
+        sub_view.required_tables(),
+    )?;
 
     let org_row = witnessed_single_key::<tables::IndustrialOrganisations, _>(&frame, org_id, |row| {
         row.organisation
@@ -3022,24 +4380,29 @@ pub fn render(
         Err(error) => RecordedDetails::Unavailable(error),
     };
 
-    let policy_costs = owner_policy_roster(&frame, org_row, lexical.as_deref());
-    if policy_costs.is_ok() {
-        read_tables.push(TableId::IndustrialOrganisationPolicies);
-    }
-
-    let (history, history_reason) = match frame.complete::<tables::IndustrialOrganisationHistory>() {
-        Ok(rows) if sub_view == SubView::History => {
-            read_tables.push(TableId::IndustrialOrganisationHistory);
-            let variants = frame
-                .complete::<tables::VariantDefinitions>()
-                .map_err(|error| format!("VariantDefinitions is unavailable: {error}"));
-            if variants.is_ok() {
-                read_tables.push(TableId::VariantDefinitions);
-            }
-            (Some(extract_history(rows, org_id, &variants, &lexical)), None)
+    let policy_costs = if sub_view == SubView::Policy {
+        let costs = owner_policy_roster(&frame, org_row, lexical.as_deref());
+        if costs.is_ok() {
+            read_tables.push(TableId::IndustrialOrganisationPolicies);
         }
-        Ok(_) => (None, None),
-        Err(error) => (None, Some(error.to_string())),
+        costs
+    } else {
+        Ok(BTreeMap::new())
+    };
+
+    let (history, history_reason) = if sub_view == SubView::History {
+        match frame.complete::<tables::IndustrialOrganisationHistory>() {
+            Ok(rows) => {
+                read_tables.push(TableId::IndustrialOrganisationHistory);
+                if frame.complete::<tables::VariantDefinitions>().is_ok() {
+                    read_tables.push(TableId::VariantDefinitions);
+                }
+                (Some(extract_history_records(rows, org_id)), None)
+            }
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
     };
 
     let samples: Vec<(TableId, i32)> = read_tables
@@ -3051,7 +4414,11 @@ pub fn render(
         extra_warnings.push(warning);
     }
 
-    let funds_defines = read_funds_defines(layers);
+    let funds_defines = if sub_view == SubView::Policy {
+        Err("not read on policy tab".to_owned())
+    } else {
+        read_funds_defines(layers)
+    };
     let data = OrganisationViewData {
         organisation_id: org_id,
         request_hour: request.hour,
@@ -3083,6 +4450,7 @@ pub fn render(
     render_data(
         service,
         layers,
+        Some(content),
         key,
         data,
         (&frame, &scripted),

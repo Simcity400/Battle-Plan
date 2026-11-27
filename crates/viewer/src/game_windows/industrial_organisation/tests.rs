@@ -111,9 +111,11 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
         sub_view: SubView::Traits,
         catalog: Err("not read in this test".to_owned()),
         org_db: Err("not read in this test".to_owned()),
-        emblem_sprite: UNKNOWN_ICON_SPRITE.to_owned(),
+        emblem: Err(("organisation emblem".to_owned(), "not recorded".to_owned())),
         tree_background: None,
-        attached_policy_sprite: None,
+        history_icons: HashMap::new(),
+        history_art_label: None,
+        scroll: BTreeMap::new(),
     };
 
     let mut tooltips = BTreeMap::new();
@@ -121,7 +123,7 @@ fn missing_details_sets_na_and_not_recorded_tooltips() {
     let scripted = unread_scripted_text();
     let failures = RefCell::new(Vec::new());
     let loc = Loc::new(&localisation, &frame, &scripted, &prepared.data, &failures);
-    configure_detail_main(root, &loc, &mut instance, &mut tooltips, &prepared);
+    configure_detail_main(root, &DummyResources, &loc, &mut instance, &mut tooltips, &prepared);
 
     let size_el = find_direct(root, "top_left_window/size_icon_window/size").unwrap();
     assert_eq!(
@@ -484,6 +486,7 @@ fn refusal(layers: &ResolvedLayers, token: &str, sub_view: SubView) -> String {
     let result = render_data(
         &service,
         layers,
+        None,
         cache_key(layers, sub_view.window_name()),
         unread_organisation(token),
         (&empty_frame(), &unread_scripted_text()),
@@ -609,6 +612,801 @@ fn unsupported_sub_view_is_refused_by_name() {
     let err = SubView::from_request(Some("unknown_tab"))
         .expect_err("unknown sub_view must refuse");
     assert!(matches!(err, GameWindowError::Refused(msg) if msg.contains("unknown_tab")));
+}
+
+#[test]
+fn tab_table_projection_restricts_history_variants_and_policies_to_consuming_tabs() {
+    let traits = SubView::Traits.required_tables();
+    assert!(!traits.contains(&TableId::IndustrialOrganisationHistory));
+    assert!(!traits.contains(&TableId::VariantDefinitions));
+    assert!(!traits.contains(&TableId::IndustrialOrganisationPolicies));
+
+    let policy = SubView::Policy.required_tables();
+    assert!(policy.contains(&TableId::IndustrialOrganisationPolicies));
+    assert!(!policy.contains(&TableId::IndustrialOrganisationHistory));
+    assert!(!policy.contains(&TableId::VariantDefinitions));
+
+    let history = SubView::History.required_tables();
+    assert!(history.contains(&TableId::IndustrialOrganisationHistory));
+    assert!(history.contains(&TableId::VariantDefinitions));
+    assert!(!history.contains(&TableId::IndustrialOrganisationPolicies));
+}
+
+#[test]
+fn missing_chosen_emblem_trait_policy_and_background_are_named_as_placeholders() {
+    use viewer_native_gui::test_support::gui as gui_fixture;
+    content_reader_script::test_game::enter();
+
+    let mut data = unread_organisation("synthetic_works_organisation");
+    data.custom_name = "Synthetic Works".to_owned();
+    data.recorded_icon = "GFX_synthetic_missing_emblem".to_owned();
+    let layers = synthetic_layers(&[
+        (
+            "common/military_industrial_organization/organizations/00_synthetic.txt",
+            br#"
+                synthetic_works_organisation = {
+                    icon = GFX_synthetic_fallback_emblem
+                    background = GFX_synthetic_missing_bg
+                    trait = {
+                        token = synthetic_trait_a
+                        name = synthetic_trait_a_name
+                        icon = GFX_synthetic_missing_trait
+                        special_trait_background = yes
+                        position = { x = 0 y = 0 }
+                    }
+                }
+            "#,
+        ),
+        (
+            "common/military_industrial_organization/policies/00_synthetic.txt",
+            br#"
+                synthetic_policy = {
+                    icon = GFX_synthetic_missing_policy
+                }
+            "#,
+        ),
+    ]);
+    let catalog = mio_traits::cached(&layers);
+    let org_db = cached_organisation_database(&layers);
+    let tree = organisation_tree(&catalog, &data.token).unwrap();
+    assert_eq!(
+        chosen_org_emblem(&data, Some(&tree)),
+        Ok("GFX_synthetic_missing_emblem".to_owned())
+    );
+    let mut no_recorded = data.clone();
+    no_recorded.recorded_icon.clear();
+    assert_eq!(
+        chosen_org_emblem(&no_recorded, Some(&tree)),
+        Ok("GFX_synthetic_fallback_emblem".to_owned())
+    );
+    assert!(chosen_org_emblem(&no_recorded, None).is_err());
+
+    let gui_bytes = br#"guiTypes = {
+        scrollbarType = {
+            name = "list_slider" size = { x = 10 y = 100 } minValue = 0 maxValue = 1
+            slider = "slider" track = "track" leftButton = "down" rightButton = "up"
+            buttonType = { name = "up" spriteType = "GFX_btn" }
+            buttonType = { name = "down" spriteType = "GFX_btn" }
+            guiButtonType = { name = "track" spriteType = "GFX_btn" }
+            guiButtonType = { name = "slider" spriteType = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 1000 height = 600 }
+            instantTextboxType = { name = "industrial_org_name" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 200 maxHeight = 20 }
+            containerWindowType = {
+                name = "top_left_window"
+                position = { x = 0 y = 20 }
+                size = { width = 200 height = 100 }
+                iconType = { name = "icon" position = { x = 10 y = 10 } spriteType = "GFX_default_icon" }
+                containerWindowType = {
+                    name = "size_icon_window"
+                    iconType = { name = "size_icon" position = { x = 0 y = 0 } spriteType = "GFX_default_icon" }
+                    instantTextboxType = { name = "size" position = { x = 0 y = 0 } font = "Main_14" text = "0" maxWidth = 30 maxHeight = 18 }
+                }
+                instantTextboxType = { name = "points" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 20 }
+            }
+            containerWindowType = {
+                name = "open_policies_window"
+                position = { x = 0 y = 120 }
+                size = { width = 200 height = 80 }
+                buttonType = { name = "open_policies" position = { x = 0 y = 0 } spriteType = "GFX_btn" }
+                instantTextboxType = { name = "open_policies_text" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 20 }
+                instantTextboxType = { name = "click_to_open_policies_text" position = { x = 0 y = 20 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 20 }
+                iconType = { name = "attached_policy_icon" position = { x = 10 y = 10 } spriteType = "GFX_default_icon" }
+                instantTextboxType = { name = "attached_policy_name" position = { x = 60 y = 10 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 20 }
+            }
+            containerWindowType = {
+                name = "tree_scrollbar_window"
+                position = { x = 220 y = 20 }
+                size = { width = 400 height = 300 }
+                containerWindowType = {
+                    name = "tree_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 400 height = 300 }
+                    gridBoxType = { name = "tree_list" position = { x = 0 y = 0 } slotsize = { width = 400 height = 300 } }
+                }
+            }
+            containerWindowType = {
+                name = "history_window"
+                position = { x = 220 y = 20 }
+                size = { width = 500 height = 300 }
+                containerWindowType = {
+                    name = "variants_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 240 height = 260 }
+                    smoothListboxType = { name = "variant_history_list" position = { x = 0 y = 0 } size = { x = 220 y = 220 } scrollbartype = "list_slider" }
+                }
+                containerWindowType = {
+                    name = "prod_lines_window"
+                    position = { x = 250 y = 0 }
+                    size = { width = 240 height = 260 }
+                    smoothListboxType = { name = "prod_line_history_list" position = { x = 0 y = 0 } size = { x = 220 y = 220 } scrollbartype = "list_slider" }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_tree_window"
+            size = { width = 400 height = 300 }
+            background = { name = "Background" spriteType = "GFX_default_bg" }
+            containerWindowType = {
+                name = "scrollbar_window"
+                position = { x = 10 y = 24 }
+                size = { width = 380 height = 260 }
+                background = { name = "Background" spriteType = "GFX_default_bg" }
+                containerWindowType = { name = "traits_window" position = { x = 0 y = 0 } clipping = no }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_trait_entry"
+            size = { width = 88 height = 112 }
+            containerWindowType = {
+                name = "industrial_organisation_trait_icon"
+                orientation = center
+                buttonType = { name = "icon_frame" position = { x = -29 y = -40 } quadTextureSprite = "GFX_industrial_org_trait_button" }
+                iconType = { name = "trait_icon" position = { x = -21 y = -32 } }
+                containerWindowType = { name = "queue_number_window" instantTextboxType = { name = "queue_number" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 } }
+            }
+            instantTextboxType = { name = "ai_value" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_history_item"
+            size = { width = 220 height = 60 }
+            iconType = { name = "equipment_icon" position = { x = 120 y = 30 } spriteType = "GFX_default_icon" centerposition = yes }
+            instantTextboxType = { name = "equipment_name" position = { x = 4 y = 4 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "equipment_archetype_name" position = { x = 4 y = 20 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "flavor_fact" position = { x = 4 y = 38 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            buttonType = { name = "upgrade_variant_button" position = { x = 190 y = 10 } quadTextureSprite = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_policy_window"
+            size = { width = 400 height = 300 }
+            containerWindowType = {
+                name = "policy_list_window"
+                position = { x = 0 y = 40 }
+                size = { width = 400 height = 240 }
+                smoothListboxType = { name = "policy_list" position = { x = 0 y = 0 } size = { x = 360 y = 220 } scrollbartype = "list_slider" }
+            }
+        }
+        containerWindowType = {
+            name = "policy_item"
+            size = { width = 360 height = 60 }
+            buttonType = { name = "background_button" spriteType = "GFX_btn" }
+            iconType = { name = "icon" position = { x = 10 y = 10 } }
+            instantTextboxType = { name = "name" position = { x = 60 y = 10 } font = "Main_14" text = "" maxWidth = 160 maxHeight = 20 }
+            instantTextboxType = { name = "attach_cost" position = { x = 260 y = 10 } font = "Main_14" text = "" maxWidth = 60 maxHeight = 20 }
+            instantTextboxType = { name = "ai_value" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 }
+        }
+    }"#;
+    let guis = super::super::load_native_guis_from_bytes("test.gui", gui_bytes).unwrap();
+    let doc = native::read_at(gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut resources = gui_fixture::fixture_with(doc);
+    resources.add_sprite("GFX_btn", [20, 20], 1);
+    resources.add_sprite("GFX_default_icon", [40, 40], 1);
+    resources.add_sprite("GFX_default_bg", [400, 300], 1);
+    resources.add_sprite("GFX_industrial_org_trait_button", [58, 58], 3);
+    resources.add_sprite("GFX_synthetic_equip", [48, 32], 1);
+    let localisation = Localisation::default();
+
+    let mut details_row = IndustrialOrganisationDetailsRow::default();
+    let lexical_rows = spelled_tokens();
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&lexical_rows);
+    details_row.state.policy = 10;
+    details_row.unlocked = vec![20];
+    details_row.allowed_policies = vec![10];
+    let mut details = extract_details(&details_row, &lexical);
+    details.unlocked = vec![Spelled::Text("synthetic_trait_a".to_owned())];
+    data.details = RecordedDetails::Available(Box::new(details));
+
+    let prepared = PreparedMio {
+        data,
+        sub_view: SubView::Traits,
+        catalog,
+        org_db,
+        emblem: Ok("GFX_synthetic_missing_emblem".to_owned()),
+        tree_background: Some("GFX_synthetic_missing_bg".to_owned()),
+        history_icons: HashMap::from([
+            (
+                101,
+                ResolvedHistoryIcon::Ready {
+                    icon: Icon::Sprite("GFX_synthetic_equip".to_owned()),
+                },
+            ),
+            (
+                102,
+                ResolvedHistoryIcon::Missing {
+                    asset: "GFX_synthetic_missing_equip".to_owned(),
+                    reason: "missing from stack".to_owned(),
+                },
+            ),
+        ]),
+        history_art_label: None,
+        scroll: BTreeMap::new(),
+    };
+
+    let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let loc = Loc::new(&localisation, &frame, &scripted, &prepared.data, &failures);
+    let mut main_layout = layout_window(
+        root,
+        &resources,
+        DEFAULT_VIEWPORT.map(|v| v as i32),
+        |instance| {
+            let mut tooltips = BTreeMap::new();
+            configure_detail_main(root, &resources, &loc, instance, &mut tooltips, &prepared);
+        },
+    )
+    .unwrap();
+    let mut plan = ComposedPlan::default();
+    compose_detail_chrome(&main_layout, root, &resources, &loc, &prepared, &mut plan);
+    compose_trait_tree(&main_layout, root, &guis, &resources, &loc, &prepared, &mut plan).unwrap();
+    let placed = plan.place_placeholders(&mut main_layout);
+
+    assert!(
+        plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_emblem"))),
+        "missing chosen emblem must be named: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_policy"))),
+        "missing attached policy icon must be named: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_bg"))),
+        "missing chosen tree background must be named: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_trait"))),
+        "missing trait icon must be named: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_country_spefific_org_trait_button"))),
+        "missing special trait frame must be named instead of substituting default: {:?}",
+        plan.text
+    );
+    assert!(placed.len() >= 4, "expected placed placeholders, got {placed:?}");
+    let tree_sub = plan
+        .sub_windows
+        .iter()
+        .find(|sub| sub.path_prefix == "mio_tree/")
+        .unwrap();
+    let bg_paths: BTreeSet<String> = guis
+        .template(TREE_WINDOW.as_bytes())
+        .unwrap()
+        .container()
+        .unwrap()
+        .backgrounds
+        .iter()
+        .map(|bg| bg.path.clone())
+        .collect();
+    assert!(
+        !tree_sub.parts.iter().any(|part| bg_paths.contains(&part.path)),
+        "default tree background must be blanked when chosen background is missing"
+    );
+
+    let policy_root = guis.template(POLICY_WINDOW_NAME.as_bytes()).unwrap();
+    let policy_layout =
+        layout_window(policy_root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let mut policy_plan = ComposedPlan::default();
+    compose_policy_list(
+        &policy_layout,
+        policy_root,
+        &guis,
+        &resources,
+        &loc,
+        &prepared,
+        &mut policy_plan,
+    )
+    .unwrap();
+    assert!(
+        policy_plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_policy"))),
+        "missing policy list icon must be named: {:?}",
+        policy_plan.text
+    );
+
+    let item_tpl = guis.template(b"industrial_organisation_history_item").unwrap();
+    let hist_records = HistoryRecordList::Entries(vec![
+        HistoryRecord { variant_id: 101, units: 5, design: DesignDate::Absent },
+        HistoryRecord { variant_id: 102, units: 9, design: DesignDate::Absent },
+    ]);
+    let variants_rows = [
+        VariantDefinitionRow {
+            id: 101,
+            display_name: b"Synthetic Ready\0".to_vec(),
+            ..Default::default()
+        },
+        VariantDefinitionRow {
+            id: 102,
+            display_name: b"Synthetic Missing\0".to_vec(),
+            ..Default::default()
+        },
+    ];
+    let variants: Result<&[VariantDefinitionRow], String> = Ok(&variants_rows);
+    let mut hist_plan = ComposedPlan::default();
+    let hist_main =
+        layout_window(root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    compose_history_list(
+        &hist_main,
+        root,
+        item_tpl,
+        &resources,
+        &loc,
+        HistoryListInput {
+            path: PRODUCTION_LIST_PATH,
+            prefix: "production",
+            kind: HistoryKind::Produced,
+            rows: &hist_records,
+            variants: &variants,
+            lexical: &lexical,
+            icons: &prepared.history_icons,
+        },
+        &mut hist_plan,
+    )
+    .unwrap();
+    let ready_row = hist_plan
+        .sub_windows
+        .iter()
+        .find(|sub| sub.path_prefix == "production:0/")
+        .unwrap();
+    assert!(
+        ready_row.parts.iter().any(|part| part.path.ends_with("equipment_icon")),
+        "available history equipment icon must be drawn rather than hidden"
+    );
+    let missing_row = hist_plan
+        .sub_windows
+        .iter()
+        .find(|sub| sub.path_prefix == "production:1/")
+        .unwrap();
+    assert!(
+        !missing_row.parts.iter().any(|part| part.path.ends_with("equipment_icon")),
+        "missing history equipment icon must be blanked"
+    );
+    assert!(
+        hist_plan.text.iter().any(|t| t.missing.as_deref().is_some_and(|m| m.contains("GFX_synthetic_missing_equip"))),
+        "missing history equipment icon must be named in text: {:?}",
+        hist_plan.text
+    );
+}
+
+#[test]
+fn history_scroll_cost_stays_constant_as_world_history_grows() {
+    use viewer_native_gui::test_support::gui as gui_fixture;
+    content_reader_script::test_game::enter();
+
+    let gui_bytes = br#"guiTypes = {
+        scrollbarType = {
+            name = "list_slider" size = { x = 10 y = 100 } minValue = 0 maxValue = 1
+            slider = "slider" track = "track" leftButton = "down" rightButton = "up"
+            buttonType = { name = "up" spriteType = "GFX_btn" }
+            buttonType = { name = "down" spriteType = "GFX_btn" }
+            guiButtonType = { name = "track" spriteType = "GFX_btn" }
+            guiButtonType = { name = "slider" spriteType = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 500 height = 300 }
+            containerWindowType = {
+                name = "history_window"
+                position = { x = 0 y = 0 }
+                size = { width = 500 height = 300 }
+                containerWindowType = {
+                    name = "prod_lines_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 300 height = 240 }
+                    smoothListboxType = { name = "prod_line_history_list" position = { x = 0 y = 0 } size = { x = 260 y = 150 } scrollbartype = "list_slider" }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_history_item"
+            size = { width = 260 height = 50 }
+            iconType = { name = "equipment_icon" position = { x = 120 y = 25 } spriteType = "GFX_btn" centerposition = yes }
+            instantTextboxType = { name = "equipment_name" position = { x = 4 y = 4 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "equipment_archetype_name" position = { x = 4 y = 18 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "flavor_fact" position = { x = 4 y = 32 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            buttonType = { name = "upgrade_variant_button" position = { x = 220 y = 10 } quadTextureSprite = "GFX_btn" }
+        }
+    }"#;
+    let guis = super::super::load_native_guis_from_bytes("test.gui", gui_bytes).unwrap();
+    let doc = native::read_at(gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut resources = gui_fixture::fixture_with(doc);
+    resources.add_sprite("GFX_btn", [20, 20], 1);
+    let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let item_tpl = guis.template(b"industrial_organisation_history_item").unwrap();
+    let main_layout =
+        layout_window(root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let list_el = find_direct(root, PRODUCTION_LIST_PATH).unwrap();
+    let localisation = Localisation::default();
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let data = unread_organisation("synthetic_works_organisation");
+    let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
+
+    let measure = |other_orgs: u64, scroll_y: f32| -> HistoryResolveCounts {
+        let target_org = other_orgs / 2 + 1;
+        let mut world_rows = Vec::with_capacity((other_orgs * 20 + 30) as usize);
+        let mut variant_rows = Vec::with_capacity(60);
+        for org in 1..=other_orgs {
+            if org == target_org {
+                for i in 0..30u64 {
+                    let vid = 10_000 + i;
+                    world_rows.push(IndustrialOrganisationHistoryRow {
+                        organisation: target_org,
+                        variant: vid,
+                        units: (i + 1) as i32,
+                        design_hour: Recorded::Value(None),
+                    });
+                    variant_rows.push(VariantDefinitionRow {
+                        id: vid,
+                        display_name: format!("Design {i}\0").into_bytes(),
+                        ..Default::default()
+                    });
+                }
+            } else {
+                for i in 0..20u64 {
+                    world_rows.push(IndustrialOrganisationHistoryRow {
+                        organisation: org,
+                        variant: org * 100 + i,
+                        units: 1,
+                        design_hour: Recorded::Value(None),
+                    });
+                }
+            }
+        }
+        let records = extract_history_records(&world_rows, target_org);
+        assert_eq!(records.len(), 30);
+        let [_, produced] = split_history_records(&records);
+        let variants: Result<&[VariantDefinitionRow], String> = Ok(&variant_rows);
+        let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+        let icons = HashMap::new();
+        let mut plan = ComposedPlan::scrolled(BTreeMap::from([(list_el.path.clone(), scroll_y)]));
+        compose_history_list(
+            &main_layout,
+            root,
+            item_tpl,
+            &resources,
+            &loc,
+            HistoryListInput {
+                path: PRODUCTION_LIST_PATH,
+                prefix: "production",
+                kind: HistoryKind::Produced,
+                rows: &produced,
+                variants: &variants,
+                lexical: &lexical,
+                icons: &icons,
+            },
+            &mut plan,
+        )
+        .unwrap()
+    };
+
+    let small_top = measure(10, 0.0);
+    let large_top = measure(1500, 0.0);
+    let large_mid = measure(1500, 500.0);
+    assert_eq!(small_top, large_top);
+    assert_eq!(large_top, large_mid);
+    assert!(
+        large_mid.variant_lookups <= 4 && large_mid.variant_lookups >= 3,
+        "only visible rows should resolve variants/names/layouts, got {large_mid:?}"
+    );
+}
+
+#[test]
+fn text_alternative_includes_visible_history_names_units_and_unread_facts() {
+    use viewer_native_gui::test_support::gui as gui_fixture;
+    content_reader_script::test_game::enter();
+
+    let gui_bytes = br#"guiTypes = {
+        scrollbarType = {
+            name = "list_slider" size = { x = 10 y = 100 } minValue = 0 maxValue = 1
+            slider = "slider" track = "track" leftButton = "down" rightButton = "up"
+            buttonType = { name = "up" spriteType = "GFX_btn" }
+            buttonType = { name = "down" spriteType = "GFX_btn" }
+            guiButtonType = { name = "track" spriteType = "GFX_btn" }
+            guiButtonType = { name = "slider" spriteType = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 600 height = 300 }
+            containerWindowType = {
+                name = "history_window"
+                position = { x = 0 y = 0 }
+                size = { width = 600 height = 300 }
+                containerWindowType = {
+                    name = "variants_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 260 height = 240 }
+                    smoothListboxType = { name = "variant_history_list" position = { x = 0 y = 0 } size = { x = 240 y = 120 } scrollbartype = "list_slider" }
+                }
+                containerWindowType = {
+                    name = "prod_lines_window"
+                    position = { x = 280 y = 0 }
+                    size = { width = 260 height = 240 }
+                    smoothListboxType = { name = "prod_line_history_list" position = { x = 0 y = 0 } size = { x = 240 y = 120 } scrollbartype = "list_slider" }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_history_item"
+            size = { width = 240 height = 60 }
+            iconType = { name = "equipment_icon" position = { x = 120 y = 30 } spriteType = "GFX_btn" centerposition = yes }
+            instantTextboxType = { name = "equipment_name" position = { x = 4 y = 4 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "equipment_archetype_name" position = { x = 4 y = 20 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            instantTextboxType = { name = "flavor_fact" position = { x = 4 y = 36 } font = "Main_14" text = "" maxWidth = 100 maxHeight = 14 }
+            buttonType = { name = "upgrade_variant_button" position = { x = 200 y = 10 } quadTextureSprite = "GFX_btn" }
+        }
+    }"#;
+    let guis = super::super::load_native_guis_from_bytes("test.gui", gui_bytes).unwrap();
+    let doc = native::read_at(gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut resources = gui_fixture::fixture_with(doc);
+    resources.add_sprite("GFX_btn", [20, 20], 1);
+    let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let item_tpl = guis.template(b"industrial_organisation_history_item").unwrap();
+    let main_layout =
+        layout_window(root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let localisation: Localisation = [(
+        "INDUSTRIAL_ORG_DETAIL_WINDOW_HISTORY_ENTRY_FLAVOR_UNITS_PRODUCED".to_owned(),
+        "Units produced: $NUMBER$".to_owned(),
+    )]
+    .into_iter()
+    .collect();
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let mut data = unread_organisation("synthetic_works_organisation");
+    data.custom_name = "Synthetic Works".to_owned();
+    let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
+
+    let variants_rows = [VariantDefinitionRow {
+        id: 1,
+        display_name: b"Synthetic Cruiser\0".to_vec(),
+        ..Default::default()
+    }];
+    let variants: Result<&[VariantDefinitionRow], String> = Ok(&variants_rows);
+    let lexical: Result<&[LexicalTokenRow], String> = Ok(&[]);
+    let rows = HistoryRecordList::Entries(vec![
+        HistoryRecord { variant_id: 1, units: 42, design: DesignDate::Absent },
+        HistoryRecord { variant_id: 99, units: 7, design: DesignDate::Absent },
+        HistoryRecord { variant_id: 200, units: 999, design: DesignDate::Absent },
+    ]);
+    let icons = HashMap::from([
+        (1, ResolvedHistoryIcon::NoneExpected),
+        (99, ResolvedHistoryIcon::NoneExpected),
+        (200, ResolvedHistoryIcon::NoneExpected),
+    ]);
+    let mut plan = ComposedPlan::default();
+    compose_history_list(
+        &main_layout,
+        root,
+        item_tpl,
+        &resources,
+        &loc,
+        HistoryListInput {
+            path: PRODUCTION_LIST_PATH,
+            prefix: "production",
+            kind: HistoryKind::Produced,
+            rows: &rows,
+            variants: &variants,
+            lexical: &lexical,
+            icons: &icons,
+        },
+        &mut plan,
+    )
+    .unwrap();
+
+    assert!(
+        plan.text.iter().any(|t| t.label == "Synthetic Cruiser" && t.value.as_deref().is_some_and(|v| v.contains("42"))),
+        "visible history name and units must appear in text: {:?}",
+        plan.text
+    );
+    assert!(
+        plan.text.iter().any(|t| t.value.is_none() && t.missing.as_deref().is_some_and(|m| m.contains("VariantDefinitions") && m.contains("7"))),
+        "unread history entry must appear as missing with its reason: {:?}",
+        plan.text
+    );
+    assert!(
+        !plan.text.iter().any(|t| t.value.as_deref().is_some_and(|v| v.contains("999")) || t.missing.as_deref().is_some_and(|m| m.contains("999"))),
+        "offscreen history row must not appear before scrolling: {:?}",
+        plan.text
+    );
+}
+
+#[test]
+fn trait_tree_sizes_to_installed_container_and_scrolls_to_offscreen_traits() {
+    use viewer_native_gui::test_support::gui as gui_fixture;
+    content_reader_script::test_game::enter();
+
+    let layers = synthetic_layers(&[(
+        "common/military_industrial_organization/organizations/00_synthetic.txt",
+        br#"
+            synthetic_wide_organisation = {
+                trait = {
+                    token = synthetic_origin
+                    name = synthetic_origin
+                    icon = GFX_btn
+                    position = { x = 0 y = 0 }
+                }
+                trait = {
+                    token = synthetic_far_corner
+                    name = synthetic_far_corner
+                    icon = GFX_btn
+                    position = { x = 4 y = 4 }
+                }
+            }
+        "#,
+    )]);
+    let gui_bytes = br#"guiTypes = {
+        extendedScrollbarType = {
+            name = "vert_bar"
+            position = { x = -12 y = 0 }
+            size = { width = 12 height = 18 }
+            orientation = upper_right
+            origo = upper_right
+            startValue = 0
+            background = { name = "bg" spriteType = "GFX_btn" }
+            slider = { name = "slider" spriteType = "GFX_btn" }
+            track = { name = "track" spriteType = "GFX_btn" }
+            decreaseButton = { name = "dec" spriteType = "GFX_btn" }
+            increaseButton = { name = "inc" spriteType = "GFX_btn" }
+        }
+        extendedScrollbarType = {
+            name = "horiz_bar"
+            position = { x = 0 y = -12 }
+            size = { width = 18 height = 12 }
+            horizontal = yes
+            orientation = lower_left
+            origo = lower_left
+            startValue = 0
+            background = { name = "bg" spriteType = "GFX_btn" }
+            slider = { name = "slider" spriteType = "GFX_btn" }
+            track = { name = "track" spriteType = "GFX_btn" }
+            decreaseButton = { name = "dec" spriteType = "GFX_btn" }
+            increaseButton = { name = "inc" spriteType = "GFX_btn" }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_detail_window"
+            size = { width = 400 height = 320 }
+            containerWindowType = {
+                name = "tree_scrollbar_window"
+                position = { x = 20 y = 20 }
+                size = { width = 320 height = 260 }
+                containerWindowType = {
+                    name = "tree_window"
+                    position = { x = 0 y = 0 }
+                    size = { width = 320 height = 260 }
+                    gridBoxType = { name = "tree_list" position = { x = 0 y = 0 } slotsize = { width = 320 height = 260 } }
+                }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_tree_window"
+            size = { width = 320 height = 260 }
+            background = { name = "Background" spriteType = "GFX_btn" }
+            containerWindowType = {
+                name = "scrollbar_window"
+                position = { x = 10 y = 10 }
+                size = { width = 260 height = 220 }
+                margin = { top = 0 left = 0 bottom = 12 right = 12 }
+                verticalScrollbar = "vert_bar"
+                horizontalScrollbar = "horiz_bar"
+                background = { name = "Background" spriteType = "GFX_btn" }
+                containerWindowType = { name = "traits_window" position = { x = 0 y = 0 } clipping = no }
+            }
+        }
+        containerWindowType = {
+            name = "industrial_organisation_trait_entry"
+            size = { width = 88 height = 112 }
+            containerWindowType = {
+                name = "industrial_organisation_trait_icon"
+                orientation = center
+                buttonType = { name = "icon_frame" position = { x = -29 y = -40 } quadTextureSprite = "GFX_industrial_org_trait_button" }
+                iconType = { name = "trait_icon" position = { x = -21 y = -32 } }
+                containerWindowType = { name = "queue_number_window" instantTextboxType = { name = "queue_number" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 } }
+            }
+            instantTextboxType = { name = "ai_value" position = { x = 0 y = 0 } font = "Main_14" text = "" maxWidth = 20 maxHeight = 20 }
+        }
+    }"#;
+    let guis = super::super::load_native_guis_from_bytes("test.gui", gui_bytes).unwrap();
+    let doc = native::read_at(gui_bytes, DEFAULT_VIEWPORT.map(|v| v as i32));
+    let mut resources = gui_fixture::fixture_with(doc);
+    resources.add_sprite("GFX_btn", [12, 12], 1);
+    resources.add_sprite("GFX_industrial_org_trait_button", [58, 58], 3);
+    let root = guis.template(DETAIL_WINDOW_NAME.as_bytes()).unwrap();
+    let main_layout =
+        layout_window(root, &resources, DEFAULT_VIEWPORT.map(|v| v as i32), |_| {}).unwrap();
+    let localisation = Localisation::default();
+    let frame = empty_frame();
+    let scripted = unread_scripted_text();
+    let failures = RefCell::new(Vec::new());
+    let catalog = mio_traits::cached(&layers);
+    let org_db = cached_organisation_database(&layers);
+    let data = unread_organisation("synthetic_wide_organisation");
+    let loc = Loc::new(&localisation, &frame, &scripted, &data, &failures);
+
+    let run = |scroll: BTreeMap<String, f32>| -> ComposedPlan {
+        let prepared = PreparedMio {
+            data: data.clone(),
+            sub_view: SubView::Traits,
+            catalog: catalog.clone(),
+            org_db: org_db.clone(),
+            emblem: Ok("GFX_btn".to_owned()),
+            tree_background: None,
+            history_icons: HashMap::new(),
+            history_art_label: None,
+            scroll,
+        };
+        let mut plan = ComposedPlan::default();
+        compose_trait_tree(&main_layout, root, &guis, &resources, &loc, &prepared, &mut plan)
+            .unwrap();
+        plan
+    };
+
+    let top = run(BTreeMap::new());
+    assert!(top.text.iter().any(|t| t.label == "synthetic_origin"));
+    assert!(
+        !top.text.iter().any(|t| t.label == "synthetic_far_corner"),
+        "offscreen trait must be culled to the installed 260x220 container, not hardcoded 905x640"
+    );
+    let v_list = top
+        .extra_regions
+        .iter()
+        .find(|r| r.scroll.as_ref().is_some_and(|s| s.vertical && matches!(s.control, GameWindowScrollControl::List)))
+        .expect("vertical tree scroll region");
+    let h_list = top
+        .extra_regions
+        .iter()
+        .find(|r| r.scroll.as_ref().is_some_and(|s| !s.vertical && matches!(s.control, GameWindowScrollControl::List)))
+        .expect("horizontal tree scroll region");
+    assert_eq!(v_list.rect[2], 248.0, "width matches installed scrollbar_window content width");
+    assert_eq!(v_list.rect[3], 208.0, "height matches installed scrollbar_window content height");
+    assert!(v_list.scroll.as_ref().unwrap().range > 0.0);
+    assert!(h_list.scroll.as_ref().unwrap().range > 0.0);
+
+    let scrolled = run(BTreeMap::from([
+        (
+            v_list.scroll.as_ref().unwrap().list.clone(),
+            v_list.scroll.as_ref().unwrap().range,
+        ),
+        (
+            h_list.scroll.as_ref().unwrap().list.clone(),
+            h_list.scroll.as_ref().unwrap().range,
+        ),
+    ]));
+    assert!(
+        scrolled.text.iter().any(|t| t.label == "synthetic_far_corner"),
+        "scrolling to the far corner must bring the offscreen trait into view: {:?}",
+        scrolled.text
+    );
+    assert!(
+        !scrolled.text.iter().any(|t| t.label == "synthetic_origin"),
+        "scrolling to the far corner must scroll the origin trait out of view"
+    );
 }
 
 struct DummyResources;
