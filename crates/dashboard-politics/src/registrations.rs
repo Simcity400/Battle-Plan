@@ -6,7 +6,7 @@ dashboard_base::register_products! {
     LOGS_LOGTAIL => crate::products::logs::LogTail; panel(crate::products::logs::dated_panel),
     POLITICS_HISTORY_POLITICSSTATEHISTORY => crate::products::politics::history::PoliticsStateHistory,
     POLITICS_CIVIL_WARS_CIVILWARS => crate::products::politics::civil_wars::CivilWars,
-    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard; interval(at_hour, |r| r.valid_through),
+    FOCUS_CARD_FOCUSCARD => crate::products::focus_card::FocusCard; panel(crate::products::focus_card::panel),
     IDEAS_IDEAHISTORY => crate::products::ideas::IdeaHistory; interval(at_hour, |r| before(r.next_change)),
     PARTY_HISTORY_PARTYHISTORY => crate::products::party_history::PartyHistory,
     STABILITY_MARKERS_STABILITYMARKERS => crate::products::stability_markers::StabilityMarkers; interval(at_hour, |r| before(r.next_change)),

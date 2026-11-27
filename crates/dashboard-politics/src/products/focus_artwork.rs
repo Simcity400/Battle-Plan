@@ -5,7 +5,7 @@ use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
 use replay::campaign::{Replay, SeekResult};
 use dashboard_text::triggers::inputs::TableRead;
-use dashboard_base::products::at_hour::reads_through;
+use dashboard_base::products::at_hour::{DatedStep, Read, reads_through};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
@@ -37,6 +37,8 @@ pub(crate) struct DatedFocusArtwork {
 pub(crate) struct FocusArtworkReply {
     #[serde(skip)]
     pub valid_through: i32,
+    #[serde(skip)]
+    pub reusable: bool,
     pub branch_id: String,
     pub hour: i32,
     pub tag: String,
@@ -195,12 +197,7 @@ fn read_frame(
     if replay.block_at(branch, hour).is_none() {
         return Err(dashboard_core::refused("Focus artwork hour was not recorded"));
     }
-    let mut selected = BTreeSet::from(BASIC_TABLES);
-    if scoped {
-        selected.extend(dashboard_text::scripted_text::TABLES.iter().copied());
-        selected.insert(TableId::Clock);
-    }
-    let selected: Vec<_> = selected.into_iter().collect();
+    let selected = frame_tables(scoped);
     let decoded = match replay
         .seek_selected_with(branch, hour, Some(&selected), || check_cancel(cancelled))?
     {
@@ -215,6 +212,15 @@ fn read_frame(
     held_campaign(replay, branch, hour)?;
     check_cancel(cancelled)?;
     Ok(*decoded)
+}
+
+fn frame_tables(scoped: bool) -> Vec<TableId> {
+    let mut tables = BTreeSet::from(BASIC_TABLES);
+    if scoped {
+        tables.extend(dashboard_text::scripted_text::TABLES.iter().copied());
+        tables.insert(TableId::Clock);
+    }
+    tables.into_iter().collect()
 }
 
 fn held_campaign(replay: &Replay, branch: u64, hour: i32) -> io::Result<()> {
@@ -248,6 +254,7 @@ pub(crate) fn load(
     params: &FocusArtworkParams,
     context: &LoadContext,
     cancelled: &AtomicBool,
+    mut step: Option<DatedStep<'_>>,
 ) -> io::Result<FocusArtworkReply> {
     check_cancel(cancelled)?;
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid focus artwork branch"))?;
@@ -292,11 +299,20 @@ pub(crate) fn load(
     } else {
         art.requested_focus_needs_frame(&params.tokens)
     };
-    let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
-    check_cancel(cancelled)?;
     let query = dashboard_base::queries::query(source, branch)?;
+    let cold;
+    let decoded = if let Some(step) = step.as_mut().filter(|_| needs_frame) {
+        let reads: Vec<_> = frame_tables(true).into_iter().map(Read::all).collect();
+        let decoded = step.frame(source, &query, params.hour, &reads, |_| None)?;
+        held_campaign(&replay, branch, params.hour)?;
+        decoded
+    } else {
+        cold = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
+        &cold
+    };
+    check_cancel(cancelled)?;
     let tag = query.holders.name(&params.country, params.hour);
-    let (reply, inputs) = dashboard_text::triggers::inputs::capture(&decoded, || present_decoded(art, params, &tag, &decoded, cancelled));
+    let (reply, inputs) = dashboard_text::triggers::inputs::capture(decoded, || present_decoded(art, params, &tag, decoded, cancelled));
     let mut reply = reply?;
     if let Some(block) = replay.block_at(branch, params.hour) {
         let through = block.last_hour.min(query.holders.interval(params.hour).1);
@@ -309,6 +325,7 @@ pub(crate) fn load(
         };
         if let Some(reads) = reads {
             reply.valid_through = reads_through(&replay, block.run, &reads, params.hour, through, cancelled)?;
+            reply.reusable = !needs_frame;
         }
     }
     Ok(reply)
@@ -366,6 +383,7 @@ fn reply_within(
 ) -> io::Result<FocusArtworkReply> {
     let mut reply = FocusArtworkReply {
         valid_through: params.hour,
+        reusable: false,
         branch_id: params.branch_id.clone(),
         hour: params.hour,
         tag: tag.to_owned(),
@@ -524,6 +542,36 @@ mod tests {
     }
 
     #[test]
+    fn current_focus_progress_reuses_art_within_a_proven_interval() {
+        use crate::products::{focus::FocusHourParams, focus_card::FocusCard};
+        use dashboard_base::products::Product;
+
+        let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&database_files(false));
+        let frames = [100, 101, 102, 105, 106].map(|hour| {
+            let mut frame = focus_scale_frame(hour, 4, 2, &[]);
+            let TableView::Complete(TableRows::Focus(rows)) = &mut *frame.tables[TableId::Focus.index()] else {
+                unreachable!();
+            };
+            rows[2].current = Some(b"shared".to_vec());
+            rows[2].progress = i64::from(hour - 99) * 100_000;
+            frame
+        });
+        let (source, context) = source_with_content(frames.into(), &folder.0);
+        let cancelled = AtomicBool::new(false);
+        let read = |hour| FocusCard::load(&source, &FocusHourParams {
+            branch_id: "1".into(), country: Country::from(String::from_utf8(scale_tag(2)).unwrap()), hour,
+        }, &context, &cancelled).unwrap();
+        let first = read(100).current.unwrap();
+        let next = read(101).current.unwrap();
+        assert_eq!(first.art, next.art);
+        assert_ne!(first.permyriad, next.permyriad);
+        assert_eq!(shared_frames(&source).lock().unwrap().reads, 1);
+        assert!(read(103).missing.is_some());
+        assert_eq!(read(105).current.unwrap().art, first.art);
+        assert_eq!(shared_frames(&source).lock().unwrap().reads, 2);
+    }
+
+    #[test]
     fn static_icon_only_product_skips_scoped_titles() {
         use dashboard_base::catalogue::texture_tests::from_url;
         let mut frame = focus_scale_frame(100, 24, 12, &["static"]);
@@ -544,7 +592,7 @@ mod tests {
             include_descriptions: Some(false),
             icons_only: Some(true),
         };
-        let reply = load(&source, &params, &context, &cancelled).unwrap();
+        let reply = load(&source, &params, &context, &cancelled, None).unwrap();
         assert_eq!(
             (reply.branch_id.as_str(), reply.hour, &reply.tag),
             ("1", 100, &params.country.to_string())
@@ -592,6 +640,7 @@ mod tests {
             },
             &context,
             &cancelled,
+            None,
         )
         .unwrap();
         assert!(title.items[0].artwork.name.is_none());
@@ -623,7 +672,7 @@ mod tests {
                 include_descriptions,
                 icons_only,
             };
-            let reply = load(&source, &params, &context, &cancelled).unwrap();
+            let reply = load(&source, &params, &context, &cancelled, None).unwrap();
             let item = &reply.items[0];
             assert!(item.artwork.name.is_none() && item.artwork.icon.is_none());
             let reason = item.reason.as_deref().unwrap_or_default();
@@ -686,6 +735,7 @@ mod tests {
                     },
                     &context,
                     &cancelled,
+                    None,
                 )
                 .unwrap()
             };
@@ -809,7 +859,14 @@ mod tests {
         use dashboard_base::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..104)
-            .map(|hour| focus_scale_frame(hour, 24, 12, &["conditional"]))
+            .map(|hour| {
+                let mut frame = focus_scale_frame(hour, 24, 12, &["conditional"]);
+                let TableView::Complete(TableRows::Focus(rows)) = &mut *frame.tables[TableId::Focus.index()] else {
+                    unreachable!();
+                };
+                rows[12].current = Some(b"conditional".to_vec());
+                frame
+            })
             .collect();
         for (frame, ruling_id) in frames.iter_mut().zip([20, 30, 30]) {
             frame.tables[TableId::PoliticalParties.index()] =
@@ -857,7 +914,8 @@ mod tests {
                 include_descriptions: Some(false),
                 icons_only: Some(true),
             };
-            let reply = load(&source, &params, &context, &cancelled).unwrap();
+            let reply = load(&source, &params, &context, &cancelled, None).unwrap();
+            assert!(!reply.reusable);
             assert_eq!(reply.valid_through, through, "hour {hour}: a scripted icon holds until an input it read changes, not one hour");
             assert_eq!(reply.items.len(), 1);
             let item = &reply.items[0];
@@ -896,6 +954,17 @@ mod tests {
             );
         }
         assert_eq!(shared.lock().unwrap().reads, 4);
+        let source = Arc::new(source);
+        let asked = serde_json::json!({"branchId":"1", "country":String::from_utf8(scale_tag(12)).unwrap()});
+        let panel = crate::products::focus_card::panel(&source, &context, &asked).unwrap();
+        let panel = panel.exact().unwrap();
+        for hour in 100..104 {
+            let placed = (panel.advance)(hour, true, &cancelled, None);
+            let cold = (panel.cold)(hour, &cancelled);
+            assert!(!placed.pending && !placed.lanes.is_empty(), "hour {hour}");
+            assert!(cold.as_ref().unwrap()["current"].is_object(), "hour {hour}");
+            assert_eq!(*placed.value, cold, "hour {hour}");
+        }
     }
 
     #[test]
