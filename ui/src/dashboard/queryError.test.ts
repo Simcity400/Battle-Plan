@@ -42,6 +42,19 @@ test('failure classification inspects only error types, never message text, and 
   assert.equal(refused?.kind, 'refused');
   assert.equal(refused?.kind === 'refused' ? refused.cause?.kind : null, 'capture-mode');
 
+  const owned = classifyFailure(new RefusedError(
+    'Cannot determine which designer \'sample_equipment_1\' uses: the design has no recorded equipment category.',
+    undefined,
+    'equipment designer',
+  ));
+  assert.deepEqual(owned, {
+    kind: 'refused',
+    cause: undefined,
+    subject: 'equipment designer',
+    reason: 'Cannot determine which designer \'sample_equipment_1\' uses: the design has no recorded equipment category.',
+    detail: 'Cannot determine which designer \'sample_equipment_1\' uses: the design has no recorded equipment category.',
+  });
+
   const shown = classifyFailure(new ShownError('Desktop host disconnected.', 'raw stack'));
   assert.deepEqual(shown, { kind: 'retryable', reason: 'Desktop host disconnected.', detail: 'raw stack' });
 
