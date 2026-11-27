@@ -225,7 +225,6 @@ struct Panels {
     thread: Option<JoinHandle<()>>,
     cells: Option<HostCells>,
     session: u64,
-    proven: BTreeMap<u32, (u32, Hour)>,
 }
 
 fn unread_from(proven: Option<&(u32, Hour)>, seek: u32, through: Hour) -> Option<Hour> {
@@ -239,6 +238,7 @@ struct ProductReads {
     tokens: BTreeMap<u32, Arc<AtomicBool>>,
     cells: BTreeMap<u32, Vec<(Group, u32)>>,
     host: Option<HostCells>,
+    proven: BTreeMap<u32, (u32, Hour)>,
 }
 
 impl ProductReads {
@@ -252,6 +252,7 @@ impl ProductReads {
     }
 
     fn remove(&mut self, id: u32) {
+        self.proven.remove(&id);
         if let Some(token) = self.tokens.remove(&id) {
             token.store(true, Ordering::Release);
             if let Some(mut cells) = self.cells.remove(&id) { release(&mut cells, self.host.as_ref()); }
@@ -300,13 +301,14 @@ impl PanelJob {
     fn start<E: Send + Sync + 'static>(self, read: PanelRead, mut product: StepProduct, work: Arc<Work<StepProduct>>, owner: &Arc<E>, get: fn(&E) -> &Playhead) {
         if let PanelRead::Seed(hour) = read {
             let (clock, route, seek) = self.stamp;
-            let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
             if reads.current(self.epoch, seek) && !self.token.load(Ordering::Acquire) && get(owner).epoch() == self.epoch {
                 let from = match product.last.filter(|(_, g, _)| *g == seek) {
                     Some((_, _, h)) => h.checked_add(1),
                     None => Some(hour),
                 };
                 if let Some(from) = from {
+                    reads.proven.remove(&product.id);
                     self.push.offer_from(self.session, PANEL, panel::dated::encoded(clock, route, seek, product.id, from, panel::dated::WAITING, &[]));
                 }
             }
@@ -361,12 +363,13 @@ impl PanelJob {
         let Some((change, _)) = product.read_at(seek, self.epoch, hour, reset, seed_paused, catch_up, &self.token, None, &self.reads) else { return false };
         let (kind, body) = change.unwrap_or((panel::dated::STANDS, &[]));
         let packet = panel::dated::at_one_hour(self.stamp, id, hour, kind, body);
-        let reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(epoch) = live_epoch().filter(|_| reads.current(self.epoch, seek)) else { return false };
         if seed_paused && epoch != self.epoch {
             product.started_on = Some((epoch, seek));
         }
         product.last = Some((epoch, seek, hour));
+        reads.proven.remove(&id);
         self.push.offer_from(self.session, PANEL, packet);
         product.wire.commit();
         true
@@ -508,7 +511,6 @@ impl StepProduct {
 
 impl Panels {
     fn remove(&mut self, id: u32) {
-        self.proven.remove(&id);
         if self.products.remove(&id).is_some() {
             self.due.retain(|&(_, due)| due != id);
         }
@@ -723,7 +725,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let mut held_products = Vec::with_capacity(replies.len());
             {
                 let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                let active = active.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut active = active.lock().unwrap_or_else(PoisonError::into_inner);
                 let ok = active.current(epoch, stamp.2) && get(&owner).epoch() == epoch;
                 if ok {
                     let mut batch = panel::dated::ProductBatch::new(stamp);
@@ -735,14 +737,14 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                                 product.last = Some((epoch, stamp.2, hour));
                                 product.wire.commit();
                                 product.joined = true;
-                                panels.proven.insert(id, (stamp.2, hour));
+                                active.proven.insert(id, (stamp.2, hour));
                             }
                             held_products.push((work, product));
                         }
                         if !live { continue; }
                         panels.due.insert((next, id));
                         if let Some((at, kind, body)) = change { batch.changed(id, at, kind, &body); }
-                        if !read && let Some(from) = unread_from(panels.proven.get(&id), stamp.2, step.last()) {
+                        if !read && let Some(from) = unread_from(active.proven.get(&id), stamp.2, step.last()) {
                             batch.changed(id, from, panel::dated::WAITING, &[]);
                         }
                     }
