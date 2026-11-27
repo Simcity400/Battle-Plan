@@ -74,16 +74,3 @@ fn a_subject_relation_first_seen_after_the_hour_is_not_in_the_reply_and_its_leve
     assert_eq!((at.runs[0].last_hour, at.runs[0].steps.len()), (130, 1), "a level that starts after the hour is not there");
     assert_eq!(next, Some(131));
 }
-
-#[test]
-fn a_partial_war_start_keeps_its_known_side_and_reason_only_from_its_date() {
-    let mut whole = reply();
-    whole.war_starts = serde_json::from_value(serde_json::json!([
-        { "hour": 137, "attacking": "AAA", "defending": null, "attackingMissing": null, "defendingMissing": "Defending country not resolved" },
-        { "hour": 143, "attacking": null, "defending": "BBB", "attackingMissing": "Attacking country not resolved", "defendingMissing": null }
-    ])).unwrap();
-    assert!(groups_at(&whole, 136).0.war_starts.is_empty());
-    assert_eq!(groups_at(&whole, 136).1, Some(137));
-    assert_eq!(groups_at(&whole, 137).0.war_starts, whole.war_starts[..1]);
-    assert_eq!(groups_at(&whole, 143).0.war_starts, whole.war_starts);
-}

@@ -49,7 +49,7 @@ fn a_war_with_an_unresolved_opponent_still_marks_the_known_countrys_history() {
         let mut other = Markers { hour: 275, shown: Vec::new(), next: None };
         let notes = war_markers(&mut other, &|tag: &str, _: i32| tag == "BBB", &groups, &[]);
         assert!(other.shown.is_empty());
-        assert!(notes.iter().any(|note| note.contains("may involve the chosen country") && note.contains("country link not resolved")));
+        assert!(notes.iter().any(|note| note.contains("any may be this country's, and none is marked")));
     }
 }
 

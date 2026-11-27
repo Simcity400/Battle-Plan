@@ -42,7 +42,10 @@ fn a_war_start_keeps_the_known_participant_its_role_and_the_missing_reason() {
     let frames = (100..=102).map(|hour| {
         let mut frame = source(1, hour, Some(1));
         let rows = if hour == 100 { Vec::new() } else {
-            vec![WarRelationRow { first_country: 9001, second_country: 9002, start_hour: 101, end_hour: 0, first_was_instigator: 1, ..Default::default() }]
+            vec![
+                WarRelationRow { first_country: 9001, second_country: 9002, start_hour: 101, end_hour: 0, first_was_instigator: 1, ..Default::default() },
+                WarRelationRow { first_country: 9001, second_country: 9003, start_hour: 101, end_hour: 0, first_was_instigator: 0, ..Default::default() },
+            ]
         };
         *frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(rows));
         frame
@@ -51,12 +54,14 @@ fn a_war_start_keeps_the_known_participant_its_role_and_the_missing_reason() {
     let held = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "partial-war-feed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = dashboard_base::queries::query(&held, 1).unwrap();
     let (rows, notes, omitted) = families::group_rows(&held, &query, &LoadContext { content: None }, 100, 102, &[super::EventFeedCategory::WarsPeace], &AtomicBool::new(false)).unwrap();
-    let start = rows.iter().find(|row| row.kind == EventFeedKind::WarStarted).expect("the start exists even when its defender is unresolved");
+    assert_eq!(rows.iter().filter(|row| row.kind == EventFeedKind::WarStarted).map(|row| &row.id).collect::<std::collections::HashSet<_>>().len(), 2, "opposite partial starts at the same hour never share a row key");
+    let start = rows.iter().find(|row| row.kind == EventFeedKind::WarStarted && row.participants.as_ref().is_some_and(|roles| roles[0].is_some())).expect("the start exists even when its defender is unresolved");
     assert_eq!(start.tags, ["GER"]);
     assert_eq!(start.participants, Some([Some("GER".into()), None]));
     let wire = serde_json::to_value(start).unwrap();
     assert!(wire["participantsMissing"][0].is_null());
     assert!(wire["participantsMissing"][1].as_str().unwrap().contains("defending"));
+    assert!(rows.iter().any(|row| row.participants == Some([None, Some("GER".into())])), "the known defender keeps its role as well");
     assert!(notes.iter().any(|(hour, note)| *hour == 101 && note.contains("totals may be incomplete")), "country-filtered totals must not claim complete attribution: {notes:?}");
     assert!(omitted.is_empty(), "a retained start is never reported as omitted");
 }

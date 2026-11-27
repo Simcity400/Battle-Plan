@@ -513,10 +513,8 @@ fn built(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                         unobserved.unattributed.push(hour);
                         continue;
                     }
-                    let reason = |side: &str| query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last)
-                        .map_or_else(|| format!("The {side} country has no resolved link at the war start"), |(_, _, reason)| format!("The {side} country is not resolved: {reason}"));
-                    let attacking_missing = attacking.is_none().then(|| reason("attacking"));
-                    let defending_missing = defending.is_none().then(|| reason("defending"));
+                    let attacking_missing = attacking.is_none().then(|| "The attacking country has no resolved link at the war start".to_owned());
+                    let defending_missing = defending.is_none().then(|| "The defending country has no resolved link at the war start".to_owned());
                     war_starts.insert(WarStart { hour, attacking, defending, attacking_missing, defending_missing });
                 }
                 WarEventRow::CAPITULATION => match tag(first) {

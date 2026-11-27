@@ -168,6 +168,7 @@ pub(crate) fn group_rows(source: &Source, query: &Query<'_>, context: &LoadConte
                 notes.push((start.hour, format!("War start: {reason}. Country-filtered war-start totals may be incomplete.")));
             }
             let mut row = family_row(EventFeedKind::WarStarted, start.hour, start.hour, start.hour, participants.iter().flatten().cloned().collect(), None, None);
+            row.id = format!("WarStarted:{}:{},{}:", start.hour, participants[0].as_deref().unwrap_or_default(), participants[1].as_deref().unwrap_or_default());
             row.participants = Some(participants);
             row.participants_missing = Some(missing);
             rows.push(row);

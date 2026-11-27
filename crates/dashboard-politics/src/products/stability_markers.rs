@@ -172,19 +172,15 @@ fn party_markers(out: &mut Markers, reply: &RulingParties) {
 }
 
 fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, hidden: &[HourSpan]) -> Vec<String> {
-    let mut notes = Vec::new();
+    let mut unattributed = groups.unobserved.unattributed.clone();
     for war in &groups.war_starts {
         let (other, missing) = if war.attacking.as_deref().is_some_and(|tag| holds(tag, war.hour)) {
             (&war.defending, &war.defending_missing)
         } else if war.defending.as_deref().is_some_and(|tag| holds(tag, war.hour)) {
             (&war.attacking, &war.attacking_missing)
         } else {
-            for reason in [&war.attacking_missing, &war.defending_missing].into_iter().flatten() {
-                if war.hour <= out.hour {
-                    notes.push(format!("War start at {} may involve the chosen country: {reason}", when(war.hour)));
-                } else {
-                    out.later(Some(war.hour));
-                }
+            if war.attacking.is_none() || war.defending.is_none() {
+                unattributed.push(war.hour);
             }
             continue;
         };
@@ -228,7 +224,8 @@ fn war_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &Co
             }
         }
     }
-    notes
+    unattributed.sort_unstable();
+    unattributed_note(out, &unattributed).into_iter().collect()
 }
 
 fn faction_markers(out: &mut Markers, holds: &dyn Fn(&str, i32) -> bool, groups: &CountryGroupReply, branch: (i32, i32), hidden: &[HourSpan]) -> Vec<String> {
@@ -400,9 +397,6 @@ impl Product for StabilityMarkers {
                 warnings.extend(war_markers(&mut out, &holds, &groups, &unheld));
             }
             let joins = if params.factions { faction_markers(&mut out, &holds, &groups, (query.timeline.first, query.timeline.last), &unheld) } else { Vec::new() };
-            if params.wars {
-                warnings.extend(unattributed_note(&mut out, &groups.unobserved.unattributed));
-            }
             warnings.extend(holder_notes(&mut out, &query.holders, &params.country, (query.timeline.first, query.timeline.last), hidden(params.wars, params.factions)));
             warnings.extend(joins);
         }

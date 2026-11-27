@@ -31,7 +31,7 @@ test('a feed row is validated, an icon the dashboard cannot draw dropped, and ma
 });
 
 test('war starts retain both role positions and the unresolved country reason', () => {
-  for (const participants of [['AAA', null], [null, 'AAA'], [null, null]]) {
+  for (const participants of [['AAA', null], [null, 'AAA']]) {
     const reasons = participants.map(tag => tag === null ? 'Country link not resolved' : null);
     const event = validateFeedRow({ ...row('warStarted', 101, participants.filter(tag => tag !== null)), participants, participantsMissing: reasons });
     const head = { branchId: '1', offset: '0', total: '1', live: '0', counts: [],
@@ -42,9 +42,10 @@ test('war starts retain both role positions and the unresolved country reason', 
     const model = eventFeedProjection.project(view, { categories: ['warsPeace'], artwork: false, expanded: [] });
     const country = model.rows[0]!.cells.country!;
     assert.equal(country.flags?.length, 2, 'each side keeps its position, including an unresolved defender');
-    assert.equal(country.value.kind, participants.includes('AAA') ? 'partial' : 'notRecorded', 'a partial pair is never a complete country value');
+    assert.equal(country.value.kind, 'partial', 'a partial pair is never a complete country value');
     assert.ok('reason' in country.value && country.value.reason.includes('Country link not resolved'));
     assert.throws(() => validateFeedRow({ ...event, participantsMissing: [null, null] }), /malformed/);
+    assert.throws(() => validateFeedRow({ ...event, tags: [], participants: [null, null], participantsMissing: ['Missing attacker', 'Missing defender'] }), /malformed/);
   }
 });
 
