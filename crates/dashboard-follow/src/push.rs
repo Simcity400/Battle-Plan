@@ -218,9 +218,10 @@ impl State {
 
     fn folds_past(&self, at: usize, later: usize) -> bool {
         let older = &self.queue[at];
-        let (Some(ids), Some((route, _))) = (&older.panels, older.stream.version()) else { return true };
+        let Some((route, _)) = older.stream.version() else { return true };
         self.queue.range(at + 1..later).all(|q| {
-            q.stream.version().is_none_or(|(other, _)| other != route) || q.panels.as_ref().is_some_and(|others| !others.iter().any(|id| ids.contains(id)))
+            q.stream.version().is_none_or(|(other, _)| other != route)
+                || matches!((&older.panels, &q.panels), (Some(ids), Some(others)) if !others.iter().any(|id| ids.contains(id)))
         })
     }
 
@@ -286,7 +287,7 @@ impl State {
         let kind = self.queue[last].kind;
         if matches!(stream, Stream::Steps { .. })
             && let Some(at) = (0..last).rev().find(|&i| self.queue[i].kind == kind && self.queue[i].stream.version() == Some(version))
-            && !self.queue[at].kept && self.queue[at].stream == stream {
+            && !self.queue[at].kept && self.queue[at].stream == stream && self.folds_past(at, last) {
             self.merge(at, last);
         }
         self.merge_passed();

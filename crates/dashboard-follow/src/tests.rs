@@ -2177,6 +2177,28 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     let (_, bytes, ..) = push.try_take().expect("the reached data leaves past credit while the budget is full");
     assert_eq!(sent(&bytes), [(42, 10, dated::DATA)], "panel 42's data leaves before the record that stands on it");
 
+    let push = Push::with_budget(playhead::ByteBudget::new(one * 2));
+    push.head(3, 0, 10);
+    push.offer_kind(PANEL, record(39, 5, dated::DATA, &[1; 1000]));
+    assert!(push.try_take().is_some());
+    let mut completing = dated::ProductBatch::new((0, 3, 0));
+    completing.changed(42, 10, dated::DATA, &[5; 1000]);
+    push.offer_kind(PANEL, completing.finish(Some(10)));
+    push.offer_kind(PANEL, record(42, 60, dated::STANDS, &[]));
+    push.offer_kind(PANEL, record(43, 10, dated::DATA, &[6; 8]));
+    assert_eq!(push.counters().pressure_merges, 0, "a message carrying a route completion never folds past anything on its route");
+    let (_, bytes, ..) = push.try_take().expect("the reached completion leaves past credit");
+    assert_eq!(sent(&bytes), [(42, 10, dated::DATA), (0, 10, dated::COMPLETED)]);
+
+    let push = Push::with_budget(playhead::ByteBudget::new(1 << 20));
+    push.head(3, 0, 10);
+    push.offer(routed(3, 10, 1, 0));
+    push.offer_kind(PANEL, record(45, 10, dated::DATA, &[8; 8]));
+    push.offer(routed(3, 10, 2, 0));
+    assert_eq!(push.counters().merges, 0, "a follow answer never folds past a panel message of its route");
+    let kinds: Vec<u8> = std::iter::from_fn(|| push.try_take()).map(|(kind, ..)| kind).collect();
+    assert_eq!(kinds, [crate::push::FOLLOW, PANEL, crate::push::FOLLOW], "the route leaves in the order it was offered");
+
     let push = Push::with_budget(playhead::ByteBudget::new(one * 3));
     push.head(3, 0, 10);
     push.offer_kind(PANEL, record(39, 5, dated::DATA, &[1; 1000]));
