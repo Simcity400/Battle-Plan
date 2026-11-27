@@ -1429,7 +1429,7 @@ fn a_listed_read_that_lands_after_read_ahead_answers_the_hour_it_was_asked_for()
     let reads = held_reads(&pages);
     let mut harness = stepping_with(&pages, 1, Timeline::whole(&*pages).unwrap(), |_| reads.rows.log_reads());
     reads.gate.close();
-    harness.follow.follow(2, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns, rows: Rows::Listed }).unwrap();
     harness.seek(ASKED);
     let mut held = since_the_reset(harness.play(ASKED));
     reads.gate.wait_entered(1);
@@ -1493,7 +1493,7 @@ fn a_list_read_again_at_a_new_piece_after_a_late_answer_answers_that_piece() {
     let pieces = vec![playhead::Piece { run: 0, first: 0, last: ENTERED - 2 }, playhead::Piece { run: 0, first: ENTERED, last: HOURS as Hour - 1 }];
     let mut harness = stepping_with(&pages, 1, Timeline::new(&*pages, pieces).unwrap(), |_| reads.rows.log_reads());
     reads.gate.close();
-    harness.follow.follow(2, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns, rows: Rows::Listed }).unwrap();
     harness.seek(ASKED);
     let mut played = since_the_reset(harness.play(ASKED));
     reads.gate.wait_entered(1);
