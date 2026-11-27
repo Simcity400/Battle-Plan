@@ -1,8 +1,8 @@
 use super::casualties::{EndedCounters, Lifetime, cached_casualty_ends};
-use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour}, validate_country}};
-use dashboard_query::timeline::Timeline;
+use dashboard_base::{Source, products::{Country, LoadContext, at_hour::{At, AtHour, Clock, Edits, ReadsAt, before, field_columns}, validate_country}};
+use dashboard_query::{identity::Holder, timeline::Timeline};
 use dashboard_world::products::{
-    groups::{FactionAt, FactionGroup, factions_at},
+    groups::{FactionAt, FactionGroup, factions_at, factions_valid_through},
     holder_tags::{HolderTags, Identity},
 };
 use replay_data::rows::{TableId, tables};
@@ -48,6 +48,8 @@ pub struct CasualtyMatrixParams {
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyMatrixCountry {
     pub tag: String,
+    pub slot: u32,
+    pub country_id: u32,
     pub faction_id: Option<String>,
     pub faction_name: Option<String>,
     pub faction_name_missing: Option<String>,
@@ -112,6 +114,7 @@ dashboard_base::reply_warnings!(CasualtyMatrixReply);
 pub struct RunCounters {
     run: u32,
     lifetimes: Arc<Vec<(u128, i64, i64)>>,
+    edges: Vec<i32>,
     ended: Arc<EndedCounters>,
 }
 
@@ -135,17 +138,16 @@ pub struct PairSum {
     pub incomplete: bool,
 }
 
-pub type Pairs = BTreeMap<(String, String), PairSum>;
+pub type Pairs = BTreeMap<(Identity, Identity), PairSum>;
 
-pub fn fold(counters: &[Counter], tag_of: impl Fn(Identity) -> Option<String>, partial: impl Fn(Identity) -> bool) -> Pairs {
+pub fn fold(counters: &[Counter], known: impl Fn(Identity) -> bool, partial: impl Fn(Identity) -> bool) -> Pairs {
     let mut out: Pairs = BTreeMap::new();
     for counter in counters {
-        let (Some(a), Some(b)) = (tag_of(counter.a), tag_of(counter.b)) else { continue };
-        if a == b {
+        if !known(counter.a) || !known(counter.b) || counter.a == counter.b {
             continue;
         }
         let incomplete = partial(counter.a) || partial(counter.b);
-        let sides = [((b.clone(), a.clone()), counter.taken.map(|taken| taken.0)), ((a, b), counter.taken.map(|taken| taken.1))];
+        let sides = [((counter.b, counter.a), counter.taken.map(|taken| taken.0)), ((counter.a, counter.b), counter.taken.map(|taken| taken.1))];
         for (key, dealt) in sides {
             let held = out.entry(key).or_insert(PairSum { dealt: Some(0), incomplete: false });
             held.dealt = held.dealt.zip(dealt).map(|(sum, more)| sum + i128::from(more));
@@ -156,11 +158,12 @@ pub fn fold(counters: &[Counter], tag_of: impl Fn(Identity) -> Option<String>, p
 }
 
 pub struct Shape<'a> {
-    pub chosen: Option<&'a HashSet<String>>,
+    pub tags: &'a HashMap<Identity, String>,
+    pub chosen: Option<&'a HashSet<Identity>>,
     pub between: bool,
     pub top: Option<u32>,
-    pub subject: Option<&'a str>,
-    pub factions: &'a HashMap<String, FactionAt>,
+    pub subject: Option<Identity>,
+    pub factions: &'a HashMap<Identity, FactionAt>,
 }
 
 fn add(sum: Option<i128>, more: Option<i128>) -> Option<i128> {
@@ -172,27 +175,30 @@ fn text(value: Option<i128>) -> Option<String> {
 }
 
 pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
-    let mut dealt: HashMap<&str, Option<i128>> = HashMap::new();
-    let mut taken: HashMap<&str, Option<i128>> = HashMap::new();
-    for ((from, to), sum) in pairs {
+    let tag_of = |identity: Identity| shape.tags.get(&identity).map(String::as_str).unwrap_or("");
+    let mut dealt: HashMap<Identity, Option<i128>> = HashMap::new();
+    let mut taken: HashMap<Identity, Option<i128>> = HashMap::new();
+    for (&(from, to), sum) in pairs {
         let held = dealt.entry(from).or_insert(Some(0));
         *held = add(*held, sum.dealt);
         let held = taken.entry(to).or_insert(Some(0));
         *held = add(*held, sum.dealt);
     }
-    let volume = |tag: &str| dealt.get(tag).copied().flatten().unwrap_or(0) + taken.get(tag).copied().flatten().unwrap_or(0);
+    let volume = |identity: Identity| dealt.get(&identity).copied().flatten().unwrap_or(0) + taken.get(&identity).copied().flatten().unwrap_or(0);
     let mut countries: Vec<CasualtyMatrixCountry> = Vec::new();
-    let mut index: HashMap<String, u32> = HashMap::new();
-    let mut intern = |tag: &str, countries: &mut Vec<CasualtyMatrixCountry>| -> u32 {
-        if let Some(&at) = index.get(tag) {
+    let mut index: HashMap<Identity, u32> = HashMap::new();
+    let mut intern = |identity: Identity, countries: &mut Vec<CasualtyMatrixCountry>| -> u32 {
+        if let Some(&at) = index.get(&identity) {
             return at;
         }
         let at = countries.len() as u32;
-        let faction = shape.factions.get(tag);
-        let total_dealt = dealt.get(tag).copied().unwrap_or(Some(0));
-        let total_taken = taken.get(tag).copied().unwrap_or(Some(0));
+        let faction = shape.factions.get(&identity);
+        let total_dealt = dealt.get(&identity).copied().unwrap_or(Some(0));
+        let total_taken = taken.get(&identity).copied().unwrap_or(Some(0));
         countries.push(CasualtyMatrixCountry {
-            tag: tag.to_owned(),
+            tag: tag_of(identity).to_owned(),
+            slot: identity.0,
+            country_id: identity.1,
             faction_id: faction.map(|faction| faction.id.clone()),
             faction_name: faction.and_then(|faction| faction.name.clone()),
             faction_name_missing: faction.and_then(|faction| faction.name_missing.clone()),
@@ -200,7 +206,7 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
             taken: text(total_taken),
             missing: (total_dealt.is_none() || total_taken.is_none()).then(|| COUNTER_NOT_RECORDED.to_owned()),
         });
-        index.insert(tag.to_owned(), at);
+        index.insert(identity, at);
         at
     };
     let mut reply = CasualtyMatrixReply {
@@ -217,10 +223,10 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
     };
 
     if let Some(subject) = shape.subject {
-        let mut opponents: Vec<&str> = pairs.keys().filter_map(|(from, to)| (from == subject).then_some(to.as_str()).or_else(|| (to == subject).then_some(from.as_str()))).collect::<HashSet<_>>().into_iter().collect();
-        let side = |from: &str, to: &str| pairs.get(&(from.to_owned(), to.to_owned()));
-        let both = |opponent: &str| side(subject, opponent).and_then(|sum| sum.dealt).unwrap_or(0) + side(opponent, subject).and_then(|sum| sum.dealt).unwrap_or(0);
-        opponents.sort_by(|a, b| both(b).cmp(&both(a)).then(a.cmp(b)));
+        let mut opponents: Vec<Identity> = pairs.keys().filter_map(|&(from, to)| (from == subject).then_some(to).or_else(|| (to == subject).then_some(from))).collect::<HashSet<_>>().into_iter().collect();
+        let side = |from: Identity, to: Identity| pairs.get(&(from, to));
+        let both = |opponent: Identity| side(subject, opponent).and_then(|sum| sum.dealt).unwrap_or(0) + side(opponent, subject).and_then(|sum| sum.dealt).unwrap_or(0);
+        opponents.sort_by(|&a, &b| both(b).cmp(&both(a)).then_with(|| tag_of(a).cmp(tag_of(b))).then(a.cmp(&b)));
         reply.subject = Some(intern(subject, &mut countries));
         let mut largest = 0i128;
         for opponent in opponents {
@@ -241,40 +247,40 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
         return reply;
     }
 
-    let everyone: HashSet<&str> = pairs.keys().flat_map(|(from, to)| [from.as_str(), to.as_str()]).collect();
-    let ranked_top: Option<HashSet<&str>> = shape.top.filter(|_| shape.chosen.is_none()).map(|limit| {
-        let mut ranked: Vec<&str> = everyone.iter().copied().collect();
-        ranked.sort_by(|a, b| volume(b).cmp(&volume(a)).then(a.cmp(b)));
+    let everyone: HashSet<Identity> = pairs.keys().flat_map(|&(from, to)| [from, to]).collect();
+    let ranked_top: Option<HashSet<Identity>> = shape.top.filter(|_| shape.chosen.is_none()).map(|limit| {
+        let mut ranked: Vec<Identity> = everyone.iter().copied().collect();
+        ranked.sort_by(|&a, &b| volume(b).cmp(&volume(a)).then_with(|| tag_of(a).cmp(tag_of(b))).then(a.cmp(&b)));
         ranked.truncate(limit as usize);
         ranked.into_iter().collect()
     });
-    let keep = |from: &str, to: &str| match (shape.chosen, &ranked_top) {
-        (Some(chosen), _) if shape.between => chosen.contains(from) && chosen.contains(to),
-        (Some(chosen), _) => chosen.contains(from) || chosen.contains(to),
-        (None, Some(top)) => top.contains(from) && top.contains(to),
+    let keep = |from: Identity, to: Identity| match (shape.chosen, &ranked_top) {
+        (Some(chosen), _) if shape.between => chosen.contains(&from) && chosen.contains(&to),
+        (Some(chosen), _) => chosen.contains(&from) || chosen.contains(&to),
+        (None, Some(top)) => top.contains(&from) && top.contains(&to),
         (None, None) => true,
     };
-    let kept: Vec<(&(String, String), &PairSum)> = pairs.iter().filter(|((from, to), _)| keep(from, to)).collect();
-    let mut shown: HashSet<&str> = kept.iter().flat_map(|((from, to), _)| [from.as_str(), to.as_str()]).collect();
+    let kept: Vec<(&(Identity, Identity), &PairSum)> = pairs.iter().filter(|&(&(from, to), _)| keep(from, to)).collect();
+    let mut shown: HashSet<Identity> = kept.iter().flat_map(|&(&(from, to), _)| [from, to]).collect();
     if let Some(chosen) = shape.chosen {
-        shown.extend(chosen.iter().map(String::as_str).filter(|tag| everyone.contains(tag)));
+        shown.extend(chosen.iter().copied().filter(|id| everyone.contains(id)));
     }
-    let group_key = |tag: &str| match shape.factions.get(tag) {
+    let group_key = |identity: Identity| match shape.factions.get(&identity) {
         Some(faction) => (0u8, faction.name.clone().unwrap_or_default(), faction.id.clone()),
         None => (1u8, String::new(), String::new()),
     };
-    let score = |tag: &str| dealt.get(tag).copied().flatten().unwrap_or(0);
-    let mut ordered: Vec<&str> = shown.into_iter().collect();
-    ordered.sort_by(|a, b| group_key(a).cmp(&group_key(b)).then(score(b).cmp(&score(a))).then(a.cmp(b)));
-    let position: HashMap<&str, u32> = ordered.iter().enumerate().map(|(at, tag)| (*tag, at as u32)).collect();
-    reply.order = ordered.iter().map(|tag| intern(tag, &mut countries)).collect();
+    let score = |identity: Identity| dealt.get(&identity).copied().flatten().unwrap_or(0);
+    let mut ordered: Vec<Identity> = shown.into_iter().collect();
+    ordered.sort_by(|&a, &b| group_key(a).cmp(&group_key(b)).then(score(b).cmp(&score(a))).then_with(|| tag_of(a).cmp(tag_of(b))).then(a.cmp(&b)));
+    let position: HashMap<Identity, u32> = ordered.iter().enumerate().map(|(at, &id)| (id, at as u32)).collect();
+    reply.order = ordered.iter().map(|&id| intern(id, &mut countries)).collect();
     let mut most = 0i128;
     let mut largest = 0i128;
-    for tag in &ordered {
-        largest = largest.max(score(tag));
+    for &id in &ordered {
+        largest = largest.max(score(id));
     }
-    for ((from, to), sum) in kept {
-        let (Some(&row), Some(&column)) = (position.get(from.as_str()), position.get(to.as_str())) else { continue };
+    for (&(from, to), sum) in kept {
+        let (Some(&row), Some(&column)) = (position.get(&from), position.get(&to)) else { continue };
         most = most.max(sum.dealt.unwrap_or(0));
         reply.cells.push(CasualtyMatrixCell {
             row,
@@ -345,7 +351,7 @@ impl AtHour for CasualtyMatrix {
     const KEY: &'static str = "casualty-matrix";
     const TITLE: &'static str = "Casualties between countries";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads ended casualty lifetimes from branch history context and faction membership runs at at.hour");
+    const CLOCK: Clock = Clock::Boundaries;
     type Params = CasualtyMatrixParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]", between, top, subject];
     type Reply = CasualtyMatrixReply;
@@ -372,6 +378,36 @@ impl AtHour for CasualtyMatrix {
         TABLES.to_vec()
     }
 
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::CasualtyLifetimes => Some(field_columns(table, &["taken_a", "taken_b"])),
+            TableId::CasualtyTotals => Some(field_columns(table, &["partial"])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        let mut through = factions_valid_through(&at.context.factions, frame.hour)
+            .min(before(at.holders.next_change(frame.hour)));
+        if let Some(timeline) = &at.context.timeline {
+            if let Some(stretch) = timeline.at(frame.hour) {
+                through = through.min(stretch.last);
+                if let Some(run) = at.context.runs.iter().find(|run| run.run == stretch.run)
+                    && let Some(&next) = run.edges.get(run.edges.partition_point(|&edge| edge <= frame.hour))
+                {
+                    through = through.min(next.saturating_sub(1));
+                }
+            } else if let Some(next) = timeline.stretches.iter().find(|stretch| stretch.first > frame.hour) {
+                through = through.min(next.first.saturating_sub(1));
+            }
+        }
+        through
+    }
+
     fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
         Ok(MatrixContext { timeline: None, runs: Vec::new(), factions: Arc::new(Vec::new()), warnings: Vec::new() })
     }
@@ -386,8 +422,15 @@ impl AtHour for CasualtyMatrix {
                 continue;
             }
             let lifetimes = dashboard_base::queries::lifetimes(source, stretch.run, TableId::CasualtyLifetimes)?;
+            let mut edges: Vec<i32> = lifetimes
+                .iter()
+                .flat_map(|&(_, born, gone)| [i32::try_from(born).ok(), i32::try_from(gone.saturating_add(1)).ok()])
+                .flatten()
+                .collect();
+            edges.sort_unstable();
+            edges.dedup();
             let ended = cached_casualty_ends(source, stretch.run)?;
-            runs.push(RunCounters { run: stretch.run, lifetimes, ended });
+            runs.push(RunCounters { run: stretch.run, lifetimes, edges, ended });
         }
         let factions = match dashboard_world::products::groups::groups(source, &query, &params.branch_id, load, &AtomicBool::new(false)) {
             Ok(reply) => Arc::new(reply.factions),
@@ -419,15 +462,44 @@ impl AtHour for CasualtyMatrix {
             .map(|rows| rows.iter().filter(|row| row.partial != 0).map(|row| (row.slot, row.id)).collect())
             .unwrap_or_default();
         let tags = HolderTags::from_holders(at.holders);
-        let pairs = fold(&counters, |identity| tags.latest_at(identity, at.hour).map(str::to_owned), |identity| partial.contains(&identity));
-        let resolve = |country: &Country| -> Option<String> { at.holders.tag_at(country, at.hour).map(str::to_owned).or_else(|| country.tag().map(str::to_owned)) };
-        let chosen: Option<HashSet<String>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
+        let pairs = fold(&counters, |identity| tags.latest_at(identity, at.hour).is_some(), |identity| partial.contains(&identity));
+        let resolve = |country: &Country| -> Option<Identity> {
+            if let Some(run) = at.holders.at(country, at.hour)
+                && let Holder::Found { slot, id } = run.holder
+            {
+                return Some((slot, id));
+            }
+            if matches!(country, Country::Tag(_)) {
+                let runs = at.holders.runs(country);
+                let before_hour = runs.partition_point(|run| run.first <= at.hour);
+                return runs[..before_hour].iter().rev().find_map(|run| match run.holder {
+                    Holder::Found { slot, id } => Some((slot, id)),
+                    Holder::Unresolved => None,
+                });
+            }
+            None
+        };
+        let chosen: Option<HashSet<Identity>> = (!params.countries.is_empty()).then(|| params.countries.iter().filter_map(resolve).collect());
         let subject = params.subject.as_ref().and_then(resolve);
         if params.subject.is_some() && subject.is_none() {
             return Ok(empty(Some("The chosen country holds no tag at this hour".to_owned()), warnings));
         }
-        let factions = factions_at(&at.context.factions, at.hour);
-        let shape = Shape { chosen: chosen.as_ref(), between: params.between, top: params.top, subject: subject.as_deref(), factions: &factions };
+        let mut names: HashMap<Identity, String> = HashMap::new();
+        for identity in pairs.keys().flat_map(|&(a, b)| [a, b]).chain(chosen.iter().flatten().copied()).chain(subject) {
+            if let Some(tag) = tags.latest_at(identity, at.hour) {
+                names.entry(identity).or_insert_with(|| tag.to_owned());
+            }
+        }
+        let factions_by_tag = factions_at(&at.context.factions, at.hour);
+        let mut factions: HashMap<Identity, FactionAt> = HashMap::new();
+        for &identity in names.keys() {
+            if let Some(current) = tags.tag_at(identity, at.hour)
+                && let Some(faction) = factions_by_tag.get(current)
+            {
+                factions.insert(identity, faction.clone());
+            }
+        }
+        let shape = Shape { tags: &names, chosen: chosen.as_ref(), between: params.between, top: params.top, subject, factions: &factions };
         let mut reply = build(&pairs, &shape);
         reply.warnings = warnings;
         Ok(reply)
@@ -443,35 +515,37 @@ mod tests {
     const POL: Identity = (3, 30);
     const FRA: Identity = (4, 40);
 
-    fn tag(identity: Identity) -> Option<String> {
-        Some(match identity {
-            GER => "GER",
-            ENG => "ENG",
-            POL => "POL",
-            FRA => "FRA",
-            _ => return None,
-        }.to_owned())
+    fn tags_map() -> HashMap<Identity, String> {
+        [(GER, "GER"), (ENG, "ENG"), (POL, "POL"), (FRA, "FRA")]
+            .into_iter()
+            .map(|(id, tag)| (id, tag.to_owned()))
+            .collect()
+    }
+
+    fn known(identity: Identity) -> bool {
+        matches!(identity, GER | ENG | POL | FRA)
     }
 
     fn counter(a: Identity, b: Identity, taken: Option<(i64, i64)>) -> Counter {
         Counter { a, b, taken }
     }
 
-    fn no_factions() -> HashMap<String, FactionAt> {
+    fn no_factions() -> HashMap<Identity, FactionAt> {
         HashMap::new()
     }
 
     #[test]
     fn a_relation_counts_what_each_side_took_as_the_other_side_dealt_and_lifetimes_sum() {
-        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, POL, Some((5, 20)))], tag, |_| false);
-        assert_eq!(pairs[&("POL".to_owned(), "GER".to_owned())].dealt, Some(105));
-        assert_eq!(pairs[&("GER".to_owned(), "POL".to_owned())].dealt, Some(920));
+        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, POL, Some((5, 20)))], known, |_| false);
+        assert_eq!(pairs[&(POL, GER)].dealt, Some(105));
+        assert_eq!(pairs[&(GER, POL)].dealt, Some(920));
     }
 
     #[test]
     fn an_unrecorded_counter_makes_the_pair_and_its_totals_missing_never_zero() {
-        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, FRA, None)], tag, |_| false);
-        let reply = build(&pairs, &Shape { chosen: None, between: false, top: None, subject: None, factions: &no_factions() });
+        let tags = tags_map();
+        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, FRA, None)], known, |_| false);
+        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &no_factions() });
         let at = |name: &str| reply.countries.iter().position(|country| country.tag == name).unwrap() as u32;
         let cell = reply.cells.iter().find(|cell| cell.row == reply.order.iter().position(|&i| i == at("GER")).unwrap() as u32
             && cell.column == reply.order.iter().position(|&i| i == at("FRA")).unwrap() as u32).unwrap();
@@ -485,12 +559,13 @@ mod tests {
 
     #[test]
     fn rows_group_by_faction_then_by_casualties_dealt() {
-        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, ENG, Some((50, 10))), counter(FRA, GER, Some((300, 30)))], tag, |_| false);
-        let factions: HashMap<String, FactionAt> = [("ENG", "1", "Allies"), ("FRA", "1", "Allies"), ("POL", "1", "Allies")]
+        let tags = tags_map();
+        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, ENG, Some((50, 10))), counter(FRA, GER, Some((300, 30)))], known, |_| false);
+        let factions: HashMap<Identity, FactionAt> = [(ENG, "1", "Allies"), (FRA, "1", "Allies"), (POL, "1", "Allies")]
             .into_iter()
-            .map(|(tag, id, name)| (tag.to_owned(), FactionAt { id: id.to_owned(), name: Some(name.to_owned()), name_missing: None }))
+            .map(|(id, fid, name)| (id, FactionAt { id: fid.to_owned(), name: Some(name.to_owned()), name_missing: None }))
             .collect();
-        let reply = build(&pairs, &Shape { chosen: None, between: false, top: None, subject: None, factions: &factions });
+        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &factions });
         let order: Vec<&str> = reply.order.iter().map(|&at| reply.countries[at as usize].tag.as_str()).collect();
         assert_eq!(order, ["POL", "ENG", "FRA", "GER"]);
         assert_eq!(reply.largest_dealt, "1210");
@@ -499,19 +574,21 @@ mod tests {
 
     #[test]
     fn between_keeps_only_pairs_of_chosen_countries() {
-        let pairs = fold(&[counter(GER, POL, Some((1, 2))), counter(GER, ENG, Some((3, 4)))], tag, |_| false);
-        let chosen: HashSet<String> = ["GER".to_owned(), "POL".to_owned()].into_iter().collect();
-        let reply = build(&pairs, &Shape { chosen: Some(&chosen), between: true, top: None, subject: None, factions: &no_factions() });
+        let tags = tags_map();
+        let pairs = fold(&[counter(GER, POL, Some((1, 2))), counter(GER, ENG, Some((3, 4)))], known, |_| false);
+        let chosen: HashSet<Identity> = [GER, POL].into_iter().collect();
+        let reply = build(&pairs, &Shape { tags: &tags, chosen: Some(&chosen), between: true, top: None, subject: None, factions: &no_factions() });
         assert_eq!(reply.order.len(), 2);
         assert_eq!(reply.cells.len(), 2);
-        let touching = build(&pairs, &Shape { chosen: Some(&chosen), between: false, top: None, subject: None, factions: &no_factions() });
+        let touching = build(&pairs, &Shape { tags: &tags, chosen: Some(&chosen), between: false, top: None, subject: None, factions: &no_factions() });
         assert_eq!(touching.order.len(), 3);
     }
 
     #[test]
     fn one_country_lists_opponents_by_casualties_both_ways() {
-        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, ENG, Some((2000, 10))), counter(GER, FRA, Some((1, 1)))], tag, |identity| identity == FRA);
-        let reply = build(&pairs, &Shape { chosen: None, between: false, top: None, subject: Some("GER"), factions: &no_factions() });
+        let tags = tags_map();
+        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, ENG, Some((2000, 10))), counter(GER, FRA, Some((1, 1)))], known, |identity| identity == FRA);
+        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: Some(GER), factions: &no_factions() });
         let names: Vec<(&str, Option<&str>, Option<&str>)> = reply
             .opponents
             .iter()
@@ -521,5 +598,107 @@ mod tests {
         assert_eq!(reply.largest_side, "2000");
         assert!(reply.opponents[2].incomplete.is_some());
         assert!(reply.cells.is_empty());
+    }
+
+    #[test]
+    fn reused_tag_keeps_each_holder_identity_separate_without_sharing_factions_or_totals() {
+        const DEAD_POL: Identity = (3, 30);
+        const LIVE_POL: Identity = (5, 50);
+        let tags: HashMap<Identity, String> = [(GER, "GER"), (DEAD_POL, "POL"), (LIVE_POL, "POL")]
+            .into_iter()
+            .map(|(id, tag)| (id, tag.to_owned()))
+            .collect();
+        let pairs = fold(&[counter(GER, DEAD_POL, Some((100, 900))), counter(GER, LIVE_POL, Some((25, 40)))], |id| tags.contains_key(&id), |_| false);
+        let factions: HashMap<Identity, FactionAt> = [(LIVE_POL, FactionAt { id: "1".to_owned(), name: Some("Allies".to_owned()), name_missing: None })].into_iter().collect();
+        let reply = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: None, factions: &factions });
+        assert_eq!(reply.countries.len(), 3);
+        let live = reply.countries.iter().find(|country| (country.slot, country.country_id) == LIVE_POL).unwrap();
+        let dead = reply.countries.iter().find(|country| (country.slot, country.country_id) == DEAD_POL).unwrap();
+        assert_eq!((live.tag.as_str(), live.dealt.as_deref(), live.taken.as_deref(), live.faction_id.as_deref()), ("POL", Some("25"), Some("40"), Some("1")));
+        assert_eq!((dead.tag.as_str(), dead.dealt.as_deref(), dead.taken.as_deref(), dead.faction_id.as_deref()), ("POL", Some("100"), Some("900"), None));
+        let subject_live = build(&pairs, &Shape { tags: &tags, chosen: None, between: false, top: None, subject: Some(LIVE_POL), factions: &factions });
+        assert_eq!(subject_live.opponents.len(), 1);
+        assert_eq!(subject_live.opponents[0].dealt.as_deref(), Some("25"));
+        assert_eq!(subject_live.opponents[0].taken.as_deref(), Some("40"));
+    }
+
+    #[test]
+    fn casualty_matrix_holds_quiet_hours_and_refreshes_on_casualty_lifetime_or_holder_changes() {
+        use dashboard_base::{
+            SourceKey,
+            products::at_hour::{exact_panel, frame_panel},
+            test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+        };
+        use replay::campaign::Replay;
+        use replay_data::rows::{CountryLinkRow, CountryRow, TableRows, WarRelationRow};
+        use replay_frame::frame::TableView;
+        use serde_json::json;
+
+        let frames: Vec<_> = (100..=108)
+            .map(|hour| {
+                let mut f = source(1, hour, None);
+                *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+                    CountryRow { id: 1, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() },
+                    CountryRow { id: if hour >= 106 { 4 } else { 2 }, canonical_slot: if hour >= 106 { 4 } else { 2 }, tag: b"POL".to_vec(), ..Default::default() },
+                ]));
+                *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+                    CountryLinkRow { id: 1, canonical_slot: 1 },
+                    CountryLinkRow { id: if hour >= 106 { 4 } else { 2 }, canonical_slot: if hour >= 106 { 4 } else { 2 } },
+                ]));
+                let war = if hour <= 104 {
+                    vec![WarRelationRow {
+                        first_country: 1,
+                        second_country: 2,
+                        start_hour: 100,
+                        end_hour: 0,
+                        first_casualties: if hour >= 103 { 500 } else { 100 },
+                        second_casualties: if hour >= 103 { 900 } else { 200 },
+                        ..Default::default()
+                    }]
+                } else if hour >= 107 {
+                    vec![WarRelationRow {
+                        first_country: 1,
+                        second_country: 4,
+                        start_hour: 107,
+                        end_hour: 0,
+                        first_casualties: 15,
+                        second_casualties: 30,
+                        ..Default::default()
+                    }]
+                } else {
+                    Vec::new()
+                };
+                *f.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(war));
+                f
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            SourceKey { source_id: "cm-exact".into(), revision: "1".into() },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let load = LoadContext { content: None };
+        let params = json!({"branchId": "1"});
+        let panel = exact_panel::<CasualtyMatrix>(&source, &load, &params).unwrap();
+        let exact = panel.exact().unwrap();
+        let mut whole = frame_panel::<CasualtyMatrix>(&source, &load, &params).unwrap();
+        let steps = played(source.replay_ref(), exact, 100, 108);
+        for step in &steps {
+            let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+            assert_eq!(streamed(&step.value, step.fresh), expected, "casualty-matrix at hour {}", step.hour);
+        }
+        for hour in [101, 102, 104, 108] {
+            assert_eq!(steps[(hour - 100) as usize].product_calls, 0, "quiet hour {hour} should hold");
+        }
+        let end_countries = steps[8].value.as_ref().as_ref().unwrap()["countries"].as_array().unwrap();
+        let pols: Vec<_> = end_countries.iter().filter(|c| c["tag"] == "POL").collect();
+        assert_eq!(pols.len(), 2, "reused POL tag preserves both holder identities");
+        assert_eq!((exact.cold)(107, &AtomicBool::new(false)), materialized_frame(&mut *whole, source.replay_ref(), 1, 107));
     }
 }

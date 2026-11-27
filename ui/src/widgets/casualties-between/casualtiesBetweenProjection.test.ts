@@ -6,13 +6,14 @@ import type { CasualtyMatrixReply } from '../../generated/dashboard';
 import { casualtyMatrixDeclaration, casualtyMatrixProjection, projectCasualtyMatrix, projectCasualtyOpponents } from './casualtiesBetweenProjection.ts';
 import { EVER_UNRECORDED } from '../../dashboard/groups.ts';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
-import { ambiguousHolderRanges, cumulativeEverMembership } from '../../families/groupFilter.ts';
+import { cumulativeEverMembership, datedIdentityMembership } from '../../families/groupFilter.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { deriveMatrixAudit, deriveMatrixMirror, deriveMatrixTooltip, matrixCellAt } from '../../families/heat/matrixModel.ts';
 
 const HOUR = 60_810_000;
-const country = (tag: string, dealt: string | null, taken: string | null) => ({
-  tag, factionId: null, factionName: null, factionNameMissing: null, dealt, taken,
+let nextIdentity = 1;
+const country = (tag: string, dealt: string | null, taken: string | null, slot = nextIdentity++, countryId = slot * 10) => ({
+  tag, slot, countryId, factionId: null, factionName: null, factionNameMissing: null, dealt, taken,
   missing: dealt === null || taken === null ? 'A war relation\'s casualties were not recorded at this hour' : null,
 });
 
@@ -203,38 +204,55 @@ test('group selections filter casualty matrix at the displayed hour for both tou
   const crossMirror = deriveMatrixMirror(crossModel, 1, 2, 0, 3);
   assert.equal(crossMirror.rows[0]!.cells[3]?.spoken, `${crossModel.columns[2]!.label}: Outside selection`);
 
-  const separable = ambiguousHolderRanges([
-    { tag: 'AAA', identities: [{ slot: 1, countryId: 10, firstHour: 0, lastHour: 99 }, { slot: 2, countryId: 20, firstHour: 200, lastHour: 300 }] },
-    { tag: 'BBB', identities: [{ slot: 1, countryId: 10, firstHour: 100, lastHour: 300 }] },
-  ]);
-  assert.equal(separable, null, 'a renamed earlier holder maps to its new tag, so reuse of its old tag is separable');
-
-  const collided = ambiguousHolderRanges([
-    { tag: 'AAA', identities: [{ slot: 1, countryId: 10, firstHour: 0, lastHour: 99 }, { slot: 2, countryId: 20, firstHour: 200, lastHour: 300 }] },
-  ]);
-  assert.deepEqual(collided, { AAA: [[200, Number.MAX_SAFE_INTEGER]] });
-
-  const reusedOpts = {
-    membership: { AAA: [[200, 299]] as const },
-    unobserved: [] as const,
-    membershipMode: 'hour' as const,
-    between: false,
-    ambiguousHolders: collided,
+  const reusedGroups: CountryGroupReply = {
+    branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    humans: [{ tag: 'AAA', firstHour: 200, lastHour: 299 }],
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ slot: 1, countryId: 10, firstHour: 0, lastHour: 99 }, { slot: 2, countryId: 20, firstHour: 200, lastHour: 300 }] },
+      { tag: 'BBB', identities: [{ slot: 3, countryId: 30, firstHour: 0, lastHour: 300 }] },
+    ],
+    unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
   };
-  const beforeReuse = casualtyMatrixProjection.nextChange?.(at(150), reusedOpts);
-  assert.equal(beforeReuse, 200);
-  const reusedModel = casualtyMatrixProjection.project(
-    createBoundedReadView({ hour: 250, panels: new Map([['main', crossReply]]) }),
-    reusedOpts,
+  const reusedReply: CasualtyMatrixReply = {
+    countries: [
+      country('AAA', '100', '0', 1, 10),
+      country('AAA', '25', '0', 2, 20),
+      country('BBB', '0', '125', 3, 30),
+    ],
+    order: [0, 1, 2],
+    cells: [
+      { row: 0, column: 2, dealt: '100', missing: null, incomplete: null },
+      { row: 1, column: 2, dealt: '25', missing: null, incomplete: null },
+    ],
+    most: '100',
+    largestDealt: '100',
+    subject: null,
+    opponents: [],
+    largestSide: '0',
+    missing: null,
+    warnings: [],
+  };
+  const hourIds = datedIdentityMembership({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, reusedGroups, 300);
+  const everIds = datedIdentityMembership({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, reusedGroups, 300);
+  assert.deepEqual(hourIds, { '[2,20]': [[200, 299]] });
+  assert.deepEqual(everIds, { '[2,20]': [[200, 300]] });
+
+  const reusedFiltered = casualtyMatrixProjection.project(
+    createBoundedReadView({ hour: 250, panels: new Map([['main', reusedReply]]) }),
+    { membership: { AAA: [[200, 299]] as const }, identityMembership: hourIds, unobserved: [], membershipMode: 'hour', between: false },
   );
-  assert.equal(matrixCellAt(reusedModel, 0, 1).kind, 'missing');
-  assert.equal(reusedModel.margin!.cell(0).kind, 'missing');
-  assert.ok(reusedModel.legend?.entries?.some(entry => entry.hatched));
-  assert.equal(
-    casualtyMatrixDeclaration.countries.mode === 'multi' && casualtyMatrixDeclaration.countries.requireGroupsWhen?.({} as never, {}),
-    true,
-    'casualty matrix always loads the group identity catalogue so All does not depend on selection history',
+  assert.deepEqual(reusedFiltered.rows.map(row => row.id), ['AAA', 'BBB']);
+  const liveCell = matrixCellAt(reusedFiltered, 0, 1);
+  assert.equal(liveCell.kind === 'value' && liveCell.text, '25', 'group filter selects only the live holder identity, never the dead earlier holder');
+
+  const reusedAll = casualtyMatrixProjection.project(
+    createBoundedReadView({ hour: 250, panels: new Map([['main', reusedReply]]) }),
+    {},
   );
+  assert.deepEqual(reusedAll.rows.map(row => row.id), ['AAA#1:10', 'AAA#2:20', 'BBB'], 'unfiltered matrix disambiguates duplicate tags by holder identity');
+  assert.equal(matrixCellAt(reusedAll, 0, 2).kind, 'value');
+  assert.equal(matrixCellAt(reusedAll, 1, 2).kind, 'value');
+  assert.equal(casualtyMatrixDeclaration.countries.mode === 'multi' && casualtyMatrixDeclaration.countries.datedAtHour, true);
 
   const missingTable: CasualtyMatrixReply = { ...crossReply, order: [], cells: [], missing: 'Casualty table not recorded' };
   const emptyBeforeJoin = casualtyMatrixProjection.project(

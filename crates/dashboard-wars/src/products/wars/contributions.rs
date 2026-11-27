@@ -5,7 +5,7 @@ use super::{
     participation::{contributions, factors},
 };
 use dashboard_base::{Source, catalogue};
-use dashboard_base::products::{LoadContext, at_hour::{At, AtHour}};
+use dashboard_base::products::{LoadContext, at_hour::{At, AtHour, Clock, Edits, ReadsAt, at_hour, before, field_columns}};
 use dashboard_base::products::check_reply_budget;
 use replay_data::{
     rows::{TableId, tables},
@@ -79,7 +79,8 @@ impl AtHour for WarContributions {
     const KEY: &'static str = "war-contributions";
     const TITLE: &'static str = "War contributions";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("stamps at.hour into WarContributionsReply.hour");
+    const CLOCK: Clock = Clock::Boundaries;
+    const DATE_HELD_REPLY: Option<fn(&mut serde_json::Value, i32)> = Some(at_hour);
     type Params = WarContributionsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, viewpoint];
     type Reply = WarContributionsReply;
@@ -107,6 +108,40 @@ impl AtHour for WarContributions {
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         TABLES.to_vec()
+    }
+
+    fn columns(table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::CountryLinks => Some(field_columns(table, &["canonical_slot"])),
+            TableId::WarRelations => Some(Vec::new()),
+            TableId::WarOwnedRelations => Some(field_columns(table, &["first_country", "second_country", "retired"])),
+            TableId::WarOverviewCountries => Some(Vec::new()),
+            TableId::WarNameRules => Some(field_columns(table, &["viewpoint"])),
+            TableId::FactionMembers => Some(field_columns(table, &["faction"])),
+            TableId::LocalPlayer => Some(field_columns(table, &["country", "observer_country"])),
+            TableId::WarParticipation => Some(field_columns(table, &[
+                "equipment_damage",
+                "province_capture",
+                "air_damage",
+                "strategic_bombing",
+                "sunk_ships",
+                "sunk_convoys",
+                "casualties",
+                "unknown_casualties",
+                "lend_lease_sent",
+                "lend_lease_received",
+            ])),
+            TableId::WarLendLeaseHistories => None,
+            _ => None,
+        }
+    }
+
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
+    fn valid_through(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
+        before(at.holders.next_change(frame.hour))
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

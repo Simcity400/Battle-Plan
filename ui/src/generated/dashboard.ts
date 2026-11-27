@@ -1193,7 +1193,7 @@ top?: number,
  * One country: its casualties with each opponent instead of the matrix.
  */
 subject?: CountryRef, };
-export type CasualtyMatrixCountry = { tag: string, factionId: string | null, factionName: string | null, factionNameMissing: string | null,
+export type CasualtyMatrixCountry = { tag: string, slot: number, countryId: number, factionId: string | null, factionName: string | null, factionNameMissing: string | null,
 /**
  * Casualties it dealt to every opponent at the hour, as a decimal string; null where a pair is not recorded.
  */

@@ -507,3 +507,130 @@ fn country_faction_goals_refreshes_when_scripted_goal_text_input_changes() {
         }
     }
 }
+
+#[test]
+fn faction_details_holds_absent_refusal_and_live_edits_and_keeps_cold_live_values() {
+    use super::details::FactionDetails;
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{LoadContext, at_hour::{exact_panel, frame_panel}},
+        test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{
+        CountryRow, FactionDoctrineRow, FactionProjectionRow, FactionResearchRow, FactionResourceRow, FactionRow,
+        FactionUnlockRow, ResourceDefinitionRow,
+    };
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames: Vec<_> = (100..=108)
+        .map(|hour| {
+            let mut f = source(1, hour, None);
+            let ger_tag = if hour >= 107 { b"GDR".to_vec() } else { b"GER".to_vec() };
+            set(&mut f, TableId::Countries, TableRows::Countries(vec![
+                CountryRow { id: 1, canonical_slot: 1, tag: ger_tag, ..Default::default() },
+            ]));
+            set(&mut f, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 1, canonical_slot: 1 }]));
+            set(&mut f, TableId::ReservedCountryNaming, TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow { tag: b"RSV".to_vec(), ..Default::default() }]));
+            set(&mut f, TableId::ResourceDefinitions, TableRows::ResourceDefinitions(vec![
+                ResourceDefinitionRow { id: 0, token: 10, ..Default::default() },
+                ResourceDefinitionRow { id: 1, token: 11, ..Default::default() },
+            ]));
+            set(&mut f, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+                LexicalTokenRow { token: 1, literal: b"mod_manifest".to_vec() },
+                LexicalTokenRow { token: 2, literal: b"mod_goal".to_vec() },
+                LexicalTokenRow { token: 3, literal: b"mod_doctrine".to_vec() },
+                LexicalTokenRow { token: 10, literal: b"oil".to_vec() },
+                LexicalTokenRow { token: 11, literal: b"steel".to_vec() },
+            ]));
+            let present = hour >= 102;
+            set(&mut f, TableId::Factions, TableRows::Factions(if present {
+                vec![FactionRow { id: FACTION, ..Default::default() }]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionGoalStatus, TableRows::FactionGoalStatus(if present {
+                vec![FactionGoalStatusRow { faction: FACTION, manifest: Some(1) }]
+            } else {
+                Vec::new()
+            }));
+            let step = i64::from(hour - 100);
+            set(&mut f, TableId::FactionGoalEntries, TableRows::FactionGoalEntries(if present {
+                vec![goal(FACTION, 0, 0, Some(2), 10_000 + step * 500)]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionUnlocks, TableRows::FactionUnlocks(if present {
+                vec![FactionUnlockRow { faction: FACTION, research: 1, manpower: 1 }]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionProjection, TableRows::FactionProjection(if present {
+                vec![FactionProjectionRow { faction: FACTION, projection_raw: 200_000 + step * 1_000, ..Default::default() }]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionManpower, TableRows::FactionManpower(if present {
+                vec![FactionManpowerRow { faction: FACTION, ordinal: 0, country: 1, value: 1_000 + (step as i32) * 10 }]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionResearch, TableRows::FactionResearch(if present {
+                vec![FactionResearchRow { faction: FACTION, ordinal: 0, scientist_base_raw: 50_000 + step * 100, countries: vec![1], ..Default::default() }]
+            } else {
+                Vec::new()
+            }));
+            set(&mut f, TableId::FactionDoctrine, TableRows::FactionDoctrine(if present {
+                vec![FactionDoctrineRow { faction: FACTION, ordinal: 0, token: 3 }]
+            } else {
+                Vec::new()
+            }));
+            let res0 = if hour >= 105 { 300_000 + step * 10 } else { 0 };
+            set(&mut f, TableId::FactionResources, TableRows::FactionResources(if present {
+                vec![
+                    FactionResourceRow { faction: FACTION, ordinal: 0, token: 10, raw: res0 },
+                    FactionResourceRow { faction: FACTION, ordinal: 1, token: 11, raw: 500_000 + step * 100 },
+                ]
+            } else {
+                Vec::new()
+            }));
+            f
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        SourceKey { source_id: "fd-exact".into(), revision: "1".into() },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let load = LoadContext { content: None };
+    let params = json!({"branchId": "1", "faction": FACTION.to_string(), "viewpoint": null});
+    let panel = exact_panel::<FactionDetails>(&source, &load, &params).unwrap();
+    let exact = panel.exact().unwrap();
+    let mut whole = frame_panel::<FactionDetails>(&source, &load, &params).unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 108);
+    for step in &steps {
+        let expected = streamed(&materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour), step.fresh);
+        assert_eq!(streamed(&step.value, step.fresh), expected, "faction-details at hour {}", step.hour);
+    }
+    assert!(steps[0].value.is_err());
+    assert_eq!(steps[1].product_calls, 0, "absent faction refusal holds while Factions stays empty");
+    assert!(steps[2].value.is_ok());
+    for hour in [103, 104, 106, 108] {
+        assert_eq!(steps[(hour - 100) as usize].product_calls, 0, "moving live cells at hour {hour} should hold");
+    }
+    assert_eq!(steps[4].value.as_ref().as_ref().unwrap()["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(steps[5].value.as_ref().as_ref().unwrap()["resources"].as_array().unwrap().len(), 2, "ordinal 0 flipping from 0 to nonzero rebuilds");
+    assert_eq!(steps[7].value.as_ref().as_ref().unwrap()["manpower"][0]["tag"], "GDR");
+    let cold = (exact.cold)(106, &AtomicBool::new(false));
+    let expected_cold = materialized_frame(&mut *whole, source.replay_ref(), 1, 106);
+    assert_eq!(cold, expected_cold, "cold read preserves every nonzero live cell");
+    let cold_groups = cold.unwrap()["live"]["groups"].as_array().unwrap().clone();
+    assert!(cold_groups.iter().all(|g| g["values"].as_array().unwrap().iter().all(|v| v.as_i64().unwrap() > 0)));
+}
