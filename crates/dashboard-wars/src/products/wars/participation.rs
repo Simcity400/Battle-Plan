@@ -1,5 +1,6 @@
 use super::{WarSide, native::Blob};
 use dashboard_base::catalogue::Catalogue;
+use dashboard_query::coverage::witnessed_rows;
 use replay_data::{
     rows::tables,
     war_participation::{self as derive, DeliveryHistory, Factors, Scores},
@@ -59,22 +60,21 @@ pub(crate) fn contributions(
             .copied()
             .ok_or_else(|| format!("Unresolved participation country {raw}"))
     };
+    let participation = witnessed_rows::<tables::WarParticipation>(frame);
     let inputs = (|| -> Result<_, String> {
         let factors = factors?;
+        if participation.rows.is_empty() && let Some(reason) = &participation.missing {
+            return Err(reason.clone());
+        }
         let mut ledgers = HashMap::new();
-        for row in frame
-            .complete::<tables::WarParticipation>()
-            .map_err(|e| e.to_string())?
-        {
-            let (a, b) = (slot(row.war_first)?, slot(row.war_second)?);
+        for row in participation.rows {
+            let (Some(&a), Some(&b)) = (raw_to_slot.get(&row.war_first), raw_to_slot.get(&row.war_second)) else { continue };
             let key = match row.direction {
                 0 => (a, b),
                 1 => (b, a),
-                _ => return Err("Invalid participation direction".into()),
+                _ => continue,
             };
-            if ledgers.insert(key, row.scores()).is_some() {
-                return Err("Ambiguous directional participation ledger".into());
-            }
+            ledgers.entry(key).and_modify(|held| *held = None).or_insert_with(|| Some(row.scores()));
         }
         let mut histories = HashMap::new();
         for row in frame
@@ -120,11 +120,16 @@ pub(crate) fn contributions(
                     let mut directional = Vec::new();
                     for &opponent in opponents {
                         if active(country, opponent) {
-                            let Some(ledger) = ledgers.get(&(country, opponent)) else {
-                                group.reason = Some("Directional participation ledger not recorded".into());
-                                continue 'sides;
-                            };
-                            directional.push(*ledger);
+                            match ledgers.get(&(country, opponent)) {
+                                Some(Some(ledger)) => directional.push(*ledger),
+                                unresolved => {
+                                    group.reason.get_or_insert_with(|| match unresolved {
+                                        Some(_) => "Ambiguous directional participation ledger".into(),
+                                        None => participation.missing.clone().unwrap_or_else(|| "Directional participation ledger not recorded".into()),
+                                    });
+                                    continue 'sides;
+                                }
+                            }
                         }
                     }
                     let deliveries = own.iter().filter_map(|&ally| {
