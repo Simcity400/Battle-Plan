@@ -220,7 +220,7 @@ pub struct ModelLibrary {
     animations: BTreeMap<String, Option<Arc<mesh::Animation>>>,
     pub animation_refusals: BTreeMap<String, String>,
     rigs: Vec<Arc<Rig>>,
-    geometry_cache: BTreeMap<native::GeometryKey, Arc<viewer_scene_base::mesh_shader::Geometry>>,
+    geometry_sources: BTreeMap<native::GeometryKey, Arc<viewer_scene_base::mesh_shader::ModelGeometry>>,
     attachment_refusals: BTreeMap<String, usize>,
     pub failed: BTreeMap<String, String>,
     composing_visual: bool,
@@ -397,7 +397,7 @@ pub struct DeviceTextures(std::sync::Mutex<Vec<Option<Arc<Bound>>>>);
 debug_fields!(ModelLibrary(this) {
     decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals, failed
 } {
-    geometry => this.geometry_cache
+    geometry => this.geometry_sources.len()
 });
 
 #[derive(Default)]
@@ -919,7 +919,7 @@ impl ModelLibrary {
                 for part in descriptor.lods.iter_mut().flatten() {
                     part.material_index = material_map[part.material_index];
                     part.geometry = self
-                        .geometry_cache
+                        .geometry_sources
                         .entry(part.geometry_key.clone())
                         .or_insert_with(|| Arc::clone(&part.geometry))
                         .clone();
@@ -948,7 +948,7 @@ impl ModelLibrary {
             .into_iter()
             .map(|(path, animation)| (apart(&path), animation))
             .collect();
-        self.geometry_cache = std::mem::take(&mut self.geometry_cache)
+        self.geometry_sources = std::mem::take(&mut self.geometry_sources)
             .into_iter()
             .map(|(mut key, geometry)| {
                 key.0 = apart(&key.0);
@@ -980,7 +980,7 @@ impl ModelLibrary {
             self.palette.truncate(marks.0);
             self.materials.truncate(marks.1);
             for key in geometry_added {
-                self.geometry_cache.remove(&key);
+                self.geometry_sources.remove(&key);
             }
         }
         added
@@ -1221,27 +1221,29 @@ impl ModelLibrary {
                 definition: entity.definition,
                 scale,
             };
-            let mut geometry_cache = std::mem::take(&mut self.geometry_cache);
+            let mut geometry_sources = std::mem::take(&mut self.geometry_sources);
+            let source_layers = Arc::clone(self.layers.as_ref().expect("layers set before composing"));
             let descriptor = native::descriptor(
                 &decoded,
                 &resolved,
                 node_index,
                 name,
                 |key, sub| {
-                    if let Some(geometry) = geometry_cache.get(&key) {
+                    if let Some(geometry) = geometry_sources.get(&key) {
                         return Ok(Arc::clone(geometry));
                     }
-                    let geometry = Arc::new(viewer_scene_base::mesh_shader::Geometry::from_mesh(
+                    let geometry = native::installed_geometry(
+                        Arc::clone(&source_layers),
+                        key.clone(),
                         sub,
-                        resolved.definition.scale,
-                    )?);
-                    geometry_cache.insert(key.clone(), Arc::clone(&geometry));
+                    )?;
+                    geometry_sources.insert(key.clone(), Arc::clone(&geometry));
                     geometry_added.push(key);
                     Ok(geometry)
                 },
                 |shape, sub| self.material(layers, directory, shape, sub, &resolved),
             );
-            self.geometry_cache = geometry_cache;
+            self.geometry_sources = geometry_sources;
             out.native.push(descriptor?);
             let shape_lods = decoded.lods();
             out.reach.collision_unsupported |= !frozen_skin || shape_lods.len() != 1;
@@ -1418,7 +1420,7 @@ impl ModelLibrary {
                         out.native.truncate(mark.2);
                         out.rig.nodes.truncate(mark.3);
                         for key in geometry_added.drain(mark.4..) {
-                            self.geometry_cache.remove(&key);
+                            self.geometry_sources.remove(&key);
                         }
                         out.reach = mark.5;
                         *out.refusals

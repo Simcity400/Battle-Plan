@@ -34,7 +34,6 @@ enum Request {
 struct State {
     flags: HashMap<NodeKey, Option<Result<[bool; 2], Failure>>>,
     parts: HashMap<PartKey, Option<Result<Built, Failure>>>,
-    packed: HashMap<GeometryKey, Arc<Vec<f32>>>,
 }
 
 fn part_keys(
@@ -284,20 +283,6 @@ impl Builds {
                     });
                     fill(&mut lock(&state).parts, part_key, built);
                 }
-                for source in lods.iter().flatten() {
-                    if lock(&state).packed.contains_key(&source.geometry_key) {
-                        continue;
-                    }
-                    let packed = caught(|| {
-                        source.geometry.packed(source.geometry.uv1).map_err(failure)
-                    });
-                    if let Ok(packed) = packed {
-                        lock(&state)
-                            .packed
-                            .entry(source.geometry_key.clone())
-                            .or_insert_with(|| Arc::new(packed));
-                    }
-                }
             }
         };
         if let Err(error) = std::thread::Builder::new()
@@ -316,10 +301,6 @@ impl Builds {
                 }
             }
         }
-    }
-
-    pub fn packed(&self, key: &GeometryKey) -> Option<Arc<Vec<f32>>> {
-        lock(&self.state).packed.remove(key)
     }
 
     pub fn take(&self, key: &PartKey) -> io::Result<Built> {
@@ -443,7 +424,7 @@ fn select_shared(
 ) -> io::Result<Selection> {
     let effect = material_effect(&mut lock(libraries)[library], part)?;
     let base = part.material.shader.as_deref().unwrap_or_default();
-    let suffix = selection_suffix(!part.geometry.skin.is_empty(), caster);
+    let suffix = selection_suffix(part.geometry.format.skinned, caster);
     if !base.is_empty()
         && let Some(selection) = effect.select(&format!("{base}{suffix}")).map_err(invalid)?
     {
@@ -466,7 +447,7 @@ fn select_alpha_shared(
     let base = select_shared(libraries, library, part, false)?;
     let effect = material_effect(&mut lock(libraries)[library], part)?;
     let name = part.material.shader.as_deref().unwrap_or_default();
-    let skin = if part.geometry.skin.is_empty() {
+    let skin = if !part.geometry.format.skinned {
         ""
     } else {
         "Skinned"
@@ -519,7 +500,7 @@ fn build(
             &mut cache,
             device,
             &selection,
-            &part.geometry,
+            part.geometry.format,
             DEPTH_MAP_FORMAT,
             DEPTH_FORMAT,
             instanced,
@@ -529,7 +510,7 @@ fn build(
             &mut cache,
             device,
             &selection,
-            &part.geometry,
+            part.geometry.format,
             SCENE_FORMAT,
             DEPTH_FORMAT,
             samples,

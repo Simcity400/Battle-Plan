@@ -72,10 +72,10 @@ fn expected_add(
     }
     let geometry_key = ("gfx/models/body.mesh".to_owned(), 3_f32.to_bits(), 0, 0);
     let geometry = library
-        .geometry_cache
+        .geometry_sources
         .entry(geometry_key.clone())
         .or_insert_with(|| {
-            Arc::new(viewer_scene_base::mesh_shader::Geometry {
+            viewer_scene_base::mesh_shader::ModelGeometry::held(viewer_scene_base::mesh_shader::Geometry {
                 vertices: vec![
                     0., 0., 0., 0., 1., 0., 3., 0., 0., 0., 1., 0., 0., 0., 10.5, 0., 1., 0.,
                 ],

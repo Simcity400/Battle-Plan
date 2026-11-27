@@ -193,7 +193,7 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
         .enumerate()
     {
         let skin = index == 0;
-        let geometry = Arc::new(mesh_shader::Geometry {
+        let geometry = mesh_shader::ModelGeometry::held(mesh_shader::Geometry {
             vertices: [[-0.75, -0.75, 0.], [0.75, -0.75, 0.], [0., 0.75, 0.]]
                 .into_iter()
                 .flat_map(|position| position.into_iter().chain([0.; 9]))
