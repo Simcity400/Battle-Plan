@@ -58,7 +58,7 @@ import { useExportVideo, type SurfaceExportContextSnapshot, type SurfaceExportMa
 import type { RecordedStretch, UnheldGap } from '../export/videoExportApi';
 import { widgetShowsRankMarkers } from '../export/videoExportModel';
 
-interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
+interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null, requestedPath: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; mapRecordingReady?: boolean; cameraMode?: CameraMode;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   onBranch?: (branch: BranchChoice | null) => void;
   onMapError?: (operation: string, error: string | null) => void;
@@ -73,7 +73,7 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onMapWarning, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, mapRecordingReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onMapWarning, mapRetry = 0, onUnsaved, unsavedReader, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   useEffect(() => {
     const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
@@ -247,14 +247,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const resendSeek = useRef<(() => void) | null>(null);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
-    if (!mapActive || mapSwitching || defaultLoading || !desktopAvailable || !reference) return;
+    if (!mapActive || !mapRecordingReady || mapSwitching || defaultLoading || !desktopAvailable || !reference) return;
     const stop = followMapPlayback(clock, reference, seekMap, error => {
       if (error != null) clock.stop();
       onMapError?.('seek', error == null ? null : errorMessage(error));
     });
     resendSeek.current = stop.resend;
     return () => { stop(); resendSeek.current = null; onMapError?.('seek', null); };
-  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError]);
+  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapRecordingReady, mapSwitching, onMapError]);
   const retried = useRef(mapRetry);
   useEffect(() => {
     if (mapRetry === retried.current) return;
@@ -264,7 +264,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [mapRetry, commands]);
   useEffect(() => {
     if (!mapReady) return;
-    resendSeek.current?.();
     maps.resend();
   }, [mapReady, maps]);
   const popoutConfig = popoutConfigKey(popout);
@@ -510,12 +509,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     campaignsRef.current = campaignsRef.current.filter(campaign => campaign.id !== id);
     setCampaigns(campaignsRef.current);
   };
-  const adoptedPath = useRef<string | null>(null);
+  const adoptedPath = useRef(false);
   useEffect(() => {
-    if (!path || !client.available || adoptedPath.current === path) return;
-    adoptedPath.current = path;
-    if (!campaignsRef.current.some((item) => sameCampaignPath(item.path, path))) void openCampaign(path);
-  }, [path, client.available, openCampaign]);
+    if (!path || !client.available || adoptedPath.current || hasOpened.current || campaignsRef.current.length) return;
+    adoptedPath.current = true;
+    void openCampaign(path);
+  }, [path, client.available, openCampaign, campaigns.length]);
   const defaultSource = defaultRoleId ? sourceMap.get(defaultRoleId) : null;
   useEffect(() => {
     let live = true;
@@ -560,7 +559,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const firstReady = campaigns.find((campaign) => roles.bindings[campaign.id]?.source);
     if (firstReady) setDefaultRoleId((current) => defaultAfterOpen(current, firstReady.id));
   }, [campaigns, roles.bindings]);
-  useEffect(() => { if (hasOpened.current && (defaultSource?.path ?? null) !== path) onPrimaryPath?.(defaultSource?.path ?? null); }, [defaultSource, path, onPrimaryPath, campaigns.length]);
+  useEffect(() => {
+    const primaryPath = defaultSource?.path ?? null;
+    if (hasOpened.current && primaryPath !== path) {
+      onPrimaryPath?.(primaryPath, campaignsRef.current.find(item => item.id === defaultRoleId)?.path ?? null);
+    }
+  }, [defaultSource, defaultRoleId, path, onPrimaryPath, campaigns.length]);
   const aircraftRecording = defaultSource ? recordingKey(defaultSource.path, defaultSource.metadata.campaignKey) : null;
   const [aircraft, setAircraft] = useState<AircraftChoice | null>(null);
   const aircraftName = aircraft?.name ?? null;

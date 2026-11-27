@@ -11,10 +11,10 @@ fn resized_commands_coalesce_and_close_takes_priority() {
         ..Default::default()
     };
     assert!(matches!(
-        pending.take_commands(false).as_slice(),
+        pending.take_commands(false, false).as_slice(),
         [NativeCommand::Close]
     ));
-    assert!(!pending.can_send(true));
+    assert!(!pending.can_send(true, true));
 }
 
 #[test]
@@ -73,18 +73,18 @@ fn restart_restores_the_latest_path_only_open_even_after_an_old_state_for_it() {
     };
     let old = inner.status.viewer.clone();
     inner.open_path("old.battleplan".into());
-    let _ = inner.pending.take_commands(true);
+    let _ = inner.pending.take_commands(true, true);
     let first = inner.path_open_id;
     inner.open_path("new.battleplan".into());
-    let _ = inner.pending.take_commands(true);
+    let _ = inner.pending.take_commands(true, true);
     inner.open_path("old.battleplan".into());
-    let _ = inner.pending.take_commands(true);
+    let _ = inner.pending.take_commands(true, true);
     let latest = inner.path_open_id;
     inner.note_viewer_state(old.clone(), Some(first));
     inner.restore_commands();
     assert_eq!(inner.pending.open, Some(("old.battleplan".into(), None, Some(latest))));
     assert!(inner.pending.seek.is_none());
-    let _ = inner.pending.take_commands(true);
+    let _ = inner.pending.take_commands(true, true);
     inner.note_viewer_state(ViewerState::default(), None);
     assert!(inner.requested_path.is_some());
     inner.note_viewer_state(ViewerState { hour: Some(0), ..old }, Some(latest));
@@ -174,7 +174,7 @@ fn seek_acknowledgement_requires_the_same_recording_and_revision() {
 }
 
 #[test]
-fn hidden_map_defers_document_work_without_spinning() {
+fn a_selected_map_can_open_while_hidden_and_seeks_when_shown() {
     let mut pending = Pending {
         open: Some(("next.battleplan".into(), Some("v2".into()), None)),
         seek: Some(SeekTarget {
@@ -188,14 +188,20 @@ fn hidden_map_defers_document_work_without_spinning() {
         ..Default::default()
     };
     assert!(matches!(
-        pending.take_commands(false).as_slice(),
+        pending.take_commands(false, false).as_slice(),
         [NativeCommand::Visibility { visible: false }]
     ));
-    assert!(!pending.can_send(false));
-    assert!(pending.can_send(true));
+    assert!(!pending.can_send(false, true));
+    assert!(pending.can_send(true, false));
     assert!(matches!(
-        pending.take_commands(true).as_slice(),
-        [NativeCommand::Open { .. }, NativeCommand::Seek { .. }]
+        pending.take_commands(true, false).as_slice(),
+        [NativeCommand::Open { .. }]
+    ));
+    assert!(!pending.can_send(true, false));
+    assert!(pending.can_send(true, true));
+    assert!(matches!(
+        pending.take_commands(true, true).as_slice(),
+        [NativeCommand::Seek { .. }]
     ));
 }
 
@@ -323,17 +329,17 @@ fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
 fn a_waiting_controller_message_is_sent_even_while_hidden() {
     use dashboard_core::protocol::GamepadMessage;
     let mut pending = Pending::default();
-    assert!(!pending.can_send(true));
+    assert!(!pending.can_send(true, true));
     pending.gamepad = Some(GamepadMessage::Release);
-    assert!(pending.can_send(false));
-    let commands = pending.take_commands(false);
+    assert!(pending.can_send(true, false));
+    let commands = pending.take_commands(true, false);
     assert!(commands.iter().any(|command| matches!(
         command,
         NativeCommand::Gamepad {
             message: GamepadMessage::Release
         }
     )));
-    assert!(!pending.can_send(true));
+    assert!(!pending.can_send(true, true));
 }
 
 #[test]
@@ -601,7 +607,7 @@ fn select_view_and_restore_after_stamped_campaign_seek_stamp_empty_clear_with_ac
     assert!(host.shared.lock().unwrap().dashboard_views.is_none());
 
     host.select_view(true).unwrap();
-    let commands = host.shared.lock().unwrap().pending.take_commands(true);
+    let commands = host.shared.lock().unwrap().pending.take_commands(false, true);
     assert_eq!(
         commands,
         vec![NativeCommand::MapViews {
@@ -613,7 +619,7 @@ fn select_view_and_restore_after_stamped_campaign_seek_stamp_empty_clear_with_ac
 
     let mut inner = host.shared.lock().unwrap();
     inner.restore_commands();
-    let restored = inner.pending.take_commands(true);
+    let restored = inner.pending.take_commands(false, true);
     assert_eq!(
         restored,
         vec![NativeCommand::MapViews {
