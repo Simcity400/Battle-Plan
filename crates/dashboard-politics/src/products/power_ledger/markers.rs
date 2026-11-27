@@ -1,4 +1,4 @@
-use super::{PowerSpendingParams, PowerSpendingReply, SpendCurrency, breakdown::unrecorded, naming, spending};
+use super::{PowerSpendingParams, PowerSpendingReply, SpendCurrency, breakdown::unrecorded, naming, spending_without_balances};
 use dashboard_base::Source;
 use dashboard_base::products::{Country, LoadContext, Product, breakdown, check_reply_budget, validate_country};
 use dashboard_query::Query;
@@ -132,7 +132,7 @@ pub(super) fn index(reply: &PowerSpendingReply, unread: Vec<(i32, i32, String)>)
 
 pub(super) fn build(source: &Source, query: &Query<'_>, span: &PowerSpendingParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<SpendMarkers> {
     let naming = naming::context(source, context)?;
-    let whole = spending(query, span, &naming, cancelled)?;
+    let whole = spending_without_balances(query, span, &naming, cancelled)?;
     let unread = unrecorded(&query.timeline, &query.holders, &span.country, &whole.coverage, whole.from, whole.to);
     Ok(index(&whole, unread))
 }

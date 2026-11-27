@@ -1308,7 +1308,61 @@ struct ItemAsks<'a> {
     asks: BTreeMap<(i32, u32), bool>,
 }
 
-fn item_membership(query: &Query<'_>, batches: &[ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
+fn complete_span(statuses: &[lanes::StatusRun], first: i32, last: i32) -> bool {
+    let mut cursor = first;
+    for run in statuses {
+        if run.last < cursor {
+            continue;
+        }
+        if run.first > cursor || run.status != Status::Complete {
+            return false;
+        }
+        if run.last >= last {
+            return true;
+        }
+        cursor = match run.last.checked_add(1) {
+            Some(next) => next,
+            None => return true,
+        };
+    }
+    false
+}
+
+fn complete_items_frame(query: &Query<'_>, frames: &mut at_hour::Frames<'_>, batch: &ItemAsks<'_>) -> io::Result<Option<DecodedFrame>> {
+    let Some((&(first, _), _)) = batch.asks.first_key_value() else { return Ok(None) };
+    let (&(last, _), _) = batch.asks.last_key_value().expect("a nonempty batch has a last ask");
+    let piece = batch.piece;
+    let recording = query.replay.recording();
+    if recording.predates(TableId::PowerItems.index()).is_some() {
+        return Ok(None);
+    }
+    let statuses = match dashboard_query::cost::storage(|| lanes::statuses(recording, piece.run, TableId::PowerItems, first, last)) {
+        Ok(runs) => runs,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !complete_span(&statuses, first, last) {
+        return Ok(None);
+    }
+    let mut first_ask: HashMap<u32, i32> = HashMap::new();
+    for (&(hour, ordinal), _) in &batch.asks {
+        first_ask.entry(ordinal).or_insert(hour);
+    }
+    let frame = frames.frame(
+        last,
+        &[at_hour::Read::these(TableId::PowerItems, first_ask.keys().map(|&ordinal| item_key(piece.slot, ordinal)))],
+        "Politics spending",
+    )?;
+    for (&ordinal, &hour) in &first_ask {
+        match coverage::witnessed::<tables::PowerItems>(&frame, item_key(piece.slot, ordinal)) {
+            coverage::Witness::Row(row) if row.first_read <= hour => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(frame))
+}
+
+fn item_membership(query: &Query<'_>, batches: &[&ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
     let mut runs = BTreeMap::<u32, (i32, i32, Vec<u128>)>::new();
     for batch in batches {
         let piece = batch.piece;
@@ -1356,6 +1410,22 @@ struct Items {
 }
 
 impl Items {
+    fn read_complete(&mut self, batch: &ItemAsks<'_>, frame: &DecodedFrame) -> HashMap<(u32, i32), (u32, bool)> {
+        let mut out = HashMap::with_capacity(batch.asks.len());
+        let piece = batch.piece;
+        for (&(hour, ordinal), _) in &batch.asks {
+            let at = *self.index.entry((piece.run, piece.slot, ordinal)).or_insert_with(|| {
+                let coverage::Witness::Row(row) = coverage::witnessed::<tables::PowerItems>(frame, item_key(piece.slot, ordinal)) else {
+                    unreachable!("complete_items_frame validated every asked item");
+                };
+                self.asked.push((piece.run, row.clone()));
+                (self.asked.len() - 1) as u32
+            });
+            out.insert((ordinal, hour), (at, true));
+        }
+        out
+    }
+
     fn read(&mut self, frames: &mut at_hour::Frames<'_>, batch: &ItemAsks<'_>, membership: Option<&lanes::History>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
         let mut out = HashMap::with_capacity(batch.asks.len());
         let piece = batch.piece;
@@ -1446,7 +1516,16 @@ fn unrecorded_item(item: &UnrecordedItem) -> SpendItem {
     }
 }
 
+#[cfg(test)]
 fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
+    spending_with(query, params, naming, true, cancelled)
+}
+
+fn spending_without_balances(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
+    spending_with(query, params, naming, false, cancelled)
+}
+
+fn spending_with(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Context, with_balances: bool, cancelled: &AtomicBool) -> io::Result<PowerSpendingReply> {
     let currency = params.currency;
     let mut reply = PowerSpendingReply {
         branch_id: params.branch_id.clone(),
@@ -1480,7 +1559,9 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
         coverage(query, piece, currency, &mut reply.coverage)?;
-        balances(query, piece, currency, &mut reply.balances)?;
+        if with_balances {
+            balances(query, piece, currency, &mut reply.balances)?;
+        }
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
@@ -1517,11 +1598,24 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         }
         batches.push(ItemAsks { piece, payments: payments_from..reply.payments.len(), days: days_from..reply.days.len(), asks });
     }
-    let membership = item_membership(query, &batches)?;
     let mut frames = at_hour::Frames::new(query)?;
-    for batch in batches {
+    let mut complete_frames: Vec<Option<DecodedFrame>> = Vec::with_capacity(batches.len());
+    let mut fallback: Vec<&ItemAsks<'_>> = Vec::new();
+    for batch in &batches {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let resolved = items.read(&mut frames, &batch, membership.get(&batch.piece.run))?;
+        let fast = complete_items_frame(query, &mut frames, batch)?;
+        if fast.is_none() && !batch.asks.is_empty() {
+            fallback.push(batch);
+        }
+        complete_frames.push(fast);
+    }
+    let membership = if fallback.is_empty() { HashMap::new() } else { item_membership(query, &fallback)? };
+    for (batch, fast) in batches.into_iter().zip(complete_frames) {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let resolved = match fast {
+            Some(frame) => items.read_complete(&batch, &frame),
+            None => items.read(&mut frames, &batch, membership.get(&batch.piece.run))?,
+        };
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[batch.payments] {
             payment.item = resolved[&(payment.item, payment.read)].0;
@@ -1559,31 +1653,33 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
             unmatched: bucket.unmatched,
         })
         .collect();
-    let runs: Vec<&dashboard_query::identity::HolderRun> = match &params.country {
-        Country::Slot(_) => query.holders.tags.values().flatten().collect(),
-        Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
-    };
-    let mut unknown: Vec<(i32, i32)> = runs
-        .into_iter()
-        .filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved)
-        .map(|run| (run.first, run.last))
-        .chain(query.holders.unknown.iter().map(|&(first, last, _)| (first, last)))
-        .collect();
-    unknown.sort_unstable();
-    unknown.dedup_by(|next, held| {
-        let joined = next.0 <= held.1.saturating_add(1);
-        if joined {
-            held.1 = held.1.max(next.1);
-        }
-        joined
-    });
-    let overlap = |first: i32, last: i32, spans: &mut dyn Iterator<Item = (i32, i32)>| -> i64 {
-        spans.map(|(a, b)| i64::from(b.min(last)) - i64::from(a.max(first)) + 1).filter(|&hours| hours > 0).sum()
-    };
-    let recorded = |first: i32, last: i32| overlap(first, last, &mut query.timeline.within(first, last).map(|stretch| (stretch.first, stretch.last)));
-    let unresolved = |first: i32, last: i32| overlap(first, last, &mut unknown.iter().copied()) > 0;
-    let nobody = |first: i32, last: i32| recorded(first, last) - overlap(first, last, &mut unknown.iter().copied());
-    reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
+    if with_balances {
+        let runs: Vec<&dashboard_query::identity::HolderRun> = match &params.country {
+            Country::Slot(_) => query.holders.tags.values().flatten().collect(),
+            Country::Tag(_) => query.holders.runs(&params.country).iter().collect(),
+        };
+        let mut unknown: Vec<(i32, i32)> = runs
+            .into_iter()
+            .filter(|run| run.holder == dashboard_query::identity::Holder::Unresolved)
+            .map(|run| (run.first, run.last))
+            .chain(query.holders.unknown.iter().map(|&(first, last, _)| (first, last)))
+            .collect();
+        unknown.sort_unstable();
+        unknown.dedup_by(|next, held| {
+            let joined = next.0 <= held.1.saturating_add(1);
+            if joined {
+                held.1 = held.1.max(next.1);
+            }
+            joined
+        });
+        let overlap = |first: i32, last: i32, spans: &mut dyn Iterator<Item = (i32, i32)>| -> i64 {
+            spans.map(|(a, b)| i64::from(b.min(last)) - i64::from(a.max(first)) + 1).filter(|&hours| hours > 0).sum()
+        };
+        let recorded = |first: i32, last: i32| overlap(first, last, &mut query.timeline.within(first, last).map(|stretch| (stretch.first, stretch.last)));
+        let unresolved = |first: i32, last: i32| overlap(first, last, &mut unknown.iter().copied()) > 0;
+        let nobody = |first: i32, last: i32| recorded(first, last) - overlap(first, last, &mut unknown.iter().copied());
+        reply.reconciliation = reconcile(params, &held, &reply, &allocations, nobody, unresolved);
+    }
     let asked = &items.asked;
     let rows: Vec<naming::Asked<'_>> = asked.iter().map(|(run, row)| naming::Asked { run: *run, row }).collect();
     let named = naming::name(query, &rows, naming, cancelled)?;

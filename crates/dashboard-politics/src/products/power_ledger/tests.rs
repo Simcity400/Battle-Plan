@@ -127,9 +127,9 @@ fn a_spans_payments_are_the_changes_of_its_totals_after_the_hour_before_it_and_r
 
     let (whole, counts) = replay_recording::cells::count_reads(|| asked(&source, FIRST, LAST));
     let items = &counts[&TableId::PowerItems];
-    assert_eq!((items.opened, items.restores), (2, 2), "the single-block run opens and restores one reader for membership and one for details");
-    assert!(items.stretches > 0, "membership follows the recorded item changes across charge hours");
-    assert_eq!(items.columns, TableId::PowerItems.schema().len() as u64, "only one reader opens the detail columns");
+    assert_eq!((items.opened, items.restores), (1, 1), "a complete single-block run reads PowerItems once at the last asked hour");
+    assert_eq!(items.stretches, 0, "a complete span skips the PowerItems membership history walk");
+    assert_eq!(items.columns, TableId::PowerItems.schema().len() as u64, "the single end-of-span reader opens the detail columns once");
     let reads: Vec<_> = whole.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "the run's totals start from nothing");
     assert_eq!(whole.coverage.len(), 2);
@@ -1453,4 +1453,163 @@ fn naming_does_not_read_the_lexicon_for_an_item_with_its_own_key() {
         naming::name(&query, &[naming::Asked { run: 1, row: &row }], &context, &AtomicBool::new(false)).unwrap()
     });
     assert!(!counts.contains_key(&TableId::LexicalTokens));
+}
+
+#[test]
+fn breakdown_and_markers_skip_country_balance_history_while_spending_still_reconciles() {
+    use super::breakdown::{PowerSpendingBreakdown, PowerSpendingBreakdownParams};
+    use super::markers::{PowerSpendMarkers, PowerSpendMarkersParams};
+    use dashboard_base::products::Product;
+
+    let source = recording();
+    let context = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+
+    let (breakdown, breakdown_counts) = replay_recording::cells::count_reads(|| {
+        PowerSpendingBreakdown::load(
+            &source,
+            &PowerSpendingBreakdownParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, hour: LAST },
+            &context,
+            &cancel,
+        )
+        .unwrap()
+    });
+    assert_eq!(breakdown_counts.get(&TableId::Countries).map_or(0, |held| held.stretches), 0, "breakdown skips Countries balance history");
+    assert!(!breakdown.breakdown.parts.is_empty());
+
+    let (markers, marker_counts) = replay_recording::cells::count_reads(|| {
+        PowerSpendMarkers::load(
+            &source,
+            &PowerSpendMarkersParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, hour: LAST },
+            &context,
+            &cancel,
+        )
+        .unwrap()
+    });
+    assert_eq!(marker_counts.get(&TableId::Countries).map_or(0, |held| held.stretches), 0, "markers skip Countries balance history");
+    assert_eq!(markers.markers.len(), 2);
+
+    let (full, full_counts) = replay_recording::cells::count_reads(|| asked(&source, 105, LAST));
+    assert!(full_counts[&TableId::Countries].stretches > 0, "direct spending still walks Countries balance history");
+    assert!(!full.balances.is_empty());
+}
+
+#[test]
+fn power_items_end_of_span_read_falls_back_on_internal_gap_and_later_first_read() {
+    use dashboard_query::{
+        Query,
+        identity::{Holder, HolderRun, Holders},
+        timeline::{Join, Stretch, Timeline},
+    };
+    use replay_data::rows::{ClockRow, PowerSpendTotalRow, compatibility::CAPTURE_ADDITIONS_FORMAT, tables};
+    use replay_journal::synthetic::{Input, Sample};
+
+    let gap_frames: Vec<DecodedFrame> = (FIRST..=LAST)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            if hour == 110 {
+                frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "countries gap".into() }.into();
+            }
+            frame
+        })
+        .collect();
+    let gap_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, gap_frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let gap_source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-item-gap".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(gap_replay), &AtomicBool::new(false)).unwrap();
+    let held = HolderRun { first: FIRST, last: LAST, holder: Holder::Found { slot: SLOT, id: GER }, starts_segment: true };
+    let holders = Holders::new([("GER".to_owned(), vec![held])].into(), Vec::new());
+    let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches: vec![Stretch { run: 0, first: FIRST, last: LAST, join: Join::Start }], unheld: Vec::new() };
+    let replay = gap_source.replay();
+    let query = Query { replay: &replay, timeline: Arc::new(timeline), holders: Arc::new(holders) };
+    let naming = naming::context(&gap_source, &LoadContext { content: None }).unwrap();
+    let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
+    let (reply, counts) = replay_recording::cells::count_reads(|| spending(&query, &params, &naming, &AtomicBool::new(false)).unwrap());
+    assert!(counts[&TableId::PowerItems].stretches > 0, "an unavailable PowerItems hour inside the asked span falls back to membership");
+    assert_eq!(reply.payments.len(), 2);
+    assert!(reply.payments.iter().all(|payment| reply.items[payment.item as usize].category == "decisions"));
+
+    let late_frames: Vec<DecodedFrame> = (FIRST..=145)
+        .map(|hour| {
+            let mut frame = source_frame(hour);
+            set(&mut frame, TableId::Clock, TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+            frame
+        })
+        .collect();
+    let item = PowerItemRow {
+        holder: SLOT,
+        ordinal: 0,
+        kind: PowerItemRow::CHANGE,
+        currency: PowerCurrency::Political,
+        cause: PowerCause::Decision,
+        charged: true,
+        site: PowerSite::AddPoliticalPower,
+        first_hour: 144,
+        first_read: 144,
+        first_country: GER,
+        first_epoch: 1,
+        first_sequence: 9,
+        ..Default::default()
+    };
+    let total_at = |payments: i64, known: i64, hour: i32, sequence: u64| PowerSpendTotalRow {
+        holder: SLOT,
+        currency: PowerCurrency::Political as u8,
+        ordinal: 0,
+        known: Recorded::Value(known),
+        payments: Recorded::Value(payments),
+        entries: Recorded::Value(payments),
+        unknown: Recorded::Value(0),
+        uncovered: Recorded::Value(0),
+        balances: Recorded::Value(0),
+        latest_hour: Recorded::Value(Some(hour)),
+        latest_sequence: Recorded::Value(Some(sequence)),
+        latest_ordinal: Recorded::Value(Some(0)),
+        days: Recorded::Value(0),
+        day_payments: Recorded::Value(0),
+        day_entries: Recorded::Value(0),
+        day_charge: Recorded::Value(0),
+        day_unknown: Recorded::Value(0),
+        days_uncovered: Recorded::Value(0),
+        realized_gained: Recorded::Value(0),
+        realized_lost: Recorded::Value(0),
+        realized_unknown: Recorded::Value(0),
+        credits: Recorded::Value(0),
+        gained: Recorded::NotRecorded,
+        capped: Recorded::NotRecorded,
+        gain_days: Recorded::NotRecorded,
+        gain_unknown_days: Recorded::NotRecorded,
+        unmatched: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let bytes = replay::campaign::fixtures::encode_framed_at(recorder_derive::writers_within, CAPTURE_ADDITIONS_FORMAT, CAMPAIGN.into(), &[records(1, late_frames)], |synthetic, decoded| {
+        let countries = decoded.complete::<tables::Countries>()?;
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let links = decoded.complete::<tables::CountryLinks>()?;
+        synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let coverage = [PowerSpendCoverageRow {
+            holder: SLOT,
+            political: true,
+            command: true,
+            reason: PowerSpendCoverageRow::KNOWN,
+            political_since: Some(FIRST),
+            command_since: Some(FIRST),
+            ..Default::default()
+        }];
+        synthetic.table(TableId::PowerSpendCoverage, Input::Snapshot { rows: &coverage, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let items = if decoded.hour >= 144 { std::slice::from_ref(&item) } else { &[] };
+        synthetic.table(TableId::PowerItems, Input::Snapshot { rows: items, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let totals = match decoded.hour {
+            ..=119 => Vec::new(),
+            120..=143 => vec![total_at(1, 50 * PP, 120, 7)],
+            _ => vec![total_at(2, 125 * PP, 144, 9)],
+        };
+        synthetic.table(TableId::PowerSpendTotals, Input::Snapshot { rows: &totals, partial: None, read: true, sample: Sample::FromReadBit })?;
+        Ok(())
+    })
+    .unwrap();
+    let late_replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    let late_source = Source::from_replay(dashboard_base::SourceKey { source_id: "power-ledger-late-item".into(), revision: "1".into() }, "late.battleplan".into(), Arc::new(late_replay), &AtomicBool::new(false)).unwrap();
+    let (late_reply, late_counts) = replay_recording::cells::count_reads(|| asked(&late_source, FIRST, 145));
+    assert!(late_counts[&TableId::PowerItems].stretches > 0, "an item whose first_read is after an asked hour falls back to membership");
+    assert_eq!(late_reply.payments.len(), 2);
+    assert_eq!(late_reply.items[late_reply.payments[0].item as usize].category, "notIdentified");
+    assert_eq!(late_reply.items[late_reply.payments[1].item as usize].category, "decisions");
 }
