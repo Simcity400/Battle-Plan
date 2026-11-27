@@ -55,32 +55,6 @@ export function spansCovered(values: readonly Span[], observed: readonly Span[])
   return true;
 }
 
-export interface Band { low: number[]; high: number[] }
-
-export function divergingStack(layers: readonly (readonly number[])[]): Band[] {
-  const points = layers[0]?.length ?? 0;
-  const up = new Array<number>(points).fill(0);
-  const down = new Array<number>(points).fill(0);
-  return layers.map(layer => {
-    const firstValue = layer.find(value => (value ?? 0) !== 0) ?? 0;
-    let last = firstValue >= 0;
-    const side = new Array<boolean>(points);
-    for (let index = 0; index < points; index++) {
-      const value = layer[index] ?? 0;
-      if (value !== 0) last = value > 0;
-      side[index] = last;
-    }
-    const low: number[] = [];
-    const high: number[] = [];
-    for (let index = 0; index < points; index++) {
-      const value = layer[index] ?? 0;
-      if (side[index]) { low.push(up[index]); up[index] += value; high.push(up[index]); }
-      else { high.push(down[index]); down[index] += value; low.push(down[index]); }
-    }
-    return { low, high };
-  });
-}
-
 export function clipToSpans<T extends Breakable>(runs: readonly T[], spans: readonly Span[]): T[] {
   const ordered = <S extends Span>(list: readonly S[]) =>
     list.every((item, index) => index === 0 || list[index - 1].firstHour <= item.firstHour) ? list : [...list].sort((a, b) => a.firstHour - b.firstHour);

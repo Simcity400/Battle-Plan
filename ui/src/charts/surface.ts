@@ -117,11 +117,3 @@ export function watchDevicePixelRatio(listener: () => void): () => void {
     ratioQuery = null;
   };
 }
-
-export function toLocal(clientX: number, clientY: number, rect: { left: number; top: number; width: number; height: number },
-  layoutWidth: number, layoutHeight: number): { x: number; y: number } {
-  return {
-    x: (clientX - rect.left) * (layoutWidth / Math.max(1e-6, rect.width)),
-    y: (clientY - rect.top) * (layoutHeight / Math.max(1e-6, rect.height)),
-  };
-}

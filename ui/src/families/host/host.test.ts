@@ -2294,3 +2294,203 @@ test('dated-at-hour widgets distinguish recorded empty hours from unobserved spa
     'a pinned read inside a roster gap reports not-recorded',
   );
 });
+
+test('points keyboard navigation supports async next-change focus without activating, activates off-nav plot hours on Enter, and drops stale replies', () => {
+  const nav: FamilyNavTuple[] = [
+    ['plot:0', 'Day 0', 0, -1, '', null],
+    ['plot:13', 'Day 13', 1, -1, '', null],
+  ];
+  let focusedKey: string | null = 'plot:0';
+  const activated: string[] = [];
+  const navCalls: string[] = [];
+  let pendingApply: ((hour: number) => void) | null = null;
+  const opts = {
+    nav,
+    get focusedKey() { return focusedKey; },
+    pageStep: 5,
+    blocked: false,
+    isPinnedTooltip: () => false,
+    onFocusKey: (key: string) => { focusedKey = key; },
+    onPointsNavigate: (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End') => {
+      navCalls.push(key);
+      pendingApply = (hour: number) => { focusedKey = `plot:${hour}`; };
+      return true;
+    },
+    onActivate: (entry: FamilyNavTuple) => { activated.push(entry[0]); },
+  };
+  const evRight = mkEvent('ArrowRight');
+  handleFamilyPointsKeyDown(evRight.event, opts);
+  assert.equal(evRight.prevented(), true);
+  assert.deepEqual(navCalls, ['ArrowRight']);
+  assert.deepEqual(activated, [], 'ArrowRight does not immediately activate or pin the drawer');
+  pendingApply!(3);
+  assert.equal(focusedKey, 'plot:3', 'async reply moves keyboard focus to exact change hour 3 inside coarse bucket');
+
+  const evEnter = mkEvent('Enter');
+  handleFamilyPointsKeyDown(evEnter.event, opts);
+  assert.equal(evEnter.prevented(), true);
+  assert.deepEqual(activated, ['plot:3'], 'Enter activates the focused off-nav hour plot:3 rather than nav[0]');
+
+  const installed: InstalledPicture = {
+    id: 1,
+    owner: 'owner-stab',
+    generation: { seek: 1, reset: 0, binding: 1 },
+    factRevisions: {},
+    validInterval: [0, 17],
+    through: 17,
+    hour: displayedHour(17),
+    viewport: { width: 600, height: 220, dpr: 1, scrollLeft: 0, scrollTop: 0 },
+    optionsRevision: '',
+    themeRevision: '',
+    actionKeys: lazyActionKeys(nav, displayedHour(17)),
+    accessibleDescription: null,
+  };
+  const record = recordInstalled(installed, {
+    nav,
+    meta: { transform: { xFrom: 0, xTo: 17, axisFrom: 0, axisTo: 17 } },
+    focusTooltip: {
+      key: 'plot:3',
+      text: {
+        rowKey: 'plot:3',
+        hour: 3,
+        payload: { title: 'Hour 3', hour: 3 },
+      },
+    },
+  }, null);
+  const effect = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(effect?.kind, 'activate', 'resolveHostInput accepts an in-axis plot:<hour> focus key even when absent from coarse nav');
+  assert.equal(effect?.kind === 'activate' ? effect.action.hour : null, 3);
+
+  const menuEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'menu',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: true },
+    () => null,
+  );
+  assert.equal(menuEffect?.kind, 'menu');
+  assert.equal(menuEffect?.kind === 'menu' ? menuEffect.hit.hour : null, 3, 'keyboard context menu uses focused plot hour 3, not picture head 17');
+  assert.equal(menuEffect?.kind === 'menu' ? menuEffect.hit.hitHour : null, 3);
+
+  const pinEffect = resolveHostInput(
+    timeChartHostAdapter,
+    'pin',
+    { key: 'plot:3', hit: null, picture: installed },
+    { current: record, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(pinEffect?.kind, 'pin');
+  assert.equal(pinEffect?.kind === 'pin' ? pinEffect.hour : null, 3, 'pinning focused tooltip uses tooltip hour 3, not picture head 17');
+
+  const emptyInstalled: InstalledPicture = {
+    ...installed,
+    id: 2,
+    hour: displayedHour(5),
+    through: 5,
+    validInterval: [0, 5],
+    actionKeys: lazyActionKeys([], displayedHour(5)),
+  };
+  const emptyRecord = recordInstalled(emptyInstalled, { nav: [] }, null);
+  const staleEnter = resolveHostInput(
+    timeChartHostAdapter,
+    'activate',
+    { key: 'plot:13', hit: null, picture: emptyInstalled },
+    { current: emptyRecord, held: false, expired: false },
+    { expansion: NO_EXPANSION, takesToggles: false, regions: false, menu: false },
+    () => null,
+  );
+  assert.equal(staleEnter, null, 'empty chart with no axis transform rejects stale plot:13 focus key');
+
+  const tips = new FamilyTooltipController('points-focus-over-stationary-pointer');
+  const tipOf = (hour: number) => ({
+    rowKey: `plot:${hour}`,
+    hour,
+    payload: { title: `Hour ${hour}`, hour },
+  });
+  tips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: 'plot:12',
+    inspectedToken: 'plot:12',
+    pointerPos: { x: 100, y: 100 },
+    hoverTip: tipOf(12),
+    hoverFieldKey: 'plot:12',
+    keepHoverWhilePending: true,
+    focusInside: true,
+    focusedKey: 'plot:3',
+    focusAnchor: { x: 50, y: 50 },
+    focusTip: tipOf(3),
+    viewportHeight: 600,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Hour 12');
+  tips.syncFromInstall({
+    dim: false,
+    held: false,
+    inspectedKey: null,
+    inspectedToken: null,
+    pointerPos: { x: 100, y: 100 },
+    hoverTip: tipOf(12),
+    hoverFieldKey: 'plot:12',
+    keepHoverWhilePending: true,
+    focusInside: true,
+    focusedKey: 'plot:3',
+    focusAnchor: { x: 50, y: 50 },
+    focusTip: tipOf(3),
+    viewportHeight: 600,
+  });
+  assert.equal(tooltipStore.get()?.content.title, 'Hour 3', 'clearing pointer inspection on keyboard focus lets the focused hour tooltip show');
+
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
+  const body = {
+    addEventListener(type: string, fn: (event: unknown) => void) { (listeners.get(type) ?? listeners.set(type, new Set()).get(type)!).add(fn); },
+    removeEventListener(type: string, fn: (event: unknown) => void) { listeners.get(type)?.delete(fn); },
+    dispatch(type: string, event: Record<string, unknown>) { for (const fn of listeners.get(type) ?? []) fn({ target: body, preventDefault() {}, ...event }); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 220 }),
+    contains: (node: unknown) => node === body,
+  };
+  const pendingPointer: ((key: string | null, meta?: PointerHitMeta) => void)[] = [];
+  const inspectedKeyRef = { current: null as string | null };
+  const lastPointerRef = { current: null as { readonly x: number; readonly y: number } | null };
+  const stopPointer = bindFamilyPointer({
+    bodyNode: body as unknown as HTMLElement,
+    pictureNode: body as unknown as HTMLElement,
+    menuHost: body as unknown as HTMLElement,
+    pipeline: {
+      pointer(_pipe: number, _slot: number, _pt: unknown, cb?: (key: string | null, meta?: PointerHitMeta) => void) { if (cb) pendingPointer.push(cb); },
+      inspect() {},
+      view() { return null; },
+    } as unknown as Pipeline,
+    pipe: 1,
+    tooltips: tips,
+    inspectedKeyRef,
+    inspectedHitRef: { current: null },
+    lastPointerRef,
+    focusInsideRef: { current: true },
+    focusedKeyRef: { current: 'plot:3' },
+    focusAnchorRef: { current: { x: 50, y: 50 } },
+    accessibleRef: { current: body as unknown as HTMLElement },
+    pointerMode: 'continuous',
+    isBlocked: () => false,
+    getInstalled: () => installed,
+    getViewportHeight: () => 600,
+    parseHit: parseTimeChartHit,
+    onActivate: () => {},
+  });
+  body.dispatch('pointermove', { isTrusted: true, clientX: 200, clientY: 80 });
+  stopPointer.clearHover();
+  assert.equal(pendingPointer.length, 1);
+  pendingPointer.shift()!('plot:12', { installedId: installed.id, owner: installed.owner });
+  assert.equal(inspectedKeyRef.current, null, 'clearHover invalidates an in-flight pointer hover reply so keyboard focus at plot:3 is not overwritten');
+  assert.equal(lastPointerRef.current, null);
+  stopPointer();
+  tips.dispose();
+});

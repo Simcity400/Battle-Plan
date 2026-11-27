@@ -108,6 +108,15 @@ export function hoveredSubject(adapter: FamilyHostAdapter<any, any, any, any>, r
   return record && hit ? actionOf(adapter, record, hit, false)?.subject ?? null : null;
 }
 
+function pointsHas(adapter: FamilyHostAdapter<any, any, any, any>, record: InstalledRecord, key: string): boolean {
+  if (record.picture.actionKeys.has(key)) return true;
+  const parsed = parseFamilyHit(adapter, key);
+  if (!parsed || parsed.kind !== 'plot' || parsed.hour === undefined) return false;
+  const transform = (record.fields.meta as { readonly transform?: { readonly axisFrom?: number; readonly axisTo?: number } } | undefined)?.transform;
+  if (!transform || transform.axisFrom === undefined || transform.axisTo === undefined) return false;
+  return parsed.hour >= transform.axisFrom && parsed.hour <= transform.axisTo;
+}
+
 export function focusedSubject(
   adapter: FamilyHostAdapter<any, any, any, any>,
   record: InstalledRecord | null,
@@ -115,7 +124,11 @@ export function focusedSubject(
   parseGridKey: (key: string | null) => { readonly row: number; readonly column: number } | null,
 ): string | null {
   if (!record || key === null) return null;
-  const shown = adapter.navigation === 'grid' ? gridHas(adapter, record, key, parseGridKey) : record.picture.actionKeys.has(key);
+  const shown = adapter.navigation === 'grid'
+    ? gridHas(adapter, record, key, parseGridKey)
+    : adapter.navigation === 'points'
+      ? pointsHas(adapter, record, key)
+      : record.picture.actionKeys.has(key);
   return shown ? actionOf(adapter, record, { key }, false)?.subject ?? key : null;
 }
 
@@ -131,17 +144,25 @@ export function resolveHostInput(
   if (inputBlocked(gate) || !record || record.picture.owner !== gate.current!.picture.owner) return null;
   const picture = record.picture;
   const { key, hit } = input;
-  if (key !== null && !hit && !(adapter.navigation === 'grid' ? gridHas(adapter, record, key, parseGridKey) : picture.actionKeys.has(key))) return null;
+  const hasKey = key === null || !!hit || (
+    adapter.navigation === 'grid'
+      ? gridHas(adapter, record, key, parseGridKey)
+      : adapter.navigation === 'points'
+        ? pointsHas(adapter, record, key)
+        : picture.actionKeys.has(key)
+  );
+  if (!hasKey) return null;
   if (command === 'menu') {
     if (!options.menu) return null;
     const target = key ? picture.actionKeys.get(key) : undefined;
-    const resolved = key !== null && !hit && adapter.resolveHitAction ? adapter.resolveHitAction({ key }, picture, record.fields) : null;
-    const hitHour = hit?.hour ?? resolved?.hour ?? target?.hour ?? null;
+    const parsedHit = key !== null && !hit ? parseFamilyHit(adapter, key) : null;
+    const resolved = key !== null && !hit && adapter.resolveHitAction ? adapter.resolveHitAction(parsedHit ?? { key }, picture, record.fields) : null;
+    const hitHour = hit?.hour ?? parsedHit?.hour ?? resolved?.hour ?? target?.hour ?? null;
     return {
       kind: 'menu',
       hit: {
         key,
-        subject: hit?.subject ?? target?.subject ?? key,
+        subject: hit?.subject ?? parsedHit?.subject ?? target?.subject ?? key,
         label: hit?.label ?? target?.label ?? key,
         hour: hitHour ?? picture.hour,
         hitHour,
@@ -154,7 +175,7 @@ export function resolveHostInput(
   if (key === null) return null;
   if (command === 'pin') {
     const tip = (record.fields.focusTooltip as FamilyTooltipField | undefined)?.text;
-    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: picture.hour } : null;
+    return tip && tip.rowKey === key ? { kind: 'pin', tip, hour: tip.hour ?? picture.hour } : null;
   }
   if (command === 'activate' && options.regions) {
     const field = record.fields.regions as RegionRowsField | undefined;

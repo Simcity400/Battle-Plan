@@ -12,9 +12,6 @@ import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashb
 import { message } from '../dashboard/follow/messages.fixture.ts';
 import { parseAnswer, cellValue } from '../dashboard/follow/message.ts';
 import { splitForLanes } from '../dashboard/follow/split.ts';
-import { componentReading } from '../dashboard/follow/useFollowed.ts';
-import { installedEntry } from '../dashboard/follow/store.ts';
-import type { Pipeline } from '../dashboard/follow/pipeline';
 import { PayloadSender, PayloadStore } from '../dashboard/follow/payloads.ts';
 import { boundDated } from '../families/host/dated.ts';
 
@@ -726,12 +723,8 @@ test('review 7 C: a whole-answer refusal installs as a named refusal; one refuse
   await step(10, { playing: false });
   assert.deepEqual([page.view(1).mode, page.view(1).reason], ['refused', 'The ranking was not recorded']);
   assert.equal(page.view(2).mode, 'picture', 'the joined widget shows its other column with the refused one inside');
-  const fake = (widget: number) => ({ view: () => page.view(widget), status: () => ({ status: 'followed' as const }), onInstall: () => () => {} }) as unknown as Pipeline;
-  assert.deepEqual([componentReading(page.view(2), 5), componentReading(page.view(2), 7).state], [{ state: 'refused', reason: 'The ranking was not recorded' }, 'covered'],
-    'review 8 2: the refused component has its own outcome inside the joined picture');
-  const refused = installedEntry(fake(2), 2, 5), whole = installedEntry(fake(1), 1, 5);
-  assert.deepEqual([refused.status, refused.reason, whole.status, whole.reason, installedEntry(fake(2), 2, 7).status],
-    ['unavailable', 'The ranking was not recorded', 'unavailable', 'The ranking was not recorded', 'followed'], 'review 8 2: both refusals reach the shared entry its consumers read');
+  assert.equal(page.view(2).fields?.['refused:5'], 'The ranking was not recorded', 'the refused component records its refusal inside the joined picture');
+  assert.equal(page.view(2).fields?.['refused:7'], undefined);
 });
 
 test('review 7 E: a followed message that fails to decode releases its charge at once, even at an idle paused lane', () => {

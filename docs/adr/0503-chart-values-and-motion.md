@@ -8,4 +8,4 @@ User zoom overrides saved bounds, then playback or auto-fit. Saved time bounds a
 
 Chart row motion derives each render from the last committed state. A layout effect records transitions only after commit, so StrictMode's repeated render and abandoned renders cannot consume an entrance. The history lives in a ref. Only an expired fade needs another render. The expiry agrees with the CSS opacity transition, and quiet charts drop the faded history and let their normal frame updates remove the inert row.
 
-[Axis values](../../ui/src/charts/valueAxis.ts) · [Chart view](../../ui/src/charts/view.ts) · [Committed row motion](../../ui/src/charts/useRowMotion.ts)
+[Axis values](../../ui/src/charts/valueAxis.ts)

@@ -208,6 +208,13 @@ export interface FamilyChromeProps<TSettings = unknown> {
 const NO_TARGETS: FamilyChromeTargets = { body: null, bodyWrap: null, extent: null };
 const MIRROR_HOLD = {};
 
+export interface PointsNavigateRequest {
+  readonly key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
+  readonly currentHour: number | null;
+  readonly zoomWindow: readonly [number, number] | null;
+  readonly focusHour: (hour: number) => void;
+}
+
 export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, TBinding = unknown, TSettings = unknown> {
   readonly adapter: FamilyHostAdapter<TModel, TOptions, TBinding, TSettings>;
   readonly settings?: TSettings;
@@ -247,6 +254,7 @@ export interface FamilyHostComponentProps<TModel = unknown, TOptions = unknown, 
   readonly onInstalledHour?: (hour: number | null) => void;
   readonly selectedKey?: string | null;
   readonly onActivate?: (action: InstalledAction) => void;
+  readonly onPointsNavigate?: (request: PointsNavigateRequest) => boolean;
   readonly onToggle?: (action: InstalledAction) => void;
   readonly onRegions?: (command: RegionCommand) => string | null;
   readonly emptyAction?: ReactNode | ((openRegions: (anchor: { readonly x: number; readonly y: number }) => void) => ReactNode);
@@ -313,6 +321,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   onInstalledHour,
   selectedKey = null,
   onActivate,
+  onPointsNavigate,
   onToggle,
   onRegions,
   emptyAction,
@@ -374,6 +383,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   const lastViewportReportRef = useRef('');
 
   const focusedKeyRef = useRef<string | null>(null);
+  const focusEpochRef = useRef(0);
   const pendingOrdinalRef = useRef<number | null>(null);
   const focusInsideRef = useRef(false);
   const focusAnchorRef = useRef({ x: 0, y: 0 });
@@ -527,6 +537,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     onInstalledHour,
     selectedKey,
     onActivate,
+    onPointsNavigate,
     onToggle,
     onRegions,
     contextMenuItems,
@@ -573,6 +584,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     const sig = `${vp.width}|${vp.height}|${vp.dpr}|${win ? `${win[0]}:${win[1]}` : ''}`;
     if (sig === lastViewportReportRef.current) return;
     lastViewportReportRef.current = sig;
+    focusEpochRef.current++;
     cb({ width: vp.width, height: vp.height, dpr: vp.dpr, window: win });
   }, []);
 
@@ -970,6 +982,8 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         return true;
       }
       case 'activate':
+        focusEpochRef.current++;
+        if (cur.onPointsNavigate) focusedKeyRef.current = null;
         tooltips.dismissActivated(effect.key);
         cur.onActivate?.(effect.action);
         return true;
@@ -1076,6 +1090,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [say]);
 
   useLayoutEffect(() => {
+    focusEpochRef.current++;
     recordRef.current = null;
     regionDragRef.current = null;
     expansionRef.current = NO_EXPANSION;
@@ -1732,6 +1747,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
     }
 
     if (activeAdapter.navigation === 'points') {
+      const pointsNav = latestRef.current.onPointsNavigate;
       handleFamilyPointsKeyDown(event, {
         nav: keyNav,
         focusedKey: focusedKeyRef.current,
@@ -1739,11 +1755,31 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
         blocked,
         isPinnedTooltip: () => tooltips.isPinned(),
         onFocusKey: key => {
+          focusEpochRef.current++;
+          clearHoverRef.current();
           focusedKeyRef.current = key;
           const hour = parseFamilyHit(activeAdapter, key)?.hour;
           if (hour !== undefined) publishHoverHour(hour);
           bindRef.current();
         },
+        ...(pointsNav ? {
+          onPointsNavigate: key => {
+            const currentHour = parseFamilyHit(activeAdapter, focusedKeyRef.current)?.hour ?? null;
+            const epoch = ++focusEpochRef.current;
+            return pointsNav({
+              key,
+              currentHour,
+              zoomWindow: viewportRef.current.zoomWindow ?? null,
+              focusHour: hour => {
+                if (focusEpochRef.current !== epoch || !focusInsideRef.current) return;
+                clearHoverRef.current();
+                focusedKeyRef.current = `plot:${hour}`;
+                publishHoverHour(hour);
+                bindRef.current();
+              },
+            });
+          },
+        } : {}),
         onActivate: entry => { run('activate', entry[0]); },
         onContextMenu: entry => run('menu', entry ? entry[0] : null),
         onTogglePinTooltip: key => { run('pin', key); },
@@ -1805,7 +1841,7 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
       if (activeAdapter.navigation === 'grid') {
         const metrics = activeAdapter.getGridMetrics?.(fieldsNow());
         if (metrics && metrics.rows > 0 && metrics.columns > 0) focusedKeyRef.current = (activeAdapter.formatGridKey ?? formatGridKey)(0, 0);
-      } else if (navNow().length) {
+      } else if (!(activeAdapter.navigation === 'points' && latestRef.current.onPointsNavigate) && navNow().length) {
         focusedKeyRef.current = navNow()[0]![0];
       }
     }
@@ -1819,8 +1855,10 @@ export default function FamilyHost<TModel = unknown, TOptions = unknown, TBindin
   }, [refreshFocusAnchor, runtime.clock, pipeline, pipe]);
 
   const onBlur = useCallback(() => {
+    focusEpochRef.current++;
     pendingOrdinalRef.current = null;
     focusInsideRef.current = false;
+    if (latestRef.current.onPointsNavigate) focusedKeyRef.current = null;
     if (!inspectedKeyRef.current) tooltips.hideIfUnpinned();
     bindRef.current();
   }, [tooltips]);

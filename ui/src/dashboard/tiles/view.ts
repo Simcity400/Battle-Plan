@@ -43,8 +43,6 @@ export interface TileRanked {
   readonly refused: string | null;
 }
 
-export interface SpannedLine { summary: Pick<ChartSummary, 'from' | 'to'>; missing: readonly MissingSpan[] }
-
 export interface TiledLine { tag: string; head: string; decimals: number; summary: ChartSummary; missing: MissingSpan[]; partial?: MissingSpan[]; parts: TilePart[]; marks: MarkSummary | null }
 
 interface Wanted { binHours: number; first: number; last: number; width: number; cell: number; keys: string[] }
@@ -398,28 +396,6 @@ function line(tag: string, head: string, tiles: readonly Tile[], from: number, t
   const summary: ChartSummary = { from, to, width, buckets, ...(hourly ? { runs } : {}),
     tiles: { binHours, valueAt: hour => valueAtHead(head, summary, binHours, hour) } };
   return { tag, head, decimals: tiles[0].decimals, summary, missing, ...(partial.length ? { partial } : {}), parts, marks: cell !== null ? { from, to, width, clusters: cellClusters(drops, binHours, cell), tiles: true } : null };
-}
-
-export function unrecordedReason(lines: ReadonlyMap<string, SpannedLine> | readonly SpannedLine[] | null | undefined): string | null {
-  const all = lines ? [...lines.values()] : [];
-  if (!all.length) return null;
-  const hours = new Map<string, number>();
-  for (const line of all) {
-    const { from, to } = line.summary;
-    let at = from;
-    for (const span of line.missing) {
-      if (span.lastHour < at || span.firstHour > to) continue;
-      if (span.firstHour > at) return null;
-      const end = Math.min(span.lastHour, to);
-      hours.set(span.reason, (hours.get(span.reason) ?? 0) + end - at + 1);
-      at = end + 1;
-      if (at > to) break;
-    }
-    if (at <= to) return null;
-  }
-  let best: string | null = null, most = -1;
-  for (const [reason, count] of hours) if (count > most) { best = reason; most = count; }
-  return best;
 }
 
 const caches = new WeakMap<object, TileCache>();

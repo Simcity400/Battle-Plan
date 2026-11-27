@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
-import { datedReading, datedStore, heldFor, lanesHost, onInstalled, readingOf } from './useFollowed.ts';
+import { datedStore, heldFor, lanesHost } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
-import { installedEntry } from './store.ts';
 import { classifyFailure, ShownError } from '../queryError.ts';
-import { followFailure } from './useFollow.ts';
 import { pipelineFor, prepareLanes, restartPipeline, type LaneWorker } from './pipeline.ts';
 import { PlaybackController } from '../playback.ts';
 
@@ -376,8 +374,13 @@ test('review 9: value-dependent output runs on every install, while React keeps 
     send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE, seek));
     assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
     const totals: bigint[] = [];
-    const stop = onInstalled(pipeline, id, () => totals.push(parseAnswer(pipeline.view(id)!.fields!['answer:' + sub] as Uint8Array).kind === 'notRecorded' ? -1n
-      : cellValue(parseAnswer(pipeline.view(id)!.fields!['answer:' + sub] as Uint8Array) as Exclude<ReturnType<typeof parseAnswer>, { kind: 'notRecorded' }>, 0) as bigint));
+    const readTotal = () => {
+      if (pipeline.view(id)?.mode !== 'picture') return;
+      const parsed = parseAnswer(pipeline.view(id)!.fields!['answer:' + sub] as Uint8Array);
+      totals.push(parsed.kind === 'notRecorded' ? -1n : cellValue(parsed, 0) as bigint);
+    };
+    readTotal();
+    const stop = pipeline.onInstall(id, readTotal);
     const structure = pipeline.view(id)!.structure;
     for (let at = 0; at < 2; at++) clock.step(1);
     send(message(12, [{ id: sub, answer: { keys: [1n], columns: 1, values: [3n] } }], false, NATIVE, seek));
@@ -411,14 +414,6 @@ test('review 9: a rejoin keeps its route\'s named failure, and a detail\'s sampl
     const named = (await capturePictures(false) as { t: string; placement?: number; widget?: string }[]).filter(record => record.t === 'picture' && record.placement === detail);
     assert.ok(named.length > 0 && named.every(record => record.widget === 'card'), 'R3-S7: ' + JSON.stringify(named.slice(-1)));
   } finally { close(); }
-});
-
-test('review 10: a reading\'s hour is the installed date when it is read, and the installed structure is made once', () => {
-  let hour: number | null = 10;
-  const reading = datedReading({ state: 'covered', hour: 10, dim: false }, { read: () => hour });
-  hour = 16;
-  assert.equal(reading.state === 'covered' && reading.hour, 16, 'a same-structure install from 10 to 16 reads 16');
-  assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });
 
 test('a single long main-thread frame does not spike speculative step far ahead of nominal frame step', () => {
@@ -512,12 +507,10 @@ test('sticky lane decode fault fails via typed Failure across seeks, surface rem
     ], false, NATIVE, seek0));
     await env.waitView(p1, w1, v => v?.mode === 'failed');
     assert.equal(p1.status(s1).status, 'failed');
-    const e1 = installedEntry(p1, w1, s1);
-    const e1b = installedEntry(p1, w1, s1b);
-    assert.equal(e1.status, 'failed');
-    assert.equal(e1b.status, 'failed');
-    assert.equal(classifyFailure(e1.error)?.kind, 'retryable');
-    assert.match(e1.error?.message ?? '', /does not hold/);
+    const err1 = p1.status(s1).error ?? p1.widgetError(w1);
+    assert.equal(p1.view(w1)?.mode, 'failed');
+    assert.equal(classifyFailure(err1)?.kind, 'retryable');
+    assert.match(err1?.message ?? '', /does not hold/);
     assert.equal(p1.view(w2)?.mode, 'picture', 'sibling w2 stays healthy');
 
     p1.bind(w1, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] });
@@ -555,10 +548,8 @@ test('sticky lane decode fault fails via typed Failure across seeks, surface rem
     env.send(message(20, [{ id: sHealthy, answer: { keys: [1n], columns: 1, values: [55n] } }], false, NATIVE, seek1));
     await env.waitView(p1, wSwap, v => v?.mode === 'picture');
 
-    const picked = followFailure({ status: e1.status, reason: e1.reason, error: e1.error, structure: '', entry: e1, hidden: false, reading: null });
-    assert.ok(picked);
     const restarted = env.nextEvent('restart');
-    picked.retry();
+    restartPipeline(p1);
     await restarted;
 
     const p2 = env.pipeline;
@@ -612,10 +603,10 @@ test('widget drawing fault reports via typed widget-failed, sticks across surfac
       env.waitView(p1, w1, v => v?.mode === 'failed'),
       env.waitView(p1, w2, v => v?.mode === 'picture'),
     ]);
-    const e1 = installedEntry(p1, w1, s1);
-    assert.equal(e1.status, 'failed');
-    assert.equal(classifyFailure(e1.error)?.kind, 'retryable');
-    assert.match(e1.error?.message ?? '', /drawing failed: boom/);
+    const err1 = p1.widgetError(w1);
+    assert.equal(p1.view(w1)?.mode, 'failed');
+    assert.equal(classifyFailure(err1)?.kind, 'retryable');
+    assert.match(err1?.message ?? '', /drawing failed: boom/);
     assert.equal(p1.status(s1).status, 'followed', 'a widget drawing fault does not fail the subscription');
     p1.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
     assert.equal(p1.view(w1)?.mode, 'failed', 'widget drawing fault stays sticky across surface remounts');
@@ -629,11 +620,10 @@ test('widget drawing fault reports via typed widget-failed, sticks across surfac
     shouldThrow = true;
     p1.bind(w1, [surface()], { surfaces: [{ width: 3, height: 1, dpr: 1 }] });
     await env.waitView(p1, w1, v => v?.mode === 'failed');
-    const e1Retry = installedEntry(p1, w1, s1);
 
     shouldThrow = false;
     const restarted = env.nextEvent('restart');
-    e1Retry.retry!();
+    restartPipeline(p1);
     await restarted;
     const p2 = env.pipeline;
     const c2 = env.nextEvent('follow-clock');
@@ -683,14 +673,13 @@ test('retry on any follow failure restarts the whole pipeline cleanly without le
     const p1 = env.pipeline;
     const w1 = p1.acquire('w1|0', { offset: 0, pin: null });
     const s1 = p1.subscribe(w1, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
-    const e1 = installedEntry(p1, w1, s1);
     await env.waitView(p1, w1, v => v?.mode === 'failed');
     assert.equal(p1.status(s1).status, 'failed');
     assert.equal(p1.status(s1).reason, 'IPC pipe disconnected');
     assert.equal(env.counts().activeReaders, 0);
 
     const restarted1 = env.nextEvent('restart');
-    e1.retry!();
+    restartPipeline(p1);
     await restarted1;
     const p2 = env.pipeline;
     assert.notEqual(p2, p1, 'retry after open failure replaces the pipeline');
@@ -717,26 +706,25 @@ test('retry on any follow failure restarts the whole pipeline cleanly without le
     assert.equal(p2.status(refS).reason, 'Table absent in format 141');
 
     const restarted2 = env.nextEvent('restart');
-    installedEntry(p2, failW, failS).retry!();
+    restartPipeline(p2);
     await restarted2;
     (releaseLateFollow as (() => void) | null)?.();
     const p3 = env.pipeline;
     assert.notEqual(p3, p2, 'retry after follow failure restarts the pipeline');
     const w3 = p3.acquire('clock-fail|0', { offset: 0, pin: null });
     const s3 = p3.subscribe(w3, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
-    const e3 = installedEntry(p3, w3, s3);
     await env.waitView(p3, w3, v => v?.mode === 'failed');
-    const clockErr = followFailure({ status: e3.status, reason: e3.reason, error: e3.error, structure: '', entry: e3, hidden: false, reading: null });
+    const clockErr = p3.status(s3).error ?? p3.widgetError(w3);
     assert.ok(clockErr);
-    assert.deepEqual(classifyFailure(clockErr.error), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
+    assert.deepEqual(classifyFailure(clockErr), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
 
     const restarted3 = env.nextEvent('restart');
-    clockErr.retry();
+    restartPipeline(p3);
     await restarted3;
     const p4 = env.pipeline;
     const clock4 = env.nextEvent('follow-clock');
     const w4a = p4.acquire('route-a|0', { offset: 0, pin: null });
-    const s4a = p4.subscribe(w4a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    p4.subscribe(w4a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed');
     await clock4;
     const clock4b = env.nextEvent('follow-clock');
     const w4b = p4.acquire('route-b|24', { offset: 24, pin: null });
@@ -749,7 +737,7 @@ test('retry on any follow failure restarts the whole pipeline cleanly without le
     ]);
 
     const restarted4 = env.nextEvent('restart');
-    installedEntry(p4, w4a, s4a).retry!();
+    restartPipeline(p4);
     await restarted4;
     const p5 = env.pipeline;
     const clock5a = env.nextEvent('follow-clock');
@@ -797,18 +785,11 @@ test('derived failure on a shared widget points at the sibling subscription carr
     const capSub = shared.pipeline.subscribe(widget, {}, shared.source, '1', 0, { product: 'series-state', params: { measure: 'capacity' } }, 'followed')!;
     shared.clock.seek(10);
     await shared.waitView(shared.pipeline, widget, v => v?.mode === 'failed');
-    const fuelEntry = installedEntry(shared.pipeline, widget, fuelSub);
-    const capEntry = installedEntry(shared.pipeline, widget, capSub);
-    assert.equal(fuelEntry.status, 'failed');
-    assert.deepEqual(classifyFailure(fuelEntry.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
-      'derived failure on fuel entry points at capacity cause');
-    const picked = followFailure(
-      { status: fuelEntry.status, reason: fuelEntry.reason, error: fuelEntry.error, structure: '', entry: fuelEntry, hidden: false, reading: null },
-      { status: capEntry.status, reason: capEntry.reason, error: capEntry.error, structure: '', entry: capEntry, hidden: false, reading: null },
-    );
-    assert.ok(picked);
-    assert.deepEqual(classifyFailure(picked.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
-      'followFailure picks the subscription carrying the ShownError cause');
+    assert.equal(shared.pipeline.status(capSub).status, 'failed');
+    const widgetErr = shared.pipeline.widgetError(widget);
+    assert.deepEqual(classifyFailure(widgetErr), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
+      'derived failure on shared widget points at capacity cause');
+    assert.equal(shared.pipeline.status(fuelSub).status, 'followed');
   } finally { shared.close(); }
 });
 
@@ -935,9 +916,8 @@ test('a superseded follow-clock rejection never overwrites a route failure cause
     assert.equal(p.status(s).error, undefined, 'superseded clock rejection must not write route.error for a later command');
     env.fail('Current stream failed');
     await env.waitView(p, w, v => v?.mode === 'failed');
-    const entry = installedEntry(p, w, s);
-    assert.equal(entry.status, 'failed');
-    assert.equal(entry.error?.message, 'Current stream failed', 'superseded clock rejection did not overwrite the current failure');
+    assert.equal(p.view(w)?.mode, 'failed');
+    assert.equal((p.status(s).error ?? p.widgetError(w))?.message, 'Current stream failed', 'superseded clock rejection did not overwrite the current failure');
   } finally {
     env.close();
   }
@@ -1130,7 +1110,6 @@ test('#1071: lanesHost installs an error handler at worker construction, isolate
       assert.equal(pPartial.view(wA)?.mode, 'failed');
       assert.match(pPartial.view(wA)?.reason ?? '', /Lane 1 failed: script 404/);
       assert.equal(pPartial.view(wA)?.failureOrigin, 'stream');
-      assert.deepEqual(readingOf(pPartial.view(wA)), { state: 'refused', reason: pPartial.view(wA)!.reason! });
     } finally {
       pPartial.close();
     }
@@ -1278,7 +1257,7 @@ test('#1071: a lane failing after starting isolates siblings on the same route, 
     assert.equal(p1.status(sPending).status, 'failed');
     assert.equal(env.credit().laneOutstanding(deadLane), 0, 'outstanding byte credit on the terminated lane is released immediately');
     assert.deepEqual(hitResults, [null], 'pending pointer hit on the dead lane settles instead of hanging');
-    assert.equal(installedEntry(p1, w0, s0).status, 'failed');
+    assert.equal(p1.widgetError(w0)?.message, expectedLaneReason);
 
     const unfollowPending = waitForUnfollow(sPending);
     releasePendingFollow();

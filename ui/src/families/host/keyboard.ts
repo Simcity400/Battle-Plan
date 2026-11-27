@@ -414,6 +414,8 @@ export function handleFamilyGridKeyDown(event: ReactKeyboardEvent | KeyboardEven
   }
 }
 
+type PointsNavigateKey = 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End';
+
 export interface FamilyPointsKeyboardOptions {
   readonly nav: readonly FamilyNavTuple[];
   readonly focusedKey: string | null;
@@ -421,6 +423,7 @@ export interface FamilyPointsKeyboardOptions {
   readonly blocked: boolean;
   readonly isPinnedTooltip: () => boolean;
   readonly onFocusKey: (key: string) => void;
+  readonly onPointsNavigate?: (key: PointsNavigateKey) => boolean;
   readonly onActivate: (entry: FamilyNavTuple) => void;
   readonly onContextMenu?: (entry: FamilyNavTuple | null) => boolean;
   readonly onTogglePinTooltip?: (activeKey: string | null) => void;
@@ -430,7 +433,24 @@ export interface FamilyPointsKeyboardOptions {
 
 export function handleFamilyPointsKeyDown(event: ReactKeyboardEvent | KeyboardEvent, options: FamilyPointsKeyboardOptions): void {
   const { nav, pageStep, blocked } = options;
-  if (!nav.length) {
+  if (
+    !blocked
+    && options.onPointsNavigate
+    && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+    && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End')
+  ) {
+    if (options.onPointsNavigate(event.key)) {
+      event.preventDefault();
+      return;
+    }
+  }
+  const matchedIdx = options.focusedKey !== null ? nav.findIndex(item => item[0] === options.focusedKey) : -1;
+  const activeEntry: FamilyNavTuple | undefined = matchedIdx >= 0
+    ? nav[matchedIdx]
+    : options.focusedKey !== null
+      ? [options.focusedKey, '', -1, -1, '', null]
+      : nav[0];
+  if (!nav.length && !activeEntry) {
     if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && !blocked) {
       if (options.onContextMenu?.(null)) event.preventDefault();
     } else if (event.key === 'Escape' && options.isPinnedTooltip()) {
@@ -439,56 +459,62 @@ export function handleFamilyPointsKeyDown(event: ReactKeyboardEvent | KeyboardEv
     }
     return;
   }
-  const matchedIdx = options.focusedKey !== null ? nav.findIndex(item => item[0] === options.focusedKey) : -1;
   const idx = matchedIdx >= 0 ? matchedIdx : 0;
-  const entry = nav[idx]!;
   const moveBy = (delta: number) => {
+    if (!nav.length) return;
     const nextIdx = matchedIdx >= 0 ? Math.max(0, Math.min(nav.length - 1, idx + delta)) : (delta >= 0 ? 0 : nav.length - 1);
     options.onFocusKey(nav[nextIdx]![0]);
   };
   if (event.key === 'ArrowRight') {
+    if (!nav.length) return;
     event.preventDefault();
     moveBy(1);
     return;
   }
   if (event.key === 'ArrowLeft') {
+    if (!nav.length) return;
     event.preventDefault();
     moveBy(-1);
     return;
   }
   if (event.key === 'Home') {
+    if (!nav.length) return;
     event.preventDefault();
     options.onFocusKey(nav[0]![0]);
     return;
   }
   if (event.key === 'End') {
+    if (!nav.length) return;
     event.preventDefault();
     options.onFocusKey(nav[nav.length - 1]![0]);
     return;
   }
   if (event.key === 'PageDown') {
+    if (!nav.length) return;
     event.preventDefault();
     moveBy(pageStep);
     return;
   }
   if (event.key === 'PageUp') {
+    if (!nav.length) return;
     event.preventDefault();
     moveBy(-pageStep);
     return;
   }
   if (event.key === 'Enter' || event.key === ' ') {
+    if (!activeEntry) return;
     event.preventDefault();
-    if (!blocked) options.onActivate(entry);
+    if (!blocked) options.onActivate(activeEntry);
     return;
   }
   if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-    if (!blocked && options.onContextMenu?.(entry)) event.preventDefault();
+    if (!blocked && options.onContextMenu?.(activeEntry ?? null)) event.preventDefault();
     return;
   }
   if ((event.key === 'p' || event.key === 'P') && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
     if (options.isPinnedTooltip()) options.onUnpinTooltip?.();
-    else if (!blocked) options.onTogglePinTooltip?.(entry[0]);
+    else if (!blocked && activeEntry) options.onTogglePinTooltip?.(activeEntry[0]);
     return;
   }
   if (event.key === 'Escape') {

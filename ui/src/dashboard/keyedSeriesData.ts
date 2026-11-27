@@ -115,24 +115,3 @@ export function keyedTileReply(reply: TileReply & { lines: readonly { country: C
     throw new Error('The keyed tile reply is malformed.');
   return { ...reply, lines: reply.lines.map((line, at) => ({ ...line, country: keyId(keys[at]) })) } as TileReply;
 }
-
-export interface ReachedKeyLine { key: SeriesKey; runs: SeriesRun[]; drops: SeriesDrop[]; missing: Map<number, string>; notApplicable: Set<number>; unrecorded: Set<number> }
-
-export function reachedKeyLines(keys: readonly SeriesKey[], states: KeyedStates | undefined): ReachedKeyLine[] {
-  const byKey = new Map<string, KeyedState[]>();
-  for (const state of states?.states ?? []) {
-    const id = keyId(state);
-    const held = byKey.get(id);
-    if (held) held.push(state); else byKey.set(id, [state]);
-  }
-  return keys.map(key => {
-    const reached = byKey.get(keyId(key)) ?? [];
-    const unique = new Map<string, SeriesRun>();
-    for (const state of reached) if (state.run) unique.set(`${state.run.firstHour}|${state.run.lastHour}|${state.run.valueRaw}`, state.run);
-    return { key, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),
-      drops: reached.flatMap(state => state.drop ? [state.drop] : []),
-      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])),
-      notApplicable: new Set(reached.flatMap(state => state.notApplicable === true ? [state.hour] : [])),
-      unrecorded: new Set(reached.flatMap(state => state.notApplicable === false ? [state.hour] : [])) };
-  });
-}
