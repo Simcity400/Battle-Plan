@@ -180,10 +180,29 @@ fn main() -> io::Result<()> {
     let opened = q.timeline.stretches.iter().map(|s| s.first).min().ok_or_else(|| io::Error::other("the branch holds no recording"))?;
     let closed = q.timeline.stretches.iter().map(|s| s.last).max().unwrap_or(opened);
     let start = opened + (closed - opened) * 3 / 10;
-    let span = q.timeline.stretches.iter().find(|s| s.first <= start && start + 3600 + QUANTUM <= s.last)
-        .ok_or_else(|| io::Error::other("no continuous recording for 3,600 hours from where the acceptance suite plays"))?;
+    let span = q.timeline.stretches.iter().find(|s| {
+        if s.first > start || start > s.last { return false; }
+        if heaviest30 {
+            i64::from(custom_quantum).checked_mul(i64::from(custom_steps))
+                .and_then(|dur| i64::from(start).checked_add(dur))
+                .is_some_and(|end| end <= i64::from(s.last))
+        } else {
+            i64::from(start) + 3600 + i64::from(QUANTUM) <= i64::from(s.last)
+        }
+    }).ok_or_else(|| io::Error::other("no continuous recording covering the requested window from where the acceptance suite plays"))?;
     let pages = Arc::new(WorldPages::open(&path, Span::Run(span.run as usize))?);
-    let first = start + (pages.pieces()[0].first - 1 - start).rem_euclid(QUANTUM);
+    let align_q = if heaviest30 { custom_quantum } else { QUANTUM };
+    let first = i64::from(start) + i64::from((pages.pieces()[0].first - 1 - start).rem_euclid(align_q));
+    let first = i32::try_from(first).map_err(|_| io::Error::other("aligned start hour overflows i32"))?;
+    if heaviest30 {
+        let last_h = i64::from(custom_quantum)
+            .checked_mul(i64::from(custom_steps))
+            .and_then(|dur| i64::from(first).checked_add(dur))
+            .ok_or_else(|| io::Error::other("requested heaviest30 window overflows i64"))?;
+        if last_h > i64::from(span.last) || last_h > i64::from(i32::MAX) {
+            return Err(io::Error::other("aligned heaviest30 window extends past the continuous stretch"));
+        }
+    }
     let end = first + 3600;
     let last = if hourly { first + QUANTUM } else { end };
     let reads = [TableId::Countries, TableId::Projects, TableId::ProjectHistory, TableId::ProductionLines].map(at_hour::Read::all);
@@ -207,8 +226,7 @@ fn main() -> io::Result<()> {
     } else { tag };
     let identity = Identity { timeline: q.timeline.clone(), holders: q.holders.clone() };
     if heaviest30 {
-        let first_h = start + (pages.pieces()[0].first - 1 - start).rem_euclid(custom_quantum);
-        return heaviest::run(recording, &source, &load, &branch.id.to_string(), tag, opened, pages, &identity, first_h, custom_quantum, custom_steps, only_product.as_deref());
+        return heaviest::run(recording, &source, &load, &branch.id.to_string(), tag, opened, pages, &identity, first, custom_quantum, custom_steps, only_product.as_deref());
     }
     let mut products = source.in_scope(|| widgets::page(&source, &load, &identity, tag))?;
     let names: Vec<_> = products.iter().map(|w| w.name).collect();
