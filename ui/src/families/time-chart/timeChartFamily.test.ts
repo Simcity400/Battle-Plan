@@ -1892,7 +1892,7 @@ describe('stacked bounded series, supply health, and ruling party', () => {
       governmentChanges: [],
       governmentUnobserved: [],
       leaders: [{ ideology: 'nazism', person: 0, firstHour: base, lastHour: hour + 200, startsSegment: true }],
-      people: [{ character: { id: 1, token: 'GER_leader', name: 'GER_leader' }, name: 'Test Leader', portrait: null, portraitMissing: null }],
+      people: [{ character: { id: 1, token: 'GER_leader', name: 'GER_leader' }, name: 'Test Leader' }],
       ideologyTypes: [{ token: 'nazism', name: 'Nazism' }],
       partyNames: ['Test Party'],
       partyNameRuns: [{ name: 0, firstHour: base, lastHour: hour + 200 }],

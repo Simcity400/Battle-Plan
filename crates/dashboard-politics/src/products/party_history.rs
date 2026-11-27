@@ -1,5 +1,5 @@
 use dashboard_base::products::Country;
-use dashboard_base::products::{CountryParams, LoadContext, Product, at_hour, check_reply_budget, character_portraits::{RecordedPortrait, portrait_png, recorded_portrait}, politics_content::{PoliticsContent, politics_content}};
+use dashboard_base::products::{CountryParams, LoadContext, Product, at_hour, check_reply_budget, politics_content::{PoliticsContent, politics_content}};
 use super::ideas::IdeaCharacter;
 use dashboard_base::Source;
 use dashboard_text::metadata::check_cancel;
@@ -7,7 +7,7 @@ use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::{catalogue::View, identity::character_script_literal, metadata::link_slot, party_names::{PartyNaming, party_key_for_tag_checked}};
 use replay_lanes::lanes::{self, Cell, History, Keys};
-use replay_data::rows::{PORTRAIT_CIVILIAN, PORTRAIT_LARGE, TableId, tables};
+use replay_data::rows::{TableId, tables};
 use replay_frame::frame::TableView;
 use replay_recording::columnar_frames::{Damage, DamageScope};
 use serde::Serialize;
@@ -134,14 +134,10 @@ pub struct IdeologyTypeInfo {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct LeaderArtwork {
+pub struct LeaderPerson {
     pub character: IdeaCharacter,
     #[doc = " Null when the saved name needs runtime scope or nothing names the character."]
     pub name: Option<String>,
-    #[doc = " An artwork URL; null when the portrait is not known."]
-    pub portrait: Option<String>,
-    #[doc = " Why `portrait` is null."]
-    pub portrait_missing: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -162,8 +158,8 @@ pub struct PartyHistoryReply {
     pub party_name_runs: Vec<PartyNameRun>,
     #[doc = " Each name on `party_name_runs`; null when it cannot be known."]
     pub party_names: Vec<Option<String>>,
-    #[doc = " Each character on `leaders`, named and pictured."]
-    pub people: Vec<LeaderArtwork>,
+    #[doc = " Each character on `leaders`, named."]
+    pub people: Vec<LeaderPerson>,
     #[doc = " The leaders' sub-ideologies, named."]
     pub ideology_types: Vec<IdeologyTypeInfo>,
     #[doc = " Each election whose new date was read, at its recorded date."]
@@ -185,7 +181,6 @@ dashboard_base::reply_warnings!(PartyHistoryReply);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Leader {
     pub character: IdeaCharacter,
-    pub portrait: RecordedPortrait,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -783,15 +778,13 @@ impl Recasts {
         let cell = |column| self.characters.columns.binary_search(&column).ok().and_then(|at| cells.map(|row| row[at]));
         let name = cell(columns.character[1]).and_then(|value| self.characters.text(value)).and_then(|text| std::str::from_utf8(text).ok());
         let word = cell(columns.character[0]).and_then(number).and_then(|word| u32::try_from(word).ok());
-        let reads = [
-            at_hour::Read { table: TableId::CharacterPortraits, keys: at_hour::Keys::These(vec![key]) },
-            at_hour::Read { table: TableId::LexicalTokens, keys: at_hour::Keys::These(vec![0]) },
-        ];
-        let reads = if word == Some(0) { &reads[..] } else { &reads[..1] };
-        let frame = frames.frame(hour, reads, "Party leader")?;
+        let frame = match word {
+            Some(0) => Some(frames.frame(hour, &[at_hour::Read { table: TableId::LexicalTokens, keys: at_hour::Keys::These(vec![0]) }], "Party leader")?),
+            _ => None,
+        };
         let token = word.and_then(|word| {
             let literal = if word == 0 {
-                frame.complete::<tables::LexicalTokens>().ok()?.first().map(|row| row.literal.as_slice())
+                frame.as_ref()?.complete::<tables::LexicalTokens>().ok()?.first().map(|row| row.literal.as_slice())
             } else {
                 let at = self.lexical.statuses.partition_point(|held| held.last < hour);
                 let status = self.lexical.statuses.get(at).filter(|held| held.first <= hour)?;
@@ -805,8 +798,7 @@ impl Recasts {
             };
             character_script_literal(word, literal)
         });
-        let portrait = recorded_portrait(frame.complete::<tables::CharacterPortraits>().ok(), id, PORTRAIT_CIVILIAN, PORTRAIT_LARGE);
-        Ok(Leader { character: IdeaCharacter { id, token: token.unwrap_or_default().to_owned(), name: name.unwrap_or_default().to_owned() }, portrait })
+        Ok(Leader { character: IdeaCharacter { id, token: token.unwrap_or_default().to_owned(), name: name.unwrap_or_default().to_owned() } })
     }
 }
 
@@ -843,7 +835,7 @@ fn ideology_content<'a>(politics: Result<&'a PoliticsContent, String>, warnings:
             Some(politics)
         }
         Err(error) => {
-            warnings.push(format!("Ideology and leader names, colours and portraits are unavailable: {error}"));
+            warnings.push(format!("Ideology and leader names and colours are unavailable: {error}"));
             None
         }
     };
@@ -870,20 +862,10 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         check_cancel(cancelled)?;
         let character = &leader.character;
         let script = (!character.token.is_empty()).then_some(character.token.as_str());
-        let (name, portrait) = match politics {
-            Some(politics) => (politics.character_name(script, &character.name), portrait_png(politics, &leader.portrait)),
-            None => (None, Err("Content is unavailable.".to_owned())),
-        };
-        let (portrait, portrait_missing) = match portrait {
-            Ok(portrait) => (Some(portrait), None),
-            Err(reason) => (None, Some(reason)),
-        };
-        people.push(LeaderArtwork { character: character.clone(), name, portrait, portrait_missing });
+        let name = politics.and_then(|politics| politics.character_name(script, &character.name));
+        people.push(LeaderPerson { character: character.clone(), name });
     }
     let party_names = parties.ruling.party_names(politics, &mut warnings);
-    if people.iter().any(|leader| leader.portrait.is_some()) {
-        warnings.push(dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned());
-    }
     finish_warnings(parties, politics, tag, &mut warnings);
     Ok(PartyHistoryReply {
         branch_id: params.branch_id.clone(),
@@ -974,7 +956,7 @@ impl Product for PartyHistory {
             LeaderRun::decl(),
             PartyNameRun::decl(),
             IdeologyTypeInfo::decl(),
-            LeaderArtwork::decl(),
+            LeaderPerson::decl(),
             IdeologyInfo::decl(),
         ]
     }
