@@ -12,7 +12,7 @@ const AGENCY_GUI: &[u8] = br#"
             containerWindowType = {
                 name = "agency_branches"
                 size = { width = 260 height = 100 }
-                gridBoxType = { name = "upgrades_list" size = { width = 230 height = 80 } slotsize = { width = 70 height = 45 } format = "UPPER_LEFT" }
+                gridBoxType = { name = "upgrades_list" position = { x = 23 y = 19 } size = { width = 230 height = 80 } slotsize = { width = 70 height = 45 } max_slots_horizontal = 3 format = "UPPER_LEFT" }
             }
             containerWindowType = {
                 name = "agency_operations"
@@ -28,6 +28,7 @@ const AGENCY_GUI: &[u8] = br#"
         }
         containerWindowType = {
             name = "upgrade_button"
+            position = { x = -7 y = 11 }
             size = { width = 60 height = 35 }
             gridBoxType = { name = "researched_icons" size = { width = 50 height = 20 } slotsize = { width = 14 height = 14 } format = "UPPER_LEFT" }
         }
@@ -141,6 +142,37 @@ fn an_unavailable_marker_preserves_the_known_upgrade_level_as_text() {
     let art = plan.text.iter().find(|entry| entry.label == "Archive level marker").unwrap();
     assert!(art.value.as_deref().is_some_and(|reason| reason.starts_with("Not shown:") && reason.contains("no frames")));
     assert!(art.missing.is_none());
+}
+
+#[test]
+fn the_overview_keeps_only_branches_inside_the_authored_grid_extent() {
+    let guis = agency_guis();
+    let root = guis.template(b"synthetic_agency").unwrap();
+    let mut resources = gui::fixture();
+    resources.add_sprite("GFX_synthetic_tab", [65, 18], 1);
+    resources.add_sprite("GFX_synthetic_marker", [11, 11], 1);
+    let layout = layout_window(root, &resources, [320, 290], |_| {}).unwrap();
+    let sources = Sources { guis: &guis, resources: &resources, localisation: resources.localisation() };
+    let mut view = agency_view();
+    view.branches = Ok((0..7).map(|index| Branch {
+        token: format!("synthetic_branch_{index}"),
+        name: Ok(format!("Synthetic Branch {index}")),
+        pips: if index == 6 {
+            vec![Pip { token: "archive".to_owned(), name: Err("Synthetic localisation unavailable".to_owned()), levels: 3, level: Ok(2) }]
+        } else {
+            Vec::new()
+        },
+    }).collect());
+
+    let mut plan = ComposedPlan::default();
+    compose_branches(&mut plan, &layout, root, &sources, &view).unwrap();
+    assert_eq!(plan.sub_windows.len(), 6);
+    assert_eq!(plan.text.iter().filter(|entry| entry.label == "Branch").count(), 7);
+    assert!(plan.text.iter().any(|entry| {
+        entry.label == "Synthetic Branch 6"
+            && entry.value.as_deref().is_some_and(|value| value.contains("separate upgrades window") && value.contains("BattlePlan"))
+    }));
+    assert!(plan.text.iter().any(|entry| entry.label == "archive" && entry.value.as_deref() == Some("2 / 3")));
 }
 
 #[test]
