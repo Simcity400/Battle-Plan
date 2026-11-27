@@ -249,6 +249,7 @@ pub struct AirChoice {
 pub struct AirChoicesReply {
     #[doc = " Every side the timeline assigns, as last assigned."]
     pub sides: Vec<AirSide>,
+    pub sides_missing: Option<String>,
     #[doc = " The air theatres at the timeline's last hour, by id."]
     pub theatres: Vec<AirChoice>,
     #[doc = " Why the theatres are not listed."]
@@ -1123,6 +1124,23 @@ impl Product for AirSuperiorityChoices {
         for side in index.epochs.iter().filter_map(|epoch| epoch.sides.as_deref()).flatten() {
             last.insert(&side.key, side);
         }
+        let sides_missing = index.epochs.iter().find(|epoch| epoch.sides.is_none()).map(|epoch| {
+            let reads = [TableId::WarRelations, TableId::Factions, TableId::FactionMembers, TableId::CountryLinks].map(Read::all);
+            let why = at_hour::frame(&query, epoch.first, &reads, "Air sides").and_then(|frame| {
+                frame.complete::<tables::WarRelations>()?;
+                frame.complete::<tables::Factions>()?;
+                frame.complete::<tables::FactionMembers>()?;
+                frame.complete::<tables::CountryLinks>()?;
+                Ok(())
+            });
+            match why {
+                Err(error) => format!("Air sides are not known at hour {}: {error}", epoch.first),
+                Ok(()) => match query.holders.unknown_reason(epoch.first) {
+                    Some(reason) => format!("Air sides are not known at hour {}: {reason}", epoch.first),
+                    None => format!("Air-side assignment is not known at hour {}", epoch.first),
+                },
+            }
+        });
         let mut resolver = RecordedSideResolver::new(source, &query, context, cancelled, &mut warnings)?;
         let sides = last.values().map(|side| side_of(&index, side, query.timeline.last, &mut resolver)).collect();
         let (theatres, theatres_missing) = match theatres_at_end(&query, &names) {
@@ -1132,7 +1150,7 @@ impl Product for AirSuperiorityChoices {
         if let Some(why) = &theatres_missing {
             warnings.push(why.clone());
         }
-        Ok(AirChoicesReply { sides, theatres, theatres_missing, countries: query.holders.tags.keys().cloned().collect(), warnings })
+        Ok(AirChoicesReply { sides, sides_missing, theatres, theatres_missing, countries: query.holders.tags.keys().cloned().collect(), warnings })
     }
 }
 

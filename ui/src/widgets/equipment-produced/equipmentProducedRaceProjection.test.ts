@@ -10,7 +10,7 @@ import type { FamilyNavTuple } from '../../families/host/keyboard.ts';
 import { parseTimeChartHit, timeChartHostAdapter } from '../../families/time-chart/hostAdapter.ts';
 import type { IdentityProvider, InstalledPicture } from '../../families/plan.ts';
 import type { EquipmentProducedRaceReply } from '../../generated/dashboard';
-import { detailCountry, detailEmptyText, detailRowFromAction, equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, UNKNOWN_WORDS, type EquipmentProducedRaceOptions, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
+import { detailCountry, detailEmptyText, detailRowFromAction, equipmentProducedRaceDeclaration, equipmentProducedRaceProjection, resolvedEquipment, UNKNOWN_WORDS, type EquipmentProducedRaceOptions, type EquipmentProducedRowMeta } from './equipmentProducedRaceProjection.ts';
 
 function fakeIdentity(names: Record<string, { name: string; color: string; tag?: string }>): IdentityProvider {
   return {
@@ -37,10 +37,21 @@ const OPTS: EquipmentProducedRaceOptions = {
   measure: 'day',
   equipmentLabel: 'Infantry Equipment',
   measureLabel: 'Per day',
-  noDataMessage: null,
+  noData: null,
   group: false,
   top: 10,
 };
+
+test('production choices distinguish an empty catalogue from an unread run and keep explicit types usable', () => {
+  const reason = 'Production type totals were unread in one run';
+  const ask = (typesMissing: string | null, included = '') => resolvedEquipment({
+    options: { count: 'units', included },
+    aux: { branchId: '1', mostDelivered: null, types: [], typesMissing, warnings: [] },
+  } as never).noData;
+  assert.deepEqual(ask(null), { kind: 'empty', message: 'No production data in this recording.' });
+  assert.deepEqual(ask(reason), { kind: 'unavailable', message: reason });
+  assert.equal(ask(reason, 'sample_type'), null);
+});
 
 test('equipmentProducedRaceProjection sends group to Rust, keys by slot, keeps zeros and missing measures, and surfaces refusal', () => {
   const emptyModel = equipmentProducedRaceProjection.project(

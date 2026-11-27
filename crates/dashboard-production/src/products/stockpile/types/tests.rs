@@ -20,6 +20,40 @@ fn raw(figure: &StockFigure) -> Option<&str> {
 }
 
 #[test]
+fn stockpile_type_list_distinguishes_empty_from_unread_stock_and_keeps_witnesses() {
+    use dashboard_base::test_fixtures::{replay, slot_hour, stockpile_frame};
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let hour = slot_hour(TableId::Stockpiles) + 24;
+    let ask = |stock: &[(u64, i64)], lines: Option<&[(u64, i64, i64, u8)]>, logistics| {
+        let mut baseline = stockpile_frame(hour - 1, true, &[], Some(&[]));
+        *baseline.tables[TableId::LogisticsEquipment.index()] = TableView::Complete(TableRows::LogisticsEquipment(vec![]));
+        let mut frame = stockpile_frame(hour, true, stock, lines);
+        *frame.tables[TableId::LogisticsEquipment.index()] = logistics;
+        let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
+        let source = super::Source::from_replay(dashboard_base::SourceKey { source_id: "stockpile-types".into(), revision: "1".into() }, "synthetic.battleplan".into(), std::sync::Arc::new(replay), &false.into()).unwrap();
+        super::load(&source, &super::StockpileTypesParams { branch_id: "1".into(), country: super::Country::Slot(7), hour }, &super::LoadContext { content: None }, &false.into()).unwrap()
+    };
+    let known = || TableView::Complete(TableRows::LogisticsEquipment(vec![]));
+    let empty = ask(&[], Some(&[]), known());
+    assert!(empty.rows.is_empty());
+    assert_eq!(serde_json::to_value(&empty).unwrap().get("rowsMissing"), Some(&serde_json::Value::Null));
+    let unread = ask(&[], None, known());
+    assert!(unread.rows.is_empty());
+    assert!(serde_json::to_value(&unread).unwrap()["rowsMissing"].as_str().is_some_and(|reason| reason.contains("fixture")));
+    let partial = ask(&[(20, 97)], None, known());
+    assert_eq!(partial.rows[0].variants[0].stored.raw.as_deref(), Some("97"));
+    assert!(serde_json::to_value(&partial).unwrap()["rowsMissing"].is_string());
+    let unread = ask(&[(20, 97)], Some(&[]), TableView::Unavailable { reason: "fixture logistics failed".into() });
+    assert_eq!(unread.rows.len(), 1);
+    assert!(serde_json::to_value(&unread).unwrap()["rowsMissing"].as_str().is_some_and(|reason| reason.contains("fixture logistics failed")));
+    let logistics = replay_data::rows::LogisticsEquipmentRow { country: 9001, archetype: 13, token: 1, balance_raw: -37, stock_raw: 0, available_raw: replay_data::rows::Recorded::Value(None) };
+    let partial = ask(&[], Some(&[]), TableView::Truncated { rows: TableRows::LogisticsEquipment(vec![logistics]), missing: 2 });
+    assert_eq!(partial.rows.len(), 1, "a partially read logistics table still identifies equipment in need");
+    assert!(partial.rows[0].balance.missing.as_deref().is_some_and(|reason| reason.contains("2 rows")));
+}
+
+#[test]
 fn each_type_answers_stored_produced_need_and_balance_with_shortages_first_worst_first() {
     let types = [kind("rifles", None), kind("trucks", None), kind("tanks", None), kind("guns", None)];
     let variants = [
@@ -33,7 +67,7 @@ fn each_type_answers_stored_produced_need_and_balance_with_shortages_first_worst
     by_key.insert("rifles".to_owned(), logistic(10, 600, Some(600)));
     by_key.insert("trucks".to_owned(), logistic(-4, 40, Some(40)));
     by_key.insert("tanks".to_owned(), logistic(-1, 12, Some(12)));
-    let need = Need::Player(by_key);
+    let need = Need::Player(by_key, None);
     let answered = rows(&Inputs { types: &types, variants: &variants, need: &need, stock_missing: None, lines_missing: None });
     assert_eq!(answered.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(), ["trucks", "tanks", "rifles", "guns"], "trucks are short by 4 of 44, tanks by 1 of 13, then the surplus, then a type with no logistics row");
     let rifles = &answered[2];
@@ -66,7 +100,7 @@ fn missing_inputs_are_reasons_never_zero() {
     ];
     let mut by_key = BTreeMap::new();
     by_key.insert("convoys".to_owned(), logistic(-2, 30, None));
-    let need = Need::Player(by_key);
+    let need = Need::Player(by_key, None);
     let answered = rows(&Inputs { types: &types, variants: &variants, need: &need, stock_missing: None, lines_missing: Some("Production lines are not known at this hour.") });
     let rifles = answered.iter().find(|row| row.key == "rifles").unwrap();
     assert_eq!(rifles.stored.missing.as_deref(), Some(super::UNTYPED_HOLDS), "an untyped design holding stock leaves every type's total unproven");
@@ -76,6 +110,12 @@ fn missing_inputs_are_reasons_never_zero() {
     let untyped = answered.iter().find(|row| row.key.starts_with(super::super::UNRESOLVED_MARK)).unwrap();
     assert_eq!(untyped.stored.missing.as_deref(), Some(super::UNRESOLVED_TYPE));
     assert_eq!(untyped.variants[0].produced.missing.as_deref(), Some("Production lines are not known at this hour."));
+
+    let need = Need::Player(BTreeMap::from([("rifles".into(), logistic(-17, 0, None))]), Some("Logistics read in part".into()));
+    let answered = rows(&Inputs { types: &types, variants: &[], need: &need, stock_missing: Some("Stock unread"), lines_missing: Some("Lines unread") });
+    assert_eq!(answered.len(), 1);
+    assert_eq!(answered[0].stored.missing.as_deref(), Some("Stock unread"));
+    assert_eq!(answered[0].produced.missing.as_deref(), Some("Lines unread"));
 }
 
 #[test]

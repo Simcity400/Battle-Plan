@@ -7,6 +7,7 @@ use dashboard_base::Source;
 use dashboard_query::{
     Query, cost,
     identity::Holder,
+    read::{self, CoveredValue},
     series::{ranked::GroupSelection, totals::Gap},
 };
 use replay_lanes::lanes::{self, Keys};
@@ -100,6 +101,7 @@ pub struct ProducedTypesReply {
     #[doc = " Every type any country produced in the branch, in the equipment database's order, the"]
     #[doc = " ones content does not resolve last."]
     pub types: Vec<ProducedType>,
+    pub types_missing: Option<String>,
     #[doc = " The type with the most units delivered, every country together, at each run's end: the"]
     #[doc = " widget's type until one is chosen. Null when nothing was."]
     pub most_delivered: Option<String>,
@@ -356,6 +358,10 @@ fn asked_parts(types: &BTreeMap<u32, BTreeMap<u32, Typed>>, asked: &[String]) ->
         .collect()
 }
 
+fn witnessed_production(value: CoveredValue) -> bool {
+    !matches!(value, CoveredValue::Value(0) | CoveredValue::Uncovered)
+}
+
 fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams, context: &LoadContext) -> io::Result<ProducedTypesReply> {
     let mut warnings = Vec::new();
     let content = Content::read(source, context, &mut warnings);
@@ -364,15 +370,45 @@ fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams,
     let column = if params.refits { "units" } else { "units_without_refits" };
     let mut delivered: HashMap<String, i128> = HashMap::new();
     let mut produced: BTreeSet<String> = BTreeSet::new();
-    for (run, (_, last)) in runs(query) {
-        let Some(rows) = snapshot(query, run, TableId::ProductionTypeTotals, last, &[column, "units", "spent"], Keys::Range(WORLD << 32, WORLD << 32 | u128::from(u32::MAX)))? else { continue };
-        for (key, cells) in rows {
-            let Some(typed) = types.get(&run).and_then(|types| types.get(&(key as u32))) else { continue };
-            if cells[1] != Some(0) || cells[2] != Some(0) {
+    let mut types_missing = None;
+    let table = TableId::ProductionTypeTotals;
+    let columns = [column, "units", "spent"].map(|name| dashboard_declare::field(table, name));
+    let [units, delivered_units, spent] = columns;
+    let columns = [units?, delivered_units?, spent?];
+    let recording = query.replay.recording();
+    for (run, (first, last)) in runs(query) {
+        let statuses = read::statuses(recording, run, table, first, last)?;
+        let unread = statuses.iter().find(|status| status.status != Status::Complete);
+        if let Some(status) = unread.filter(|_| types_missing.is_none()) {
+            let reasons = read::status_reasons(recording, run, table, std::slice::from_ref(status))?;
+            let reason = match status.status {
+                Status::Unavailable { reason } => reasons.get(&reason).map(String::as_str),
+                _ => None,
+            };
+            types_missing = dashboard_query::coverage::row_coverage(table, status.status, reason, false).into_missing();
+        }
+        let read = cost::storage(|| lanes::at_keys(recording, run, table, last, Some(&columns), Keys::Range(WORLD << 32, WORLD << 32 | u128::from(u32::MAX))))?;
+        let view = read.view();
+        let Some(run_types) = types.get(&run) else { continue };
+        for &(key, slot) in &read.rows {
+            let Some(typed) = run_types.get(&(key as u32)) else { continue };
+            if [columns[1], columns[2]].into_iter().any(|column| witnessed_production(view.number(column, slot).map_or(CoveredValue::Unvalued, CoveredValue::Value))) {
                 produced.insert(typed.kind.key.clone());
             }
-            if let (Some(units), false) = (cells[0], typed.kind.key == UNRECORDED_TYPE) {
+            if let (Some(units), false) = (view.number(columns[0], slot), typed.kind.key == UNRECORDED_TYPE) {
                 *delivered.entry(typed.kind.key.clone()).or_default() += i128::from(units);
+            }
+        }
+        if unread.is_some() && !run_types.is_empty() {
+            let keys: Vec<_> = run_types.keys().map(|&token| WORLD << 32 | u128::from(token)).collect();
+            for column in [columns[1], columns[2]] {
+                let source = replay_columnar::summary::Source::Cell(column);
+                let (held, _) = read::covered_runs(recording, run, table, source, Some(&keys), first, last)?;
+                for (key, rows) in held {
+                    if rows.iter().any(|&(_, _, value)| witnessed_production(value)) {
+                        produced.insert(run_types[&(key as u32)].kind.key.clone());
+                    }
+                }
             }
         }
     }
@@ -388,8 +424,9 @@ fn types_reply(source: &Source, query: &Query<'_>, params: &ProducedTypesParams,
     warnings.extend(notes);
     Ok(ProducedTypesReply {
         branch_id: params.branch_id.clone(),
-        most_delivered: most.map(|(key, _)| key.to_owned()),
+        most_delivered: most.filter(|_| types_missing.is_none()).map(|(key, _)| key.to_owned()),
         types: types.into_iter().map(|typed| typed.kind).collect(),
+        types_missing,
         warnings,
     })
 }
@@ -1150,6 +1187,62 @@ pub(super) mod tests {
     use replay_data::rows::{CountryLinkRow, CountryRow, ProductionLineOutputRow, Recorded, RocketProductionOutputRow, TableRows};
     use replay_frame::frame::TableView;
     use std::sync::Arc;
+
+    #[test]
+    fn produced_type_list_distinguishes_recorded_empty_from_an_unread_run_end() {
+        let ask = |read| {
+            let mut frame = source(1, 1000, Some(1));
+            *frame.tables[TableId::ProductionLineOutput.index()] = if read {
+                TableView::Complete(TableRows::ProductionLineOutput(vec![]))
+            } else {
+                TableView::Unavailable { reason: "fixture production feed failed".into() }
+            };
+            let replay = dashboard_base::test_fixtures::replay(vec![frame]).into_timelines(&Default::default()).unwrap();
+            let source = Source::from_replay(dashboard_base::SourceKey { source_id: "produced-types".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+            EquipmentProducedTypes::load(&source, &ProducedTypesParams { branch_id: "1".into(), refits: false }, &LoadContext { content: None }, &false.into()).unwrap()
+        };
+        let empty = ask(true);
+        assert!(empty.types.is_empty());
+        assert_eq!(serde_json::to_value(&empty).unwrap().get("typesMissing"), Some(&serde_json::Value::Null));
+        let unread = ask(false);
+        assert!(unread.types.is_empty());
+        let unread = serde_json::to_value(unread).unwrap();
+        assert!(unread["typesMissing"].as_str().is_some_and(|reason| reason.contains("fixture production feed failed")), "{unread}");
+
+        let ask = |units, lose_tail| {
+            let mut witnessed = source(1, 1000, Some(1));
+            *witnessed.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(vec![
+                ProductionLineOutputRow { line: 11, variant: 17, country: 9001, units, since_hour: 1000, observed_since_creation: true, exact: true, spent_raw: Recorded::Value(None), purpose: Recorded::Value(1), ..Default::default() }
+            ]));
+            let mut frames = vec![witnessed];
+            if lose_tail {
+                let mut lost = source(1, 1001, Some(1));
+                *lost.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable { reason: "fixture lost its production feed".into() };
+                frames.push(lost);
+            }
+            let replay = dashboard_base::test_fixtures::replay(frames).into_timelines(&Default::default()).unwrap();
+            let source = Source::from_replay(dashboard_base::SourceKey { source_id: "produced-types-partial".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+            EquipmentProducedTypes::load(&source, &ProducedTypesParams { branch_id: "1".into(), refits: false }, &LoadContext { content: None }, &false.into()).unwrap()
+        };
+        for units in [0, 91] {
+            let witnessed = ask(units, false);
+            assert_eq!(witnessed.types.len(), 1);
+            let lost = ask(units, true);
+            assert_eq!(lost.types, witnessed.types, "a run-end failure does not remove the witnessed type");
+            assert!(lost.most_delivered.is_none());
+            assert!(lost.types_missing.as_deref().is_some_and(|reason| reason.contains("fixture lost its production feed")));
+        }
+
+        let mut lost = dashboard_base::test_fixtures::source(1, 1000, Some(1));
+        *lost.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable { reason: "fixture production gap".into() };
+        let mut recovered = dashboard_base::test_fixtures::source(1, 1001, Some(1));
+        *recovered.tables[TableId::ProductionLineOutput.index()] = TableView::Complete(TableRows::ProductionLineOutput(vec![]));
+        let replay = dashboard_base::test_fixtures::replay(vec![lost, recovered]).into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "produced-types-recovered".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &false.into()).unwrap();
+        let reply = EquipmentProducedTypes::load(&source, &ProducedTypesParams { branch_id: "1".into(), refits: false }, &LoadContext { content: None }, &false.into()).unwrap();
+        assert!(reply.types.is_empty());
+        assert!(reply.types_missing.as_deref().is_some_and(|reason| reason.contains("fixture production gap")));
+    }
 
     #[test]
     fn the_race_reads_each_date_once_for_all_its_countries() {

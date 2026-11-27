@@ -52,7 +52,7 @@ export interface EquipmentProducedRaceOptions {
   readonly measure: ProducedMeasure;
   readonly equipmentLabel: string;
   readonly measureLabel: string;
-  readonly noDataMessage: string | null;
+  readonly noData: { readonly kind: 'empty' | 'unavailable'; readonly message: string } | null;
   readonly group: boolean;
   readonly top: number | null;
 }
@@ -86,6 +86,7 @@ export function validateEquipmentProducedTypes(value: unknown): ProducedTypesRep
     !isObj(value)
     || typeof value.branchId !== 'string'
     || !Array.isArray(value.types)
+    || !(value.typesMissing === null || typeof value.typesMissing === 'string')
     || !(value.mostDelivered === null || typeof value.mostDelivered === 'string')
     || !Array.isArray(value.warnings)
   ) {
@@ -195,8 +196,8 @@ export const equipmentProducedRaceProjection: BarsProjection<EquipmentProducedRa
       caption: captionFor(options.count, options.measure, options.equipmentLabel, null),
     };
 
-    if (options.noDataMessage !== null) {
-      return { ...baseModel, rows: [], empty: options.noDataMessage, emptyKind: 'unavailable' };
+    if (options.noData) {
+      return { ...baseModel, rows: [], empty: options.noData.message, emptyKind: options.noData.kind };
     }
     const refused = readView.refused('main');
     if (refused) {
@@ -281,7 +282,7 @@ export function resolvedEquipment(ctx: FamilyPlanContext<ProducedTypesReply>): {
   readonly refits: boolean;
   readonly shownTypes: readonly string[];
   readonly equipmentLabel: string;
-  readonly noDataMessage: string | null;
+  readonly noData: EquipmentProducedRaceOptions['noData'];
 } {
   const count = countOption(ctx.options.count);
   const measure = measureOption(ctx.options.measure);
@@ -299,20 +300,23 @@ export function resolvedEquipment(ctx: FamilyPlanContext<ProducedTypesReply>): {
     : shownTypes.length === 1
       ? nameOf(shownTypes[0]!)
       : `${formatScalar(shownTypes.length, { decimals: 0 })} types`;
-  let noDataMessage: string | null = null;
+  let noData: EquipmentProducedRaceOptions['noData'] = null;
   if (ctx.aux) {
-    if (!ctx.aux.types.length) noDataMessage = 'Production data is not in this recording.';
-    else if (pickingDefault && !mostType) noDataMessage = 'No production data in this recording.';
+    if (ctx.aux.typesMissing) {
+      if (pickingDefault) noData = { kind: 'unavailable', message: ctx.aux.typesMissing };
+    } else if (!ctx.aux.types.length || (pickingDefault && !mostType)) {
+      noData = { kind: 'empty', message: 'No production data in this recording.' };
+    }
   }
-  return { count, measure, refits, shownTypes, equipmentLabel, noDataMessage };
+  return { count, measure, refits, shownTypes, equipmentLabel, noData };
 }
 
 function equipmentProducedRaceSources(ctx: FamilyPlanContext<ProducedTypesReply>): SourcePlan {
-  const { count, measure, refits, shownTypes, noDataMessage } = resolvedEquipment(ctx);
+  const { count, measure, refits, shownTypes, noData } = resolvedEquipment(ctx);
   const top = ctx.countries.top;
   const all = ctx.countries.all;
   const group = top == null && !all ? groupSelection(ctx.widget.countries) : null;
-  const waitingForDefault = count === 'units' && !shownTypes.length && !noDataMessage;
+  const waitingForDefault = count === 'units' && !shownTypes.length && !noData;
   const emptySelection = top == null && !all && !group && !ctx.countries.tags.length;
   const coverage: SourceCoverage = top != null
     ? { mode: 'population', form: 'top', limit: top }
@@ -332,7 +336,7 @@ function equipmentProducedRaceSources(ctx: FamilyPlanContext<ProducedTypesReply>
     refits,
     ...(fromHour !== undefined ? { fromHour } : {}),
   };
-  const skip = waitingForDefault || noDataMessage !== null || emptySelection;
+  const skip = waitingForDefault || noData !== null || emptySelection;
   return {
     owner: `equipment-produced:race:${ctx.track.source.id}:${ctx.track.source.revision}:${ctx.branch.id}:${count}:${measure}:${refits ? 1 : 0}:${shownTypes.join(',')}:${fromHour ?? ''}`,
     entries: skip ? [] : [{
@@ -380,7 +384,7 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
   sources: equipmentProducedRaceSources,
   projection: equipmentProducedRaceProjection,
   projectionOptions: ctx => {
-    const { count, measure, equipmentLabel, noDataMessage } = resolvedEquipment(ctx);
+    const { count, measure, equipmentLabel, noData } = resolvedEquipment(ctx);
     const top = ctx.countries.top;
     const all = ctx.countries.all;
     return {
@@ -388,7 +392,7 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
       measure,
       equipmentLabel,
       measureLabel: MEASURE_LABELS[measure],
-      noDataMessage,
+      noData,
       group: top == null && !all && groupSelection(ctx.widget.countries) !== null,
       top,
     };
@@ -396,6 +400,7 @@ export const equipmentProducedRaceDeclaration: BarsWidgetDeclaration<EquipmentPr
   unavailable: ctx => ctx.countries.reason,
   warnings: (ctx, followRefused) => [
     ...(ctx.aux?.warnings ?? []),
+    ...(ctx.aux?.typesMissing ? [ctx.aux.typesMissing] : []),
     ...(followRefused ? [followRefused] : []),
   ],
   jumpToDate: true,

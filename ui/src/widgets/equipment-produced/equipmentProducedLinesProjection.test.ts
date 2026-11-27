@@ -40,6 +40,7 @@ function fakeIdentity(names: Record<string, { name: string; color: string; tag?:
 const AUX: ProducedTypesReply = {
   branchId: '1',
   mostDelivered: 'infantry_equipment',
+  typesMissing: null,
   types: [{ key: 'infantry_equipment', name: 'Infantry Equipment', domain: 'land' }],
   warnings: [],
 };
@@ -205,7 +206,7 @@ test('equipment-produced lines keys by slot, keeps missing readings with their r
     count: 'units',
     measure: 'day',
     equipmentLabel: 'Infantry Equipment',
-    noDataMessage: null,
+    noData: null,
     fromHour: null,
     holders: null,
     membership: { [ger]: [[100, 600]], [ita]: [[296, 600]] },

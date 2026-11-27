@@ -94,7 +94,7 @@ export function validateAirSuperiority(value: unknown): AirSuperiorityReply {
 export function validateAirChoices(value: unknown): AirChoicesReply {
   const choice = (item: unknown) => object(item) && text(item.id) && text(item.name);
   if (!object(value) || !Array.isArray(value.theatres) || !value.theatres.every(choice)
-    || !Array.isArray(value.sides) || !value.sides.every(validSide) || !optionalText(value.theatresMissing) || !Array.isArray(value.countries)
+    || !Array.isArray(value.sides) || !value.sides.every(validSide) || !optionalText(value.sidesMissing) || !optionalText(value.theatresMissing) || !Array.isArray(value.countries)
     || !value.countries.every(text) || !Array.isArray(value.warnings) || !value.warnings.every(text)) throw new Error('Invalid air-superiority-choices reply');
   return value as AirChoicesReply;
 }

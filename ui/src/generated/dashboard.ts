@@ -785,7 +785,7 @@ export type AirStatisticsRegionsReply = {
 /**
  * Every region the country held statistics in over the timeline, in region order.
  */
-regions: Array<AirStatisticsRegion>, warnings: Array<string>, };
+regions: Array<AirStatisticsRegion>, missing: string | null, warnings: Array<string>, };
 export type AirSuperiorityParams = { branchId: string, mode?: AirMode,
 /**
  * A side's key, or a country (its slot or tag) with `viewpointCountry`.
@@ -899,7 +899,7 @@ export type AirChoicesReply = {
 /**
  * Every side the timeline assigns, as last assigned.
  */
-sides: Array<AirSide>,
+sides: Array<AirSide>, sidesMissing: string | null,
 /**
  * The air theatres at the timeline's last hour, by id.
  */
@@ -2419,7 +2419,7 @@ export type ProducedTypesReply = { branchId: string,
  * Every type any country produced in the branch, in the equipment database's order, the
  * ones content does not resolve last.
  */
-types: Array<ProducedType>,
+types: Array<ProducedType>, typesMissing: string | null,
 /**
  * The type with the most units delivered, every country together, at each run's end: the
  * widget's type until one is chosen. Null when nothing was.
@@ -2509,7 +2509,7 @@ needMissing: string | null,
 /**
  * Shortages first, worst first, then surpluses, largest first, then the rest in the equipment database's order.
  */
-rows: Array<StockTypeRow>, warnings: Array<string>, };
+rows: Array<StockTypeRow>, rowsMissing: string | null, warnings: Array<string>, };
 export type EspionageLogTailParams = { branchId: string, hour: number | null, from: number | null, to: number | null, countries: Array<CountryRef> | null, group: GroupSelection | null, search: string | null, sort: OccurrenceSort | null, offset: string | null, limit: number, operationTypes: Array<string> | null, countryRole: EspionageCountryRole | null, runningOrder: EspionageRunningOrder | null, };
 export type EspionageStatus = "preparing" | "running" | "completed" | "ended" | "outcomeNotRecorded" | "notRead";
 export type EspionageCountryRole = "owner" | "target" | "either";

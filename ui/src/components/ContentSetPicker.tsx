@@ -25,7 +25,7 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(-1);
   const [view, setView] = useState({ scrollTop: 0, height: LIST_HEIGHT });
-  const rows = useMemo(() => unavailable ? [] : contentChoices(choices, selected), [choices, selected, unavailable]);
+  const rows = useMemo(() => unavailable && !choices.length ? [] : contentChoices(choices, selected), [choices, selected, unavailable]);
   const chosen = useMemo(() => new Set(selected), [selected]);
   const filtered = useMemo(() => filterContent(rows, query), [rows, query]);
   const window = contentWindow(filtered, view.scrollTop, view.height);

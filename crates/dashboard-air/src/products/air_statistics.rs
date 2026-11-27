@@ -4,6 +4,7 @@ use dashboard_base::products::{LoadContext, Product};
 use dashboard_base::{Source, catalogue, products::at_hour::{self, At, AtHour, Keys, Owner, Read}};
 use crate::products::air_missions::{AirMissionTheatre, THEATRE_TABLES, theatre_wings, theatres_at};
 use dashboard_follow::live::{Cells, Source as Cell};
+use dashboard_query::identity::{Holder, TAG_UNLINKED};
 use engine_air_history::cloop_history::air_stats;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{AirStatisticsRow, TableId, tables};
@@ -327,6 +328,7 @@ pub struct AirStatisticsRegionsParams {
 pub struct AirStatisticsRegionsReply {
     #[doc = " Every region the country held statistics in over the timeline, in region order."]
     pub regions: Vec<AirStatisticsRegion>,
+    pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -359,17 +361,49 @@ impl Product for AirStatisticsRegions {
         let names = names(source, load);
         let mut warnings = names.warnings.clone();
         let runs = query.holders.runs(&params.country);
+        let unresolved = runs.iter().find(|run| matches!(run.holder, Holder::Unresolved)).map(|run| run.first)
+            .or_else(|| query.holders.unknown.first().map(|&(first, ..)| first))
+            .or_else(|| {
+                if !matches!(params.country, Country::Slot(_)) {
+                    return None;
+                }
+                query.holders.unlinked().iter().find_map(|&(start, end)| {
+                    let mut first = start;
+                    for held in &runs[runs.partition_point(|run| run.last < start)..] {
+                        if held.first > first {
+                            break;
+                        }
+                        if held.last >= end {
+                            return None;
+                        }
+                        first = held.last + 1;
+                    }
+                    Some(first)
+                })
+            });
+        let mut missing = unresolved.map(|hour| {
+            query.holders.not_known(&params.country, hour).unwrap_or_else(|| format!("Who holds {} is not known: {TAG_UNLINKED}", params.country.key()))
+        });
         let found = || runs.iter().filter_map(|run| match run.holder {
-            dashboard_query::identity::Holder::Found { slot, id } => Some((slot, id)),
-            dashboard_query::identity::Holder::Unresolved => None,
+            Holder::Found { slot, id } => Some((slot, id)),
+            Holder::Unresolved => None,
         });
         let slots: BTreeSet<u32> = found().map(|(slot, _)| slot).collect();
         let mut ids: BTreeSet<u32> = found().map(|(_, id)| id).collect();
         if !slots.is_empty() {
             let frame = at_hour::frame(&query, query.timeline.last, &[Read::all(TableId::CountryLinks)], "Air statistics");
-            match frame.and_then(|frame| frame.complete::<tables::CountryLinks>().map(|links| links.iter().filter(|link| slots.contains(&link.canonical_slot)).map(|link| link.id).collect::<Vec<_>>())) {
-                Ok(linked) => ids.extend(linked),
-                Err(error) => warnings.push(format!("Regions of the country's other link ids are not listed: its links are not known at the timeline's end ({error})")),
+            let reason = match frame {
+                Ok(frame) => {
+                    let links = dashboard_query::coverage::witnessed_rows::<tables::CountryLinks>(&frame);
+                    ids.extend(links.rows.iter().filter(|link| slots.contains(&link.canonical_slot)).map(|link| link.id));
+                    links.missing
+                }
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(reason) = reason {
+                let reason = format!("Some of the country's other link ids are not known at the timeline's end ({reason})");
+                missing.get_or_insert_with(|| reason.clone());
+                warnings.push(reason);
             }
         }
         let recording = query.replay.recording();
@@ -377,6 +411,18 @@ impl Product for AirStatisticsRegions {
         let mut read = BTreeSet::new();
         for stretch in &query.timeline.stretches {
             dashboard_text::metadata::check_cancel(cancelled)?;
+            if missing.is_none() {
+                let table = TableId::AirStatistics;
+                let statuses = dashboard_query::read::statuses(recording, stretch.run, table, stretch.first, stretch.last)?;
+                if let Some(status) = statuses.iter().find(|status| status.status != replay_columnar::manifest::Status::Complete) {
+                    let reasons = dashboard_query::read::status_reasons(recording, stretch.run, table, std::slice::from_ref(status))?;
+                    let reason = match status.status {
+                        replay_columnar::manifest::Status::Unavailable { reason } => reasons.get(&reason).map(String::as_str),
+                        _ => None,
+                    };
+                    missing = dashboard_query::coverage::row_coverage(table, status.status, reason, false).into_missing();
+                }
+            }
             if read.insert(stretch.run) {
                 let lifetimes = dashboard_query::cost::lifetimes(recording, stretch.run, TableId::AirStatistics)?;
                 held.extend(regions_of(lifetimes.into_iter().map(|(key, ..)| key), &ids));
@@ -385,6 +431,6 @@ impl Product for AirStatisticsRegions {
         if let Err(why) = &names.regions {
             warnings.push(why.clone());
         }
-        Ok(AirStatisticsRegionsReply { regions: held.into_iter().map(|id| region(&names, id)).collect(), warnings })
+        Ok(AirStatisticsRegionsReply { regions: held.into_iter().map(|id| region(&names, id)).collect(), missing, warnings })
     }
 }

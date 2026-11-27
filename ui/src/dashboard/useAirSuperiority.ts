@@ -9,6 +9,7 @@ import { airSideName, factionNameChanges, factionNamer, validateAirChoices } fro
 import { airChoiceToken } from './airOptions';
 import type { AirChoicesReply } from '../generated/dashboard';
 import { productRequest } from './request.ts';
+import { RefusedError } from './queryError';
 import { useCountryGroups } from './useCountryGroups';
 import { useRegion, useRegionHour, useRegionOutside } from './widgetTime';
 
@@ -36,10 +37,13 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
     const faction = factionNamer(dated, factions.factions, factions.displayNames, shown, gap);
     const country = (tag: string) => looks.name(tag, hour);
     const sides = (choices.data?.sides ?? []).map(side => ({ value: airChoiceToken(campaign, side.key), label: airSideName(side, country, faction) }));
+    const viewpoint = [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))];
+    const error = choices.data?.sidesMissing ? new RefusedError(choices.data.sidesMissing) : choices.error;
     return {
-      viewpoint: [...sides, ...(choices.data?.countries ?? []).map(tag => ({ value: setToken(`country:${tag}`), label: country(tag) }))], sides,
+      viewpoint: error ? { choices: viewpoint, error, retry: choices.retry } : viewpoint,
+      sides: error ? { choices: sides, error, retry: choices.retry } : sides,
       theatres: (choices.data?.theatres ?? []).map(theatre => ({ value: airChoiceToken(campaign, theatre.id), label: theatre.name })),
     };
-  }, [choices.data, looks, hour, dated, shown, gap, factions.factions, factions.displayNames, track?.source.metadata.campaignKey]);
+  }, [choices.data, choices.error, choices.retry, looks, hour, dated, shown, gap, factions.factions, factions.displayNames, track?.source.metadata.campaignKey]);
 }
 

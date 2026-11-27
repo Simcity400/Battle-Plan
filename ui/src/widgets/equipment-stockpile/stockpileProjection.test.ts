@@ -19,9 +19,23 @@ function type(key: string, extra: Partial<StockTypeRow>): StockTypeRow {
 
 const AI = 'The game doesn\'t compute surplus or shortage for AI-controlled countries.';
 
-function reply(rows: StockTypeRow[], needMissing: string | null = null): StockpileTypesReply {
-  return { hour: 100, validUntil: 123, decimals: 5, needMissing, rows, warnings: [] };
+function reply(rows: StockTypeRow[], needMissing: string | null = null, rowsMissing: string | null = null): StockpileTypesReply {
+  return { hour: 100, validUntil: 123, decimals: 5, needMissing, rows, rowsMissing, warnings: [] };
 }
+
+test('the empty stockpile keeps its wording and unread stockpile inputs show their reason', () => {
+  const project = (answer: StockpileTypesReply) => stockpileProjection.project(
+    createBoundedReadView({ hour: 100, panels: new Map([['main', answer]]) }), { layout: 'sum' },
+  );
+  const reason = 'Stockpile reader could not establish the stored types';
+  assert.equal(project(reply([])).empty, 'No equipment stored, made or needed');
+  const unavailable = project(reply([], null, reason));
+  assert.equal(unavailable.emptyKind, 'unavailable');
+  assert.equal(unavailable.emptyDetail, reason);
+  const partial = project(reply([type('sample', {})], null, reason));
+  assert.equal(partial.rows.length, 1);
+  assert.deepEqual(partial.warnings, [reason]);
+});
 
 const art: StockpileArtworkReply = {
   tag: 'USA', entries: [{ key: 'type:motorized', variant: '7', name: 'Motorized', icon: 'data:image/png;base64,AA', reason: null }], warnings: [],

@@ -98,10 +98,10 @@ export interface WidgetMeta {
 }
 
 export interface OptionChoice { value: string; label: string; icon?: string | null; detail?: string }
-export type ChoicesUnavailable = { loading: true } | { error: Failure; retry: () => void };
+export type ChoicesUnavailable = { loading: true } | { error: Failure; retry: () => void; choices?: readonly OptionChoice[] };
 export type OptionChoices = Readonly<Record<string, readonly OptionChoice[] | ChoicesUnavailable>>;
 export const listedChoices = (choices: OptionChoices[string] | undefined): readonly OptionChoice[] | undefined =>
-  choices === undefined || 'loading' in choices || 'error' in choices ? undefined : choices;
+  choices === undefined || 'loading' in choices ? undefined : 'error' in choices ? choices.choices : choices;
 export const unavailableChoices = (choices: OptionChoices[string] | undefined): ChoicesUnavailable | undefined =>
   choices !== undefined && ('loading' in choices || 'error' in choices) ? choices : undefined;
 

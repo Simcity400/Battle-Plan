@@ -177,13 +177,15 @@ function project(readView: BoundedReadView, options: StockpileProjectionOptions)
   if (!reply) return { ...base, rows: [] };
   const art = artIndex(readView);
   const rows = reply.rows.map(row => typeRow(readView, row, art, ai));
-  const warnings = [...reply.warnings, ...(readView.panel<StockpileArtworkReply>('art')?.warnings ?? [])];
+  const warnings = [...reply.warnings, ...(readView.panel<StockpileArtworkReply>('art')?.warnings ?? []), ...(rows.length && reply.rowsMissing ? [reply.rowsMissing] : [])];
   return {
     ...base,
     rows,
     nextChangeAt: reply.validUntil + 1,
     ...(warnings.length ? { warnings } : {}),
-    ...(rows.length ? {} : { empty: 'No equipment stored, made or needed' }),
+    ...(rows.length ? {} : reply.rowsMissing
+      ? { empty: 'Not recorded', emptyDetail: reply.rowsMissing, emptyKind: 'unavailable' as const }
+      : { empty: 'No equipment stored, made or needed' }),
   };
 }
 
@@ -191,7 +193,8 @@ export const stockpileProjection: TableProjection<StockpileProjectionOptions> = 
 
 export function validateStockpileTypes(raw: unknown): StockpileTypesReply {
   const reply = raw as Partial<StockpileTypesReply> | null;
-  if (!reply || typeof reply.hour !== 'number' || typeof reply.validUntil !== 'number' || !Array.isArray(reply.rows) || !Array.isArray(reply.warnings)) {
+  if (!reply || typeof reply.hour !== 'number' || typeof reply.validUntil !== 'number' || !Array.isArray(reply.rows)
+    || !(reply.rowsMissing === null || typeof reply.rowsMissing === 'string') || !Array.isArray(reply.warnings)) {
     throw new Error('Invalid equipment stockpile reply');
   }
   return reply as StockpileTypesReply;
