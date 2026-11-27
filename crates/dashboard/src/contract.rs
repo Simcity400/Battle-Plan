@@ -6,6 +6,8 @@ pub fn typescript_contract() -> String {
     use ts_rs::TS;
     let mut declarations = vec![
         QueryError::decl(),
+        crate::strip::StripParams::decl(),
+        crate::strip::StripReply::decl(),
         ReplayMetadata::decl(),
         CaptureMode::decl(),
         PartialRecording::decl(),
