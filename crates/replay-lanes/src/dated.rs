@@ -4,7 +4,7 @@ use crate::{
 };
 use replay_columnar::{manifest::Status, state::Kind, store::Value};
 use replay_data::{rows::TableId, scope::CaptureMode};
-use replay_frame::frame::{SharedView, TableView, Unsayable, rows_of_fields, value_field};
+use replay_frame::frame::{SharedView, TableView, Unsayable, check_table_field, rows_of_fields, value_field};
 use replay_recording::columnar_frames::Recording;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -242,6 +242,7 @@ impl Dated {
                 },
             };
             value_field(kind, value, |text| self.texts.get(text as usize).map(|text| &**text), self.format)
+                .map(|read| check_table_field(self.table, column, read))
         })
     }
 

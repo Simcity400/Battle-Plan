@@ -25,15 +25,18 @@ pub fn table_field<'a>(
     if id.column_withheld_at(column, format) {
         return Ok(Field::NotRecorded);
     }
-    let read = field(table, slot, column, format)?;
+    field(table, slot, column, format).map(|read| check_table_field(id, column, read))
+}
+
+pub fn check_table_field(id: TableId, column: usize, read: Field<'_>) -> Field<'_> {
     if let Field::Opaque(Opaque::Encoded(bytes, _)) = read
         && matches!(id, TableId::CountryAppearance | TableId::ReservedCountryNaming)
         && id.field_name(column) == Some("original_tag")
         && !original_tag_option_fits(bytes)
     {
-        return Ok(Field::NotRecorded);
+        return Field::NotRecorded;
     }
-    Ok(read)
+    read
 }
 
 fn original_tag_option_fits(bytes: &[u8]) -> bool {
