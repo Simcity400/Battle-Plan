@@ -100,6 +100,7 @@ pub enum GroupState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Live {
     pub groups: Vec<Group>,
+    keyed: bool,
     rows: Vec<String>,
     kinds: Vec<(String, Op, f64)>,
     cells: Vec<u32>,
@@ -110,17 +111,35 @@ impl Live {
         self.cells.is_empty()
     }
 
+    pub const KEYED_TYPESCRIPT: &str = concat!(
+        "type KeyedLiveSection = { groups: Array<{ ref: string, table: number, columns: Array<number>, keys: Array<string>, ",
+        "values?: Array<number | string>, rawValues?: Array<string | null>, follow?: number, seedHour?: number, unavailable?: string }>, ",
+        r#"kinds: Array<{ ref: string, id: string, op: "value" | "sum" | "difference" | "ratio", scale: number }>, "#,
+        "cellsByRow: Record<string, Record<string, [kind: string, sources: Array<[group: string, key: string, column: number]>]>> };",
+    );
+
     pub fn json(&self, states: &[GroupState]) -> Value {
+        let group_keys: Vec<_> = if self.keyed {
+            self.groups.iter().map(|group| {
+                format!("{}:{}:{:?}", group.table.index(), u8::from(group.scope == CoverageScope::Row), group.columns)
+            }).collect()
+        } else {
+            Vec::new()
+        };
         let groups: Vec<Value> = self
             .groups
             .iter()
             .zip(states)
-            .map(|(group, state)| {
+            .enumerate()
+            .map(|(at, (group, state))| {
                 let mut out = json!({
                     "table": group.table.index(),
                     "columns": group.columns,
                     "keys": group.keys.iter().map(u128::to_string).collect::<Vec<_>>(),
                 });
+                if let Some(key) = group_keys.get(at) {
+                    out["ref"] = json!(key);
+                }
                 let values_json = |values: &[CellValue]| values.iter().map(|value| match value {
                         CellValue::Number(number) => json!(number),
                         CellValue::Missing(reason) => json!(reason),
@@ -162,6 +181,31 @@ impl Live {
             })
             .collect();
         let kinds: Vec<Value> = self.kinds.iter().map(|(id, op, scale)| json!({ "id": id, "op": op.name(), "scale": scale })).collect();
+        if self.keyed {
+            let kind_keys: Vec<_> = self.kinds.iter().map(|(id, op, scale)| {
+                format!("{id}:{}:{:016x}", op.name(), scale.to_bits())
+            }).collect();
+            let kinds: Vec<_> = kinds.into_iter().zip(&kind_keys).map(|(mut kind, key)| {
+                kind["ref"] = json!(key);
+                kind
+            }).collect();
+            let mut by_row = BTreeMap::<_, BTreeMap<_, _>>::new();
+            let mut at = 0;
+            while at < self.cells.len() {
+                let row = &self.rows[self.cells[at] as usize];
+                let kind = self.cells[at + 1] as usize;
+                let next = at + 3 + self.cells[at + 2] as usize * 3;
+                let sources = self.cells[at + 3..next].chunks_exact(3).map(|source| {
+                    let (group, row) = (source[0] as usize, source[1] as usize);
+                    let key = groups[group]["keys"][row].as_str().expect("a grouped source key");
+                    let column = self.groups[group].columns[source[2] as usize];
+                    (group_keys[group].as_str(), key, column)
+                }).collect::<Vec<_>>();
+                by_row.entry(row).or_default().insert(&self.kinds[kind].0, (&kind_keys[kind], sources));
+                at = next;
+            }
+            return json!({ "groups": groups, "kinds": kinds, "cellsByRow": by_row });
+        }
         json!({ "groups": groups, "rows": self.rows, "kinds": kinds, "cells": self.cells })
     }
 
@@ -257,6 +301,7 @@ fn cell(table: TableId, column: usize, field: Field<'_>) -> CellValue {
 
 #[derive(Default)]
 struct Building {
+    keyed: bool,
     rows: Vec<String>,
     row_at: HashMap<String, u32>,
     kinds: Vec<(String, Op, f64)>,
@@ -267,6 +312,10 @@ struct Building {
 pub struct Cells(RefCell<Building>);
 
 impl Cells {
+    pub fn key_rows(&self) {
+        self.0.borrow_mut().keyed = true;
+    }
+
     pub fn value(&self, row: &str, column: &str, source: Source, scale: f64) {
         self.add(CoverageScope::Row, row, column, Op::Value, scale, &[source]);
     }
@@ -305,7 +354,7 @@ impl Cells {
     }
 
     pub fn finish(self) -> Live {
-        let Building { rows, kinds, cells, .. } = self.0.into_inner();
+        let Building { keyed, rows, kinds, cells, .. } = self.0.into_inner();
         let mut columns_of: BTreeMap<(TableId, u128, u8), BTreeSet<usize>> = BTreeMap::new();
         let tag_of = |scope: CoverageScope| u8::from(scope == CoverageScope::Row);
         for (_, _, scope, sources) in &cells {
@@ -340,7 +389,7 @@ impl Cells {
                 flat.extend([group, at, column]);
             }
         }
-        Live { groups, rows, kinds, cells: flat }
+        Live { groups, keyed, rows, kinds, cells: flat }
     }
 }
 
