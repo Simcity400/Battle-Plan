@@ -7,7 +7,6 @@ import type { WarContributionHistoryReply, WarHistoryContributor, WarMeasureKey,
 import { observationAt } from '../wars/warsData.ts';
 import { MEASURE_LIST } from './definition.ts';
 import { contributionPartial, groupCoverageReason } from './warContributionPlan.ts';
-
 const coverage = new WeakMap<WarObservation, { listed: readonly Set<string>[]; reason?: string }>();
 export const HISTORY_SCALES = ['Recorded amount', 'Share of side', 'Share of war'] as const;
 export function permyriad(part: bigint | null, whole: bigint | null): bigint | null {
@@ -32,8 +31,7 @@ function exact(runs: readonly [number, string][], hour: number): bigint | null {
   const word = stepAt(runs, hour)?.[1];
   return word === undefined ? null : BigInt(word);
 }
-
-export function readContribution(history: WarContributionHistoryReply, person: WarHistoryContributor, measure: number, hour: number): readonly Value<bigint>[] {
+export function detailAt(history: WarContributionHistoryReply, person: WarHistoryContributor, measure: number, hour: number): readonly Value<bigint>[] {
   const gap = runAt(history.gaps, hour);
   const membership = memberAt(person, hour);
   const all = (state: Value<bigint>) => [state, state, state];
@@ -85,7 +83,7 @@ export function historyChart(history: WarContributionHistoryReply, people: reado
     const denominator = scale === 0 ? 100_000n : 100n;
     const points: ChartInlinePoint[] = [];
     hours.forEach((hour, i) => {
-      const read = readContribution(history, person, index, hour)[scale]!;
+      const read = detailAt(history, person, index, hour)[scale]!;
       if (read.kind === 'notRecorded' && !runAt(history.gaps, hour)) missingSpans.push({ firstHour: hour, lastHour: (hours[i + 1] ?? until + 1) - 1, reason: read.reason });
       const previous = points.at(-1);
       if (!hasMeasuredValue(read) && previous && previous.value !== null && previous.hour < hour - 1) points.push({ ...previous, hour: hour - 1 });
@@ -108,7 +106,7 @@ export function historyChart(history: WarContributionHistoryReply, people: reado
     extent: [Math.min(firstHour, until - 1), until], yAxis: scale ? { format: 'percent' } : { format: 'number', exactDecimals: 5 },
     series, gaps: history.gaps, markers, legend: series.length > 1 ? series.map(({ id, name, color }) => ({ id, label: name, color })) : undefined,
     detailAt: (hour: number): ChartHoverDetail => ({ hour, replacesSeries: true, items: people.map((person, i) => ({
-      label: memberAt(person, hour)?.[3] ?? series[i]!.name, swatch: series[i]!.color, value: readingText(readContribution(history, person, index, hour)[scale]!, scale),
+      label: memberAt(person, hour)?.[3] ?? series[i]!.name, swatch: series[i]!.color, value: readingText(detailAt(history, person, index, hour)[scale]!, scale),
     })) }),
   } satisfies TimeChartModel & { detailAt(hour: number): ChartHoverDetail };
 }

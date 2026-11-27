@@ -20,7 +20,7 @@ import { drawTimeChart } from '../../families/time-chart/painter.ts';
 import { hasMeasuredValue } from '../../families/value.ts';
 import { formatDateHover } from '../../families/valueFormat.ts';
 import type { WarContributionHistoryReply, WarMeasureKey } from '../../generated/dashboard';
-import { HISTORY_SCALES, historyChart, memberAt, readContribution, readingText } from './contributorHistory.ts';
+import { HISTORY_SCALES, detailAt, historyChart, memberAt, readingText } from './contributorHistory.ts';
 import { MEASURE_LIST } from './definition.ts';
 
 export interface OpenedContributor {
@@ -69,11 +69,11 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     const { layout } = state.current;
     if (!layout) return;
     const hit = parseChartInspect(key);
-    const at = hit?.kind === 'plot' || hit?.kind === 'line' ? Math.floor(hit.hour) : null;
+    const at = hit?.kind === 'marker' ? layout.markers[hit.index]?.marker.hour ?? null
+      : hit?.kind === 'plot' || hit?.kind === 'line' ? Math.floor(hit.hour) : null;
     if (at !== null && at < first) key = `plot:${first}`;
     if (key !== state.current.key) { state.current.key = key; state.current.paint?.(); }
-    const atModel = at === null ? model : { ...model, hoverDetail: model.detailAt(Math.max(first, at)) };
-    const entry = deriveTimeChartTooltip(atModel, layout, key);
+    const entry = deriveTimeChartTooltip({ ...model, series: [], hoverDetail: at === null ? undefined : model.detailAt(Math.max(first, at)) }, layout, key);
     if (!entry) return hideTooltip(tooltip);
     inspect(Math.max(first, Math.min(model.hour, Math.floor(entry.hour))));
     showTooltip(tooltip, resolveTooltipEntryContent(entry), x, y);
@@ -83,9 +83,8 @@ function HistoryCanvas({ model, hour, first, inspect, theme }: { readonly model:
     onPointerLeave={() => visit(null)} onBlur={() => visit(null)}
     onPointerMove={event => {
       const layout = state.current.layout;
-      if (!layout) return;
       const rect = event.currentTarget.getBoundingClientRect();
-      visit(hitTestTimeChart(model, layout, [event.clientX - rect.left, event.clientY - rect.top]), event.clientX, event.clientY);
+      visit(layout && hitTestTimeChart(model, layout, [event.clientX - rect.left, event.clientY - rect.top]), event.clientX, event.clientY);
     }}
     onKeyDown={event => {
       const next = { ArrowLeft: hour - 1, ArrowRight: hour + 1, Home: first, End: model.hour }[event.key];
@@ -106,7 +105,7 @@ function HistoryBody({ history, opened, track, runtime }: { readonly history: Wa
   const index = history.measureKeys.indexOf(measure);
   const side = useMemo(() => history.contributors.filter(person => memberAt(person, opened.at)?.[2] === opened.side), [history, opened]);
   const rank = useMemo(() => side.flatMap(person => {
-    const value = readContribution(history, person, index, opened.at)[0]!;
+    const value = detailAt(history, person, index, opened.at)[0]!;
     return hasMeasuredValue(value) ? [{ person, magnitude: value.value < 0n ? -value.value : value.value }] : [];
   }).sort((a, b) => a.magnitude === b.magnitude ? a.person.slot - b.person.slot : a.magnitude > b.magnitude ? -1 : 1), [side, history, index, opened.at]);
   const focused = opened.tag === null ? rank[0]?.person ?? side[0] : side.find(person => memberAt(person, opened.at)?.[3] === opened.tag);
@@ -139,7 +138,7 @@ function HistoryBody({ history, opened, track, runtime }: { readonly history: Wa
         {name} · {formatDateHover(hour)}<span className="sr-only"> {model?.measureTitle}. {model?.detailAt(hour).items.map(item => `${item.label} ${item.value}`).join('. ')}</span></caption>
       <thead><tr><th scope="col">Measure</th>{HISTORY_SCALES.map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
       <tbody>{MEASURE_LIST.map(({ key, label }) => <tr key={key}><th scope="row">{label}</th>
-        {readContribution(history, focused, history.measureKeys.indexOf(key), hour).map((value, i) =>
+        {detailAt(history, focused, history.measureKeys.indexOf(key), hour).map((value, i) =>
           <td key={HISTORY_SCALES[i]}>{readingText(value, i)}</td>)}
       </tr>)}</tbody>
     </table> : <p role="status">{unread}</p>}
