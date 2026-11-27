@@ -5,7 +5,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { barsHostAdapter } from '../../families/bars/hostAdapter.ts';
-import { assertBarsModelValid, type BarsDataRow } from '../../families/bars/model.ts';
+import { assertBarsModelValid, deriveBarsTooltip, type BarsDataRow } from '../../families/bars/model.ts';
+import { buildTooltipContent } from '../../families/host/tooltips.ts';
+import { tooltipText } from '../../charts/tooltip.ts';
 import { createBoundedReadView, displayedHour } from '../../families/boundedView.ts';
 import { lazyActionKeys } from '../../families/host/adapter.ts';
 import { recordInstalled, resolveHostInput } from '../../families/host/installed.ts';
@@ -89,6 +91,23 @@ test('occupation-reserve-manpower race preserves Rust ranking, builds source-cou
   assert.deepEqual(rows[0]!.segments?.map(s => [s.key, s.share]), [['CCC', 1]]);
   assert.ok(rows[0]!.tooltip?.items?.some(item => item.label === 'Negative entries'));
   assert.ok(model.warnings?.some(w => w.includes('1 holders')));
+
+  const pendingSourceIdentity: IdentityProvider = {
+    resolve(kind, key, atHour) {
+      if (kind === 'country' && key === 'AAA') {
+        return { kind, key, atHour, holder: { status: 'ready', value: key }, tag: { status: 'ready', value: key }, name: { status: 'ready', value: 'Alpha' }, colour: { status: 'ready', value: '#6b7280' }, flagChoice: { status: 'absent', reason: 'Flag not recorded' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+      }
+      return { kind, key, atHour, holder: { status: 'ready', value: key }, tag: { status: 'ready', value: key }, name: { status: 'pending' }, colour: { status: 'absent', reason: 'Colour not recorded' }, flagChoice: { status: 'absent', reason: 'Flag not recorded' }, validInterval: [0, 1000], nextChangeAt: Infinity };
+    },
+  };
+  const pendingSourceModel = occupationReserveRaceProjection.project(
+    createBoundedReadView({ hour: displayedHour(240), panels: new Map([['main', reply]]), identity: pendingSourceIdentity }),
+    { surface: '#1e1e1e', top: 10, all: false, group: false },
+  );
+  const pendingSourceTip = deriveBarsTooltip(pendingSourceModel, 'AAA')!;
+  const spoken = tooltipText(buildTooltipContent(pendingSourceTip));
+  assert.match(spoken, /Source country Loading: Name is loading/);
+  assert.match(spoken, /Manpower 300/);
 });
 
 test('occupation-reserve-manpower surfaces missing refusal as unavailable and handles unpopulated default Top cleanly', () => {

@@ -173,11 +173,11 @@ export interface RegionLabel {
   readonly namePending?: string;
 }
 
-export function regionLabel(readView: BoundedReadView, id: string | number, pendingLabel: string | null): RegionLabel {
+export function regionLabel(readView: BoundedReadView, id: string | number, recordedName: string | null): RegionLabel {
   const name = readView.who('region', String(id)).name;
   if (name.status === 'ready') return { label: name.value, value: knownValue(name.value) };
   if (name.status === 'absent' || name.status === 'failed') return { label: 'Region name not recorded', value: notRecorded(name.reason), nameMissing: name.reason };
-  return pendingLabel
-    ? { label: pendingLabel, value: knownValue(pendingLabel) }
+  return recordedName
+    ? { label: recordedName, value: knownValue(recordedName) }
     : { label: 'Loading…', value: pendingValue(NAME_LOADING), namePending: NAME_LOADING };
 }

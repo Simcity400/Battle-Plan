@@ -8,7 +8,7 @@ import { barsLabelText, countryRowPresentation, type BarsDataRow, type BarsModel
 import { registerFamilyProjection } from '../../families/registry.ts';
 import type { BoundedReadView, FamilyPlanContext, SourcePlan } from '../../families/contract.ts';
 import type { TooltipListItem } from '../../families/host/tooltips.ts';
-import { knownValue, zeroValue } from '../../families/value.ts';
+import { knownValue, notRecorded, zeroValue, type Value } from '../../families/value.ts';
 import type { Country, OccupationReserveReply, ReserveHolder } from '../../generated/dashboard';
 import { persons, validateOccupationReserve } from './occupationReserveData.ts';
 
@@ -20,16 +20,32 @@ interface OccupationReserveRowMeta {
   readonly key: string;
 }
 
-function sourcePresentation(readView: BoundedReadView, source: Country, surface: string): { readonly key: string; readonly label: string; readonly color: string } {
+function sourcePresentation(readView: BoundedReadView, source: Country, surface: string): {
+  readonly key: string;
+  readonly label: string;
+  readonly value: Value<string>;
+  readonly color: string;
+} {
   if (source.tag === null) {
-    return { key: `unresolved:${source.id}`, label: 'Source country unavailable', color: colour(surface, 0) };
+    return { key: `unresolved:${source.id}`, label: 'Source country unavailable', value: notRecorded('Source country was not recorded'), color: colour(surface, 0) };
   }
   const pres = countryRowPresentation(readView, source.tag);
   return {
     key: source.tag,
     label: pres.label.kind === 'known' ? pres.label.value : pres.label.kind === 'pending' ? barsLabelText(pres.label) : 'Source country unavailable',
+    value: pres.label,
     color: pres.color ?? colour(surface, 0),
   };
+}
+
+function sourceTooltipItems(src: ReturnType<typeof sourcePresentation>, amountText: string, withSwatch: boolean): readonly TooltipListItem[] {
+  if (src.value.kind === 'pending') {
+    return [
+      { label: 'Source country', ...(withSwatch ? { swatch: src.color } : {}), pendingReason: src.value.reason },
+      { label: 'Manpower', indent: true, value: amountText },
+    ];
+  }
+  return [{ label: src.label, ...(withSwatch ? { swatch: src.color } : {}), value: amountText }];
 }
 
 function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHour: number | null, surface: string): BarsDataRow | null {
@@ -49,11 +65,11 @@ function makeHolderRow(readView: BoundedReadView, holder: ReserveHolder, readHou
       const existing = bySource.get(src.key);
       if (existing) existing.amount += entry.amount;
       else bySource.set(src.key, { label: src.label, color: src.color, amount: entry.amount });
-      positiveItems.push({ label: src.label, swatch: src.color, value: persons(entry.amount) });
+      positiveItems.push(...sourceTooltipItems(src, persons(entry.amount), true));
     } else if (entry.amount === 0) {
-      positiveItems.push({ label: src.label, swatch: src.color, value: '0' });
+      positiveItems.push(...sourceTooltipItems(src, '0', true));
     } else {
-      negativeItems.push({ label: src.label, value: persons(entry.amount) });
+      negativeItems.push(...sourceTooltipItems(src, persons(entry.amount), false));
     }
   }
 

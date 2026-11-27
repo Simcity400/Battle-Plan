@@ -110,10 +110,22 @@ function resolvePlace(
     };
   }
   if (place.kind === 'railway') {
-    const endpoints: Value<string>[] = [];
-    if (place.state !== null) endpoints.push(resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value);
-    if (place.toState !== null && place.toState !== place.state) {
-      endpoints.push(resolveName(readView, 'state', String(place.toState), { atHour: place.atHour, boundary }).value);
+    if (place.state === null && place.toState === null) {
+      const value = notRecorded(row.placeMissing ?? 'Railway route was not recorded');
+      return { cell: { value, missingFigure: 'Place' }, value };
+    }
+    const endpointMissing = row.placeMissing ?? 'Railway endpoint was not recorded';
+    const endpoints: Value<string>[] = [
+      place.state !== null
+        ? resolveName(readView, 'state', String(place.state), { atHour: place.atHour, boundary }).value
+        : notRecorded(endpointMissing),
+    ];
+    if (place.toState !== place.state) {
+      endpoints.push(
+        place.toState !== null
+          ? resolveName(readView, 'state', String(place.toState), { atHour: place.atHour, boundary }).value
+          : notRecorded(endpointMissing),
+      );
     }
     const value = combinePlaceValues(endpoints, row.placeMissing ?? 'Railway route was not recorded');
     return { cell: { value, ...(value.kind === 'notRecorded' ? { missingFigure: 'Place' } : {}) }, value };

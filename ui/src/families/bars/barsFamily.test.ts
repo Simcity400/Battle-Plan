@@ -935,6 +935,20 @@ test('bars row labels carry Value<string> states through mirror, audit, tooltip,
         numeric: 5,
         tooltip: { title: 'Loading…', hour: h, items: [{ label: 'Factories', value: '5' }] },
       },
+      {
+        kind: 'data',
+        key: 'readout-only-row',
+        label: pendingValue('Name is loading'),
+        readout: { primary: '7 mines' },
+      },
+      {
+        kind: 'data',
+        key: 'split-left',
+        label: knownValue('Left'),
+        value: { value: knownValue(3), format: 'integer' },
+        numeric: 3,
+        rightSide: { key: 'split-right', label: pendingValue('Name is loading'), value: { value: knownValue(4), format: 'integer' }, numeric: 4 },
+      },
     ],
   };
   assertBarsModelValid(model, h);
@@ -949,11 +963,17 @@ test('bars row labels carry Value<string> states through mirror, audit, tooltip,
   assert.equal(labelAudit('pending-row'), '["pending","Name is loading"]');
   assert.equal(labelAudit('literal-row'), '["known",["str","Loading…"]]');
   assert.equal(labelAudit('missing-row'), '["notRecorded","Country not recorded"]');
+  assert.equal(labelAudit('split-right'), '["pending","Name is loading"]');
 
   const defaultTip = deriveBarsTooltip(model, 'pending-row')!;
   assert.match(tooltipText(buildTooltipContent(defaultTip)), /Loading: Name is loading/);
   const customTip = deriveBarsTooltip(model, 'custom-tip-row')!;
   assert.match(tooltipText(buildTooltipContent(customTip)), /Loading: Name is loading/);
+  const readoutTip = deriveBarsTooltip(model, 'readout-only-row')!;
+  assert.deepEqual(readoutTip.items, [
+    { label: 'Name', pendingReason: 'Name is loading' },
+    { label: 'Count', value: '7 mines' },
+  ]);
 
   const layout = layoutFamilyBars(model, 480, 220, THEME);
   const fake = makeFakeCtx();

@@ -2,6 +2,7 @@ import { assertRunCounts } from '../../families/heat/runIdentity.fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
+import { deriveBarsAudit } from '../../families/bars/model.ts';
 import { deriveLanesTooltip } from '../../families/heat/lanesModel.ts';
 import type { IdentityProvider } from '../../families/plan.ts';
 import type { NavalSupremacyReply } from '../../generated/dashboard';
@@ -41,6 +42,16 @@ test('the shares bar splits the score at the playhead between friends and enemie
   assert.ok(row && row.kind === 'data');
   assert.deepEqual((row.segments ?? []).map(segment => [segment.key, Math.round(segment.share * 100)]), [['friendly', 59], ['enemy', 41]]);
   assert.equal(row.readout?.primary, '13 v n/a ships');
+
+  const placeholderReply = {
+    ...reply(60),
+    regions: [{ ...reply(60).regions[0]!, name: 'Region 17 (name unavailable)' }],
+  };
+  const pendingModel = projectSupremacyShares(view(60, placeholderReply), { viewer: null, surface: SURFACE, historyStart: 0, tiles: 0 });
+  const pendingRow = pendingModel.rows.find(item => item.kind === 'data');
+  assert.ok(pendingRow && pendingRow.kind === 'data');
+  assert.deepEqual(pendingRow.label, { kind: 'pending', reason: 'Name is loading' });
+  assert.equal(deriveBarsAudit(pendingModel).find(entry => entry.key === '17:label')?.value, '["pending","Name is loading"]');
 });
 
 test('a day with no score on either side is the empty lane, not contested', () => {

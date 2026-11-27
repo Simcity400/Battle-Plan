@@ -268,6 +268,7 @@ test('pending state or province lookup stays pending in construction place cell,
     sampleRow({ key: 'p-state', ordinal: '0', place: { kind: 'building', state: 77, toState: null, province: null, atHour: 100 } }),
     sampleRow({ key: 'p-rail-both', ordinal: '1', kind: 'railway', place: { kind: 'railway', state: 77, toState: 88, province: null, atHour: 100 } }),
     sampleRow({ key: 'p-rail-mixed', ordinal: '2', kind: 'railway', place: { kind: 'railway', state: 10, toState: 88, province: null, atHour: 100 } }),
+    sampleRow({ key: 'p-rail-half-null', ordinal: '3', kind: 'railway', place: { kind: 'railway', state: 10, toState: null, province: null, atHour: 100 } }),
   ];
   const source = buildRowSourceFromHead('test:construction:pending-place', sampleReply(rows), undefined, 100)!;
   const model = constructionLogProjection.project(
@@ -284,4 +285,6 @@ test('pending state or province lookup stays pending in construction place cell,
   assert.deepEqual(tipOf(1).find(item => item.label === 'Place')?.value, { kind: 'pending', reason: 'Name is loading' });
   assert.deepEqual(model.rows[2]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
   assert.deepEqual(tipOf(2).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Name is loading' });
+  assert.deepEqual(model.rows[3]!.cells.place?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
+  assert.deepEqual(tipOf(3).find(item => item.label === 'Place')?.value, { kind: 'partial', value: 'Illinois', reason: 'Railway endpoint was not recorded' });
 });

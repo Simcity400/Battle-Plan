@@ -90,7 +90,7 @@ export function projectSupremacyShares(readView: BoundedReadView, options: Supre
   if (!reply || !options.surface || reply.lastHour > hour) return emptyBars(hour);
   const look = lookOf(readView, reply, options);
   const entry = (region: SupremacyRegion): ShareRowEntry => {
-    const named = regionLabel(readView, region.id, region.name);
+    const named = regionLabel(readView, region.id, null);
     const base = { key: region.id, subject: region.id, region: Number(region.id), label: named.value, countText: shipsText(region.ownShips, region.enemyShips) };
     const readout = region.readout;
     if (!readout || readout.kind === 'notRecorded') {
@@ -269,7 +269,7 @@ export function projectSupremacyTimeline(readView: BoundedReadView, options: Sup
   windows.set(options, current);
   const lastDay = Math.floor((through - now.firstDayHour) / now.dayHours);
   const rows: HeatLaneRow[] = now.regions.map(region => {
-    const named = regionLabel(readView, region.id, region.name);
+    const named = regionLabel(readView, region.id, null);
     const old = previous?.get(region.id);
     const parts = lanes.map(({ reply, regions, tile, extend }, i) => {
       const source = regions.get(region.id);

@@ -411,9 +411,6 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   }
   const title = barsLabelText(row.label);
   const items: TooltipListItem[] = [];
-  if (typeof row.label !== 'string' && row.label.kind === 'pending') {
-    items.push({ label: 'Name', pendingReason: row.label.reason });
-  }
   let missingReason: string | undefined;
   let exactValue: string | undefined;
 
@@ -478,6 +475,9 @@ export function deriveBarsTooltip(model: BarsModel, rowKey: string, side?: 'left
   }
   if (row.readout?.primary && !items.length && !missingReason) {
     items.push({ label: row.readout.secondary ?? 'Count', value: row.readout.primary });
+  }
+  if (typeof row.label !== 'string' && row.label.kind === 'pending') {
+    items.unshift({ label: 'Name', pendingReason: row.label.reason });
   }
   const art = artTooltipItem(row.media?.kind === 'flag' ? 'Flag' : 'Art', row.media?.art);
   if (art) items.push(art);
@@ -568,7 +568,10 @@ export function deriveBarsAudit(
     if (item.value) cell(item.key, 'value', canonicalAuditValue(item.value.value));
     if (item.left) cell(item.key, 'left', canonicalAuditValue(item.left.value.value));
     if (item.right) cell(item.key, 'right', canonicalAuditValue(item.right.value.value));
-    if (item.rightSide) cell(item.rightSide.key, 'rightSide', canonicalAuditValue(item.rightSide.value.value));
+    if (item.rightSide) {
+      cell(item.rightSide.key, 'label', barsLabelAudit(item.rightSide.label));
+      cell(item.rightSide.key, 'rightSide', canonicalAuditValue(item.rightSide.value.value));
+    }
     if (item.target) cell(item.key, 'target', canonicalAuditValue(item.target.value));
     if (item.pair) {
       cell(item.key, 'pairTop', canonicalAuditValue(item.pair.topValue));

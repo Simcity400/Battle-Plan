@@ -135,9 +135,9 @@ test('a war goal target whose name is still loading reads as loading on the card
     goals: [{ handle: '2', name: 'Conquer', actor: 'AAA', recipient: 'BBB', available: true, expires: null, states: [4], liberate: ['CCC'], puppets: [], state: 'ready', granted: hour - 40 * DAY, grantedMissing: null }],
     stateNames: [{ id: 4, name: 'Invented state 4', known: true }],
   };
-  const at = (names: Parameters<typeof datedIdentity>[0]) => warGoalsProjection.project(
+  const at = (names: Parameters<typeof datedIdentity>[0], targetNames = true) => warGoalsProjection.project(
     createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', { get: () => undefined, missing: () => 'Not read at this hour' }]]), identity: datedIdentity(names) }),
-    { targetNames: true },
+    { targetNames },
   );
   const waiting = at({});
   const row = items(waiting)[0]!;
@@ -154,6 +154,13 @@ test('a war goal target whose name is still loading reads as loading on the card
   assert.equal(removedTip.items?.[0]?.label, 'Target');
   assert.equal(removedTip.items?.[0]?.pendingReason, NAME_LOADING);
   assert.match(tooltipText(buildTooltipContent(removedTip)), /Target Loading: Name is loading/);
+  const defaultMode = at({}, false);
+  const defaultActiveTip = deriveCardTooltip(defaultMode, items(defaultMode)[0]!.key)!;
+  const defaultRemovedTip = deriveCardTooltip(defaultMode, items(defaultMode)[1]!.key)!;
+  assert.equal(defaultActiveTip.items?.[0]?.pendingReason, NAME_LOADING);
+  assert.equal(defaultRemovedTip.items?.[0]?.pendingReason, NAME_LOADING);
+  assert.match(tooltipText(buildTooltipContent(defaultActiveTip)), /Target Loading: Name is loading/);
+  assert.match(tooltipText(buildTooltipContent(defaultRemovedTip)), /Target Loading: Name is loading/);
   assert.ok(deriveCardAudit(waiting).some(cell => cell.row === row.key && cell.key === `${row.key}:title` && cell.value === JSON.stringify(['pending', NAME_LOADING])), 'the audit says the title is pending');
   const named = items(at({ BBB: [{ from: 0, name: 'Bravo' }], CCC: [{ from: 0, name: 'Charlie' }] }))[0]!;
   assert.deepEqual(named.title, { kind: 'known', value: 'Bravo' });
@@ -399,6 +406,11 @@ test('a general’s dossier splits the record won and lost, measures experience 
   const hover = deriveCardTooltip(partial, 'record')!;
   assert.ok(hover.items?.some(item => item.label.startsWith('Battle counts are incomplete')), 'the default hover names the missing coverage');
   assert.ok(deriveCardMirror(model).rows.find(item => item.key === 'leader')!.cells.some(cell => cell.spoken !== 'Owner not recorded' && cell.spoken.length > 0));
+  const pendingOwner = dossierProjection.project(createBoundedReadView({ hour, panels: new Map([['main', reply]]), live: new Map([['main', live]]), identity: datedIdentity({}) }), { reference: null });
+  const pendingLeaderTip = deriveCardTooltip(pendingOwner, 'leader')!;
+  assert.equal(pendingLeaderTip.items?.[0]?.label, 'Country');
+  assert.equal(pendingLeaderTip.items?.[0]?.pendingReason, NAME_LOADING);
+  assert.match(tooltipText(buildTooltipContent(pendingLeaderTip)), /Country Loading: Name is loading/);
   assert.deepEqual([unread.empty, unread.emptyKind], ['Leaders were not recorded', 'unavailable']);
 });
 

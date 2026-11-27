@@ -1,5 +1,5 @@
 import { colour } from '../../charts/palette.ts';
-import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { BoundedReadView, FamilyPlanContext, SourceCoverage, SourcePlan } from '../contract.ts';
 import { groupSelection } from '../groupSelection.ts';
@@ -185,24 +185,35 @@ function memberNamesItem(readView: BoundedReadView, row: FactionTotalRow): Toolt
   const keys = row.memberCountries.length ? row.memberCountries.map(countryKey) : row.members;
   const label = `Members (${keys.length})`;
   const shown: string[] = [];
-  let pendingReason: string | undefined;
+  const reasons: string[] = [];
+  let hasPending = false;
+  const addReason = (reason: string) => {
+    if (!reasons.includes(reason)) reasons.push(reason);
+  };
   for (let index = 0; index < Math.min(limit, keys.length); index++) {
     const key = keys[index]!;
     const who = resolveName(readView, 'country', key);
     if (who.value.kind === 'known') {
       shown.push(who.value.value);
     } else if (who.value.kind === 'pending') {
-      pendingReason ??= who.value.reason;
+      hasPending = true;
+      addReason(who.value.reason);
     } else {
-      shown.push(row.members[index] ?? key);
+      const reason = 'reason' in who.value ? who.value.reason : 'Country name not recorded';
+      addReason(reason);
+      if (who.who.tag?.status === 'ready') shown.push(who.who.tag.value);
+      else if (!isSlotKey(key)) shown.push(key);
     }
   }
-  if (!shown.length && pendingReason) return { label, pendingReason };
+  if (!shown.length) {
+    const merged = reasons.join('; ') || 'Member names were not recorded';
+    return hasPending ? { label, pendingReason: merged } : { label, missingReason: merged };
+  }
   const suffix = keys.length > limit ? ` +${keys.length - limit} more` : '';
   return {
     label,
     value: `${shown.join(', ')}${suffix}`,
-    ...(pendingReason ? { partialReason: pendingReason } : {}),
+    ...(reasons.length ? { partialReason: reasons.join('; ') } : {}),
   };
 }
 
