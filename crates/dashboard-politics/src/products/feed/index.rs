@@ -297,7 +297,7 @@ struct Branch {
     binding: Option<Weak<Catalogue>>,
     decisions: Option<Arc<Index<Item>>>,
     choices: Option<Arc<Index<Item>>>,
-    feed: Option<(Option<Weak<Catalogue>>, Arc<Feed>)>,
+    feed: Option<Arc<Feed>>,
 }
 
 #[derive(Default)]
@@ -346,6 +346,10 @@ fn feed_label(kind: EventFeedKind) -> Option<&'static str> {
         BecameSubject => Some("Became subject"), GuaranteeGranted => Some("Guaranteed"), RulingPartyChanged => Some("New government"),
         LawChanged => Some("Law changed"), AdvisorHired => Some("Advisor hired"), FocusCompleted => Some("Focus completed"),
         ProjectFinished => Some("Project finished"), NukesIncreased => Some("Nuclear stockpile"), NuclearStrike => Some("Nuclear strike"),
+        DecisionSelected => Some("Decision selected"), DecisionActivated => Some("Mission activated"), DecisionCompleted => Some("Decision completed"),
+        DecisionTimedOut => Some("Decision timed out"), DecisionCancelled => Some("Decision cancelled"), DecisionRemoved => Some("Decision removed"),
+        DecisionReenabled => Some("Decision reenabled"), DecisionDurationChanged => Some("Duration changed"),
+        DecisionRemovalEffect | DecisionCancellationEffect | DecisionCompletionEffect | DecisionTimeoutEffect => Some("Decision effect"),
         _ => None,
     }
 }
@@ -373,7 +377,7 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
         (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)], shown <= event.read_hour)
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let name = feed_label(kind).or(name);
+    let name = if kind.scripted() { name.or_else(|| feed_label(kind)) } else { feed_label(kind).or(name) };
     let text = SearchText::from(text_of(token, tags(&roles).into_iter().chain(name.map(str::to_owned))));
     let sort_keys = Box::new([SortKey::text(roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)))), SortKey::text(name)]);
     Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys, text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
@@ -413,7 +417,7 @@ fn scan(source: &Source, query: &Query<'_>, branch: u64, catalogue: Option<&Arc<
             if decision_state::applies(&event) && event.lifecycle.is_some() {
                 lifecycles.push(event.clone());
             }
-            let item = super::present(&event, &names, &presenter, &mut Notices::default()).ok().flatten().and_then(|row| row.item);
+            let item = super::present(&event, &names, &presenter, &mut Notices::default())?.and_then(|row| row.item);
             let name = item.as_ref().filter(|item| !item.gaps.iter().any(|gap| gap.field == super::EventFeedGapField::Title)).and_then(|item| item.name.clone());
             let choice = event.option.filter(|&option| option >= 0).and_then(|option| {
                 let item = item.as_ref()?;
@@ -632,7 +636,7 @@ fn cost_key(edges: &[&Brief]) -> SortKey {
         let chargeable = matches!(edge.kind, EventFeedKind::DecisionSelected | EventFeedKind::DecisionTimeoutEffect);
         missing |= (chargeable && !proven) || (proven && edge.costs.iter().any(Option::is_none));
         for (total, cost) in totals.iter_mut().zip(edge.costs) {
-            if let Some(value) = cost.flatten() {
+            if let Some(value) = cost.flatten().filter(|value| *value != 0) {
                 *total = total.unwrap_or(0).checked_add(value);
                 missing |= total.is_none();
             }
@@ -779,7 +783,7 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
         roles: roles.into_boxed_slice(),
         subjects: Box::new([]),
         states: Box::new([]),
-        sort_keys: Box::new([SortKey::text(row.tags.first().cloned()), SortKey::text(label.map(str::to_owned).or(name))]),
+        sort_keys: Box::new([SortKey::text(row.participants.as_ref().map(|roles| roles[0].clone()).unwrap_or_else(|| row.tags.first().cloned())), SortKey::text(label.map(str::to_owned).or(name))]),
         text,
         payload: Item::Family(Box::new(family)),
     }
@@ -986,15 +990,12 @@ pub(crate) fn feed_for(source: &Source, query: &Query<'_>, branch: u64, context:
     let kept = branch_of(source, branch);
     let mut held = kept.lock().unwrap_or_else(PoisonError::into_inner);
     let scanned = scanned(source, query, branch, &mut held, catalogue, cancelled)?;
-    if let Some((made_with, found)) = &held.feed
-        && made_with.as_ref().and_then(Weak::upgrade).as_ref().map(Arc::as_ptr) == catalogue.map(Arc::as_ptr)
-        && made_with.is_some() == catalogue.is_some()
-    {
+    if let Some(found) = &held.feed {
         return Ok(Arc::clone(found));
     }
     let made = Arc::new(feed(source, query, context, &scanned, cancelled)?);
     if !made.unsettled {
-        held.feed = Some((catalogue.map(Arc::downgrade), Arc::clone(&made)));
+        held.feed = Some(Arc::clone(&made));
     }
     Ok(made)
 }
@@ -1009,10 +1010,12 @@ pub fn kept(source: &Source) -> Vec<u64> {
 }
 
 pub fn warm(source: &Source, branch: u64) -> io::Result<()> {
+    let catalogue = branch_of(source, branch).lock().unwrap_or_else(PoisonError::into_inner).binding.as_ref().and_then(Weak::upgrade);
+    let Some(catalogue) = catalogue else { return Ok(()) };
     let query = dashboard_base::queries::query(source, branch)?;
     let cancelled = AtomicBool::new(false);
-    decisions_for(source, &query, branch, None, &cancelled)?;
-    choices_for(source, &query, branch, None, &cancelled)?;
+    decisions_for(source, &query, branch, Some(&catalogue), &cancelled)?;
+    choices_for(source, &query, branch, Some(&catalogue), &cancelled)?;
     Ok(())
 }
 

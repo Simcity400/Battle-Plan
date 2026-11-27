@@ -47,7 +47,8 @@ fn whole_log_search_sort(product: &str) {
     let context = LoadContext { content: None };
     let cancel = AtomicBool::new(false);
     let panel = |extra: serde_json::Value| {
-        let mut ask = serde_json::json!({ "panel": product, "branchId": "1", "limit": 2, "categories": ["politics"] });
+        let mut ask = serde_json::json!({ "panel": product, "branchId": "1", "limit": 2 });
+        if product == "event-feed-tail" { ask["categories"] = serde_json::json!(["politics"]); }
         ask.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         match product {
             "decisions-tail" => super::decisions_dated_panel(&source, &context, &ask).unwrap(),
@@ -455,7 +456,7 @@ fn scripted_text_not_expanded_is_marked_where_it_stood_never_as_an_authored_elli
 }
 
 #[test]
-fn the_feed_index_warmed_at_open_holds_the_branch_until_forgotten() {
+fn unbound_read_ahead_does_not_fill_or_replace_the_feed_index() {
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
     use replay::campaign::Replay;
     use std::sync::{Arc, atomic::AtomicBool};
@@ -464,6 +465,12 @@ fn the_feed_index_warmed_at_open_holds_the_branch_until_forgotten() {
     let source = dashboard_base::Source::from_replay(dashboard_base::SourceKey { source_id: "feed-index-warm".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     assert!(super::index::kept(&source).is_empty(), "nothing is kept before the open reads ahead");
     super::index::warm(&source, 1).unwrap();
+    assert!(super::index::kept(&source).is_empty());
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let first = super::index::decisions_for(&source, &query, 1, None, &AtomicBool::new(false)).unwrap();
+    super::index::warm(&source, 1).unwrap();
+    let second = super::index::decisions_for(&source, &query, 1, None, &AtomicBool::new(false)).unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
     assert_eq!(super::index::kept(&source), [1]);
     dashboard_base::queries::forget(&source);
     crate::forget(&source);

@@ -521,15 +521,15 @@ test('a state-targeted decision shows one country flag and resolves the target i
 
 test('all four log declarations send whole-log search and sort, replace the page owner, and group dates only for date order', () => {
   for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration, marketLedgerDeclaration]) {
-    const make = (search: string, column: string) => {
+    const make = (search: string, column: string, single = false) => {
       const settings = tableSettingsOf(undefined, typeof declaration.columns === 'function' ? [] : declaration.columns, LOG_TABLE_BASE);
       settings.sort = { column, direction: 'ascending' };
       const ctx = {
         track: { source: { id: 'whole-log', revision: '1' }, axisOffset: 0 },
         branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
-        widget: { id: 'log', kind: declaration.kind, countries: { kind: 'all' }, time: { mode: 'follow' } },
+        widget: { id: 'log', kind: declaration.kind, countries: single ? { kind: 'tags', tags: ['GER'] } : { kind: 'all' }, time: { mode: 'follow' } },
         options: { warsPeace: true, tableSettings: encodeTableSettings(settings), search }, settings, following: true,
-        countries: { all: true, tags: [], filter: { passing: null, unrecorded: [], bounds: [] } },
+        countries: { all: !single, tags: single ? [countryKey('GER')] : [], filter: { passing: null, unrecorded: [], bounds: [] } },
         gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
       } as unknown as FamilyPlanContext<unknown> & { settings: typeof settings };
       const plan = declaration.sources(ctx, { following: true, staticSpan: null });
@@ -547,5 +547,6 @@ test('all four log declarations send whole-log search and sort, replace the page
     assert.equal(searched.ask?.search, 'deep match');
     assert.notEqual(sorted.owner, searched.owner, 'a new owner releases the scrolled snapshot and starts at the head');
     assert.notEqual(searched.owner, make('', 'country').owner);
+    if (declaration.kind === 'market-ledger') assert.equal(make('', 'paid', true).ask?.perspective, 'GER');
   }
 });

@@ -12,7 +12,7 @@ use dashboard_query::{
     identity::{Country, Holders},
     log::{
         Cell, Reader,
-        occurrence::{Ask, Chip, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown, SortKey},
+        occurrence::{Ask, Chip, Index, Occurrence, Order, PlacedGap, Role, SearchText, Selection, Shown, SortKey, SortValue},
     },
     series::{MissingSpan, ranked::GroupSelection},
     timeline::Timeline,
@@ -259,6 +259,9 @@ pub struct MarketLedgerTailParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sort: Option<OccurrenceSort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub perspective: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub offset: Option<String>,
@@ -521,6 +524,7 @@ enum Line {
 
 #[derive(Default, PartialEq, Eq)]
 struct Opening {
+    perspective: Option<String>,
     expanded: BTreeSet<u32>,
     full: BTreeSet<u32>,
     from: Option<i32>,
@@ -567,11 +571,11 @@ impl Ledger {
         };
         let expanded = find(&params.expanded);
         let full = find(&params.full).intersection(&expanded).copied().collect();
-        Opening { expanded, full, from: params.from, to: params.to }
+        Opening { expanded, full, from: params.from, to: params.to, perspective: params.perspective.clone().filter(|_| params.sort.as_ref().is_some_and(|sort| matches!(sort.column.as_str(), "country" | "paid"))) }
     }
 
     fn index(&self, opening: Opening, cancelled: &AtomicBool) -> io::Result<Arc<Lines>> {
-        if opening.expanded.is_empty() && !opening.ranged() {
+        if opening.expanded.is_empty() && !opening.ranged() && opening.perspective.is_none() {
             return Ok(Arc::clone(&self.closed));
         }
         let mut kept = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
@@ -594,6 +598,23 @@ fn following(states: &[(i32, u8)], from: i32, hidden: Option<i32>) -> Box<[(i32,
     out.extend(states[at..].iter().copied().take_while(|&(hour, _)| hidden.is_none_or(|hidden| hour < hidden)));
     out.extend(hidden.map(|hidden| (hidden, HIDDEN)));
     out.into_boxed_slice()
+}
+
+fn perspective_keys(placed: &Placed, perspective: Option<&str>) -> Box<[SortKey]> {
+    let mut keys = placed.sort_keys.clone();
+    let Some(perspective) = perspective else { return keys };
+    if placed.seller.0.as_deref() == Some(perspective) {
+        keys[0] = SortKey::dated_text(std::iter::once((placed.observed, placed.buyer.0.as_deref().map(Into::into))).chain(placed.buyer_later.iter().map(|(at, buyer)| (*at, buyer.0.as_deref().map(Into::into)))).collect::<BTreeMap<_, _>>()).shared();
+    } else if let SortKey::SharedDated(steps) = &placed.sort_keys[4] {
+        let mut hours: Vec<_> = steps.iter().map(|&(at, _)| at).chain(placed.buyer_later.iter().map(|&(at, _)| at)).collect();
+        hours.sort_unstable();
+        hours.dedup();
+        keys[4] = SortKey::dated_numbers(hours.into_iter().map(|hour| {
+            let value = match placed.sort_keys[4].at(hour) { Some(SortValue::Number(value)) => Some(*value), _ => None };
+            (hour, if placed.buyer_at(hour).0.as_deref() == Some(perspective) { value.and_then(i64::checked_neg) } else { value })
+        })).shared();
+    }
+    keys
 }
 
 fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io::Result<Lines> {
@@ -630,8 +651,8 @@ fn lines(contracts: &[Placed], opening: &Opening, gaps: Vec<MissingSpan>) -> io:
             }
         }
         let sort_key = if steps.len() == 1 { SortKey::number(steps[0].1) } else { SortKey::dated_numbers(steps) };
-        let mut keys = placed.sort_keys.to_vec();
-        if opening.ranged() { keys.push(sort_key); }
+        let mut keys = perspective_keys(placed, opening.perspective.as_deref()).into_vec();
+        if opening.ranged() { keys.push(sort_key.shared()); }
         let mut push = |payload: Line, kind: u16, observed: i32, states: Box<[(i32, u8)]>| {
             entries.push(Occurrence {
                 id: u128::MAX - entries.len() as u128,
@@ -1102,15 +1123,16 @@ fn sort_keys(source: &Source, query: &Query<'_>, load: &LoadContext, ledger: &mu
         hours.dedup();
         let (mut items, mut status, mut delivered, mut paid, mut text) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut seen = BTreeSet::new();
-        for hour in hours.into_iter().filter(|&hour| hour >= placed.observed) {
+        for hour in hours.into_iter().filter(|&hour| hour >= placed.observed && placed.contract.ended.is_none_or(|(_, seen)| hour <= seen)) {
             let at = placed.states.partition_point(|&(at, _)| at <= hour);
             let state = at.checked_sub(1).map(|at| placed.states[at].1);
             let row = contract_row(ledger, &Shown { at: 0, ordinal: 0, live: false, state }, placed, hour, &terms, &name_of);
-            let names: Option<Vec<_>> = row.items.iter().map(|item| item.name.as_deref()).collect();
-            items.push((hour, names.filter(|names| !names.is_empty()).map(|names| names.join(", ").into_boxed_str())));
+            items.push((hour, row.items.first().and_then(|item| item.name.as_deref()).map(Into::into)));
             for name in row.items.iter().filter_map(|item| item.name.as_ref()).filter(|name| seen.insert((*name).clone())) { text.push((hour, name.as_str().into())); }
             status.push((hour, match row.status { MarketContractStatus::Active => Some("Contract started".into()), MarketContractStatus::Requested => Some("Request posted".into()), MarketContractStatus::Ended => Some("Contract ended".into()), MarketContractStatus::RequestEnded => Some("Request ended".into()), MarketContractStatus::NotRecorded => None }));
-            delivered.push((hour, (row.delivery_missing.is_none() && !row.items.is_empty()).then(|| row.items.iter().map(|item| item.delivered_raw.as_deref().filter(|_| item.delivery_unavailable.is_none()).and_then(|raw| raw.parse::<i64>().ok())).collect::<Option<Vec<_>>>().map(|values| values.into_iter().fold(0i64, i64::saturating_add))).flatten()));
+            let amounts = row.items.iter().map(|item| item.delivered_raw.as_deref().filter(|_| item.delivery_unavailable.is_none()).and_then(|raw| raw.parse::<i64>().ok())).collect::<Option<Vec<_>>>();
+            let total = amounts.map(|values| values.into_iter().fold(0i64, i64::saturating_add));
+            delivered.push((hour, total.filter(|_| row.delivery_missing.is_none() && !row.items.is_empty())));
             paid.push((hour, row.paid_raw.as_deref().filter(|_| row.paid_missing.is_none()).and_then(|raw| raw.parse().ok())));
         }
         let mut keys = vec![SortKey::text(placed.seller.0.clone()), SortKey::dated_text(items), SortKey::dated_text(status), SortKey::dated_numbers(delivered), SortKey::dated_numbers(paid)];
@@ -1353,7 +1375,7 @@ impl Product for MarketLedgerTail {
     const INTERACTIVE: bool = true;
     type Params = MarketLedgerTailParams;
     const FIELDS: dashboard_base::products::Fields =
-        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, offset, limit, statuses, expanded, "expanded[]", full, "full[]"];
+        dashboard_base::fields![branchId, hour: Read, from: Start, to: End, countries, "countries[]", group, search, sort, perspective, offset, limit, statuses, expanded, "expanded[]", full, "full[]"];
     type Reply = MarketLedgerTailReply;
 
     #[cfg(any(test, feature = "export-types"))]

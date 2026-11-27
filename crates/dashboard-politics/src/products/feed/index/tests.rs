@@ -114,7 +114,8 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     };
     let held = |slot: u32| vec![HolderRun { first: 0, last: 1_000, holder: Holder::Found { slot, id: slot }, starts_segment: true }];
     let holders = Holders::new([("GER".to_owned(), held(7)), ("POL".to_owned(), held(8))].into_iter().collect(), Vec::new());
-    let opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
+    let mut opener = brief(1, EventFeedKind::DecisionSelected, 100, None, Some(30));
+    opener.name = Some("Opening name".into());
     let later = Brief {
         at: Locator { run: 1, hour: 110, key: (1u128 << 64) | 2 },
         kind: EventFeedKind::DecisionDurationChanged,
@@ -127,7 +128,7 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         days: Some(40),
         token: Some("mission_b".into()),
         costs: [None, None],
-        name: None,
+        name: Some("Later name".into()),
         choice: None,
     };
     let scanned = Scanned {
@@ -163,6 +164,8 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
     assert_eq!(index.ask(&holders, &Ask { search: Some("POL"), ..ask_at(110) }).unwrap().total, 1);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(109) }).unwrap().total, 0);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_b"), ..ask_at(110) }).unwrap().total, 1);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("Later name"), ..ask_at(109) }).unwrap().total, 0);
+    assert_eq!(index.ask(&holders, &Ask { search: Some("Later name"), ..ask_at(110) }).unwrap().total, 1);
     assert_eq!(index.ask(&holders, &Ask { search: Some("mission_a"), ..ask_at(100) }).unwrap().total, 1);
 
     let mut swapped = brief(3, EventFeedKind::DecisionSelected, 100, None, None);
@@ -175,14 +178,15 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
 #[test]
 fn decision_cost_sort_keeps_unrecorded_after_recorded_in_both_directions() {
     use dashboard_query::{identity::Holders, log::occurrence::{Ask, Direction, Order}};
-    let mut briefs: Vec<_> = (0..3).map(|i| brief(i + 1, EventFeedKind::DecisionSelected, 100 + i as i32, None, None)).collect();
+    let mut briefs: Vec<_> = (0..4).map(|i| brief(i + 1, EventFeedKind::DecisionSelected, 100 + i as i32, None, None)).collect();
     briefs[0].costs = [Some(Some(-20)), Some(None)];
     briefs[1].costs = [Some(Some(-10)), Some(None)];
+    briefs[2].costs = [Some(Some(0)), Some(Some(-15))];
     let scanned = Scanned { briefs, gaps: Vec::new(), ..Scanned::refused(0, 0, "fixture") };
     let index = decisions(&scanned, &Names { slots: HashMap::new() }).unwrap();
-    for (direction, expected) in [(Direction::Ascending, [101, 100, 102]), (Direction::Descending, [100, 101, 102])] {
-        let answer = index.ask(&Holders::new(BTreeMap::new(), Vec::new()), &Ask { hour: 110, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Key(2, direction), live_first: false, offset: 0, limit: 3, chips: &[] }).unwrap();
+    for (direction, expected) in [(Direction::Ascending, [101, 102, 100, 103]), (Direction::Descending, [100, 102, 101, 103])] {
+        let answer = index.ask(&Holders::new(BTreeMap::new(), Vec::new()), &Ask { hour: 110, from: None, to: None, gap_end: None, selection: None, subject: None, kinds: None, states: None, search: None, order: Order::Key(2, direction), live_first: false, offset: 0, limit: 4, chips: &[] }).unwrap();
         assert_eq!(answer.rows.iter().map(|shown| index.get(shown.at).date).collect::<Vec<_>>(), expected);
-        assert_eq!(index.get(answer.rows[2].at).sort_keys[2].at(110), None);
+        assert_eq!(index.get(answer.rows[3].at).sort_keys[2].at(110), None);
     }
 }

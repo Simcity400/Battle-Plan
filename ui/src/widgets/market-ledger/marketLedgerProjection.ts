@@ -438,6 +438,8 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     const search = typeof ctx.options.search === 'string' ? ctx.options.search : '';
     const all = ctx.countries.all;
     const tags = all ? null : ctx.countries.tags;
+    const ref = tags && tags.length === 1 ? countryFromKey(tags[0]!) : null;
+    const perspective = typeof ref === 'string' ? ref : null;
     if (!all && (!tags || tags.length === 0)) {
       return { owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:empty`, entries: [], allowEmptyFollow: true };
     }
@@ -452,7 +454,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
     const expanded = opened.map(key => key.slice(GROUP.length));
     const full = contentSet(ctx.options.full).filter(key => opened.includes(key)).map(key => key.slice(GROUP.length));
     return {
-      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}:${JSON.stringify([search, sort])}`,
+      owner: `${ctx.track.source.id}:${ctx.branch.id}:market-ledger:${statuses.join(',')}:${selection ? JSON.stringify(selection) : 'all'}:${expanded.join(',')}:${full.join(',')}:${JSON.stringify([search, sort, perspective])}`,
       entries: [
         pagedTailEntry(
           'main',
@@ -464,7 +466,7 @@ export const marketLedgerDeclaration: TableWidgetDeclaration<MarketLedgerProject
             branchId: ctx.branch.id,
             from: boundFrom,
             limit: HEAD_LIMIT,
-            ask: { search, sort, ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}), ...(full.length ? { full } : {}) },
+            ask: { search, sort, ...(perspective ? { perspective } : {}), ...(statuses.length === 5 ? {} : { statuses }), ...selection, ...(expanded.length ? { expanded } : {}), ...(full.length ? { full } : {}) },
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,

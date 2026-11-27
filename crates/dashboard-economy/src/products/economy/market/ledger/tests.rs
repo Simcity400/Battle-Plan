@@ -9,7 +9,7 @@ fn opened(id: &str, frames: Vec<DecodedFrame>) -> Source {
 }
 
 fn ask(hour: i32) -> MarketLedgerTailParams {
-    MarketLedgerTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, offset: None, limit: 64, statuses: None, expanded: None, full: None }
+    MarketLedgerTailParams { branch_id: "1".into(), hour: Some(hour), from: None, to: None, countries: None, group: None, search: None, sort: None, perspective: None, offset: None, limit: 64, statuses: None, expanded: None, full: None }
 }
 
 #[test]
@@ -584,4 +584,24 @@ fn a_party_is_named_at_the_contracts_date_and_a_buyer_first_recorded_later_only_
         ("1", "0", "1", "0"),
         "later buyer membership and search use effective hour 103 and admit from observation hour 105"
     );
+}
+
+#[test]
+fn a_single_country_ledger_sorts_counterparties_and_signed_payments_before_paging() {
+    let src = opened("market-perspective-sort", frames(100..=106, |hour| {
+        let make = |id, kind, country, receiver, agreement, amount_raw| MarketEventRow { country, receiver, agreement, amount_raw, ..event(id, hour, kind, MarketEventRow::default()) };
+        match hour {
+            100 => vec![make(1, 11, 9001, 66, 1, 0)],
+            101 => vec![make(2, 11, 66, 9001, 2, 0)],
+            102 => vec![make(3, 11, 9001, 44, 3, 0)],
+            103 => vec![make(4, 21, 9001, 66, 1, 20), make(5, 21, 66, 9001, 2, 30), make(6, 21, 9001, 44, 3, 10)],
+            _ => Vec::new(),
+        }
+    }));
+    let params = MarketLedgerTailParams { perspective: Some("GER".into()), limit: 2, ..ask(106) };
+    let by_country = load(&src, &MarketLedgerTailParams { sort: Some(OccurrenceSort { column: "country".into(), direction: dashboard_query::log::occurrence::Direction::Ascending }), ..params.clone() });
+    assert_eq!(contracts(&by_country).iter().map(|row| row.hour).collect::<Vec<_>>(), [102, 101]);
+    let by_paid = load(&src, &MarketLedgerTailParams { sort: Some(OccurrenceSort { column: "paid".into(), direction: dashboard_query::log::occurrence::Direction::Descending }), ..params });
+    assert_eq!(contracts(&by_paid).iter().map(|row| row.hour).collect::<Vec<_>>(), [100, 102]);
+    stepped_matches_cold(&src, serde_json::json!({ "panel": "market-ledger-tail", "branchId": "1", "limit": 2, "perspective": "GER", "sort": { "column": "paid", "direction": "descending" } }), &(100..=106).collect::<Vec<_>>());
 }
