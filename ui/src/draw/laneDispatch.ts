@@ -220,6 +220,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       case 'lane-surface': lane.setLaneSurface(m.canvas, m.opaque); break;
       case 'lane-surface-dispose': lane.disposeLaneSurface(); break;
       case 'lane-slots': lane.setLaneSlots(m); break;
+      case 'clock': lane.setClock(m.clock); break;
       case 'frame': lane.frame(m); break;
     }
   };

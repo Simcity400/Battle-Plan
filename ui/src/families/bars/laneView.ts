@@ -1,10 +1,13 @@
 import { LABEL_WEIGHT } from '../../charts/draw.ts';
 import { textWidth } from '../../charts/textWidth.ts';
 import type { LaneBinding, LaneFamily, LaneFrame } from '../laneRuntime.ts';
+import { interpolateFamilyValue } from '../motion.ts';
 import { glideDurationForSpeed } from '../table/painter.ts';
-import { barsAuditWindow, barsRangeForBand, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
+import { valueNumber } from '../value.ts';
+import { formatValueState } from '../valueFormat.ts';
+import { barsAuditWindow, barsRangeForBand, barsScales, barsScrollHeight, layoutFamilyBars, visibleBarsRange, type BarsLayout } from './layout.ts';
 import { assertBarsModelValid, barsLabelText, deriveBarsAudit, deriveBarsMirror, deriveBarsTooltip, formatBarsValueField, type BarsDataRow, type BarsModel, type BarsValueField } from './model.ts';
-import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
+import { collectVisibleBarsIcons, drawFamilyBars, easeBarFraction, easeOutCubic, hitFamilyBars, type BarsEasedRow, type BarsGlideOffset } from './painter.ts';
 import { hitPickList, pickAudit, pickedKey, pickNav, pickTooltip } from './pickList.ts';
 import { barsRegionRows } from './shareRows.ts';
 import { regionHitKey } from '../regions/regionRows.ts';
@@ -27,6 +30,7 @@ interface Glide {
 
 const STILL: Glide = { duration: 0, offsets: new Map(), moving: false };
 const glides = new WeakMap<BarsLayout, { readonly continuity: number; readonly scrollTop: number; readonly offsets: ReadonlyMap<string, BarsGlideOffset> }>();
+const paintedMotionY = new WeakMap<BarsFrame, ReadonlyMap<string, number>>();
 
 function glideOf(frame: BarsFrame): Glide {
   const { model, layout, before, binding } = frame;
@@ -182,6 +186,16 @@ function inspected(inspect: string | null): { readonly key: string; readonly sid
   return null;
 }
 
+function formatInterpolatedBarsField(field: BarsValueField, interp: number, origNumeric: number): string | undefined {
+  if (Math.abs(interp - origNumeric) <= 1e-6) {
+    const fmt = formatBarsValueField(field);
+    return fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial' ? fmt.text : undefined;
+  }
+  const value = interpolateFamilyValue(field.value, interp, { originalNumeric: origNumeric, format: field.format });
+  const fmt = formatBarsValueField({ ...field, value });
+  return fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial' ? fmt.text : undefined;
+}
+
 export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
   family: 'bars',
   boundary(model, hour) {
@@ -199,6 +213,222 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
     });
   },
   paint(ctx, frame) {
+    const liveMotion = frame.motion;
+    if (liveMotion) {
+      const { field, step, nextModel } = liveMotion;
+      const { model, layout, binding } = frame;
+      const visible = visibleBarsRange(layout, binding.scrollTop, 2);
+      const nextRows = nextModel && nextModel.form === model.form
+        ? new Map<string, BarsDataRow>(nextModel.rows.filter((r): r is BarsDataRow => r.kind === 'data').map(r => [r.key, r]))
+        : null;
+      const nextScales = nextModel && nextModel.form === model.form
+        ? barsScales(nextModel, layout.showAxis)
+        : null;
+      const interpScaleMax = field.stepScalar('scaleMax', layout.scaleMax, nextScales?.scaleMax, false, easeOutCubic) ?? layout.scaleMax;
+      const interpScaleLeft = field.stepScalar('scaleLeftMax', layout.scaleLeftMax, nextScales?.scaleLeftMax, false, easeOutCubic) ?? layout.scaleLeftMax;
+      const interpScaleRight = field.stepScalar('scaleRightMax', layout.scaleRightMax, nextScales?.scaleRightMax, false, easeOutCubic) ?? layout.scaleRightMax;
+      const safeScale = Math.max(1e-6, interpScaleMax);
+      const safeLeftScale = Math.max(1e-6, interpScaleLeft);
+      const safeRightScale = Math.max(1e-6, interpScaleRight);
+      const activeScalars = new Set<string>(['scaleMax', 'scaleLeftMax', 'scaleRightMax']);
+      const activeYs = new Set<string>();
+      const easedMap = step.mode !== 'exact' ? new Map<string, BarsEasedRow>() : undefined;
+      const hitYMap = step.mode !== 'exact' ? new Map<string, number>() : undefined;
+
+      for (let i = visible.first; i < visible.last; i++) {
+        const item = model.rows[i]!;
+        const baseY = layout.bodyTop + layout.rowTops[i]! - binding.scrollTop;
+        const yKey = `y:${item.key}`;
+        activeYs.add(yKey);
+        const yOverride = field.stepY(yKey, baseY, layout.bodyHeight, easeOutCubic);
+        if (hitYMap) hitYMap.set(item.key, yOverride);
+        if (item.kind !== 'data') continue;
+        const h1Row = nextRows?.get(item.key);
+        const rowEased: {
+          numericFrac?: number;
+          leftFrac?: number;
+          rightFrac?: number;
+          rightSideFrac?: number;
+          targetFrac?: number;
+          segmentShares?: Record<string, number>;
+          valueText?: string;
+          leftText?: string;
+          rightText?: string;
+          rightSideText?: string;
+          pairTopText?: string;
+          pairBottomText?: string;
+          yOverride?: number;
+        } = { yOverride };
+
+        if (model.form === 'share' || model.form === 'stacked') {
+          const parentMeasured = isMeasuredField(item.value);
+          if (item.segments?.length) {
+            const nextSegs = h1Row?.segments ? new Map(h1Row.segments.map(s => [s.key, s])) : null;
+            const shares: Record<string, number> = {};
+            for (const seg of item.segments) {
+              const sKey = `seg:${item.key}:${seg.key}`;
+              activeScalars.add(sKey);
+              const segMeasured = parentMeasured && isMeasuredField({ value: seg.value });
+              const h1Seg = nextSegs?.get(seg.key);
+              const h1Share = h1Seg
+                ? (isMeasuredField({ value: h1Seg.value }) ? h1Seg.share : null)
+                : (h1Row ? 0 : undefined);
+              const interpShare = field.stepScalar(sKey, segMeasured ? seg.share : null, h1Share, !segMeasured, easeOutCubic);
+              if (easedMap && segMeasured && interpShare !== null && Number.isFinite(interpShare)) {
+                shares[seg.key] = Math.max(0, Math.min(1, interpShare));
+              }
+            }
+            if (easedMap && Object.keys(shares).length > 0) rowEased.segmentShares = shares;
+          }
+        } else if (model.form === 'two-sided' && layout.twoSidedLayout === 'split-sides') {
+          if (item.value) {
+            const vKey = `v:${item.key}`;
+            activeScalars.add(vKey);
+            const measured = isMeasuredField(item.value) && item.numeric !== null && item.numeric !== undefined;
+            const h1Val = h1Row?.value
+              ? (isMeasuredField(h1Row.value) && h1Row.numeric !== null && h1Row.numeric !== undefined ? h1Row.numeric : null)
+              : undefined;
+            const interpVal = field.stepScalar(vKey, measured ? item.numeric! : null, h1Val, !measured, easeOutCubic);
+            if (easedMap && measured && interpVal !== null && Number.isFinite(interpVal)) {
+              rowEased.numericFrac = interpVal / safeLeftScale;
+              const text = formatInterpolatedBarsField(item.value, interpVal, item.numeric!);
+              if (text !== undefined) rowEased.valueText = text;
+            }
+          }
+          if (item.rightSide) {
+            const rsKey = `rs:${item.rightSide.key}`;
+            activeScalars.add(rsKey);
+            const rsMeasured = isMeasuredField(item.rightSide.value) && item.rightSide.numeric !== null && item.rightSide.numeric !== undefined;
+            const h1Right = h1Row?.rightSide;
+            const h1Val = h1Right
+              ? (isMeasuredField(h1Right.value) && h1Right.numeric !== null && h1Right.numeric !== undefined ? h1Right.numeric : null)
+              : undefined;
+            const interpVal = field.stepScalar(rsKey, rsMeasured ? item.rightSide.numeric! : null, h1Val, !rsMeasured, easeOutCubic);
+            if (easedMap && rsMeasured && interpVal !== null && Number.isFinite(interpVal)) {
+              rowEased.rightSideFrac = interpVal / safeRightScale;
+              const text = formatInterpolatedBarsField(item.rightSide.value, interpVal, item.rightSide.numeric!);
+              if (text !== undefined) rowEased.rightSideText = text;
+            }
+          }
+        } else if (model.form === 'two-sided') {
+          const leftDenom = layout.twoSidedLayout === 'stacked-pair' ? safeScale : safeLeftScale;
+          const rightDenom = layout.twoSidedLayout === 'stacked-pair' ? safeScale : safeRightScale;
+          if (item.left) {
+            const lKey = `l:${item.key}`;
+            activeScalars.add(lKey);
+            const lMeasured = isMeasuredField(item.left.value) && item.left.numeric !== null && item.left.numeric !== undefined;
+            const h1Left = h1Row?.left;
+            const h1Val = h1Left
+              ? (isMeasuredField(h1Left.value) && h1Left.numeric !== null && h1Left.numeric !== undefined ? h1Left.numeric : null)
+              : undefined;
+            const interpVal = field.stepScalar(lKey, lMeasured ? item.left.numeric! : null, h1Val, !lMeasured, easeOutCubic);
+            if (easedMap && lMeasured && interpVal !== null && Number.isFinite(interpVal)) {
+              rowEased.leftFrac = interpVal / leftDenom;
+              const text = formatInterpolatedBarsField(item.left.value, interpVal, item.left.numeric!);
+              if (text !== undefined) rowEased.leftText = text;
+            }
+          }
+          if (item.right) {
+            const rKey = `r:${item.key}`;
+            activeScalars.add(rKey);
+            const rMeasured = isMeasuredField(item.right.value) && item.right.numeric !== null && item.right.numeric !== undefined;
+            const h1Right = h1Row?.right;
+            const h1Val = h1Right
+              ? (isMeasuredField(h1Right.value) && h1Right.numeric !== null && h1Right.numeric !== undefined ? h1Right.numeric : null)
+              : undefined;
+            const interpVal = field.stepScalar(rKey, rMeasured ? item.right.numeric! : null, h1Val, !rMeasured, easeOutCubic);
+            if (easedMap && rMeasured && interpVal !== null && Number.isFinite(interpVal)) {
+              rowEased.rightFrac = interpVal / rightDenom;
+              const text = formatInterpolatedBarsField(item.right.value, interpVal, item.right.numeric!);
+              if (text !== undefined) rowEased.rightText = text;
+            }
+          }
+        } else {
+          const vKey = `v:${item.key}`;
+          activeScalars.add(vKey);
+          const valField = item.value;
+          const measured = valField !== undefined && isMeasuredField(valField) && item.numeric !== null && item.numeric !== undefined;
+          const h1Val = h1Row
+            ? (isMeasuredField(h1Row.value) && h1Row.numeric !== null && h1Row.numeric !== undefined ? h1Row.numeric : null)
+            : undefined;
+          const interpVal = field.stepScalar(vKey, measured ? item.numeric! : null, h1Val, !measured, easeOutCubic);
+          if (easedMap && measured && valField && interpVal !== null && Number.isFinite(interpVal)) {
+            rowEased.numericFrac = interpVal / safeScale;
+            const text = formatInterpolatedBarsField(valField, interpVal, item.numeric!);
+            if (text !== undefined) rowEased.valueText = text;
+          }
+          if (item.target) {
+            const tKey = `t:${item.key}`;
+            activeScalars.add(tKey);
+            const tMeasured = isMeasuredField({ value: item.target.value }) && Number.isFinite(item.target.numeric);
+            const h1Target = h1Row?.target;
+            const h1TargetVal = h1Target
+              ? (isMeasuredField({ value: h1Target.value }) && Number.isFinite(h1Target.numeric) ? h1Target.numeric : null)
+              : undefined;
+            const interpTarget = field.stepScalar(tKey, tMeasured ? item.target.numeric : null, h1TargetVal, !tMeasured, easeOutCubic);
+            if (easedMap && tMeasured && interpTarget !== null && Number.isFinite(interpTarget)) {
+              rowEased.targetFrac = Math.max(0, interpTarget / safeScale);
+            }
+          }
+          if (item.segments?.length) {
+            const nextSegs = h1Row?.segments ? new Map(h1Row.segments.map(s => [s.key, s])) : null;
+            const shares: Record<string, number> = {};
+            for (const seg of item.segments) {
+              const sKey = `seg:${item.key}:${seg.key}`;
+              activeScalars.add(sKey);
+              const segMeasured = isMeasuredField({ value: seg.value });
+              const h1Seg = nextSegs?.get(seg.key);
+              const h1Share = h1Seg ? (isMeasuredField({ value: h1Seg.value }) ? h1Seg.share : null) : (h1Row ? 0 : undefined);
+              const interpShare = field.stepScalar(sKey, segMeasured ? seg.share : null, h1Share, !segMeasured, easeOutCubic);
+              if (easedMap && segMeasured && interpShare !== null && Number.isFinite(interpShare)) {
+                shares[seg.key] = Math.max(0, Math.min(1, interpShare));
+              }
+            }
+            if (easedMap && Object.keys(shares).length > 0) rowEased.segmentShares = shares;
+          }
+          if (model.form === 'net' && item.pair) {
+            const ptKey = `pt:${item.key}`;
+            const pbKey = `pb:${item.key}`;
+            activeScalars.add(ptKey);
+            activeScalars.add(pbKey);
+            const topNum = valueNumber(item.pair.topValue);
+            const botNum = valueNumber(item.pair.bottomValue);
+            const h1Top = h1Row?.pair ? (valueNumber(h1Row.pair.topValue) ?? null) : undefined;
+            const h1Bot = h1Row?.pair ? (valueNumber(h1Row.pair.bottomValue) ?? null) : undefined;
+            const interpTop = field.stepScalar(ptKey, topNum ?? null, h1Top, topNum === undefined, easeOutCubic);
+            const interpBot = field.stepScalar(pbKey, botNum ?? null, h1Bot, botNum === undefined, easeOutCubic);
+            if (easedMap && topNum !== undefined && interpTop !== null && Number.isFinite(interpTop)) {
+              const nextVal = interpolateFamilyValue(item.pair.topValue, interpTop, { format: item.pair.format });
+              const fmt = formatValueState(nextVal, item.pair.format);
+              if (fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial') rowEased.pairTopText = fmt.text;
+            }
+            if (easedMap && botNum !== undefined && interpBot !== null && Number.isFinite(interpBot)) {
+              const nextVal = interpolateFamilyValue(item.pair.bottomValue, interpBot, { format: item.pair.format });
+              const fmt = formatValueState(nextVal, item.pair.format);
+              if (fmt.kind === 'known' || fmt.kind === 'zero' || fmt.kind === 'partial') rowEased.pairBottomText = fmt.text;
+            }
+          }
+        }
+        if (easedMap) easedMap.set(item.key, rowEased);
+      }
+      if (hitYMap) paintedMotionY.set(frame, hitYMap);
+      else paintedMotionY.delete(frame);
+      field.prune(activeScalars, activeYs);
+      drawFamilyBars(ctx, {
+        model: frame.model,
+        layout: frame.layout,
+        theme: frame.theme,
+        scrollTop: frame.binding.scrollTop,
+        now: frame.now,
+        glideDuration: 0,
+        ...(easedMap ? { easedValues: easedMap } : {}),
+        artCache: frame.art,
+        inspectedKey: inspected(frame.inspect)?.key ?? null,
+        selectedKey: frame.binding.selectedKey,
+        focusedKey: frame.binding.focusedKey,
+      });
+      return field.active;
+    }
     const glide = glideOf(frame);
     const eased = easedBarsOf(frame);
     drawFamilyBars(ctx, {
@@ -223,12 +453,13 @@ export const barsLane: LaneFamily<FamilyBarsBinding, BarsModel, BarsLayout> = {
       if (picked) return picked;
       if (point[0] < frame.layout.bodyLeft) return null;
     }
-    const glide = glideOf(frame);
+    const motionY = paintedMotionY.get(frame);
+    const glide = motionY ? STILL : glideOf(frame);
     const shown = new Set<string>();
     const hovered = inspected(frame.inspect)?.key;
     if (hovered) shown.add(hovered);
     if (frame.binding.focusedKey) shown.add(frame.binding.focusedKey);
-    const res = hitFamilyBars(frame.layout, frame.model, { x: point[0], y: point[1] }, frame.binding.scrollTop, glide.moving ? glide.offsets : undefined, frame.now, glide.duration, shown);
+    const res = hitFamilyBars(frame.layout, frame.model, { x: point[0], y: point[1] }, frame.binding.scrollTop, glide.moving ? glide.offsets : undefined, frame.now, glide.duration, shown, motionY);
     if (res.kind === 'none' || !res.rowKey) return null;
     if (res.kind === 'add-region') return regionHitKey('add', res.rowKey);
     if (res.kind === 'remove-region') return regionHitKey('remove', res.rowKey);

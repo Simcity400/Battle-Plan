@@ -12,6 +12,7 @@ import type { FamilyTooltipEntry, FamilyTooltipField } from './host/tooltips.ts'
 import { IdentityIndex } from './identity/index.ts';
 import { createSnapshotIdentityProvider } from './identity/provider.ts';
 import type { IdentitySnapshot } from './identity/types.ts';
+import { MotionField, type MotionStep } from './motion.ts';
 import type { FamilyId } from './plan.ts';
 import { ensureBoundProjection, familyProjectionFailure, forgetProjectionWaiter, retryFamilyProjection, unknownProjectionReason } from './registry.ts';
 import { projectScene, samePictures, sceneReadView, snapshotPictures, type SceneProjection, type SceneReaders, type SceneSources } from './scene.ts';
@@ -71,6 +72,13 @@ export interface LaneDrawn<TBinding extends LaneBinding, TModel, TLayout> {
   readonly hour: number;
 }
 
+export interface LaneMotionContext<TModel> {
+  readonly field: MotionField;
+  readonly step: MotionStep;
+  readonly nextModel: TModel | null;
+  readonly nextHour: number | null;
+}
+
 export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly binding: TBinding;
   readonly theme: FamilyTheme;
@@ -90,6 +98,7 @@ export interface LaneFrame<TBinding extends LaneBinding, TModel, TLayout> {
   readonly changedAt: number;
   readonly continuity: number;
   readonly fullRepaint?: boolean;
+  readonly motion?: LaneMotionContext<TModel>;
   readNow(): BoundedReadView;
 }
 
@@ -153,8 +162,19 @@ interface Held<TBinding extends LaneBinding, TModel, TLayout> {
   workerCanvas: OffscreenCanvas | null;
   sharedPainted: boolean;
   lastTarget: 'bitmap' | 'worker' | 'shared' | null;
+  lastNextHour: number | null;
   opaque: boolean;
   surfaceColor: string;
+  readonly motionField: MotionField;
+  nextProjected: SceneProjection<TModel> | null;
+  nextParts: readonly (readonly Fact<LaneValue>[])[];
+  nextHour: number | null;
+  nextKind: string;
+  nextViewName: string | undefined;
+  nextOwner: string | undefined;
+  nextInputs: Revisions | undefined;
+  nextWindowKey: string;
+  nextArtRevision: number;
   readonly art: LaneArtCache;
   wake: () => void;
   artRevision: number;
@@ -527,8 +547,19 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       workerCanvas: workerCanvas ? workerCanvas.canvas : null,
       sharedPainted: false,
       lastTarget: null,
+      lastNextHour: null,
       opaque,
       surfaceColor: '',
+      motionField: new MotionField(),
+      nextProjected: null,
+      nextParts: [],
+      nextHour: null,
+      nextKind: '',
+      nextViewName: undefined,
+      nextOwner: undefined,
+      nextInputs: undefined,
+      nextWindowKey: '',
+      nextArtRevision: 0,
       art,
       wake: wakerOf(widget),
       artRevision: 0,
@@ -697,7 +728,20 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       const timed = binding.audit === true;
       const t0 = timed ? performance.now() : 0;
       const current = painting(input, binding);
-      const continuity = follows(keep.painting, current);
+      const prevPainting = keep.painting;
+      const continuity = follows(prevPainting, current);
+      const motionPlacementCut = prevPainting !== null && (
+        prevPainting.seek !== current.seek
+        || prevPainting.pin !== current.pin
+        || prevPainting.owner !== current.owner
+        || prevPainting.kind !== current.kind
+        || prevPainting.view !== current.view
+        || (prevPainting.revisions !== undefined && current.revisions !== undefined && (
+          !sameRevision(prevPainting.revisions.options, current.revisions.options)
+          || !sameRevision(prevPainting.revisions.sources, current.revisions.sources)
+        ))
+        || current.hour < prevPainting.hour
+      );
       keep.painting = current;
       if (continuity === 'cut') {
         const hadEphemeral = keep.motion || Number.isFinite(keep.expiry);
@@ -781,16 +825,87 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         return { ...EMPTY, mode: 'refused', reason: status.refused, ...nextChangeAt };
       }
 
+      let nextModel: TModel | null = null;
+      let nextHour: number | null = null;
+      const reducedMotion = (binding as { readonly reducedMotion?: boolean }).reducedMotion === true;
+      const isMotionFamily = !reducedMotion && family.family === 'bars';
+      const allowNextProject = isMotionFamily
+        && !input.semanticsOnly
+        && input.motionClock?.playing === true
+        && input.motionClock.speed < 120;
+      if (allowNextProject && input.nextPictures && input.nextHour !== undefined && input.nextHour > drawn) {
+        const nextWindowKey = windowKeyOf(binding);
+        const reuseNext = keep.nextProjected !== null
+          && keep.nextHour === input.nextHour
+          && keep.nextKind === binding.kind
+          && keep.nextViewName === binding.view
+          && keep.nextOwner === input.owner
+          && keep.nextWindowKey === nextWindowKey
+          && sameInputRevisions(keep.nextInputs, binding.revisions)
+          && !readersChanged
+          && keep.nextArtRevision === keep.artRevision
+          && samePictures(keep.nextParts, input.nextPictures);
+        if (!reuseNext) {
+          const nextBase: SceneSources = {
+            sources: binding.sources,
+            ...(binding.staticPanels ? { staticPanels: binding.staticPanels } : {}),
+            ...(binding.staticShifts ? { staticShifts: binding.staticShifts } : {}),
+            ...(binding.staticAnswers ? { staticAnswers: binding.staticAnswers } : {}),
+            ...(binding.hovers ? { hovers: binding.hovers } : {}),
+            kind: binding.kind,
+            ...(binding.pagedRows ? { pagedRows: binding.pagedRows } : {}),
+            ...(binding.window ? { window: binding.window } : {}),
+            ...(projection.validateTail ? { validateTail: projection.validateTail } : {}),
+          };
+          const nextScene: Scene = { widget: input.widget, subs: input.subs, pictures: input.nextPictures, model: input.model, ...(input.owner !== undefined ? { owner: input.owner } : {}) };
+          try {
+            keep.nextProjected = projectScene(nextScene, nextBase, input.nextHour, readers, view => projection.project(view, binding.options));
+            keep.nextParts = snapshotPictures(input.nextPictures);
+            keep.nextHour = input.nextHour;
+            keep.nextKind = binding.kind;
+            keep.nextViewName = binding.view;
+            keep.nextOwner = input.owner;
+            keep.nextInputs = binding.revisions;
+            keep.nextWindowKey = nextWindowKey;
+            keep.nextArtRevision = keep.artRevision;
+          } catch {
+            keep.nextProjected = null;
+            keep.nextHour = null;
+          }
+        }
+        if (keep.nextProjected) {
+          nextModel = keep.nextProjected.model;
+          nextHour = keep.nextHour;
+        }
+      } else if (!input.semanticsOnly) {
+        keep.nextProjected = null;
+        keep.nextHour = null;
+      }
+
+      const shared = input.sharedSurface;
+      if (reducedMotion && keep.motionField.active) keep.motionField.reset();
+      const motionStep = !input.semanticsOnly && input.motionClock && isMotionFamily
+        ? keep.motionField.beginFrame(
+          input.motionClock,
+          performance.timeOrigin + input.now,
+          input.bracketStart ?? drawn,
+          input.bracketEnd ?? nextHour,
+          motionPlacementCut || input.motionGap === true,
+          input.binding.offset,
+          input.continuousHour,
+        )
+        : undefined;
+
       const layoutKey = [model, drawn, surface.width, surface.height, ...viewKey(binding, ['theme', ...family.view])];
-      if (!keep.layout || !sameKey(keep.layoutKey, layoutKey)) {
+      const layoutDirty = !keep.layout || !sameKey(keep.layoutKey, layoutKey);
+      if (layoutDirty) {
         const previous = continuity === 'continues' ? keep.drawn : null;
         keep.layout = family.layout(model, binding, surface, theme, keep.ctx, drawn, { previous, now: effectiveNow, speed: effectiveSpeed });
         keep.layoutKey = layoutKey;
       }
-      const layout = keep.layout;
+      const layout = keep.layout!;
       const tLayout = timed ? performance.now() : 0;
       let readNow: BoundedReadView | null = null;
-      const shared = input.sharedSurface;
       const slotDirty = canvasSwitched || (shared ? (shared.dirty || !keep.sharedPainted) : Boolean(input.workerCanvas?.dirty));
       const frame: LaneFrame<TBinding, TModel, TLayout> = {
         binding, theme, model, layout, surface,
@@ -807,6 +922,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         changedAt: keep.changedAt,
         continuity: keep.continuity,
         ...(slotDirty ? { fullRepaint: true } : {}),
+        ...(motionStep ? { motion: { field: keep.motionField, step: motionStep, nextModel, nextHour } } : {}),
         readNow: () => readNow ??= sceneReadView(projected.scene, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
       };
 
@@ -824,7 +940,18 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
       if (speedChanged) family.onSpeed?.(layout, effectiveSpeed, keep.continuity);
       const speedRedraw = speedChanged && keep.content !== '' && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame) === false;
       keep.speed = effectiveSpeed;
-      const shouldPaint = slotDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || !sameKey(keep.drawKey, drawKey);
+      const nextHourChanged = !input.semanticsOnly && nextHour !== keep.lastNextHour;
+      if (!input.semanticsOnly) keep.lastNextHour = nextHour;
+      const motionNeedsPaint = motionStep !== undefined && (
+        motionStep.cut
+        || motionStep.justSettled
+        || motionStep.mode === 'settling'
+        || keep.motionField.active
+        || nextHourChanged
+        || !reuse
+        || layoutDirty
+      );
+      const shouldPaint = !input.semanticsOnly && (slotDirty || !reuse || layoutDirty || keep.motion || effectiveNow >= keep.expiry || speedRedraw || motionNeedsPaint || !sameKey(keep.drawKey, drawKey));
       let repainted = false;
       if (shouldPaint) {
         const shown = [...family.visibleArt(frame)];
@@ -869,6 +996,23 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
               const bh = slot.bh ?? slot.h;
               const cr = Math.min(sharedLane.cornerRadius ?? 0, bw / 2, bh / 2);
               if (cr > 0) {
+                if (family.family !== 'table' || slotDirty) {
+                  const rawBx = slot.bx ?? slot.x;
+                  const rawBy = slot.by ?? slot.y;
+                  const bLeft = Math.round(rawBx * sdpr);
+                  const bTop = Math.round(rawBy * sdpr);
+                  const bRight = Math.round((rawBx + bw) * sdpr);
+                  const bBottom = Math.round((rawBy + bh) * sdpr);
+                  const crDev = Math.ceil(cr * sdpr) + 1;
+                  const cw = Math.min(crDev, Math.max(0, bRight - bLeft));
+                  const ch = Math.min(crDev, Math.max(0, bBottom - bTop));
+                  if (cw > 0 && ch > 0) {
+                    sharedLane.rawSetTransform(1, 0, 0, 1, 0, 0);
+                    sharedLane.rawClearRect(bLeft, bBottom - ch, cw, ch);
+                    sharedLane.rawClearRect(bRight - cw, bBottom - ch, cw, ch);
+                    sctx.setTransform(sdpr, 0, 0, sdpr, 0, 0);
+                  }
+                }
                 sctx.beginPath();
                 sctx.moveTo(bx, by);
                 sctx.lineTo(bx + bw, by);
@@ -918,7 +1062,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
             keep.ctx.restore();
           }
         };
-        const canKeep = !slotDirty && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
+        const canKeep = !slotDirty && !motionNeedsPaint && keep.content && family.keepsCanvas?.(shared ? shared.lane.ctx : keep.ctx, frame);
         const painted = canKeep ? { drew: false, next: false } : drawCanvas();
         const incremental = typeof painted === 'object';
         repainted = !incremental || painted.drew;
@@ -932,6 +1076,35 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         if (!incremental || painted.drew || !keep.content) keep.content = content();
       }
       keep.lastTarget = activeTarget;
+
+      if (!input.semanticsOnly && (keep.workerCanvas || shared) && input.motionClock?.playing && (!motionStep || motionStep.mode !== 'exact')) {
+        return {
+          ...(status === 'picture' ? { mode: 'picture' as const } : {}),
+          ...nextChangeAt,
+          viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
+          surfaces: [],
+          fields: {},
+          motion: motionStep ? keep.motionField.active : keep.motion,
+          repainted,
+          settling: false,
+          justSettled: false,
+          hit: keep.hit,
+        };
+      }
+      if (!input.semanticsOnly && (keep.workerCanvas || shared) && motionStep && motionStep.mode === 'settling') {
+        return {
+          ...(status === 'picture' ? { mode: 'picture' as const } : {}),
+          ...nextChangeAt,
+          viewport: { width: surface.width, height: surface.height, dpr, scrollLeft: binding.scrollLeft ?? 0, scrollTop: binding.scrollTop },
+          surfaces: [],
+          fields: {},
+          motion: true,
+          repainted,
+          settling: true,
+          justSettled: false,
+          hit: keep.hit,
+        };
+      }
 
       const tPaint = timed ? performance.now() : 0;
       const fields: Record<string, Field> = { ...keep.demandFields };
@@ -1035,9 +1208,10 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         surfaces: keep.workerCanvas || shared ? [] : [{ source: keep.canvas, content: keep.content }],
         ...(keep.workerCanvas || shared ? { surfaceContent: keep.content } : {}),
         fields,
-        motion: keep.motion,
+        motion: input.semanticsOnly ? false : keep.motion,
         repainted,
-        ...(keep.motion || Number.isFinite(keep.expiry) ? { ephemeral: true } : {}),
+        ...(!input.semanticsOnly && (keep.motion || Number.isFinite(keep.expiry)) ? { ephemeral: true } : {}),
+        ...(motionStep?.justSettled ? { settling: false, justSettled: true } : {}),
         hit: keep.hit,
       };
     },

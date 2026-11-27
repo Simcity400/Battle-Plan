@@ -64,6 +64,13 @@ export interface BarsEasedRow {
   readonly rightSideFrac?: number;
   readonly targetFrac?: number;
   readonly segmentShares?: Readonly<Record<string, number>>;
+  readonly valueText?: string;
+  readonly leftText?: string;
+  readonly rightText?: string;
+  readonly rightSideText?: string;
+  readonly pairTopText?: string;
+  readonly pairBottomText?: string;
+  readonly yOverride?: number;
 }
 
 export interface DrawFamilyBarsInput {
@@ -397,7 +404,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
     const item = model.rows[i]!;
     const baseY = layout.bodyTop + layout.rowTops[i]! - scrollTop;
     const rowH = layout.rowHeights[i]!;
-    const y = paintedRowY(item.key, baseY, glide, now, glideDuration);
+    const easedRow = easedValues?.get(item.key);
+    const y = easedRow?.yOverride !== undefined ? easedRow.yOverride : paintedRowY(item.key, baseY, glide, now, glideDuration);
     const middleY = y + rowH / 2;
     paintedRows++;
 
@@ -502,7 +510,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
               ? theme.muted
               : theme.text;
           const captioned = layout.showPair;
-          ctx.fillText(ellipsise(formatted.text, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
+          const displayText = eased?.valueText ?? formatted.text;
+          ctx.fillText(ellipsise(displayText, layout.readoutWidth, s => textWidth(ctx, s)), rightEdge, captioned ? middleY - 7 : middleY);
           if (captioned) {
             const sub = row.value?.caption ?? ((row.numeric ?? 0) < 0 ? 'Short a day' : (row.numeric ?? 0) > 0 ? 'Surplus a day' : 'Balanced');
             ctx.font = `${LABEL_WEIGHT} 11px ${theme.font}`;
@@ -516,8 +525,8 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       if (layout.showPair && row.pair) {
         const topFmt = formatValueState(row.pair.topValue, row.pair.format);
         const botFmt = formatValueState(row.pair.bottomValue, row.pair.format);
-        const topVal = topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable' || topFmt.kind === 'pending' ? topFmt.label : topFmt.text;
-        const botVal = botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable' || botFmt.kind === 'pending' ? botFmt.label : botFmt.text;
+        const topVal = eased?.pairTopText ?? (topFmt.kind === 'notRecorded' || topFmt.kind === 'notApplicable' || topFmt.kind === 'pending' ? topFmt.label : topFmt.text);
+        const botVal = eased?.pairBottomText ?? (botFmt.kind === 'notRecorded' || botFmt.kind === 'notApplicable' || botFmt.kind === 'pending' ? botFmt.label : botFmt.text);
         const rightEdge = layout.pairX + layout.pairWidth;
         ctx.save();
         ctx.textBaseline = 'middle';
@@ -556,13 +565,15 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           layout.plotWidth,
           layout.barHeight,
           row.segments.map(seg => {
-            const share = eased?.segmentShares?.[seg.key] ?? seg.share;
+            const easedShare = eased?.segmentShares?.[seg.key];
+            const share = easedShare ?? seg.share;
+            const shareText = formatShare(Math.max(0, Math.min(1, share)));
             return {
               share,
               color: seg.color,
               hatched: seg.hatched,
-              label: seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`,
-              shortLabel: formatShare(seg.share),
+              label: easedShare !== undefined && seg.inlineLabel === undefined ? `${seg.label} ${shareText}` : (seg.inlineLabel ?? `${seg.label} ${formatShare(seg.share)}`),
+              shortLabel: easedShare !== undefined ? shareText : formatShare(seg.share),
             };
           }),
           theme,
@@ -609,7 +620,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.fillStyle = leftFmt.kind === 'zero' ? theme.muted : theme.text;
           ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
-          ctx.fillText(leftFmt.text, layout.centerX - 18, middleY);
+          ctx.fillText(eased?.valueText ?? leftFmt.text, layout.centerX - 18, middleY);
           ctx.restore();
         }
       }
@@ -627,7 +638,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.fillStyle = rightFmt.kind === 'zero' ? theme.muted : theme.text;
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
-          ctx.fillText(rightFmt.text, layout.centerX + 18, middleY);
+          ctx.fillText(eased?.rightSideText ?? rightFmt.text, layout.centerX + 18, middleY);
           ctx.restore();
           const rightFrac = eased?.rightSideFrac !== undefined ? eased.rightSideFrac : (right.numeric ?? 0) / layout.scaleRightMax;
           if (rightFrac > 0) {
@@ -680,7 +691,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.fillStyle = leftFmt.kind === 'zero' ? theme.muted : theme.text;
           ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
-          ctx.fillText(leftFmt.text, layout.centerX - w - BARS_VALUE_GAP, middleY);
+          ctx.fillText(eased?.leftText ?? leftFmt.text, layout.centerX - w - BARS_VALUE_GAP, middleY);
           ctx.restore();
         }
       }
@@ -700,7 +711,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           ctx.fillStyle = rightFmt.kind === 'zero' ? theme.muted : theme.text;
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
-          ctx.fillText(rightFmt.text, layout.centerX + w + BARS_VALUE_GAP, middleY);
+          ctx.fillText(eased?.rightText ?? rightFmt.text, layout.centerX + w + BARS_VALUE_GAP, middleY);
           ctx.restore();
         }
       }
@@ -767,7 +778,7 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
           barY,
           totalBarW,
           layout.barHeight,
-          row.segments.map(seg => ({ fraction: seg.share, fill: seg.color, hatched: seg.hatched })),
+          row.segments.map(seg => ({ fraction: eased?.segmentShares?.[seg.key] ?? seg.share, fill: seg.color, hatched: seg.hatched })),
           theme,
         );
       }
@@ -825,19 +836,20 @@ export function drawFamilyBars(ctx: Canvas2D, input: DrawFamilyBarsInput): BarsP
       ctx.save();
       ctx.font = `500 ${theme.fontSize.body}px ${theme.font}`;
       ctx.textBaseline = 'middle';
-      const labelW = textWidth(ctx, formatted.text);
+      const displayText = eased?.valueText ?? formatted.text;
+      const labelW = textWidth(ctx, displayText);
       const fitsOutside = !layout.valueInsideBar && drawnEndX + BARS_VALUE_GAP + labelW <= layout.width - BARS_PAD_X;
       if (fitsOutside || drawnEndX - layout.plotLeft < labelW + 12) {
         ctx.fillStyle = formatted.kind === 'zero' ? theme.muted : theme.text;
         ctx.textAlign = 'left';
-        ctx.fillText(formatted.text, drawnEndX + BARS_VALUE_GAP, middleY);
+        ctx.fillText(displayText, drawnEndX + BARS_VALUE_GAP, middleY);
         if (formatted.kind === 'partial') {
           drawPartialTab(ctx, drawnEndX + BARS_VALUE_GAP + labelW + 5, middleY, theme);
         }
       } else {
         ctx.fillStyle = contrastInkForFill(barColor, theme);
         ctx.textAlign = 'right';
-        ctx.fillText(formatted.text, drawnEndX - 6, middleY);
+        ctx.fillText(displayText, drawnEndX - 6, middleY);
       }
       ctx.restore();
     }
@@ -913,6 +925,7 @@ export function hitFamilyBars(
   now = 0,
   glideDuration = 0,
   removeShown: ReadonlySet<string> | null = null,
+  motionRowY?: ReadonlyMap<string, number>,
 ): BarsHitResult {
   if (point.y < layout.bodyTop || point.y > layout.bodyBottom) return { kind: 'none' };
   const { first, last } = visibleBarsRange(layout, scrollTop);
@@ -920,7 +933,7 @@ export function hitFamilyBars(
     const item = model.rows[i]!;
     const baseY = layout.bodyTop + layout.rowTops[i]! - scrollTop;
     const rowH = layout.rowHeights[i]!;
-    const y = paintedRowY(item.key, baseY, glide, now, glideDuration);
+    const y = motionRowY?.get(item.key) ?? paintedRowY(item.key, baseY, glide, now, glideDuration);
     if (point.y < y || point.y >= y + rowH) continue;
     if (item.kind === 'section') return { kind: 'none' };
     if (item.kind === 'add-region') return { kind: 'add-region', rowKey: item.key };
