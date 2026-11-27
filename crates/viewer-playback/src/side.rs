@@ -71,12 +71,15 @@ struct Turn {
     looks: u64,
     stop: bool,
     refused: Option<(u64, Hour, String)>,
+    overlay: Option<overlay::Made>,
+    overlay_withdrawn: bool,
 }
 
 struct Shared {
     held: Mutex<Turn>,
     ask: Mutex<Option<Ask>>,
     signal: Condvar,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
@@ -104,7 +107,11 @@ pub struct SideThread {
 }
 
 impl SideThread {
-    pub fn new(mut side: MapSide) -> io::Result<Self> {
+    pub fn new(side: MapSide) -> io::Result<Self> {
+        Self::with_wake(side, None)
+    }
+
+    pub fn with_wake(mut side: MapSide, wake: Option<Arc<dyn Fn() + Send + Sync>>) -> io::Result<Self> {
         let (entry, sight, views) = (Arc::clone(side.entry()), side.sight().cloned(), side.views().handle());
         let doing = Arc::clone(side.doing());
         let composed = Arc::clone(side.composed());
@@ -112,9 +119,10 @@ impl SideThread {
         let products = Products { branch: side.branch(), ..Products::default() };
         let tables = sight.as_ref().and_then(|content| content.tables);
         let shared = Arc::new(Shared {
-            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None }),
+            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None, overlay: None, overlay_withdrawn: false }),
             ask: Mutex::new(None),
             signal: Condvar::new(),
+            wake,
         });
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let shared = Arc::clone(&shared);
@@ -438,6 +446,12 @@ impl Window<'_> {
         let reached = self.turn.published.take().map(|published| published.elapsed());
         self.turn.reached = reached.or(self.turn.reached);
         self.turn.side.reached(reached);
+        if std::mem::take(&mut self.turn.overlay_withdrawn) {
+            (self.products.overlay, self.products.overlay_withdrawn) = (None, true);
+        }
+        if let Some(made) = self.turn.overlay.take() {
+            self.products.overlay = Some(made);
+        }
         self.products.take(&mut self.turn.side, wants);
     }
 }
@@ -488,7 +502,8 @@ fn advance(shared: &Shared) {
             at => {
                 let (now, interval) = (Instant::now(), rate::interval());
                 let viewpoint = ask.view.perspective != turn.side.view().perspective;
-                let Some(late) = pace.late(now).or((viewpoint || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
+                let view_changed = ask.view != *turn.side.view();
+                let Some(late) = pace.late(now).or((view_changed || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
                     turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
                     continue;
                 };
@@ -511,6 +526,7 @@ fn advance(shared: &Shared) {
                 pace.take(now, interval);
                 waited.late_ns = late.as_nanos() as u64;
                 turn.side.waited(std::mem::take(&mut waited));
+                let before = Progress::of(&turn.side);
                 turn.framed = false;
                 turn.ready = None;
                 turn.published = Some(now);
@@ -518,10 +534,40 @@ fn advance(shared: &Shared) {
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
                 }
-                shared.signal.notify_all();
+                if turn.side.take_overlay_withdrawal() {
+                    (turn.overlay, turn.overlay_withdrawn) = (None, true);
+                }
+                if let Some(made) = turn.side.take_overlay() {
+                    turn.overlay = Some(made);
+                }
+                let wake = shared.wake.as_ref().filter(|_| should_wake(&before, &turn, &ask, head) || shared.asked().is_some_and(|latest| latest.serial != ask.serial)).cloned();
+                if let Some(wake) = wake {
+                    drop(turn);
+                    wake();
+                    shared.signal.notify_all();
+                    turn = lock(&shared.held);
+                } else {
+                    shared.signal.notify_all();
+                }
             }
         }
     }
+}
+
+struct Progress(View, Option<viewer_map_modes::map_mode::MapMode>, Option<OnScreen>, Option<Hour>, Option<Hour>);
+
+impl Progress {
+    fn of(side: &MapSide) -> Self {
+        Self(side.view_shown().clone(), side.mode_on_screen().cloned(), side.on_screen(), side.applied(), side.overlay().and_then(|o| o.hour()))
+    }
+}
+
+fn should_wake(before: &Progress, turn: &Turn, ask: &Ask, head: Hour) -> bool {
+    let side = &turn.side;
+    let needs_upload = side.parts().is_some_and(|(_, layers)| layers.iter().any(|layer| side.draws(layer.name()) && !layer.uploaded()));
+    let mode_pending = side.on_screen().is_some_and(|on| on.drawn == Some(head) && on.settled) && side.mode_on_screen() != Some(&ask.view.map_mode);
+    let changed = side.view_shown() != &before.0 || side.mode_on_screen() != before.1.as_ref() || side.on_screen() != before.2 || side.applied() != before.3 || side.overlay().and_then(|o| o.hour()) != before.4;
+    side.failure().is_some() || side.composing() || needs_upload || turn.overlay.is_some() || turn.overlay_withdrawn || mode_pending || changed
 }
 
 fn wait<'a>(shared: &'a Shared, turn: MutexGuard<'a, Turn>) -> MutexGuard<'a, Turn> {

@@ -124,3 +124,52 @@ fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
     drop(window);
     assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
 }
+
+#[test]
+fn a_paused_mode_change_wakes_the_window_once_and_idle_turns_stay_quiet() {
+    use viewer_map_modes::map_mode::{MapMode, Stock};
+    let composes = Arc::new(Mutex::new(0));
+    let (recording, _) = record(1, 8, busy);
+    let entry = open(units(recording, "side wake mode"), quick()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let _ = tx.send(());
+    });
+    let mut side = SideThread::with_wake(
+        MapSide::with_products(entry, vec![Box::new(Sum::new(&composes))], View::default()).unwrap(),
+        Some(wake),
+    )
+    .unwrap();
+    side.anchor(2, false, 1.0, true);
+    side.ask(View::default(), Head::Paced(2), None, None);
+    side.wait_window(|side| side.applied() == Some(2) && side.mode_on_screen() == Some(&MapMode::default()))
+        .unwrap();
+    let mut initial_wakes = 0usize;
+    while rx.try_recv().is_ok() {
+        initial_wakes += 1;
+    }
+    assert!(initial_wakes >= 1, "initial settle wakes the window at least once");
+    let before_idle = side.last_frame().made;
+    side.wait_window(|side| side.last_frame().made > before_idle).unwrap();
+    let mut idle_wakes = 0usize;
+    while rx.try_recv().is_ok() {
+        idle_wakes += 1;
+    }
+    assert_eq!(idle_wakes, 0, "settled idle turn requests no repaint");
+    let factions = MapMode::Stock(Stock::Factions);
+    side.ask(View { map_mode: factions.clone(), ..View::default() }, Head::Paced(2), None, None);
+    drop(side.window());
+    assert!(
+        rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+        "a paused map mode change wakes the window without any other input"
+    );
+    side.wait_window(|side| side.mode_on_screen() == Some(&factions)).unwrap();
+    while rx.try_recv().is_ok() {}
+    let after_mode = side.last_frame().made;
+    side.wait_window(|side| side.last_frame().made > after_mode).unwrap();
+    let mut post_mode_idle_wakes = 0usize;
+    while rx.try_recv().is_ok() {
+        post_mode_idle_wakes += 1;
+    }
+    assert_eq!(post_mode_idle_wakes, 0, "idle turn after the new mode settles requests no repaint");
+}

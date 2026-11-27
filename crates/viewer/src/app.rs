@@ -2607,12 +2607,20 @@ impl Viewer {
 
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
-            side.on_screen().is_some_and(|on| {
-                if !side.products().overlay_coming() {
-                    return layers_show(&on, target.hour, playing);
-                }
-                whole_picture(&on, self.overlay_hour(), target.hour, playing)
-            })
+            side.mode_on_screen() == Some(&self.map_mode)
+                && side.on_screen().is_some_and(|on| {
+                    if !side.products().overlay_coming() {
+                        return layers_show(&on, target.hour, playing);
+                    }
+                    whole_picture(&on, self.overlay_hour(), target.hour, playing)
+                })
+        })
+    }
+
+    fn side_needs_repaint(&self, head: Playhead) -> bool {
+        self.playhead_map.as_ref().is_some_and(|side| {
+            side.products().missed.is_some()
+                || (side.on_screen().is_some() && !self.picture_whole(head, self.playing))
         })
     }
 
@@ -4346,7 +4354,11 @@ impl Viewer {
         }
         if let Some(made) = self.playhead_opening.as_ref().and_then(crate::playhead_host::Opening::poll) {
             self.playhead_opening = None;
-            match made.and_then(viewer_playback::side::SideThread::new) {
+            let wake: Arc<dyn Fn() + Send + Sync> = {
+                let ctx = ui.ctx().clone();
+                Arc::new(viewer_runtime::worker_priority::waking(move || ctx.request_repaint()))
+            };
+            match made.and_then(|side| viewer_playback::side::SideThread::with_wake(side, Some(wake))) {
                 Ok(side) if self.playhead.is_some_and(|clock| side.branch().is_some_and(|branch| branch != clock.branch)) => {
                     self.drop_later(side);
                     self.playhead_opened = false;
@@ -4368,6 +4380,7 @@ impl Viewer {
             side.views().show_through(taken);
         }
         self.hover_rows.playing = self.playing && !self.saves_a_frame();
+        let asked_mode = self.map_mode.clone();
         if self.playhead_map.is_some() {
             let drawing = self.last_view.is_some() && self.picture_ready();
             let at = head_wanted(
@@ -4562,17 +4575,15 @@ impl Viewer {
         let map_error = self.map_error_of(document);
         self.hour_error(map_error, ui.ctx());
         self.follow_continuity(&document.playback.replay().gaps);
-        if self.playhead.is_some_and(|head| {
-            self.playhead_map.as_ref().is_some_and(|side| side.on_screen().is_some_and(|on| on.drawn != Some(head.hour) || !on.settled))
-        }) {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
-        }
         if let Some(error) = self.map_error.clone() {
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
             return Ok(());
+        }
+        if self.playhead.is_some_and(|head| self.side_needs_repaint(head)) {
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         if !self.picture_ready() {
             if profiling() {
@@ -7131,6 +7142,9 @@ impl Viewer {
             None => (layers_hour, f64::from(document.hour_fraction)),
         };
         self.rendered = Some(Playhead { branch, hour, fraction });
+        if self.map_mode != asked_mode {
+            ui.ctx().request_repaint();
+        }
         Ok(())
     }
 }

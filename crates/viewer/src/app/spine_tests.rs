@@ -309,21 +309,37 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     let mut viewer = viewer(side, 2);
     map(&mut viewer).anchor(2, false, 0.0, true);
     shown(map(&mut viewer), 2);
+    drawn(&mut viewer);
+    whole_at(&mut viewer, 2);
     assert_eq!(*viewer.shown_mode(), MapMode::default());
+    assert!(viewer.picture_whole(at(2), false));
+    assert!(!viewer.side_needs_repaint(at(2)));
     let diplomacy = MapMode::Stock(Stock::Diplomacy);
     viewer.map_mode = diplomacy.clone();
+    assert!(!viewer.picture_whole(at(2), false), "picture is not whole until the asked mode is on screen");
+    assert!(viewer.map_state(&target(2, false)).loading, "map state stays loading while the old mode is still shown");
+    assert!(viewer.side_needs_repaint(at(2)), "paused map keeps repainting until the asked mode is on screen");
     gate.store(false, Ordering::Release);
-    let at = View { map_mode: diplomacy.clone(), ..View::default() };
+    let at_view = View { map_mode: diplomacy.clone(), ..View::default() };
     map(&mut viewer).with_side_mut(|side| {
-        side.set_view(at).unwrap();
+        side.set_view(at_view).unwrap();
         side.frame(2).unwrap();
         side.frame(2).unwrap();
     });
     map(&mut viewer).driven(|_| ());
     assert_eq!(*viewer.shown_mode(), MapMode::default(), "the layer has not settled the new mode");
+    assert!(!viewer.picture_whole(at(2), false));
+    assert!(viewer.side_needs_repaint(at(2)));
     gate.store(true, Ordering::Release);
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));
     assert_eq!(*viewer.shown_mode(), diplomacy);
+    assert!(viewer.picture_whole(at(2), false));
+    assert!(!viewer.map_state(&target(2, false)).loading);
+    assert!(!viewer.side_needs_repaint(at(2)), "settled paused map in the asked mode requests no repaint");
+    viewer.overlay_hour = Some(1);
+    assert!(viewer.side_needs_repaint(at(2)), "paused map with a lagging overlay keeps repainting until overlay catches up");
+    viewer.overlay_hour = Some(2);
+    assert!(!viewer.side_needs_repaint(at(2)));
 }
 
 #[test]
