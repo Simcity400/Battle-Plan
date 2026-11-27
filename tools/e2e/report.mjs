@@ -1,6 +1,6 @@
 import { COST_FORMULA, datedPlaybackVerdict, summarizeWidgetCosts } from './datedPlayback.mjs';
-import { createReadStream, existsSync } from 'node:fs';
-import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFileSync, createReadStream, existsSync } from 'node:fs';
+import { readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { compareCounts, countKey, countRow, functionalReasons, GAPS, measureCounts, sameVisualFixture, trend } from './perfBaseline.mjs';
 import readline from 'node:readline';
 import path from 'node:path';
@@ -566,7 +566,7 @@ if (files['perf-baseline']) {
     cells: [verdict(row.pass), countRow(row, run, path.join(files.out, 'counts.json')).replaceAll('|', '\\|')] }))
     : [{ pass: false, cells: [verdict(false), 'unmeasured: no scoped count interactions'] }],
   `${families.size} of 12 driven families have accepted gated counts in this run (7 available). Native viewer gaps: ${GAPS.join(', ')}. Pause is unmeasured: its starting hour follows free-running playback and it can send nonzero work; a deterministic playback clock in the suite is required. Timings, pictures, commits, layout figures and session peak memory are trends, never timing gates.`);
-  await appendFile(path.join(path.dirname(files['perf-baseline']), 'perf-history.jsonl'), JSON.stringify(trend(run, results, records, entries)) + '\n');
+  appendFileSync(path.join(path.dirname(files['perf-baseline']), 'perf-history.jsonl'), JSON.stringify(trend(run, results, records, entries)) + '\n');
 }
 const judged = sections.filter(entry => !entry.phases || entry.phases.some(phase => asked(run, phase)));
 const failed = judged.flatMap(entry => entry.rows).filter(row => !row.pass).length;
@@ -595,7 +595,11 @@ await writeFile(path.join(files.out, 'e2e.json'), JSON.stringify({ passed, faile
 if (files.history && sweep) {
   const before = readHistory(await readJSON(files.history), files.history);
   const wholeCatalogue = run.tier !== 'quick' && asked(run, 'catalogue') && area('catalogue').some(result => result.label === 'add');
-  await writeFile(files.history, JSON.stringify(mergeHistory(before, results, { slowest: wholeCatalogue ? slowestCards(results) : null, at: new Date().toISOString() }), null, 1));
+  const staged = `${files.history}.${process.pid}.tmp`;
+  try {
+    await writeFile(staged, JSON.stringify(mergeHistory(before, results, { slowest: wholeCatalogue ? slowestCards(results) : null, at: new Date().toISOString() }), null, 1));
+    await rename(staged, files.history);
+  } finally { await unlink(staged).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 console.log(`${passed ? 'passed' : 'failed'}: ${failed} failing rows; report ${path.join(files.out, 'e2e.md')}`);
 process.exitCode = passed ? 0 : 1;

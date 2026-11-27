@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { compareCounts, scenarioId, scopeScenario, measureCounts, countRow, functionalReasons, familyOf, sameVisualFixture, trend } from './perfBaseline.mjs';
 import { Session } from './session.mjs';
+import { summariseTrace } from './trace.mjs';
 
 const run = { fixture: { name: 'fixture', sha256: 'sha256:fixture' }, commit: 'rev', started: 'today' };
 const entry = { recording: run.fixture.sha256, scenario: 'scenario', interaction: 'seeks|Army|early warm', family: 'seek', phase: 'seeks', session: 'seeks', counts: { 'requests:total': 8 }, complete: true };
@@ -49,7 +50,8 @@ test('visual acceptances made before recording hashes stay valid for the same fi
 });
 test('history contains trend totals rather than per-frame logs or trace stacks', () => {
   const frames = Array.from({ length: 100 }, () => ({ t: 'frame', session: 'example', pictures: 2, commits: 3 }));
-  const history = trend({ ...run, sessions: [{ name: 'example', sessionPeakCommitBytes: 99 }] }, [{ area: 'trace', trace: { layouts: 3, dirtyObjects: 4, frames: 5, roots: ['not trend data'] } }], frames, []);
+  const history = trend({ ...run, sessions: [{ name: 'example', sessionCpuSeconds: 0.5, sessionPeakCommitBytes: 99 }] }, [{ area: 'trace', trace: { layouts: 3, dirtyObjects: 4, frames: 5, roots: ['not trend data'] } }], frames, []);
+  assert.equal(history.sessions[0].sessionCpuSeconds, 0.5);
   assert.equal(history.sessions[0].sessionPeakCommitBytes, 99);
   assert.equal(history.sessions[0].pictures, 200);
   assert.equal(history.sessions[0].commits, 300);
@@ -57,12 +59,26 @@ test('history contains trend totals rather than per-frame logs or trace stacks',
   assert.equal('frames' in history, false);
   assert.equal(JSON.stringify(history).includes('not trend data'), false);
 });
+test('trace processor time uses the renderer thread clock and stays missing when its coverage is incomplete', () => {
+  const task = { ph: 'X', name: 'RunTask', ts: 10, dur: 2000, tdur: 500, tid: 1, pid: 1 };
+  const events = [{ ph: 'M', name: 'thread_name', tid: 1, pid: 1, args: { name: 'CrRendererMain' } }, task,
+    { ...task, name: 'FunctionCall', ts: 20, dur: 120, tdur: 100 },
+    { ...task, ph: 'I', name: 'BeginMainThreadFrame', ts: 25 }];
+  const trace = summariseTrace(events);
+  const report = trend(run, [{ area: 'trace', trace }], [], []);
+  assert.equal(report.interactions[0].mainThreadCpuMsPerFrame, 0.5);
+  assert.equal(report.interactions[0].traceElapsedMs.main, 2);
+  assert.equal(summariseTrace([...events, { ...task, ts: 3000, tdur: undefined }]).mainThreadCpuMs, null);
+});
 test('measurement counts completed actual sends including errors, excludes hits and joins', () => {
   const result = { area: 'seeks', item: 'Army', label: 'early warm', session: 'seeks', pass: true, reasons: [], perf: { start: 100, settled: 200, complete: true, scenario: 'scenario', family: 'seek' } };
   const records = [{ t: 'page', session: 'seeks', at: 0, rebinds: true }, { t: 'stop', session: 'seeks', at: 250 }, ...['ok', 'cancelled', 'error'].map(outcome => ({ t: 'q', at: 150, session: 'seeks', cmd: 'query', product: 'countries', outcome })), { t: 'q', at: 150, session: 'seeks', cache: 'hit' }, { t: 'q', at: 160, session: 'seeks', cache: 'joined' }];
   const measured = measureCounts(run, [result], records)[0];
   assert.equal(measured.counts['requests:total'], 3);
   assert.equal(measured.counts['requests:countries'], 3);
+  const query = records.find(record => record.outcome === 'ok');
+  query.bytes = 123;
+  assert.deepEqual(measureCounts(run, [result], records)[0].replyBytes, { observed: 123, measured: 1, sent: 3 });
   assert.equal(measureCounts(run, [result], [...records, { t: 'lost', session: 'seeks', count: 1 }])[0].complete, false);
   assert.equal(measureCounts(run, [result], [])[0].complete, false);
 });

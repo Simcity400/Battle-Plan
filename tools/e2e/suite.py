@@ -18,8 +18,9 @@ with the UI embedded on Boat; `build --shell` compiles the measuring shell on Bo
 Boat). The measuring shell is the same release app serving its UI from a production bundle on disk, so a UI change is
 measured by rebuilding only the bundle (`suite.py build-ui --out <bundle dir>` or `npx.cmd vite build --config ui/vite.config.ts`)
 and running the shell on it with `run --shell <shell dir> --ui <bundle dir>`; a shell is built once and serves any later
-bundle. `run` copies the fixture's recording into a fresh profile, then starts the app on that profile for each session
-and runs tools/e2e/sweep.mjs over it, and writes e2e.md: a table per area, failures with screenshots, and the visual
+bundle. `run` copies the fixture's recording into a fresh profile under `--out` and starts the app on that profile for each session.
+Use a distinct `--out` for each concurrent run. The run drives tools/e2e/sweep.mjs and writes e2e.md with a table per area,
+failures with screenshots, and the visual
 check's differences from the baseline `accept` last made, with diff images. `--pages-at` adds a session that seeks to that
 share of the timeline and visits and scrolls every page there, into sweep-pages-at.json. Each app runs in a Job on a
 desktop of its own, so it never takes the user's input or focus, at a fixed window size. `--tier quick` is one cold
@@ -786,7 +787,7 @@ def driver(script, log, *arguments, seconds):
 
 
 def state_lock(state):
-    """Holds `state` for this run: the copy stage empties its work folder, so two runs never share one."""
+    """Serializes explicit changes to the count baseline."""
     import msvcrt
     state.mkdir(parents=True, exist_ok=True)
     lock = open(state / "run.lock", "a+b")
@@ -794,7 +795,7 @@ def state_lock(state):
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
         lock.close()
-        raise RuntimeError(f"another suite run is using --state {state}: give each run a state folder of its own")
+        raise RuntimeError(f"another acceptance is using --state {state}")
     return lock
 
 
@@ -803,12 +804,8 @@ def run(args):
     args.out = Path(args.out).resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     state = Path(args.state).resolve()
-    with state_lock(state):
-        return run_locked(args, started, state)
-
-
-def run_locked(args, started, state):
-    work = state / "work"
+    state.mkdir(parents=True, exist_ok=True)
+    work = args.out / "work"
     stages = args.stages.split(",")
     phases = {}
     record = {"commit": git_head(), "started": datetime.datetime.now().isoformat(timespec="seconds"), "phases": phases,
@@ -894,7 +891,7 @@ def run_locked(args, started, state):
                     session["machine"]["after"] = record["machine"]["end"] = machine_load(int(app.running()))
                 finally:
                     try:
-                        session["sessionPeakCommitBytes"] = app.usage()[1]
+                        session["sessionCpuSeconds"], session["sessionPeakCommitBytes"] = app.usage()
                     finally:
                         session["appExit"] = app.close()
             session["seconds"] = time.monotonic() - began
@@ -1553,7 +1550,7 @@ def parse(argv):
     run_command.add_argument("--game-dir", default=os.environ.get("BATTLEPLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")), required=not os.environ.get("BATTLEPLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")))
     run_command.add_argument("--user-dir", default=os.environ.get("BATTLEPLAN_USER_DIR", os.environ.get("HOI4_USER_DIR")), help="the Paradox user folder, else found as the recorder finds it")
     run_command.add_argument("--out", required=True)
-    run_command.add_argument("--state", default=str(DEFAULT_STATE), help="baseline history, shader compiler and the last run's work")
+    run_command.add_argument("--state", default=str(DEFAULT_STATE), help="shared baselines, history and shader compiler cache")
     run_command.add_argument("--tier", choices=("full", "quick"), default="full", help="quick: one session for iterating, every page once")
     run_command.add_argument("--history", help="every step that ever failed (JSON), read and extended by each run; <state>/history.json by default")
     run_command.add_argument("--pin", choices=("all", "product"), default="all",

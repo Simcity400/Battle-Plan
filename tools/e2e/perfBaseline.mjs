@@ -37,8 +37,10 @@ export function measureCounts(run, results, records) {
       counts = { 'requests:head': head?.values?.count ?? null };
       complete &&= Number.isInteger(counts['requests:head']);
     }
+    const replySizes = queries.map(q => q.bytes).filter(Number.isFinite);
+    const replyBytes = { observed: replySizes.reduce((sum, bytes) => sum + bytes, 0), measured: replySizes.length, sent: queries.length };
     return { recording: run.fixture?.sha256, scenario: p.scenario, interaction: `${result.session}|${failureKey(result)}`, family: p.family, phase: result.area,
-      session: result.session, page: p.page, recipe: p.recipe, context: p.context, start: p.start, settled: p.settled, counts, breakdown, complete: Boolean(complete), reasons: [...functionalReasons(result.reasons), ...(p.reason ? [p.reason] : [])] };
+      session: result.session, page: p.page, recipe: p.recipe, context: p.context, start: p.start, settled: p.settled, counts, breakdown, replyBytes, complete: Boolean(complete), reasons: [...functionalReasons(result.reasons), ...(p.reason ? [p.reason] : [])] };
   });
 }
 function index(entries) {
@@ -65,13 +67,15 @@ export function compareCounts(entries, baseline, expected = () => false) {
 export function trend(run, results, records, entries) {
   const sessions = (run.sessions ?? []).map(s => {
     const frames = (records ?? []).filter(r => r.session === s.name.replaceAll(' ', '-') && r.t === 'frame');
-    return { name: s.name, sessionPeakCommitBytes: s.sessionPeakCommitBytes, pictures: frames.reduce((n, r) => n + (r.pictures ?? 0), 0), commits: frames.reduce((n, r) => n + (r.commits ?? 0), 0),
+    return { name: s.name, sessionCpuSeconds: s.sessionCpuSeconds, sessionPeakCommitBytes: s.sessionPeakCommitBytes, pictures: frames.reduce((n, r) => n + (r.pictures ?? 0), 0), commits: frames.reduce((n, r) => n + (r.commits ?? 0), 0),
       playingFrameMs: quantiles(frames.filter(r => r.playing).map(r => r.main)), playingIntervalMs: quantiles(frames.filter(r => r.playing).map(r => r.dt)) };
   });
   return { at: run.started, commit: run.commit, recording: run.fixture, sessions,
     interactions: results.map(({ area, item, label, ms, timing, placeholderMs, placeholderAt, trace }) => ({ area, item, label, ms, timing, placeholderMs, placeholderAt,
-      ...(trace && { layout: { layouts: trace.layouts, dirtyObjects: trace.dirtyObjects, frames: trace.frames }, traceMs: { main: trace.main, kinds: trace.kinds } }) })),
-    counts: entries.map(({ interaction, scenario, counts, breakdown }) => ({ interaction, scenario, counts, breakdown })) };
+      ...(trace && { layout: { layouts: trace.layouts, dirtyObjects: trace.dirtyObjects, frames: trace.frames },
+        mainThreadCpuMsPerFrame: Number.isFinite(trace.mainThreadCpuMs) && trace.frames > 0 ? trace.mainThreadCpuMs / trace.frames : null,
+        traceElapsedMs: { main: trace.main, kinds: trace.kinds } }) })),
+    counts: entries.map(({ interaction, scenario, counts, breakdown, replyBytes }) => ({ interaction, scenario, counts, breakdown, replyBytes })) };
 }
 export function countRow(row, run, file) {
   const { entry, name, value, before, allowance, limit } = row;

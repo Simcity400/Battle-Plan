@@ -686,6 +686,23 @@ class HostedShellTests(unittest.TestCase):
 
 
 class CountAcceptanceTests(unittest.TestCase):
+    def test_copy_runs_share_baseline_state_without_locking_or_erasing_another_run(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fixture = root / "example.battleplan"
+            fixture.write_bytes(b"recording fixture")
+            for name in (suite.APP_EXE, "hoi4.exe", *suite.SHADER_COMPILER):
+                (root / name).touch()
+            state = root / "state"
+            with suite.state_lock(state):
+                for name in ("one", "two"):
+                    args = suite.parse(["run", "--app", str(root), "--game-dir", str(root), "--user-dir", str(root),
+                                        "--state", str(state), "--fixture", str(root), "--out", str(root / name), "--stages", "copy"])
+                    self.assertEqual(suite.run(args), 0)
+            for name in ("one", "two"):
+                copied = root / name / "work" / "profile" / "local" / "BattlePlan" / "captures" / fixture.name
+                self.assertEqual(copied.read_bytes(), fixture.read_bytes())
+
     def test_selected_only_archive_and_atomic_replace(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as folder:
