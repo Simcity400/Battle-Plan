@@ -153,4 +153,21 @@ mod tests {
         assert!(reseed.fresh);
         assert_eq!(calls.load(Ordering::SeqCst), 5, "seed delivery must read afresh");
     }
+
+    #[test]
+    fn a_reply_that_does_not_prove_its_own_hour_is_never_held() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reader_calls = Arc::clone(&calls);
+        let panel = occurrence_panel(None, move |hour, _cancelled| {
+            reader_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(StubReply { hour, next_change: Some(hour), rows: 1 })
+        });
+        let exact = panel.exact().expect("exact reader");
+        let cancel = AtomicBool::new(false);
+        let first = (exact.advance)(10, true, &cancel, None);
+        let again = (exact.advance)(10, false, &cancel, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "an unsettled reply is read again at the same hour");
+        assert!(again.fresh);
+        assert_eq!((first.from, again.from), (10, 10));
+    }
 }

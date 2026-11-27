@@ -454,9 +454,9 @@ fn dated_interval(
         let (value, rows, from) = match read(hour, cancelled) {
             Ok((reply, proven, rows)) => {
                 let value = Arc::new(Ok(reply));
-                let interval = (*proven.start()).min(hour)..=(*proven.end()).max(hour);
-                let from = *interval.start();
-                *held = Some((interval, value.clone(), rows));
+                let holds = *proven.end() >= hour;
+                let from = if holds { (*proven.start()).min(hour) } else { hour };
+                *held = holds.then(|| (from..=*proven.end(), value.clone(), rows));
                 (value, rows, from)
             }
             Err(error) => {
