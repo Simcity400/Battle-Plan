@@ -175,6 +175,17 @@
       if (list.scrollTop + list.clientHeight >= list.scrollHeight - 1) return false;
     }
   };
+  const countryRowInfo = o => {
+    const unnamed = o.querySelector('.country-picker-unnamed');
+    if (unnamed) {
+      const tag = [...unnamed.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+      return { name: '', tag, selected: o.getAttribute('aria-selected') === 'true' };
+    }
+    const tagEl = o.querySelector('small');
+    const nameEl = o.querySelector('[data-overflow-label]') ?? tagEl?.previousElementSibling ?? null;
+    return { name: nameEl?.textContent.trim() ?? '', tag: tagEl?.textContent.trim() ?? '', selected: o.getAttribute('aria-selected') === 'true' };
+  };
+  p.countryRowInfo = countryRowInfo;
   p.countryRows = async () => {
     const list = document.querySelector('.country-picker:popover-open .country-picker-list');
     if (!list) return null;
@@ -183,9 +194,7 @@
       list.scrollTop = top;
       await twoFrames();
       for (const o of list.querySelectorAll('[role=option]')) {
-        const tag = o.querySelector('small');
-        found.set(Number(o.getAttribute('aria-posinset')), { name: tag?.previousElementSibling?.textContent.trim() ?? '', tag: tag?.textContent.trim() ?? '',
-          selected: o.getAttribute('aria-selected') === 'true' });
+        found.set(Number(o.getAttribute('aria-posinset')), countryRowInfo(o));
       }
       if (list.scrollTop + list.clientHeight >= list.scrollHeight - 1) break;
     }
@@ -200,7 +209,7 @@
     for (let top = 0; ; top += Math.max(24, list.clientHeight)) {
       list.scrollTop = top;
       await twoFrames();
-      const row = [...list.querySelectorAll('[role=option] small')].find(e => e.textContent.trim() === tag);
+      const row = [...list.querySelectorAll('[role=option]')].find(o => countryRowInfo(o).tag === tag);
       if (row) { row.scrollIntoView({ block: 'nearest' }); await twoFrames(); return true; }
       if (list.scrollTop + list.clientHeight >= list.scrollHeight - 1) return false;
     }
