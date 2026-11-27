@@ -112,7 +112,7 @@ fn temp_measures_at(days: &[Day]) -> Vec<(String, Daily)> {
 #[test]
 fn unavailable_and_truncated_weather_days_carry_their_reasons() {
     use dashboard_base::test_fixtures::{played, recorded_mod_defines, source, source_with_mods};
-    use replay_data::rows::TableRows;
+    use replay_data::rows::{ModifierDefinitionRow, TableRows};
     use replay_frame::frame::TableView;
 
     let (machine, cat_source, load) = recorded_mod_defines("", "", &[]);
@@ -155,6 +155,13 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
         } else {
             TableView::Complete(TableRows::WeatherProvinces(Vec::new()))
         };
+        *frame.tables[TableId::ModifierDefinitions.index()] = TableView::Complete(TableRows::ModifierDefinitions(vec![
+            ModifierDefinitionRow {
+                index: MODIFIERS[0].1,
+                name_key: if hour < 3 { b"fixture_weather_first".to_vec() } else { b"fixture_weather_second".to_vec() },
+                ..Default::default()
+            },
+        ]));
         frames.push(frame);
     }
     let (source, load) = source_with_mods(frames, &machine.root, &["mod/probe.mod"]);
@@ -175,7 +182,7 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
     };
 
     for show in [Show::Conditions, Show::Modifier] {
-        let before_outage = history(&query, &params(show, 0), &weather, None, &AtomicBool::new(false)).unwrap();
+        let before_outage = history(&query, &params(show, 3), &weather, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(before_outage.valid_through, 4, "{show:?}: reply must expire before the status change at hour 5");
 
         let unavailable = history(&query, &params(show, 2 * DAY - 1), &weather, None, &AtomicBool::new(false)).unwrap();
@@ -235,12 +242,16 @@ fn unavailable_and_truncated_weather_days_carry_their_reasons() {
             advance(hour, seed, token, step)
         }),
     };
-    let reads = played(source.replay_ref(), &with_error, 4, 2 * DAY + 1);
-    for (hour, rows) in [(4, 3), (5, 0), (9, 3), (10, 3), (11, 3), (12, 3), (13, 0), (DAY, 0), (2 * DAY, 2), (2 * DAY + 1, 2)] {
+    let reads = played(source.replay_ref(), &with_error, 0, 2 * DAY + 1);
+    for (hour, rows) in [(0, 4), (1, 0), (2, 0), (3, 1), (4, 0), (5, 0), (9, 3), (10, 3), (11, 3), (12, 3), (13, 0), (DAY, 0), (2 * DAY, 3), (2 * DAY + 1, 0)] {
         let read = reads.iter().find(|read| read.hour == hour).unwrap();
         assert!(read.value.is_ok(), "hour {hour}: {:?}", read.value);
         assert_eq!(read.rows, rows, "weather sample reads at hour {hour}");
         assert_eq!(*read.value, (exact.cold)(hour, &false.into()));
+    }
+    for (hour, key) in [(2, "fixture_weather_first"), (3, "fixture_weather_second")] {
+        let reply = reads.iter().find(|read| read.hour == hour).unwrap().value.as_ref().as_ref().unwrap();
+        assert!(reply["warnings"].to_string().contains(key), "{reply}");
     }
     let sought = (exact.advance)(6, true, &false.into(), None);
     assert_eq!(*sought.value, (exact.cold)(6, &false.into()));

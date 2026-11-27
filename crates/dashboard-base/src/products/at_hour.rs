@@ -519,7 +519,7 @@ pub fn product_interval_panel<P: super::Product>(
     dated_product::<P>(source, load, asked, date, move |_, reply| valid_through(reply), |_, _| {}, |source, params, load, cancelled, _| P::load(source, params, load, cancelled))
 }
 
-fn dated_product<P: super::Product>(
+pub fn dated_product<P: super::Product>(
     source: &Arc<Source>, load: &LoadContext, asked: &Value,
     date: impl Fn(&mut Value, i32) + Send + Sync + 'static,
     valid_through: impl Fn(&P::Params, &P::Reply) -> i32 + Send + Sync + 'static,
