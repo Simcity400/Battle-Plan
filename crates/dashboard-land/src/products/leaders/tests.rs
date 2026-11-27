@@ -1167,18 +1167,19 @@ fn group_leader_choices_follow_member_slots_through_a_rename_over_observed_servi
 #[test]
 fn leader_choice_list_distinguishes_empty_unread_and_partial_leaders() {
     use super::career::{LeaderChoices, LeaderChoicesParams};
-    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, snapshot_records, source}};
-    use replay::campaign::Replay;
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{replay, source}};
     use replay_data::rows::{TableId, TableRows, UnitLeaderRow};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
     let ask = |leaders, countries, selection| {
+        let mut baseline = source(1, 99, Some(1));
+        *baseline.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(vec![]));
         let mut frame = source(1, 100, Some(1));
         *frame.tables[TableId::UnitLeaders.index()] = leaders;
         if let Some(countries) = countries {
             *frame.tables[TableId::Countries.index()] = countries;
         }
-        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, vec![frame])]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = replay(vec![baseline, frame]).into_timelines(&Default::default()).unwrap();
         let cancelled = AtomicBool::new(false);
         let source = Source::from_replay(SourceKey { source_id: "unread-leader-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
         let params = LeaderChoicesParams { branch_id: "1".into(), selection };
