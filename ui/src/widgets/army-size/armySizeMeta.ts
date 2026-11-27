@@ -1,6 +1,6 @@
 import { isOrderedSpans } from '../../charts/series.ts';
 import { int, object } from '../../dashboard/validation.ts';
-import type { ArmyBreakdownReply, ArmyMeasure } from '../../generated/dashboard';
+import type { ArmyBreakdownReply, ArmyMeasure, MissingSpan } from '../../generated/dashboard';
 
 export const MEASURES = [
   { value: 'manpower', label: 'Manpower in the field' },
@@ -13,6 +13,7 @@ export interface ArmyMetadataReply {
   readonly branchId: string;
   readonly available: boolean;
   readonly measures: readonly ArmyMeasure[];
+  readonly missing: readonly MissingSpan[];
   readonly warnings: readonly string[];
 }
 
@@ -52,6 +53,7 @@ export function validateArmyMetadata(value: unknown): ArmyMetadataReply {
     || !(value.window === null || (int(value.window) && value.window >= 0))
     || !Array.isArray(value.measures) || !value.measures.every(measure => MEASURES.some(item => item.value === measure))
     || new Set(value.measures).size !== value.measures.length
+    || !Array.isArray(value.missing) || !value.missing.every(span => object(span) && int(span.firstHour) && int(span.lastHour) && typeof span.reason === 'string')
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) {
     throw new Error('The army size reply is malformed.');
   }

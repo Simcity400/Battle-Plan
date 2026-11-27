@@ -60,6 +60,7 @@ export function validateWarsReply(value: unknown): WarsReply {
 
 export function validateWarContributions(value: unknown): WarContributionsReply {
   if (!object(value) || !text(value.branchId) || !hour(value.hour) || typeof value.available !== 'boolean' || !list(value.warnings, text)
+    || !(value.missing === null || text(value.missing))
     || !list(value.contributions, group => object(group) && list(group.viewpointSide, text) && list(group.opposingSide, text)
       && (group.reason === null || text(group.reason)) && list(group.participants, row => object(row) && text(row.tag) && side(row.side)
         && ['equipmentDamage', 'occupation', 'airDamage', 'strategicBombing', 'shipDamage', 'convoyDamage', 'casualties',

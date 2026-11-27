@@ -129,7 +129,7 @@ export const armySizeRaceDeclaration: BarsWidgetDeclaration<ArmySizeRaceOptions,
       split: measure === 'battalions' && ctx.options.byType === true,
     };
   },
-  unavailable: seriesRaceUnavailable,
+  unavailable: ctx => ctx.aux?.available === false ? ctx.aux.missing[0]?.reason ?? 'Army totals are not recorded.' : seriesRaceUnavailable(ctx),
   warnings: (ctx, followRefused) => [
     ...(ctx.aux?.warnings ?? []),
     ...seriesRaceWarnings(followRefused),

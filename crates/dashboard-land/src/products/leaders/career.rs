@@ -1275,6 +1275,7 @@ pub struct LeaderChoicesParams {
 #[serde(rename_all = "camelCase")]
 pub struct LeaderChoicesReply {
     pub choices: Vec<(String, Option<String>, Option<String>, i32, Option<String>)>,
+    pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -1315,7 +1316,20 @@ impl Product for LeaderChoices {
         let token = field(TableId::Characters, "token")?;
         let mut last: BTreeMap<u128, (u32, i32)> = BTreeMap::new();
         let mut lives: HashMap<u128, Vec<(i32, i32)>> = HashMap::new();
+        let mut missing = None;
         for stretch in &query.timeline.stretches {
+            if missing.is_none() {
+                let table = TableId::UnitLeaders;
+                let statuses = dashboard_query::read::statuses(recording, stretch.run, table, stretch.first, stretch.last)?;
+                if let Some(status) = statuses.iter().find(|status| status.status != replay_columnar::manifest::Status::Complete) {
+                    let reasons = dashboard_query::read::status_reasons(recording, stretch.run, table, std::slice::from_ref(status))?;
+                    let reason = match status.status {
+                        replay_columnar::manifest::Status::Unavailable { reason } => reasons.get(&reason).map(String::as_str),
+                        _ => None,
+                    };
+                    missing = dashboard_query::coverage::row_coverage(table, status.status, reason, false).into_missing();
+                }
+            }
             let (from, to) = (i64::from(stretch.first), i64::from(stretch.last));
             for (key, spans) in dashboard_query::cost::presences(recording, stretch.run, TableId::UnitLeaders, (0, u128::MAX), from, to)? {
                 let seen: Vec<(i32, i32)> = spans.into_iter().filter(|&(a, b)| a <= to && b >= from).map(|(a, b)| (a.max(from) as i32, b.min(to) as i32)).collect();
@@ -1365,8 +1379,21 @@ impl Product for LeaderChoices {
                 let slot = links.slot_at(raw, hour);
                 let tag = slot.and_then(|slot| names.slot_tag(slot, hour)).map(str::to_owned);
                 if let LeaderSelection::Countries { countries } = &params.selection
-                    && !tag.as_ref().is_some_and(|tag| countries.iter().any(|country| query.holders.goes_by(country, tag, hour)))
+                    && !countries.iter().any(|country| match country {
+                        dashboard_base::products::Country::Slot(asked) => slot == Some(*asked),
+                        dashboard_base::products::Country::Tag(_) => tag.as_ref().is_some_and(|tag| query.holders.goes_by(country, tag, hour)),
+                    })
                 {
+                    let could_match = || slot.is_none() || countries.iter().any(|country| {
+                        country.tag().is_some() && query.holders.slot_at(country, hour).is_none_or(|held| Some(held) == slot)
+                    });
+                    if tag.is_none() && missing.is_none() && could_match() {
+                        let frame = replay_lanes::at::frame(recording, run, hour, &[replay_lanes::at::Read::all(TableId::CountryLinks)])?;
+                        missing = Some(match frame.complete::<tables::CountryLinks>() {
+                            Err(error) => error.to_string(),
+                            Ok(_) => query.holders.not_known_as("the leader's country", hour).unwrap_or_else(|| "The leader's country link is unresolved".to_owned()),
+                        });
+                    }
                     continue;
                 }
                 let missing = match roster.as_deref() {
@@ -1381,6 +1408,6 @@ impl Product for LeaderChoices {
             }
         }
         choices.sort_by_key(|choice| choice.0.parse::<u64>().unwrap_or_default());
-        Ok(LeaderChoicesReply { choices, warnings: content.missing() })
+        Ok(LeaderChoicesReply { choices, missing, warnings: content.missing() })
     }
 }

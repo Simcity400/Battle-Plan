@@ -4075,6 +4075,7 @@ test('deriveTableAudit records tooltip countryFlagKey across pending and ready s
     branchId: 'b1',
     hour,
     available: true,
+    missing: null,
     warnings: [],
     contributions: [{
       viewpointSide: ['GER'],

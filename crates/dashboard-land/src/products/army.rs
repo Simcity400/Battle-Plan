@@ -8,11 +8,11 @@ use dashboard_query::{
     Query,
     identity::Holder,
     read,
-    series::{Line, NavigationKey, Part, SeriesKeyReply},
+    series::{Line, MissingSpan, NavigationKey, Part, SeriesKeyReply},
 };
 use content_reader_script::sub_units::SubUnits;
 use replay_recording::columnar_frames::Recording;
-use replay_columnar::{store::TableView, summary};
+use replay_columnar::{manifest::Status, store::TableView, summary};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -146,6 +146,7 @@ pub struct ArmySizeReply {
     pub measures: Vec<ArmyMeasure>,
     pub types: Vec<ArmyType>,
     pub series: Vec<ArmySeries>,
+    pub missing: Vec<MissingSpan>,
     pub warnings: Vec<String>,
 }
 
@@ -239,12 +240,29 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
         windows: if params.window.is_none() { windows } else { Vec::new() },
         window: params.window,
         interval: interval.clone(),
-        available: true,
+        available: false,
         measures: MEASURES.to_vec(),
         types: Vec::new(),
         series: Vec::new(),
+        missing: Vec::new(),
         warnings: Vec::new(),
     };
+    let (first, last) = interval.as_ref().map_or((query.timeline.first, query.timeline.last), |range| (range.first_hour, range.last_hour));
+    let (recording, table) = (query.replay.recording(), TableId::ArmyTotals);
+    for stretch in query.timeline.within(first, last) {
+        let statuses = read::statuses(recording, stretch.run, table, stretch.first, stretch.last)?;
+        let reasons = read::status_reasons(recording, stretch.run, table, &statuses)?;
+        for status in statuses {
+            reply.available |= replay_recording::columnar_frames::available(status.status);
+            let reason = match status.status {
+                Status::Unavailable { reason } => reasons.get(&reason).map(String::as_str),
+                _ => None,
+            };
+            if let Some(reason) = dashboard_query::coverage::row_coverage(table, status.status, reason, false).into_missing() {
+                reply.missing.push(MissingSpan { first_hour: status.first, last_hour: status.last, reason });
+            }
+        }
+    }
     let Some(range) = interval else {
         return Ok(reply);
     };
@@ -254,6 +272,22 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
         Some(top) => {
             let width = ((i64::from(last) - i64::from(first) + 1) / 6).max(1) as u32;
             let lines = line.ranked(first, last, width, top)?;
+            for stretch in query.timeline.within(first, last) {
+                let (held, _) = read::covered_runs(recording, stretch.run, table, line.source(), None, stretch.first, stretch.last)?;
+                let gaps: BTreeSet<_> = held.values().flatten().filter_map(|&(lo, hi, value)| (value == read::CoveredValue::Unvalued).then_some((lo, hi))).collect();
+                for (first_hour, last_hour) in gaps {
+                    if let Err(reason) = line.rank_at(first_hour, top, false)? {
+                        reply.missing.push(MissingSpan { first_hour, last_hour, reason });
+                    }
+                }
+            }
+            if lines.is_empty() && reply.missing.is_empty() && let Err(reason) = line.rank_at(last, top, false)? {
+                reply.missing.push(MissingSpan { first_hour: last, last_hour: last, reason });
+            }
+            if lines.is_empty() && !reply.missing.is_empty() {
+                reply.available &= query.timeline.within(first, last).flat_map(|stretch| stretch.first..=stretch.last)
+                    .any(|hour| !reply.missing.iter().any(|span| (span.first_hour..=span.last_hour).contains(&hour)));
+            }
             Some(
                 lines
                     .into_iter()
@@ -287,6 +321,7 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     );
     let (found, mix) = (found?, mix?);
     let runs = runs_by_tag(&found, &parts);
+    let table_missing = reply.missing.len();
     let membership = ranked;
     let wanted: Vec<Country> = match &membership {
         Some(members) => members.keys().cloned().collect(),
@@ -311,22 +346,25 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
             (None, Some(identities)) => identities.iter().map(|identity| (identity.first_hour, identity.last_hour)).collect(),
             (None, None) => Vec::new(),
         };
-        let runs = runs
-            .get(&tag)
-            .into_iter()
-            .flatten()
-            .filter_map(|&(run_first, run_last, value)| Some((run_first, run_last, value?)))
-            .flat_map(|(run_first, run_last, value)| {
-                spans.iter().filter_map(move |&(span_first, span_last)| {
-                    let (lo, hi) = (run_first.max(span_first), run_last.min(span_last));
-                    (lo <= hi).then(|| ArmyRun { first_hour: lo, last_hour: hi, total: Some(geometry(value, params.measure)), raw: value.to_string() })
-                })
-            })
-            .collect();
+        let mut kept = Vec::new();
+        for &(run_first, run_last, value) in runs.get(&tag).into_iter().flatten() {
+            for &(span_first, span_last) in &spans {
+                let (lo, hi) = (run_first.max(span_first), run_last.min(span_last));
+                if lo > hi {
+                    continue;
+                }
+                if let Some(value) = value {
+                    kept.push(ArmyRun { first_hour: lo, last_hour: hi, total: Some(geometry(value, params.measure)), raw: value.to_string() });
+                } else if !reply.missing[..table_missing].iter().any(|span| span.first_hour <= lo && hi <= span.last_hour) {
+                    let reason = line.missing_at(&tag, lo).unwrap_or_else(|| query.holders.say(&tag, lo, |name| format!("{name}'s army total was not recorded")));
+                    reply.missing.push(MissingSpan { first_hour: lo, last_hour: hi, reason });
+                }
+            }
+        }
         reply.series.push(ArmySeries {
             country: tag.clone(),
             identities,
-            runs,
+            runs: kept,
             segments,
             membership: membership.as_ref().map(|members| {
                 members.get(&tag).into_iter().flatten().map(|span| ArmySpan { first_hour: span.first_hour, last_hour: span.last_hour }).collect()

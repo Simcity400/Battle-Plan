@@ -11,7 +11,8 @@ export interface RegionListEntry {
   readonly id: number;
   readonly label: string;
   readonly nameMissing: boolean;
-  readonly sea: boolean;
+  readonly sea: boolean | null;
+  readonly membershipMissing: string | null;
 }
 
 export type RegionList =
@@ -38,14 +39,15 @@ export function useRegionList(client: DashboardClient, track: BoundTrack | undef
     if (listed.error) return { kind: 'failed', failure: listed.error, retry: listed.retry };
     if (!regions) return CLOSED;
     const entries = regions.map((region): RegionListEntry => {
-      if (hour === null) return { id: region.id, label: `Region ${region.id}`, nameMissing: true, sea: region.sea };
+      const membership = { sea: region.sea, membershipMissing: region.membershipMissing };
+      if (hour === null) return { id: region.id, label: `Region ${region.id}`, nameMissing: true, ...membership };
       const named = names.resolve(regionKey(region.id), hour);
       const name = named.kind === 'known' && named.name.kind === 'known' ? named.name.value : null;
       const reason = named.kind === 'known' && named.name.kind === 'missing' ? named.name.reason
         : named.kind === 'absent' ? named.reason
           : named.kind === 'pending' || (named.kind === 'known' && named.name.kind === 'pending') ? 'Loading name…'
             : 'Region name not recorded';
-      return { id: region.id, label: name ?? `${reason} (${region.id})`, nameMissing: name === null, sea: region.sea };
+      return { id: region.id, label: name ?? `${reason} (${region.id})`, nameMissing: name === null, ...membership };
     });
     entries.sort((a, b) => a.label.localeCompare(b.label) || a.id - b.id);
     return { kind: 'ready', regions: entries };

@@ -78,7 +78,10 @@ export function chosenGroup(readView: BoundedReadView, options: WarChoiceOptions
   const { reply, asOf } = found;
   const observation = observationAt(war, asOf);
   const group = observation ? warContributions(reply.contributions, observation) : null;
-  if (!observation || !group || (group.reason && !group.measures.length)) return { kind: 'blank', empty: group?.reason ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
+  if (!observation || !reply.available || (group?.reason && !group.measures.length)) {
+    return { kind: 'blank', empty: group?.reason ?? reply.missing ?? 'This war’s contributions were not recorded at this time.', emptyKind: 'unavailable' };
+  }
+  if (!group) return { kind: 'blank', empty: 'No contributions for this war at this time.', emptyKind: 'empty' };
   return { kind: 'shown', war, reply, asOf, observation, group, sides: attackersFirst<WarSide>(observation, 'viewpoint', 'opposing') };
 }
 

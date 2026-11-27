@@ -4,6 +4,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { FamilyViewProps, FamilyViewRenderer, OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
+import { RefusedError } from '../../dashboard/queryError';
 import { useGate } from '../../dashboard/regionGate';
 import { SPEC, type GatedHour } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
@@ -24,8 +25,9 @@ function useArmyChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoic
     product: 'army-size',
     params: armyMetadataParams(track.branch.id),
   }) : null;
-  const { data } = useProduct<ArmyMetadataReply>(runtime.client, request, true, validateArmyMetadata, track?.source);
-  return { measure: measureChoices(data) };
+  const { data, retry } = useProduct<ArmyMetadataReply>(runtime.client, request, true, validateArmyMetadata, track?.source);
+  const choices = measureChoices(data);
+  return { measure: data?.available === false ? { choices, error: new RefusedError(data.missing[0]?.reason ?? 'Army totals are not recorded.'), retry } : choices };
 }
 
 function ArmyAtDetail({ runtime, trackId, tag, hour, countFor, active }: {

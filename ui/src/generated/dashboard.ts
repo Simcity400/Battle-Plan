@@ -1120,7 +1120,7 @@ rawValues?: Array<string | null>, };
 export type ArmyIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
 export type ArmySpan = { firstHour: number, lastHour: number, };
 export type ArmySeries = { country: CountryRef, identities?: Array<ArmyIdentityRun>, runs: Array<ArmyRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, mix?: Array<ArmyMixRun>, };
-export type ArmySizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
+export type ArmySizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, missing: Array<MissingSpan>, warnings: Array<string>, };
 export type AutonomyLevelsParams = { branchId: string, };
 export type AutonomySubject = { overlordId: number, overlordSlot?: number,
 /**
@@ -3376,7 +3376,7 @@ export type LandBattlesTailReply = { branchId: string, total: string, offset: st
 export type LandBattleLogRow = { key: string, hour: number, exact: boolean, province: number | null, state: number | null, countries: [Array<number>, Array<number>], countriesUnknown: [boolean, boolean], countriesHour: [number, number], casualties: [number | null, number | null], icLost: [number | null, number | null], lossesSoFar: boolean, divisions: [number | null, number | null], result: LandBattleStatus, };
 export type LandBattleStatus = "ongoing" | "attackerWon" | "defenderWon" | "unknown";
 export type LandOwnersParams = Record<string, never>;
-export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
+export type LandOwners = { countries: Array<CountryMetadata>, countriesMissing: string | null, warnings: Array<string>, };
 export type LeaderNameRunsParams = { branchId: string, owner: CountryRef, references: Array<string>, from: number, to: number, };
 export type LeaderRuns = { reference: string, runs: Array<NameRun>, };
 export type LeaderNameRunsReply = { from: number, to: number,
@@ -5771,7 +5771,7 @@ key: string, variant: string, name: string | null,
 icon: string | null, reason: string | null, };
 export type StockpileArtworkReply = { tag: string, entries: Array<StockpileArt>, warnings: Array<string>, };
 export type StockpileArtworkParamsAtHour = StockpileArtworkParams & { hour: number };
-export type StrategicRegionEntry = { id: number, name: string | null, nameMissing: string | null, land: boolean, sea: boolean, };
+export type StrategicRegionEntry = { id: number, name: string | null, nameMissing: string | null, land: boolean | null, sea: boolean | null, membershipMissing: string | null, };
 export type StrategicRegionsReply = { regions: Array<StrategicRegionEntry>, warnings: Array<string>, };
 export type SubjectLevel = {
 /**
@@ -6184,7 +6184,7 @@ traitGains: Array<[number, number, number]>, traits: Array<LeaderTrait>, command
  */
 observed: Array<[number, number]>, battlesPartialFrom: number | null, resultsMissing: string, missing: string | null, warnings: Array<string>, };
 export type LeaderChoicesParams = { branchId: string, selection: LeaderSelection, };
-export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number, string | null]>, warnings: Array<string>, };
+export type LeaderChoicesReply = { choices: Array<[string, string | null, string | null, number, string | null]>, missing: string | null, warnings: Array<string>, };
 export type LeaderHourParams = { branchId: string, reference?: string, selection?: LeaderSelection, };
 export type LeaderTraining = { key: string, token: string | null, name: string | null, requiredRaw: string | null, };
 export type LeaderFactor = { token: string | null, name: string | null, factorRaw: string, };
@@ -6278,13 +6278,13 @@ export type WarMeasure = { key: WarMeasureKey, viewpoint: WarMeasureSide, opposi
 export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, measures: Array<WarMeasure>, reason: string | null, };
 export type WarContributionsReply = { branchId: string, hour: number,
 /**
- * An overview table was recorded at the hour, even in part.
+ * The group list was read at the hour, even in part.
  */
 available: boolean,
 /**
  * Each native group the viewpoint sees, in the overview's order.
  */
-contributions: Array<WarContributionGroup>, warnings: Array<string>, };
+contributions: Array<WarContributionGroup>, missing: string | null, warnings: Array<string>, };
 export type WarContributionsParamsAtHour = WarContributionsParams & { hour: number };
 export type WarTimelineParams = { branchId: string,
 /**
@@ -6315,12 +6315,12 @@ available: boolean, viewpoints: Array<MembershipRun>,
  */
 wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
 export type WargoalsParams = { branchId: string, country: CountryRef, };
-export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, state: WargoalState, granted: number | null, grantedMissing: string | null, };
+export type WargoalEntry = { handle: string, name: string | null, nameMissing: string | null, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, state: WargoalState, granted: number | null, grantedMissing: string | null, };
 export type WargoalJustification = {
 /**
  * Its row key: the row of its live cell `points`, the stored fixed5 progress.
  */
-id: string, ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
+id: string, ordinal: number, name: string | null, nameMissing: string | null, actor: string, recipient: string, states: Array<number>, total: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
 export type WargoalsReply = { branchId: string, tag: string,
 /**
  * The country the request named, which a reply is matched to: a slot follows its country through any tag.

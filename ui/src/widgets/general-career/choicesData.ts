@@ -8,7 +8,8 @@ import { leaderSelectionOf } from './dossierProjection.ts';
 export function validateLeaderChoicesReply(input: unknown): LeaderChoicesReply {
   const bad = (): never => { throw new Error('The leader choices reply is malformed.'); };
   if (typeof input !== 'object' || input === null) return bad();
-  const choices = (input as LeaderChoicesReply).choices;
+  const { choices, missing } = input as LeaderChoicesReply;
+  if (!(missing === null || typeof missing === 'string')) return bad();
   if (!Array.isArray(choices) || !choices.every(choice => Array.isArray(choice) && choice.length === 5 && typeof choice[0] === 'string' && typeof choice[3] === 'number')) return bad();
   return input as LeaderChoicesReply;
 }

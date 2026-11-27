@@ -1165,6 +1165,45 @@ fn group_leader_choices_follow_member_slots_through_a_rename_over_observed_servi
 }
 
 #[test]
+fn leader_choice_list_distinguishes_empty_unread_and_partial_leaders() {
+    use super::career::{LeaderChoices, LeaderChoicesParams};
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, snapshot_records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{TableId, TableRows, UnitLeaderRow};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+    let ask = |leaders, countries, selection| {
+        let mut frame = source(1, 100, Some(1));
+        *frame.tables[TableId::UnitLeaders.index()] = leaders;
+        if let Some(countries) = countries {
+            *frame.tables[TableId::Countries.index()] = countries;
+        }
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[snapshot_records(1, vec![frame])]).unwrap().into_timelines(&Default::default()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(SourceKey { source_id: "unread-leader-choices".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &cancelled).unwrap();
+        let params = LeaderChoicesParams { branch_id: "1".into(), selection };
+        LeaderChoices::load(&source, &params, &LoadContext { content: None }, &cancelled).unwrap()
+    };
+    let empty = ask(TableView::Complete(TableRows::UnitLeaders(vec![])), None, LeaderSelection::All);
+    assert!(empty.choices.is_empty());
+    assert_eq!(serde_json::to_value(&empty).unwrap().get("missing"), Some(&serde_json::Value::Null));
+    let unread = ask(TableView::Unavailable { reason: "fixture leader read failed".into() }, None, LeaderSelection::All);
+    assert!(unread.choices.is_empty());
+    assert!(serde_json::to_value(&unread).unwrap()["missing"].as_str().is_some_and(|reason| reason.contains("fixture leader read failed")));
+    let leaders = TableRows::UnitLeaders(vec![UnitLeaderRow { id: 1, character_id: 9, kind: KIND_ARMY, owner: 9001, ..Default::default() }]);
+    let partial = ask(TableView::Truncated { rows: leaders.clone(), missing: 3 }, None, LeaderSelection::All);
+    assert_eq!(partial.choices.len(), 1);
+    assert!(serde_json::to_value(&partial).unwrap()["missing"].as_str().is_some_and(|reason| reason.contains("3 rows")));
+    let countries = TableView::Unavailable { reason: "fixture country names failed".into() };
+    let selected = ask(TableView::Complete(leaders.clone()), Some(countries.clone()), LeaderSelection::Countries { countries: vec![dashboard_base::products::Country::Slot(7)] });
+    assert_eq!(selected.choices.len(), 1);
+    assert!(selected.choices[0].2.is_none());
+    let other = ask(TableView::Complete(leaders), Some(countries), LeaderSelection::Countries { countries: vec![dashboard_base::products::Country::Slot(8)] });
+    assert!(other.choices.is_empty());
+    assert!(other.missing.is_none());
+}
+
+#[test]
 fn leader_choices_on_a_fork_keep_a_leader_last_seen_before_the_fork() {
     use super::career::{LeaderChoices, LeaderChoicesParams};
     use dashboard_base::{Source, SourceKey, products::{LoadContext, Product}, test_fixtures::{CAMPAIGN, ownership_frame, snapshot_records}};

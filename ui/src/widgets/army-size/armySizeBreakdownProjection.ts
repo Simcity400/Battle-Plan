@@ -78,7 +78,7 @@ type ResolvedMeasure =
 
 function resolveBreakdownMeasure(rawOption: unknown, aux: ArmyMetadataReply | undefined): ResolvedMeasure {
   if (!aux) return { kind: 'pending' };
-  if (!aux.available) return { kind: 'unavailable', reason: 'Not in this recording' };
+  if (!aux.available) return { kind: 'unavailable', reason: aux.missing[0]?.reason ?? 'Not in this recording' };
   if (typeof rawOption === 'string' && rawOption.length > 0) {
     if (aux.measures.includes(rawOption as ArmyMeasure)) {
       return { kind: 'ready', measure: rawOption as ArmyMeasure };

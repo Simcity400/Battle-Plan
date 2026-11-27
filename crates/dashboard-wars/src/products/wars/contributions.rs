@@ -11,7 +11,7 @@ use replay_data::{
     rows::{TableId, tables},
     war_participation::Factors,
 };
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io};
 #[cfg(any(test, feature = "export-types"))]
@@ -34,10 +34,11 @@ pub struct WarContributionsParams {
 pub struct WarContributionsReply {
     pub branch_id: String,
     pub hour: i32,
-    #[doc = " An overview table was recorded at the hour, even in part."]
+    #[doc = " The group list was read at the hour, even in part."]
     pub available: bool,
     #[doc = " Each native group the viewpoint sees, in the overview's order."]
     pub contributions: Vec<WarContributionGroup>,
+    pub missing: Option<String>,
     pub warnings: Vec<String>,
 }
 
@@ -57,12 +58,6 @@ const TABLES: &[TableId] = &[
 
 pub struct ContributionContent {
     factors: Result<Factors, String>,
-}
-
-fn available(frame: &DecodedFrame) -> bool {
-    [TableId::WarOwnedRelations, TableId::WarOverviewCountries, TableId::WarNameRules]
-        .iter()
-        .any(|table| !matches!(&*frame.tables[table.index()], TableView::Unavailable { .. }))
 }
 
 pub(crate) fn groups(frame: &DecodedFrame, holders: &dashboard_query::identity::Holders, view: Option<&dashboard_base::products::Country>, factors: Result<Factors, String>) -> Result<Vec<WarContributionGroup>, String> {
@@ -153,12 +148,45 @@ impl AtHour for WarContributions {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut reply = WarContributionsReply { branch_id: params.branch_id.clone(), hour: at.hour, available: available(frame), contributions: Vec::new(), warnings: Vec::new() };
-        match groups(frame, at.holders, params.viewpoint.as_ref(), at.context.factors.clone()) {
-            Ok(groups) => reply.contributions = groups,
-            Err(reason) => reply.warnings.push(reason),
-        }
+        let (contributions, missing) = match groups(frame, at.holders, params.viewpoint.as_ref(), at.context.factors.clone()) {
+            Ok(groups) => (groups, None),
+            Err(reason) => (Vec::new(), Some(reason)),
+        };
+        let available = missing.is_none();
+        let reply = WarContributionsReply { branch_id: params.branch_id.clone(), hour: at.hour, available, contributions, missing, warnings: Vec::new() };
         check_reply_budget(&reply)?;
         Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+
+    #[test]
+    fn contribution_reply_distinguishes_peace_from_an_unread_grouping_input() {
+        let mut frame = crate::products::war_fixtures::recorded(100);
+        for table in [TableId::WarRelations, TableId::WarOwnedRelations] {
+            *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+        let held = [("ONE", 1), ("TWO", 2), ("THREE", 3)].into_iter().map(|(tag, slot)| (tag.to_owned(), vec![
+            dashboard_query::identity::HolderRun { first: 100, last: 100, holder: dashboard_query::identity::Holder::Found { slot, id: slot }, starts_segment: true }
+        ])).collect();
+        let holders = dashboard_query::identity::Holders::new(held, Vec::new());
+        let context = ContributionContent { factors: Err("outside the contribution fixture".into()) };
+        let at = At { owner: None, holders: &holders, hour: 100, context: &context, cancelled: &false.into(), live: &Default::default() };
+        let params = WarContributionsParams { branch_id: "1".into(), viewpoint: None };
+        let empty = WarContributions::reply(&frame, &params, &at).unwrap();
+        assert!(empty.available && empty.contributions.is_empty());
+        assert_eq!(serde_json::to_value(&empty).unwrap().get("missing"), Some(&serde_json::Value::Null));
+        *frame.tables[TableId::WarOverviewCountries.index()] = TableView::Unavailable { reason: "fixture overview scores failed".into() };
+        let empty = WarContributions::reply(&frame, &params, &at).unwrap();
+        assert!(empty.available && empty.contributions.is_empty() && empty.missing.is_none());
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable { reason: "fixture country links failed".into() };
+        let unread = WarContributions::reply(&frame, &params, &at).unwrap();
+        assert!(!unread.available && unread.contributions.is_empty());
+        assert!(serde_json::to_value(&unread).unwrap()["missing"].as_str().is_some_and(|reason| reason.contains("fixture country links failed")));
     }
 }
