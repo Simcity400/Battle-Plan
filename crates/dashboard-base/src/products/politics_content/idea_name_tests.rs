@@ -615,3 +615,66 @@ fn a_spirit_without_localisation_says_which_key_is_missing() {
             .is_some_and(|why| why.contains("name tag of country appearance"))
     );
 }
+
+#[test]
+fn scripted_idea_artwork_never_writes_dated_text_into_the_undated_cache() {
+    let (catalogue, _dir) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synth.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = {} } }",
+        ),
+        (
+            "localisation/english/synth_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " synth_plain:0 \"Plain Spirit\"\n",
+                " synth_scripted:0 \"[ROOT.GetName] Charter\"\n",
+                " synth_scripted_desc:0 \"[ROOT.GetName] details\"\n",
+            ),
+        ),
+        (
+            "common/ideas/synth.txt",
+            "ideas = { country = { synth_plain = {} synth_scripted = {} } }",
+        ),
+    ]);
+    let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+    let country = IdeaCountry {
+        tag: "AAA",
+        slot: 7,
+        look: Some(CountryLook {
+            name_tag: "",
+            original_or_own_tag: Ok("AAA"),
+            cosmetic_tag: "",
+            civil_war: Ok(false),
+        }),
+    };
+    assert!(!content.idea_is_scripted("synth_plain", None, country, None));
+    assert!(content.idea_is_scripted("synth_scripted", None, country, None));
+
+    let (first, _, first_missing) = content.idea_artwork_scoped("synth_scripted", None, country, None, &mut |key| {
+        Ok(match key {
+            "synth_scripted" => "Alpha Charter".to_owned(),
+            "synth_scripted_desc" => "Alpha details".to_owned(),
+            other => other.to_owned(),
+        })
+    });
+    assert_eq!(first.name.as_deref(), Some("Alpha Charter"));
+    assert_eq!(first.description.as_deref(), Some("Alpha details"));
+    assert_eq!(first_missing, None);
+    assert!(content.artwork.lock().unwrap().is_empty(), "dated text must never populate the undated artwork cache");
+
+    let (second, _, second_missing) = content.idea_artwork_scoped("synth_scripted", None, country, None, &mut |key| {
+        Ok(match key {
+            "synth_scripted" => "Beta Charter".to_owned(),
+            "synth_scripted_desc" => "Beta details".to_owned(),
+            other => other.to_owned(),
+        })
+    });
+    assert_eq!(second.name.as_deref(), Some("Beta Charter"));
+    assert_eq!(second.description.as_deref(), Some("Beta details"));
+    assert_eq!(second_missing, None);
+    assert!(content.artwork.lock().unwrap().is_empty());
+
+    let (unscoped, _) = content.idea_artwork("synth_scripted", None, country);
+    assert_eq!(unscoped.name, None, "unscoped lookup still refuses honestly without leaking dated text");
+}

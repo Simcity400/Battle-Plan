@@ -99,7 +99,7 @@ impl Product for LandOwnersProduct {
         let mut failures: Vec<String> = Vec::new();
         if let Some(localisation) = &localisation {
             let mut looks: HashMap<u32, std::sync::Arc<styles::RunLooks>> = HashMap::new();
-            let mut evaluator: Option<styles::ScriptedEvaluator> = None;
+            let mut evaluator: Option<dashboard_base::products::scoped_text::ScopedText<'static>> = None;
             for ((tag, _), &(timeline, hour)) in &found {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let query = dashboard_base::queries::query(source, timeline)?;
@@ -113,8 +113,10 @@ impl Product for LandOwnersProduct {
                 });
                 if let Some(look) = look.and_then(|&(_, look, ..)| run.looks.get(&look)) {
                     let (style, problem) = styles::style_with(tag, look, Some(localisation), |key, text, slot| {
-                        let eval = evaluator.get_or_insert_with(|| styles::ScriptedEvaluator::for_source(source, context.content.as_ref()));
-                        eval.expand(stretch.run, hour, slot, key, text)
+                        let eval = evaluator.get_or_insert_with(|| {
+                            dashboard_base::products::scoped_text::ScopedText::for_source(source, context.content.as_ref())
+                        });
+                        eval.expand_raw(stretch.run, hour, dashboard_base::products::scoped_text::Scope::Country(slot), key, text)
                     });
                     if let Some(name) = style.name {
                         names.insert((tag.clone(), timeline, hour), name);

@@ -51,6 +51,7 @@ pub struct PoliticsContent {
     pub names: content_reader_politics::names::NameLists,
     pub warnings: Vec<String>,
     artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
+    idea_icons: Mutex<BTreeMap<String, catalogue::Drawn<(Option<String>, Option<String>, Option<String>)>>>,
     portraits: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     portrait_thumbnails: Mutex<BTreeMap<PortraitKey, super::artwork::sprites::DrawnArt>>,
     power: OnceLock<Arc<PowerContent>>,
@@ -245,6 +246,7 @@ impl PoliticsContent {
             names,
             warnings,
             artwork: Mutex::new(BTreeMap::new()),
+            idea_icons: Mutex::new(BTreeMap::new()),
             portraits: Mutex::new(BTreeMap::new()),
             power: OnceLock::new(),
             power_result: Default::default(),
@@ -743,8 +745,223 @@ impl PoliticsContent {
         }
     }
 
+    pub fn idea_name_is_scripted(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+    ) -> bool {
+        if saved.is_some_and(|saved| !saved.is_empty()) {
+            return false;
+        }
+        let idea = self.ideas.idea(token).ok().flatten();
+        let role = if idea.is_some() {
+            None
+        } else {
+            self.characters.advisor(token).ok().flatten()
+        };
+        let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
+        if idea.is_none() && advisor.is_some() {
+            return false;
+        }
+        matches!(
+            idea_name(&self.ideas, &self.names, &self.catalogue.localisation, token, country),
+            Ok(IdeaName::Key(key)) if super::scoped_text::key_needs_scope(&self.catalogue.localisation, &key, &[])
+        )
+    }
+
+    pub fn idea_is_scripted(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+    ) -> bool {
+        let description_scripted = self
+            .idea_description_key(token)
+            .is_some_and(|key| super::scoped_text::key_needs_scope(&self.catalogue.localisation, &key, &[]));
+        if description_scripted {
+            return true;
+        }
+        self.idea_name_is_scripted(token, character, country, saved)
+    }
+
+    pub fn idea_artwork_scoped(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+        resolve: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> (Artwork, Option<String>, Option<String>) {
+        self.idea_artwork_scoped_inner(token, character, country, saved, true, resolve)
+    }
+
+    pub fn idea_marker_artwork_scoped(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+        resolve: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> (Artwork, Option<String>, Option<String>) {
+        self.idea_artwork_scoped_inner(token, character, country, saved, false, resolve)
+    }
+
+    fn idea_artwork_scoped_inner(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+        saved: Option<&str>,
+        include_description: bool,
+        resolve: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> (Artwork, Option<String>, Option<String>) {
+        let scripted = if include_description {
+            self.idea_is_scripted(token, character, country, saved)
+        } else {
+            self.idea_name_is_scripted(token, character, country, saved)
+        };
+        if !scripted {
+            let (art, problem) = self.idea_artwork_for(token, character, Some(country), saved);
+            let name_missing = art
+                .name
+                .is_none()
+                .then(|| self.idea_name_missing(token, character, country, saved))
+                .flatten();
+            return (art, problem, name_missing);
+        }
+        let (idea, role) = match self.idea_and_role(token) {
+            Ok(found) => found,
+            Err(reason) => {
+                let name = saved.and_then(|saved| self.character_name(None, saved));
+                let name_missing = name.is_none().then(|| format!("{token}: {reason}"));
+                let art = Artwork {
+                    token: token.to_owned(),
+                    name,
+                    description: None,
+                    base_duration_days: None,
+                    icon: None,
+                    sprite: None,
+                };
+                return (art, Some(format!("{token}: {reason}")), name_missing);
+            }
+        };
+        let (name, name_missing) = match self.idea_display_name_with(
+            token,
+            character,
+            Some(country),
+            saved,
+            idea,
+            role,
+            resolve,
+        ) {
+            Ok(name) => (Some(name), None),
+            Err(reason) => (None, Some(reason)),
+        };
+        let description = include_description
+            .then(|| self.idea_description_key(token))
+            .flatten()
+            .and_then(|key| resolve(&key).ok());
+        let (sprite, icon, problem) = self.idea_icon_cached(token, character, Some(country), idea, role);
+        let art = Artwork {
+            token: token.to_owned(),
+            name,
+            description,
+            base_duration_days: None,
+            icon,
+            sprite,
+        };
+        (art, problem, name_missing)
+    }
+
     pub fn idea_artwork_offline(&self, token: &str) -> (Artwork, Option<String>) {
         self.idea_artwork_for(token, None, None, None)
+    }
+
+    fn idea_icon_cached(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: Option<IdeaCountry<'_>>,
+        idea: Option<&Idea>,
+        role: Option<&AdvisorRole>,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let key = format!(
+            "{token}\u{0}{}\u{0}{:?}\u{0}{:?}",
+            character.unwrap_or(""),
+            country.map(|country| country.tag),
+            content_reader_layers::content::artwork_mode(),
+        );
+        if let Some(cached) = self
+            .idea_icons
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&key)
+        {
+            return cached.get().clone();
+        }
+        let drawn = catalogue::Drawn::new(|| self.draw_idea_icon(token, character, country, idea, role));
+        let result = drawn.get().clone();
+        self.idea_icons
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(key, drawn);
+        result
+    }
+
+    fn draw_idea_icon(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: Option<IdeaCountry<'_>>,
+        idea: Option<&Idea>,
+        role: Option<&AdvisorRole>,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
+        let icon = match idea {
+            Some(idea) => self.shown_idea_icon(
+                token,
+                &IdeaIcon::Candidates {
+                    names: idea.sprite_candidates(country.map(|country| country.tag)),
+                    recorded_tag: country.is_some(),
+                },
+            ),
+            None => match advisor
+                .map(|character| self.portrait(character))
+                .transpose()
+            {
+                Ok(Some(Some(portrait))) => {
+                    self.shown_idea_icon(token, &IdeaIcon::Sprite(portrait.to_owned()))
+                }
+                Err(finding) => Err(finding),
+                Ok(_) => {
+                    self.shown_idea_icon(token, &IdeaIcon::Sprite(format!("GFX_idea_{token}")))
+                }
+            },
+        };
+        let (drawn, problem) = match icon {
+            Ok(Some(drawn)) => (Some(drawn), None),
+            Ok(None) => {
+                let reason =
+                    format!("{token}: no artwork in the recorded content; a placeholder is shown");
+                self.catalogue
+                    .note(Finding::new(Kind::Fallback, token, &reason));
+                (None, Some(reason))
+            }
+            Err(finding) => {
+                let reason = if finding.kind == Kind::Fallback {
+                    finding.message.clone()
+                } else {
+                    format!("{token}: icon unavailable: {}", finding.message)
+                };
+                self.catalogue.note(*finding);
+                (None, Some(reason))
+            }
+        };
+        let (sprite, icon) = drawn.unzip();
+        (sprite, icon, problem)
     }
 
     fn idea_artwork_for(
@@ -825,54 +1042,13 @@ impl PoliticsContent {
         idea: Option<&Idea>,
         role: Option<&AdvisorRole>,
     ) -> (Artwork, Option<String>) {
-        let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
         let name = self
             .idea_display_name(token, character, country, saved, idea, role)
             .ok();
         let description = self
             .idea_description_key(token)
             .and_then(|key| self.localised(&key, View::Scripted));
-        let icon = match idea {
-            Some(idea) => self.shown_idea_icon(
-                token,
-                &IdeaIcon::Candidates {
-                    names: idea.sprite_candidates(country.map(|country| country.tag)),
-                    recorded_tag: country.is_some(),
-                },
-            ),
-            None => match advisor
-                .map(|character| self.portrait(character))
-                .transpose()
-            {
-                Ok(Some(Some(portrait))) => {
-                    self.shown_idea_icon(token, &IdeaIcon::Sprite(portrait.to_owned()))
-                }
-                Err(finding) => Err(finding),
-                Ok(_) => {
-                    self.shown_idea_icon(token, &IdeaIcon::Sprite(format!("GFX_idea_{token}")))
-                }
-            },
-        };
-        let (drawn, problem) = match icon {
-            Ok(Some(drawn)) => (Some(drawn), None),
-            Ok(None) => {
-                let reason =
-                    format!("{token}: no artwork in the recorded content; a placeholder is shown");
-                self.catalogue
-                    .note(Finding::new(Kind::Fallback, token, &reason));
-                (None, Some(reason))
-            }
-            Err(finding) => {
-                let reason = if finding.kind == Kind::Fallback {
-                    finding.message.clone()
-                } else {
-                    format!("{token}: icon unavailable: {}", finding.message)
-                };
-                self.catalogue.note(*finding);
-                (None, Some(reason))
-            }
-        };
-        let (sprite, icon) = drawn.unzip();
+        let (sprite, icon, problem) = self.draw_idea_icon(token, character, country, idea, role);
         let art = Artwork {
             token: token.to_owned(),
             name,
@@ -893,6 +1069,22 @@ impl PoliticsContent {
         idea: Option<&Idea>,
         role: Option<&AdvisorRole>,
     ) -> Result<String, String> {
+        self.idea_display_name_with(token, character, country, saved, idea, role, &mut |key| {
+            self.catalogue.localised_or_why(key, View::Scripted)
+        })
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "internal helper shared by plain and dated idea naming")]
+    fn idea_display_name_with(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: Option<IdeaCountry<'_>>,
+        saved: Option<&str>,
+        idea: Option<&Idea>,
+        role: Option<&AdvisorRole>,
+        resolve: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
         let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
         match saved.map(|saved| self.recorded_name(saved)) {
             Some(RecordedName::Named(name)) => Ok(name),
@@ -902,7 +1094,7 @@ impl PoliticsContent {
                     || self.idea_name_offline(token),
                     |country| self.idea_name(token, country),
                 )? {
-                    IdeaName::Key(key) => self.catalogue.localised_or_why(&key, View::Scripted),
+                    IdeaName::Key(key) => resolve(&key),
                     IdeaName::Generated(text) => Ok(text),
                 },
                 (None, Some(character)) => self

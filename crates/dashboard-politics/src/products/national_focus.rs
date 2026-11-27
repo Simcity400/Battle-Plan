@@ -36,6 +36,47 @@ pub struct State {
     continuous: Option<artwork::Context>,
 }
 
+pub(crate) fn resolve_focus_titles(
+    source: &Source,
+    content: &dashboard_base::products::ContentOptions,
+    query: &dashboard_query::Query<'_>,
+    country: &dashboard_base::products::Country,
+    asks: &[(&str, i32)],
+) -> io::Result<std::collections::HashMap<(String, i32), Result<Option<String>, String>>> {
+    let state = source.state::<State>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let national = artwork::ensure(&mut state.national, source, content, artwork::Kind::Focus(FocusDatabase::National))?;
+    let scoped = dashboard_base::products::scoped_text::ScopedText::owned(
+        source.replay(),
+        Err("unused catalogue".to_owned()),
+    );
+    let mut resolved = std::collections::HashMap::new();
+    for &(token, completed_hour) in asks {
+        let key = (token.to_owned(), completed_hour);
+        if resolved.contains_key(&key) {
+            continue;
+        }
+        let Some(stretch) = query.timeline.at(completed_hour) else {
+            resolved.insert(key, Err(format!("focus {token}: hour {completed_hour} is not recorded")));
+            continue;
+        };
+        let Some(tag) = query.holders.tag_at(country, completed_hour) else {
+            resolved.insert(key, Err(format!("focus {token}: country tag is unavailable at hour {completed_hour}")));
+            continue;
+        };
+        let entry = scoped.eval_at(stretch.run, completed_hour, |frame| {
+            national.focus_titles_at(&[(token, tag)], frame, |items| items.next())
+        })?;
+        let outcome = match entry {
+            Some((art, _)) if art.name.is_some() => Ok(art.name),
+            Some((_, Some(reason))) => Err(reason),
+            Some((_, None)) | None => Ok(None),
+        };
+        resolved.insert(key, outcome);
+    }
+    Ok(resolved)
+}
+
 impl Product for NationalFocus {
     const KEY: &'static str = "national-focus";
     const CONTENT_DEPENDENT: bool = true;

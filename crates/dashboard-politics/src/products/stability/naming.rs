@@ -45,8 +45,22 @@ pub fn line_group(line: &BreakdownLine, content: &PoliticsContent, character: Op
     }
 }
 
-pub fn line_name(line: &BreakdownLine, content: &PoliticsContent, character: Option<RecordedCharacter>, country: IdeaCountry<'_>) -> Option<String> {
-    let localise = |key: &str| content.localised(key, View::Scripted);
+pub fn line_name(
+    line: &BreakdownLine,
+    content: &PoliticsContent,
+    character: Option<RecordedCharacter>,
+    country: IdeaCountry<'_>,
+) -> Option<String> {
+    line_name_with(line, content, character, country, |key| content.localised(key, View::Scripted))
+}
+
+pub fn line_name_with(
+    line: &BreakdownLine,
+    content: &PoliticsContent,
+    character: Option<RecordedCharacter>,
+    country: IdeaCountry<'_>,
+    mut localise: impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
     let expanded = |name: String| (!name.contains('[')).then_some(name);
     let character_name = |token: &str| content.authored_character_name(token);
     let recorded = || {

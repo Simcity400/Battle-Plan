@@ -213,3 +213,166 @@ fn an_enemy_capitulating_while_no_one_knows_who_holds_the_country_is_not_marked(
     war_markers(&mut out, &|tag: &str, _| tag == "ITA", &groups, &hidden);
     assert_eq!(titles(&out), [(200, "War with ETH began")], "the capitulation at 400 falls in the hour the holder warning covers");
 }
+
+#[test]
+fn scripted_completed_focus_markers_resolve_at_completion_hour_and_preserve_refusals() {
+    use crate::products::focus_dto::{FocusEntry, FocusHistory, FocusOrder, FocusSegment};
+
+    let reply = FocusReply {
+        history: FocusHistory {
+            segments: vec![FocusSegment {
+                first_hour: 100,
+                last_hour: 300,
+                order: FocusOrder {
+                    completed: vec![
+                        FocusEntry { token: "synth_resolved".into(), ordinal: 0, completed_by_hour: Some(120) },
+                        FocusEntry { token: "synth_refused".into(), ordinal: 1, completed_by_hour: Some(140) },
+                        FocusEntry { token: "synth_future".into(), ordinal: 2, completed_by_hour: Some(250) },
+                    ],
+                    current: None,
+                    continuous: None,
+                    paused: false,
+                },
+            }],
+            progress: Vec::new(),
+        },
+        missing: Vec::new(),
+        artwork: Vec::new(),
+        static_text: Some(Vec::new()),
+        continuous_static_text: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let mut out = Markers { hour: 200, shown: Vec::new(), next: None };
+    let mut warnings = Vec::new();
+    let mut asked = Vec::new();
+    focus_markers(
+        &mut out,
+        &reply,
+        &mut |token, hour| {
+            asked.push((token.to_owned(), hour));
+            match token {
+                "synth_resolved" => Ok(Some("Alpha Defence 1936".to_owned())),
+                "synth_refused" => Err("localisation synth_refused holds conditional".to_owned()),
+                other => panic!("unexpected focus lookup: {other}"),
+            }
+        },
+        &mut warnings,
+    );
+    assert_eq!(asked, [("synth_resolved".to_owned(), 120), ("synth_refused".to_owned(), 140)]);
+    assert_eq!(
+        titles(&out),
+        [(120, "Focus: Alpha Defence 1936"), (140, "Focus: Focus name unavailable")]
+    );
+    assert_eq!(out.next, Some(250), "future completed focus is not resolved before its hour");
+    assert_eq!(warnings, ["localisation synth_refused holds conditional"]);
+}
+
+#[test]
+fn completed_focus_markers_reuse_seeded_focus_scope() {
+    use dashboard_base::{
+        SourceKey,
+        products::{LoadContext, Product},
+        test_fixtures::{records, source},
+    };
+    use replay_data::rows::{
+        ClockRow, CompletedFocusRow, CountryLinkRow, CountryRow, FocusRow, TableId, TableRows,
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let frames: Vec<_> = (100..=105)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            let completed = if hour >= 102 {
+                vec![CompletedFocusRow { country: 7, ordinal: 0, token: b"synth_random_focus".to_vec() }]
+            } else {
+                Vec::new()
+            };
+            for (table, rows) in [
+                (TableId::Clock, TableRows::Clock(vec![ClockRow { hour, seed: 987, ..Default::default() }])),
+                (TableId::Countries, TableRows::Countries(vec![CountryRow { id: 7, canonical_slot: 1, tag: b"AAA".to_vec(), ..Default::default() }])),
+                (TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 7, canonical_slot: 1 }])),
+                (
+                    TableId::Focus,
+                    TableRows::Focus(vec![FocusRow {
+                        country: 7,
+                        tree: Some(b"synth_tree".to_vec()),
+                        completed_count: completed.len() as i32,
+                        ..Default::default()
+                    }]),
+                ),
+                (TableId::CompletedFocuses, TableRows::CompletedFocuses(completed)),
+            ] {
+                *frame.tables[table.index()] = TableView::Complete(rows);
+            }
+            frame
+        })
+        .collect();
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        ("common/defines/synth.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7}}"),
+        (
+            "common/scripted_localisation/synth.txt",
+            concat!(
+                "defined_text = {\n",
+                "  name = synth_focus_rand\n",
+                "  text = {\n",
+                "    random_list = {\n",
+                "      50 = { localization_key = FOCUS_OPT_A }\n",
+                "      50 = { localization_key = FOCUS_OPT_B }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        ),
+        (
+            "common/national_focus/synth.txt",
+            "focus_tree = { id = synth_tree focus = { id = synth_random_focus icon = GFX_goal_generic_allies_build_infantry cost = 5 } }\n",
+        ),
+        (
+            "localisation/english/synth_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " synth_random_focus:0 \"[synth_focus_rand]\"\n",
+                " FOCUS_OPT_A:0 \"Option A\"\n",
+                " FOCUS_OPT_B:0 \"Option B\"\n",
+            ),
+        ),
+    ]);
+    let (options, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
+    let mut input = records(1, frames);
+    if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+        session.identity = identity.clone();
+    }
+    let replay = dashboard_base::test_fixtures::with_facts(&options, &identity, input)
+        .into_timelines(&Default::default())
+        .unwrap();
+    let src = Source::from_replay(
+        SourceKey { source_id: "seeded-focus-marker".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let params = StabilityMarkersParams {
+        branch_id: "1".into(),
+        country: "AAA".into(),
+        hour: 105,
+        focus: true,
+        government: false,
+        wars: false,
+        factions: false,
+    };
+    let reply = src
+        .in_scope(|| StabilityMarkers::load(&src, &params, &LoadContext { content: Some(options) }, &AtomicBool::new(false)))
+        .unwrap();
+    let focus = reply.markers.iter().find(|m| m.kind == StabilityMarkerKind::Focus).unwrap();
+    assert!(
+        matches!(focus.title.as_str(), "Focus: Option A" | "Focus: Option B"),
+        "seeded focus marker should resolve random_list with Clock seed 987, got {:?}",
+        focus.title
+    );
+}

@@ -227,3 +227,175 @@ fn a_keys_lines_add_to_its_total_and_what_they_leave_is_the_remainder() {
     let absent = super::modifier((b"stability_factor", u32::MAX), None, Some(&lines), &good, &mut refused, "AAA");
     assert_eq!((absent.index, absent.total_raw, absent.lines.len()), (None, None, 0));
 }
+
+#[test]
+fn scripted_stability_idea_labels_resolve_and_hold_until_the_input_changes() {
+    use dashboard_base::{
+        SourceKey,
+        test_fixtures::{played, records, source},
+    };
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryCommandPowerRow, CountryLinkRow, CountryRow,
+        ModifierDefinitionRow, Recorded, ScriptVariableEntry, ScriptVariablesRow, SliceReadRow,
+        TableRows,
+    };
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+
+    let frames: Vec<_> = (100..=115)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1_000));
+            let mut keys = vec![u32::MAX; 10];
+            keys[0] = 3;
+            keys[1] = 4;
+            let row = CountryStabilityInputRow {
+                country: 9001,
+                stability_raw: 50_000,
+                max_stability: 100_000,
+                max_war_support: 100_000,
+                stability_factor: Some(10),
+                party_popularity_stability_factor: Some(0),
+                keys,
+                ..Default::default()
+            };
+            let line = CountryStabilityLineRow {
+                country: 9001,
+                key: 3,
+                value: 10,
+                kind: CountryStabilityLineRow::IDEA,
+                identity: b"synth_dynamic".to_vec(),
+                ..Default::default()
+            };
+            let slices = [TableId::CountryStabilityInputs, TableId::CountryStabilityLines].map(|table| SliceReadRow {
+                owner: 9001,
+                table: table.index() as u32,
+                sample_hour: 100,
+            });
+            for (table, rows) in [
+                (TableId::Countries, TableRows::Countries(vec![CountryRow { id: 9001, canonical_slot: 7, tag: b"AAA".to_vec(), ..Default::default() }])),
+                (TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: 9001, canonical_slot: 7 }])),
+                (TableId::CountryAppearance, TableRows::CountryAppearance(vec![CountryAppearanceRow { country: 9001, ..Default::default() }])),
+                (TableId::CountryStabilityInputs, TableRows::CountryStabilityInputs(vec![row])),
+                (TableId::CountryStabilityLines, TableRows::CountryStabilityLines(vec![line])),
+                (TableId::CountryCommandPower, TableRows::CountryCommandPower(vec![CountryCommandPowerRow { canonical_slot: 7, ..Default::default() }])),
+                (
+                    TableId::ModifierDefinitions,
+                    TableRows::ModifierDefinitions(vec![
+                        ModifierDefinitionRow { index: 3, flags: GOOD_FLAG, ..Default::default() },
+                        ModifierDefinitionRow { index: 4, flags: GOOD_FLAG, ..Default::default() },
+                    ]),
+                ),
+                (TableId::Characters, TableRows::Characters(Vec::new())),
+                (TableId::LexicalTokens, TableRows::LexicalTokens(Vec::new())),
+                (TableId::SliceReads, TableRows::SliceReads(slices.into())),
+                (
+                    TableId::ScriptVariables,
+                    TableRows::ScriptVariables(vec![ScriptVariablesRow {
+                        scope_kind: 1,
+                        scope_id: 9001,
+                        seed: Recorded::Value(None),
+                        entries: vec![ScriptVariableEntry {
+                            name: b"synth_level".to_vec(),
+                            value_raw: if hour < 108 { 100_000 } else { 200_000 },
+                        }],
+                    }]),
+                ),
+            ] {
+                *frame.tables[table.index()] = TableView::Complete(rows);
+            }
+            frame
+        })
+        .collect();
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        (
+            "common/defines/synth.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=7},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/scripted_localisation/synth.txt",
+            concat!(
+                "defined_text = {\n",
+                "  name = synth_level_loc\n",
+                "  text = { trigger = { check_variable = { synth_level > 1 } } localization_key = SYNTH_HIGH }\n",
+                "  text = { localization_key = SYNTH_LOW }\n",
+                "}\n",
+            ),
+        ),
+        ("common/ideas/synth.txt", "ideas = { country = { synth_dynamic = {} } }"),
+        (
+            "localisation/english/synth_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n",
+                " SYNTH_LOW:0 \"Level Low\"\n",
+                " SYNTH_HIGH:0 \"Level High\"\n",
+                " synth_dynamic:0 \"[synth_level_loc]\"\n",
+            ),
+        ),
+    ]);
+    let tables = dashboard_text::catalogue::tests::script_game::executable()
+        .executable(b"test")
+        .build();
+    let (options, identity) =
+        dashboard_base::test_fixtures::content_identity_with_tables(&folder.0, tables);
+    let mut input = records(1, frames);
+    if let replay_capture_spool::spool::Record::SessionStart(session) = &mut input[0] {
+        session.identity = identity.clone();
+    }
+    let replay = dashboard_base::test_fixtures::with_facts_tables(&options, &identity, input, tables)
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Arc::new(
+        Source::from_replay(
+            SourceKey { source_id: "stability-scripted".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &false.into(),
+        )
+        .unwrap(),
+    );
+    let load = LoadContext { content: Some(options) };
+    let breakdown_req = json!({"branchId": "1", "country": "AAA"});
+    let panel = (crate::registrations::STABILITY_COUNTRYSTABILITYBREAKDOWN.panel.unwrap().open)(&source, &load, &breakdown_req).unwrap();
+    let exact = panel.exact().unwrap();
+    let steps = played(source.replay_ref(), exact, 100, 115);
+    for step in &steps {
+        let value = step.value.as_ref().as_ref().unwrap();
+        let label = value["breakdown"]["modifiers"][0]["lines"][0]["label"].as_str();
+        let expected = if step.hour < 108 { "Level Low" } else { "Level High" };
+        assert_eq!(label, Some(expected), "breakdown label at hour {}", step.hour);
+        let expected_calls = u64::from(step.hour == 108);
+        assert_eq!(step.product_calls, expected_calls, "breakdown product_calls at hour {}", step.hour);
+    }
+
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let keys_frame = dashboard_base::products::at_hour::frame(
+        &query,
+        100,
+        &[dashboard_base::products::at_hour::Read::all(TableId::StabilityPartKeys)],
+        "stability part keys",
+    )
+    .unwrap();
+    let handle = keys_frame
+        .complete::<tables::StabilityPartKeys>()
+        .unwrap()
+        .iter()
+        .find(|row| row.kind == CountryStabilityLineRow::IDEA && row.identity == b"synth_dynamic")
+        .unwrap()
+        .handle;
+    let parts_req = json!({"branchId": "1", "country": "AAA", "parts": [handle.to_string()]});
+    let parts_panel = (crate::registrations::STABILITY_STABILITYPARTNAMES.panel.unwrap().open)(&source, &load, &parts_req).unwrap();
+    let parts_exact = parts_panel.exact().unwrap();
+    let part_steps = played(source.replay_ref(), parts_exact, 100, 115);
+    for step in &part_steps {
+        let value = step.value.as_ref().as_ref().unwrap();
+        let label = value["parts"][0]["line"]["label"].as_str();
+        let expected = if step.hour < 108 { "Level Low" } else { "Level High" };
+        assert_eq!(label, Some(expected), "part label at hour {}", step.hour);
+        let expected_calls = u64::from(step.hour == 108);
+        assert_eq!(step.product_calls, expected_calls, "part product_calls at hour {}", step.hour);
+    }
+}

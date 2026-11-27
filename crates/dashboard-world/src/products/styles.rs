@@ -1,22 +1,24 @@
 
-use dashboard_base::products::{BranchParams, ContentOptions, LoadContext, Product};
+use dashboard_base::products::{
+    BranchParams, ContentOptions, LoadContext, Product,
+    scoped_text::{Scope, ScopedText},
+};
 use dashboard_core::protocol::validate_tag;
-use dashboard_base::{Source, catalogue::{self, Catalogue, plain_text}, content};
+use dashboard_base::{Source, catalogue::plain_text, content};
 use dashboard_core::invalid;
-use dashboard_text::{flag_choices, scripted_text::{ScriptedText, TABLES as SCRIPTED_TABLES, probe_unselected_tables}};
+use dashboard_text::flag_choices;
 use crate::products::country_flags::{CountryFlagChoice, FlagFolders};
 use dashboard_query::{Query, read};
 use content_reader_country_names::country_names::{CountryName, CountryNames};
 use content_reader_localisation::localisation::Localisation;
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use replay_looks::Look;
 use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{Recorded, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     io,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
@@ -107,110 +109,6 @@ pub struct CountryFactRuns {
 }
 
 dashboard_base::reply_warnings!(CountryStyleReply, CountryFactsReply);
-
-const MAX_CACHED_SCRIPTED_FRAMES: usize = 4;
-
-struct BoundedFrames {
-    entries: HashMap<(u32, i32), DecodedFrame>,
-    order: VecDeque<(u32, i32)>,
-}
-
-impl BoundedFrames {
-    fn new() -> Self {
-        Self { entries: HashMap::new(), order: VecDeque::new() }
-    }
-
-    fn take_or_empty(&mut self, run: u32, hour: i32) -> DecodedFrame {
-        if let Some(frame) = self.entries.remove(&(run, hour)) {
-            if let Some(pos) = self.order.iter().position(|&k| k == (run, hour)) {
-                self.order.remove(pos);
-            }
-            return frame;
-        }
-        DecodedFrame {
-            branch: 0,
-            hour,
-            tables: std::array::from_fn(|_| not_selected()),
-            metrics: Metrics::default(),
-        }
-    }
-
-    fn put(&mut self, run: u32, hour: i32, frame: DecodedFrame) {
-        let key = (run, hour);
-        if self.entries.contains_key(&key) {
-            if let Some(pos) = self.order.iter().position(|&k| k == key) {
-                self.order.remove(pos);
-            }
-        } else if self.order.len() >= MAX_CACHED_SCRIPTED_FRAMES
-            && let Some(oldest) = self.order.pop_front()
-        {
-            self.entries.remove(&oldest);
-        }
-        self.order.push_back(key);
-        self.entries.insert(key, frame);
-    }
-}
-
-pub(crate) struct ScriptedEvaluator {
-    read_tables: Box<dyn Fn(u32, i32, &[TableId]) -> io::Result<DecodedFrame> + Send + Sync>,
-    catalogue: Result<Arc<Catalogue>, String>,
-    frames: Mutex<BoundedFrames>,
-}
-
-impl ScriptedEvaluator {
-    pub(crate) fn for_source(source: &Source, content: Option<&ContentOptions>) -> Self {
-        let replay = source.replay();
-        let read_tables = Box::new(move |run: u32, hour: i32, tables: &[TableId]| {
-            let reads: Vec<_> = tables
-                .iter()
-                .map(|&table| replay_lanes::at::Read {
-                    table,
-                    columns: None,
-                    keys: replay_lanes::at::Keys::All,
-                })
-                .collect();
-            replay_lanes::at::frame(replay.recording(), run, hour, &reads)
-        });
-        let catalogue = match content {
-            Some(content) => catalogue::recorded_catalogue(source, content).map_err(|error| error.to_string()),
-            None => Err("Game content is not configured".to_owned()),
-        };
-        Self { read_tables, catalogue, frames: Mutex::new(BoundedFrames::new()) }
-    }
-
-    pub(crate) fn expand(&self, run: u32, hour: i32, slot: u32, key: &str, text: &str) -> Result<String, String> {
-        let catalogue = self.catalogue.as_ref().map_err(|why| format!("localisation {key}: {why}"))?;
-        let content = catalogue.scripted_content().map_err(|why| format!("localisation {key}: {why}"))?;
-        let mut frame = self.frames.lock().unwrap_or_else(|error| error.into_inner()).take_or_empty(run, hour);
-        let mut last_result: Result<String, String> = Err("scripted country name did not resolve".to_owned());
-        for _ in 0..=SCRIPTED_TABLES.len() {
-            let scripted = ScriptedText::new(&frame, &catalogue.localisation, content, slot);
-            let mut result = None;
-            let needed = probe_unselected_tables(&frame, || {
-                result = Some(scripted.expand(text));
-            });
-            last_result = result.expect("probe ran expansion");
-            if needed.is_empty() {
-                break;
-            }
-            let partial = (self.read_tables)(run, hour, &needed).map_err(|why| format!("localisation {key}: {why}"));
-            let partial = match partial {
-                Ok(partial) => partial,
-                Err(err) => {
-                    self.frames.lock().unwrap_or_else(|error| error.into_inner()).put(run, hour, frame);
-                    return Err(err);
-                }
-            };
-            frame.branch = partial.branch;
-            for table in needed {
-                frame.tables[table.index()] = partial.tables[table.index()].clone();
-            }
-        }
-        self.frames.lock().unwrap_or_else(|error| error.into_inner()).put(run, hour, frame);
-        let expanded = last_result.map_err(|why| format!("localisation {key}: {why}"))?;
-        plain_text(&expanded).map_err(|reason| format!("localisation {key}: its name holds {reason}"))
-    }
-}
 
 fn format_problem(unnamed: Option<String>, colour: Option<[u8; 3]>) -> Option<String> {
     match (unnamed, colour) {
@@ -524,7 +422,7 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
         segments.push((tag, out));
     }
     if !scripted_by_run.is_empty() {
-        let eval = ScriptedEvaluator::for_source(source, context.content.as_ref());
+        let eval = ScopedText::for_source(source, context.content.as_ref());
         struct ActiveSpan {
             tag_idx: usize,
             last: i32,
@@ -560,7 +458,7 @@ fn facts(source: &Source, query: &Query<'_>, branch_id: &str, context: &LoadCont
                         unreachable!();
                     };
                     let color_packed = colour.map_or(-1, |[red, green, blue]| (i32::from(red) << 16) | (i32::from(green) << 8) | i32::from(blue));
-                    let (name, unnamed) = match eval.expand(run_id, hour, *slot, key, text) {
+                    let (name, unnamed) = match eval.expand_raw(run_id, hour, Scope::Country(*slot), key, text) {
                         Ok(name) => (Some(name), None),
                         Err(reason) => (None, Some(reason)),
                     };
@@ -771,7 +669,7 @@ impl Product for CountryStyles {
             }
         }
         let mut styles = Vec::with_capacity(params.tags.len());
-        let mut evaluator: Option<ScriptedEvaluator> = None;
+        let mut evaluator: Option<ScopedText<'static>> = None;
         for tag in &params.tags {
             match at.get(tag.as_str()) {
                 Some(&(look, first, last)) => {
@@ -779,8 +677,8 @@ impl Product for CountryStyles {
                     let (mut built, problem) = match localisation.as_deref() {
                         Ok(loc) => style_with(tag, look, Some(loc), |key, text, slot| {
                             was_scripted = true;
-                            let eval = evaluator.get_or_insert_with(|| ScriptedEvaluator::for_source(source, context.content.as_ref()));
-                            eval.expand(stretch.run, params.hour, slot, key, text)
+                            let eval = evaluator.get_or_insert_with(|| ScopedText::for_source(source, context.content.as_ref()));
+                            eval.expand_raw(stretch.run, params.hour, Scope::Country(slot), key, text)
                         }),
                         Err(loc_reason) => (
                             CountryStyle {
@@ -968,7 +866,7 @@ pub struct LookResolver<'a> {
     timeline: &'a dashboard_query::timeline::Timeline,
     content: Option<ContentOptions>,
     localisation: Option<Arc<Localisation>>,
-    evaluator: Option<ScriptedEvaluator>,
+    evaluator: Option<ScopedText<'static>>,
     runs: HashMap<u32, IndexedRunLooks>,
 }
 
@@ -991,8 +889,8 @@ impl<'a> LookResolver<'a> {
         let content = self.content.as_ref();
         let evaluator = &mut self.evaluator;
         Ok(run.resolve(tag, hour, self.localisation.as_deref(), |key, text, slot| {
-            let eval = evaluator.get_or_insert_with(|| ScriptedEvaluator::for_source(source, content));
-            eval.expand(stretch.run, hour, slot, key, text)
+            let eval = evaluator.get_or_insert_with(|| ScopedText::for_source(source, content));
+            eval.expand_raw(stretch.run, hour, Scope::Country(slot), key, text)
         }))
     }
 }
@@ -1000,7 +898,7 @@ impl<'a> LookResolver<'a> {
 pub struct BranchLooks {
     timeline: dashboard_query::timeline::Timeline,
     localisation: Option<Arc<Localisation>>,
-    evaluator: Option<ScriptedEvaluator>,
+    evaluator: Option<ScopedText<'static>>,
     runs: HashMap<u32, IndexedRunLooks>,
 }
 
@@ -1016,7 +914,7 @@ impl BranchLooks {
         let evaluator = runs
             .values()
             .any(IndexedRunLooks::has_scripted_names)
-            .then(|| ScriptedEvaluator::for_source(source, context.content.as_ref()));
+            .then(|| ScopedText::for_source(source, context.content.as_ref()));
         Ok(Self { timeline: timeline.clone(), localisation, evaluator, runs })
     }
 
@@ -1037,7 +935,7 @@ impl BranchLooks {
         match self.runs.get(&stretch.run) {
             Some(run) => run.resolve(tag, hour, self.localisation.as_deref(), |key, text, slot| {
                 match self.evaluator.as_ref() {
-                    Some(eval) => eval.expand(stretch.run, hour, slot, key, text),
+                    Some(eval) => eval.expand_raw(stretch.run, hour, Scope::Country(slot), key, text),
                     None => Err(format!("localisation {key} uses unsupported scripted text")),
                 }
             }),
@@ -1135,13 +1033,11 @@ mod tests {
                 "\u{feff}l_english:\n AAA_fascism:0 \"[GetDate] Reich\"\n",
             ),
         ]);
-        let eval = ScriptedEvaluator {
-            read_tables: Box::new(|_, _, tables| panic!("date-only scripted name must not read replay tables: {tables:?}")),
-            catalogue: Ok(Arc::new(cat)),
-            frames: Mutex::new(BoundedFrames::new()),
-        };
-        let d0 = eval.expand(0, 0, 1, "AAA_fascism", "[GetDate] Reich").unwrap();
-        let d24 = eval.expand(0, 24, 1, "AAA_fascism", "[GetDate] Reich").unwrap();
+        let eval = ScopedText::with_reader(Ok(Arc::new(cat)), |_, _, tables| {
+            panic!("date-only scripted name must not read replay tables: {tables:?}")
+        });
+        let d0 = eval.expand_raw(0, 0, Scope::Country(1), "AAA_fascism", "[GetDate] Reich").unwrap();
+        let d24 = eval.expand_raw(0, 24, Scope::Country(1), "AAA_fascism", "[GetDate] Reich").unwrap();
         assert_ne!(d0, d24, "real [GetDate] expansion distinguishes two hours with zero table reads ({d0:?} vs {d24:?})");
         assert!(d0.ends_with(" Reich") && d24.ends_with(" Reich"), "{d0:?} vs {d24:?}");
     }

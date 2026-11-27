@@ -67,20 +67,26 @@ fn name_arguments(argument: &str) -> Vec<(&str, Argument<'_>)> {
     }
 }
 
-fn label(content: &PoliticsContent, key: &str, argument: &str) -> Option<String> {
-    content
-        .catalogue
-        .localised_with(key, &name_arguments(argument), catalogue::View::Scripted)
+fn label_with(
+    key: &str,
+    argument: &str,
+    localise: &mut dyn FnMut(&str, &[(&str, Argument<'_>)]) -> Option<String>,
+) -> Option<String> {
+    localise(key, &name_arguments(argument))
 }
 
-pub(crate) fn content_format(content: &PoliticsContent, key: &str) -> Option<ModifierFormat> {
+fn content_format_with(
+    content: &PoliticsContent,
+    key: &str,
+    localise: &mut dyn FnMut(&str, &[(&str, Argument<'_>)]) -> Option<String>,
+) -> Option<ModifierFormat> {
     let definition = content.modifier_definitions.get(key)?;
     let postfix = definition.postfix_key();
     Some(ModifierFormat {
         key: key.to_owned(),
         index: None,
-        label: label(content, &definition.token, ""),
-        postfix: postfix.and_then(|key| content.localised(key, catalogue::View::Scripted)),
+        label: label_with(&definition.token, "", localise),
+        postfix: postfix.and_then(|key| localise(key, &[])),
         postfix_key: postfix.map(str::to_owned),
         flags: definition.flags,
         feature: 0,
@@ -93,6 +99,19 @@ pub fn modifier_formats_from_recorded(
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
     keys: &BTreeSet<String>,
     content: &PoliticsContent,
+) -> (Vec<ModifierFormat>, Vec<String>) {
+    modifier_formats_with(recorded, keys, content, &mut |key, args| {
+        content
+            .catalogue
+            .localised_with(key, args, catalogue::View::Scripted)
+    })
+}
+
+pub fn modifier_formats_with(
+    recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
+    keys: &BTreeSet<String>,
+    content: &PoliticsContent,
+    localise: &mut dyn FnMut(&str, &[(&str, Argument<'_>)]) -> Option<String>,
 ) -> (Vec<ModifierFormat>, Vec<String>) {
     let mut warnings = Vec::new();
     if recorded.is_none() && !keys.is_empty() {
@@ -111,9 +130,9 @@ pub fn modifier_formats_from_recorded(
             formats.push(ModifierFormat {
                 key: key.clone(),
                 index: Some(row.index),
-                label: label(content, &String::from_utf8_lossy(&row.name_key), &argument),
+                label: label_with(&String::from_utf8_lossy(&row.name_key), &argument, localise),
                 postfix: (!postfix.is_empty())
-                    .then(|| content.localised(&postfix, catalogue::View::Scripted))
+                    .then(|| localise(&postfix, &[]))
                     .flatten(),
                 postfix_key: (!postfix.is_empty()).then(|| postfix.into_owned()),
                 flags: row.flags,
@@ -123,7 +142,7 @@ pub fn modifier_formats_from_recorded(
             });
             continue;
         }
-        if let Some(format) = content_format(content, key) {
+        if let Some(format) = content_format_with(content, key, localise) {
             formats.push(format);
         }
     }
@@ -137,10 +156,19 @@ pub fn modifier_formats_from_recorded(
 }
 
 pub fn texts(content: &PoliticsContent, keys: &BTreeSet<String>) -> Vec<LocalisedText> {
+    texts_with(keys, &mut |key| {
+        content.localised(key, catalogue::View::Scripted)
+    })
+}
+
+pub fn texts_with(
+    keys: &BTreeSet<String>,
+    localise: &mut dyn FnMut(&str) -> Option<String>,
+) -> Vec<LocalisedText> {
     keys.iter()
         .map(|key| LocalisedText {
             key: key.clone(),
-            text: content.localised(key, catalogue::View::Scripted),
+            text: localise(key),
         })
         .collect()
 }

@@ -30,6 +30,7 @@ pub use placed::with_strip_pool;
 #[cfg(any(test, feature = "test-support"))]
 pub use placed::interactive_pool_snapshot;
 mod validity;
+pub(crate) use validity::reading_dates;
 pub use validity::{ReadDates, ScriptedInputs, reads_through, row_change_hours};
 pub use incremental::{DatedStep, Edits, Held};
 
