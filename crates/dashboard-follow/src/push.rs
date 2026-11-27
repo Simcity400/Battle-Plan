@@ -95,14 +95,15 @@ impl Stream {
             }
             Self::Steps { route: word(4) >> 1, seek: word(16), due }
         } else if kind == PANEL && let Some((route, seek)) = panel::dated::stamp(bytes) {
-            let mut due = i32::MIN;
+            let (mut due, mut waits) = (None::<i32>, i32::MIN);
             let mut at = 24;
             while let Some(header) = bytes.get(at..).and_then(|tail| tail.get(..16)) {
-                due = due.max(i32::from_le_bytes(header[4..8].try_into().expect("panel hour")));
+                let hour = i32::from_le_bytes(header[4..8].try_into().expect("panel hour"));
+                if header[8] == panel::dated::WAITING { waits = waits.max(hour); } else { due = Some(due.map_or(hour, |due| due.max(hour))); }
                 let size = u32::from_le_bytes(header[12..16].try_into().expect("panel length")) as usize;
                 at += (16 + size).next_multiple_of(8);
             }
-            Self::Panels { route, seek, due }
+            Self::Panels { route, seek, due: due.unwrap_or(waits) }
         } else {
             Self::Notice
         }
@@ -215,6 +216,14 @@ impl State {
     }
 
 
+    fn folds_past(&self, at: usize, later: usize) -> bool {
+        let older = &self.queue[at];
+        let (Some(ids), Some((route, _))) = (&older.panels, older.stream.version()) else { return true };
+        self.queue.range(at + 1..later).all(|q| {
+            q.stream.version().is_none_or(|(other, _)| other != route) || q.panels.as_ref().is_some_and(|others| !others.iter().any(|id| ids.contains(id)))
+        })
+    }
+
     fn merge_passed(&mut self) {
         let mut at = 0;
         while at < self.queue.len() {
@@ -235,7 +244,7 @@ impl State {
                 at += 1;
                 continue;
             };
-            if self.reached(self.queue[later].stream) && self.merge(at, later) {
+            if self.reached(self.queue[later].stream) && self.folds_past(at, later) && self.merge(at, later) {
                 continue;
             }
             at += 1;
@@ -284,12 +293,9 @@ impl State {
         loop {
             self.charged();
             if !self.charge.full() { break; }
-            let pair = {
-                let mut ours = self.queue.iter().enumerate()
-                    .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.reached(q.stream)).map(|(at, _)| at);
-                (ours.next(), ours.next())
-            };
-            let (Some(at), Some(later)) = pair else { break };
+            let ours: Vec<usize> = self.queue.iter().enumerate()
+                .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.reached(q.stream)).map(|(at, _)| at).collect();
+            let Some(&[at, later]) = ours.windows(2).find(|pair| self.folds_past(pair[0], pair[1])) else { break };
             if !self.merge(at, later) { break; }
             self.counters.pressure_merges += 1;
             crate::lead::count_merge();
