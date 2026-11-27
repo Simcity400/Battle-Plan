@@ -1628,6 +1628,202 @@ fn rows_message(hour: Hour, changed: bool, rows: &[(u128, i64)]) -> Vec<u8> {
     message
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ConfirmedHead {
+    hour: Hour,
+    through: Hour,
+    body: Vec<u8>,
+    open: bool,
+}
+
+fn confirmation_seeds() -> BTreeMap<u32, Vec<ConfirmedHead>> {
+    [7, 8].into_iter().map(|id| (id, vec![ConfirmedHead { hour: 0, through: 0, body: body(id, 0), open: true }])).collect()
+}
+
+fn add_confirmed(heads: &mut BTreeMap<u32, Vec<ConfirmedHead>>, id: u32, hour: Hour, body: &[u8]) {
+    let facts = heads.entry(id).or_default();
+    if facts.last().is_some_and(|last| last.hour == hour) {
+        facts.pop();
+    } else if let Some(last) = facts.last_mut().filter(|last| last.through >= hour) {
+        last.through = hour - 1;
+    }
+    facts.push(ConfirmedHead { hour, through: hour, body: body.to_vec(), open: true });
+}
+
+fn assert_latest_confirmation_and_coverage_subset(merged: &BTreeMap<u32, Vec<ConfirmedHead>>, sequential: &BTreeMap<u32, Vec<ConfirmedHead>>) {
+    assert_eq!(merged.keys().collect::<Vec<_>>(), sequential.keys().collect::<Vec<_>>());
+    for (&id, facts) in merged {
+        let expected = &sequential[&id];
+        assert_eq!(facts.last(), expected.last(), "latest fact of {id}");
+        for fact in facts {
+            let sequential = expected.iter().find(|held| held.hour == fact.hour && held.body == fact.body).expect("a merged fact was received sequentially");
+            assert!(fact.through <= sequential.through, "id {id}, fact at {}: merged confirmation {} exceeds sequential {}", fact.hour, fact.through, sequential.through);
+        }
+    }
+}
+
+fn follow_packet(hour: Hour, reset: bool, limit: Option<Hour>, reading: Option<Hour>) -> Vec<u8> {
+    let mut out = Vec::new();
+    crate::answer::begin(&mut out, 0, 0, hour, 0, reset);
+    if let Some(through) = limit { crate::answer::push(&mut out, 7, through, &[]); }
+    if let Some(at) = reading { crate::answer::push(&mut out, 7, at, &body(7, i64::from(at))); }
+    out
+}
+
+fn follow_page(messages: &[&[u8]]) -> (BTreeMap<u32, Vec<ConfirmedHead>>, Vec<u32>) {
+    let mut heads = confirmation_seeds();
+    let mut limited = Vec::new();
+    for bytes in messages {
+        let message = decode(bytes).unwrap();
+        if message.reset { heads.clear(); }
+        for (id, hour, body) in message.answers {
+            add_confirmed(&mut heads, id, hour, body);
+        }
+        for (&id, facts) in &mut heads {
+            let head = facts.last_mut().unwrap();
+            let through = message.limited.iter().rev().find(|&&(held, _)| held == id).map_or(message.hour, |&(_, through)| through);
+            head.through = head.through.max(through);
+        }
+        limited = message.limited.iter().map(|&(id, _)| id).collect();
+        limited.sort_unstable();
+        limited.dedup();
+    }
+    (heads, limited)
+}
+
+fn assert_follow_confirmation_merge(older: &[u8], newer: &[u8], through: Hour) {
+    let sequential = follow_page(&[older, newer]);
+    assert_eq!(sequential.0.get(&7).and_then(|facts| facts.last()).map(|head| head.through), Some(through));
+    let (merged, _) = crate::answer::merge(older, newer).unwrap();
+    let applied = follow_page(&[&merged]);
+    assert_eq!(applied.1, sequential.1);
+    assert_latest_confirmation_and_coverage_subset(&applied.0, &sequential.0);
+}
+
+#[test]
+fn follow_merge_keeps_a_confirmation_when_a_limit_retreats() {
+    assert_follow_confirmation_merge(&follow_packet(10, false, Some(8), None), &follow_packet(20, false, Some(4), None), 8);
+}
+
+#[test]
+fn follow_merge_keeps_an_implicit_confirmation_before_a_limit() {
+    assert_follow_confirmation_merge(&follow_packet(10, false, None, None), &follow_packet(20, false, Some(4), None), 10);
+}
+
+#[test]
+fn follow_merge_keeps_a_retained_answers_confirmation_before_a_limit() {
+    for (limit, through) in [(Some(8), 8), (None, 10)] {
+        assert_follow_confirmation_merge(&follow_packet(10, false, limit, Some(6)), &follow_packet(20, false, Some(4), None), through);
+    }
+}
+
+#[test]
+fn follow_merge_limit_equivalence_cases() {
+    for (name, older, newer) in [
+        ("older limit omitted", follow_packet(10, false, Some(8), None), follow_packet(20, false, None, None)),
+        ("unread limit omitted", follow_packet(10, false, Some(Hour::MIN), None), follow_packet(20, false, None, None)),
+        ("limit advances", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(14), None)),
+        ("limit unchanged", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(8), None)),
+        ("new answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, None, Some(16))),
+        ("new limited answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(4), Some(16))),
+        ("new delayed answer", follow_packet(10, false, Some(8), None), follow_packet(20, false, Some(4), Some(3))),
+        ("older reset", follow_packet(10, true, None, Some(6)), follow_packet(20, false, Some(4), None)),
+        ("newer reset", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, true, Some(4), None)),
+        ("newer reset answer", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, true, Some(4), Some(3))),
+        ("retained limited answer", follow_packet(10, false, Some(8), Some(6)), follow_packet(20, false, None, None)),
+        ("retained answer limit advances", follow_packet(10, false, None, Some(6)), follow_packet(20, false, Some(14), None)),
+    ] {
+        let (merged, _) = crate::answer::merge(&older, &newer).unwrap();
+        let (applied, limited) = follow_page(&[&merged]);
+        let (sequential, sequential_limited) = follow_page(&[&older, &newer]);
+        assert_eq!(limited, sequential_limited, "{name}");
+        assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
+    }
+}
+
+fn panel_packet(through: Option<Hour>, records: &[(u32, Hour, u8, &[u8])]) -> Vec<u8> {
+    let mut batch = crate::panel::dated::ProductBatch::new((0, 0, 0));
+    for &(id, hour, kind, body) in records { batch.changed(id, hour, kind, body); }
+    batch.finish(through)
+}
+
+fn panel_page(messages: &[&[u8]]) -> BTreeMap<u32, Vec<ConfirmedHead>> {
+    use crate::panel::dated;
+    let mut heads = confirmation_seeds();
+    for bytes in messages {
+        for record in dated::records(bytes).unwrap() {
+            if record.kind == dated::COMPLETED {
+                for facts in heads.values_mut() {
+                    let head = facts.last_mut().unwrap();
+                    if head.open { head.through = head.through.max(record.hour); }
+                }
+                continue;
+            }
+            if matches!(record.kind, dated::DATA | dated::REFUSED | dated::STOPPED) {
+                add_confirmed(&mut heads, record.id, record.hour, record.body);
+                continue;
+            }
+            let head = heads.get_mut(&record.id).unwrap().last_mut().unwrap();
+            match record.kind {
+                dated::STANDS => { head.through = head.through.max(record.hour); head.open = true; }
+                dated::AGAIN => {
+                    let body = head.body.clone();
+                    add_confirmed(&mut heads, record.id, record.hour, &body);
+                }
+                dated::WAITING => head.open = false,
+                _ => panic!("unknown dated panel kind"),
+            }
+        }
+    }
+    heads
+}
+
+fn assert_panel_confirmation_merge(older: &[u8], newer: &[u8], through: Hour) {
+    let sequential = panel_page(&[older, newer]);
+    assert_eq!(sequential[&7].last().unwrap().through, through);
+    let result = crate::panel::dated::merge(older, newer);
+    assert!(result.is_err(), "a confirmation before WAITING must not merge away");
+    let delivered = result.map_or_else(|_| vec![older.to_vec(), newer.to_vec()], |(merged, _)| vec![merged]);
+    let applied = panel_page(&delivered.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
+}
+
+#[test]
+fn dated_panel_merge_keeps_a_readings_completion_before_waiting() {
+    use crate::panel::dated;
+    assert_panel_confirmation_merge(&panel_packet(Some(10), &[(7, 6, dated::DATA, b"value")]), &panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")]), 10);
+}
+
+#[test]
+fn dated_panel_merge_keeps_an_implicit_completion_before_waiting() {
+    use crate::panel::dated;
+    assert_panel_confirmation_merge(&panel_packet(Some(10), &[]), &panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")]), 10);
+}
+
+#[test]
+fn dated_panel_merge_keeps_an_explicit_confirmation_before_waiting() {
+    use crate::panel::dated;
+    assert_panel_confirmation_merge(&panel_packet(None, &[(7, 6, dated::DATA, b"value"), (7, 10, dated::STANDS, b"")]), &panel_packet(None, &[(7, 14, dated::WAITING, b"")]), 10);
+}
+
+#[test]
+fn dated_panel_merge_limit_equivalence_cases() {
+    use crate::panel::dated;
+    for (name, older, newer) in [
+        ("older waiting omitted", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[])),
+        ("waiting repeated", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")])),
+        ("waiting then answered", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 16, dated::DATA, b"value")])),
+        ("reading confirms completion", panel_packet(Some(10), &[(7, 10, dated::DATA, b"value")]), panel_packet(Some(20), &[(7, 14, dated::WAITING, b"")])),
+        ("waiting then stands", panel_packet(Some(10), &[(7, 8, dated::WAITING, b"")]), panel_packet(Some(20), &[(7, 14, dated::STANDS, b"")])),
+    ] {
+        let (merged, _) = dated::merge(&older, &newer).unwrap();
+        let applied = panel_page(&[&merged]);
+        let sequential = panel_page(&[&older, &newer]);
+        assert_eq!(applied[&7].last(), sequential[&7].last(), "{name}");
+        assert_latest_confirmation_and_coverage_subset(&applied, &sequential);
+    }
+}
+
 #[test]
 fn rows_changed_queued_behind_the_rows_they_change_are_laid_over_them_never_dropped() {
     let whole = rows_message(10, false, &[(1, 10), (2, 20), (3, 30)]);
