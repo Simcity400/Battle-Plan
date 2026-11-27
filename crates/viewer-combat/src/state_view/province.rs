@@ -118,7 +118,9 @@ fn dynamic_modifiers(content: &Content, frame: &DecodedFrame, root: &native::Ele
                 continue;
             }
             let mut values = crate::Values::new();
-            binding::sprite(&mut values, "icon", String::from_utf8_lossy(&definition.icon).into_owned());
+            let icon = String::from_utf8_lossy(&definition.icon).into_owned();
+            content.assets.acquire_sprite(&icon);
+            binding::sprite(&mut values, "icon", icon);
             if row.scope_country == 0 {
                 binding::hide(&mut values, "flag");
             } else {

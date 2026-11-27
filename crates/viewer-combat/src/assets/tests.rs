@@ -543,26 +543,44 @@ fn sprites_the_state_view_names_from_its_content_load_with_the_windows() {
 
 #[test]
 fn combat_dynamic_sprites_defer_until_drawn_or_queried_and_keep_alpha_hit_eager() {
-    let (root, assets, _) = synthetic_assets("dynamic_lazy", "", |root| {
+    use crate::{binding::Bindings, gui_resources};
+
+    let (root, assets, lazy) = synthetic_assets("dynamic_lazy", "", |root| {
         std::fs::create_dir_all(root.join("gfx/combat")).unwrap();
+        std::fs::create_dir_all(root.join("gfx/interface/landcombat/tactics")).unwrap();
         std::fs::write(root.join("gfx/combat/ship.tga"), tga(12, 8)).unwrap();
+        std::fs::write(root.join("gfx/combat/cold.tga"), tga(10, 6)).unwrap();
         std::fs::write(root.join("gfx/combat/alpha.tga"), tga(6, 6)).unwrap();
+        std::fs::write(
+            root.join("gfx/interface/landcombat/tactics/fixture.tga"),
+            tga(4, 4),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("common/combat_tactics.txt"),
+            b"fixture = { picture = fixture }",
+        )
+        .unwrap();
         std::fs::write(
             root.join("interface/dynamic.gfx"),
             br#"spriteTypes = {
                 spriteType = { name = "GFX_navalcombat_ship_icon_destroyer" textureFile = "gfx/combat/ship.tga" noOfFrames = 2 }
                 spriteType = { name = "GFX_navalcombat_ship_icon_missing" textureFile = "gfx/combat/missing.tga" noOfFrames = 2 }
+                spriteType = { name = "GFX_terrain_cold" textureFile = "gfx/combat/cold.tga" }
                 spriteType = { name = "GFX_terrain_alpha" textureFile = "gfx/combat/alpha.tga" transparencecheck = yes }
-                spriteType = { name = "GFX_mapmode_buttons_default" textureFile = "gfx/combat/ship.tga" }
+                spriteType = { name = "GFX_mapmode_buttons_default_medium" textureFile = "gfx/combat/ship.tga" }
             }"#,
         )
         .unwrap();
     });
     assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_destroyer"));
     assert!(assets.lazy_sprites.contains_key("GFX_navalcombat_ship_icon_missing"));
+    assert!(assets.lazy_sprites.contains_key("GFX_terrain_cold"));
     assert!(!assets.lazy_sprites.contains_key("GFX_terrain_alpha"));
-    assert!(!assets.lazy_sprites.contains_key("GFX_mapmode_buttons_default"));
+    assert!(!assets.lazy_sprites.contains_key("GFX_mapmode_buttons_default_medium"));
+    assert!(!assets.lazy_sprites.contains_key("combat_tactic:fixture"));
     assert_eq!(assets.portraits.peek("gfx/combat/ship.tga"), Lookup::Pending);
+    assert_eq!(assets.portraits.peek("gfx/combat/cold.tga"), Lookup::Pending);
     assert_eq!(assets.portraits.peek("gfx/combat/missing.tga"), Lookup::Pending);
 
     assert_eq!(assets.sprite_size("GFX_navalcombat_ship_icon_destroyer"), Some([6.0, 8.0]));
@@ -574,10 +592,26 @@ fn combat_dynamic_sprites_defer_until_drawn_or_queried_and_keep_alpha_hit_eager(
         Some([12, 8])
     );
     assert!(assets.drawable_sprite(b"GFX_navalcombat_ship_icon_missing").is_none());
-    let sheets = assets.portrait_sheets([b"GFX_navalcombat_ship_icon_destroyer".as_slice()]);
-    assert_eq!(
-        sheets.get(b"GFX_navalcombat_ship_icon_destroyer".as_slice()).map(|sheet| (sheet.size, sheet.frames)),
-        Some(([12, 8], 2))
+
+    assert_eq!(assets.portraits.peek("gfx/combat/cold.tga"), Lookup::Pending);
+    let mut bindings = Bindings::default();
+    crate::binding::sprite(&mut bindings.values, "icon", "GFX_terrain_cold".into());
+    assets.acquire_sprite("GFX_terrain_cold");
+    let mut inventory = gui_resources::GuiAssets::new(&assets, &bindings);
+    inventory.refresh_portraits(&assets, 0.0, lazy.version());
+    let localisation = Default::default();
+    let resources = gui_resources::GuiResources::new(
+        &assets,
+        &assets.native_windows,
+        &localisation,
+        &assets.flags,
+        &assets.flags,
+        &inventory,
     );
+    let sheet = resources
+        .sheet(b"GFX_terrain_cold")
+        .expect("acquired lazy sprite draws on the first frame");
+    assert_ne!(sheet.texture, NO_TEXTURE);
+    assert_eq!((sheet.size, sheet.frames), ([10, 6], 1));
     std::fs::remove_dir_all(root).unwrap();
 }

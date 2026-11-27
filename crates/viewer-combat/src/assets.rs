@@ -352,6 +352,12 @@ impl Assets {
             .collect()
     }
 
+    pub(crate) fn acquire_sprite(&self, name: &str) {
+        if let Some((path, _)) = self.lazy_sprite(name) {
+            let _ = self.portraits.acquire(path);
+        }
+    }
+
     pub fn has_sprite(&self, name: &str) -> bool {
         if let Some((path, _)) = self.lazy_sprite(name) {
             return matches!(self.portraits.acquire(path), Lookup::Loaded { .. });
@@ -869,12 +875,14 @@ impl Assets {
             textures: native_assets.textures,
         };
         for name in &wanted {
-            let eager_window = window_sprites.contains(name.as_bytes())
-                || name.starts_with("GFX_mapmode_buttons_")
+            let always_eager = name.starts_with("GFX_mapmode_buttons_")
+                || name.starts_with("combat_tactic:")
                 || name == super::tactics::NULL_PICTURE;
-            if let Some(facts) = registry.sprite(name.as_bytes())
+            let window = window_sprites.contains(name.as_bytes());
+            if !always_eager
+                && let Some(facts) = registry.sprite(name.as_bytes())
                 && let SpriteKind::Plain(plain) = &facts.kind
-                && (!eager_window
+                && (!window
                     || plain.texture.starts_with(b"gfx/leaders/")
                     || name.ends_with("_medium")
                     || name.starts_with("air_texture:"))
@@ -906,19 +914,28 @@ impl Assets {
         warnings.extend(sprite_warnings(&gui, &resident.sprites, true));
         warnings.extend(gui.uncovered_note("Combat UI"));
         let reader = Arc::clone(shared);
-        let recorded = reader.without_overlays();
+        let strict = content_reader_layers::content::is_strict();
+        let recorded = (!strict).then(|| reader.without_overlays()).flatten();
         let decode = interface.decode;
         let portrait_failures = Arc::new(Mutex::new(BTreeMap::new()));
         let failures = Arc::clone(&portrait_failures);
         let portraits = LazyImages::new(
             "combat sprite",
             Arc::new(move |path: &str| {
-                match resources::stack_texture_or_recorded(
-                    &reader,
-                    recorded.as_ref(),
-                    path.as_bytes(),
-                    decode,
-                ) {
+                let load = || {
+                    resources::stack_texture_or_recorded(
+                        &reader,
+                        recorded.as_ref(),
+                        path.as_bytes(),
+                        decode,
+                    )
+                };
+                let loaded = if strict {
+                    content_reader_layers::content::strict(load)
+                } else {
+                    load()
+                };
+                match loaded {
                     Ok(Ok(texture)) => Ok(texture.image),
                     Ok(Err(why)) => {
                         let kind = if why.native_failure() {
