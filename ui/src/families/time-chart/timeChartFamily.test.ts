@@ -18,7 +18,7 @@ import { timeChartCacheState } from './cacheControl.ts';
 import { IdentityIndex } from '../identity/index.ts';
 import { createSnapshotIdentityProvider } from '../identity/provider.ts';
 import { knownValue, notRecorded } from '../value.ts';
-import { formatDateOnly } from '../valueFormat.ts';
+import { formatDateHover, formatDateOnly } from '../valueFormat.ts';
 import { commandPowerDeclaration, commandPowerProjection } from '../../widgets/command-power/commandPowerProjection.ts';
 import { stabilityProjection } from '../../widgets/stability/stabilityProjection.ts';
 import { experienceProjection } from '../../widgets/experience/experienceProjection.ts';
@@ -1064,6 +1064,46 @@ describe('time-chart picture authority', () => {
     assert.equal(key, `marker:0@${H1936 + 200}`);
     assert.equal(parseTimeChartHit(key)?.hour, H1936 + 200);
   });
+
+  for (const [widgets, mode, badge] of [
+    ['Stability', 'lines', 'icon'],
+    ['Political and Command power', 'lines', null],
+    ['Ruling party', 'stack', null],
+    ['World tension', 'stack', 'flag'],
+  ] as const) {
+    it(`inspects overlapping ${widgets} markers in order and keeps distinct markers separate`, () => {
+      const early = H1936 + 239;
+      const late = early + 1;
+      const after = late + 1;
+      const model = pictureModel(H1936 + 600, { mode, markers: [
+        { id: 'late', hour: late, title: 'Alert', ...(badge ? { [badge]: { art: readyArt('art://alert') } } : {}) },
+        { id: 'early', hour: early, title: 'Reading', items: [{ title: 'Reading', detail: '15 points' }, { title: 'Note' }] },
+        ...(badge ? [{ id: 'after', hour: after, title: 'Result' }] : []),
+      ] });
+      const crowded = layoutTimeChart(model, 600, 260, FONT, measure);
+      const representative = badge ? late : early;
+      const hit = hitTestTimeChart(model, crowded, [crowded.toX(late), crowded.axisY - 10]);
+      assert.ok(hit);
+      const items = [
+        ['Reading', `${formatDateHover(early)} · 15 points`],
+        ['Note', formatDateHover(early)],
+        ['Alert', formatDateHover(late)],
+        ...(badge ? [['Result', formatDateHover(after)]] : []),
+      ];
+      assert.deepEqual(deriveTimeChartTooltip(model, crowded, hit)?.payload?.items?.slice(0, items.length).map(({ label, value }) => [label, value]), items);
+      assert.deepEqual(crowded.markers.map(({ x, kind }) => [x, kind]), [[crowded.toX(representative), badge ?? 'tick']]);
+      assert.deepEqual(chartNavStops(model, crowded).filter(([key]) => key.startsWith('marker:')).map(([key]) => key), [hit]);
+
+      const wide = layoutTimeChart(model, 1100, 260, FONT, measure);
+      assert.deepEqual(wide.markers.map(({ x, kind }) => [x, kind]), [
+        [wide.toX(early), 'tick'], [wide.toX(late), badge ?? 'tick'], ...(badge ? [[wide.toX(after), 'tick']] : []),
+      ]);
+      for (const [i, hour] of (badge ? [early, late, after] : [early, late]).entries()) {
+        const key = hitTestTimeChart(model, wide, [wide.toX(hour), wide.axisY - 10]);
+        assert.equal(key, `marker:${i}@${hour}`);
+      }
+    });
+  }
 
   it('names a gap by its own identity and never by its future end', () => {
     const hour = H1936 + 400;

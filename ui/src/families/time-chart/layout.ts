@@ -100,6 +100,7 @@ export interface PlacedEndLabel {
 export interface PlacedMarker {
   readonly index: number;
   readonly marker: ChartMarker;
+  readonly members?: readonly ChartMarker[];
   readonly x: number;
   readonly y: number;
   readonly kind: 'icon' | 'flag' | 'tick';
@@ -878,16 +879,28 @@ export function layoutTimeChart(
       .sort((a, b) => a.hour - b.hour);
     const ly = baseY + markerLaneHeight / 2 + 1;
     let lastIconX = -1e9;
-    for (let i = 0; i < sorted.length; i++) {
-      const m = sorted[i]!;
+    let members: ChartMarker[] | undefined;
+    for (const m of sorted) {
       const x = toX(m.hour);
       const hasFlag = !!(m.flag && m.flag.art.status !== 'noArtExpected');
       const hasIcon = !!(m.icon && m.icon.art.status !== 'noArtExpected');
-      if ((hasFlag || hasIcon) && markerLaneHeight >= 20 && x - lastIconX >= MARKER_MIN_ICON_GAP) {
-        placedMarkers.push({ index: i, marker: m, x, y: ly, kind: hasFlag ? 'flag' : 'icon', size: 18 });
-        lastIconX = x;
+      const showBadge = (hasFlag || hasIcon) && markerLaneHeight >= 20 && x - lastIconX >= MARKER_MIN_ICON_GAP;
+      const kind = showBadge ? (hasFlag ? 'flag' : 'icon') : 'tick';
+      const size = showBadge ? 18 : markerLaneHeight >= 20 ? 8 : 6;
+      if (showBadge) lastIconX = x;
+
+      const previous = placedMarkers[placedMarkers.length - 1];
+      if (previous && x - previous.x <= 1) {
+        const { index } = previous;
+        if (!members) {
+          members = [previous.marker];
+          placedMarkers[index] = { ...previous, members };
+        }
+        members.push(m);
+        if (showBadge) placedMarkers[index] = { index, marker: m, x, y: ly, kind, size, members };
       } else {
-        placedMarkers.push({ index: i, marker: m, x, y: ly, kind: 'tick', size: markerLaneHeight >= 20 ? 8 : 6 });
+        placedMarkers.push({ index: placedMarkers.length, marker: m, x, y: ly, kind, size });
+        members = undefined;
       }
     }
   }
