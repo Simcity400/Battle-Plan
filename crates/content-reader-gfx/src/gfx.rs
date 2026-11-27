@@ -89,7 +89,7 @@ enum Declared {
 struct Kept {
     table: Table,
     decode: Decode,
-    decoded: Arc<[OnceLock<Result<SpriteType, String>>]>,
+    decoded: Arc<[OnceLock<Box<Result<SpriteType, String>>>]>,
 }
 
 impl Kept {
@@ -99,7 +99,7 @@ impl Kept {
 
     fn decoded(&self, index: usize) -> Result<&SpriteType, String> {
         let cell = self.decoded.get(index).ok_or_else(Self::damaged)?;
-        cell.get_or_init(|| {
+        let read = || {
             let name = self
                 .table
                 .key(index)
@@ -107,9 +107,11 @@ impl Kept {
                 .ok_or_else(Self::damaged)?;
             let body = self.table.value(index).ok_or_else(Self::damaged)?;
             (self.decode)(name, body)
-        })
-        .as_ref()
-        .map_err(|why| format!("its kept declaration cannot be read: {why}"))
+        };
+        cell.get_or_init(|| Box::new(read()))
+            .as_ref()
+            .as_ref()
+            .map_err(|why| format!("its kept declaration cannot be read: {why}"))
     }
 }
 
@@ -314,6 +316,17 @@ mod tests {
                 .map(|(path, bytes)| ((*path).to_owned(), read_sprites(bytes)))
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn a_packed_sprite_slot_is_smaller_than_a_sprite() {
+        let mut bytes = 0u64.to_le_bytes().to_vec();
+        put_texts(&mut bytes, &[]);
+        Table::write(&mut bytes, std::iter::once((b"GFX_a", b"")));
+        let (packed, _) = SpriteSet::from_kept(&Arc::new(bytes), 0, |_, _| unreachable!()).unwrap();
+        let Declared::Kept(kept) = &packed.sprites else { unreachable!() };
+        assert_eq!(kept.decoded.len(), 1);
+        assert!(std::mem::size_of_val(kept.decoded.as_ref()) < std::mem::size_of::<SpriteType>());
     }
 
     #[test]
