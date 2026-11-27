@@ -284,10 +284,12 @@ fn the_shared_fixture_is_the_real_encoders_bytes_in_both_modes() {
                 "{name}"
             );
             if name == "edit budget exceeded" {
-                assert!(matches!(
-                    patch.as_slice(),
-                    [Operation::Splice(_, 30, 20, _)]
-                ));
+                assert_eq!(patch.len(), 20);
+                assert!(
+                    patch.iter().all(
+                        |edit| matches!(edit, Operation::Replace(_, value) if value.is_object())
+                    )
+                );
             }
             if name == "scroll and edit" {
                 assert!(patch.iter().any(|edit| matches!(edit, Operation::Replace(path, _) if path.last() == Some(&patch::Part::Key("count".into())))));

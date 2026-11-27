@@ -74,17 +74,65 @@ fn a_hunk_pairs_rows_but_keeps_a_whole_replacement_when_it_is_smaller() {
 }
 
 #[test]
-fn an_oversized_search_splices_only_the_middle() {
-    let bookend = json!("prepared by the eastern dispatch office".repeat(535));
-    let mut before: Vec<_> = (0..4_100).map(|index| json!(index)).collect();
-    before[0] = bookend.clone();
-    before[4_099] = bookend;
+fn an_oversized_equal_length_search_edits_only_the_changed_elements() {
+    let before: Vec<_> = (0..4_100).map(|index| json!(index)).collect();
     let mut after = before.clone();
     after[1] = json!(9_019);
     after[4_098] = json!(9_021);
     let (before, after) = (Value::Array(before), Value::Array(after));
     let patch = diff(&before, &after);
-    assert!(matches!(patch.as_slice(), [Operation::Splice(path, 1, 4_098, _)] if path.is_empty()));
+    assert_eq!(
+        patch,
+        [
+            Operation::Replace(vec![Part::Index(1)], json!(9_019)),
+            Operation::Replace(vec![Part::Index(4_098)], json!(9_021)),
+        ]
+    );
     assert_eq!(apply(&before, &patch).unwrap(), after);
     assert!(encode(&patch).unwrap().len() < rmp_serde::to_vec(&after).unwrap().len());
+}
+
+#[test]
+fn an_exhausted_search_in_a_table_keeps_single_field_edits() {
+    let rows = |offset: i32| {
+        let rows = (0..100).map(|id| {
+            json!({
+                "ordinal": id,
+                "displayName": format!("Parcel manifest line {id} for scheduled dispatch"),
+                "warehouseIdentifier": "North quay consolidation office",
+                "destination": "Harbor transfer depot",
+                "state": "Awaiting reconciliation",
+                "count": id * 3 + 17 + offset,
+            })
+        });
+        Value::Array(rows.collect())
+    };
+    let (before, after) = (rows(0), rows(1));
+    let patch = diff(&before, &after);
+    assert_eq!(patch.len(), 100);
+    assert!(patch.iter().all(|op| {
+        let Operation::Replace(path, _) = op else {
+            return false;
+        };
+        matches!(path.as_slice(), [Part::Index(_), Part::Key(key)] if key == "count")
+    }));
+    assert_eq!(apply(&before, &patch).unwrap(), after);
+    assert!(encode(&patch).unwrap().len() * 5 < rmp_serde::to_vec(&after).unwrap().len());
+}
+
+#[test]
+fn an_exhausted_unequal_length_search_splices_only_the_middle() {
+    let before = json!((0..80).collect::<Vec<_>>());
+    let after = json!((0..30).chain(110..129).chain(50..80).collect::<Vec<_>>());
+    let patch = diff(&before, &after);
+    assert_eq!(
+        patch,
+        [Operation::Splice(
+            Vec::new(),
+            30,
+            20,
+            (110..129).map(|index| json!(index)).collect()
+        )]
+    );
+    assert_eq!(apply(&before, &patch).unwrap(), after);
 }

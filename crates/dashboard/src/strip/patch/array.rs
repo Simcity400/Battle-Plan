@@ -39,14 +39,7 @@ pub(super) fn diff(
     {
         return;
     }
-    if !before.is_empty() || !after.is_empty() {
-        out.push(Operation::Splice(
-            path.clone(),
-            prefix,
-            before.len(),
-            after.to_vec(),
-        ));
-    }
+    emit(prefix, before, after, path, out);
 }
 
 fn emit(
