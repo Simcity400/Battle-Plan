@@ -1286,13 +1286,18 @@ fn viewport_layouts_join_one_build_and_follow_the_content_generation() {
     let size = |guis: &Guis| guis.template("shared_child").unwrap().window().unwrap().size;
     assert_ne!(size(&one), size(&other));
     assert_eq!(size(&other)[0], WindowExtent::Pixels(42));
+    let dashboard = read_shared_layers(&layers, None).unwrap();
+    assert!(!Arc::ptr_eq(&one, &dashboard));
+    assert!(dashboard.template("shared_child").unwrap().refusals().iter()
+        .any(|refusal| refusal.key == "size" && refusal.cause == Cause::Unrecorded));
+    assert!(Arc::ptr_eq(&dashboard, &read_shared_layers(&layers, None).unwrap()));
     let builds: Vec<_> = layers
         .product_counts()
         .into_iter()
-        .filter(|entry| entry.parser == "GUI layouts at viewport")
+        .filter(|entry| entry.parser == "inherited GUI layouts")
         .map(|entry| entry.builds)
         .collect();
-    assert_eq!(builds, [1, 1]);
+    assert_eq!(builds, [1, 1, 1]);
     let refreshed = {
         let _generation = Generation::enter();
         ResolvedLayers::from_folders(&[(&root, &[])]).unwrap()

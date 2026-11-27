@@ -1558,11 +1558,15 @@ pub fn read_layers(layers: &ResolvedLayers) -> io::Result<Guis> {
 }
 
 pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result<std::sync::Arc<Guis>> {
+    read_shared_layers(layers, Some(viewport))
+}
+
+pub fn read_shared_layers(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::Result<std::sync::Arc<Guis>> {
     let _loading = (!layers.is_generation_scoped()).then(|| layers.loading());
-    let key = viewport.map(i32::to_le_bytes).concat();
-    layers.compatible_product("GUI layouts at viewport", 1, &key,
-        |guis: &Guis| guis.fits_viewport(viewport),
-        |layers| read_layers_with(layers, Some(viewport)),
+    let key = viewport.map_or_else(Vec::new, |size| size.map(i32::to_le_bytes).concat());
+    layers.compatible_product("inherited GUI layouts", 1, &key,
+        |guis: &Guis| viewport.map_or(!guis.needs_viewport, |size| guis.fits_viewport(size)),
+        |layers| read_layers_with(layers, viewport),
     )
 }
 
@@ -1580,7 +1584,10 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
         &mut tested,
     );
     let mut guis = Guis::new(files);
-    guis.viewport = viewport.map(|_| tested.comparisons);
+    guis.needs_viewport = tested.needed;
+    if viewport.is_some() || !tested.needed {
+        guis.viewport = Some(tested.comparisons);
+    }
     Ok(guis)
 }
 
@@ -1613,6 +1620,7 @@ pub struct Guis {
     pub files: Vec<(String, Gui)>,
     registered: Vec<(Vec<u8>, usize, usize)>,
     viewport: Option<inherit::Comparisons>,
+    needs_viewport: bool,
 }
 
 impl Guis {
@@ -1648,6 +1656,7 @@ impl Guis {
         Self {
             files,
             viewport: None,
+            needs_viewport: false,
             registered: registered
                 .into_iter()
                 .map(|(name, (file, template))| (name, file, template))

@@ -57,6 +57,20 @@ fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
     );
     let guis = crate::gui::native::read_layers(&layers).unwrap();
     assert!(guis.template(b"raw_window").is_some());
+    let dashboard = crate::gui::native::read_shared_layers(&layers, None).unwrap();
+    let map = crate::gui::native::read_layers_at(&layers, [2048, 768]).unwrap();
+    let game_window = crate::gui::native::read_layers_at(&layers, [2100, 960]).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&dashboard, &map));
+    assert!(std::sync::Arc::ptr_eq(&dashboard, &game_window));
+    assert_eq!(dashboard.files, guis.files);
+    let builds: Vec<_> = layers.product_counts().into_iter()
+        .filter(|entry| entry.parser == "inherited GUI layouts")
+        .map(|entry| entry.builds).collect();
+    assert_eq!(builds, [1]);
+    let map_first = ResolvedLayers::from_test_layers(vec![archive_layer("mod", &archive, &[])]).unwrap();
+    let map = crate::gui::native::read_layers_at(&map_first, [2048, 768]).unwrap();
+    let dashboard = crate::gui::native::read_shared_layers(&map_first, None).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&map, &dashboard));
     let registry = crate::gui::native::resources::Registry::load(&layers).unwrap();
     assert!(registry.sprite(b"GFX_raw").is_some());
     let dynamic = crate::gui::native::keywords::DynamicTokens::read(&layers).unwrap();
