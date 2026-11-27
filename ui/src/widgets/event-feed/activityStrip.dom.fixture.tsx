@@ -24,7 +24,7 @@ const groups = { branchId: '1', countryIdentities: identities, humans: members,
   unobserved: { humans: [], factions: [], wars: [], unattributed: [] }, warnings: [], warStarts: [], capitulations: [], identityChanges: [] } as unknown as CountryGroupReply;
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
-async function run(selection: CountrySelection, integrated: boolean, hours = 0) {
+async function run(selection: CountrySelection, integrated: boolean, hours = 0, unknownMembership = false) {
   const asked: ProductRequest[] = [];
   let now = 1000;
   performance.now = () => now;
@@ -44,7 +44,8 @@ async function run(selection: CountrySelection, integrated: boolean, hours = 0) 
     if (request.product === 'event-feed-activity') data = { branchId: '1', firstHour: Math.floor(params.from / params.binHours) * params.binHours,
       binHours: params.binHours, lines: [{ category: 'politics', before: '0', bins: [] }],
       missing: [{ firstHour: 110, lastHour: 119, reason: 'Holder unknown' }, { firstHour: 120, lastHour: 143, reason: 'Holder unknown' }], warnings: [] };
-    else if (integrated && request.product === 'country-groups') data = groups;
+    else if (integrated && request.product === 'country-groups') data = unknownMembership ? { ...groups,
+      unobserved: Object.fromEntries(['humans', 'factions', 'wars'].map(key => [key, [{ firstHour: 113, lastHour: 115 }]])) } : groups;
     else if (integrated && request.product === 'country-identities') data = { branchId: '1', known: [], countries: identities.map(entry => ({ ...entry, unresolved: [] })), unknown: [], warnings: [] };
     else if (request.product === 'event-feed-kinds') data = { kinds: [] };
     else if (request.product === 'follow') data = { available: false, reason: 'No followed rows in this fixture' };

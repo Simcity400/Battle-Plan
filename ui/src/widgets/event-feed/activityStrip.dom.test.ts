@@ -50,3 +50,14 @@ test('one followed log widget asks for activity at day boundaries over 1000 play
     assert.equal(result.hour, 1100);
     assert.equal(result.count, 42);
   }, 180_000)));
+
+test('the family refreshes a followed group strip at unknown-membership boundaries inside a day', () =>
+  withNativePage('activity-membership-gap', '/ui/src/widgets/event-feed/activityStrip.dom.fixture.tsx', page => page.stage('membership gap', async () => {
+    for (const membership of ['hour', 'ever']) {
+      const selection = { kind: 'group', group: { type: 'faction', id: '31' }, membership, aggregate: false };
+      const result = await page.evaluate<Result>(`window.activityStripFixture.run(${JSON.stringify(selection)}, true, 16, true)`);
+      assert.equal(result.hour, 116);
+      assert.deepEqual(result.activities.map(params => params.hour), membership === 'hour' ? [100, 113, 116] : [100, 113]);
+      assert.equal(result.partial, 1);
+    }
+  })));
