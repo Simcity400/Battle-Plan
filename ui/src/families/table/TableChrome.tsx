@@ -110,11 +110,12 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
     };
   }), [layout, specMap, measured]);
 
-  const widthVars = useMemo(() => {
+  const headerStyle = useMemo(() => {
     const vars: Record<string, string> = {};
     for (const [key, px] of Object.entries(measured?.widths ?? NO_WIDTHS)) vars[columnWidthVar(key)] = `${px}px`;
+    if (bodyBlocked) vars.visibility = 'hidden';
     return vars as CSSProperties;
-  }, [measured]);
+  }, [measured, bodyBlocked]);
 
   const paned = panes !== undefined;
   useLayoutEffect(() => {
@@ -205,12 +206,12 @@ export default function TableChrome({ state, settings, onSettings, editable, vie
         }}
       /> : null}
       {!meta.hideHeader && panes ? (
-        <div className="tf-head-clip tf-pane-heads" style={bodyBlocked ? { ...widthVars, display: 'none' } : { ...widthVars, columnGap: panes.gutter }}>
+        <div className="tf-head-clip tf-pane-heads" style={{ ...headerStyle, columnGap: panes.gutter }}>
           {panes.titles.map(title => <div key={title.key} className="tf-pane-head" style={{ width: panes.width }}>{header(title)}</div>)}
           {panes.xs.slice(1).map(x => <i key={x} className="tf-pane-rule" style={{ left: Math.round(x - panes.gutter / 2) }} aria-hidden="true" />)}
         </div>
       ) : !meta.hideHeader ? (
-        <div className={`tf-head-clip${grouped ? ' is-grouped' : ''}`} style={bodyBlocked ? { ...widthVars, display: 'none' } : widthVars}>
+        <div className={`tf-head-clip${grouped ? ' is-grouped' : ''}`} style={headerStyle}>
           {header()}
         </div>
       ) : null}
