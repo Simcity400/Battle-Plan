@@ -2416,6 +2416,7 @@ fn apart_drive_stops_when_a_read_fails() {
     )
     .unwrap();
     let mut apart = crate::playhead_host::views::apart::Apart::new(&entry, 1).unwrap();
+    let _reads = apart.store().reader("reads", &[crate::playhead_host::views::Need::every(table(0))]);
     entry.playhead().seek(4);
     assert!(!apart.drive(4), "drive must return false instead of spinning after a read error");
     assert!(

@@ -35,6 +35,7 @@ pub(crate) struct Ring {
     taken: Option<Hour>,
     reset: Option<(u64, Hour)>,
     published: Option<Hour>,
+    published_in: u64,
     bound: usize,
 }
 
@@ -56,7 +57,7 @@ fn retire(pool: &mut Vec<Arc<Step>>, reuse: bool, steps: impl IntoIterator<Item 
 
 impl Ring {
     pub(crate) fn new(size: usize) -> Self {
-        Self { epoch: 0, size, ahead: usize::MAX, budget: None, next_seq: 0, built: VecDeque::new(), payload_offsets: VecDeque::from([0]), lent: Vec::new(), consumers: Vec::new(), orphans: Vec::new(), taken: None, reset: None, published: None, bound: usize::MAX }
+        Self { epoch: 0, size, ahead: usize::MAX, budget: None, next_seq: 0, built: VecDeque::new(), payload_offsets: VecDeque::from([0]), lent: Vec::new(), consumers: Vec::new(), orphans: Vec::new(), taken: None, reset: None, published: None, published_in: 0, bound: usize::MAX }
     }
 
     pub(crate) fn share_budget(&mut self, budget: Arc<crate::ByteBudget>) -> std::io::Result<()> {
@@ -92,7 +93,8 @@ impl Ring {
 
     pub(crate) fn room(&self, head: Hour) -> bool {
         let past = self.past(head);
-        past < self.size && self.untaken() < self.size && (past == 0 || (self.past_bytes(head) < self.ahead && self.budget.as_ref().is_none_or(|b| b.used() < b.limit())))
+        let untaken = next_of(&self.built, self.furthest().unwrap_or(0));
+        past < self.size && self.built.len() - untaken < self.size && (untaken == self.built.len() || self.payload_between(untaken, self.built.len()) < self.ahead) && (past == 0 || (self.past_bytes(head) < self.ahead && self.budget.as_ref().is_none_or(|b| b.used() < b.limit())))
     }
 
     pub(crate) fn resize(&mut self, size: usize, ahead: usize) {
@@ -129,10 +131,6 @@ impl Ring {
 
     fn piece_end(&self, from: Hour) -> Option<&Arc<Step>> {
         self.built.iter().find(|step| step.first > from && (step.reset || step.piece.is_none()))
-    }
-
-    fn untaken(&self) -> usize {
-        self.built.len() - next_of(&self.built, self.furthest().unwrap_or(0))
     }
 
     pub(crate) fn past(&self, head: Hour) -> usize {
@@ -211,6 +209,7 @@ impl Ring {
             self.reset = Some((held.seq, held.last));
         }
         self.published = Some(held.last);
+        self.published_in = self.epoch;
         self.next_seq += 1;
         self.payload_offsets.push_back(self.payload_offsets[self.built.len()].wrapping_add(step.payload()));
         self.built.push_back(step);
@@ -310,6 +309,10 @@ impl Ring {
         retire(&mut self.lent, self.budget.is_none(), seat.own.remove(at).map(|(_, held)| held));
         seat.own.push_front((seat.next, step));
         Ok(Ok(()))
+    }
+
+    pub(crate) fn published_now(&self) -> Option<(Hour, u64)> {
+        self.published.filter(|_| self.published_in == self.epoch).map(|hour| (hour, self.epoch))
     }
 
     pub(crate) fn parked(&self, id: usize) -> Option<Hour> {
