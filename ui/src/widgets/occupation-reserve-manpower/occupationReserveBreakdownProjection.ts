@@ -54,8 +54,28 @@ function numericOption(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function validSpan(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const { firstHour, lastHour } = value as { firstHour?: unknown; lastHour?: unknown };
+  return Number.isSafeInteger(firstHour) && Number.isSafeInteger(lastHour) && (firstHour as number) <= (lastHour as number);
+}
+
+function validU32(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
+}
+
 function validateIdentitiesAux(value: unknown): CountryIdentitiesReply {
-  if (!value || typeof value !== 'object' || !Array.isArray((value as CountryIdentitiesReply).countries)) {
+  const reply = value as Partial<CountryIdentitiesReply> | null;
+  const ok = !!reply && typeof reply === 'object'
+    && (reply.known === undefined || (Array.isArray(reply.known) && reply.known.every(validSpan)))
+    && Array.isArray(reply.unknown) && reply.unknown.every(span => validSpan(span) && typeof (span as { reason?: unknown }).reason === 'string')
+    && Array.isArray(reply.countries) && reply.countries.every(entry => !!entry && typeof entry === 'object'
+      && typeof entry.tag === 'string'
+      && Array.isArray(entry.identities) && entry.identities.every(run => validSpan(run)
+        && validU32((run as { slot?: unknown }).slot)
+        && validU32((run as { countryId?: unknown }).countryId))
+      && Array.isArray(entry.unresolved) && entry.unresolved.every(validSpan));
+  if (!ok) {
     throw new Error('The country identities reply is malformed.');
   }
   return value as CountryIdentitiesReply;
@@ -91,11 +111,10 @@ function holderAtHour(ctx: FamilyPlanContext<CountryIdentitiesReply>, atHour: nu
   readonly valid: readonly [number, number];
   readonly reason?: string;
 } {
-  const index = ctx.aux ? identityIndexOf(ctx.aux, ctx.branch) : null;
   const explicit = ctx.options.holder ? holderOf(contentKey(String(ctx.options.holder))) : null;
   if (explicit) {
-    if (!index) return { holder: explicit, valid: [-Infinity, Infinity] };
-    const resolved = index.countryHolderByIdAt(explicit.id, atHour);
+    if (!ctx.aux) return { holder: explicit, valid: [-Infinity, Infinity] };
+    const resolved = identityIndexOf(ctx.aux, ctx.branch).countryHolderByIdAt(explicit.id, atHour);
     return {
       holder: resolved.holder ? { tag: resolved.holder.tag, id: explicit.id, slot: resolved.holder.slot } : null,
       valid: resolved.valid,
@@ -104,8 +123,8 @@ function holderAtHour(ctx: FamilyPlanContext<CountryIdentitiesReply>, atHour: nu
   }
   const key = singleCountryKey(ctx);
   if (!key) return { holder: null, valid: [-Infinity, Infinity] };
-  if (index) {
-    const resolved = index.countryHolderAt(key, atHour);
+  if (ctx.aux) {
+    const resolved = identityIndexOf(ctx.aux, ctx.branch).countryHolderAt(key, atHour);
     return {
       holder: resolved.holder ? { tag: resolved.holder.tag, id: resolved.holder.countryId, slot: resolved.holder.slot } : null,
       valid: resolved.valid,

@@ -618,3 +618,137 @@ test('occupation-reserve-manpower breakdown keeps unread source bands null and w
   assert.equal(noPosUnreadModel.auditRows?.find(row => row.key === '__total__')?.value, noPosUnreadModel.empty?.message);
   assert.equal(noPosUnreadModel.auditRows?.find(row => row.key === '8')?.value, noPosUnreadModel.empty?.message);
 });
+
+test('occupation-reserve-manpower breakdown rejects malformed identities aux and keeps pending inputs in loading state', () => {
+  const validate = occupationReserveBreakdownDeclaration.aux!.validate!;
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      countries: [{ tag: 'AAA', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 200 }] }],
+      unknown: [],
+      warnings: [],
+    }),
+    /malformed/i,
+    'a country entry missing unresolved spans is rejected at the aux boundary rather than crashing render',
+  );
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      countries: [{ tag: 'AAA', identities: [], unresolved: [] }],
+      warnings: [],
+    }),
+    /malformed/i,
+    'an identities reply missing unknown spans is rejected at the aux boundary',
+  );
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      known: [],
+      countries: [{ tag: 'AAA', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 200 }], unresolved: [] }],
+      unknown: [{ firstHour: 151, lastHour: 149, reason: 'reversed' }],
+      warnings: [],
+    }),
+    /malformed/i,
+    'reversed hour spans in unknown coverage are rejected',
+  );
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      known: [],
+      countries: [{ tag: 'AAA', identities: [{ slot: -1, countryId: 101, firstHour: 100, lastHour: 200 }], unresolved: [] }],
+      unknown: [],
+      warnings: [],
+    }),
+    /malformed/i,
+    'negative slot outside u32 range is rejected',
+  );
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      known: [],
+      countries: [{ tag: 'AAA', identities: [{ slot: 1, countryId: -1, firstHour: 100, lastHour: 200 }], unresolved: [] }],
+      unknown: [],
+      warnings: [],
+    }),
+    /malformed/i,
+    'negative countryId outside u32 range is rejected',
+  );
+  assert.throws(
+    () => validate({
+      branchId: '1',
+      known: [],
+      countries: [{ tag: 'AAA', identities: [{ slot: 1, countryId: 0x1_0000_0000, firstHour: 100, lastHour: 200 }], unresolved: [] }],
+      unknown: [],
+      warnings: [],
+    }),
+    /malformed/i,
+    'countryId above u32 max is rejected',
+  );
+  assert.doesNotThrow(
+    () => validate({
+      branchId: '1',
+      known: [],
+      countries: [{ tag: 'AAA', identities: [{ slot: 0, countryId: 0, firstHour: 100, lastHour: 100 }], unresolved: [] }],
+      unknown: [],
+      warnings: [],
+    }),
+    'u32 lower bound zero and single-hour spans are accepted',
+  );
+
+  const validAux = validate({
+    branchId: '1',
+    known: [],
+    countries: [{ tag: 'AAA', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 200 }], unresolved: [] }],
+    unknown: [],
+    warnings: [],
+  });
+  const baseCtx = {
+    track: { id: 'main', source: { id: 's1', revision: 'r1' }, axisOffset: 0 },
+    branch: { id: '1', firstHour: 100, lastHour: 200, gaps: [] },
+    options: {},
+    planHour: 150,
+  };
+  const allCtx = {
+    ...baseCtx,
+    countries: { all: true, top: null, tags: [], holders: null },
+    aux: validAux,
+  } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+  const allPlan = occupationReserveBreakdownDeclaration.sources(allCtx, { following: true, staticSpan: null });
+  assert.equal(allPlan.entries.length, 0);
+  const allOpts = occupationReserveBreakdownDeclaration.projectionOptions(allCtx, { extent: [100, 200], surface: '#1e1e1e' });
+  assert.equal(allOpts.holder, null);
+  assert.equal(allOpts.resolvingHolder, false);
+  const allModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(150), panels: new Map() }),
+    allOpts,
+  );
+  assert.equal(allModel.empty?.kind, 'empty');
+  assert.match(allModel.empty?.message ?? '', /Choose a holder/);
+
+  const pendingSingleCtx = {
+    ...baseCtx,
+    countries: { all: false, top: null, tags: ['AAA'], holders: null },
+    aux: undefined,
+  } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+  const pendingSingleOpts = occupationReserveBreakdownDeclaration.projectionOptions(pendingSingleCtx, { extent: [100, 200], surface: '#1e1e1e' });
+  assert.equal(pendingSingleOpts.holder, null);
+  assert.equal(pendingSingleOpts.resolvingHolder, true);
+  const pendingSingleModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(150), panels: new Map() }),
+    pendingSingleOpts,
+  );
+  assert.equal(pendingSingleModel.empty, null, 'pending single-country identities stay loading rather than prompting to choose a holder');
+
+  const pendingExplicitCtx = {
+    ...baseCtx,
+    options: { holder: 'AAA|101' },
+    countries: { all: true, top: null, tags: [], holders: null },
+    aux: undefined,
+  } as unknown as FamilyPlanContext<CountryIdentitiesReply>;
+  const pendingExplicitOpts = occupationReserveBreakdownDeclaration.projectionOptions(pendingExplicitCtx, { extent: [100, 200], surface: '#1e1e1e' });
+  const pendingExplicitModel = occupationReserveBreakdownProjection.project(
+    createBoundedReadView({ hour: displayedHour(150), panels: new Map() }),
+    pendingExplicitOpts,
+  );
+  assert.equal(pendingExplicitModel.empty, undefined, 'pending history for an explicit holder stays loading');
+});
