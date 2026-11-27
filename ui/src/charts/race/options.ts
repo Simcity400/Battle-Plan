@@ -12,7 +12,7 @@ export function raceViewOption(mixLabel?: string, defaultView: RaceView = 'race'
   extraViews: readonly { value: string; label: string }[] = []): OptionField {
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: defaultView,
     choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines' },
-      ...(mixLabel === undefined ? [] : [{ value: 'mix', label: `One country by ${mixLabel}` }]), ...extraViews] };
+      ...(mixLabel === undefined ? [] : [{ value: 'mix', label: `By ${mixLabel}` }]), ...extraViews] };
 }
 
 const VIEW_TITLES: Readonly<Record<string, (title: string) => string>> = {

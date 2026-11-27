@@ -6,7 +6,6 @@ import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model'
 import { resolveOptions, setOption } from '../../dashboard/options.ts';
 import { parseTemplate } from '../../dashboard/storage.ts';
 import { OPTIONS as MINEFIELD_OPTIONS } from '../../widgets/minefields/definition.ts';
-import { factionMemberOptions } from '../race/factionMembersOptions.ts';
 import { partsRaceOptions } from '../race/partsRaceOptions.ts';
 import { jumpItem } from '../jump.ts';
 import { breakdownOption, CLOSED, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, reduceDrill, savedDrill } from './drillState.ts';
@@ -71,7 +70,6 @@ test('the drill settings are ordinary options and a saved dashboard holding a re
   const stored = saved.widgets[0]!.options;
   assert.deepEqual(resolveOptions(MINEFIELD_OPTIONS, stored), { regions: '', order: 'name' });
   assert.equal('drill' in resolveOptions(MINEFIELD_OPTIONS, stored), false);
-  assert.equal('drill' in resolveOptions(factionMemberOptions, { drill: 'popout' }), false);
   assert.equal('drill' in resolveOptions(partsRaceOptions('type'), { drill: 'popout' }), false);
 });
 

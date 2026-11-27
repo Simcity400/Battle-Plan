@@ -3,7 +3,6 @@ import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
 import type { OptionField } from '../../dashboard/options';
-import { breakdownOption, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 
 const COUNTS = [
@@ -20,7 +19,6 @@ const MEASURES = [
 
 const RACE_OPTIONS: readonly OptionField[] = partsRaceOptions('equipment').flatMap((field): OptionField[] => {
   if (field.key === 'split') return [];
-  if (field.key === 'show') return [breakdownOption([{ id: 'breakdown', label: 'Equipment types' }], 'Equipment produced')];
   if (field.key === 'view' && field.kind === 'choice') return [{ ...field, choices: field.choices.filter(choice => choice.value !== 'mix') }];
   return [field];
 });
@@ -45,6 +43,5 @@ export const definition = {
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
   viewSwitch: { option: 'count' },
-  variants: [...raceViewVariants('Equipment produced', OPTIONS), ...breakdownVariants('Equipment produced', OPTIONS),
-    ...choiceVariants(OPTIONS.find(field => field.key === 'count'), () => 'Equipment output (IC)', ['ic'])],
+  variants: [...raceViewVariants('Equipment produced', OPTIONS), ...choiceVariants(OPTIONS.find(field => field.key === 'count'), () => 'Equipment output (IC)', ['ic'])],
 } as const satisfies WidgetMeta;

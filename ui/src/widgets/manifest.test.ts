@@ -38,6 +38,7 @@ import {
   widgetViewOptions,
 } from './manifest.ts';
 import { viewSlotProps } from './viewProps.ts';
+import type { WidgetMeta } from '../dashboard/definitions';
 import type { WidgetSpec } from '../dashboard/model';
 
 test('manifest accounts for every widget kind across family and native entries', () => {
@@ -448,6 +449,29 @@ test('a preset is materialised once through the mapping of the view it opens, an
   const race = presetWidget('army-size', { options: { view: 'race', countFor: 'host' } }).options!;
   assert.equal(widgetViewOptions('army-size', race).countFor, 'host', 'R3-S2: a race preset counting expeditionary forces for the host is what the race view and its detail read');
   assert.equal(viewSlotProps('army-size', { widget: { kind: 'army-size', options: race } as unknown as WidgetSpec }).options.countFor, 'host');
+});
+
+test('every catalogue preset opens another manifest view or sets only what the view it opens declares (R24)', () => {
+  const same: string[] = [];
+  for (const meta of widgetMetas as readonly WidgetMeta[]) {
+    const entries = FAMILY_VIEWS.filter(entry => entry.kind === meta.kind);
+    if (!entries.length) continue;
+    const main = resolveWidgetActiveView(meta.kind, {});
+    for (const variant of meta.variants ?? []) {
+      const stored = presetWidget(meta.kind, variant.initial).options ?? {};
+      const view = resolveWidgetActiveView(meta.kind, stored);
+      if (view !== main) continue;
+      const declared = new Set(viewOwnedFields(entries.find(entry => normalizeView(entry.view) === view)?.options ?? meta.options ?? [], view)
+        .map(field => field.storeAs ?? field.key));
+      if (Object.keys(stored).some(key => !declared.has(key))) same.push(`${meta.kind}:${variant.key}`);
+    }
+  }
+  assert.deepEqual(same, [], 'a preset that names a view the main view does not read is the main view under another name');
+  for (const kind of ['air-force-size', 'factories', 'naval-losses', 'navy-size', 'nuclear-arsenal']) {
+    const opened = (widgetMetas as readonly WidgetMeta[]).find(meta => meta.kind === kind)!.variants!
+      .map(variant => resolveWidgetActiveView(kind, presetWidget(kind, variant.initial).options));
+    assert.deepEqual(opened, ['lines', 'mix'], `${kind}: each preset opens its own view, the type breakdown being the mix view`);
+  }
 });
 
 test('every setting a time-chart view shows reaches what that view reads or projects (rv11 S19)', async () => {
