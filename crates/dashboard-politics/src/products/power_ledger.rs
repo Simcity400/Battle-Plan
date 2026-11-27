@@ -1302,12 +1302,12 @@ fn item_key(slot: u32, ordinal: u32) -> u128 {
     PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key()
 }
 
-fn items_at(query: &Query<'_>, slot: u32, ordinals: &[u32], hour: i32) -> io::Result<DecodedFrame> {
+fn items_at(frames: &mut at_hour::Frames<'_>, slot: u32, ordinals: &[u32], hour: i32) -> io::Result<DecodedFrame> {
     let mut keys: Vec<u128> = ordinals.iter().map(|&ordinal| item_key(slot, ordinal)).collect();
     keys.sort_unstable();
     keys.dedup();
     let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::These(keys) }];
-    at_hour::frame(query, hour, &reads, "Politics spending")
+    frames.frame(hour, &reads, "Politics spending")
 }
 
 const UNRECORDED_ITEM: u32 = 1 << 31;
@@ -1330,14 +1330,14 @@ struct Items {
 }
 
 impl Items {
-    fn read(&mut self, query: &Query<'_>, piece: &Piece, asks: &BTreeMap<(u32, i32), bool>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
+    fn read(&mut self, frames: &mut at_hour::Frames<'_>, piece: &Piece, asks: &BTreeMap<(u32, i32), bool>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
         let mut by_hour: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
         for &(ordinal, read) in asks.keys() {
             by_hour.entry(read).or_default().push(ordinal);
         }
         let mut out = HashMap::with_capacity(asks.len());
         for (hour, ordinals) in by_hour {
-            let frame = items_at(query, piece.slot, &ordinals, hour)?;
+            let frame = items_at(frames, piece.slot, &ordinals, hour)?;
             for ordinal in ordinals {
                 let recurring = asks[&(ordinal, hour)];
                 out.insert((ordinal, hour), self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
@@ -1418,6 +1418,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
         warnings: Vec::new(),
     };
     let mut items = Items::default();
+    let mut frames = at_hour::Frames::new(query)?;
     let mut credits: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
@@ -1465,7 +1466,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
             })?;
             apply_day_gaps(&mut reply.coverage, coverage_start, &gaps, &mut day_gap_hours);
         }
-        let resolved = items.read(query, piece, &asks)?;
+        let resolved = items.read(&mut frames, piece, &asks)?;
         let missing = resolved.values().filter(|(_, known)| !known).count();
         for payment in &mut reply.payments[payments_from..] {
             payment.item = resolved[&(payment.item, payment.read)].0;

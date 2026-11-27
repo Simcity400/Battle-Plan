@@ -125,7 +125,8 @@ fn a_spans_payments_are_the_changes_of_its_totals_after_the_hour_before_it_and_r
     assert_eq!(gains, [(144, Some("300000".into()), Some("0".into()), 1), (168, Some("500000".into()), Some("100000".into()), 1)]);
     assert_eq!(late.coverage, [SpendCoverage { first_hour: 105, last_hour: LAST, covered: true, reason: None }]);
 
-    let whole = asked(&source, FIRST, LAST);
+    let (whole, counts) = replay_recording::cells::count_reads(|| asked(&source, FIRST, LAST));
+    assert_eq!(counts[&TableId::PowerItems].opened, 1, "the items of every charge hour are read by one reader moving forward, not one opened per hour");
     let reads: Vec<_> = whole.payments.iter().map(|payment| (payment.read, payment.known_raw.clone())).collect();
     assert_eq!(reads, [(104, Some("5000000".into())), (120, Some("7500000".into()))], "the run's totals start from nothing");
     assert_eq!(whole.coverage.len(), 2);
