@@ -5,6 +5,7 @@ import { syncTableEdges } from './edges.ts';
 import type { TableChromeState } from './hostAdapter.ts';
 import { buildColumnLayouts, columnInset, layoutFamilyTable, type TableRhythm } from './layout.ts';
 import LogKindFilter from './LogKindFilter.tsx';
+import { LOG_SEARCH_OPTION } from './logHelpers.ts';
 import SubjectSummary from './SubjectSummary.tsx';
 import type { TableColumnSpec, TableModel } from './model.ts';
 import { updateTableSettings, type TableSettings } from './settings.ts';
@@ -48,7 +49,7 @@ interface ChromeWidths {
 function LogSearch({ value, onChange }: { readonly value: string; readonly onChange: (key: string, value: string) => void }) {
   const [draft, setDraft] = useState(value);
   const pending = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useLayoutEffect(() => { if (pending.current === undefined) setDraft(value); }, [value]);
+  useLayoutEffect(() => { if (pending.current === undefined) setDraft(current => current.trim() === value ? current : value); }, [value]);
   useLayoutEffect(() => () => clearTimeout(pending.current), []);
   const change = (text: string) => {
     setDraft(text);
@@ -58,7 +59,7 @@ function LogSearch({ value, onChange }: { readonly value: string; readonly onCha
     else pending.current = setTimeout(() => { pending.current = undefined; onChange('search', text); }, 150);
   };
   return <label className="tf-log-search">
-    <input type="search" aria-label="Search log" placeholder="Search log" value={draft} onChange={event => change(event.target.value)}
+    <input type="search" aria-label="Search log" placeholder="Search log" maxLength={LOG_SEARCH_OPTION.maxLength} value={draft} onChange={event => change(event.target.value)}
       onKeyDown={event => { if (event.key === 'Escape') change(''); }} />
     {draft ? <button type="button" aria-label="Clear search" onClick={() => change('')}>×</button> : null}
   </label>;

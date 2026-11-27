@@ -1,4 +1,5 @@
 import type { FollowRequest } from '../../dashboard/regionTime';
+import type { OptionField } from '../../dashboard/options.ts';
 import { flagChoiceArt } from '../art/provider.ts';
 import { unavailableArt } from '../art/types.ts';
 import type { DashboardSource } from '../../dashboard/client';
@@ -36,6 +37,10 @@ export const LOG_TABLE_BASE: TableBase = {
   barsBehind: 'off',
   sort: { column: 'date', direction: 'descending' },
 };
+
+export const LOG_SEARCH_OPTION = {
+  key: 'search', section: 'options', label: 'Search log', kind: 'text', default: '', maxLength: 256, visibleWhen: () => false,
+} as const satisfies OptionField;
 
 const LEAST_SHARE = 0.03;
 

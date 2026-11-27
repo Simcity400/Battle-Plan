@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  LOG_SEARCH_OPTION,
   logActionColumn,
   logCountryColumn,
   logDateColumn,
@@ -40,6 +41,7 @@ export const EVENT_CHOICES_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const OPTIONS: readonly OptionField[] = [
+  LOG_SEARCH_OPTION,
   ...EVENT_KINDS.map(kind => ({ key: kind.value, section: 'options' as const, label: kind.label, kind: 'toggle' as const, default: true })),
   { key: AWAITING.value, section: 'options', label: AWAITING.label, hint: AWAITING.hint, kind: 'toggle', default: false },
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },

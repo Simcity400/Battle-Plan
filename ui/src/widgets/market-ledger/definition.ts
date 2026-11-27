@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  LOG_SEARCH_OPTION,
   logActionColumn,
   logCountryColumn,
   logDateColumn,
@@ -46,6 +47,7 @@ export const MARKET_LEDGER_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const OPTIONS: readonly OptionField[] = [
+  LOG_SEARCH_OPTION,
   { key: 'showRequests', section: 'options', label: 'Include open requests', kind: 'toggle', default: true },
   { key: 'showEnded', section: 'options', label: 'Include ended contracts', kind: 'toggle', default: true },
   columnsControl(MARKET_LEDGER_COLUMNS, LOG_TABLE_BASE, { key: TABLE_SETTINGS_KEY }),

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../../dashboard/calendar.ts';
+import { resolveOptions, setOption } from '../../dashboard/options.ts';
+import { OPTIONS as DECISIONS_OPTIONS } from './definition.ts';
+import { OPTIONS as EVENT_CHOICES_OPTIONS } from '../event-choices/definition.ts';
+import { OPTIONS as EVENT_FEED_OPTIONS } from '../event-feed/definition.ts';
+import { OPTIONS as MARKET_LEDGER_OPTIONS } from '../market-ledger/definition.ts';
 import { daysLeft, decisionAt, decisionCard, lifecycleLine, STATUS_CHOICES, statusLabel } from './decisionsData.ts';
 import { plainScripted, scriptedParts } from '../event-feed/scriptedGaps.ts';
 import { createBoundedReadView } from '../../families/boundedView.ts';
@@ -520,15 +525,17 @@ test('a state-targeted decision shows one country flag and resolves the target i
 });
 
 test('all four log declarations send whole-log search and sort, replace the page owner, and group dates only for date order', () => {
-  for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration, marketLedgerDeclaration]) {
+  for (const [declaration, fields] of [[decisionsDeclaration, DECISIONS_OPTIONS], [eventChoicesDeclaration, EVENT_CHOICES_OPTIONS], [eventFeedDeclaration, EVENT_FEED_OPTIONS], [marketLedgerDeclaration, MARKET_LEDGER_OPTIONS]] as const) {
     const make = (search: string, column: string, single = false) => {
+      const stored = setOption(fields, undefined, 'search', search);
+      assert.notEqual(stored, null, `${declaration.kind}: search is a persisted widget option`);
       const settings = tableSettingsOf(undefined, typeof declaration.columns === 'function' ? [] : declaration.columns, LOG_TABLE_BASE);
       settings.sort = { column, direction: 'ascending' };
       const ctx = {
         track: { source: { id: 'whole-log', revision: '1' }, axisOffset: 0 },
         branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
         widget: { id: 'log', kind: declaration.kind, countries: single ? { kind: 'tags', tags: ['GER'] } : { kind: 'all' }, time: { mode: 'follow' } },
-        options: { warsPeace: true, tableSettings: encodeTableSettings(settings), search }, settings, following: true,
+        options: { ...resolveOptions(fields, stored ?? undefined), warsPeace: true, tableSettings: encodeTableSettings(settings) }, settings, following: true,
         countries: { all: !single, tags: single ? [countryKey('GER')] : [], filter: { passing: null, unrecorded: [], bounds: [] } },
         gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
       } as unknown as FamilyPlanContext<unknown> & { settings: typeof settings };

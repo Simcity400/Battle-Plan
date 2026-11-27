@@ -3,6 +3,7 @@ import type { OptionField } from '../../dashboard/options';
 import { columnsControl } from '../../families/settingsControls.ts';
 import {
   LOG_TABLE_BASE,
+  LOG_SEARCH_OPTION,
   logCountryColumn,
   logDateColumn,
   logItemColumn,
@@ -47,6 +48,7 @@ export const DECISIONS_COLUMNS: readonly TableColumnSpec[] = [
 ];
 
 export const OPTIONS: readonly OptionField[] = [
+  LOG_SEARCH_OPTION,
   ...STATUS_CHOICES.map(status => ({
     key: status.value,
     section: 'options' as const,
