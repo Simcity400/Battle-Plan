@@ -413,3 +413,64 @@ test('event feed projection shows each scripted gap in place with its own reason
   assert.ok(twelfthIndex >= afterScroll.first && twelfthIndex < afterScroll.last, 'scrolling brings the twelfth gap into view');
   hideTooltip('event-feed-test');
 });
+
+test('S3: a malformed event feed row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const good = row('warDeclared', 100, ['GER', 'POL']);
+  const bad = { ...good, participants: ['GER', 'ITA'] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '0',
+    counts: [],
+    rows: [
+      { key: 'ok', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: null },
+      { key: 'bad', hour: 100, observed: 100, ordinal: '1', live: false, row: bad, choice: null },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:feed-mixed-bad', mixedHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const mixedModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', mixedSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, 'ok');
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The event feed row is malformed.' });
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    rows: [{ key: 'bad', hour: 100, observed: 100, ordinal: '0', live: false, row: bad, choice: null }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:feed-only-bad', onlyBadHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const onlyBadModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', onlyBadSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The event feed row is malformed.' }]);
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed feed row never claims no events matched');
+
+  const badChoiceHead = {
+    ...mixedHead,
+    total: '1',
+    rows: [{ key: 'bad-choice', hour: 100, observed: 100, ordinal: '0', live: false, row: good, choice: { row: bad, option: 0 } }],
+  };
+  const badChoiceSource = buildRowSourceFromHead('test:feed-bad-choice', badChoiceHead, undefined, 120, undefined, eventFeedProjection.validateTail)!;
+  const badChoiceModel = eventFeedProjection.project(
+    createBoundedReadView({ hour: 120, rows: new Map([['main', badChoiceSource]]) }),
+    { categories: ['warsPeace'], artwork: false },
+  );
+  assert.equal(badChoiceModel.rows.length, 0);
+  assert.deepEqual(badChoiceModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The event feed row is malformed.' }]);
+  assert.equal(badChoiceModel.empty, undefined);
+});

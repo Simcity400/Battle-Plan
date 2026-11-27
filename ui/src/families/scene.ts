@@ -9,7 +9,7 @@ import { artHandleKey, flagArtKey } from './art/types.ts';
 import { createBoundedReadView } from './boundedView.ts';
 import type { ArtHandle, ArtProvider, ArtResult, BoundedReadView, BoundedSeries, DisplayedHour, EntityKind, FieldStatus, IdentityProvider, IdentityResult } from './contract.ts';
 import type { IdentityIndex } from './identity/index.ts';
-import { buildRowSourceFromHead, frozenAnswer, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource } from './table/rowSource.ts';
+import { buildRowSourceFromHead, frozenAnswer, type DatedLogRow, type PagedRows, type RowWindow, type TableRowSource, type TailValidator } from './table/rowSource.ts';
 
 export interface SceneSources {
   readonly sources: Readonly<Record<string, number>>;
@@ -21,6 +21,7 @@ export interface SceneSources {
   readonly kind?: string;
   readonly pagedRows?: PagedRows;
   readonly window?: RowWindow;
+  readonly validateTail?: TailValidator;
 }
 
 export interface SceneReaders {
@@ -184,10 +185,10 @@ function readScene(
       const identity = `${sources.kind ?? ''}:${name}`;
       let rows: TableRowSource<DatedLogRow> | undefined;
       if (sources.staticPanels && Object.hasOwn(sources.staticPanels, name)) {
-        rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot) ?? undefined;
+        rows = buildRowSourceFromHead(identity, sources.staticPanels[name], undefined, hour, snapshot, sources.validateTail) ?? undefined;
       } else if (Object.hasOwn(sources.sources, name)) {
         const head = pictureOf(name)?.parts[0]?.value;
-        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, head.refused === null ? head.data : undefined, head.refused ?? undefined, hour, snapshot) ?? undefined;
+        if (head?.kind === 'panel') rows = buildRowSourceFromHead(identity, head.refused === null ? head.data : undefined, head.refused ?? undefined, hour, snapshot, sources.validateTail) ?? undefined;
       }
       rowsCache.set(name, rows);
       return rows;

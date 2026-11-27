@@ -18,11 +18,11 @@ import {
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded, partialValue } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { ScriptCurrency, ScriptOccurrence, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
+import type { ScriptCurrency, ScriptPageRow, ScriptStatus } from '../../generated/dashboard';
 import { descriptionRows, gapRows, hasTooltipGaps, hoverTextOf, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { gapsForField, plainScripted, reasonsOf, scriptedValue } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
@@ -305,9 +305,20 @@ const ASKED_STATUSES: Readonly<Record<StatusChoice, readonly ScriptStatus[]>> = 
   removed: ['removed'],
 };
 
+function validateDecisionsTail(raw: unknown, readAt?: number): TailReply<ScriptPageRow & DatedLogRow> {
+  return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
+    const occurrence = validateOccurrence(row.occurrence);
+    if (at !== undefined && occurrence.edges[0]!.row.readHour > at) {
+      throw new Error(`Decision ${occurrence.id} was read at hour ${occurrence.edges[0]!.row.readHour} after displayed hour ${at}.`);
+    }
+    return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
+  }, readAt);
+}
+
 export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = registerFamilyProjection({
   kind: 'decisions',
   family: 'table',
+  validateTail: validateDecisionsTail,
   project(readView, options): TableModel {
     const hour = readView.hour;
     const refused = readView.refused('main');
@@ -329,20 +340,8 @@ export const decisionsProjection: TableProjection<DecisionsProjectionOptions> = 
       asOf,
       readView.rowWindow,
       rawRow => {
-        if (!rawRow.occurrence) return null;
-        let occ: ScriptOccurrence;
-        try {
-          occ = validateOccurrence(rawRow.occurrence);
-        } catch {
-          return null;
-        }
-        const card = decisionCard(occ);
-        const resolved = decisionAt(
-          card,
-          asOf,
-          options.breaks,
-        );
-        if (!resolved) return null;
+        const resolved = decisionAt(decisionCard(rawRow.occurrence), asOf, options.breaks);
+        if (!resolved) throw new Error('Decision row was not validated by the tail decoder.');
         const recorded = rawRow.status ? RECORDED_STATUS[rawRow.status] : null;
         const effective = recorded ? { ...resolved, status: recorded } : resolved;
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : effective.status === 'active';
@@ -418,6 +417,7 @@ export const decisionsDeclaration: TableWidgetDeclaration<DecisionsProjectionOpt
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
+          validateDecisionsTail,
         ),
       ],
     };

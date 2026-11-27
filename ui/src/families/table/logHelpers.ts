@@ -25,6 +25,7 @@ import {
   type LogTailQuery,
   type PlacedSpan,
   type TableRowSource,
+  type TailValidator,
 } from './rowSource.ts';
 import { OFFERED, type TableBase } from './settings.ts';
 import type { StatusMarkKind } from '../../draw/kit.ts';
@@ -314,6 +315,7 @@ export function pagedTailEntry(
   tailQuery: LogTailQuery,
   following: boolean,
   pageSize = DEFAULT_TAIL_PAGE_SIZE,
+  validate?: TailValidator,
 ): SourceEntry {
   return {
     name,
@@ -325,6 +327,7 @@ export function pagedTailEntry(
       tailQuery,
       pageSize,
       followQuery: following ? tailFollowParams(tailQuery) : null,
+      ...(validate ? { validate } : {}),
     },
   };
 }
@@ -333,7 +336,7 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
   source: TableRowSource<TRow>,
   hour: number,
   window: { readonly first: number; readonly count: number } | undefined,
-  mapRow: (row: TRow, ordinal: number) => TableRow | null,
+  mapRow: (row: TRow, ordinal: number) => TableRow,
   extraMissing?: readonly MissingSpan[],
 ): {
   readonly slots: TableModelSlot[];
@@ -382,10 +385,8 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
       if (!slot) continue;
       if (slot.kind === 'data') {
         const built = mapRow(slot.row, slot.ordinal);
-        if (built) {
-          slots.push({ kind: 'data', row: built });
-          rows.push(built);
-        }
+        slots.push({ kind: 'data', row: built });
+        rows.push(built);
       } else if (slot.kind === 'refused') {
         slots.push({ kind: 'refused', key: `refused:${slot.ordinal}`, reason: slot.reason });
       } else if (slot.kind === 'loading') {
@@ -408,10 +409,8 @@ export function projectPagedSlots<TRow extends DatedLogRow>(
   for (const slot of navigable) {
     if (slot.kind === 'data') {
       const built = mapRow(slot.row, slot.ordinal);
-      if (built) {
-        slots.push({ kind: 'data', row: built });
-        rows.push(built);
-      }
+      slots.push({ kind: 'data', row: built });
+      rows.push(built);
     } else if (slot.kind === 'gap') {
       slots.push({ kind: 'gap', key: slot.key, firstHour: slot.firstHour, lastHour: slot.lastHour, reason: slot.reason });
     } else if (slot.kind === 'refused') {

@@ -382,3 +382,68 @@ test('a decision cost read in one currency keeps it, partial, when the other cur
   assert.deepEqual(read.rows[0]?.cells.cost?.value, { kind: 'partial', value: '50', reason: 'Part of the decision cost was not recorded' },
     'a selection whose cost was not read keeps the one that was, partial');
 });
+
+test('S3: a malformed decision row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const start = day(3, 1);
+  const hour = start + 10;
+  const goodOcc = card([edge('decisionSelected', start, { days: 10 })]);
+  const badOcc = { id: 'bad:dec', opened: true, edges: [] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '1',
+    counts: [{ key: 'running', total: '2' }],
+    rows: [
+      { hour: start, key: goodOcc.id, observed: start, ordinal: '0', live: true, status: 'active', occurrence: goodOcc },
+      { hour: start, key: 'bad:dec', observed: start, ordinal: '1', live: false, status: 'active', occurrence: badOcc },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:decisions-mixed-bad', mixedHead, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const mixedModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', mixedSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, goodOcc.id);
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The occurrence card is malformed.' });
+  assert.equal(mixedModel.titleSummary, '2 running');
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    counts: [{ key: 'running', total: '1' }],
+    rows: [{ hour: start, key: 'bad:dec', observed: start, ordinal: '0', live: false, status: 'active', occurrence: badOcc }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:decisions-only-bad', onlyBadHead, undefined, hour, undefined, decisionsProjection.validateTail)!;
+  const onlyBadModel = decisionsProjection.project(
+    createBoundedReadView({ hour, rows: new Map([['main', onlyBadSource]]) }),
+    { artwork: false, breaks: [] },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The occurrence card is malformed.' }]);
+  assert.equal(onlyBadModel.titleSummary, '1 running');
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed decision never claims no decisions matched');
+
+  for (const declaration of [decisionsDeclaration, eventChoicesDeclaration, eventFeedDeclaration]) {
+    const entry = declaration.sources({
+      track: { source: { id: 's1', revision: 'r1', metadata: { playerCountryId: '9' } }, axisOffset: 0, selectedSlot: 7 },
+      branch: { id: '1', firstHour: 0, lastHour: 200, gaps: [] },
+      widget: { id: 'w1', kind: declaration.kind, countries: { kind: 'all' }, time: { mode: 'follow' } },
+      options: { warsPeace: true },
+      following: true,
+      countries: { all: true, tags: [], filter: { passing: null, unrecorded: [], bounds: [] } },
+      gateSpan: (firstHour: number, lastHour: number) => ({ firstHour, lastHour }),
+    } as unknown as FamilyPlanContext<unknown>, { following: true, staticSpan: null }).entries[0]!;
+    assert.equal(entry.read.shape === 'paged-rows' ? entry.read.validate : undefined, declaration.projection.validateTail, `${declaration.kind}: pagedTailEntry carries its product tail validator`);
+  }
+});

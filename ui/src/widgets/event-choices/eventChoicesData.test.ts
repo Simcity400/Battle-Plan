@@ -190,3 +190,55 @@ test('an awaiting choice on a page frozen at an earlier hour counts its days ope
   assert.equal((futureModel.slots ?? []).filter(s => s.kind === 'gap').length, 0);
   assert.equal(futureModel.titleSummaryPartial, undefined, 'a frozen page with only future gaps does not mark its count partial');
 });
+
+test('S3: a malformed event choice row becomes a refused slot with its reason instead of disappearing or reporting no matches', () => {
+  const fired = day(3, 3);
+  const atHour = fired + 12;
+  const goodOcc = occurrence([fire(fired, 'POL', 'GER')]);
+  const badOcc = { id: 'bad:1', opened: true, edges: [] };
+  const mixedHead = {
+    branchId: '1',
+    total: '2',
+    offset: '0',
+    live: '1',
+    counts: [{ key: 'awaiting', total: '2' }],
+    rows: [
+      { hour: fired, key: goodOcc.id, observed: fired, ordinal: '0', live: true, status: 'awaiting', occurrence: goodOcc },
+      { hour: fired, key: 'bad:1', observed: fired, ordinal: '1', live: false, status: 'awaiting', occurrence: badOcc },
+    ],
+    missing: [],
+    nextChange: null,
+    unavailable: [],
+    warnings: [],
+  };
+  const mixedSource = buildRowSourceFromHead('test:choices-mixed-bad', mixedHead, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const mixedModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', mixedSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(mixedModel.rows.length, 1);
+  assert.equal(mixedModel.rows[0]?.key, goodOcc.id);
+  assert.equal(mixedModel.slots?.length, 2);
+  assert.equal(mixedModel.slots?.[0]?.kind, 'data');
+  assert.deepEqual(mixedModel.slots?.[1], { kind: 'refused', key: 'refused:1', reason: 'The occurrence card is malformed.' });
+  assert.equal(mixedModel.titleSummary, '2 events');
+  assert.equal(mixedModel.totalRows, 2);
+  assert.equal(mixedModel.empty, undefined);
+
+  const onlyBadHead = {
+    ...mixedHead,
+    total: '1',
+    counts: [{ key: 'awaiting', total: '1' }],
+    rows: [{ hour: fired, key: 'bad:1', observed: fired, ordinal: '0', live: false, status: 'awaiting', occurrence: badOcc }],
+  };
+  const onlyBadSource = buildRowSourceFromHead('test:choices-only-bad', onlyBadHead, undefined, atHour, undefined, eventChoicesProjection.validateTail)!;
+  const onlyBadModel = eventChoicesProjection.project(
+    createBoundedReadView({ hour: atHour, rows: new Map([['main', onlyBadSource]]) }),
+    { events: ['country'], awaiting: false, artwork: false, breaks: [] },
+  );
+  assert.equal(onlyBadModel.rows.length, 0);
+  assert.deepEqual(onlyBadModel.slots, [{ kind: 'refused', key: 'refused:0', reason: 'The occurrence card is malformed.' }]);
+  assert.equal(onlyBadModel.titleSummary, '1 event');
+  assert.equal(onlyBadModel.totalRows, 1);
+  assert.equal(onlyBadModel.empty, undefined, 'a tail with one malformed row never claims no events matched');
+});

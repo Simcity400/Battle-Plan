@@ -16,11 +16,11 @@ import {
 } from '../../families/table/logHelpers.ts';
 import type { TableCell, TableModel, TableProjection, TableRow, TooltipExtraRow } from '../../families/table/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
-import { DEFAULT_TAIL_PAGE_SIZE, type DatedLogRow } from '../../families/table/rowSource.ts';
+import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type TailReply } from '../../families/table/rowSource.ts';
 import { TABLE_SETTINGS_KEY } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatScalar } from '../../families/valueFormat.ts';
-import type { ScriptEventKind, ScriptOccurrence, ScriptPageRow } from '../../generated/dashboard';
+import type { ScriptEventKind, ScriptPageRow } from '../../generated/dashboard';
 import { gapRows, hasTooltipGaps, hoverTextOf, unreadRows, type TooltipTexts } from '../event-feed/hoverText.ts';
 import { gapsForField, reasonsOf, scriptedValue } from '../event-feed/scriptedGaps.ts';
 import { recordingBreaks, validateOccurrence, type RecordingBreak } from '../event-feed/scriptOccurrences.ts';
@@ -171,9 +171,22 @@ function buildChoiceRow(
   };
 }
 
+function validateEventChoicesTail(raw: unknown, readAt?: number): TailReply<ScriptPageRow & DatedLogRow> {
+  return validateRowTailReply(raw, (row, _columns, at): ScriptPageRow & DatedLogRow => {
+    const occurrence = validateOccurrence(row.occurrence);
+    const card = choiceCard(occurrence);
+    if (!card) throw new Error('The occurrence card is malformed.');
+    if (at !== undefined && card.first.row.readHour > at) {
+      throw new Error(`Event choice ${occurrence.id} was read at hour ${card.first.row.readHour} after displayed hour ${at}.`);
+    }
+    return { ...(row as unknown as ScriptPageRow & DatedLogRow), occurrence };
+  }, readAt);
+}
+
 export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptions> = registerFamilyProjection({
   kind: 'event-choices',
   family: 'table',
+  validateTail: validateEventChoicesTail,
   project(readView, options): TableModel {
     const hour = readView.hour;
     if (!options.events.length) {
@@ -206,20 +219,8 @@ export const eventChoicesProjection: TableProjection<EventChoicesProjectionOptio
       readAt,
       readView.rowWindow,
       rawRow => {
-        if (!rawRow.occurrence) return null;
-        let occ: ScriptOccurrence;
-        try {
-          occ = validateOccurrence(rawRow.occurrence);
-        } catch {
-          return null;
-        }
-        const card = choiceCard(occ);
-        const resolved = choiceAt(
-          card,
-          readAt,
-          options.breaks,
-        );
-        if (!resolved) return null;
+        const resolved = choiceAt(choiceCard(rawRow.occurrence), readAt, options.breaks);
+        if (!resolved) throw new Error('Event choice row was not validated by the tail decoder.');
         const open = rawRow.status != null ? rawRow.status === 'awaiting' : isOpen(resolved);
         const live = typeof rawRow.live === 'boolean' ? rawRow.live : open;
         const page: ChoicePageInfo = { open, live, notRecorded: rawRow.status === 'notRecorded' };
@@ -305,6 +306,7 @@ export const eventChoicesDeclaration: TableWidgetDeclaration<EventChoicesProject
           },
           ctx.following,
           DEFAULT_TAIL_PAGE_SIZE,
+          validateEventChoicesTail,
         ),
       ],
     };

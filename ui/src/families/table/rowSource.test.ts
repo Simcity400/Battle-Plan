@@ -5,7 +5,7 @@ import { tableHostAdapter } from './hostAdapter.ts';
 import { gatedHour } from '../../test-support/gated.ts';
 import { projectPagedSlots, tailFollowParams } from './logHelpers.ts';
 import { formatDateOnly } from '../valueFormat.ts';
-import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
+import { buildNavigableSlots, buildRowSourceFromHead, SnapshotPager, validateGenericTailReply, validateRowTailReply, type DatedLogRow, type SnapshotPage, type SnapshotPages, type TailReply } from './rowSource.ts';
 
 interface Row extends DatedLogRow {
   readonly label: string;
@@ -232,4 +232,40 @@ test('a dated tail follows its selected categories and group', () => {
   });
   assert.deepEqual(tail, { panel: 'event-feed-tail', branchId: '1', from: 100, limit: 256, categories: ['politics'], group: { type: 'faction', id: '42', membership: 'hour' } },
     'a tail panel carries its real follow parameters and the group, never a member list');
+});
+
+test('S3: tail decoder turns per-row decode errors into refused slots with their ordinal and reason on both head and snapshot pages', () => {
+  const validate = (raw: unknown, readAt?: number) => validateRowTailReply<Row>(raw, row => {
+    if (typeof row.label !== 'string') throw new Error('Row payload is malformed.');
+    return { key: row.key as string, hour: row.hour as number, label: row.label };
+  }, readAt);
+
+  const head = rawReply([
+    { key: 'bad0', hour: 120 } as unknown as Row,
+    { key: 'ok1', hour: 100, label: 'good' } as unknown as Row,
+  ], 2, { missing: [{ firstHour: 110, lastHour: 115, reason: 'Collector detached' }] });
+  const source = buildRowSourceFromHead('q:head', head, undefined, 130, undefined, validate)!;
+  assert.deepEqual(source.sliceAt(130, 0, 2), [
+    { kind: 'refused', ordinal: 0, readAt: 130, reason: 'Row payload is malformed.' },
+    { kind: 'data', ordinal: 1, readAt: 130, row: { key: 'ok1', hour: 100, label: 'good' } },
+  ]);
+  const projected = projectPagedSlots(source, 130, { first: 0, count: 10 }, row => ({ key: row.key, name: row.label, cells: {} }));
+  assert.deepEqual(projected.slots.map(slot => (slot.kind === 'data' ? ['data', slot.row.key] : slot.kind === 'refused' ? ['refused', slot.key, slot.reason] : slot.kind === 'gap' ? ['gap', slot.reason] : [slot.kind])), [
+    ['refused', 'refused:0', 'Row payload is malformed.'],
+    ['gap', 'Collector detached'],
+    ['data', 'ok1'],
+  ], 'a refused row at ordinal 0 keeps top-of-log gaps intact');
+
+  const rawPage = rawReply([
+    { key: 'p4', hour: 95, label: 'four' } as unknown as Row,
+    { key: 'p5', hour: 94 } as unknown as Row,
+  ], 6, { offset: '4' });
+  const pages: SnapshotPages<Row> = {
+    4: { hour: 100, offset: 4, limit: 4, raw: rawPage, reply: validate(rawPage, 100) },
+  };
+  const frozen = buildRowSourceFromHead<Row>('q:frozen', undefined, undefined, 130, pages, validate)!;
+  assert.deepEqual(frozen.sliceAt(130, 4, 2), [
+    { kind: 'data', ordinal: 4, readAt: 130, row: { key: 'p4', hour: 95, label: 'four' } },
+    { kind: 'refused', ordinal: 5, readAt: 130, reason: 'Row payload is malformed.' },
+  ]);
 });
