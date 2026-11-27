@@ -79,7 +79,6 @@ use viewer_native_gui::counter_hovers::land::CounterHover;
 use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
 use viewer_native_gui::lazy_icons::LazyFlags;
 use viewer_native_gui::native_gui::Assets;
-use viewer_native_gui::native_gui::Sheets;
 use viewer_native_gui::native_gui::container_frame;
 use viewer_native_gui::native_resources::GuiResources;
 use viewer_native_gui::native_windows::NAVY_WINDOW;
@@ -2356,7 +2355,7 @@ impl CounterArt {
                 .gui_assets
                 .sprites
                 .iter()
-                .filter_map(|name| Sheets::sheet(&self.gui, name));
+                .filter_map(|name| self.gui.loaded_sheet(name));
             for sheet in self
                 .sheets
                 .values()
@@ -2389,7 +2388,7 @@ impl CounterArt {
                 .gui_assets
                 .fonts
                 .iter()
-                .filter_map(|name| self.gui.font(name));
+                .filter_map(|name| self.gui.loaded_font(name));
             for font in window_fonts {
                 for ch in
                     "0123456789?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz /-+.%".chars()
