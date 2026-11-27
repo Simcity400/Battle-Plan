@@ -3273,7 +3273,7 @@ mod paused_reset {
         let seed_release_rx = Mutex::new(seed_release_rx);
         let catch_up_hour_5 = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let catch_up_hour_5_read = Arc::clone(&catch_up_hour_5);
-        host.prepare_panel(product(Arc::new(move |hour, _, _, step| {
+        host.prepare_panel(product(Arc::new(move |hour, values, _, step| {
             if hour == 0 && step.is_none() {
                 let _ = seed_entered_tx.send(());
                 let _ = seed_release_rx.lock().unwrap().recv();
@@ -3284,6 +3284,10 @@ mod paused_reset {
             }
             if hour == 5 && step.is_none() {
                 catch_up_hour_5_read.store(true, std::sync::atomic::Ordering::Release);
+                if !values {
+                    let (live, value) = live_cell(0, 100, 40);
+                    return ProductRead { value, rows: 1, fresh: false, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN };
+                }
             }
             let (live, value) = live_cell(0, 100, i64::from(hour) * 10);
             ProductRead { value, rows: 1, fresh: true, pending: false, live: Some(live), lanes: Vec::new(), from: Hour::MIN }
@@ -3297,6 +3301,8 @@ mod paused_reset {
         let _ = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 0);
         let returned = take_panel_data_at_epoch(&mut seen, &push, Some((&playhead, epoch_after_settle)), 11, 5);
         assert!(returned["live"]["groups"][0]["follow"].is_u64(), "returning cell group in catch-up receives a follow id");
+        assert_eq!(returned["live"]["groups"][0]["seedHour"], 5, "cells a shared reader returns from its cache are read again with their values at the catch-up hour");
+        assert_eq!(returned["live"]["groups"][0]["values"], serde_json::json!([50]));
         loop {
             if seen.iter().any(|(id, hour, kind, _)| *id == 11 && *hour == 8 && (*kind == dated::DATA || *kind == dated::STANDS)) {
                 break;
