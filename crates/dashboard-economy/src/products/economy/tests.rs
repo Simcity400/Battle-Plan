@@ -907,12 +907,12 @@ mod market {
         };
         let quiet = steps(|_, _| {});
         assert!(quiet.last().is_some_and(|&(hour, from)| hour == 116 && from <= 113), "a quiet market stays proven across the step 114-116: {quiet:?}");
-        let transient = steps(|hour, frame| if hour == 112 {
+        let transient = steps(|hour, frame| if hour == 115 {
             let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
             terms.push(MarketContractTermsRow { country: FRA, id: 0x53, kind: 0, buyer: 77, ..MarketContractTermsRow::default() });
             set::<tables::MarketContractTerms>(frame, terms);
         });
-        assert_eq!(transient.last(), Some(&(116, 113)), "a request born and gone at 112 leaves the reply proven only from the end of the step that held it: {transient:?}");
+        assert_eq!(transient.last(), Some(&(116, 116)), "a request born and gone at 115, inside the step the quiet market keeps proven, leaves the reply proven only from 116: {transient:?}");
         let unread = steps(|hour, frame| if hour == 115 {
             *frame.tables[TableId::MarketContractTerms.index()] = TableView::Unavailable { reason: "terms unreadable".into() };
         });
