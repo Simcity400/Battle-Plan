@@ -158,6 +158,36 @@ test('a followed reply delivered again with the same bytes costs no projection, 
   }
 });
 
+test('a tooltip on a held picture reads the records that prove its drawn hour, even after a later record repeats the value', () => {
+  reset();
+  const recording = installRecordingCanvas();
+  try {
+    const reading: LaneFamily<Binding, Model, Layout> = {
+      ...family,
+      tooltip(frame, key) {
+        const row = frame.readNow().panel<{ rows: Row[] }>('main')?.rows.find(item => item.key === key);
+        return row ? { rowKey: key, content: { title: `${key} ${row.v}`, rows: [] } as never } : null;
+      },
+    };
+    const lane = driveLane(createLaneView(reading, () => {}), recording.canvases);
+    const subs = [{ id: 5, channel: 'panel' as const, route: null }];
+    const bound = binding({}, DOWN, { sources: { main: 5 } });
+    const value: Value = { kind: 'panel', bytes: null, data: { hour: 11, rows: [{ key: 'A', v: 7 }] }, refused: null };
+    const at = (h: number, hour: number, inspect: string | null) => {
+      const fact: Fact<Value> = { h, c: 15, value, refused: null, cells: [], seeds: new Map(), channel: 'panel', version: h, bytes: 0 };
+      return lane.paint({ label: `record ${h} at hour ${hour}`, binding: bound, hour, speed: 24, subs, inspect, pictures: [{ h, c: 15, parts: [fact], value, refused: null }] });
+    };
+    at(11, 11, null);
+    const projections = counts.project;
+    const repeated = at(13, 13, 'A');
+    assert.equal(counts.project, projections, 'the repeated value keeps the held projection and its drawn hour');
+    assert.equal(repeated.mode, 'picture');
+    assert.equal((repeated.fields.tooltip?.value as { text?: { content?: { title?: string } } } | undefined)?.text?.content?.title, 'A 7');
+  } finally {
+    recording.restore();
+  }
+});
+
 test('a held model ends where a bounded series it was given ends, even while its panel is unchanged', () => {
   let projected = 0;
   let seriesEnd = -Infinity;

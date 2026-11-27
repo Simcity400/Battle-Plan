@@ -706,7 +706,7 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
         before: keep.before,
         changedAt: keep.changedAt,
         continuity: keep.continuity,
-        readNow: () => readNow ??= sceneReadView(input, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
+        readNow: () => readNow ??= sceneReadView(projected.scene, projection.validateTail ? { ...binding, validateTail: projection.validateTail } : binding, drawn, readers),
       };
 
       const drawKey = [layout, keep.continuity, binding.scrollTop, binding.scrollLeft ?? 0, input.inspect, binding.selectedKey, binding.focusedKey, keep.artRevision, width, height];
