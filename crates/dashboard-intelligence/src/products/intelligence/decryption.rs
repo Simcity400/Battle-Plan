@@ -281,7 +281,6 @@ impl AtHour for Decryption {
     const KEY: &'static str = "decryption";
     const TITLE: &'static str = "Decryption";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DecryptionParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = DecryptionReply;

@@ -45,7 +45,6 @@ impl AtHour for Power {
     const KEY: &'static str = "test-power";
     const TITLE: &'static str = "Power";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PowerParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId, country];
     type Reply = PowerReply;
@@ -264,7 +263,6 @@ impl AtHour for Scoped {
     const KEY: &'static str = "test-scoped";
     const TITLE: &'static str = "Scoped";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = ScopedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = ScopedReply;
@@ -360,7 +358,6 @@ impl AtHour for Planned {
     const KEY: &'static str = "test-planned";
     const TITLE: &'static str = "Planned";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::Boundaries;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PlannedReply;
@@ -444,7 +441,6 @@ impl AtHour for Dropping {
     const KEY: &'static str = "test-dropping";
     const TITLE: &'static str = "Dropping";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = DroppingReply;
@@ -514,7 +510,6 @@ impl AtHour for Steady {
     const KEY: &'static str = "test-steady";
     const TITLE: &'static str = "Steady";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = SteadyReply;
@@ -805,7 +800,6 @@ impl AtHour for Partial {
     const KEY: &'static str = "test-partial";
     const TITLE: &'static str = "Partial";
     const CONTENT_DEPENDENT: bool = false;
-    const CLOCK: Clock = Clock::InputsOnly;
     type Params = PlannedParams;
     const FIELDS: crate::products::Fields = crate::fields![branchId];
     type Reply = PartialReply;
@@ -875,7 +869,6 @@ fn at_hour_live_cells_apply_witness_rule_on_cold_and_incremental_across_truncate
         const KEY: &'static str = "test-coal-scopes";
         const TITLE: &'static str = "Test coal scopes";
         const CONTENT_DEPENDENT: bool = false;
-        const CLOCK: Clock = Clock::InputsOnly;
         type Params = PowerParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId, country];
         type Reply = PowerReply;
@@ -970,7 +963,6 @@ fn a_later_stage_releasing_its_selection_restores_the_first_stages_reply() {
         const KEY: &'static str = "test-repeated-countries";
         const TITLE: &'static str = "Roster";
         const CONTENT_DEPENDENT: bool = false;
-        const CLOCK: Clock = Clock::Boundaries;
         type Params = PlannedParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId];
         type Context = ();
@@ -1024,7 +1016,6 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         const KEY: &'static str = "test-quiet";
         const TITLE: &'static str = "Quiet";
         const CONTENT_DEPENDENT: bool = false;
-        const CLOCK: Clock = Clock::InputsOnly;
         type Params = PlannedParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId];
         type Reply = SteadyReply;
@@ -1052,7 +1043,6 @@ fn a_quiet_advance_on_a_populated_product_visits_zero_rows() {
         const KEY: &'static str = "test-expiring";
         const TITLE: &'static str = "Expiring";
         const CONTENT_DEPENDENT: bool = false;
-        const CLOCK: Clock = Clock::Boundaries;
         type Params = PlannedParams;
         const FIELDS: crate::products::Fields = crate::fields![branchId];
         type Reply = ExpiryReply;

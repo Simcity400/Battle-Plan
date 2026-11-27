@@ -219,7 +219,6 @@ impl AtHour for OccupationReserve {
         Ok(())
     }
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
 
     fn valid_through(_frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> i32 {
         at.context.valid_through(params.group.as_ref(), at.hour)

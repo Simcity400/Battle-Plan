@@ -85,12 +85,6 @@ pub struct ReadsAt<'a, C> {
     pub since: Option<i32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Clock {
-    InputsOnly,
-    Boundaries,
-}
-
 pub trait AtHour: 'static {
     const KEY: &'static str;
     const TITLE: &'static str;
@@ -144,9 +138,6 @@ pub trait AtHour: 'static {
     fn plan_changes(_stage: usize, edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
 
     fn compares_previous(_table: TableId) -> bool { false }
-
-
-    const CLOCK: Clock;
 
     const DATE_HELD_REPLY: Option<fn(&mut Value, i32)> = None;
 

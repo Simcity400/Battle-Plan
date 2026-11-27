@@ -83,7 +83,6 @@ impl AtHour for DoctrineRewards {
     const KEY: &'static str = "doctrine-rewards";
     const TITLE: &'static str = "Doctrine rewards";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
     type Params = DoctrineRewardsParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, folder, track];
     type Reply = DoctrineRewardsReply;

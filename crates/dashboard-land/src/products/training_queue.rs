@@ -301,7 +301,6 @@ impl AtHour for TrainingQueue {
     const KEY: &'static str = "training-queue";
     const TITLE: &'static str = "Training queue";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = TrainingQueueParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TrainingQueueReply;

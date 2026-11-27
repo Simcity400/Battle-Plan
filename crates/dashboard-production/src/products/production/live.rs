@@ -172,7 +172,6 @@ impl AtHour for ProductionLinesAt {
     }
 
 
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::InputsOnly;
 
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         let fields: &[&str] = match table {
