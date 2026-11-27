@@ -1,5 +1,6 @@
+import type { ArtResolutions } from '../art/provider.ts';
 import { readPlanExact, type ExactReadOptions, type PagedSnapshotPage } from '../broker.ts';
-import type { BoundedReadView, SourceEntry, SourcePlan } from '../contract.ts';
+import type { ArtProvider, BoundedReadView, SourceEntry, SourcePlan } from '../contract.ts';
 import type { FamilyRowWindow } from './adapter.ts';
 import { dataWindowOf, DEFAULT_TAIL_PAGE_SIZE, SnapshotPager, type PagedRows, type PagerStep } from '../table/rowSource.ts';
 
@@ -44,10 +45,13 @@ export function pagedSnapshots(
 export function createExactReadView(
   plan: SourcePlan,
   snapshots: PagedSnapshot,
-  options: Omit<ExactReadOptions, 'snapshotHour' | 'pagedSnapshot' | 'rowWindow'>,
-): (wantedHour: number, rowWindow: FamilyRowWindow | null) => Promise<BoundedReadView | null> {
-  return (wantedHour, rowWindow) => readPlanExact(plan, wantedHour, {
+  options: Omit<ExactReadOptions, 'snapshotHour' | 'pagedSnapshot' | 'rowWindow' | 'art'> & {
+    readonly art?: (resolutions: ArtResolutions | undefined) => ArtProvider;
+  },
+): (wantedHour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null> {
+  return (wantedHour, rowWindow, artResolutions) => readPlanExact(plan, wantedHour, {
     ...options,
+    art: options.art?.(artResolutions),
     pagedSnapshot: name => snapshots[name] ?? null,
     rowWindow,
   });
