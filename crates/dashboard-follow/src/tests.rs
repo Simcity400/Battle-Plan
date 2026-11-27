@@ -319,24 +319,42 @@ fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
 }
 
 #[test]
-fn an_answer_equal_to_the_last_is_not_sent() {
+fn an_answer_equal_to_the_last_is_claimed_only_at_the_hours_it_was_read() {
     let pages = record(quiet);
     let mut harness = harness(&pages);
-    harness.follow.follow(7, keys(&[106], &[2])).unwrap();
+    let query = keys(&[106], &[2]);
+    harness.follow.follow(7, query.clone()).unwrap();
     harness.seek(0);
     let played = harness.play(280);
-    let first = played.iter().position(|played| !played.answers().is_empty()).expect("a first answer");
-    let mut sent = played[first].head % 2;
-    let mut unchanged = 0;
-    for played in played[first + 1..].iter().filter(|played| played.moved() && played.head < 300) {
-        assert_eq!(played.stats.evaluated, 1, "written at hours {}..{}", played.from, played.head);
-        let differs = played.head % 2 != sent;
-        assert_eq!(played.stats.changed, u32::from(differs), "hours {}..{}", played.from, played.head);
-        assert_eq!(!played.answers().is_empty(), differs);
-        unchanged += u32::from(!differs);
-        sent = played.head % 2;
+    let mut facts: Vec<(Hour, Hour, Answer)> = Vec::new();
+    let mut restated = 0;
+    for played in &played {
+        let Some(message) = &played.message else { continue };
+        let message = decode(&message.bytes).unwrap();
+        if message.reset {
+            facts.clear();
+        }
+        for (_, hour, body) in message.answers {
+            let answer = Answer::parse(body).unwrap();
+            if facts.last().is_some_and(|last| last.0 == hour) {
+                facts.pop();
+            } else if let Some(last) = facts.last_mut() {
+                restated += u32::from(last.2 == answer);
+                last.1 = last.1.min(hour - 1);
+            }
+            facts.push((hour, hour, answer));
+        }
+        let through = message.limited.iter().rev().find(|&&(id, _)| id == 7).map_or(message.hour, |&(_, through)| through);
+        if let Some(last) = facts.last_mut() {
+            last.1 = last.1.max(through);
+        }
     }
-    assert!(unchanged > 0, "an equal answer evaluated and not sent");
+    for (from, through, answer) in &facts {
+        for hour in *from..=*through {
+            assert_eq!(answer, &harness.fresh(&query, hour), "the answer read at hour {from} is claimed at hour {hour}");
+        }
+    }
+    assert!(restated > 5, "{restated} answers equal to the last were restated at the hour they were read");
 }
 
 #[test]

@@ -364,6 +364,7 @@ struct Followed {
     has_pending: bool,
     pending_hour: Hour,
     pending_held: u32,
+    restate: Option<Hour>,
     queued: bool,
     live: LiveRows,
     ranking: evaluate::Ranking,
@@ -444,6 +445,7 @@ struct Index {
     until: Hour,
     status: Option<Status>,
     withheld: bool,
+    read: Hour,
 }
 
 impl Index {
@@ -633,13 +635,22 @@ fn mark(slab: &mut [Option<Followed>], marked: &mut Vec<usize>, query: usize) {
     }
 }
 
-fn offer(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) -> bool {
+fn offer(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, restate: bool, queue: &mut Vec<usize>) -> bool {
     if followed.has_sent && followed.sent == *body {
         followed.has_pending = false;
+        if restate { restate_at(followed, query, hour, queue); }
         return false;
     }
     queue_body(followed, query, body, hour, queue);
     true
+}
+
+fn restate_at(followed: &mut Followed, query: usize, hour: Hour, queue: &mut Vec<usize>) {
+    followed.restate = Some(hour);
+    if !followed.queued {
+        followed.queued = true;
+        queue.push(query);
+    }
 }
 
 fn queue_body(followed: &mut Followed, query: usize, body: &mut Vec<u8>, hour: Hour, queue: &mut Vec<usize>) {
@@ -711,6 +722,11 @@ impl Engine {
         }
         self.answer_heads(step, &mut stats);
         let message = self.send(step, lanes, step.reset(), &mut stats);
+        for (&table, index) in &mut self.tables {
+            if let Some(head) = lanes.get(table).and_then(Lane::head) {
+                index.read = head;
+            }
+        }
         let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
         stats.ns = start.elapsed().as_nanos() as u64;
         let counters = &mut self.counters;
@@ -799,6 +815,7 @@ impl Engine {
             });
             followed.queued = false;
             followed.has_pending = false;
+            followed.restate = None;
             followed.has_sent = false;
             followed.late = None;
             followed.reading = None;
@@ -827,6 +844,7 @@ impl Engine {
             has_pending: false,
             pending_hour: 0,
             pending_held: 0,
+            restate: None,
             queued: false,
             live: LiveRows::default(),
             ranking: evaluate::Ranking::default(),
@@ -902,7 +920,7 @@ impl Engine {
                 self.body.clear();
                 answer::not_recorded(&refused, &mut self.body);
                 stats.evaluated += 1;
-                stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), false, &mut self.queue));
                 continue;
             }
             followed.phase = Phase::Active;
@@ -1216,6 +1234,8 @@ impl Engine {
             let followed = self.slab[query].as_mut().expect("a marked query");
             followed.dirty = false;
             let Some(lane) = lanes.get(followed.table).filter(|lane| evaluate::holds(&followed.query, lane)) else { continue };
+            let head = evaluate::head(lane);
+            let restate = self.tables.get(&followed.table).is_some_and(|index| index.read.saturating_add(1) < head);
             if followed.query.listed() {
                 if followed.reading.is_some() || followed.late.is_some_and(|late| late >= step.last()) {
                     continue;
@@ -1237,7 +1257,7 @@ impl Engine {
                     }
                 }
                 stats.evaluated += 1;
-                stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                stats.changed += u32::from(offer(followed, query, &mut self.body, head, restate, &mut self.queue));
                 continue;
             }
             let index = self.tables.get_mut(&followed.table).expect("an active query's table");
@@ -1257,7 +1277,7 @@ impl Engine {
                     followed.live.unrecorded();
                     self.body.clear();
                     answer::not_recorded(&reason, &mut self.body);
-                    stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+                    stats.changed += u32::from(offer(followed, query, &mut self.body, head, restate, &mut self.queue));
                     continue;
                 }
                 let reasons = &self.reasons;
@@ -1280,7 +1300,10 @@ impl Engine {
                 );
                 stats.cells += read as u32;
                 match answer {
-                    live_rows::Answer::Same => followed.has_pending = false,
+                    live_rows::Answer::Same => {
+                        followed.has_pending = false;
+                        if restate { restate_at(followed, query, head, &mut self.queue); }
+                    }
                     live_rows::Answer::Body => {
                         stats.changed += 1;
                         let changed = self.body.first() == Some(&answer::CHANGED);
@@ -1296,7 +1319,7 @@ impl Engine {
                 evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
             }
             stats.cells += cells_of(&self.scratch.table, &self.body);
-            stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
+            stats.changed += u32::from(offer(followed, query, &mut self.body, head, restate, &mut self.queue));
         }
     }
 
@@ -1315,7 +1338,7 @@ impl Engine {
             followed.live.unrecorded();
             stats.touched += 1;
             stats.evaluated += 1;
-            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), &mut self.queue));
+            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), false, &mut self.queue));
         }
     }
 
@@ -1328,7 +1351,7 @@ impl Engine {
             head::write(value, step.last(), step.reset(), &mut self.listed, &mut self.body);
             stats.touched += 1;
             stats.evaluated += 1;
-            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), &mut self.queue));
+            stats.changed += u32::from(offer(followed, query, &mut self.body, step.last(), false, &mut self.queue));
         }
     }
 
@@ -1353,6 +1376,7 @@ impl Engine {
         }
         for query in self.queue.drain(..) {
             let followed = self.slab[query].as_mut().expect("a queued query");
+            let restate = followed.restate.take();
             let body = if followed.query.appended() && followed.phase != Phase::Refused {
                 if followed.log.rows() == 0 {
                     followed.queued = false;
@@ -1364,6 +1388,11 @@ impl Engine {
             } else {
                 if !followed.has_pending {
                     followed.queued = false;
+                    if let Some(hour) = restate.filter(|_| followed.has_sent) {
+                        let held = if followed.sent.first() == Some(&answer::CHANGED) { followed.live.whole() } else { 0 };
+                        answer::push_held(&mut self.message, followed.id, hour, &followed.sent, held);
+                        stats.sent += 1;
+                    }
                     continue;
                 }
                 &followed.pending
