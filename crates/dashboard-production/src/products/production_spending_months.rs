@@ -747,6 +747,74 @@ impl Product for ProductionSpendingMonths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashboard_base::{SourceKey, test_fixtures::{CAMPAIGN, records, source as base_frame}};
+    use dashboard_core::QueryError;
+    use replay::campaign::{Replay, fixtures::encode_framed_at};
+    use replay_data::rows::{ClockRow, ProductionLineOutputRow, TableId, TableRows, compatibility::VARIANT_STAT_WITNESS_FORMAT, tables};
+    use replay_frame::frame::TableView;
+    use replay_journal::synthetic::{Input, Sample};
+    use serde_json::json;
+
+    fn older_source(first: i32, last: i32, cancelled: &AtomicBool) -> Source {
+        let format = VARIANT_STAT_WITNESS_FORMAT - 1;
+        let frames = (first..=last).map(|hour| {
+            let mut frame = base_frame(1, hour, None);
+            *frame.tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+            frame
+        }).collect();
+        let bytes = encode_framed_at(recorder_derive::writers_within, format, CAMPAIGN.into(), &[records(1, frames)], |synthetic, decoded| {
+            let countries = decoded.complete::<tables::Countries>()?;
+            synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+            let links = decoded.complete::<tables::CountryLinks>()?;
+            synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: true, sample: Sample::FromReadBit })?;
+            synthetic.table::<ProductionLineOutputRow>(TableId::ProductionLineOutput,
+                Input::Snapshot { rows: &[], partial: None, read: true, sample: Sample::FromReadBit })
+        }).unwrap();
+        let replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+        Source::from_replay(SourceKey { source_id: "withheld-table".into(), revision: "1".into() },
+            "synthetic.battleplan".into(), Arc::new(replay), cancelled).unwrap()
+    }
+
+    fn withheld(source: &Source, table: TableId) -> QueryError {
+        let reason = source.replay_ref().recording().withheld_reason(table.index()).unwrap();
+        QueryError::Refused { text: format!("{table:?} of the recording: {reason}") }
+    }
+
+    #[test]
+    fn months_refuses_withheld_rocket_output_for_each_spending_view() {
+        use crate::registrations::PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS;
+
+        let first = first_hour_of_month(1936 * 12);
+        let last = first + 1;
+        let cancelled = AtomicBool::new(false);
+        let source = older_source(first, last, &cancelled);
+        let expected = withheld(&source, TableId::RocketProductionOutput);
+
+        for (domain, repairs) in [("naval", true), ("air", false), ("land", false)] {
+            for hour in [first, last] {
+                let params = json!({ "branchId": "1", "country": "GER", "domain": domain, "repairs": repairs,
+                    "firstHour": first, "lastHour": hour });
+                let error = (PRODUCTION_SPENDING_MONTHS_PRODUCTIONSPENDINGMONTHS.load)(
+                    &source, "lease", params, &LoadContext { content: None }, &cancelled,
+                ).unwrap_err();
+                assert_eq!(error, expected, "{domain} at {hour}");
+            }
+        }
+    }
+
+    #[test]
+    fn daily_equipment_production_refuses_withheld_rocket_output_by_name() {
+        use crate::registrations::EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT;
+
+        let hour = first_hour_of_month(1936 * 12);
+        let cancelled = AtomicBool::new(false);
+        let source = older_source(hour, hour, &cancelled);
+        let params = json!({ "branchId": "1", "country": "GER", "hour": hour, "measure": "day", "refits": false });
+        let error = (EQUIPMENT_PRODUCED_EQUIPMENTPRODUCEDAT.load)(
+            &source, "lease", params, &LoadContext { content: None }, &cancelled,
+        ).unwrap_err();
+        assert_eq!(error, withheld(&source, TableId::RocketProductionOutput));
+    }
 
     fn run(first_hour: i32, last_hour: i32, amount: Amount) -> CachedRun {
         CachedRun { first_hour, last_hour, amount, break_before: false }

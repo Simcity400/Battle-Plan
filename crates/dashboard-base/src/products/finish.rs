@@ -41,7 +41,7 @@ impl Finish {
 
     pub fn reply<R: ReplyWarnings>(&self, read: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
         let mut own = OwnRefusals::default();
-        let mut reply = self.scope(&mut own, read).map_err(|error| dashboard_core::duplicate(&error))?;
+        let mut reply = self.scope(&mut own, read)?;
         self.seal(reply.warnings_mut(), &own);
         Ok(reply)
     }
