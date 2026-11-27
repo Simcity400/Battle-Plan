@@ -10,7 +10,7 @@ use super::politics::{Holding, holdings};
 use dashboard_base::products::at_hour;
 use dashboard_query::{Query, coverage};
 use replay_frame::frame::DecodedFrame;
-use replay_lanes::{lanes::{self, Keys}, points::Cell};
+use replay_lanes::{lanes::{self, Keys}, points::{self, Cell}};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{PowerCause, PowerCurrency, PowerItemRow, PowerOperation, PowerSite, PowerSpendCoverageRow, PowerSpendTotalRow, TableId, tables};
 use serde::{Deserialize, Serialize};
@@ -451,24 +451,33 @@ pub(super) fn gained(change: &Change<'_>) -> Option<SpendGain> {
 fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut dyn FnMut(Change<'_>)) -> io::Result<()> {
     let columns: Vec<usize> = TOTALS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendTotals, name)).collect::<io::Result<_>>()?;
     let from = piece.baseline.unwrap_or(piece.first);
-    let history = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), piece.run, TableId::PowerSpendTotals, &columns, Keys::Range(low, high), from, piece.last))?;
-    let order: Vec<usize> = columns.iter().map(|column| history.columns.binary_search(column).map_err(|_| dashboard_core::invalid("A totals column was not read"))).collect::<io::Result<_>>()?;
-    for (key, steps) in &history.keys {
-        let mut before: Option<Cells> = None;
-        for step in steps {
-            let Some(cells) = &step.cells else { continue };
-            let after: Cells = std::array::from_fn(|at| Value::of(cells[order[at]]));
-            if piece.baseline == Some(step.hour) {
-                before = Some(after);
-                continue;
+    let order = column_order(&columns);
+    let mut previous = HashMap::<u128, Cells>::new();
+    let (read, _) = dashboard_query::cost::storage(|| {
+        points::cells(query.replay.recording(), piece.run, TableId::PowerSpendTotals, &columns, Keys::Range(low, high), from, piece.last, None, &mut |hour, key, cells| {
+            let Some(cells) = cells.filter(|cells| cells.len() == order.len()) else { return true };
+            let after = std::array::from_fn(|at| Value::of(cells[order[at]]));
+            let before = previous.insert(key, after);
+            if piece.baseline != Some(hour) && before.as_ref() != Some(&after) {
+                each(Change { ordinal: key as u32, hour, before: before.as_ref(), after: &after });
             }
-            if before.as_ref() != Some(&after) {
-                each(Change { ordinal: *key as u32, hour: step.hour, before: before.as_ref(), after: &after });
-            }
-            before = Some(after);
-        }
+            true
+        })
+    })?;
+    if read.len() != columns.len() {
+        return Err(dashboard_core::invalid("A totals column was not read"));
     }
     Ok(())
+}
+
+fn column_order(columns: &[usize]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..columns.len()).collect();
+    order.sort_unstable_by_key(|&at| columns[at]);
+    let mut places = vec![0; columns.len()];
+    for (projected, original) in order.into_iter().enumerate() {
+        places[original] = projected;
+    }
+    places
 }
 
 fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut dyn FnMut(i32, u32, SpendDay)) -> io::Result<Vec<lanes::LogGap>> {
@@ -891,48 +900,44 @@ fn instant_gains(
     let uses_delta = recording.format() >= replay_data::rows::compatibility::RECORDING_SIZE_FORMAT;
     let col_names = if uses_delta { &CHANGE_COLS_DELTA } else { &CHANGE_COLS };
     let columns: Vec<usize> = col_names.iter().map(|name| dashboard_declare::field(TableId::CountryPowerChanges, name)).collect::<io::Result<_>>()?;
-    let history = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::CountryPowerChanges, &columns, Keys::Ranges(&ranges), start, piece.last))?;
-    let order: Vec<usize> = columns.iter().map(|column| history.columns.binary_search(column).map_err(|_| dashboard_core::invalid("A power change column was not read"))).collect::<io::Result<_>>()?;
+    let order = column_order(&columns);
     let wanted_currency = match currency {
         SpendCurrency::Political => PowerCurrency::Political,
         SpendCurrency::Command => PowerCurrency::Command,
     };
-    for (key, steps) in &history.keys {
-        let raw = (*key >> 64) as u32;
-        let Some(link_steps) = links_by_raw.get(&raw) else { continue };
-        let mut seen_epochs: Vec<u64> = Vec::new();
-        for step in steps {
-            let Some(cells) = &step.cells else { continue };
+    let mut seen_epochs: HashMap<u128, Vec<u64>> = HashMap::new();
+    let (read, _) = dashboard_query::cost::storage(|| {
+        points::cells(recording, piece.run, TableId::CountryPowerChanges, &columns, Keys::Ranges(&ranges), start, piece.last, None, &mut |hour, key, cells| {
+            let Some(cells) = cells.filter(|cells| cells.len() == order.len()) else { return true };
             let epoch = Value::of(cells[order[0]]).number().map(|value| value as u64);
-            if piece.baseline == Some(step.hour) || step.hour < piece.first || step.hour <= piece.run_first {
-                if let Some(ep) = epoch && !seen_epochs.contains(&ep) {
-                    seen_epochs.push(ep);
-                }
-                continue;
-            }
             if let Some(ep) = epoch {
-                if seen_epochs.contains(&ep) {
-                    continue;
+                let epochs = seen_epochs.entry(key).or_default();
+                if epochs.contains(&ep) {
+                    return true;
                 }
-                seen_epochs.push(ep);
+                epochs.push(ep);
             }
-            if !maps_to_slot(link_steps, step.hour, piece.slot) {
-                continue;
+            if piece.baseline == Some(hour) || hour < piece.first || hour <= piece.run_first {
+                return true;
+            }
+            let raw = (key >> 64) as u32;
+            if !links_by_raw.get(&raw).is_some_and(|links| maps_to_slot(links, hour, piece.slot)) {
+                return true;
             }
             let Some(row_currency) = Value::of(cells[order[2]]).number().and_then(|value| u8::try_from(value).ok()).and_then(|value| PowerCurrency::try_from(value).ok()) else {
-                continue;
+                return true;
             };
             if row_currency != wanted_currency {
-                continue;
+                return true;
             }
             let Some(operation) = Value::of(cells[order[3]]).number().and_then(|value| u8::try_from(value).ok()).and_then(|value| PowerOperation::try_from(value).ok()) else {
-                continue;
+                return true;
             };
             let Some(cause) = Value::of(cells[order[7]]).number().and_then(|value| u16::try_from(value).ok()).and_then(|value| PowerCause::try_from(value).ok()) else {
-                continue;
+                return true;
             };
             let Some(site) = Value::of(cells[order[8]]).number().and_then(|value| u16::try_from(value).ok()).and_then(|value| PowerSite::try_from(value).ok()) else {
-                continue;
+                return true;
             };
             let event_hour = Value::of(cells[order[1]]).number().map(|value| value as i32);
             let before = Value::of(cells[order[4]]).number();
@@ -951,11 +956,11 @@ fn instant_gains(
                         Some((b, a)) => {
                             let delta = i128::from(a) - i128::from(b);
                             if delta < 0 {
-                                buckets.entry((step.hour, event_hour)).or_default().push(Some(0), Some(-delta), 0, 0, 0);
+                                buckets.entry((hour, event_hour)).or_default().push(Some(0), Some(-delta), 0, 0, 0);
                             }
                         }
                         None => {
-                            buckets.entry((step.hour, event_hour)).or_default().push(Some(0), None, 0, 1, 0);
+                            buckets.entry((hour, event_hour)).or_default().push(Some(0), None, 0, 1, 0);
                         }
                     },
                     _ => match before.zip(after) {
@@ -965,7 +970,7 @@ fn instant_gains(
                                 && let Some(req) = requested.map(i128::from).filter(|&req| req > delta && delta >= 0)
                             {
                                 allocations.add_released(req);
-                                buckets.entry((step.hour, event_hour)).or_default().push(Some(0), Some(req - delta), 0, 0, 0);
+                                buckets.entry((hour, event_hour)).or_default().push(Some(0), Some(req - delta), 0, 0, 0);
                             } else if delta < 0 {
                                 allocations.add_allocated(-delta);
                             } else if delta > 0 {
@@ -975,10 +980,10 @@ fn instant_gains(
                         None => allocations.mark_unknown(),
                     },
                 }
-                continue;
+                return true;
             }
             if matches!(cause, PowerCause::DailyGain | PowerCause::CapCorrection | PowerCause::ResetSetup | PowerCause::Console) {
-                continue;
+                return true;
             }
             let entry = match operation {
                 PowerOperation::Grant | PowerOperation::Refund | PowerOperation::Add => match requested {
@@ -1009,9 +1014,13 @@ fn instant_gains(
                 PowerOperation::Subtract | PowerOperation::Reset | PowerOperation::AllocationClamp | PowerOperation::Clamp => None,
             };
             if let Some((gained, capped, unknown)) = entry {
-                buckets.entry((step.hour, event_hour)).or_default().push(gained, capped, 0, unknown, 0);
+                buckets.entry((hour, event_hour)).or_default().push(gained, capped, 0, unknown, 0);
             }
-        }
+            true
+        })
+    })?;
+    if read.len() != columns.len() {
+        return Err(dashboard_core::invalid("A power change column was not read"));
     }
     Ok(())
 }
@@ -1282,15 +1291,42 @@ fn item_key(slot: u32, ordinal: u32) -> u128 {
     PowerItemRow { holder: slot, ordinal, ..PowerItemRow::default() }.key()
 }
 
-fn items_at(frames: &mut at_hour::Frames<'_>, slot: u32, ordinals: &[u32], hour: i32) -> io::Result<DecodedFrame> {
-    let mut keys: Vec<u128> = ordinals.iter().map(|&ordinal| item_key(slot, ordinal)).collect();
-    keys.sort_unstable();
-    keys.dedup();
-    let reads = [at_hour::Read { table: TableId::PowerItems, keys: at_hour::Keys::These(keys) }];
-    frames.frame(hour, &reads, "Politics spending")
+struct ItemAsks<'a> {
+    piece: &'a Piece,
+    payments: std::ops::Range<usize>,
+    days: std::ops::Range<usize>,
+    asks: BTreeMap<(i32, u32), bool>,
+}
+
+fn item_membership(query: &Query<'_>, batches: &[ItemAsks<'_>]) -> io::Result<HashMap<u32, lanes::History>> {
+    let mut runs = BTreeMap::<u32, (i32, i32, Vec<u128>)>::new();
+    for batch in batches {
+        let piece = batch.piece;
+        let Some((&(first, _), _)) = batch.asks.first_key_value() else { continue };
+        let (&(last, _), _) = batch.asks.last_key_value().expect("a nonempty batch has a last ask");
+        let held = runs.entry(piece.run).or_insert_with(|| (first, last, Vec::new()));
+        held.0 = held.0.min(first);
+        held.1 = held.1.max(last);
+        held.2.extend(batch.asks.keys().map(|&(_, ordinal)| item_key(piece.slot, ordinal)));
+    }
+    let mut members = HashMap::with_capacity(runs.len());
+    for (run, (first, last, mut keys)) in runs {
+        keys.sort_unstable();
+        keys.dedup();
+        let read = dashboard_query::cost::storage(|| {
+            lanes::history(query.replay.recording(), run, TableId::PowerItems, &[], Keys::These(&keys), first, last)
+        });
+        match read {
+            Ok(history) => { members.insert(run, history); }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(members)
 }
 
 const UNRECORDED_ITEM: u32 = 1 << 31;
+const ITEM_ABSENT: &str = "Its item was not among the power items read when it was charged";
 
 struct UnrecordedItem {
     run: u32,
@@ -1310,35 +1346,62 @@ struct Items {
 }
 
 impl Items {
-    fn read(&mut self, frames: &mut at_hour::Frames<'_>, piece: &Piece, asks: &BTreeMap<(u32, i32), bool>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
-        let mut by_hour: BTreeMap<i32, Vec<u32>> = BTreeMap::new();
-        for &(ordinal, read) in asks.keys() {
-            by_hour.entry(read).or_default().push(ordinal);
-        }
-        let mut out = HashMap::with_capacity(asks.len());
-        for (hour, ordinals) in by_hour {
-            let frame = items_at(frames, piece.slot, &ordinals, hour)?;
-            for ordinal in ordinals {
-                let recurring = asks[&(ordinal, hour)];
-                out.insert((ordinal, hour), self.at(&frame, piece.run, piece.slot, ordinal, hour, recurring));
+    fn read(&mut self, frames: &mut at_hour::Frames<'_>, batch: &ItemAsks<'_>, membership: Option<&lanes::History>) -> io::Result<HashMap<(u32, i32), (u32, bool)>> {
+        let mut out = HashMap::with_capacity(batch.asks.len());
+        let piece = batch.piece;
+        let asks: Vec<_> = batch.asks.iter().collect();
+        for at_hour in asks.chunk_by(|(left, _), (right, _)| left.0 == right.0) {
+            let (&(hour, _), _) = at_hour[0];
+            let membership = membership.filter(|history| {
+                history.statuses.get(history.statuses.partition_point(|span| span.last < hour)).is_some_and(|status| status.first <= hour)
+            });
+            let mut details = Vec::new();
+            let mut witnesses = Vec::with_capacity(at_hour.len());
+            for &(&(_, ordinal), &recurring) in at_hour {
+                let key = item_key(piece.slot, ordinal);
+                let witness = membership.map(|history| coverage::reading_witness(TableId::PowerItems, history.reading(key, hour)));
+                let needs_details = match witness {
+                    None => true,
+                    Some(coverage::Witness::Row(_)) => !self.index.contains_key(&(piece.run, piece.slot, ordinal)),
+                    _ => false,
+                };
+                if needs_details {
+                    details.push(key);
+                }
+                witnesses.push((ordinal, recurring, witness));
+            }
+            let frame = if details.is_empty() { None } else {
+                Some(frames.frame(hour, &[at_hour::Read::these(TableId::PowerItems, details)], "Politics spending")?)
+            };
+            for (ordinal, recurring, witness) in witnesses {
+                out.insert((ordinal, hour), self.at(frame.as_ref(), piece, witness, ordinal, hour, recurring));
             }
         }
         Ok(out)
     }
 
-    fn at(&mut self, frame: &DecodedFrame, run: u32, slot: u32, ordinal: u32, read: i32, recurring: bool) -> (u32, bool) {
-        let key = item_key(slot, ordinal);
-        let reason = match coverage::witnessed::<tables::PowerItems>(frame, key) {
-            coverage::Witness::Row(row) => {
-                let asked = &mut self.asked;
-                let at = *self.index.entry((run, slot, ordinal)).or_insert_with(|| {
-                    asked.push((run, row.clone()));
-                    (asked.len() - 1) as u32
-                });
-                return (at, true);
+    fn at(&mut self, frame: Option<&DecodedFrame>, piece: &Piece, witness: Option<coverage::Witness<'_, [Cell]>>, ordinal: u32, read: i32, recurring: bool) -> (u32, bool) {
+        let (run, slot) = (piece.run, piece.slot);
+        let reason = match witness {
+            Some(coverage::Witness::Absent) => ITEM_ABSENT.to_owned(),
+            Some(coverage::Witness::NotRecorded(reason)) => reason,
+            witness => {
+                if matches!(witness, Some(coverage::Witness::Row(_))) && let Some(&at) = self.index.get(&(run, slot, ordinal)) {
+                    return (at, true);
+                }
+                let frame = frame.expect("a first or unproven witness requests its detail row");
+                match coverage::witnessed::<tables::PowerItems>(frame, item_key(slot, ordinal)) {
+                    coverage::Witness::Row(row) => {
+                        let at = *self.index.entry((run, slot, ordinal)).or_insert_with(|| {
+                            self.asked.push((run, row.clone()));
+                            (self.asked.len() - 1) as u32
+                        });
+                        return (at, true);
+                    }
+                    coverage::Witness::Absent => ITEM_ABSENT.to_owned(),
+                    coverage::Witness::NotRecorded(reason) => reason,
+                }
             }
-            coverage::Witness::Absent => "Its item was not among the power items read when it was charged".to_owned(),
-            coverage::Witness::NotRecorded(reason) => reason,
         };
         let unrecorded = &mut self.unrecorded;
         let at = *self.unrecorded_index.entry((run, slot, ordinal, reason.clone())).or_insert_with(|| {
@@ -1394,7 +1457,6 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         warnings: Vec::new(),
     };
     let mut items = Items::default();
-    let mut frames = at_hour::Frames::new(query)?;
     let mut credits: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     let mut day_gap_hours: BTreeMap<String, u64> = BTreeMap::new();
     let mut gain_buckets: BTreeMap<(i32, Option<i32>), GainBucket> = BTreeMap::new();
@@ -1403,6 +1465,7 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
     let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     let held = pieces(query, &params.country, params.from, params.to)?;
     reply.tag = query.holders.tag_at(&params.country, params.to).map_or_else(|| params.country.key().into_owned(), str::to_owned);
+    let mut batches = Vec::new();
     for piece in &held {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let coverage_start = reply.coverage.len();
@@ -1411,9 +1474,9 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
         instant_gains(query, piece, currency, &mut reply.gain_coverage, &mut gain_buckets, &mut allocations)?;
         let low = u128::from(piece.slot) << 40 | u128::from(currency.code()) << 32;
         let (payments_from, days_from) = (reply.payments.len(), reply.days.len());
-        let mut asks: BTreeMap<(u32, i32), bool> = BTreeMap::new();
+        let mut asks = BTreeMap::new();
         let mut ask = |ordinal: u32, hour: i32, recurring: bool| {
-            asks.entry((ordinal, hour)).or_insert(recurring);
+            asks.entry((hour, ordinal)).or_insert(recurring);
         };
         changes(query, piece, low, low | u128::from(u32::MAX), &mut |change| {
             if change.ordinal == PowerSpendTotalRow::GAINS {
@@ -1442,12 +1505,18 @@ fn spending(query: &Query<'_>, params: &PowerSpendingParams, naming: &naming::Co
             })?;
             apply_day_gaps(&mut reply.coverage, coverage_start, &gaps, &mut day_gap_hours);
         }
-        let resolved = items.read(&mut frames, piece, &asks)?;
+        batches.push(ItemAsks { piece, payments: payments_from..reply.payments.len(), days: days_from..reply.days.len(), asks });
+    }
+    let membership = item_membership(query, &batches)?;
+    let mut frames = at_hour::Frames::new(query)?;
+    for batch in batches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let resolved = items.read(&mut frames, &batch, membership.get(&batch.piece.run))?;
         let missing = resolved.values().filter(|(_, known)| !known).count();
-        for payment in &mut reply.payments[payments_from..] {
+        for payment in &mut reply.payments[batch.payments] {
             payment.item = resolved[&(payment.item, payment.read)].0;
         }
-        for day in &mut reply.days[days_from..] {
+        for day in &mut reply.days[batch.days] {
             day.item = resolved[&(day.item, day.read)].0;
             if day.credits > 0 || day.unknown_credits > 0 {
                 let held = credits.entry(day.item).or_default();
