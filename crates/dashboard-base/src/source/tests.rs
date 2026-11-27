@@ -69,7 +69,7 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     });
     let mut old_lines = Vec::new();
     content_reader_layers::content::diagnostics::current().append_to(&mut old_lines);
-    source.append_changed_warnings(&mut old_lines, Some(&old));
+    if let Some(held) = source.changed_content(&old) { held.append_changed_to(&mut old_lines); }
     assert!(!uncovered(&old_lines));
     assert!(!content_reader_layers::content::diagnostics::current().has_uncovered());
     assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
@@ -79,7 +79,7 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     content_reader_layers::content::diagnostics::scope(&mut own, false, || {
         let mut new_lines = Vec::new();
         content_reader_layers::content::diagnostics::current().append_to(&mut new_lines);
-        source.append_changed_warnings(&mut new_lines, Some(&new));
+        if let Some(held) = source.changed_content(&new) { held.append_changed_to(&mut new_lines); }
     assert!(uncovered(&new_lines));
     assert!(content_reader_layers::content::diagnostics::current().has_uncovered());
     });

@@ -292,7 +292,7 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
         tables: vec![TableId::Countries],
         holders,
         context: (),
-        content_warnings: Vec::new(),
+        finish: Finish::new(&source, &LoadContext { content: None }, false),
         live: None,
         executable: Some(executable),
         product: PhantomData,

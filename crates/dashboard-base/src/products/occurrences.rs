@@ -73,13 +73,13 @@ pub fn counts(answer: &Answer, keys: &[&str]) -> Vec<OccurrenceCount> {
     keys.iter().zip(&answer.chips).map(|(key, total)| OccurrenceCount { key: (*key).to_owned(), total: total.to_string(), missing: None }).collect()
 }
 
-pub fn occurrence_panel<R, F>(executable: Option<engine_executable::executable_tables::Tables>, read: F) -> Box<dyn Panel>
+pub fn occurrence_panel<R, F>(executable: Option<engine_executable::executable_tables::Tables>, finish: super::Finish, read: F) -> Box<dyn Panel>
 where
-    R: OccurrenceReply,
+    R: OccurrenceReply + super::ReplyWarnings,
     F: Fn(i32, &AtomicBool) -> io::Result<R> + Send + Sync + 'static,
 {
     super::at_hour::interval_panel(executable, move |hour, cancelled| {
-        let reply = read(hour, cancelled)?;
+        let reply = finish.reply(|| read(hour, cancelled))?;
         let through = reply.next_change().map_or(i32::MAX, |next| next.saturating_sub(1));
         let rows = reply.row_count() as u64;
         Ok((serde_json::to_value(reply)?, hour..=through, rows))
@@ -96,7 +96,10 @@ mod tests {
         hour: i32,
         next_change: Option<i32>,
         rows: usize,
+        warnings: Vec<String>,
     }
+
+    crate::reply_warnings!(StubReply);
 
     impl OccurrenceReply for StubReply {
         fn next_change(&self) -> Option<i32> {
@@ -112,10 +115,10 @@ mod tests {
     fn occurrence_panel_reuses_held_reply_across_quiet_forward_steps_and_rereads_at_boundary_seed_or_seek_back() {
         let calls = Arc::new(AtomicUsize::new(0));
         let reader_calls = Arc::clone(&calls);
-        let panel = occurrence_panel(None, move |hour, _cancelled| {
+        let panel = occurrence_panel(None, crate::products::Finish::default(), move |hour, _cancelled| {
             reader_calls.fetch_add(1, Ordering::SeqCst);
             let next_change = if hour < 20 { Some(20) } else { None };
-            Ok(StubReply { hour, next_change, rows: 3 })
+            Ok(StubReply { hour, next_change, rows: 3, warnings: Vec::new() })
         });
         let exact = panel.exact().expect("exact reader");
         let cancel = AtomicBool::new(false);
@@ -158,9 +161,9 @@ mod tests {
     fn a_reply_that_does_not_prove_its_own_hour_is_never_held() {
         let calls = Arc::new(AtomicUsize::new(0));
         let reader_calls = Arc::clone(&calls);
-        let panel = occurrence_panel(None, move |hour, _cancelled| {
+        let panel = occurrence_panel(None, crate::products::Finish::default(), move |hour, _cancelled| {
             reader_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(StubReply { hour, next_change: Some(hour), rows: 1 })
+            Ok(StubReply { hour, next_change: Some(hour), rows: 1, warnings: Vec::new() })
         });
         let exact = panel.exact().expect("exact reader");
         let cancel = AtomicBool::new(false);
