@@ -604,6 +604,42 @@ const api = {
   exactness,
   scrollDashboard(top: number) { scroller().scrollTop = top; return scroller().scrollTop; },
   nudgeDashboard(left: number) { document.getElementById('dashboard-root')!.style.marginLeft = `${left}px`; },
+  placeEmptyBars() {
+    statics.set('bars', { stamp: {}, proof: null, hour: barsHour,
+      panels: { main: { ...barsModel, rows: [], empty: 'No samples at this hour.' } } });
+    setLook({ ...look });
+    const cell = document.querySelector('[data-widget="bars"]')!.parentElement!;
+    cell.style.cssText = 'position:fixed; left:238.4px; top:472.4px; width:774px; height:186px; z-index:10;';
+  },
+  moveEmptyBars() {
+    const cell = document.querySelector('[data-widget="bars"]')!.parentElement!;
+    cell.style.left = '238px';
+    cell.style.top = '472px';
+  },
+  barsPicture() {
+    const canvas = canvases().find(canvas => familyOf(canvas) === 'bars')!;
+    const body = canvas.closest('.fh-body')!;
+    const picture = pipeline.view(Number(canvas.dataset.placement));
+    return { id: picture?.id, binding: picture?.binding, hour: picture?.through,
+      busy: body.closest('.fh-frame')!.getAttribute('aria-busy'), width: body.clientWidth, height: body.clientHeight };
+  },
+  async barsLeadingEdgeAtSmallScale() {
+    document.documentElement.style.zoom = '0.75';
+    api.zoom({ bars: 0.5 });
+    api.placeEmptyBars();
+    await frames(6);
+    const canvas = canvases().find(canvas => familyOf(canvas) === 'bars')!;
+    const extent = canvas.parentElement!;
+    const body = extent.parentElement!;
+    const cell = canvas.closest('[data-widget="bars"]')!.parentElement!;
+    const top = body.getBoundingClientRect().top * devicePixelRatio;
+    const nudge = (Math.floor(top) + 0.49 - top) / (devicePixelRatio * cell.currentCSSZoom);
+    cell.style.top = `${parseFloat(cell.style.top) + nudge}px`;
+    await frames(6);
+    const leading = canvas.getBoundingClientRect().top;
+    return { offset: (leading - body.getBoundingClientRect().top) / canvas.currentCSSZoom,
+      inside: leading >= extent.getBoundingClientRect().top };
+  },
   scrollTable(top: number) {
     const body = document.querySelector<HTMLElement>('[data-widget="table"] .fh-body')!;
     body.scrollTop = top;
