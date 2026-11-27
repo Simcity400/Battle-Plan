@@ -2531,6 +2531,33 @@ fn a_followed_population_rank_of_packed_holders_returns_the_country_slot() {
 }
 
 #[test]
+fn the_follow_host_releases_its_pages_when_dropped() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let pages = record(quiet);
+    let held = crate::host::held_tables(&*pages, pages.kinds.len());
+    let timeline = Timeline::whole(&*pages).unwrap();
+    let pages_ref = Arc::downgrade(&pages);
+    let follow = Follow::new(0);
+    let hook = follow.hook(Box::new(|_, _| {}));
+    let notifier = follow.clone();
+    let playhead = Arc::new(Playhead::new(pages, timeline, Settings::default(), Some(hook)).unwrap());
+    let host = crate::host::PlayheadHost::new(playhead, |p| p, |_, _| {}, follow, held).unwrap();
+    let declarations = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&declarations);
+    notifier.bind(move |_, _| {
+        counted.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }, host.playhead().log_reads()).unwrap();
+    assert!(pages_ref.upgrade().is_some());
+    drop(host);
+    notifier.rehooker()();
+    assert_eq!(declarations.load(Ordering::Relaxed), 1);
+    drop(notifier);
+    assert!(pages_ref.upgrade().is_none());
+}
+
+#[test]
 fn a_pending_product_on_a_paused_seek_delivers_its_anchored_hour_after_warming() {
     use crate::{
         host::PlayheadHost,

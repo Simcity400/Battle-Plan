@@ -358,13 +358,20 @@ impl Inputs {
     }
 }
 
-#[derive(Default)]
-struct ScriptContentIndex(Mutex<Option<Arc<content_reader_events::events::LazyEvents>>>);
+#[cfg(test)]
+#[test]
+fn the_event_index_releases_the_recording_with_its_catalogue() {
+    use dashboard_base::test_fixtures::visual_mods::Machine;
 
-fn script_events(catalogue: &Catalogue) -> Arc<content_reader_events::events::LazyEvents> {
-    let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
-    let mut index = cache.0.lock().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(index.get_or_insert_with(|| Arc::new(content_reader_events::events::LazyEvents::from_content(Arc::clone(&catalogue.content)))))
+    let machine = Machine::new("event_index_release");
+    let (source, options) = machine.open();
+    let replay = Arc::downgrade(&source.replay());
+    let catalogue = catalogue::catalogue(&source, &options).unwrap();
+    assert!(std::ptr::eq(catalogue.event_index(), catalogue.event_index()));
+    drop(source);
+    assert!(replay.upgrade().is_some());
+    drop(catalogue);
+    assert!(replay.upgrade().is_none());
 }
 
 fn inline_gaps(expanded: &ExpandedText) -> String {
@@ -741,7 +748,7 @@ fn presentation(notices: &mut Notices, art: &Art<'_, '_>, kind: EventFeedKind, i
         return Ok(());
     };
     let lookup = || {
-        let event = script_events(catalogue).get(token.as_bytes())?;
+        let event = catalogue.event_index().get(token.as_bytes())?;
         let title = if event.refused.is_none() { event.sole_title_key().map(|key| key.map(Arc::from)) } else { Ok(None) };
         Ok((event, title))
     };
@@ -967,7 +974,7 @@ fn render(catalogue: &Catalogue, inputs: &Inputs, decision: bool, source: &str, 
     };
     let actor = inputs.actor_slot.unwrap_or(0);
     let text = ScriptedText::new(&frame, &catalogue.localisation, scripted, actor);
-    let events = script_events(catalogue);
+    let events = catalogue.event_index();
     let lookup = |id: &[u8]| events.get(id);
     let context = effect_description::Context::new(&text, &catalogue.localisation, actor, source, content.view(Some(&lookup)));
     Ok(effect_description::describe(items, &context, &mut inputs.graph(decision)?))
@@ -1007,7 +1014,7 @@ fn effects(notices: &mut Notices, catalogue: &Catalogue, kind: EventFeedKind, it
     let Some(token) = item.token.clone() else { return Ok(()) };
     let unavailable = |notices: &mut Notices, reason: String| notices.unavailable("scriptEffectDescription", "Authored effects", reason, Some(1));
     if presents_event(kind) {
-        let events = script_events(catalogue);
+        let events = catalogue.event_index();
         let event = match events.get(token.as_bytes()) {
             Ok(event) => event,
             Err(reason) => {
