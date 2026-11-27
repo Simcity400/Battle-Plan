@@ -319,7 +319,7 @@ fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
     for reads in control.followed.values().filter(|reads| reads.table != head::TABLE) {
         let entry = tables.entry(reads.table).or_default();
         entry.0.extend(&reads.columns);
-        entry.1 |= reads.appended;
+        entry.1 = true;
         entry.2 |= reads.appended || reads.listed;
     }
     for lane in control.products.values().flatten() {
@@ -925,7 +925,7 @@ impl Engine {
             }
             followed.phase = Phase::Active;
             let head = evaluate::head(lane);
-            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), ..Index::default() });
+            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), read: head, ..Index::default() });
             index.queries.push(query);
             if followed.query.witness_sensitive() {
                 index.witnessed.push(query);
@@ -1010,8 +1010,11 @@ impl Engine {
         {
             index.status = Some(status);
             index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
-        } else if changes.read_rows_changed() {
+        } else if changes.read_rows_changed() || (matches!(index.status, Some(Status::Truncated { .. })) && index.read.saturating_add(1) < evaluate::head(lane)) {
             index.witnessed.iter().for_each(|&query| mark_all(slab, marked, query));
+        }
+        if changes.status_left().is_some() {
+            index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
         }
         if let Some(log) = changes.log() {
             let head = evaluate::head(lane);
@@ -1118,6 +1121,19 @@ impl Engine {
                 } else {
                     at += 1;
                 }
+            }
+        }
+        if !passing.is_empty() {
+            index.broad.iter().for_each(|&query| mark(slab, marked, query));
+            match passing.keys() {
+                Some(keys) => {
+                    for &key in keys {
+                        if let Some(watch) = index.watch.get(&key) {
+                            watch.queries.iter().for_each(|&query| mark_row(slab, marked, query, key));
+                        }
+                    }
+                }
+                None => index.queries.iter().for_each(|&query| mark_all(slab, marked, query)),
             }
         }
         for written in changes.columns() {
