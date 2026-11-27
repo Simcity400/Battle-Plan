@@ -999,7 +999,7 @@ impl<'a> Inputs<'a> {
 
     fn kinds_of(&self, table: TableId) -> io::Result<&'a [Kind]> {
         let kinds = self.kinds;
-        kinds.get(table.index()).map(Vec::as_slice).ok_or_else(|| self.refuse(format!("it reads {table:?}, which this recording's schema does not hold")))
+        kinds.get(table.index()).filter(|kinds| !kinds.is_empty()).map(Vec::as_slice).ok_or_else(|| self.refuse(format!("it reads {table:?}, which this recording's schema does not hold")))
     }
 
     fn refuse(&self, why: String) -> io::Error {
