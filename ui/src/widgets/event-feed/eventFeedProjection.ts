@@ -21,7 +21,7 @@ import { DEFAULT_TAIL_PAGE_SIZE, validateRowTailReply, type DatedLogRow, type Ta
 import { TABLE_SETTINGS_KEY, tableSettingsOf } from '../../families/table/settings.ts';
 import { knownValue, notApplicable, notRecorded } from '../../families/value.ts';
 import { formatRecordedPercent, formatScalar } from '../../families/valueFormat.ts';
-import type { EventFeedFoldRow, EventFeedItem, EventFeedLine, EventFeedMoreRow, EventFeedPageRow, EventFeedRow, ScriptEdge, ScriptStatus } from '../../generated/dashboard';
+import { EVENT_FEED_ROW_LABELS, type EventFeedFoldRow, type EventFeedItem, type EventFeedLine, type EventFeedMoreRow, type EventFeedPageRow, type EventFeedRow, type ScriptEdge, type ScriptStatus } from '../../generated/dashboard.ts';
 import { choiceNotRecordedText, optionLetter } from '../event-choices/eventChoicesData.ts';
 import type { EventDetailSubject } from '../event-choices/EventDetailWindow.tsx';
 import { CATEGORIES, EVENT_FEED_COLUMNS } from './definition.ts';
@@ -122,6 +122,7 @@ function eventItemAndSubtext(
   const item = effectiveEventItem(event, page.choice);
   const reasons = reasonsOf(item);
   const named = nonBlank(item?.name);
+  const label = EVENT_FEED_ROW_LABELS[event.kind] ?? null;
   const chosenOrdinal = parsedOptionOrdinal(event, page.choice);
   const stateLabel = (stateId: number | null | undefined): string | undefined => {
     if (stateId == null) return undefined;
@@ -158,80 +159,63 @@ function eventItemAndSubtext(
         missingReason: reasons.nameMissing ?? 'Event presentation was not recorded',
       };
     case 'decisionSelected':
-      return { primary: named ?? 'Decision selected', secondary: named ? 'Decision' : undefined, missingReason: reasons.nameMissing };
+      return { primary: named ?? label, secondary: named ? 'Decision' : undefined, missingReason: reasons.nameMissing };
     case 'decisionActivated':
-      return { primary: named ?? 'Mission activated', secondary: named ? 'Mission' : undefined, missingReason: reasons.nameMissing };
+      return { primary: named ?? label, secondary: named ? 'Mission' : undefined, missingReason: reasons.nameMissing };
     case 'decisionCompleted':
       return {
-        primary: named ?? 'Decision completed',
+        primary: named ?? label,
         secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Completed',
         missingReason: reasons.nameMissing,
       };
     case 'decisionTimedOut':
-      return { primary: named ?? 'Decision timed out', secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Timed out', missingReason: reasons.nameMissing };
+      return { primary: named ?? label, secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Timed out', missingReason: reasons.nameMissing };
     case 'decisionCancelled':
-      return { primary: named ?? 'Decision cancelled', secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Cancelled', missingReason: reasons.nameMissing };
+      return { primary: named ?? label, secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Cancelled', missingReason: reasons.nameMissing };
     case 'decisionRemoved':
-      return { primary: named ?? 'Decision removed', secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Removed', missingReason: reasons.nameMissing };
+      return { primary: named ?? label, secondary: event.decisionState?.kind === 'failed' ? 'Failed' : 'Removed', missingReason: reasons.nameMissing };
     case 'decisionReenabled':
-      return { primary: named ?? 'Decision reenabled', secondary: 'Reenabled' };
+      return { primary: named ?? label, secondary: 'Reenabled' };
     case 'decisionDurationChanged':
-      return { primary: named ?? 'Duration changed', secondary: 'Duration changed' };
+      return { primary: named ?? label, secondary: label ?? undefined };
     case 'decisionRemovalEffect':
     case 'decisionCancellationEffect':
     case 'decisionCompletionEffect':
     case 'decisionTimeoutEffect':
-      return { primary: named ?? 'Decision effect', secondary: 'Effect' };
+      return { primary: named ?? label, secondary: 'Effect' };
     case 'warStarted':
     case 'warDeclared':
-      return { primary: 'War declared', secondary: event.cause?.how ?? undefined };
-    case 'warJoined':
-      return { primary: 'Joined a war', secondary: event.cause?.reason ?? event.cause?.how ?? undefined };
-    case 'civilWarWarTransferred':
-      return { primary: 'Civil war transferred' };
     case 'warEnded':
     case 'peace':
-      return { primary: 'Peace', secondary: event.cause?.how ?? undefined };
-    case 'peaceConferenceStarted':
-      return { primary: 'Peace conference' };
-    case 'capitulated':
-      return { primary: 'Capitulated' };
     case 'annexed':
-      return { primary: 'Annexed', secondary: event.cause?.how ?? undefined };
     case 'released':
-      return { primary: 'Released', secondary: event.cause?.how ?? undefined };
-    case 'stateTransferred':
-      return { primary: 'State transferred', secondary: stateLabel(event.cause?.state) };
+      return { primary: label, secondary: event.cause?.how ?? undefined };
+    case 'warJoined':
+      return { primary: label, secondary: event.cause?.reason ?? event.cause?.how ?? undefined };
+    case 'civilWarWarTransferred':
+    case 'peaceConferenceStarted':
+    case 'capitulated':
     case 'ceasedToExist':
-      return { primary: 'Ceased to exist' };
+    case 'guaranteeGranted':
+      return { primary: label };
+    case 'stateTransferred':
+      return { primary: label, secondary: stateLabel(event.cause?.state) };
     case 'factionJoined':
-      return {
-        primary: 'Joined faction',
-        ...(named ? { secondary: named } : {}),
-        ...(named === null ? { detail: { value: notRecorded(reasons.nameMissing ?? 'Faction name not recorded at this hour') } } : {}),
-      };
     case 'factionLeft':
       return {
-        primary: 'Left faction',
+        primary: label,
         ...(named ? { secondary: named } : {}),
         ...(named === null ? { detail: { value: notRecorded(reasons.nameMissing ?? 'Faction name not recorded at this hour') } } : {}),
       };
     case 'becameSubject':
-      return { primary: 'Became subject', secondary: named ?? undefined };
-    case 'guaranteeGranted':
-      return { primary: 'Guaranteed' };
     case 'rulingPartyChanged':
-      return { primary: 'New government', secondary: named ?? undefined };
     case 'lawChanged':
-      return { primary: 'Law changed', secondary: named ?? undefined };
     case 'advisorHired':
-      return { primary: 'Advisor hired', secondary: named ?? undefined };
     case 'focusCompleted':
-      return { primary: 'Focus completed', secondary: named ?? undefined };
     case 'projectFinished':
-      return { primary: 'Project finished', secondary: named ?? undefined };
+      return { primary: label, secondary: named ?? undefined };
     case 'nukesIncreased':
-      return { primary: 'Nuclear stockpile', secondary: event.amount ? `+${event.amount}` : undefined };
+      return { primary: label, secondary: event.amount ? `+${event.amount}` : undefined };
     case 'nuclearStrike': {
       const targetState = stateLabel(event.strike?.state);
       const losses: string[] = [];
@@ -246,7 +230,7 @@ function eventItemAndSubtext(
           ? { value: notRecorded(event.strike.notRecorded.join('; ')) }
           : undefined;
       return {
-        primary: 'Nuclear strike',
+        primary: label,
         secondary: targetState,
         detail: detailCell,
       };

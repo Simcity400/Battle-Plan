@@ -144,6 +144,43 @@ impl EventFeedKind {
         Self::ALL.get(usize::from(index)).copied()
     }
 
+    pub fn row_label(self) -> Option<&'static str> {
+        use EventFeedKind::*;
+        match self {
+            WarStarted | WarDeclared => Some("War declared"),
+            WarJoined => Some("Joined a war"),
+            CivilWarWarTransferred => Some("Civil war transferred"),
+            WarEnded | Peace => Some("Peace"),
+            PeaceConferenceStarted => Some("Peace conference"),
+            Capitulated => Some("Capitulated"),
+            Annexed => Some("Annexed"),
+            Released => Some("Released"),
+            StateTransferred => Some("State transferred"),
+            CeasedToExist => Some("Ceased to exist"),
+            FactionJoined => Some("Joined faction"),
+            FactionLeft => Some("Left faction"),
+            BecameSubject => Some("Became subject"),
+            GuaranteeGranted => Some("Guaranteed"),
+            RulingPartyChanged => Some("New government"),
+            LawChanged => Some("Law changed"),
+            AdvisorHired => Some("Advisor hired"),
+            FocusCompleted => Some("Focus completed"),
+            ProjectFinished => Some("Project finished"),
+            NukesIncreased => Some("Nuclear stockpile"),
+            NuclearStrike => Some("Nuclear strike"),
+            DecisionSelected => Some("Decision selected"),
+            DecisionActivated => Some("Mission activated"),
+            DecisionCompleted => Some("Decision completed"),
+            DecisionTimedOut => Some("Decision timed out"),
+            DecisionCancelled => Some("Decision cancelled"),
+            DecisionRemoved => Some("Decision removed"),
+            DecisionReenabled => Some("Decision reenabled"),
+            DecisionDurationChanged => Some("Duration changed"),
+            DecisionRemovalEffect | DecisionCancellationEffect | DecisionCompletionEffect | DecisionTimeoutEffect => Some("Decision effect"),
+            ScriptEventFired | NewsEventFired | EventOptionSelected | EventWindowPresented => None,
+        }
+    }
+
     pub fn category(self) -> EventFeedCategory {
         use EventFeedKind::*;
         match self {

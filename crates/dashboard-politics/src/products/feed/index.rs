@@ -335,25 +335,6 @@ fn text_of(token: Option<&str>, tags: impl Iterator<Item = String>) -> Box<str> 
     text.join(" ").into_boxed_str()
 }
 
-fn feed_label(kind: EventFeedKind) -> Option<&'static str> {
-    use EventFeedKind::*;
-    match kind {
-        WarStarted | WarDeclared => Some("War declared"), WarJoined => Some("Joined a war"),
-        CivilWarWarTransferred => Some("Civil war transferred"), WarEnded | Peace => Some("Peace"),
-        PeaceConferenceStarted => Some("Peace conference"), Capitulated => Some("Capitulated"),
-        Annexed => Some("Annexed"), Released => Some("Released"), StateTransferred => Some("State transferred"),
-        CeasedToExist => Some("Ceased to exist"), FactionJoined => Some("Joined faction"), FactionLeft => Some("Left faction"),
-        BecameSubject => Some("Became subject"), GuaranteeGranted => Some("Guaranteed"), RulingPartyChanged => Some("New government"),
-        LawChanged => Some("Law changed"), AdvisorHired => Some("Advisor hired"), FocusCompleted => Some("Focus completed"),
-        ProjectFinished => Some("Project finished"), NukesIncreased => Some("Nuclear stockpile"), NuclearStrike => Some("Nuclear strike"),
-        DecisionSelected => Some("Decision selected"), DecisionActivated => Some("Mission activated"), DecisionCompleted => Some("Decision completed"),
-        DecisionTimedOut => Some("Decision timed out"), DecisionCancelled => Some("Decision cancelled"), DecisionRemoved => Some("Decision removed"),
-        DecisionReenabled => Some("Decision reenabled"), DecisionDurationChanged => Some("Duration changed"),
-        DecisionRemovalEffect | DecisionCancellationEffect | DecisionCompletionEffect | DecisionTimeoutEffect => Some("Decision effect"),
-        _ => None,
-    }
-}
-
 fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &Names, name: Option<&str>) -> Occurrence<Item> {
     let tags = |roles: &[Role]| roles.iter().filter_map(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)).map(str::to_owned)).collect::<Vec<_>>();
     let (date, roles, valid_clock): (i32, Vec<Role>, bool) = if !event.derived() {
@@ -377,7 +358,8 @@ fn feed_occurrence(event: &FeedEvent, kind: EventFeedKind, at: Locator, names: &
         (date, vec![Role::dated(actor, date, at.hour), Role::dated(target, date, at.hour)], shown <= event.read_hour)
     };
     let token = event.token.as_deref().and_then(|bytes| std::str::from_utf8(bytes).ok());
-    let name = if kind.scripted() { name.or_else(|| feed_label(kind)) } else { feed_label(kind).or(name) };
+    let label = kind.row_label();
+    let name = if kind.scripted() { name.or(label) } else { label.or(name) };
     let text = SearchText::from(text_of(token, tags(&roles).into_iter().chain(name.map(str::to_owned))));
     let sort_keys = Box::new([SortKey::text(roles.first().and_then(|role| role.slot.and_then(|slot| names.slot_tag(slot, role.at)))), SortKey::text(name)]);
     Occurrence { id: at.key, date, observed: at.hour, kind: kind_code(kind), roles: roles.into_boxed_slice(), subjects: Box::new([]), states: Box::new([]), sort_keys, text, payload: Item::Log { head: at, edges: Box::new([]), valid_clock } }
@@ -775,7 +757,7 @@ fn family_occurrence(query: &Query<'_>, family: families::FamilyRow, slot: Optio
             .collect()
     };
     let name = row.item.as_ref().and_then(|item| item.name.clone());
-    let label = feed_label(row.kind);
+    let label = row.kind.row_label();
     let text = SearchText::from(text_of(name.as_deref(), row.tags.iter().cloned().chain(label.map(str::to_owned))));
     Occurrence {
         id: family_id(&row.id),
