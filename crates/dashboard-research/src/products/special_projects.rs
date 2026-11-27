@@ -308,6 +308,54 @@ struct State {
     held: Option<Arc<ProjectContent>>,
 }
 
+const KEPT_HISTORIES: usize = 8;
+type HistorySlot = Arc<Mutex<ExactHistory>>;
+
+#[derive(Default)]
+struct Kept(Vec<((u64, Country), HistorySlot)>);
+
+impl Kept {
+    fn slot(&mut self, branch: u64, country: &Country) -> HistorySlot {
+        let entry = match self.0.iter().position(|((held_branch, held_country), _)| *held_branch == branch && held_country == country) {
+            Some(at) => self.0.remove(at),
+            None => ((branch, country.clone()), Arc::default()),
+        };
+        let slot = Arc::clone(&entry.1);
+        self.0.push(entry);
+        if self.0.len() > KEPT_HISTORIES {
+            self.0.remove(0);
+        }
+        slot
+    }
+}
+
+#[derive(Default)]
+struct ExactHistory {
+    history: Option<(Option<u32>, incremental::Follow)>,
+    spelling: Option<Spelling>,
+    content: Option<std::sync::Weak<ProjectContent>>,
+}
+
+impl ExactHistory {
+    fn read(&mut self, query: &Query<'_>, country: &Country, hour: i32, cancelled: &AtomicBool) -> io::Result<(&incremental::Follow, &mut Option<Spelling>)> {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let run = query.timeline.at(hour).map(|stretch| stretch.run);
+        if self.history.as_ref().is_none_or(|(held_run, follow)| {
+            *held_run != run || follow.through().is_some_and(|through| hour < through)
+        }) {
+            self.history = Some((run, incremental::Follow::new(query.timeline.first)));
+            self.spelling = None;
+        }
+        let read = self.history.as_mut().expect("a project history").1.to(query, country, hour, cancelled);
+        if let Err(error) = read {
+            self.history = None;
+            self.spelling = None;
+            return Err(error);
+        }
+        Ok((&self.history.as_ref().expect("a project history").1, &mut self.spelling))
+    }
+}
+
 pub(crate) fn content(source: &Source, load: &LoadContext) -> io::Result<Arc<ProjectContent>> {
     let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Special projects need the recorded content stack"))?;
     let politics = politics_content(source, options)?;
@@ -1028,6 +1076,7 @@ fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u3
 struct Spelled {
     tokens: HashMap<u32, String>,
     people: HashMap<u32, ProjectPerson>,
+    notes: OwnRefusals,
 }
 
 fn spell(query: &Query<'_>, naming: &mut Naming<'_>, definitions: &BTreeMap<u32, i32>, characters: &BTreeMap<u32, i32>, cancelled: &AtomicBool) -> io::Result<Spelled> {
@@ -1038,7 +1087,7 @@ fn spell(query: &Query<'_>, naming: &mut Naming<'_>, definitions: &BTreeMap<u32,
     for (&id, &hour) in characters {
         by_hour.entry(hour).or_default().1.push(id);
     }
-    let mut spelled = Spelled { tokens: HashMap::new(), people: HashMap::new() };
+    let mut spelled = Spelled { tokens: HashMap::new(), people: HashMap::new(), notes: OwnRefusals::default() };
     let mut frames = at_hour::Frames::new(query)?;
     for (hour, (defs, chars)) in by_hour {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -1049,10 +1098,12 @@ fn spell(query: &Query<'_>, naming: &mut Naming<'_>, definitions: &BTreeMap<u32,
         let lexical = frames.frame(hour, &tokens, "Special project names")?;
         frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
         spelled.tokens.extend(spellings(&frame, defs));
-        for id in chars {
-            let person = naming.person(&frame, id);
-            spelled.people.insert(id, person);
-        }
+        let ((), notes) = catalogue::capture_isolated(|| {
+            for id in chars {
+                spelled.people.insert(id, naming.person(&frame, id));
+            }
+        });
+        spelled.notes.merge(&notes);
     }
     Ok(spelled)
 }
@@ -1092,14 +1143,27 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
     let content = content(source, load)?;
     let through = params.hour.unwrap_or(query.timeline.last);
     if params.hour.is_some() && query.timeline.at(through).is_none() { return Err(dashboard_core::refused("Special projects hour is not recorded")); }
-    reply_through(query, params, &content, through, cancelled)
+    reply_through(query, params, &content, through, cancelled, &source.state::<Kept>())
 }
 
-fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
-    let mut follow = incremental::Follow::new(query.timeline.first);
-    follow.to(&query, &params.country, through, cancelled)?;
+fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Arc<ProjectContent>, through: i32, cancelled: &AtomicBool, kept: &Mutex<Kept>) -> io::Result<SpecialProjectsReply> {
+    let slot = kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner).slot(query.timeline.id, &params.country);
+    let mut held = match slot.lock() {
+        Ok(held) => held,
+        Err(error) => {
+            let mut held = error.into_inner();
+            *held = ExactHistory::default();
+            slot.clear_poison();
+            held
+        }
+    };
+    if held.content.as_ref().is_none_or(|content_read| !std::ptr::eq(content_read.as_ptr(), Arc::as_ptr(content))) {
+        held.spelling = None;
+        held.content = Some(Arc::downgrade(content));
+    }
+    let (follow, spelling) = held.read(&query, &params.country, through, cancelled)?;
     let tag = query.holders.name(&params.country, through);
-    present(&query, params, content, &follow, &tag, cancelled, &mut None)
+    present(&query, params, content, follow, &tag, cancelled, spelling)
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
@@ -1228,10 +1292,12 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             let more = spell(query, &mut naming, &new_definitions, &new_characters, cancelled)?;
             spelled.tokens.extend(more.tokens);
             spelled.people.extend(more.people);
+            spelled.notes.merge(&more.notes);
             *cache = Some((definitions, characters, spelled, naming.refusals.get_mut().unwrap().clone(), naming.art.clone()));
         }
     }
     let (_, _, spelled, refused, art) = cache.as_ref().expect("spelled");
+    catalogue::credit(&spelled.notes);
     *naming.refusals.get_mut().unwrap() = refused.clone();
     naming.art.clone_from(art);
     let mut people = Interned::new();
@@ -1382,10 +1448,11 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
     let advance = at_hour::shared_reader(source, load, SpecialProjects::KEY, asked, || incremental::reader(replay.clone(), timeline.clone(), holders.clone(), params.clone(), content.clone(), executable, finish.clone()));
+    let kept = source.state::<Kept>();
     let read: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
         if timeline.at(hour).is_none() { return Err("Special projects hour is not recorded".into()); }
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        let reply = engine_executable::executable_tables::scope(executable, || finish.reply(|| reply_through(query, &params, &content, hour, cancelled))).map_err(|e| e.to_string())?;
+        let reply = engine_executable::executable_tables::scope(executable, || finish.reply(|| reply_through(query, &params, &content, hour, cancelled, &kept))).map_err(|e| e.to_string())?;
         serde_json::to_value(reply).map_err(|e| e.to_string())
     });
     Ok(at_hour::product_panel(advance, read))

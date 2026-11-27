@@ -14,6 +14,88 @@ const UNKNOWN: (u32, u8, u8, u64) = (0x99, 1, 1, 0);
 const POOL: (u32, u8, u8, u64) = (0x18, 1, 0, 0);
 
 #[test]
+fn exact_project_reads_advance_history_shared_with_the_load_path() {
+    use dashboard_base::test_fixtures::visual_mods::Machine;
+
+    let (first, previous, requested) = (100, 850, 1020);
+    let machine = Machine::new("project_exact_history");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    machine.write("common/special_projects/projects/fixture.txt", b"fixture_project={}");
+    let frames: Vec<_> = (first..=requested).map(|at| {
+        let mut frame = frame(at, &hour(at, RUNNING));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 40, literal: b"fixture_project".to_vec() }]));
+        frame
+    }).collect();
+    let owners = frames[0].complete::<tables::CountryLinks>().unwrap().len() as u64;
+    let (source, options) = machine.open_frames(frames);
+    let load = LoadContext { content: Some(options) };
+    let cancelled = AtomicBool::new(false);
+    let load_at = |country, hour| {
+        crate::registrations::SPECIAL_PROJECTS_SPECIALPROJECTS.answer(
+            &source, serde_json::json!({"branchId":"1", "country":country, "hour":hour}), &load, &cancelled,
+        ).unwrap()
+    };
+    let exact_at_requested = || {
+        let panel = dated_panel(&source, &load, &serde_json::json!({"panel":"special-projects", "branchId":"1", "country":"GER"})).unwrap();
+        count_reads(|| (panel.exact().unwrap().cold)(requested, &cancelled).unwrap())
+    };
+    let (rebuilt, rebuilt_reads) = exact_at_requested();
+    load_at(serde_json::json!("GER"), previous);
+    let (reply, forward_reads) = exact_at_requested();
+    assert!(reply["projects"].as_array().is_some_and(|projects| !projects.is_empty()));
+    assert_eq!(reply, rebuilt);
+    let reach = (previous + 1 - (STAGGER_PERIOD - 1)).max(first);
+    let block = |hour| (hour - first) as u64 / u64::from(replay_columnar::unit::BLOCK);
+    let forward_limit = owners * (block(requested) - block(reach) + 1);
+    load_at(serde_json::json!(7), requested);
+    let (repeated, repeated_reads) = count_reads(|| load_at(serde_json::json!("GER"), requested));
+    assert_eq!(repeated, reply);
+    for table in [TableId::Projects, TableId::ProjectHistory] {
+        let forward = forward_reads[&table].stretches;
+        let rebuilt = rebuilt_reads[&table].stretches;
+        assert!((1..=forward_limit).contains(&forward) && forward < rebuilt,
+            "{table:?} walked {forward} stretches advancing (limit {forward_limit}) and {rebuilt} rebuilding");
+        assert!(repeated_reads.get(&table).is_none_or(|reads| reads.stretches == 0), "{table:?} walked history at the same hour");
+    }
+}
+
+#[test]
+fn kept_project_history_matches_rebuilds_across_rewinds_gaps_and_run_changes() {
+    let machine = dashboard_base::test_fixtures::visual_mods::Machine::new("project_exact_rebuilds");
+    machine.write("common/defines/fixture.lua", b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=23},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}");
+    let (content_source, options) = machine.open();
+    let content = content(&content_source, &LoadContext { content: Some(options) }).unwrap();
+    let segments = [(1, 100..=120), (2, 130..=140), (3, 141..=150)].map(|(branch, hours)| {
+        records(branch, hours.map(|at| {
+            let history = if at >= 107 { vec![(0, M, 107)] } else { Vec::new() };
+            let mut frame = frame(at, &Hour { history, ..hour(at, if at >= 107 { COMPLETED } else { RUNNING }) });
+            frame.branch = branch;
+            frame
+        }).collect())
+    });
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "kept-project-history".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let mut params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({"branchId":"1", "country":"GER"})).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let kept = Mutex::default();
+    let read = |params: &SpecialProjectsParams, at, kept: &Mutex<Kept>| {
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        reply_through(query, params, &content, at, &cancelled, kept)
+    };
+    for (at, current) in [(105, false), (110, true), (107, false), (120, false), (125, false), (130, false), (140, true), (141, false), (150, false), (105, true)] {
+        params.current = Some(current);
+        let rebuilt = read(&params, at, &Mutex::default()).unwrap();
+        let cached = read(&params, at, &kept).unwrap();
+        assert!(!cached.projects.is_empty(), "hour {at}");
+        assert_eq!(serde_json::to_vec(&cached).unwrap(), serde_json::to_vec(&rebuilt).unwrap(), "hour {at}");
+    }
+    params.country = Country::Slot(7);
+    let rebuilt = read(&params, 109, &Mutex::default()).unwrap();
+    let cached = read(&params, 109, &kept).unwrap();
+    assert_eq!(cached, rebuilt);
+}
+
+#[test]
 fn cached_project_icons_keep_overlay_notes_in_exact_and_followed_replies() {
     use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
 
