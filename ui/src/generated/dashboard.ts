@@ -4144,6 +4144,8 @@ garrisonAlert: boolean,
  */
 assignedKnown: boolean, garrisonMissing: string | null, law: string | null, lawMissing: string | null, };
 export type OccupationLawInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
+export type KeyedLiveSection = { groups: Array<{ ref: string, table: number, columns: Array<number>, keys: Array<string>, values?: Array<number | string>, rawValues?: Array<string | null>, follow?: number, seedHour?: number, unavailable?: string }>, kinds: Array<{ ref: string, id: string, op: "value" | "sum" | "difference" | "ratio", scale: number }>, cellsByRow: Record<string, Record<string, [kind: string, sources: Array<[group: string, key: string, column: number]>]>> };
+export type OccupiedStatesWireReply = OccupiedStatesReply & { live?: KeyedLiveSection };
 export type OccupiedStatesParamsAtHour = OccupiedStatesParams & { hour: number };
 export type OperativeMatrixParams = { branchId: string,
 /**
