@@ -443,12 +443,23 @@ impl LogReads {
         } else {
             self.shared.queue([((3, 0), Job::Rows(wanted, reply))]);
         }
-        Asked { answer }
+        self.shared.listing.fetch_add(1, Ordering::AcqRel);
+        Asked { answer, shared: Arc::downgrade(&self.shared) }
     }
 }
 
 pub struct Asked {
     answer: Arc<Answer>,
+    shared: std::sync::Weak<Shared>,
+}
+
+impl Drop for Asked {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.listing.fetch_sub(1, Ordering::AcqRel);
+            shared.nudge(|_| {});
+        }
+    }
 }
 
 impl Asked {
@@ -537,6 +548,7 @@ struct Control {
     stood: u64,
     stop: bool,
     error: Option<String>,
+    holding_reads: bool,
 }
 
 struct Shared {
@@ -561,6 +573,7 @@ struct Shared {
     flight: Arc<Flight>,
     report: Mutex<(Report, Report, Counters)>,
     lead: Mutex<Lead>,
+    listing: AtomicUsize,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1197,6 +1210,7 @@ impl Playhead {
                 stood: 0,
                 stop: false,
                 error: None,
+                holding_reads: false,
             }),
             wake: Condvar::new(),
             jobs: Mutex::new(Jobs::default()),
@@ -1209,6 +1223,7 @@ impl Playhead {
             flight: Arc::new(Flight::default()),
             report: Mutex::new(Default::default()),
             lead: Mutex::new(Lead::NONE),
+            listing: AtomicUsize::new(0),
         });
         let mut threads = Vec::new();
         let entering = settings.entering;
@@ -1554,6 +1569,11 @@ impl Playhead {
             }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn holding_reads(&self) -> bool {
+        lock(&self.shared.control).holding_reads
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1999,6 +2019,7 @@ struct Stepper {
     peak: Report,
     failed: bool,
     holding: Option<Instant>,
+    holding_reads: bool,
     why: usize,
     catching: Vec<CatchUp>,
 }
@@ -2045,6 +2066,7 @@ impl Stepper {
             peak: Report::default(),
             failed: false,
             holding: None,
+            holding_reads: false,
             why: IDLE_OTHER,
             catching: Vec::new(),
         }
@@ -2642,6 +2664,15 @@ impl Stepper {
             self.shared.notify_control();
         }
         sought
+    }
+
+    fn hold_for_paused_reads(&mut self, newest: Hour) -> bool {
+        let holding = self.shared.listing.load(Ordering::Acquire) > 0 && newest >= self.head && !lock_clock(&self.shared.clock).playing();
+        if holding != self.holding_reads {
+            self.holding_reads = holding;
+            self.shared.nudge(|control| control.holding_reads = holding);
+        }
+        holding
     }
 
     fn hold_for_paused_seed(&mut self) -> bool {
@@ -3732,7 +3763,7 @@ impl Stepper {
                 return Ok(false);
             }
         }
-        if self.hold_for_paused_seed() {
+        if self.hold_for_paused_seed() || self.hold_for_paused_reads(newest) {
             return Ok(false);
         }
         let timeline = &self.shared.timeline;
