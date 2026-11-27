@@ -1540,11 +1540,6 @@ impl Content {
     }
 }
 
-pub enum LoadTarget {
-    Content,
-    Scene,
-}
-
 impl Document {
     pub fn capture_mode(&self) -> replay_data::scope::CaptureMode {
         self.playback.replay().capture_mode
@@ -1605,7 +1600,6 @@ impl Document {
             visual_mods,
             texture_quality,
             None,
-            LoadTarget::Content,
         )?;
         document.bind_source(&source);
         if !matches!(
@@ -1634,7 +1628,6 @@ impl Document {
         visual_mods: Option<&[content_reader_layers::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
-        target: LoadTarget,
     ) -> io::Result<Self> {
         let _startup = crate::perf_log::StartupSpan::new("document").with_loaders(path);
         let resolved = std::cell::RefCell::new({
@@ -1698,9 +1691,7 @@ impl Document {
         {
             let _sources = crate::perf_log::StartupSpan::new("source_release");
             document.content.loading.release_sources();
-            if matches!(target, LoadTarget::Content) {
-                document.content.release_loading();
-            }
+            document.content.release_loading();
         }
         Ok(document)
     }
@@ -5788,7 +5779,6 @@ mod tests {
                 None,
                 0,
                 None,
-                LoadTarget::Content,
             )
             .unwrap();
             let mut warnings = document.warnings.clone();

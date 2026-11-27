@@ -838,7 +838,7 @@ fn yes(value: &Value) -> Result<bool, String> {
     }
 }
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    content_reader_parser::fields::invalid(message)
 }
 
 #[cfg(test)]

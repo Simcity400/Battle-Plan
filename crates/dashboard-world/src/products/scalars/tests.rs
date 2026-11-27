@@ -991,3 +991,305 @@ fn factory_mix_computes_rust_shares_keeps_witnessed_parts_and_refuses_unreconcil
     assert!(total_missing_n.is_none());
     assert!(parts_missing_n.is_some());
 }
+
+#[test]
+fn world_tension_played_steps_match_whole_frame_across_live_edits_ranking_groups_damage_seeks_and_branches() {
+    use crate::registrations::SCALARS_WORLDTENSION;
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::frame_panel}, test_fixtures::{CAMPAIGN, materialized_frame, played, records, source, streamed}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, TableId, TableRows, ThreatCountryAggregateRow, ThreatSourceRow, WorldTensionRow};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let country = |id: u32, canonical_slot: u32, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        border_land_doctrine_level: Recorded::Value(None),
+        ..CountryRow::default()
+    };
+    let build_frame = |branch: u64, h: i32| {
+        let mut f = source(branch, h, Some(i64::from(h)));
+        let mut countries = vec![country(9001, 7, b"AAA"), country(9002, 8, b"BBB")];
+        if branch == 2 || h < 108 {
+            countries.push(country(9003, 9, b"CCC"));
+        }
+        *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+        *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 },
+            CountryLinkRow { id: 9002, canonical_slot: 8 },
+            CountryLinkRow { id: 9003, canonical_slot: 9 },
+            CountryLinkRow { id: 9999, canonical_slot: h as u32 },
+        ]));
+        *f.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![
+            FactionRow { id: 10, name: b"SynBloc".to_vec(), ..FactionRow::default() },
+        ]));
+        let mut members = vec![FactionMemberRow { country: 9001, faction: 10, ordinal: 0 }];
+        if branch == 2 || h >= 106 {
+            members.push(FactionMemberRow { country: 9002, faction: 10, ordinal: 1 });
+        }
+        *f.tables[TableId::FactionMembers.index()] = TableView::Complete(TableRows::FactionMembers(members));
+
+        *f.tables[TableId::WorldTension.index()] = if branch == 1 && (112..=114).contains(&h) {
+            TableView::Unavailable { reason: "tension damaged".into() }
+        } else {
+            TableView::Complete(TableRows::WorldTension(vec![WorldTensionRow {
+                total_raw: i64::from(h) * 100,
+                source_count: h,
+                country_aggregate_count: 3,
+            }]))
+        };
+
+        let (aaa_raw, bbb_raw) = if branch == 2 {
+            (900_000, 100_000)
+        } else if h < 103 {
+            (500_000 + i64::from(h - 100) * 10_000, 200_000)
+        } else {
+            (300_000, 700_000)
+        };
+        let mut aggs = vec![
+            ThreatCountryAggregateRow { country_slot: 7, total_raw: aaa_raw },
+            ThreatCountryAggregateRow { country_slot: 8, total_raw: bbb_raw },
+            ThreatCountryAggregateRow { country_slot: 9, total_raw: 100_000 },
+        ];
+        if branch == 1 && h >= 104 {
+            aggs.push(ThreatCountryAggregateRow { country_slot: 99, total_raw: 50_000 });
+        }
+        *f.tables[TableId::ThreatCountryAggregates.index()] = if branch == 1 && (115..=117).contains(&h) {
+            TableView::Unavailable { reason: "aggregates damaged".into() }
+        } else if branch == 1 && (118..=119).contains(&h) {
+            TableView::Truncated { rows: TableRows::ThreatCountryAggregates(aggs[..1].to_vec()), missing: 2 }
+        } else {
+            TableView::Complete(TableRows::ThreatCountryAggregates(aggs))
+        };
+
+        let mut sources = vec![ThreatSourceRow {
+            ordinal: 0,
+            country: 9001,
+            second_country: h as u32,
+            current_raw: i64::from(h) * 500,
+            final_raw: 500_000,
+            daily_raw: 1_000,
+            date: 95,
+            reason: b"syn_reason_a".to_vec(),
+        }];
+        if branch == 1 && (105..=106).contains(&h) {
+            sources.push(ThreatSourceRow {
+                ordinal: 1,
+                country: 9002,
+                second_country: 0,
+                current_raw: i64::from(h) * 200,
+                final_raw: 200_000,
+                daily_raw: 500,
+                date: 105,
+                reason: b"syn_reason_b".to_vec(),
+            });
+        }
+        *f.tables[TableId::ThreatSources.index()] = if branch == 1 && (120..=122).contains(&h) {
+            TableView::Unavailable { reason: "sources damaged".into() }
+        } else {
+            TableView::Complete(TableRows::ThreatSources(sources))
+        };
+        f
+    };
+
+    let branch1: Vec<_> = (100..=124).map(|h| build_frame(1, h)).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, branch1.clone())])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Arc::new(
+        Source::from_replay(
+            SourceKey { source_id: "world-tension-played".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let load = LoadContext { content: None };
+    let requests = [
+        json!({"branchId": "1"}),
+        json!({"branchId": "1", "countries": [7, 8], "group": {"type": "faction", "id": "10", "membership": "hour"}}),
+    ];
+    for params in &requests {
+        let mut whole = frame_panel::<world_tension::WorldTension>(&source, &load, params).unwrap();
+        let panel = (SCALARS_WORLDTENSION.panel.unwrap().open)(&source, &load, params).unwrap();
+        let reader = panel.exact().unwrap();
+        let steps = played(source.replay_ref(), reader, 100, 124);
+        for step in &steps {
+            let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour);
+            assert_eq!(streamed(&step.value, step.fresh), streamed(&expected, step.fresh), "{params} at {}", step.hour);
+        }
+        if params.get("countries").is_none() {
+            assert_eq!(steps[1].product_calls, 0, "live cell edits and same-order aggregate edit must hold without rebuilding");
+            assert_eq!(steps[2].product_calls, 0, "live cell edits and same-order aggregate edit must hold without rebuilding");
+            assert_eq!(steps[3].product_calls, 1, "aggregate rank swap must rebuild");
+            assert_eq!(steps[4].product_calls, 1, "unnamed contributor entering must rebuild");
+            assert_eq!(steps[5].product_calls, 1, "new threat source must rebuild");
+            assert_eq!(steps[6].product_calls, 0, "quiet hour with live current_raw/total_raw/sum/unrelated link edits must hold");
+            assert_eq!(steps[8].product_calls, 1, "annexed CCC becoming remembered must rebuild");
+            assert_eq!(steps[9].product_calls, 0, "quiet hour after annexation must hold");
+        } else {
+            assert_eq!(steps[1].product_calls, 1, "selected country reading change must rebuild");
+            assert_eq!(steps[4].product_calls, 0, "unrelated slot 99 entering must not rebuild selected countries");
+            assert_eq!(steps[6].product_calls, 1, "BBB joining faction 10 must rebuild");
+        }
+        for h in [113, 101, 103, 106, 108, 116, 118, 121, 124] {
+            let read = (reader.advance)(h, true, &false.into(), None);
+            assert_eq!(*read.value, materialized_frame(&mut *whole, source.replay_ref(), 1, h), "{params} seek {h}");
+        }
+    }
+    let branch2: Vec<_> = (100..=104).map(|h| build_frame(2, h)).collect();
+    let multi = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, branch1), records(2, branch2)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let multi_source = Arc::new(
+        Source::from_replay(
+            SourceKey { source_id: "world-tension-branches".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    for branch in &multi_source.metadata().unwrap().branches {
+        let id: u64 = branch.id.parse().unwrap();
+        let req_b = json!({"branchId": branch.id});
+        let mut whole_b = frame_panel::<world_tension::WorldTension>(&multi_source, &load, &req_b).unwrap();
+        let panel_b = (SCALARS_WORLDTENSION.panel.unwrap().open)(&multi_source, &load, &req_b).unwrap();
+        let reader_b = panel_b.exact().unwrap();
+        for h in 100..=104 {
+            let read = (reader_b.advance)(h, h == 100, &false.into(), None);
+            let expected = materialized_frame(&mut *whole_b, multi_source.replay_ref(), id, h);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&expected, read.fresh), "branch {} at {h}", branch.id);
+        }
+    }
+}
+
+#[test]
+fn factory_parts_played_steps_match_whole_frame_across_edits_damage_seeks_and_branches() {
+    use crate::registrations::SCALARS_FACTORYPARTS;
+    use dashboard_base::{Source, SourceKey, products::{LoadContext, at_hour::frame_panel}, test_fixtures::{CAMPAIGN, materialized_frame, played, records, source}};
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryLinkRow, CountryRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let build_frame = |branch: u64, h: i32| {
+        let mut f = source(branch, h, Some(i64::from(h)));
+        let mut countries = vec![
+            CountryRow { id: 9002, canonical_slot: 8, tag: b"BBB".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..CountryRow::default() },
+        ];
+        if branch == 2 || h < 115 {
+            countries.insert(0, CountryRow {
+                id: 9001,
+                canonical_slot: 7,
+                tag: if branch == 1 && h >= 108 { b"DDD".to_vec() } else { b"AAA".to_vec() },
+                border_land_doctrine_level: Recorded::Value(None),
+                ..CountryRow::default()
+            });
+        }
+        *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
+        *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow { id: 9001, canonical_slot: 7 },
+            CountryLinkRow { id: 9002, canonical_slot: 8 },
+        ]));
+
+        let aaa_mil = if branch == 2 { 900_000 } else if h >= 104 { 700_000 } else { 500_000 };
+        let mut rows = vec![CountryFactoriesRow {
+            country: 9002,
+            military_total_raw: i64::from(h) * 100_000,
+            ..CountryFactoriesRow::default()
+        }];
+        if branch == 2 || h != 113 {
+            rows.insert(0, CountryFactoriesRow {
+                country: 9001,
+                military_levels: h,
+                military_used: h,
+                civilian_used: h,
+                naval_levels: h,
+                military_total_raw: aaa_mil,
+                consumer_goods: if branch == 1 && h >= 104 { 4 } else { 2 },
+                ..CountryFactoriesRow::default()
+            });
+        }
+        *f.tables[TableId::CountryFactories.index()] = if branch == 1 && (110..=112).contains(&h) {
+            TableView::Unavailable { reason: "factories damaged".into() }
+        } else {
+            TableView::Complete(TableRows::CountryFactories(rows))
+        };
+        f
+    };
+
+    let branch1: Vec<_> = (100..=116).map(|h| build_frame(1, h)).collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, branch1.clone())])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Arc::new(
+        Source::from_replay(
+            SourceKey { source_id: "factory-parts-played".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    let load = LoadContext { content: None };
+    for country in [json!("AAA"), json!(7)] {
+        let req = json!({"branchId": "1", "country": country});
+        let mut whole = frame_panel::<factory_parts::FactoryParts>(&source, &load, &req).unwrap();
+        let panel = (SCALARS_FACTORYPARTS.panel.unwrap().open)(&source, &load, &req).unwrap();
+        let reader = panel.exact().unwrap();
+        let steps = played(source.replay_ref(), reader, 100, 116);
+        for step in &steps {
+            let expected = materialized_frame(&mut *whole, source.replay_ref(), 1, step.hour);
+            let mut got = step.value.as_ref().clone();
+            if !step.fresh && let Ok(value) = &mut got {
+                value["hour"] = Value::from(step.hour);
+            }
+            assert_eq!(got, expected, "factory-parts {country} at {}", step.hour);
+        }
+        assert_eq!(steps[1].product_calls, 0, "foreign country and unused *_used/*_levels edits must not rebuild");
+        assert_eq!(steps[2].product_calls, 0, "quiet hour must not rebuild");
+        assert_eq!(steps[4].product_calls, 1, "military_total_raw change must rebuild");
+        assert_eq!(steps[5].product_calls, 0, "quiet hour after change must not rebuild");
+        for h in [111, 102, 104, 108, 113, 115] {
+            let read = (reader.advance)(h, true, &false.into(), None);
+            assert_eq!(*read.value, materialized_frame(&mut *whole, source.replay_ref(), 1, h), "factory-parts {country} seek {h}");
+        }
+    }
+    let branch2: Vec<_> = (100..=104).map(|h| build_frame(2, h)).collect();
+    let multi = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, branch1), records(2, branch2)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let multi_source = Arc::new(
+        Source::from_replay(
+            SourceKey { source_id: "factory-parts-branches".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(multi),
+            &AtomicBool::new(false),
+        )
+        .unwrap(),
+    );
+    for branch in &multi_source.metadata().unwrap().branches {
+        let id: u64 = branch.id.parse().unwrap();
+        let req_b = json!({"branchId": branch.id, "country": "AAA"});
+        let mut whole_b = frame_panel::<factory_parts::FactoryParts>(&multi_source, &load, &req_b).unwrap();
+        let panel_b = (SCALARS_FACTORYPARTS.panel.unwrap().open)(&multi_source, &load, &req_b).unwrap();
+        let reader_b = panel_b.exact().unwrap();
+        for h in 100..=104 {
+            let read = (reader_b.advance)(h, h == 100, &false.into(), None);
+            let mut got = read.value.as_ref().as_ref().unwrap().clone();
+            if !read.fresh {
+                got["hour"] = Value::from(h);
+            }
+            assert_eq!(got, materialized_frame(&mut *whole_b, multi_source.replay_ref(), id, h).unwrap(), "branch {} at {h}", branch.id);
+        }
+    }
+}

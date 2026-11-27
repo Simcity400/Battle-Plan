@@ -7,8 +7,8 @@ dashboard_base::register_products! {
 
     @hourly
     INTELLIGENCE_AGENCIES_AGENCYCOMPARISON => exact<crate::products::intelligence::agencies::AgencyComparison>,
-    INTELLIGENCE_DECRYPTION_DECRYPTION => whole_frame<crate::products::intelligence::decryption::Decryption>,
-    INTELLIGENCE_OPERATIVE_MATRIX_OPERATIVEMATRIX => whole_frame<crate::products::intelligence::operative_matrix::OperativeMatrix>,
-    INTELLIGENCE_ROSTER_OPERATIVESROSTER => whole_frame<crate::products::intelligence::roster::OperativesRoster>,
+    INTELLIGENCE_DECRYPTION_DECRYPTION => exact<crate::products::intelligence::decryption::Decryption>,
+    INTELLIGENCE_OPERATIVE_MATRIX_OPERATIVEMATRIX => exact<crate::products::intelligence::operative_matrix::OperativeMatrix>,
+    INTELLIGENCE_ROSTER_OPERATIVESROSTER => exact<crate::products::intelligence::roster::OperativesRoster>,
     INTEL_COVERAGE_INTELNETWORKCOVERAGE => exact<crate::products::intel_coverage::IntelNetworkCoverage>,
 }

@@ -191,3 +191,30 @@ fn at_an_hour_a_holding_is_named_from_its_own_first_run_and_bounded_by_what_the_
     assert_eq!((ideas.next_change(112), ideas.next_change(115), ideas.next_change(120)), (Some(115), Some(116), Some(LAST + 1)));
     assert_eq!(ideas.warnings.get(super::TOKENLESS_SEATS), Some(&125), "a warning is dated to the hour it was first read");
 }
+
+#[test]
+fn tokenless_holder_clears_sprite_and_sets_per_look_artwork_missing() {
+    let (_, folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("common/defines/mod.lua", "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"political_advisor\" } } }"),
+        ("interface/ideas.gfx", "spriteTypes = { spriteType = { name = \"GFX_idea_adv_shared\" texturefile = \"gfx/interface/ideas/adv_shared.tga\" } }"),
+    ]);
+    let texture = folder.0.join("gfx/interface/ideas/adv_shared.tga");
+    std::fs::create_dir_all(texture.parent().unwrap()).unwrap();
+    let tga = [0u8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255];
+    std::fs::write(&texture, tga).unwrap();
+    let layers = content_reader_layers::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let cat = dashboard_base::catalogue::tests::layers_catalogue(layers);
+    let content = dashboard_base::products::politics_content::PoliticsContent::load(Arc::new(cat)).unwrap();
+    let country = dashboard_text::idea_names::IdeaCountry { tag: "GER", slot: 7, look: None };
+    let named = span("adv_shared", 100, 110, Some((2, "CHAR_B", "Saved Named")));
+    let (control, control_problem) = super::look(&content, &named, None, country);
+    assert!(control.artwork.icon.is_some(), "known holder decodes fallback idea icon: {control_problem:?}");
+    assert_eq!(control.artwork.sprite.as_deref(), Some("GFX_idea_adv_shared"), "known holder retains fallback idea sprite");
+    assert_eq!(control_problem, None);
+    let unnamed = span("adv_shared", 100, 110, Some((1, "", "Saved Unnamed")));
+    let (look, problem) = super::look(&content, &unnamed, None, country);
+    assert_eq!(look.artwork.icon, None);
+    assert_eq!(look.artwork.sprite, None, "withheld advisor clears stale sprite");
+    assert!(look.artwork_missing.as_deref().is_some_and(|m| m.contains("no recorded script token")), "{:?}", look.artwork_missing);
+    assert_eq!(look.artwork_missing, problem);
+}

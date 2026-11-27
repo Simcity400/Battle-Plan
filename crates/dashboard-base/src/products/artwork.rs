@@ -5,7 +5,7 @@ pub mod sprites;
 
 pub use resolver::{
     ArtFile, ArtFrame, ArtOrigin, ArtProvenance, ArtRenderVariant, ArtResolution, ArtScopeKey,
-    ArtTarget, CURRENT_INSTALL_ART_LABEL, FlagSetKey, Searched, art_file, art_scope_key, relayed_searches,
+    ArtTarget, CURRENT_INSTALL_ART_LABEL, CURRENT_INSTALL_ART_NOTICE, FlagSetKey, Searched, art_file, art_scope_key, relayed_searches,
     resolve, resolve_equipment_icon,
     resolve_flag, resolve_flag_pixels, resolve_portrait_entry, resolve_sprite,
     resolve_sprite_or_texture, resolve_sprite_type, resolve_sprite_type_on_layers,
@@ -565,9 +565,7 @@ impl Context {
     }
 
     fn load_inner(catalogue: Arc<Catalogue>, kind: Kind) -> io::Result<Self> {
-        let mut warnings = vec![format!(
-            "{CURRENT_INSTALL_ART_LABEL}; visual assets are outside content hash coverage."
-        )];
+        let mut warnings = vec![CURRENT_INSTALL_ART_NOTICE.to_owned()];
         warnings.extend(catalogue.verification.iter().cloned());
         let layers = &catalogue.content.layers;
         let prepared = layers.derived::<PreparedContent>();

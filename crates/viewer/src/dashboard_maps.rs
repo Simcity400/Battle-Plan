@@ -1036,7 +1036,6 @@ impl DashboardMaps {
                         load_visual_mods.as_deref(),
                         texture_quality,
                         Some((recording.as_str(), &decisions)),
-                        crate::document::LoadTarget::Content,
                     )
                     .map_err(|error| error.to_string())?;
                     document.bind_source(&source_handle);

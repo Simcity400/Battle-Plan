@@ -39,6 +39,39 @@ export function mirrorToSync(
   return next !== last || selected !== lastSelected ? next : undefined;
 }
 
+export function syncTableHead(
+  thead: HTMLTableSectionElement | null,
+  columns: readonly string[] | null,
+  lastHeadKeyRef: { current: string },
+): void {
+  if (!thead) return;
+  if (!columns || columns.length === 0) {
+    if (lastHeadKeyRef.current !== '') {
+      lastHeadKeyRef.current = '';
+      thead.replaceChildren();
+    }
+    return;
+  }
+  const key = JSON.stringify(columns);
+  if (key === lastHeadKeyRef.current) return;
+  lastHeadKeyRef.current = key;
+  let tr = thead.firstElementChild as HTMLTableRowElement | null;
+  if (!tr || tr.tagName !== 'TR') {
+    tr = document.createElement('tr');
+    thead.replaceChildren(tr);
+  }
+  while (tr.children.length > columns.length) tr.lastElementChild?.remove();
+  while (tr.children.length < columns.length) {
+    const th = document.createElement('th');
+    th.setAttribute('scope', 'col');
+    tr.append(th);
+  }
+  for (let i = 0; i < columns.length; i++) {
+    const th = tr.children[i]!;
+    if (th.textContent !== columns[i]) th.textContent = columns[i]!;
+  }
+}
+
 export function syncTableMirror(
   tbody: HTMLTableSectionElement | null,
   mirror: MirrorModel | null,

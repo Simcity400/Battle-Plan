@@ -17,9 +17,10 @@ import './battleViewer.css';
 export type { BattleSpan } from './battleClock.ts';
 
 type ViewerRuntime = Pick<WidgetRuntime, 'maps' | 'clock' | 'client' | 'nativeHidden'>;
-type BattleView = 'battle' | 'map' | 'details';
+export type BattleView = 'battle' | 'map' | 'details';
 
 const VIEWS = [{ value: 'battle', label: 'Battle' }, { value: 'map', label: 'Map' }, { value: 'details', label: 'Details' }] as const;
+const ALL_VIEWS: readonly BattleView[] = ['battle', 'map', 'details'];
 const DAY = 24;
 
 export interface BattleViewerProps {
@@ -38,7 +39,8 @@ export interface BattleViewerProps {
   readonly fallbackHour: number;
   readonly sides: (hour: number) => ReactNode;
   readonly battle: (hour: number, clock: BattleClock | null) => ReactNode;
-  readonly details: (hour: number) => ReactNode;
+  readonly details?: (hour: number) => ReactNode;
+  readonly views?: readonly BattleView[];
   readonly onClose: () => void;
 }
 
@@ -118,10 +120,11 @@ function rgbOf(value: string): Rgb | null {
 
 export interface BattleLead { readonly slot: number; readonly tag: string }
 
-export function BattleGameWindow({ runtime, track, clock, combat, lead, live, until, ended }: {
+export function BattleGameWindow({ runtime, track, clock, kind = 'land', combat, lead, live, until, ended }: {
   readonly runtime: ViewerRuntime;
   readonly track: BoundTrack;
   readonly clock: BattleClock;
+  readonly kind?: 'land' | 'naval';
   readonly combat: string;
   readonly lead: BattleLead;
   readonly live: readonly (readonly [number, number])[];
@@ -154,9 +157,9 @@ export function BattleGameWindow({ runtime, track, clock, combat, lead, live, un
       options: { fog: true, country: track.selectedTag ?? null, countrySlot: track.selectedSlot ?? null, countryPinned: false, observed: null, pickerHidden: true },
       sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
       seekSequence: clock.jumpSequence, playing: clock.playing, hoursPerSecond: clock.rate, hour, fraction: 0, sequence: clock.sequence,
-      battle: { combat, country: leading.current.tag, countrySlot: leading.current.slot, playedFrom: clock.resumeFrom, live: live.map(([first, last]) => [first, last]), canvas, text },
+      battle: { kind, combat, country: leading.current.tag, countrySlot: leading.current.slot, playedFrom: clock.resumeFrom, live: live.map(([first, last]) => [first, last]), canvas, text },
     };
-  }, [track, clock, combat, until, live]);
+  }, [track, clock, kind, combat, until, live]);
   useLayoutEffect(() => placed && body.current ? runtime.maps.register(id, body.current, target, false) : undefined, [placed, runtime.maps, id, target]);
   useEffect(() => clock.subscribe(() => runtime.maps.retarget()), [clock, runtime.maps]);
   useEffect(() => { runtime.maps.retarget(); }, [past, runtime.maps]);
@@ -248,7 +251,7 @@ function Transport({ clock, gaps, unplayable, fallbackHour }: {
 }
 
 export function BattleViewer(props: BattleViewerProps) {
-  const { runtime, span } = props;
+  const { runtime, span, views = ALL_VIEWS } = props;
   const [view, setView] = useState<BattleView>('battle');
   const [viewing, setViewing] = useState(props.subject);
   if (viewing !== props.subject) {
@@ -283,12 +286,12 @@ export function BattleViewer(props: BattleViewerProps) {
   }, [clock]);
   return <DetailWindowHost open subject={props.subject} hour={hour} title={props.title} day={props.day} placement="center"
     anchor={props.anchor} returnFocus={props.returnFocus} pauseClock clock={pause} className="battle-viewer" closeLabel={props.closeLabel}
-    headerActions={<Segmented label="Battle view" value={view} options={VIEWS} onChange={setView} />} onClose={props.onClose}>
+    headerActions={views.length > 1 ? <Segmented label="Battle view" value={view} options={VIEWS.filter(option => views.includes(option.value))} onChange={setView} /> : undefined} onClose={props.onClose}>
     <div className="bv-view" ref={body}>
       {props.sides(hour)}
       {view === 'battle' ? props.battle(hour, clock)
         : view === 'map' ? <BattleMap runtime={runtime} track={props.track} clock={clock} province={props.province} fallbackHour={props.fallbackHour} />
-          : <div className="bv-details">{props.details(hour)}</div>}
+          : <div className="bv-details">{props.details?.(hour)}</div>}
       <Transport clock={clock} gaps={props.gaps} unplayable={props.unplayable} fallbackHour={props.fallbackHour} />
     </div>
   </DetailWindowHost>;

@@ -10,45 +10,11 @@ use std::{
 };
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-#[derive(Debug)]
-struct ScriptError(String);
-
-impl std::fmt::Display for ScriptError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ScriptError {}
-
-fn script_error(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, ScriptError(message))
+    content_reader_layers::content_error(message)
 }
 
 pub fn is_script_error(error: &io::Error) -> bool {
-    let mut inner: Option<&(dyn std::error::Error + 'static)> = error
-        .get_ref()
-        .map(|error| error as &(dyn std::error::Error + 'static));
-    while let Some(current) = inner {
-        if current.is::<ScriptError>() {
-            return true;
-        }
-        inner = if let Some(wrapped) = current.downcast_ref::<io::Error>() {
-            wrapped
-                .get_ref()
-                .map(|error| error as &(dyn std::error::Error + 'static))
-        } else if let Some(wrapped) = current.downcast_ref::<Arc<io::Error>>() {
-            wrapped
-                .get_ref()
-                .map(|error| error as &(dyn std::error::Error + 'static))
-        } else {
-            current.source()
-        };
-    }
-    false
+    content_reader_layers::is_content_error(error)
 }
 
 const HOOK_INTERVAL: u32 = 1_000_000;
@@ -283,15 +249,18 @@ pub fn load_order_paths<'a>(
 
 impl Defines {
     pub fn new() -> io::Result<Self> {
+        let setup_error = |error: mlua::Error| {
+            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+        };
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH,
             LuaOptions::default(),
         )
-        .map_err(lua_error)?;
-        lua.set_memory_limit(MEMORY_LIMIT).map_err(lua_error)?;
+        .map_err(setup_error)?;
+        lua.set_memory_limit(MEMORY_LIMIT).map_err(setup_error)?;
         let globals = lua.globals();
         for name in ["dofile", "loadfile", "print"] {
-            globals.raw_remove(name).map_err(lua_error)?;
+            globals.raw_remove(name).map_err(setup_error)?;
         }
         let hooks = Arc::new(AtomicU32::new(0));
         let spent = Arc::new(AtomicBool::new(false));
@@ -307,15 +276,15 @@ impl Defines {
                 }
             },
         )
-        .map_err(lua_error)?;
+        .map_err(setup_error)?;
         let checked = Arc::clone(&spent);
         let check = lua
             .create_function(move |_, ()| Ok(checked.load(Ordering::Relaxed)))
-            .map_err(lua_error)?;
+            .map_err(setup_error)?;
         lua.load(BUDGET_GUARD)
             .set_name("define instruction limit")
             .call::<()>((check, BUDGET_SPENT))
-            .map_err(lua_error)?;
+            .map_err(setup_error)?;
         Ok(Self {
             lua,
             sealed: false,
@@ -330,7 +299,7 @@ impl Defines {
             ));
         }
         self.run(path, source)
-            .map_err(|error| script_error(format!("defines unavailable in {path}: {error}")))
+            .map_err(|error| invalid(format!("defines unavailable in {path}: {error}")))
     }
 
     fn run(&self, name: &str, source: &[u8]) -> io::Result<()> {

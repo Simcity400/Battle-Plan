@@ -22,7 +22,7 @@ import { parseBreakdownHit } from './hostAdapter.ts';
 import { breakdownLane } from './laneView.ts';
 import { hitTestBreakdown, layoutBreakdown, type PartsViewLayout, type RingViewLayout, type MosaicViewLayout } from './layout.ts';
 import { buildBreakdownTooltip, partColour, breakdownLevel, PATH, type BreakdownModel } from './model.ts';
-import { deriveBreakdownAudit, deriveBreakdownNavAndMirror } from './structure.ts';
+import { deriveBreakdownAudit, deriveBreakdownMirror, deriveBreakdownNav } from './structure.ts';
 import { breakdownParts, breakdownTotal, type BreakdownWords } from './product.ts';
 
 const THEME: FamilyTheme = {
@@ -184,7 +184,7 @@ test('expanding a part is held by the host, shared by the parts list and the rin
   assert.equal(closed.rows.some(row => row.parentKey === 'Decisions'), false);
   const open = layoutBreakdown({ ...base, view: 'parts', userExpanded: { Decisions: true } }) as PartsViewLayout;
   assert.deepEqual(open.rows.filter(row => row.parentKey === 'Decisions').map(row => row.key), [`Decisions${PATH}Plan A`, `Decisions${PATH}Plan B`]);
-  const { nav } = deriveBreakdownNavAndMirror(open, level.total);
+  const nav = deriveBreakdownNav(open);
   assert.equal(nav.find(entry => entry[0] === 'Decisions')![3], 1, 'navigation reports the open part so a toggle closes it');
   const ring = layoutBreakdown({ ...base, view: 'ring', userExpanded: { Decisions: false } }) as RingViewLayout;
   assert.equal(ring.openKey, null, 'closing the default open part closes it');
@@ -311,7 +311,7 @@ test('a part is known by its whole path, and every painted tile is navigable', (
   assert.equal(JSON.stringify(buildBreakdownTooltip(read, level, `Repairs${PATH}type:7`, THEME)).includes('585'), true, 'hovering repairs shows the repairs amount');
   const mosaic = layoutBreakdown({ ...at(1111, 346), level, view: 'mosaic', userExpanded: {} }) as MosaicViewLayout;
   const painted = mosaic.tiles.flatMap(tile => [tile.key, ...tile.children.map(child => child.key)]);
-  const { nav } = deriveBreakdownNavAndMirror(mosaic, level.total);
+  const nav = deriveBreakdownNav(mosaic);
   assert.deepEqual(nav.map(entry => entry[0]).sort(), painted.sort(), 'navigation is the installed tiles');
 });
 
@@ -992,4 +992,27 @@ test('breakdown arc labels keep joined graphemes intact and parts view disambigu
   });
   assert.ok(partTexts.some(t => t.includes('Alpha')), `parts view preserves Alpha suffix (${partTexts.join(', ')})`);
   assert.ok(partTexts.some(t => t.includes('Beta')), `parts view preserves Beta suffix (${partTexts.join(', ')})`);
+});
+
+test('breakdown lane keeps mirror derivation out of layout and defers spoken rows until mirror callback runs', () => {
+  const sample: Breakdown = {
+    total: { amount: exact('100'), state: 'known', reason: null },
+    unrecordedHours: 0,
+    parts: [wire('A', 0, '60', { share: 0.6 }), wire('B', 1, '40', { share: 0.4 })],
+  };
+  const m = model(sample);
+  const fakeMeasure = { measureText: (text: string) => ({ width: text.length * 7 }) } as unknown as OffscreenCanvasRenderingContext2D;
+  const frameLayout = breakdownLane.layout(
+    m,
+    { family: 'breakdown', kind: 'test', options: { view: 'parts', namesInRing: false }, sources: {}, scrollTop: 0, width: 320, height: 240, expanded: {} },
+    { width: 320, height: 240, dpr: 1 },
+    THEME,
+    fakeMeasure,
+    0,
+    { previous: null, now: 0, speed: 24 },
+  );
+  assert.equal('mirror' in frameLayout, false, 'layout builds navigation only and defers mirror rows');
+  assert.deepEqual(frameLayout.nav, deriveBreakdownNav(frameLayout.layout));
+  const derived = breakdownLane.mirror!({ layout: frameLayout } as never);
+  assert.deepEqual(derived, deriveBreakdownMirror(frameLayout.layout, frameLayout.level.total));
 });

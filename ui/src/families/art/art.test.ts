@@ -768,6 +768,7 @@ test('missing artwork in equipment designs and spirit history preserves asset id
           tooltips: [],
         },
         artwork: { token: 'mod_spirit_missing_icon', name: 'Mod Spirit', description: null, icon: null, sprite: 'GFX_stale_withheld' },
+        artworkMissing: 'mod_spirit_missing_icon: artwork is unknown because the holder has no recorded script token; a placeholder is shown',
       },
       {
         info: {
@@ -807,13 +808,53 @@ test('missing artwork in equipment designs and spirit history preserves asset id
         },
         artwork: { token: 'mod_spirit_sprite_refused', name: 'Refused Sprite Spirit', description: null, icon: null, sprite: 'GFX_mod_refused' },
       },
+      {
+        info: {
+          token: 'mod_spirit_sprite_pending',
+          category: 'country',
+          slot: null,
+          law: false,
+          designer: false,
+          effectsKnown: true,
+          unknown: null,
+          nameMissing: null,
+          effects: [],
+          research: [],
+          targeted: [],
+          equipment: [],
+          traits: [],
+          tooltips: [],
+        },
+        artwork: { token: 'mod_spirit_sprite_pending', name: 'Pending Sprite Spirit', description: null, icon: null, sprite: 'GFX_mod_pending' },
+      },
+      {
+        info: {
+          token: 'mod_spirit_sprite_failed',
+          category: 'country',
+          slot: null,
+          law: false,
+          designer: false,
+          effectsKnown: true,
+          unknown: null,
+          nameMissing: null,
+          effects: [],
+          research: [],
+          targeted: [],
+          equipment: [],
+          traits: [],
+          tooltips: [],
+        },
+        artwork: { token: 'mod_spirit_sprite_failed', name: 'Failed Sprite Spirit', description: null, icon: null, sprite: 'GFX_mod_failed' },
+      },
     ],
     holdings: [
       { token: 'mod_spirit_missing_icon', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 0, slot: null, character: null },
       { token: 'mod_spirit_sprite_missing', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 1, slot: null, character: null },
       { token: 'mod_spirit_sprite_refused', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 2, slot: null, character: null },
+      { token: 'mod_spirit_sprite_pending', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 3, slot: null, character: null },
+      { token: 'mod_spirit_sprite_failed', firstHour: 10, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 4, slot: null, character: null },
     ],
-    held: [0, 1, 2],
+    held: [0, 1, 2, 3, 4],
     modifiers: [],
     texts: [],
   };
@@ -826,13 +867,14 @@ test('missing artwork in equipment designs and spirit history preserves asset id
         if (handle.kind === 'sprite' && handle.key === 'GFX_stale_withheld') return readyArt('art://wrong-sprite');
         if (handle.kind === 'sprite' && handle.key === 'GFX_mod_missing') return missingArt('GFX_mod_missing absent in install');
         if (handle.kind === 'sprite' && handle.key === 'GFX_mod_refused') return refusedArt('Unsupported shader sprite', 'sprite');
+        if (handle.kind === 'sprite' && handle.key === 'GFX_mod_failed') return failedArt('Disk read interrupted', true);
         return PENDING_ART;
       },
     },
   });
   const spiritOpts = { showEnded: true, iconsOnBars: true, firstHour: 0, surface: '#111111' };
   const spiritModel = spiritHistoryProjection.project(spiritView, spiritOpts);
-  const [warnLane, missingLane, refusedLane] = spiritModel.lanes;
+  const [warnLane, missingLane, refusedLane, pendingLane, failedLane] = spiritModel.lanes;
   assert.equal(warnLane!.icon?.status, 'unavailable');
   assert.match((warnLane!.icon as { readonly reason: string }).reason, /holder has no recorded script token/);
   const warnTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: warnLane!.key, spanId: warnLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
@@ -841,4 +883,121 @@ test('missing artwork in equipment designs and spirit history preserves asset id
   assert.ok(missingTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('GFX_mod_missing absent in install')));
   const refusedTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: refusedLane!.key, spanId: refusedLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
   assert.ok(refusedTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('Unsupported shader sprite')));
+  const pendingTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: pendingLane!.key, spanId: pendingLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
+  assert.ok(pendingTip?.items?.some(item => item.label === 'Icon' && item.missingReason === 'Loading'));
+  const failedTip = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: failedLane!.key, spanId: failedLane!.spans[0]!.id, hour: 50 }, spiritView, spiritOpts);
+  assert.ok(failedTip?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('Disk read interrupted') && item.missingReason?.includes('will retry')));
+});
+
+test('per-look artworkMissing isolates withheld holdings from sibling holdings in both Spirit History and Idea Timeline', async () => {
+  const { spiritHistoryProjection } = await import('../../widgets/spirit-history/spiritHistoryProjection.ts');
+  const { ideaTimelineProjection } = await import('../../widgets/idea-timeline/ideaTimelineProjection.ts');
+  const baseInfo = {
+    token: 'adv_shared',
+    category: 'country',
+    slot: 'political_advisor',
+    law: false,
+    designer: false,
+    effectsKnown: true,
+    unknown: null,
+    nameMissing: null,
+    effects: [],
+    research: [],
+    targeted: [],
+    equipment: [],
+    traits: [],
+    tooltips: [],
+  };
+  const reply = {
+    hour: 100,
+    nextChange: null,
+    unrecorded: null,
+    unobserved: [],
+    warnings: [
+      'adv_shared: artwork is unknown because the holder has no recorded script token; a placeholder is shown',
+    ],
+    categories: [{
+      token: 'country',
+      kind: 'national_spirit',
+      name: 'Spirits',
+      politicsTab: true,
+      hidden: false,
+      slots: [{ token: 'political_advisor', name: 'Political Advisor', character: true, seats: 1, laws: [] }],
+    }],
+    looks: [
+      {
+        info: baseInfo,
+        artwork: { token: 'adv_shared', name: 'Unnamed Holder', description: null, icon: null, sprite: 'GFX_stale' },
+        artworkMissing: 'adv_shared: artwork is unknown because the holder has no recorded script token; a placeholder is shown',
+      },
+      {
+        info: baseInfo,
+        artwork: { token: 'adv_shared', name: 'Known Holder', description: null, icon: null, sprite: 'GFX_unreadable' },
+        artworkMissing: 'GFX_unreadable: texture unreadable in current install',
+      },
+    ],
+    holdings: [
+      { token: 'adv_shared', firstHour: 10, lastHour: 49, start: 'seen', end: { kind: 'ended' }, look: 0, slot: 'political_advisor', character: { id: 1, token: '', name: 'A' } },
+      { token: 'adv_shared', firstHour: 50, lastHour: 100, start: 'seen', end: { kind: 'held' }, look: 1, slot: 'political_advisor', character: { id: 2, token: 'CHAR_B', name: 'B' } },
+    ],
+    held: [1],
+    modifiers: [],
+    texts: [],
+  };
+  const view = createBoundedReadView({
+    hour: 100,
+    panels: new Map<string, unknown>([['main', reply]]),
+    art: {
+      demandOwner: 'view',
+      resolve: handle => {
+        if (handle.kind === 'sprite' && handle.key === 'GFX_stale') return readyArt('art://wrong-sprite');
+        if (handle.kind === 'sprite' && handle.key === 'GFX_unreadable') return refusedArt('Unsupported DDS texture', 'dds');
+        return PENDING_ART;
+      },
+    },
+  });
+
+  const spiritOpts = { showEnded: true, iconsOnBars: true, firstHour: 0, surface: '#111111' };
+  const spiritModel = spiritHistoryProjection.project(view, spiritOpts);
+  const spiritSpans = spiritModel.lanes[0]!.spans;
+  assert.equal(spiritSpans[0]!.icon?.status, 'unavailable');
+  assert.match((spiritSpans[0]!.icon as { readonly reason: string }).reason, /holder has no recorded script token/);
+  assert.equal(spiritSpans[1]!.icon?.status, 'unavailable');
+  assert.match((spiritSpans[1]!.icon as { readonly reason: string }).reason, /texture unreadable/);
+  const sTip0 = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: spiritModel.lanes[0]!.key, spanId: spiritSpans[0]!.id, hour: 25 }, view, spiritOpts);
+  const sTip1 = spiritHistoryProjection.tooltip!(spiritModel, { kind: 'span', laneKey: spiritModel.lanes[0]!.key, spanId: spiritSpans[1]!.id, hour: 75 }, view, spiritOpts);
+  assert.ok(sTip0?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('holder has no recorded script token')));
+  assert.ok(sTip1?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('texture unreadable')));
+  assert.ok(!sTip1?.items?.some(item => item.missingReason?.includes('holder has no recorded script token')), 'first holder warning never bleeds onto second holder');
+
+  const ideaOpts = { category: 'country', iconsOnBars: true, firstHour: 0, surface: '#111111' };
+  const ideaModel = ideaTimelineProjection.project(view, ideaOpts);
+  const ideaSpans = ideaModel.lanes[0]!.spans;
+  assert.equal(ideaSpans[0]!.icon?.status, 'unavailable');
+  assert.match((ideaSpans[0]!.icon as { readonly reason: string }).reason, /holder has no recorded script token/);
+  assert.equal(ideaSpans[1]!.icon?.status, 'unavailable');
+  assert.match((ideaSpans[1]!.icon as { readonly reason: string }).reason, /texture unreadable/);
+  const iTip0 = ideaTimelineProjection.tooltip!(ideaModel, { kind: 'span', laneKey: ideaModel.lanes[0]!.key, spanId: ideaSpans[0]!.id, hour: 25 }, view, ideaOpts);
+  const iTip1 = ideaTimelineProjection.tooltip!(ideaModel, { kind: 'span', laneKey: ideaModel.lanes[0]!.key, spanId: ideaSpans[1]!.id, hour: 75 }, view, ideaOpts);
+  assert.ok(iTip0?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('holder has no recorded script token')));
+  assert.ok(iTip1?.items?.some(item => item.label === 'Icon' && item.missingReason?.includes('texture unreadable')));
+
+  const { nationalSpiritsProjection } = await import('../../widgets/national-spirits/nationalSpiritsProjection.ts');
+  const cardView = createBoundedReadView({
+    hour: 100,
+    panels: new Map<string, unknown>([['main', { ...reply, held: [0] }]]),
+    art: {
+      demandOwner: 'view',
+      resolve: handle => {
+        if (handle.kind === 'sprite' && handle.key === 'GFX_stale') return readyArt('art://wrong-sprite');
+        return PENDING_ART;
+      },
+    },
+  });
+  const cardModel = nationalSpiritsProjection.project(cardView, {});
+  const cardRow = cardModel.rows[0] as { readonly art?: { readonly art: { readonly status: string; readonly reason?: string } }; readonly tooltip?: { readonly items?: readonly { readonly label: string; readonly missingReason?: string }[] } };
+  assert.equal(cardRow.art?.art.status, 'unavailable');
+  assert.match(cardRow.art?.art.reason ?? '', /holder has no recorded script token/);
+  assert.ok(cardRow.tooltip?.items?.some(item => item.label === 'Art' && item.missingReason?.includes('holder has no recorded script token')));
+  assert.ok(!cardRow.tooltip?.items?.some(item => item.missingReason?.includes('art missing from the current installation')));
 });

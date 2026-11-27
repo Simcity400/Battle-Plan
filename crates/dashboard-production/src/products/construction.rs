@@ -451,6 +451,7 @@ struct NamedType {
     name: Option<String>,
     icon: Option<String>,
     listed: Vec<(Listing, String)>,
+    notes: Vec<String>,
     fallbacks: Diagnostics,
 }
 
@@ -506,6 +507,7 @@ impl Naming {
             for (listing, entry) in &named.listed {
                 listed[*listing as usize].push(entry.clone());
             }
+            warnings.extend(named.notes.iter().cloned());
             out.push(ConstructionType { id, token: Some(token.clone()), name: named.name.clone(), icon: named.icon.clone() });
         }
         for (what, names) in LISTINGS.iter().zip(&listed) {
@@ -520,13 +522,29 @@ impl Naming {
         };
         let state_content = catalogue.cached_states();
         let mut unnamed = Vec::new();
+        let mut contextual_states = Vec::new();
         let states = states
             .iter()
             .map(|&id| {
-                let name = state_content.as_ref().ok().and_then(|states| states.names.get(&id)).and_then(|key| key.as_deref().ok()).and_then(|key| catalogue.localised(key, View::Plain));
-                if state_content.is_ok() && name.is_none() {
-                    unnamed.push(id.to_string());
-                }
+                let name = match state_content.as_ref().ok().and_then(|states| states.names.get(&id)) {
+                    Some(Ok(key)) => match catalogue.localised_or_why(key, View::Scripted) {
+                        Ok(name) => Some(name),
+                        Err(why) => {
+                            if catalogue.localisation.get(key).is_none() {
+                                unnamed.push(format!("{id} ({key})"));
+                            } else {
+                                contextual_states.push(format!("State {id}: {why}"));
+                            }
+                            None
+                        }
+                    },
+                    Some(Err(_)) | None => {
+                        if state_content.is_ok() {
+                            unnamed.push(id.to_string());
+                        }
+                        None
+                    }
+                };
                 ConstructionStateName { id, name }
             })
             .collect();
@@ -534,18 +552,17 @@ impl Naming {
             Ok(states) => warnings.extend(dashboard_text::scripted_text::live_state_warnings(&states.warnings).map(|why| format!("State names: {why}"))),
             Err(why) => warnings.push(format!("State names are unavailable: {why}")),
         }
+        warnings.extend(contextual_states);
         counted(warnings, "states have no name in the recorded content; their titles are unavailable", &unnamed);
         if out.iter().any(|named| named.icon.is_some()) {
-            warnings.push(format!(
-                "{}; visual assets are outside content hash coverage.",
-                dashboard_base::products::artwork::CURRENT_INSTALL_ART_LABEL
-            ));
+            warnings.push(dashboard_base::products::artwork::CURRENT_INSTALL_ART_NOTICE.to_owned());
         }
         Named { types: out, repair_icon, states }
     }
 
     fn name_type(&self, catalogue: &Catalogue, token: &str) -> NamedType {
         let mut listed = Vec::new();
+        let mut notes = Vec::new();
         let ((name, icon), fallbacks) = content_reader_layers::content::diagnostics::observe(|| {
             let declaration = self.buildings.as_ref().ok().and_then(|buildings| match buildings.by_token(token) {
                 Ok(Some(building)) => Some(building),
@@ -559,10 +576,17 @@ impl Naming {
                 }
             });
             let key = declaration.map_or(token, |building| building.name.as_str());
-            let name = catalogue.localised(key, View::Plain);
-            if name.is_none() {
-                listed.push((Listing::Unnamed, token.to_owned()));
-            }
+            let name = match catalogue.localised_or_why(key, View::Scripted) {
+                Ok(name) => Some(name),
+                Err(why) => {
+                    if catalogue.localisation.get(key).is_none() {
+                        listed.push((Listing::Unnamed, format!("{token} ({key})")));
+                    } else {
+                        notes.push(format!("building {token}: {why}"));
+                    }
+                    None
+                }
+            };
             let frame = declaration.and_then(|building| match building.icon_frame {
                 frame if frame < 0 => {
                     listed.push((Listing::Unusable, token.to_owned()));
@@ -596,7 +620,7 @@ impl Naming {
             };
             (name, icon)
         });
-        NamedType { name, icon, listed, fallbacks }
+        NamedType { name, icon, listed, notes, fallbacks }
     }
 }
 

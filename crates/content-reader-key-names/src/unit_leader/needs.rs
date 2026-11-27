@@ -105,7 +105,7 @@ fn text(bytes: &[u8]) -> io::Result<&str> {
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    content_reader_parser::fields::invalid(message)
 }
 
 #[cfg(test)]

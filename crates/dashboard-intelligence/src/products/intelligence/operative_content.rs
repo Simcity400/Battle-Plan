@@ -140,6 +140,10 @@ impl OperativeContent {
         &self.catalogue.localisation
     }
 
+    pub fn has_capture_days(&self) -> bool {
+        self.capture_days.is_ok()
+    }
+
     pub fn draw(&self, art: &Art) -> Shown {
         if let Some(drawn) = self.drawn.lock().unwrap_or_else(|error| error.into_inner()).get(art) {
             return drawn.clone();
@@ -352,6 +356,18 @@ pub fn capture_progress(captured_hour: i32, now: i32, duration: i32) -> (i32, f3
     (remaining, elapsed as f32 / denominator as f32)
 }
 
+pub fn capture_valid_through(now: i32) -> i32 {
+    let offset = now.wrapping_sub(HOUR_EPOCH);
+    let extra = if offset >= 0 {
+        23 - (offset % 24)
+    } else if offset > -24 {
+        23 - offset
+    } else {
+        -(offset % 24)
+    };
+    now.saturating_add(extra)
+}
+
 pub fn cooldown_remaining(kind: u32, end: i32, now: i32) -> i32 {
     if kind == 0 {
         return 0;
@@ -359,6 +375,21 @@ pub fn cooldown_remaining(kind: u32, end: i32, now: i32) -> i32 {
     let end = end.wrapping_sub(HOUR_EPOCH);
     let now = now.wrapping_sub(HOUR_EPOCH);
     end.wrapping_add(23_i32.wrapping_sub(now)) / 24
+}
+
+pub fn cooldown_valid_through(kind: u32, end: i32, now: i32) -> i32 {
+    if kind == 0 {
+        return i32::MAX;
+    }
+    let n = end.wrapping_sub(HOUR_EPOCH).wrapping_add(23_i32.wrapping_sub(now.wrapping_sub(HOUR_EPOCH)));
+    let extra = if n >= 24 {
+        n % 24
+    } else if n >= 0 {
+        n + 23
+    } else {
+        23 + (n % 24)
+    };
+    now.saturating_add(extra)
 }
 
 pub fn cooldown_progress(kind: u32, start: i32, end: i32, now: i32) -> (i32, f32) {

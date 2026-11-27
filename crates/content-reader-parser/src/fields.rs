@@ -1,13 +1,47 @@
 
-use std::io;
+use std::{fmt, io, sync::Arc};
 
 use crate::{
     crt,
     parser::{Item, Value},
 };
 
+#[derive(Debug)]
+struct ContentError(String);
+
+impl fmt::Display for ContentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ContentError {}
+
 pub fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+    io::Error::new(io::ErrorKind::InvalidData, ContentError(message.into()))
+}
+
+pub fn is_content_error(error: &io::Error) -> bool {
+    let mut inner: Option<&(dyn std::error::Error + 'static)> = error
+        .get_ref()
+        .map(|error| error as &(dyn std::error::Error + 'static));
+    while let Some(current) = inner {
+        if current.is::<ContentError>() {
+            return true;
+        }
+        inner = if let Some(wrapped) = current.downcast_ref::<io::Error>() {
+            wrapped
+                .get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static))
+        } else if let Some(wrapped) = current.downcast_ref::<Arc<io::Error>>() {
+            wrapped
+                .get_ref()
+                .map(|error| error as &(dyn std::error::Error + 'static))
+        } else {
+            current.source()
+        };
+    }
+    false
 }
 
 pub fn text<'a>(value: &'a Value, what: &str) -> io::Result<&'a str> {
@@ -168,5 +202,29 @@ mod tests {
             kind: crate::parser::Kind::Bare,
         };
         assert!(key_str(&raw, "test").is_err());
+    }
+
+    #[test]
+    fn content_error_marker_follows_parse_errors_through_wrapped_io_errors() {
+        let field = invalid("broken field");
+        assert_eq!(field.kind(), io::ErrorKind::InvalidData);
+        assert!(is_content_error(&field));
+        let wrapped = io::Error::new(field.kind(), field);
+        assert!(is_content_error(&wrapped));
+        let shared = io::Error::new(wrapped.kind(), Arc::new(wrapped));
+        assert!(is_content_error(&shared));
+
+        let parse = parser::parse(b"a = {").unwrap_err();
+        assert_eq!(parse.kind(), io::ErrorKind::InvalidData);
+        assert!(is_content_error(&parse));
+
+        let decimal = crate::parser::decimal::Decimal::parse(b"not_a_number").unwrap_err();
+        assert_eq!(decimal.kind(), io::ErrorKind::InvalidData);
+        assert!(is_content_error(&decimal));
+
+        let plain = io::Error::new(io::ErrorKind::InvalidData, "content file changed since verification");
+        assert!(!is_content_error(&plain));
+        assert!(!is_content_error(&io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert!(!is_content_error(&io::Error::from(io::ErrorKind::NotFound)));
     }
 }

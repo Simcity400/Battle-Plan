@@ -176,6 +176,12 @@ const SUBJECT_ARGUMENTS: [&str; 5] = [
     "NONIDEOLOGYADJ",
 ];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountryName {
+    Plain(String),
+    Scripted { key: String, text: String },
+}
+
 #[derive(Default)]
 struct Walk {
     active: BTreeSet<(u32, String)>,
@@ -193,7 +199,7 @@ struct Frame {
 }
 
 enum Step {
-    Done(Result<String, String>),
+    Done(Result<CountryName, String>),
     Subject(Frame),
 }
 
@@ -303,6 +309,14 @@ impl<'a> CountryNames<'a> {
         self.resolve(slot, suffix, &mut Walk::default())
     }
 
+    pub fn resolve_name(&self, slot: u32) -> Result<CountryName, String> {
+        self.resolve_name_with(slot, "")
+    }
+
+    pub fn resolve_name_with(&self, slot: u32, suffix: &str) -> Result<CountryName, String> {
+        self.resolve_classified(slot, suffix, &mut Walk::default())
+    }
+
     pub fn ruling_group(&self, slot: u32) -> Result<Option<&str>, String> {
         match self.operands.get(&slot) {
             Some(Ok(input)) => Ok(input
@@ -314,9 +328,9 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    fn resolve(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Result<String, String> {
+    fn resolve_classified(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Result<CountryName, String> {
         let mut stack = Vec::new();
-        let mut answer = match self.begin(slot, suffix, walk) {
+        let mut answer = match self.begin(slot, suffix, walk, true) {
             Step::Done(result) => return result,
             Step::Subject(frame) => {
                 walk.active.insert(frame.identity.clone());
@@ -324,6 +338,7 @@ impl<'a> CountryNames<'a> {
                 None
             }
         };
+        let mut root_answer: Option<Result<CountryName, String>> = None;
         while let Some(top) = stack.len().checked_sub(1) {
             if let Some(result) = answer.take() {
                 match result {
@@ -332,7 +347,13 @@ impl<'a> CountryNames<'a> {
                         stack[top].values.push((name, value));
                     }
                     Err(reason) => {
-                        answer = Some(self.finish(stack.pop().expect("a top frame"), Err(reason), walk));
+                        let frame = stack.pop().expect("a top frame");
+                        let finished = self.finish(frame, Err(reason), walk, top == 0);
+                        if top == 0 {
+                            root_answer = Some(finished);
+                        } else {
+                            answer = Some(plain_only(finished));
+                        }
                         continue;
                     }
                 }
@@ -350,7 +371,13 @@ impl<'a> CountryNames<'a> {
             let index = match reached {
                 Ok(text) => {
                     let text = text.map_err(|why| why.to_string());
-                    answer = Some(self.finish(stack.pop().expect("a top frame"), text, walk));
+                    let frame = stack.pop().expect("a top frame");
+                    let finished = self.finish(frame, text, walk, top == 0);
+                    if top == 0 {
+                        root_answer = Some(finished);
+                    } else {
+                        answer = Some(plain_only(finished));
+                    }
                     continue;
                 }
                 Err(index) => index,
@@ -361,8 +388,8 @@ impl<'a> CountryNames<'a> {
                 "OVERLORDADJ" | "OVERLORDNAMEDEF" => {
                     frame.asked = Some(name);
                     let suffix = if name == "OVERLORDADJ" { "_ADJ" } else { "_DEF" };
-                    match self.begin(frame.overlord, suffix, walk) {
-                        Step::Done(result) => answer = Some(result),
+                    match self.begin(frame.overlord, suffix, walk, false) {
+                        Step::Done(result) => answer = Some(plain_only(result)),
                         Step::Subject(next) => {
                             walk.active.insert(next.identity.clone());
                             stack.push(next);
@@ -376,13 +403,25 @@ impl<'a> CountryNames<'a> {
             };
             match value {
                 Ok(value) => frame.values.push((name, value)),
-                Err(reason) => answer = Some(self.finish(stack.pop().expect("a top frame"), Err(reason), walk)),
+                Err(reason) => {
+                    let frame = stack.pop().expect("a top frame");
+                    let finished = self.finish(frame, Err(reason), walk, top == 0);
+                    if top == 0 {
+                        root_answer = Some(finished);
+                    } else {
+                        answer = Some(plain_only(finished));
+                    }
+                }
             }
         }
-        answer.expect("the first frame's name")
+        root_answer.expect("the first frame's name")
     }
 
-    fn begin(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Step {
+    fn resolve(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Result<String, String> {
+        plain_only(self.resolve_classified(slot, suffix, walk))
+    }
+
+    fn begin(&self, slot: u32, suffix: &str, walk: &mut Walk, allow_scripted: bool) -> Step {
         if slot == 0
             && let Some(built) = self.reserved_built
         {
@@ -393,12 +432,12 @@ impl<'a> CountryNames<'a> {
                 _ => 0,
             };
             if bit != 0 && built & bit == 0 {
-                return Step::Done(Ok(String::new()));
+                return Step::Done(Ok(CountryName::Plain(String::new())));
             }
         }
         let identity = (slot, suffix.to_owned());
         if let Some(built) = walk.built.get(&identity) {
-            return Step::Done(built.clone());
+            return Step::Done(built.clone().map(CountryName::Plain));
         }
         if walk.active.contains(&identity) {
             return Step::Done(Err("country names refer to each other in a cycle".into()));
@@ -415,7 +454,7 @@ impl<'a> CountryNames<'a> {
         };
         match input.overlord {
             None => {
-                let text = self.localised(&key).and_then(|text| unscripted(&key, text));
+                let text = self.localised(&key).and_then(|text| classify(&key, text, allow_scripted));
                 self.built(identity, text, walk)
             }
             Some(overlord) => Step::Subject(Frame {
@@ -430,15 +469,23 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    fn built(&self, identity: (u32, String), result: Result<String, String>, walk: &mut Walk) -> Step {
-        walk.built.insert(identity, result.clone());
+    fn built(&self, identity: (u32, String), result: Result<CountryName, String>, walk: &mut Walk) -> Step {
+        if let Ok(CountryName::Plain(ref plain)) = result {
+            walk.built.insert(identity, Ok(plain.clone()));
+        } else if let Err(ref err) = result {
+            walk.built.insert(identity, Err(err.clone()));
+        }
         Step::Done(result)
     }
 
-    fn finish(&self, frame: Frame, text: Result<String, String>, walk: &mut Walk) -> Result<String, String> {
-        let result = text.and_then(|text| unscripted(&frame.key, text));
+    fn finish(&self, frame: Frame, text: Result<String, String>, walk: &mut Walk, allow_scripted: bool) -> Result<CountryName, String> {
+        let result = text.and_then(|text| classify(&frame.key, text, allow_scripted));
         walk.active.remove(&frame.identity);
-        walk.built.insert(frame.identity, result.clone());
+        if let Ok(CountryName::Plain(ref plain)) = result {
+            walk.built.insert(frame.identity, Ok(plain.clone()));
+        } else if let Err(ref err) = result {
+            walk.built.insert(frame.identity, Err(err.clone()));
+        }
         result
     }
 
@@ -449,11 +496,27 @@ impl<'a> CountryNames<'a> {
     }
 }
 
-fn unscripted(key: &str, text: String) -> Result<String, String> {
+fn plain_only(result: Result<CountryName, String>) -> Result<String, String> {
+    match result {
+        Ok(CountryName::Plain(text)) => Ok(text),
+        Ok(CountryName::Scripted { key, .. }) => {
+            Err(format!("localisation {key} uses unsupported scripted text"))
+        }
+        Err(reason) => Err(reason),
+    }
+}
+
+fn classify(key: &str, text: String, allow_scripted: bool) -> Result<CountryName, String> {
     if text.contains('[') {
+        if allow_scripted {
+            return Ok(CountryName::Scripted {
+                key: key.to_owned(),
+                text,
+            });
+        }
         return Err(format!("localisation {key} uses unsupported scripted text"));
     }
-    Ok(text)
+    Ok(CountryName::Plain(text))
 }
 
 fn partial<F: Tables + ?Sized, T: TableSchema>(frame: &F, mask: u64) -> (Rowset<'_, T::Row>, bool) {

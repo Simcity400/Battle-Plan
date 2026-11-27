@@ -9,7 +9,10 @@ import { nameReadFrom, type NameRead } from './nameReads.ts';
 import type { DashboardClient } from './client';
 
 const names = new Map<string, NameRead>([[nameKey(10, 'named'), nameReadFrom('Recorded name', true)],
-  [nameKey(10, 'pending'), nameReadFrom(undefined, true)], [nameKey(10, 'missing'), nameReadFrom(null, true)], [nameKey(20, 'named'), nameReadFrom('Later name', true)]]);
+  [nameKey(10, 'pending'), nameReadFrom(undefined, true)], [nameKey(10, 'missing'), nameReadFrom(null, true)],
+  [nameKey(10, 'refused-a'), nameReadFrom({ reason: 'localisation A: scripted trigger unavailable' }, true)],
+  [nameKey(10, 'refused-b'), nameReadFrom({ reason: 'localisation B: missing key' }, true)],
+  [nameKey(20, 'named'), nameReadFrom('Later name', true)]]);
 const flags = new Map<string, { url?: string; reason?: string } | null | Error>([[nameKey(10, 'named'), { url: 'recorded-flag' }], [nameKey(20, 'named'), { url: 'later-flag' }]]);
 const calls: { kind: string; args: unknown[] }[] = [];
 const host = globalThis as typeof globalThis & {
@@ -47,6 +50,8 @@ test('dated labels forward the hour limit to the name read and distinguish pendi
         const { labelAt } = useCountryLabelsAt(client, track, wanted, true, limit);
         assert.deepEqual(labelAt(10)('pending'), { name: 'Loading name…', flag: undefined, known: undefined, nameFailed: false, flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('missing'), { name: 'Country name unavailable', flag: undefined, known: false, nameFailed: false, flagPending: true, flagReason: undefined });
+        assert.deepEqual(labelAt(10)('refused-a'), { name: 'Country name unavailable', flag: undefined, known: false, nameFailed: false, nameDetail: 'localisation A: scripted trigger unavailable', flagPending: true, flagReason: undefined });
+        assert.deepEqual(labelAt(10)('refused-b'), { name: 'Country name unavailable', flag: undefined, known: false, nameFailed: false, nameDetail: 'localisation B: missing key', flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('failed'), { name: 'Couldn’t load country name.', flag: undefined, known: false, nameFailed: true, nameDetail: FAILED_FACT.message, nameFailure: FAILED_FACT, flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('named'), { name: 'Recorded name', flag: 'recorded-flag', known: true, nameFailed: false, flagPending: false, flagReason: undefined });
         assert.equal(labelAt(10)('failed-flag').flagReason, 'The flag request failed.');

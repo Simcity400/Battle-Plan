@@ -29,11 +29,13 @@ impl From<io::Error> for ContentError {
 }
 impl ContentError {
     pub fn error(&self) -> io::Error {
-        match self.0.raw_os_error() {
-            Some(code) => io::Error::from_raw_os_error(code),
-            None => dashboard_core::duplicate(&self.0),
-        }
+        io::Error::new(self.0.kind(), Arc::clone(&self.0))
     }
+}
+
+fn is_kept_error(error: &io::Error) -> bool {
+    content_reader_parser::fields::is_content_error(error)
+        || dashboard_core::refusal(error).is_some()
 }
 
 pub struct CachedResult<T> {
@@ -67,14 +69,17 @@ impl<T> CachedResult<T> {
             self.loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (result, noted) = capture(read);
-            if result
-                .as_ref()
-                .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
-            {
-                return result.map(Arc::new);
+            match result {
+                Ok(loaded) => {
+                    *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;
+                    *value = Some(Ok(Arc::new(loaded)));
+                }
+                Err(error) if is_kept_error(&error) => {
+                    *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;
+                    *value = Some(Err(ContentError::from(error)));
+                }
+                Err(error) => return Err(error),
             }
-            *self.noted.lock().unwrap_or_else(|error| error.into_inner()) = noted;
-            *value = Some(result.map(Arc::new).map_err(ContentError::from));
         } else {
             credit(&self.noted.lock().unwrap_or_else(|error| error.into_inner()));
         }
@@ -1634,37 +1639,42 @@ pub mod tests {
     }
 
     #[test]
-    fn keyed_results_retain_named_failures_and_native_os_errors() {
+    fn keyed_results_keep_content_errors_and_retry_read_errors() {
         let cache = KeyedResults::<String, String>::default();
         let key = "mod/refused".to_owned();
         let error = cache
             .get_or_init(&key, |spelling| {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{spelling}: unsupported authored projection"),
-                ))
+                Err(content_reader_parser::fields::invalid(format!(
+                    "{spelling}: unsupported authored projection"
+                )))
             })
             .unwrap_err();
         for _ in 0..10 {
             let held = cache
-                .get_or_init(&key, |_| panic!("retried a fixed refusal"))
+                .get_or_init(&key, |_| panic!("retried a fixed content error"))
                 .unwrap_err();
             assert_eq!(held.kind(), error.kind());
             assert_eq!(held.to_string(), error.to_string());
+            assert!(content_reader_parser::fields::is_content_error(&held));
         }
         assert_eq!(cache.loads(&key), 1);
 
         let key = "unreadable".to_owned();
-        let error = cache
-            .get_or_init(&key, |_| Err(io::Error::from_raw_os_error(2)))
-            .unwrap_err();
-        let held = cache
-            .get_or_init(&key, |_| panic!("retried an OS refusal"))
-            .unwrap_err();
-        assert_eq!(held.raw_os_error(), error.raw_os_error());
-        assert_eq!(held.kind(), error.kind());
-        assert_eq!(held.to_string(), error.to_string());
-        assert_eq!(cache.loads(&key), 1);
+        for transient in [
+            io::Error::from_raw_os_error(2),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+            io::Error::from(io::ErrorKind::NotFound),
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "content file changed since verification: common/probe.txt",
+            ),
+        ] {
+            let expected_kind = transient.kind();
+            let got = cache.get_or_init(&key, |_| Err(transient)).unwrap_err();
+            assert_eq!(got.kind(), expected_kind);
+        }
+        assert_eq!(*cache.get_or_init(&key, |_| Ok("recovered".to_owned())).unwrap(), "recovered");
+        assert_eq!(cache.loads(&key), 5);
     }
 
     #[test]
@@ -1713,10 +1723,7 @@ pub mod tests {
                             if spelling == "known" {
                                 Ok("authored class".to_owned())
                             } else {
-                                Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "refused by name",
-                                ))
+                                Err(content_reader_parser::fields::invalid("refused by name"))
                             }
                         });
                         (key, result)
@@ -1808,14 +1815,14 @@ pub mod tests {
         for _ in 0..20 {
             let error = refused
                 .get_or_init(|| {
-                    Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
+                    Err(content_reader_parser::fields::invalid(
                         "mod definition refused by name",
                     ))
                 })
                 .unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert_eq!(error.to_string(), "mod definition refused by name");
+            assert!(content_reader_parser::fields::is_content_error(&error));
         }
         assert_eq!(refused.loads(), 1);
         let visual = CachedResult::<Vec<String>>::default();
@@ -1828,21 +1835,169 @@ pub mod tests {
         let error = visual.get().unwrap().unwrap_err();
         assert_eq!(dashboard_core::refusal(&error), Some("Synthetic visual mods are refused"));
         assert_eq!(visual.loads(), 1);
-        let cancelled = CachedResult::default();
+        let transient = CachedResult::default();
+        for error in [
+            io::Error::from(io::ErrorKind::Interrupted),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+            io::Error::from(io::ErrorKind::NotFound),
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "content file changed since verification: common/probe.txt",
+            ),
+        ] {
+            let expected = error.kind();
+            assert_eq!(
+                transient
+                    .get_or_init(|| Err::<Vec<String>, _>(error))
+                    .unwrap_err()
+                    .kind(),
+                expected
+            );
+            assert!(transient.get().is_none());
+        }
         assert_eq!(
-            cancelled
-                .get_or_init(|| Err::<Vec<String>, _>(io::Error::from(io::ErrorKind::Interrupted)))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert_eq!(
-            *cancelled
-                .get_or_init(|| Ok(vec!["after cancellation".to_owned()]))
+            *transient
+                .get_or_init(|| Ok(vec!["after transient read errors".to_owned()]))
                 .unwrap(),
-            ["after cancellation"]
+            ["after transient read errors"]
         );
-        assert_eq!(cancelled.loads(), 2);
+        assert_eq!(transient.loads(), 5);
+    }
+
+    #[test]
+    fn cached_results_recover_from_read_errors_keep_mod_parse_errors_and_retry_absence() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "cached-result-layers-{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let mod_dir = root.join("mod");
+        std::fs::create_dir_all(base.join("map/strategicregions")).unwrap();
+        std::fs::create_dir_all(mod_dir.join("map/strategicregions")).unwrap();
+        let mod_region = mod_dir.join("map/strategicregions/mod_region.txt");
+        let valid_source = "strategic_region = { id = 7 name = \"MOD_REGION\" provinces = { 1 } }";
+        std::fs::write(&mod_region, valid_source).unwrap();
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&reads);
+        let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&mod_dir, &[][..])])
+            .unwrap()
+            .with_read_trace(Arc::new(move |read| {
+                if read.path == b"map/strategicregions/mod_region.txt" {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        let cache = layers.derived::<CachedResult<content_reader_regions::regions::StrategicRegions>>();
+
+        let io_error = {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let _locked = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(&mod_region)
+                    .unwrap();
+                cache
+                    .get_or_init(|| content_reader_regions::regions::read(&layers))
+                    .unwrap_err()
+            }
+            #[cfg(unix)]
+            {
+                let parent = mod_dir.join("map/strategicregions");
+                let backup = mod_dir.join("map/strategicregions_bak");
+                std::fs::rename(&parent, &backup).unwrap();
+                std::fs::write(&parent, b"").unwrap();
+                let error = cache
+                    .get_or_init(|| content_reader_regions::regions::read(&layers))
+                    .unwrap_err();
+                std::fs::remove_file(&parent).unwrap();
+                std::fs::rename(&backup, &parent).unwrap();
+                error
+            }
+        };
+        assert_ne!(io_error.kind(), io::ErrorKind::InvalidData, "{io_error}");
+        assert!(cache.get().is_none());
+
+        std::fs::write(
+            &mod_region,
+            "strategic_region = { id = 7 name = \"CHANGED\" provinces = { 1 } }",
+        )
+        .unwrap();
+        let changed = cache
+            .get_or_init(|| content_reader_regions::regions::read(&layers))
+            .unwrap_err();
+        assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
+        assert!(changed.to_string().contains("changed since verification"), "{changed}");
+        assert!(cache.get().is_none());
+
+        std::fs::write(&mod_region, valid_source).unwrap();
+        let loaded = cache
+            .get_or_init(|| content_reader_regions::regions::read(&layers))
+            .unwrap();
+        assert_eq!(loaded.regions[&7].name_key, "MOD_REGION");
+        let reads_after_recovery = reads.load(Ordering::Relaxed);
+        let again = cache
+            .get_or_init(|| panic!("successful read was not kept"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&loaded, &again));
+        assert_eq!(cache.loads(), 3);
+        assert_eq!(reads.load(Ordering::Relaxed), reads_after_recovery);
+
+        let broken_dir = root.join("broken_mod");
+        std::fs::create_dir_all(broken_dir.join("map/strategicregions")).unwrap();
+        let broken_file = broken_dir.join("map/strategicregions/mod_broken.txt");
+        std::fs::write(
+            &broken_file,
+            "strategic_region = { id = 9 name = \"BROKEN\" provinces = { 0 } }",
+        )
+        .unwrap();
+        let broken_reads = Arc::new(AtomicUsize::new(0));
+        let broken_count = Arc::clone(&broken_reads);
+        let broken_layers =
+            ResolvedLayers::from_folders(&[(&base, &[][..]), (&broken_dir, &[][..])])
+                .unwrap()
+                .with_read_trace(Arc::new(move |read| {
+                    if read.path == b"map/strategicregions/mod_broken.txt" {
+                        broken_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+        let broken_cache =
+            broken_layers.derived::<CachedResult<content_reader_regions::regions::StrategicRegions>>();
+        let first_broken = broken_cache
+            .get_or_init(|| content_reader_regions::regions::read(&broken_layers))
+            .unwrap_err();
+        assert_eq!(first_broken.kind(), io::ErrorKind::InvalidData);
+        assert!(content_reader_parser::fields::is_content_error(&first_broken));
+        assert!(first_broken.to_string().contains("mod_broken.txt"), "{first_broken}");
+        assert_eq!(broken_reads.load(Ordering::Relaxed), 1);
+        for _ in 0..4 {
+            let repeated = broken_cache
+                .get_or_init(|| panic!("parse error was read again"))
+                .unwrap_err();
+            assert_eq!(repeated.to_string(), first_broken.to_string());
+            assert!(content_reader_parser::fields::is_content_error(&repeated));
+        }
+        assert_eq!(broken_cache.loads(), 1);
+        assert_eq!(broken_reads.load(Ordering::Relaxed), 1);
+
+        let absent_cache =
+            layers.derived::<CachedResult<content_reader_key_names::terrain::DefaultMap>>();
+        for attempt in 1..=2 {
+            let missing = absent_cache
+                .get_or_init(|| content_reader_key_names::terrain::read_default_map(&layers))
+                .unwrap_err();
+            assert_eq!(missing.kind(), io::ErrorKind::NotFound, "{missing}");
+            assert!(!content_reader_parser::fields::is_content_error(&missing));
+            assert!(absent_cache.get().is_none());
+            assert_eq!(absent_cache.loads(), attempt);
+        }
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

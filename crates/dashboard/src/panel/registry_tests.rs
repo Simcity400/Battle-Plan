@@ -152,15 +152,14 @@ fn each_ui_panel_key_has_one_registered_reader() {
 #[test]
 fn readers_that_can_rebuild_at_each_hour_are_named() {
     let allowed = [
-        "autonomy-levels", "casualty-matrix",
+        "casualty-matrix",
         "country-faction-goals", "country-fuel",
-        "decryption",
-        "faction-details", "factory-parts",
-        "occupation-at", "operative-matrix", "operatives-roster",
+        "faction-details",
+        "occupation-at",
         "resource-balance",
-        "territory-breakdown", "trade-flow",
+        "trade-flow",
         "volunteer-flow", "war-contributions",
-        "wargoals", "world-tension",
+        "wargoals",
     ];
     let actual: Vec<_> = READERS.iter().filter_map(|(&key, reader)| {
         matches!(reader.kind, PanelKind::WholeFrame | PanelKind::DayThroughHour | PanelKind::ExactHourly).then_some(key)

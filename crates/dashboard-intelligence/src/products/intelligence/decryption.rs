@@ -1,7 +1,7 @@
 
 use super::{Content, Country, IDENTITY, Tags, branch, missing};
-use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
-use dashboard_follow::live::Source as Cell;
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour, Edits, Held as HeldReply, Read as TableRead, ReadsAt, field_columns, warnings_through}}};
+use dashboard_follow::live::{Live, Source as Cell};
 use dashboard_query::{Index, Query, timeline::Join};
 use dashboard_text::cryptology;
 use replay::campaign::Replay;
@@ -252,13 +252,36 @@ fn name_cells(live: &dashboard_follow::live::Cells, row: &CryptologyRow) {
 pub struct DecryptionContext {
     content: Content,
     ciphers: Ciphers,
+    branch: Option<u64>,
+    attempts: Option<Result<Arc<Attempts>, String>>,
+    history: Option<Result<Arc<CipherHistory>, String>>,
+}
+
+impl DecryptionContext {
+    fn attempts_for(&self, branch: u64) -> Result<Arc<Attempts>, String> {
+        if self.branch == Some(branch)
+            && let Some(held) = &self.attempts
+        {
+            return held.clone();
+        }
+        self.ciphers.attempts(branch, self.content.defines.as_ref().ok().copied()).map_err(|error| error.to_string())
+    }
+
+    fn history_for(&self, branch: u64) -> Result<Arc<CipherHistory>, String> {
+        if self.branch == Some(branch)
+            && let Some(held) = &self.history
+        {
+            return held.clone();
+        }
+        self.ciphers.history(branch).map_err(|error| error.to_string())
+    }
 }
 
 impl AtHour for Decryption {
     const KEY: &'static str = "decryption";
     const TITLE: &'static str = "Decryption";
     const CONTENT_DEPENDENT: bool = true;
-    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::EveryHour("reads decryption attempts and 7-day history window from precomputed history context at frame.hour");
+    const CLOCK: dashboard_base::products::at_hour::Clock = dashboard_base::products::at_hour::Clock::Boundaries;
     type Params = DecryptionParams;
     const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = DecryptionReply;
@@ -277,8 +300,85 @@ impl AtHour for Decryption {
         TABLES.to_vec()
     }
 
+    fn plan_changes(_stage: usize, _edits: &Edits, _held: &DecodedFrame, _at: &ReadsAt<'_, Self::Context>) -> bool {
+        false
+    }
+
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<TableRead>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::Cryptology => &["amount_raw", "bonus_active", "decrypting"],
+            TableId::RaidIntelInputs => &["crypto_strength"],
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryLinks => &["canonical_slot"],
+            _ => return None,
+        };
+        Some(field_columns(table, fields))
+    }
+
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {
-        Ok(DecryptionContext { content: Content::load(source, load), ciphers: Ciphers::of(source) })
+        Ok(DecryptionContext { content: Content::load(source, load), ciphers: Ciphers::of(source), branch: None, attempts: None, history: None })
+    }
+
+    fn context_for(source: &Source, load: &LoadContext, params: &Self::Params) -> io::Result<Self::Context> {
+        let content = Content::load(source, load);
+        let ciphers = Ciphers::of(source);
+        let branch = params.branch_id.parse::<u64>().ok();
+        let attempts = branch.map(|branch| ciphers.attempts(branch, content.defines.as_ref().ok().copied()).map_err(|error| error.to_string()));
+        let history = branch.map(|branch| ciphers.history(branch).map_err(|error| error.to_string()));
+        Ok(DecryptionContext { content, ciphers, branch, attempts, history })
+    }
+
+    fn valid_reply_through(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>, reply: &Self::Reply, partial: bool) -> i32 {
+        let diagnostics = warnings_through(
+            frame.hour,
+            reply.missing.iter()
+                .chain(&reply.attempts_unknown)
+                .chain(&reply.warnings)
+                .chain(reply.pairs.iter().flat_map(|pair| pair.threshold_unknown.iter().chain(&pair.week_change_unknown)))
+                .map(String::as_str),
+        );
+        if partial || diagnostics == frame.hour {
+            return frame.hour;
+        }
+        if reply.missing.is_some() {
+            return i32::MAX;
+        }
+        let Ok(rows) = frame.complete::<tables::Cryptology>() else {
+            return i32::MAX;
+        };
+        let Ok(branch) = params.branch_id.parse::<u64>() else {
+            return i32::MAX;
+        };
+        let mut through = i32::MAX;
+        if let Ok(attempts) = at.context.attempts_for(branch) {
+            for row in rows {
+                through = through.min(attempts.valid_through(pair_key(row.owner_country, row.target_country), frame.hour));
+            }
+        }
+        if let Ok(history) = at.context.history_for(branch) {
+            for pair in &reply.pairs {
+                if pair.threshold_unknown.is_none() {
+                    through = through.min(history.amount_valid_through(pair_key(pair.owner.id, pair.target.id), frame.hour));
+                }
+            }
+        }
+        through
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, _live: &Live, data: &mut HeldReply<'_>) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || !data["missing"].is_null() {
+            return Ok(false);
+        }
+        if !edits.tables.keys().all(|table| *table == TableId::RaidIntelInputs) {
+            return Ok(false);
+        }
+        let Some(changed) = edits.tables.get(&TableId::RaidIntelInputs) else {
+            return Ok(true);
+        };
+        let Ok(rows) = frame.complete::<tables::Cryptology>() else {
+            return Ok(false);
+        };
+        Ok(!rows.iter().any(|row| changed.contains_key(&u128::from(row.target_country))))
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
@@ -288,10 +388,10 @@ impl AtHour for Decryption {
             warnings.push(format!("Cipher thresholds unknown, so a cipher is known broken only by its bonus: {reason}"));
         }
         let branch: u64 = params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
-        let attempts = at.context.ciphers.attempts(branch, defines.as_ref().ok().copied());
+        let attempts = at.context.attempts_for(branch);
         let attempts_unknown = attempts.as_ref().err().map(|error| format!("Attempt starts and breaks are not known: {error}"));
-        let history = at.context.ciphers.history(branch);
-        let history_error = history.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        let history = at.context.history_for(branch);
+        let history_error = history.as_ref().err().cloned().unwrap_or_default();
         let history = history.as_deref().map_err(|_| history_error.as_str());
         Ok(match pairs(frame, defines, attempts.as_deref().ok(), history, at.live) {
             Ok(pairs) => DecryptionReply { counts: CipherCounts::of(&pairs), pairs, missing: None, attempts_unknown, warnings },
@@ -491,6 +591,28 @@ impl CipherHistory {
         Ok(steps.amounts[at])
     }
 
+    fn amount_valid_through(&self, key: u64, hour: i32) -> i32 {
+        let Some(&(first, last)) = self.stretches.iter().find(|(first, last)| *first <= hour && hour <= *last) else {
+            return self.stretches.iter().filter(|(first, _)| *first > hour).map(|(first, _)| first - 1).min().unwrap_or(i32::MAX);
+        };
+        let Some(then) = hour.checked_sub(WEEK_HOURS) else {
+            return last;
+        };
+        if then < first {
+            return first.saturating_add(WEEK_HOURS).saturating_sub(1).min(last);
+        }
+        let Some(steps) = self.pairs.get(&key) else {
+            return last;
+        };
+        let next = steps.hours.partition_point(|&step| step <= then);
+        let value = |at: usize| (steps.flags[at] & KNOWN != 0).then_some(steps.amounts[at]);
+        let current = next.checked_sub(1).map(value);
+        match (next..steps.hours.len()).find(|&at| Some(value(at)) != current) {
+            Some(at) => steps.hours[at].saturating_add(WEEK_HOURS).saturating_sub(1).min(last),
+            None => last,
+        }
+    }
+
     fn attempts(&self, defines: Option<cryptology::Defines>) -> Attempts {
         let none = Vec::new();
         let mut out = HashMap::with_capacity(self.pairs.len());
@@ -559,6 +681,17 @@ impl Attempts {
             .get(&key)
             .and_then(|steps| steps.get(steps.partition_point(|step| step.hour <= hour).checked_sub(1)?))
             .map_or((None, None), |step| (step.started, step.broke))
+    }
+
+    fn valid_through(&self, key: u64, hour: i32) -> i32 {
+        let Some(steps) = self.0.get(&key) else {
+            return i32::MAX;
+        };
+        let next = steps.partition_point(|step| step.hour <= hour);
+        match steps.get(next) {
+            Some(step) => step.hour - 1,
+            None => i32::MAX,
+        }
     }
 }
 

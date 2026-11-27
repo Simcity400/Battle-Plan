@@ -120,10 +120,12 @@ export function stylesIn(facts: CountryTimeline, hour: number, tags: readonly st
   const { names, reasons, warnings } = facts.reply;
   return new Map(tags.map(tag => {
     const run = runAt(facts.runs.get(tag) ?? [], hour);
-    const reason = !run ? `${tag}: not a country at this hour` : run[3] >= 0 ? `${tag}: ${reasons[run[3]]}` : null;
+    const detail = !run ? 'not a country at this hour' : run[3] >= 0 ? reasons[run[3]] : null;
+    const reason = detail === null ? null : `${tag}: ${detail}`;
     const colour = run?.[2] ?? -1;
     return [tag, { tag, name: run && run[1] >= 0 ? names[run[1]] : null,
       color: colour >= 0 ? [(colour >> 16) & 255, (colour >> 8) & 255, colour & 255] as [number, number, number] : null,
+      ...(detail !== null ? { reason: detail } : {}),
       warnings: reason === null ? warnings : [...warnings, reason] }] as const;
   }));
 }

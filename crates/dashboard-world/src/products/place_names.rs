@@ -82,16 +82,10 @@ impl Content {
         }
         let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
-                let named = |region: &content_reader_regions::regions::StrategicRegion| {
-                    if !cat.has_presentation_key(&region.name_key) {
-                        return Err(format!("localisation {} is missing; region title is unavailable", region.name_key));
-                    }
-                    cat.localisation.localise(region.name_key.as_bytes()).map_err(|error| error.to_string()).and_then(|name| catalogue::plain_text(&name))
-                };
                 let mut by_region = BTreeMap::new();
                 let mut by_province = BTreeMap::new();
                 for (&id, region) in &regions.regions {
-                    let name = named(region);
+                    let name = crate::products::region_names::region_name(&cat, &regions, id);
                     for province in region.native_provinces(|_| true) {
                         if by_province.insert(province, name.clone()).is_some() {
                             by_province.insert(province, Err(format!("province {province}: multiple strategic-region memberships refused")));

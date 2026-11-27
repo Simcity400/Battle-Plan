@@ -22,6 +22,7 @@ use std::{
 use ts_rs::TS;
 
 pub const CURRENT_INSTALL_ART_LABEL: &str = "Artwork from current installation";
+pub const CURRENT_INSTALL_ART_NOTICE: &str = "Artwork from current installation; visual assets are outside content hash coverage.";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]

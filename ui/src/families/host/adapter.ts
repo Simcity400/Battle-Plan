@@ -207,10 +207,12 @@ export interface FamilyBindingContext<TOptions, TSettings = unknown> {
   readonly reducedMotion: boolean;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly focusInside?: boolean;
   readonly expanded: Readonly<Record<string, boolean>>;
   readonly audit: boolean;
   readonly auditId: number | undefined;
   readonly pauseFlush: number;
+  readonly mirrorRequest?: number;
   readonly window?: FamilyRowWindow | null;
   readonly motion?: LaneMotion;
 }
@@ -275,9 +277,11 @@ export interface FamilyBaseBinding<TOptions = unknown> extends FamilyBindingIden
   readonly artResolutions?: Readonly<Record<string, ArtResolution>>;
   readonly selectedKey: string | null;
   readonly focusedKey: string | null;
+  readonly focusInside?: boolean;
   readonly audit: boolean;
   readonly auditId?: number;
   readonly pauseFlush: number;
+  readonly mirrorRequest?: number;
   readonly window?: FamilyRowWindow;
   readonly motion?: LaneMotion;
 }
@@ -304,9 +308,11 @@ export function familyBinding<TOptions, TBinding, TSettings>(
     theme: ctx.theme,
     selectedKey: ctx.selectedKey,
     focusedKey: ctx.focusedKey,
+    ...(ctx.focusInside ? { focusInside: true } : {}),
     audit: ctx.audit,
     ...(ctx.auditId !== undefined ? { auditId: ctx.auditId } : {}),
     pauseFlush: ctx.pauseFlush,
+    ...(ctx.mirrorRequest ? { mirrorRequest: ctx.mirrorRequest } : {}),
     ...(ctx.window ? { window: ctx.window } : {}),
     ...(ctx.motion ? { motion: ctx.motion } : {}),
   };

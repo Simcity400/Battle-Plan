@@ -1,7 +1,6 @@
 import { colour } from '../../charts/palette.ts';
-import { holdingSince, holdingSpanFlags, holdingUntil, ideaHistoryRead, ideaNameMissing, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
+import { holdingSince, holdingSpanFlags, holdingUntil, ideaArtMissing, ideaArtwork, ideaHistoryRead, ideaNameMissing, lookOf, unobservedThrough } from '../../dashboard/ideaHistoryReply.ts';
 import type { TimelineWidgetDeclaration } from '../../families/timeline/declaration.ts';
-import { artworkArt } from '../../families/art/provider.ts';
 import { inHourSpans, timelineModel } from '../../families/timeline/helpers.ts';
 import { laneByKey, spanAt, type TimelineLane, type TimelineProjection } from '../../families/timeline/model.ts';
 import { registerFamilyProjection } from '../../families/registry.ts';
@@ -41,7 +40,7 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
         firstHour: span.holding.firstHour,
         color: fill,
         label: span.label,
-        icon: artworkArt(readView, span.artwork),
+        icon: ideaArtwork(readView, span.look),
         ...holdingSpanFlags(span.holding, hour),
         meta: { holding: span.holding },
       }));
@@ -74,11 +73,16 @@ export const ideaTimelineProjection: TimelineProjection<IdeaTimelineOptions> = r
     const category = chosenCategory(reply.categories, opt.category);
     const level = category ? lawLevel(category, look.info) : null;
     const why = ideaNameMissing(look.artwork, look.info);
+    const artMissing = ideaArtMissing(look, ideaArtwork(readView, look));
     return {
       title: span.label ?? lane.label,
       subtitle: level ? `${lane.label} · Level ${level}` : lane.label,
       hour: hit.hour ?? model.hour,
-      items: [holdingSince(holding), holdingUntil(holding)],
+      items: [
+        holdingSince(holding),
+        holdingUntil(holding),
+        ...(artMissing ? [{ label: 'Icon', missingReason: artMissing, tone: 'muted' as const }] : []),
+      ],
       ...(look.artwork.description ? { description: look.artwork.description } : {}),
       ...(why ? { note: why } : {}),
     };
