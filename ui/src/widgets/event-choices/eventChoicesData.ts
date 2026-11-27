@@ -1,4 +1,4 @@
-import { beforeBreak, breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
+import { breakAfter, dayOf, daysBetween, daysText, edgesAt, occurrenceItem } from '../event-feed/scriptOccurrences.ts';
 import type { RecordingBreak } from '../event-feed/scriptOccurrences';
 import { gapsForField, plainScripted } from '../event-feed/scriptedGaps.ts';
 import type { EventFeedItem, ScriptEdge, ScriptOccurrence } from '../../generated/dashboard';
@@ -67,7 +67,7 @@ export function optionLines(at: ChoiceAt): OptionLine[] {
   return lines;
 }
 
-export function choiceDates(at: ChoiceAt): string {
+export function choiceDates(at: ChoiceAt, breakHour?: number | null): string {
   const fired = at.card.fired;
   if (at.choice) {
     if (!fired) return `Chosen ${dayOf(at.choice.row.hour)}`;
@@ -75,7 +75,10 @@ export function choiceDates(at: ChoiceAt): string {
     return `${dayOf(fired.row.hour)} → chosen ${dayOf(at.choice.row.hour)} · ${days ? daysText(days) : 'same day'}`;
   }
   const start = at.card.first.row.hour;
-  if (at.pause) return `${dayOf(start)} · not chosen by ${dayOf(beforeBreak(at.pause, at.card.first.row.readHour))}`;
+  const lostAt = breakHour !== undefined ? breakHour : at.pause?.firstHour ?? null;
+  if (lostAt !== null && lostAt > at.card.first.row.readHour) {
+    return `${dayOf(start)} · not chosen by ${dayOf(lostAt - 1)}`;
+  }
   return dayOf(start);
 }
 
@@ -83,4 +86,12 @@ export function awaitingText(at: ChoiceAt): string {
   return `Awaiting choice · ${daysText(Math.max(0, daysBetween(at.card.first.row.hour, at.hour)))} open`;
 }
 
-export const noChoiceText = (at: ChoiceAt) => at.pause ? 'No choice recorded' : 'No option chosen yet';
+const PAUSE_REASON = /^(?:recording\s+)?paused\.?$/i;
+
+export function choiceNotRecordedText(reason: string | null | undefined): string {
+  const trimmed = reason?.trim();
+  if (!trimmed) return 'Choice not recorded (gap reason not recorded)';
+  return `Choice not recorded (${PAUSE_REASON.test(trimmed) ? 'recording paused' : trimmed})`;
+}
+
+export const noChoiceText = (at: ChoiceAt) => at.pause ? choiceNotRecordedText(at.pause.reason) : 'No option chosen yet';

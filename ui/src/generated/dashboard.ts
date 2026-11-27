@@ -1988,7 +1988,7 @@ export type ScriptPageRow = { key: string, hour: number, observed: number, ordin
 /**
  * The card's status at the hour asked.
  */
-status: ScriptStatus | null, occurrence: ScriptOccurrence | null, };
+status: ScriptStatus | null, occurrence: ScriptOccurrence | null, notRecordedReason?: string, notRecordedHour?: number, };
 export type ScriptOccurrenceTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, rows: Array<ScriptPageRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type DecoratedDivisionsParams = { branchId: string,
 /**
@@ -2742,7 +2742,7 @@ observed: number, ordinal: string, live: boolean, row: EventFeedRow | null,
 /**
  * A fired event's chosen option, where one was observed by the hour asked.
  */
-choice: ScriptEdge | null, status?: ScriptStatus, };
+choice: ScriptEdge | null, status?: ScriptStatus, notRecordedReason?: string, };
 export type EventFeedTailReply = { branchId: string, total: string, offset: string, live: string, counts: Array<OccurrenceCount>, rows: Array<EventFeedPageRow>, missing: Array<OccurrenceGap>, nextChange: number | null, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type FactionDetailParams = { branchId: string,
 /**

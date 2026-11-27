@@ -108,6 +108,7 @@ fn card_edges_date_membership_at_effective_hour_and_gate_admission_and_search_by
         resolved: Mutex::default(),
         presented: Mutex::default(),
         breaks: Vec::new(),
+        choice_breaks: Vec::new(),
         decision_breaks: Vec::new(),
         partial_reads: Vec::new(),
         gaps: Vec::new(),
