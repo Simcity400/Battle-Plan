@@ -129,16 +129,9 @@ fn a_strip_rebuilds_seventeen_exact_answers_and_keeps_the_interactive_lanes() {
         );
         assert!(expected[10]["answer"]["missing"].is_string());
         assert_ne!(expected[0], expected[1]);
-        for hour in [100, 104, 109, 111] {
-            crate::answer::answer(
-                &source,
-                "nuclear-arsenal",
-                &json!({"branchId":"1", "hour":hour}),
-                &load,
-                &cancelled,
-            )
-            .unwrap();
-        }
+        let panel = crate::panel::open(&source, &load, &json!({"panel":"nuclear-arsenal", "branchId":"1"})).unwrap();
+        let reader = panel.exact().unwrap();
+        assert!((reader.advance)(111, true, &cancelled, None).value.is_ok());
         let held = interactive_pool_snapshot(&source).unwrap();
         assert!(!held.is_empty());
         let mut previous = None;

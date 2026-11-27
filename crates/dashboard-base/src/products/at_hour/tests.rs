@@ -117,7 +117,11 @@ fn frame(hour: i32) -> DecodedFrame {
 }
 
 fn recording() -> (Source, Arc<dyn Pages>) {
-    let frames = (FIRST..=LAST).map(frame).collect();
+    recording_through(LAST)
+}
+
+fn recording_through(last: i32) -> (Source, Arc<dyn Pages>) {
+    let frames = (FIRST..=last).map(frame).collect();
     let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay_recording::columnar_frames::Recording::open(replay.bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let source = Source::from_replay(crate::SourceKey { source_id: "at-hour".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
@@ -185,6 +189,88 @@ fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::Query
 
 fn requested(source: &Source, country: impl Serialize, hour: i32) -> Result<Value, dashboard_core::QueryError> {
     asked(source, json!({ "branchId": "1", "country": country, "hour": hour }))
+}
+
+#[test]
+fn exact_reads_at_different_hours_match_serial_replies() {
+    let (source, _) = recording();
+    let hours = [FIRST + 3, ITA_LEAVES];
+    let reply = |hour| serde_json::to_vec(&requested(&source, "GER", hour).unwrap()).unwrap();
+    let serial = hours.map(reply);
+    let start = std::sync::Barrier::new(hours.len());
+    let concurrent = std::thread::scope(|scope| {
+        let start = &start;
+        hours.map(|hour| scope.spawn(move || {
+            start.wait();
+            reply(hour)
+        })).map(|work| work.join().unwrap())
+    });
+    assert_eq!(concurrent, serial);
+}
+
+#[test]
+fn overlapping_exact_frames_share_the_same_projection() {
+    let (source, _) = recording();
+    let pool = placed::Pool::of(&source).unwrap();
+    let run = pool.pages.run_of(0).unwrap();
+    let mode = incremental::capture_mode(&pool.pages).unwrap();
+    let ready = std::sync::Barrier::new(2);
+    let read = || {
+        let mut count = 0;
+        let mut input = incremental::Input { pool: &pool, run, hour: FIRST, mode, count: &mut count, step: None, exact: Some(Default::default()), gap: false };
+        let table = TableId::Countries;
+        let frame = input.frame(&[Read::all(table)], |_| None, 1);
+        ready.wait();
+        frame.unwrap().tables[table.index()].clone()
+    };
+    let (left, right) = std::thread::scope(|scope| {
+        let worker = scope.spawn(read);
+        (read(), worker.join().unwrap())
+    });
+    assert!(replay_frame::frame::SharedView::ptr_eq(&left, &right));
+    assert!(interactive_pool_snapshot(&source).unwrap().is_empty());
+}
+
+#[test]
+fn a_far_exact_read_does_not_restore_or_reproject_the_followed_lane() {
+    const STRIDES: i32 = 100;
+    const FAR: i32 = FIRST + 900;
+    let drive = |overlap: bool| {
+        let (source, _) = recording_through(FAR);
+        let panel = exact_panel::<Power>(&source, &load(), &json!({"branchId": "1", "country": "GER"})).unwrap();
+        let advance = &panel.exact().unwrap().advance;
+        let before = placed::restores();
+        let strides: Vec<_> = (FIRST..FIRST + STRIDES).map(|hour| {
+            let read = || advance(hour, true, &false.into(), None);
+            let read = if overlap {
+                let start = std::sync::Barrier::new(2);
+                std::thread::scope(|scope| {
+                    let exact = scope.spawn(|| {
+                        start.wait();
+                        requested(&source, "GER", FAR)
+                    });
+                    start.wait();
+                    let read = read();
+                    assert!(exact.join().unwrap().is_ok());
+                    read
+                })
+            } else {
+                read()
+            };
+            (read.rows, serde_json::to_vec(&*read.value).unwrap())
+        }).collect();
+        (placed::restores() - before, strides)
+    };
+    let serial = drive(false);
+    assert!(serial.0 > 0 && serial.1.iter().any(|(rows, _)| *rows > 0));
+    assert_eq!(drive(true), serial);
+}
+
+#[test]
+fn an_exact_request_releases_every_offscreen_lane() {
+    let (source, _) = recording();
+    assert!(requested(&source, "GER", FIRST).is_ok());
+    assert!(interactive_pool_snapshot(&source).unwrap().is_empty());
 }
 
 fn refused(error: dashboard_core::QueryError) -> String {
@@ -648,7 +734,7 @@ fn older_format_frame(tables: &[TableId]) -> DecodedFrame {
     let pool = placed::Pool::of(&source).unwrap();
     let mode = incremental::capture_mode(&pool.pages).unwrap();
     let mut count = 0;
-    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, placed: None, gap: false };
+    let mut input = incremental::Input { pool: &pool, run: pool.pages.run_of(0).unwrap(), hour: FIRST + 1, mode, count: &mut count, step: None, exact: Some(Default::default()), gap: false };
     input.frame(&tables.iter().copied().map(Read::all).collect::<Vec<_>>(), |_| None, 1).unwrap()
 }
 
@@ -719,7 +805,7 @@ fn a_keyed_read_names_the_rows_it_chose() {
     let mode = incremental::capture_mode(&pool.pages).unwrap();
     let reads = [Read::these(TableId::Countries, [9001, 9002]), Read::all(TableId::CountryLinks)];
     for hour in [FIRST, ITA_LEAVES] {
-        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, placed: None, gap: false };
+        let mut input = incremental::Input { pool: &pool, run, hour, mode, count: &mut count, step: None, exact: Some(Default::default()), gap: false };
         let frame = input.frame(&reads, |_| None, 1).unwrap();
         assert_eq!(*frame.tables[TableId::Countries.index()].keys(), Keys::These(vec![9001, 9002]), "hour {hour}");
         assert_eq!(*frame.tables[TableId::CountryLinks.index()].keys(), Keys::All, "hour {hour}");

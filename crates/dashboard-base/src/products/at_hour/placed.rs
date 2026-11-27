@@ -1,4 +1,6 @@
+use super::Keys;
 use crate::Source;
+use dashboard_follow::panel::Wake;
 use playhead::{
     changes::Changes,
     lane::Lane,
@@ -6,13 +8,14 @@ use playhead::{
 };
 use replay_columnar::unit::BLOCK;
 use replay_data::Hour;
+use replay_frame::frame::SharedView;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak, atomic::{AtomicBool, Ordering}},
 };
 
-const HELD_SETS: usize = 4;
+type Key = (usize, usize);
 
 struct StripPool {
     source: *const Source,
@@ -40,18 +43,22 @@ pub fn with_strip_pool<T>(source: &Source, work: impl FnOnce() -> T) -> T {
 #[cfg(any(test, feature = "test-support"))]
 pub fn interactive_pool_snapshot(source: &Source) -> io::Result<Vec<String>> {
     let pool = Pool::interactive(source)?;
-    let free = pool.free.lock().unwrap_or_else(PoisonError::into_inner);
-    Ok(free.iter().map(|placed| {
-        let lanes: Vec<_> = placed.lanes.iter().map(|lane| (lane.table(), lane.head(), lane.requested())).collect();
-        format!("{:?}", (placed.run, placed.at, lanes))
-    }).collect())
+    let slots = lock(&pool.slots);
+    let mut lanes = Vec::new();
+    for (key, slot) in slots.iter() {
+        if let Some(followed) = slot.followed.upgrade() && let Some(lane) = lock(&followed.lane).as_ref() {
+            lanes.push(format!("{:?}", (key, lane.head(), lane.requested())));
+        }
+        if slot.exact.strong_count() != 0 { lanes.push(format!("exact {key:?}")); }
+    }
+    lanes.sort_unstable();
+    Ok(lanes)
 }
 
 pub struct Pool {
     pub(super) pages: Arc<WorldPages>,
-    free: Mutex<Vec<Placed>>,
-    warming: Mutex<HashMap<(usize, usize), Vec<dashboard_follow::panel::Wake>>>,
-    unplaceable: Mutex<HashSet<(usize, usize)>>,
+    slots: Mutex<HashMap<Key, Slot>>,
+    strip: bool,
 }
 
 pub(super) enum Warm<T> {
@@ -60,15 +67,38 @@ pub(super) enum Warm<T> {
     Cold,
 }
 
-struct Placed {
-    run: usize,
-    at: Option<Hour>,
-    lanes: Vec<Lane>,
+#[derive(Default)]
+struct Slot {
+    followed: Weak<Following>,
+    exact: Weak<Exact>,
+    strip: Option<Arc<Exact>>,
 }
 
-pub(super) struct Taken {
-    pool: Arc<Pool>,
-    placed: Option<Placed>,
+#[derive(Default)]
+pub(super) struct Following {
+    lane: Mutex<Option<Lane>>,
+    warming: Mutex<Option<Vec<Wake>>>,
+    unplaceable: AtomicBool,
+}
+
+#[derive(Default)]
+struct Exact {
+    lane: Mutex<Option<Lane>>,
+    views: Mutex<Vec<Weak<Projection>>>,
+}
+
+struct Projection {
+    hour: Hour,
+    fields: u64,
+    keys: Keys,
+    view: Mutex<Option<SharedView>>,
+}
+
+#[derive(Default)]
+pub(super) struct ExactReads(Vec<(Arc<Exact>, Arc<Projection>)>);
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Pool {
@@ -78,7 +108,7 @@ impl Pool {
                 return Ok(None);
             };
             if held.pool.is_none() {
-                held.pool = Some(Self::new(source)?);
+                held.pool = Some(Self::new(source, true)?);
             }
             Ok(held.pool.clone())
         })?;
@@ -92,129 +122,143 @@ impl Pool {
         #[derive(Default)]
         struct Held(Option<Arc<Pool>>);
         let state = source.state::<Held>();
-        let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = lock(&state);
         if let Some(pool) = &held.0 {
             return Ok(Arc::clone(pool));
         }
-        let pool = Self::new(source)?;
+        let pool = Self::new(source, false)?;
         held.0 = Some(Arc::clone(&pool));
         Ok(pool)
     }
 
-    fn new(source: &Source) -> io::Result<Arc<Self>> {
+    fn new(source: &Source, strip: bool) -> io::Result<Arc<Self>> {
         Ok(Arc::new(Self {
             pages: WorldPages::shared(source.replay_ref().recording())?,
-            free: Mutex::default(),
-            warming: Mutex::default(),
-            unplaceable: Mutex::default(),
+            slots: Mutex::default(),
+            strip,
         }))
     }
 
-    pub(super) fn take(self: &Arc<Self>, run: usize, hour: Hour) -> Taken {
-        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
-        let nearest = free.iter().enumerate().filter(|(_, placed)| placed.run == run).max_by_key(|(_, placed)| match placed.at {
-            Some(at) if at <= hour => (true, at),
-            at => (false, at.map_or(Hour::MIN, |at| -at)),
-        });
-        let placed = nearest.map(|(at, _)| at).map_or_else(|| Placed { run, at: None, lanes: Vec::new() }, |at| free.swap_remove(at));
-        Taken { pool: Arc::clone(self), placed: Some(placed) }
+    fn slot<T>(&self, key: Key, get: impl FnOnce(&mut Slot) -> T) -> T {
+        let mut slots = lock(&self.slots);
+        slots.retain(|_, slot| slot.followed.strong_count() != 0 || slot.exact.strong_count() != 0);
+        get(slots.entry(key).or_default())
+    }
+
+    pub(super) fn following(&self, key: Key) -> Arc<Following> {
+        self.slot(key, |slot| slot.followed.upgrade().unwrap_or_else(|| {
+            let followed = Arc::new(Following::default());
+            slot.followed = Arc::downgrade(&followed);
+            followed
+        }))
+    }
+
+    fn position<'a>(&self, held: &'a mut Option<Lane>, (run, table): Key, columns: &[usize], hour: Hour) -> io::Result<&'a Lane> {
+        if !held.as_ref().is_some_and(|lane| covers(lane, columns)) {
+            if self.pages.runs().get(run).is_some_and(|run| run.blocks() > 0) && self.pages.table_entry(run, 0, table)?.log {
+                return Err(invalid(format!("Table {table} is a log: its rows are read by ordinal, never at an hour")));
+            }
+            let mut wide = held.as_ref().map_or_else(Vec::new, |lane| lane.requested().to_vec());
+            wide.extend_from_slice(columns);
+            wide.sort_unstable();
+            wide.dedup();
+            *held = Some(Lane::new(self.pages.clone() as Arc<dyn Pages>, run, table, &wide, true)?);
+        }
+        if let Err(error) = place(held.as_mut().expect("lane opened"), hour) {
+            *held = None;
+            return Err(error);
+        }
+        Ok(held.as_ref().expect("lane positioned"))
     }
 }
 
-impl Pool {
-    pub(super) fn warm<T>(self: &Arc<Self>, run: usize, table: usize, columns: &[usize], hour: Hour, wake: Option<dashboard_follow::panel::Wake>, read: impl FnOnce(&Lane) -> io::Result<T>) -> Warm<T> {
-        if self.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).contains(&(run, table)) { return Warm::Cold; }
-        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
-        let near = |lane: &Lane| lane.table() == table && columns.iter().all(|column| lane.requested().contains(column))
-            && lane.head().is_some_and(|head| head <= hour && hour - head <= BLOCK as Hour);
-        if let Some(lane) = free.iter_mut().filter(|placed| placed.run == run).flat_map(|placed| placed.lanes.iter_mut()).filter(|lane| near(lane)).max_by_key(|lane| lane.head()) {
-            return Warm::Read(place(lane, hour).and_then(|()| read(lane)));
-        }
-        let mut wide: Vec<usize> = free.iter().filter(|placed| placed.run == run).flat_map(|placed| &placed.lanes)
-            .filter(|lane| lane.table() == table).flat_map(|lane| lane.requested().iter().copied()).chain(columns.iter().copied()).collect();
-        wide.sort_unstable();
-        wide.dedup();
-        drop(free);
-        let mut warming = self.warming.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(waiting) = warming.get_mut(&(run, table)) {
+impl Following {
+    pub(super) fn read<T>(&self, pool: &Pool, key: Key, columns: &[usize], hour: Hour, read: impl FnOnce(&Lane) -> io::Result<T>) -> io::Result<T> {
+        pool.position(&mut lock(&self.lane), key, columns, hour).and_then(read)
+    }
+
+    pub(super) fn warm<T>(self: &Arc<Self>, pool: &Arc<Pool>, key: Key, columns: &[usize], hour: Hour, wake: Option<Wake>, read: impl FnOnce(&Lane) -> io::Result<T>) -> Warm<T> {
+        if self.unplaceable.load(Ordering::Acquire) { return Warm::Cold; }
+        let mut warming = lock(&self.warming);
+        if let Some(waiting) = warming.as_mut() {
             if let Some(wake) = wake && !waiting.iter().any(|held| Arc::ptr_eq(held, &wake)) { waiting.push(wake); }
-        } else {
-            warming.insert((run, table), wake.into_iter().collect());
-            let (pool, columns) = (Arc::clone(self), wide);
-            let spawned = std::thread::Builder::new().name("product lane".into()).spawn(move || {
-                let mut taken = Taken { pool: Arc::clone(&pool), placed: Some(Placed { run, at: None, lanes: Vec::new() }) };
-                if taken.lane(table, &columns, hour).is_err() { pool.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).insert((run, table)); }
-                drop(taken);
-                let waiting = pool.warming.lock().unwrap_or_else(PoisonError::into_inner).remove(&(run, table)).unwrap_or_default();
-                for wake in waiting { wake(); }
-            });
-            if spawned.is_err() {
-                warming.remove(&(run, table));
-                return Warm::Cold;
+            return Warm::Warming;
+        }
+        if let Ok(mut held) = self.lane.try_lock()
+            && let Some(lane) = held.as_mut().filter(|lane| covers(lane, columns))
+            && lane.head().is_some_and(|head| head <= hour && hour - head <= BLOCK as Hour) {
+            drop(warming);
+            return Warm::Read(pool.position(&mut held, key, columns, hour).and_then(read));
+        }
+        *warming = Some(wake.into_iter().collect());
+        let (followed, pool, columns) = (self.clone(), pool.clone(), columns.to_vec());
+        let spawned = std::thread::Builder::new().name("product lane".into()).spawn(move || {
+            if followed.read(&pool, key, &columns, hour, |_| Ok(())).is_err() {
+                followed.unplaceable.store(true, Ordering::Release);
             }
+            let waiting = lock(&followed.warming).take().unwrap_or_default();
+            for wake in waiting { wake(); }
+        });
+        if spawned.is_err() {
+            *warming = None;
+            return Warm::Cold;
         }
         Warm::Warming
     }
-
 }
 
-impl Drop for Taken {
-    fn drop(&mut self) {
-        let Some(placed) = self.placed.take() else { return };
-        let mut free = self.pool.free.lock().unwrap_or_else(PoisonError::into_inner);
-        match free.iter_mut().find(|held| held.run == placed.run && held.at == placed.at) {
-            Some(held) => {
-                for lane in placed.lanes {
-                    match held.lanes.iter().position(|kept| kept.table() == lane.table()) {
-                        None => held.lanes.push(lane),
-                        Some(at) if lane.requested().iter().all(|column| held.lanes[at].requested().contains(column)) && held.lanes[at].head() == lane.head() => {}
-                        Some(at) => held.lanes[at] = lane,
-                    }
-                }
-            }
-            None => {
-                free.push(placed);
-                if free.len() > HELD_SETS { free.remove(0); }
-            }
+impl ExactReads {
+    pub(super) fn read(&mut self, pool: &Pool, key: Key, columns: &[usize], (hour, fields, keys): (Hour, u64, &Keys), read: impl FnOnce(&Lane) -> io::Result<SharedView>) -> io::Result<SharedView> {
+        let (exact, followed) = pool.slot(key, |slot| {
+            let exact = slot.strip.clone().or_else(|| slot.exact.upgrade()).unwrap_or_else(|| {
+                let exact = Arc::new(Exact::default());
+                slot.exact = Arc::downgrade(&exact);
+                if pool.strip { slot.strip = Some(Arc::clone(&exact)); }
+                exact
+            });
+            (exact, slot.followed.upgrade())
+        });
+        let shared = exact.projection(hour, fields, keys);
+        let mut held = lock(&shared.view);
+        if held.is_none() {
+            let followed = followed.as_ref().and_then(|followed| followed.lane.try_lock().ok())
+                .filter(|held| held.as_ref().is_some_and(|lane| lane.head() == Some(hour) && covers(lane, columns)));
+            let view = match followed.as_deref().and_then(Option::as_ref) {
+                Some(lane) => read(lane)?,
+                None => read(pool.position(&mut lock(&exact.lane), key, columns, hour)?)?,
+            };
+            *held = Some(view);
         }
+        let view = held.as_ref().expect("projection made").clone();
+        drop(held);
+        self.0.push((exact, shared));
+        Ok(view)
     }
 }
 
-impl Taken {
-    pub(super) fn lane(&mut self, table: usize, columns: &[usize], hour: Hour) -> io::Result<&Lane> {
-        let pages = Arc::clone(&self.pool.pages);
-        let placed = self.placed.as_mut().expect("held until dropped");
-        placed.at = Some(hour);
-        let found = placed.lanes.iter().position(|lane| lane.table() == table);
-        let at = match found {
-            Some(at) if columns.iter().all(|column| placed.lanes[at].requested().contains(column)) => at,
-            _ => {
-                let run = pages.runs().get(placed.run).ok_or_else(|| invalid(format!("No run {}", placed.run)))?;
-                if run.blocks() > 0 && pages.table_entry(placed.run, 0, table)?.log {
-                    return Err(invalid(format!("Table {table} is a log: its rows are read by ordinal, never at an hour")));
-                }
-                let mut wide = found.map_or_else(Vec::new, |at| placed.lanes[at].requested().to_vec());
-                wide.extend_from_slice(columns);
-                wide.sort_unstable();
-                wide.dedup();
-                let lane = Lane::new(pages as Arc<dyn Pages>, placed.run, table, &wide, true)?;
-                match found {
-                    Some(at) => {
-                        placed.lanes[at] = lane;
-                        at
-                    }
-                    None => {
-                        placed.lanes.push(lane);
-                        placed.lanes.len() - 1
-                    }
-                }
-            }
-        };
-        let lane = &mut placed.lanes[at];
-        place(lane, hour)?;
-        Ok(lane)
+impl Exact {
+    fn projection(&self, hour: Hour, fields: u64, keys: &Keys) -> Arc<Projection> {
+        let mut views = lock(&self.views);
+        views.retain(|view| view.strong_count() != 0);
+        views.iter().filter_map(Weak::upgrade)
+            .find(|view| view.hour == hour && view.fields == fields && view.keys == *keys)
+            .unwrap_or_else(|| {
+                let view = Arc::new(Projection { hour, fields, keys: keys.clone(), view: Mutex::default() });
+                views.push(Arc::downgrade(&view));
+                view
+            })
     }
 }
+
+fn covers(lane: &Lane, columns: &[usize]) -> bool {
+    columns.iter().all(|column| lane.requested().contains(column))
+}
+
+#[cfg(test)]
+thread_local! { static RESTORES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(super) fn restores() -> u64 { RESTORES.get() }
 
 fn place(lane: &mut Lane, hour: Hour) -> io::Result<()> {
     match lane.head() {
@@ -231,10 +275,30 @@ fn place(lane: &mut Lane, hour: Hour) -> io::Result<()> {
             }
             Ok(())
         }
-        _ => lane.seek(hour).map(drop),
+        _ => {
+            #[cfg(test)]
+            RESTORES.set(RESTORES.get() + 1);
+            lane.seek(hour).map(drop)
+        }
     }
 }
 
 fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_joined_projection_outlives_the_request_that_made_it() {
+        let exact = Exact::default();
+        let first = exact.projection(4, 3, &Keys::All);
+        let waiting = exact.projection(4, 3, &Keys::All);
+        let made = SharedView::from(replay_frame::frame::TableView::Unavailable { reason: "example".into() });
+        *lock(&first.view) = Some(made.clone());
+        drop(first);
+        assert!(SharedView::ptr_eq(lock(&waiting.view).as_ref().unwrap(), &made));
+    }
 }

@@ -1,4 +1,4 @@
-use super::{placed::{Pool, Taken, Warm}, *};
+use super::{placed::{ExactReads, Following, Pool, Warm}, *};
 use crate::catalogue::OwnRefusals;
 use dashboard_follow::panel::{ProductReader, ProductStep};
 use playhead::{Step, changes::Changes, lane::Lane, pages::WorldPages};
@@ -9,6 +9,7 @@ use std::collections::hash_map::Entry;
 
 pub(super) struct Projection {
     run: usize,
+    followed: Option<Arc<Following>>,
     columns: Vec<usize>,
     format: u16,
     fields: u64,
@@ -83,7 +84,8 @@ impl Projection {
         physical.sort_unstable();
         physical.dedup();
         let passing = !playhead::lane::log::is_log(&**pages, table.index()).unwrap_or(true);
-        Ok(Self { run: input.run, columns: physical, format: recording.format(), fields, validity, selection: None, at: None, passing })
+        let followed = input.exact.is_none().then(|| input.pool.following((input.run, table.index())));
+        Ok(Self { run: input.run, followed, columns: physical, format: recording.format(), fields, validity, selection: None, at: None, passing })
     }
 
     fn lane<'s>(&self, table: TableId, hour: i32, step: ProductStep<'s>) -> Option<(&'s Step, &'s Lane, &'s Changes)> {
@@ -100,26 +102,31 @@ impl Projection {
             self.selection = Some(Arc::new(read.keys.clone()));
         }
         let previous = self.at;
-        let Input { pool, hour, count, step, placed, mode, gap, .. } = input;
-        let (run, table) = (self.run, read.table.index());
+        let Input { pool, hour, count, step, exact, mode, gap, .. } = input;
+        let key = (self.run, read.table.index());
         let stepped = match step.and_then(|step| self.lane(read.table, *hour, step)) {
             Some((step, lane, change)) => self.from_lane(read, sample, view, edits, count, lane, Some((step, change)), *mode)?,
-            None => {
-                let warm = if step.is_some_and(|step| step.lanes_table(table)) {
-                    let columns = self.columns.clone();
+            None => if let Some(followed) = self.followed.clone() {
+                let columns = self.columns.clone();
+                let warm = if step.is_some_and(|step| step.lanes_table(key.1)) {
                     let wake = step.and_then(|step| step.wake.cloned());
-                    pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
+                    followed.warm(pool, key, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
                 } else { Warm::Cold };
                 match warm {
                     Warm::Read(result) => result?,
                     Warm::Warming => return Err(io::Error::new(io::ErrorKind::WouldBlock, format!("{:?} is being placed beside the step", read.table))),
-                    Warm::Cold => {
-                        let placed = placed.get_or_insert_with(|| pool.take(run, *hour));
-                        let lane = placed.lane(table, &self.columns, *hour)?;
-                        self.from_lane(read, sample, view, edits, count, lane, None, *mode)?
-                    }
+                    Warm::Cold => followed.read(pool, key, &columns, *hour, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))?,
                 }
-            }
+            } else {
+                let exact = exact.as_mut().expect("an exact answer owns its reads");
+                let columns = self.columns.clone();
+                *view = exact.read(pool, key, &columns, (*hour, self.fields | self.validity, &read.keys), |lane| {
+                    let mut view = not_selected();
+                    self.from_lane(read, sample, &mut view, edits, count, lane, None, *mode)?;
+                    Ok(view)
+                })?;
+                false
+            },
         };
         *gap |= !stepped && previous.is_none_or(|at| at.saturating_add(1) < *hour);
         *view = view.clone().with_keys(self.selection.clone());
@@ -288,7 +295,7 @@ impl DatedStep<'_> {
             .unwrap_or_else(|| (run, Box::new(empty(query.timeline.id, hour)), Projections::new()));
         frame.hour = hour;
         let mut count = 0;
-        let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: self.step, placed: None, gap: false };
+        let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: self.step, exact: None, gap: false };
         for read in reads {
             let fields = columns(read.table);
             if let Err(error) = input.read(&mut tables, read, &mut frame.tables[read.table.index()], || (fields.clone(), fields.clone()), false, &mut Edits::default()) {
@@ -308,7 +315,7 @@ pub(super) struct Input<'a> {
     pub(super) mode: CaptureMode,
     pub(super) count: &'a mut u64,
     pub(super) step: Option<ProductStep<'a>>,
-    pub(super) placed: Option<Taken>,
+    pub(super) exact: Option<ExactReads>,
     pub(super) gap: bool,
 }
 
@@ -506,7 +513,7 @@ where P::Context: Sync, P::Params: Sync {
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
-            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, placed: None, gap: false };
+            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step, exact: None, gap: false };
             if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run && !s.rebuild) {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
