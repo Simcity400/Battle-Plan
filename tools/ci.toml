@@ -162,6 +162,15 @@ ci-only = true
 command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tools/smoke.tests.ps1"]
 
 [[job]]
+name = "shader-compiler-tests"
+group = "windows"
+tier = "check"
+toolchain = "python"
+inputs = ["tools/install-shader-compiler.ps1", "tools/install-shader-compiler.tests.ps1"]
+ci-only = true
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "tools/install-shader-compiler.tests.ps1"]
+
+[[job]]
 name = "ui-typecheck"
 group = "linux"
 tier = "check"
