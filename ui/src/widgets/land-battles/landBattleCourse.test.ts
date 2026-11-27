@@ -4,8 +4,8 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { sampleSeriesValueAt } from '../../families/time-chart/hitTest.ts';
 import { courseDivisions, courseEquipment, courseFigures, courseManpower, courseMissing, coursePoints, runCovering, withinCourse, sharedSpans, validateLandBattleCourse, validateLandBattleTerrain } from './landBattleCourse.ts';
 
-const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
-  ({ firstHour, lastHour, counts, rosterUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], leads: [{ slot: 2, tag: 'B' }, { slot: 4, tag: 'D' }] as [{ slot: number; tag: string }, { slot: number; tag: string }], duration: 0 });
+const run = (firstHour: number, lastHour: number, counts: [number, number], countsUnknown: [boolean, boolean] = [false, false]) =>
+  ({ firstHour, lastHour, counts, countsUnknown, countries: [['A'], ['B']] as [string[], string[]], countriesUnknown: [false, false] as [boolean, boolean], leads: [{ slot: 2, tag: 'B' }, { slot: 4, tag: 'D' }] as [{ slot: number; tag: string }, { slot: number; tag: string }], duration: 0 });
 const wire = (losses: unknown[], runs = [run(10, 20, [3, 2])], designs = [{ name: 'Rifle', variant: '7' }, { name: 'Rifle', variant: '8' }, { name: null, variant: '9' }]) => ({
   battle: { id: 'b', provinceId: 1, start: { hour: 10, bound: 'exact' }, end: null, endUnknownHour: null, counterBase: 0, runs,
     losses, ic: [], men: [], menMissing: null, icMissing: null, result: null },
@@ -61,7 +61,7 @@ test('manpower and divisions are held steps to the shown hour, broken at unread 
     { hour: 10, terminal: false, sides: [{ manpower: 5, variants: [] }, { manpower: 1, variants: [] }] },
     { hour: 12, terminal: false, sides: 'Hourly losses not recorded' },
     { hour: 14, terminal: false, sides: [{ manpower: 9, variants: [] }, { manpower: 'Not in this recording', unknown: 'Not in this recording' }] },
-  ], [run(10, 11, [3, 2]), run(12, 12, [0, 0], true), run(13, 14, [4, 1]), run(18, 20, [6, 2])]));
+  ], [run(10, 11, [3, 2]), run(12, 12, [0, 0], [true, true]), run(13, 14, [4, 1]), run(18, 20, [6, 2])]));
   const [attacker, defender] = courseManpower(course, 16);
   assert.deepEqual(attacker, [{ firstHour: 10, lastHour: 11, value: 5 }, { firstHour: 14, lastHour: 16, value: 9, breakBefore: true }]);
   assert.deepEqual(defender, [{ firstHour: 10, lastHour: 11, value: 1 }]);
@@ -94,6 +94,23 @@ test('a course chart holds each read hour, breaks where reading stops and marks 
   assert.deepEqual(sharedSpans([{ firstHour: 16, lastHour: 16 }], [{ firstHour: 14, lastHour: 16 }]), [{ firstHour: 16, lastHour: 16 }]);
 });
 
+test('the sides band and divisions chart keep each recorded side through an unread opposing roster', () => {
+  const course = validateLandBattleCourse(wire([], [run(10, 11, [3, 0], [false, true]), run(12, 13, [0, 2], [true, false]),
+    run(14, 14, [0, 0], [true, true]), run(15, 16, [0, 0])]));
+  assert.deepEqual(courseDivisions(course, 16), [
+    [{ firstHour: 10, lastHour: 11, value: 3 }, { firstHour: 15, lastHour: 16, value: 0, breakBefore: true }],
+    [{ firstHour: 12, lastHour: 13, value: 2 }, { firstHour: 15, lastHour: 16, value: 0, breakBefore: true }],
+  ]);
+  const missing = { missing: 'Divisions not recorded' };
+  assert.deepEqual(courseFigures(course, 11, false).map(side => side.divisions), [{ value: 3, soFar: false }, missing]);
+  assert.deepEqual(courseFigures(course, 13, false).map(side => side.divisions), [missing, { value: 2, soFar: false }]);
+  assert.deepEqual(courseFigures(course, 14, false).map(side => side.divisions), [missing, missing]);
+  assert.deepEqual(courseFigures(course, 16, true).map(side => side.divisions), [{ value: 0, soFar: false }, { value: 0, soFar: false }]);
+  for (const countsUnknown of [true, [false], [false, null]]) {
+    assert.throws(() => validateLandBattleCourse({ ...wire([]), battle: { ...wire([]).battle, runs: [{ ...run(10, 11, [3, 0]), countsUnknown }] } }), /malformed/);
+  }
+});
+
 
 test('terrain replies keep each province and its reason; a name and a reason never both appear', () => {
   const reply = { provinces: [{ provinceId: 1, name: 'Mod hills', missing: null }, { provinceId: 2, name: null, missing: 'localisation mod_marsh is missing' }], warnings: [] };
@@ -107,7 +124,7 @@ test('the sides band reads each figure at the clock hour, says what is missing, 
   const base = wire([
     { hour: 12, terminal: false, sides: [{ manpower: 40, variants: [] }, { manpower: 'Casualties not read', unknown: 'x' }] },
     { hour: 21, terminal: true, sides: [{ manpower: 90, variants: [] }, { manpower: 70, variants: [] }] },
-  ], [run(10, 14, [3, 2]), run(17, 20, [4, 1], true)]);
+  ], [run(10, 14, [3, 2]), run(17, 20, [4, 1], [true, true])]);
   const course = validateLandBattleCourse({ ...base, battle: { ...base.battle, men: [{ hour: 10, sides: [9000, 4000] }, { hour: 13, sides: [8800, null] }],
     ic: [{ hour: 12, sides: [3.5, null] }, { hour: 21, sides: [9, 2] }] } });
   const [early, earlyDefender] = courseFigures(course, 11, false);

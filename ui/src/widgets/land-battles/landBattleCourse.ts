@@ -9,7 +9,7 @@ export interface LandDesign { name: string | null; variant: string }
 export interface CourseSide { manpower: number | string; equipment: Map<number, bigint> | string }
 export interface CourseRead { hour: number; terminal: boolean; sides: [CourseSide, CourseSide] | string }
 export interface SideRead { hour: number; sides: [number | null, number | null] }
-export interface CourseRun { firstHour: number; lastHour: number; counts: [number, number]; rosterUnknown: boolean; countries: [string[], string[]]; countriesUnknown: [boolean, boolean]; leads: [CourseLead | null, CourseLead | null] }
+export interface CourseRun { firstHour: number; lastHour: number; counts: [number, number]; countsUnknown: [boolean, boolean]; countries: [string[], string[]]; countriesUnknown: [boolean, boolean]; leads: [CourseLead | null, CourseLead | null] }
 export interface CourseLead { slot: number; tag: string }
 export type CourseEnd = { hour: number; bound: 'exact' | 'by' } | { unknown: string } | null;
 export interface LandCourse { id: string; end: CourseEnd; resultHour: number | null; runs: CourseRun[];
@@ -48,12 +48,13 @@ export function validateLandBattleCourse(v: unknown): LandCourse {
       : object(ending) && hour(ending.hour) && (ending.bound === 'exact' || ending.bound === 'by') ? { hour: ending.hour, bound: ending.bound }
         : (() => { throw malformed(); })();
   const runs = battle.runs.map(run => {
-    if (!object(run) || !hour(run.firstHour) || !hour(run.lastHour) || run.firstHour > run.lastHour || typeof run.rosterUnknown !== 'boolean'
+    if (!object(run) || !hour(run.firstHour) || !hour(run.lastHour) || run.firstHour > run.lastHour
+      || !Array.isArray(run.countsUnknown) || run.countsUnknown.length !== 2 || !run.countsUnknown.every(unknown => typeof unknown === 'boolean')
       || !Array.isArray(run.counts) || run.counts.length !== 2 || !run.counts.every(count => int(count) && count >= 0)
       || !Array.isArray(run.countries) || run.countries.length !== 2 || !run.countries.every(texts)
       || !Array.isArray(run.countriesUnknown) || run.countriesUnknown.length !== 2 || !run.countriesUnknown.every(known => typeof known === 'boolean')
       || !sidePair(run.leads, lead => object(lead) && Number.isSafeInteger(lead.slot) && (lead.slot as number) >= 0 && typeof lead.tag === 'string')) throw malformed();
-    return { firstHour: run.firstHour, lastHour: run.lastHour, counts: run.counts as [number, number], rosterUnknown: run.rosterUnknown,
+    return { firstHour: run.firstHour, lastHour: run.lastHour, counts: run.counts as [number, number], countsUnknown: run.countsUnknown as [boolean, boolean],
       countries: run.countries as [string[], string[]], countriesUnknown: run.countriesUnknown as [boolean, boolean], leads: run.leads as [CourseLead | null, CourseLead | null] };
   });
   const reads: CourseRead[] = [];
@@ -171,7 +172,7 @@ export function courseDivisions(course: LandCourse, at: number): [Run[], Run[]] 
     let previous: number | null = null;
     for (const run of course.runs) {
       if (run.firstHour > at) break;
-      if (run.rosterUnknown) { previous = null; continue; }
+      if (run.countsUnknown[side]) { previous = null; continue; }
       const breakBefore = previous === null ? runs[side].length > 0 : run.firstHour > previous + 1;
       runs[side].push({ firstHour: run.firstHour, lastHour: Math.min(run.lastHour, at), value: run.counts[side], ...(breakBefore ? { breakBefore: true } : {}) });
       previous = Math.min(run.lastHour, at);
@@ -232,7 +233,7 @@ export function courseFigures(course: LandCourse, at: number, final: boolean): [
       const gap = { missing: NOT_AT_THIS_HOUR };
       return { divisions: gap, men: gap, casualties: gap, icLost: gap };
     }
-    const divisions: CourseFigure = run.rosterUnknown ? { missing: 'Divisions not recorded' } : { value: run.counts[side], soFar: false };
+    const divisions: CourseFigure = run.countsUnknown[side] ? { missing: 'Divisions not recorded' } : { value: run.counts[side], soFar: false };
     const strength: CourseFigure = men?.sides[side] != null ? { value: men.sides[side]!, soFar: false }
       : { missing: course.menMissing ?? 'Men not recorded: a division’s manpower was not read' };
     if (!read) {

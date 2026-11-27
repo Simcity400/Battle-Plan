@@ -3332,7 +3332,7 @@ export type BattleBound = "exact" | "by";
 export type BattleMoment = { hour: number, bound: BattleBound, };
 export type BattleEnd = BattleMoment | { unknown: string, };
 export type BattleWinner = { side: number, } | { unknown: string, };
-export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], rosterUnknown: boolean, countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], leads: [LandBattleLead | null, LandBattleLead | null],
+export type LandBattleRun = { firstHour: number, lastHour: number, counts: [number, number], countsUnknown: [boolean, boolean], countries: [Array<string>, Array<string>], countriesUnknown: [boolean, boolean], leads: [LandBattleLead | null, LandBattleLead | null],
 /**
  * The native counter at `first_hour`.
  */
