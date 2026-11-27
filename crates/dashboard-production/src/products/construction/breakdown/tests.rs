@@ -20,7 +20,7 @@ fn facts() -> Facts {
             ((true, false, 7, 1, NONE), steps(&[(15, Some(100_000))])),
         ]
         .into(),
-        names: [(7, "Workshop".to_owned()), (8, "type_b".to_owned())].into(),
+        names: [(7, vec![(0, "Workshop".to_owned())]), (8, vec![(0, "type_b".to_owned())])].into(),
         ..Facts::default()
     }
 }
@@ -198,4 +198,184 @@ fn repeated_breakdown_answers_reuse_the_held_index_without_rereading_storage() {
     assert_eq!(later.breakdown.total.state, BreakdownState::Known);
     assert_eq!(later.breakdown.total.amount, Some(BreakdownAmount { numerator: "6".into(), denominator: "1".into() }));
     assert_eq!(later.through, 110);
+}
+
+#[test]
+fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
+    use super::super::spending::gap_assignment;
+    use super::{ConstructionBreakdown, ConstructionBreakdownParams};
+    use dashboard_base::{
+        Source, SourceKey,
+        products::{Country, LoadContext, Product},
+        test_fixtures::{CAMPAIGN, records, source},
+    };
+    use replay::campaign::Replay;
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, LexicalTokenRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    assert_eq!(gap_assignment(Some(120), Some(115), 105), Some((true, 115)));
+    assert_eq!(gap_assignment(Some(120), Some(100), 122), Some((false, 122)));
+    assert_eq!(gap_assignment(Some(60), Some(70), 61), Some((false, 61)));
+    assert_eq!(gap_assignment(Some(60), Some(70), 80), Some((true, 80)));
+
+    let frames = (100..=125)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
+                id: 1,
+                country: 9001,
+                building_type: 7,
+                target_state: 12,
+                cost: 500_000,
+                created_hour: 90,
+                amount: if hour >= 120 { 2 } else { 0 },
+                repair_levels: 1,
+                ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            let outputs = if hour >= 105 {
+                vec![ConstructionLineOutputRow {
+                    line: 1,
+                    since_hour: 100,
+                    linked: true,
+                    exact: false,
+                    country: Recorded::Value(Some(9001)),
+                    building_type: Recorded::Value(Some(7)),
+                    target_state: Recorded::Value(Some(12)),
+                    ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
+            frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 7,
+                literal: b"alpha_mill".to_vec(),
+            }]))
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let cancel = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey { source_id: "construction-new-work".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &cancel,
+    )
+    .unwrap();
+    let reply = ConstructionBreakdown::load(
+        &source,
+        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 108 },
+        &LoadContext { content: None },
+        &cancel,
+    )
+    .unwrap();
+    assert!(reply.breakdown.parts.iter().all(|part| part.key != "new"), "new work first seen at 120 must not receive the gap at 105");
+    let repair = reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repair part carries the gap");
+    assert_eq!(repair.state, BreakdownState::Partial);
+}
+
+#[test]
+fn construction_spellings_and_warnings_are_dated_to_their_charge_hours() {
+    use super::{ConstructionBreakdown, ConstructionBreakdownParams};
+    use dashboard_base::{
+        catalogue::tests::folder_catalogue,
+        products::{Country, Product},
+        test_fixtures::{source, source_with_content},
+    };
+    use replay_data::rows::{BuildingConstructionRow, ConstructionLineOutputRow, LexicalTokenRow, Recorded, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::atomic::AtomicBool;
+
+    let (_, dir) = folder_catalogue(&[
+        ("common/buildings/00_test.txt", "buildings = { alpha_mill = { icon_frame = 1 } beta_mill = { icon_frame = 1 } }"),
+        ("localisation/languages.yml", "\u{feff}l_english:\n l_english: \"English\"\n"),
+        ("localisation/english/test_l_english.yml", "\u{feff}l_english:\n alpha_mill:0 \"Alpha Mill\"\n beta_mill:0 \"Beta Mill\"\n"),
+    ]);
+    let frames = (100..=135)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            let mut lines = vec![
+                BuildingConstructionRow { id: 1, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 90, amount: 1, ..Default::default() },
+                BuildingConstructionRow { id: 2, country: 9001, building_type: 8, target_state: 13, cost: 500_000, created_hour: 90, amount: 1, ..Default::default() },
+            ];
+            if hour >= 130 {
+                lines.push(BuildingConstructionRow { id: 3, country: 9001, building_type: 99, target_state: 14, cost: 500_000, created_hour: 130, amount: 1, ..Default::default() });
+            }
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(lines)).into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            let mut outputs = Vec::new();
+            if hour >= 105 {
+                outputs.push(ConstructionLineOutputRow {
+                    line: 1, since_hour: 100, construction_raw: 100_000, exact: true,
+                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
+                });
+                outputs.push(ConstructionLineOutputRow {
+                    line: 2, since_hour: 100, construction_raw: 200_000, exact: true,
+                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(8)), target_state: Recorded::Value(Some(13)), ..Default::default()
+                });
+            }
+            if hour >= 130 {
+                outputs.push(ConstructionLineOutputRow {
+                    line: 3, since_hour: 130, construction_raw: 100_000, exact: true,
+                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(99)), target_state: Recorded::Value(Some(14)), ..Default::default()
+                });
+            }
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
+            frame.tables[TableId::LexicalTokens.index()] = if hour < 120 {
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow { token: 7, literal: b"alpha_mill".to_vec() }])).into()
+            } else if hour <= 132 {
+                TableView::Complete(TableRows::LexicalTokens(vec![
+                    LexicalTokenRow { token: 7, literal: b"beta_mill".to_vec() },
+                    LexicalTokenRow { token: 8, literal: b"alpha_mill".to_vec() },
+                ]))
+                .into()
+            } else {
+                TableView::Unavailable { reason: "lexical unread at end".into() }.into()
+            };
+            frame
+        })
+        .collect();
+    let (source, load) = source_with_content(frames, &dir.0);
+    let cancel = AtomicBool::new(false);
+    let ask = |hour: i32| {
+        ConstructionBreakdown::load(
+            &source,
+            &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour },
+            &load,
+            &cancel,
+        )
+        .unwrap()
+    };
+    fn child_name<'a>(reply: &'a super::ConstructionBreakdownReply, key: &str) -> Option<&'a str> {
+        reply.breakdown.parts.iter().find(|part| part.key == "new").and_then(|part| part.children.iter().find(|child| child.key == key)).map(|child| child.name.as_str())
+    }
+
+    let early = ask(105);
+    assert_eq!(child_name(&early, "type:7"), Some("Alpha Mill"), "spelling at charge hour 105 is alpha_mill");
+    assert_eq!(child_name(&early, "type:8"), Some("Building name unavailable"), "token 8 is not yet spelled at 105");
+    assert_eq!(early.through, 119, "validity ends before token spellings change at 120");
+    assert!(early.warnings.iter().any(|w| w.contains("lexical dictionary") && w.contains('8')), "{:?}", early.warnings);
+    assert!(early.warnings.iter().all(|w| !w.contains("99")), "warning for building 99 charged at 130 must not appear at 105: {:?}", early.warnings);
+
+    let mid = ask(125);
+    assert_eq!(child_name(&mid, "type:7"), Some("Beta Mill"), "token 7 updated at 120");
+    assert_eq!(child_name(&mid, "type:8"), Some("Alpha Mill"), "token 8 spelled at 120");
+    assert_eq!(mid.through, 129, "validity ends before building 99 is charged at 130");
+    assert!(mid.warnings.iter().all(|w| !w.contains("lexical dictionary")), "both 7 and 8 are spelled by 125 and 99 is not charged yet: {:?}", mid.warnings);
+
+    let late = ask(135);
+    assert_eq!(child_name(&late, "type:7"), Some("Beta Mill"), "earlier spellings survive an unavailable stretch end");
+    assert_eq!(child_name(&late, "type:8"), Some("Alpha Mill"));
+    assert_eq!(child_name(&late, "type:99"), Some("Building name unavailable"));
+    assert!(late.warnings.iter().any(|w| w.contains("lexical dictionary") && w.contains("99")), "{:?}", late.warnings);
 }

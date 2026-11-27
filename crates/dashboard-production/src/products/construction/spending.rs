@@ -171,8 +171,20 @@ pub(crate) struct Facts {
     pub lines: Vec<LineFacts>,
     pub unattributed: Vec<i32>,
     pub unrecorded: Vec<(i32, i32, String)>,
-    pub names: HashMap<u32, String>,
-    pub warnings: Vec<String>,
+    pub names: HashMap<u32, Vec<(i32, String)>>,
+    pub warnings: Vec<(i32, Vec<String>)>,
+}
+
+pub(crate) fn gap_assignment(new_from: Option<i32>, repair_from: Option<i32>, hour: i32) -> Option<(bool, i32)> {
+    Some(match (new_from, repair_from) {
+        (Some(new), Some(repair)) if hour >= new && hour >= repair => (repair >= new, hour),
+        (_, Some(repair)) if hour >= repair => (true, hour),
+        (Some(new), _) if hour >= new => (false, hour),
+        (Some(new), Some(repair)) => if repair <= new { (true, repair) } else { (false, new) },
+        (Some(new), None) => (false, new),
+        (None, Some(repair)) => (true, repair),
+        (None, None) => return None,
+    })
 }
 
 const BUILDINGS_UNREAD: &str = "The building construction queue was not read in full, so building output in those hours is not counted";
@@ -222,13 +234,29 @@ fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Resul
     Ok(())
 }
 
-type ReasonSteps = HashMap<u64, (Vec<(i32, Option<u8>, bool)>, Option<i32>)>;
+#[derive(Default)]
+struct LineHistory {
+    read: Vec<(i32, Option<u8>, bool)>,
+    repair_tick: Option<i32>,
+    first_new: Option<i32>,
+    first_repair: Option<i32>,
+}
+
+type ReasonSteps = HashMap<u64, LineHistory>;
+
+const NEW_COLS: [usize; 6] = [col::REMAINING, col::BUILT, col::ADDED_NEW, col::POSSIBLE, col::UNACCOUNTED_NEW, col::CONSTRUCTION_RAW];
+const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::REPAIRED, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIR_RAW];
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
-    let columns = [col::OUTPUT_REASON, col::OUTPUT_SINCE, col::FIRST_REPAIR_TICK];
+    let columns = [
+        col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
+        col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
+    ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let (reason, since, repair) = (at(columns[0])?, at(columns[1])?, at(columns[2])?);
+    let (reason, since, repair) = (at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?, at(col::FIRST_REPAIR_TICK)?);
+    let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
+    let repair_at = REPAIR_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
     let number = |cells: &[Cell], at: usize| match cells.get(at) {
         Some(Cell::Number(value)) => Some(*value),
         _ => None,
@@ -238,20 +266,83 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
         let held = out.entry(*key as u64).or_default();
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
-            held.0.push((step.hour, number(cells, reason).and_then(|value| u8::try_from(value).ok()), number(cells, since).is_some()));
-            if held.1.is_none() {
-                held.1 = number(cells, repair).and_then(|value| i32::try_from(value).ok());
+            held.read.push((step.hour, number(cells, reason).and_then(|value| u8::try_from(value).ok()), number(cells, since).is_some()));
+            held.repair_tick = held.repair_tick.or_else(|| number(cells, repair).and_then(|value| i32::try_from(value).ok()));
+            if held.first_new.is_none() && new_at.iter().any(|&column| number(cells, column).is_some_and(|value| value > 0)) {
+                held.first_new = Some(step.hour);
+            }
+            if held.first_repair.is_none() && repair_at.iter().any(|&column| number(cells, column).is_some_and(|value| value > 0)) {
+                held.first_repair = Some(step.hour);
             }
         }
     }
     Ok(out)
 }
 
+fn dated_spellings(query: &Query<'_>, run: u32, first: i32, last: i32, ids: &BTreeSet<u32>, into: &mut BTreeMap<u32, Vec<(i32, String)>>) -> io::Result<()> {
+    let recording = query.replay.recording();
+    if ids.is_empty() || recording.predates(TableId::LexicalTokens.index()).is_some() || recording.withheld_reason(TableId::LexicalTokens.index()).is_some() {
+        return Ok(());
+    }
+    let wanted: Vec<u128> = ids.iter().map(|&id| u128::from(id)).collect();
+    let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(recording, run, TableId::LexicalTokens, &[0], Keys::These(&wanted), first, last))?;
+    let mut asks = Vec::new();
+    for (key, steps) in &history.keys {
+        for step in steps {
+            match step.cells.as_deref().and_then(|cells| cells.first().copied()) {
+                Some(Cell::Written(_)) => asks.push((step.hour, *key)),
+                Some(cell) => {
+                    if let Some(text) = history.text(cell).and_then(|bytes| std::str::from_utf8(bytes).ok()) {
+                        into.entry(*key as u32).or_default().push((step.hour, text.to_owned()));
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+    if !asks.is_empty() {
+        dashboard_query::cost::storage(|| {
+            replay_lanes::lanes::at_each(recording, run, TableId::LexicalTokens, Some(&[0]), &asks, &mut |hour, key, row| {
+                if let Some(text) = row
+                    .and_then(|(view, slot)| view.list(0, slot).or_else(|| dashboard_query::read::text(&view, 0, slot)))
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                {
+                    into.entry(key as u32).or_default().push((hour, text.to_owned()));
+                }
+                Ok(())
+            })
+        })?;
+    }
+    Ok(())
+}
+
+fn first_building_hours(from: i32, spent: &BTreeMap<LeafKey, Vec<SpentStep>>, lines: &[LineFacts]) -> BTreeMap<u32, i32> {
+    let mut first_at: BTreeMap<u32, i32> = BTreeMap::new();
+    let mut note = |id: u32, hour: i32| {
+        let hour = hour.max(from);
+        first_at.entry(id).and_modify(|held| *held = (*held).min(hour)).or_insert(hour);
+    };
+    for (place, steps) in spent {
+        if let (Some(id), Some(step)) = (named(place.2), steps.first()) {
+            note(id, step.known_at);
+        }
+    }
+    for line in lines {
+        if let Some(id) = line.building {
+            for &(hour, _) in &line.gaps {
+                if let Some((_, at)) = gap_assignment(line.new_from, line.repair_from, hour) {
+                    note(id, at);
+                }
+            }
+        }
+    }
+    first_at
+}
+
 pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Facts> {
     let names = Names::new(&query.holders);
     let mut out = Facts { from: query.timeline.first, to: query.timeline.last, spent: spent_by_leaf(query, country)?, ..Facts::default() };
     let mut seen = BTreeSet::new();
-    let mut tokens = BTreeMap::new();
     for stretch in &query.timeline.stretches {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let lines = crate::products::construction::cached_construction(source, stretch.run)?;
@@ -274,9 +365,12 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         }
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
         let steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
-        let mut ids = BTreeSet::new();
         for (line, attributed) in kept {
-            let (read, repair_tick) = steps.get(&line.id).map(|(read, tick)| (read.as_slice(), *tick)).unwrap_or_default();
+            let held = steps.get(&line.id);
+            let read = held.map_or(&[][..], |history| history.read.as_slice());
+            let repair_tick = held.and_then(|history| history.repair_tick);
+            let first_new = held.and_then(|history| history.first_new);
+            let first_repair = held.and_then(|history| history.first_repair);
             let gaps = dated_gaps(read, line.last, line.output_reason, line.had_output);
             if !attributed {
                 let owner_gaps = gaps.iter().filter(|gap| gap.1 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
@@ -293,25 +387,58 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
                 }
                 continue;
             }
-            ids.extend(line.building);
             let leaf = leaf_keys(line)[0];
+            let repair_from = repair_tick.or(first_repair).map(|hour| hour.max(line.first_read));
+            let new_from = first_new.map(|hour| hour.max(line.first_read)).or_else(|| repair_from.is_none().then_some(line.first_read));
             out.lines.push(LineFacts {
                 leaf: (leaf.1, leaf.2, leaf.3, leaf.4),
                 building: line.building,
-                new_from: (line.new_work || !line.repair_work).then_some(line.first_read),
-                repair_from: line.repair_work.then(|| repair_tick.unwrap_or(line.last).max(line.first_read)),
+                new_from,
+                repair_from,
                 gaps,
                 before_first_read: line.before_observation.then_some(line.first_read),
             });
         }
-        for key in out.spent.keys() {
-            ids.extend(named(key.2));
+    }
+    let first_at = first_building_hours(out.from, &out.spent, &out.lines);
+    let ids: BTreeSet<u32> = first_at.keys().copied().collect();
+    let mut raw_spellings: BTreeMap<u32, Vec<(i32, String)>> = BTreeMap::new();
+    for stretch in &query.timeline.stretches {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        dated_spellings(query, stretch.run, stretch.first, stretch.last, &ids, &mut raw_spellings)?;
+    }
+    for steps in raw_spellings.values_mut() {
+        steps.sort_by_key(|(hour, _)| *hour);
+        steps.dedup_by(|next, prev| next.1 == prev.1);
+    }
+    let mut change_hours = BTreeSet::from([out.from]);
+    for (&id, &start) in &first_at {
+        change_hours.insert(start);
+        change_hours.extend(raw_spellings.get(&id).into_iter().flatten().filter(|(at, _)| *at > start).map(|(at, _)| *at));
+    }
+    let content = Content::load(source, context);
+    let mut active: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    for hour in change_hours {
+        for (&id, &start) in &first_at {
+            if start <= hour {
+                let text = raw_spellings.get(&id).and_then(|s| s[..s.partition_point(|(at, _)| *at <= hour)].last()).map(|(_, t)| t.clone());
+                active.insert(id, text);
+            }
         }
-        super::spellings(query, stretch.run, stretch.last, &ids, &mut tokens)?;
+        let mut warnings = Vec::new();
+        let named = content.name(source, &active, &BTreeSet::new(), &mut warnings);
+        if out.warnings.last().is_none_or(|(_, held)| *held != warnings) {
+            out.warnings.push((hour, warnings));
+        }
+        for kind in named.types {
+            let label = kind.name.or(kind.token).unwrap_or_else(|| "Building name unavailable".into());
+            let entry = out.names.entry(kind.id).or_default();
+            if entry.last().is_none_or(|(_, held)| *held != label) {
+                entry.push((hour, label));
+            }
+        }
     }
     queue_gaps(query, &mut out.unrecorded)?;
     out.unrecorded.extend(missing(query, out.from, out.to).into_iter().map(|span| (span.first_hour, span.last_hour, HOURS_UNRECORDED.to_owned())));
-    let named = Content::load(source, context).name(source, &tokens, &BTreeSet::new(), &mut out.warnings);
-    out.names = named.types.into_iter().filter_map(|kind| kind.name.or(kind.token).map(|name| (kind.id, name))).collect();
     Ok(out)
 }

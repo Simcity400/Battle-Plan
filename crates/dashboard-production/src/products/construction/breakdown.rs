@@ -1,6 +1,6 @@
-use super::spending::{ConstructionSpendingParams, Facts, facts};
+use super::spending::{ConstructionSpendingParams, Facts, facts, gap_assignment};
 use super::{COST_SCALE, SpendingGap};
-use dashboard_base::products::breakdown::{self, Amount, Breakdown, Exact, History, HistoryBuilder, Node, counted};
+use dashboard_base::products::breakdown::{self, Amount, Breakdown, BreakdownPart, Dated, Exact, History, HistoryBuilder, Node, counted};
 use dashboard_base::products::{Country, LoadContext, Product, check_reply_budget, validate_country};
 use dashboard_base::Source;
 use replay_data::rows::TagHolderRow;
@@ -73,14 +73,28 @@ impl Product for ConstructionBreakdown {
 pub(super) struct ConstructionHistory {
     from: i32,
     history: History,
+    names: HashMap<u32, Dated<String>>,
     before_first_read: Vec<i32>,
     unattributed: Vec<i32>,
-    warnings: Vec<String>,
+    warnings: Dated<Vec<String>>,
+}
+
+fn relabel(parts: &mut [BreakdownPart], names: &HashMap<u32, Dated<String>>, hour: i32) {
+    for part in parts {
+        for child in &mut part.children {
+            if let Some(id) = child.key.strip_prefix("type:").and_then(|id| id.parse::<u32>().ok())
+                && let Some(name) = names.get(&id).and_then(|steps| steps.at(hour))
+            {
+                child.name = name.clone();
+            }
+        }
+    }
 }
 
 impl ConstructionHistory {
     pub(super) fn at(&self, hour: i32) -> ConstructionBreakdownReply {
-        let (breakdown, through) = self.history.at(hour);
+        let (mut breakdown, through) = self.history.at(hour);
+        relabel(&mut breakdown.parts, &self.names, hour);
         ConstructionBreakdownReply {
             from: self.from,
             hour,
@@ -88,7 +102,7 @@ impl ConstructionHistory {
             breakdown,
             before_first_read: counted(&self.before_first_read, hour),
             unattributed: counted(&self.unattributed, hour),
-            warnings: self.warnings.clone(),
+            warnings: self.warnings.at(hour).cloned().unwrap_or_default(),
         }
     }
 }
@@ -137,12 +151,7 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
             }
         }
         for &(hour, gap) in &line.gaps {
-            let (repair, at) = match (line.new_from, line.repair_from) {
-                (_, Some(repair)) if hour >= repair => (true, hour),
-                (Some(new), _) => (false, hour.max(new)),
-                (None, Some(repair)) => (true, repair),
-                (None, None) => continue,
-            };
+            let Some((repair, at)) = gap_assignment(line.new_from, line.repair_from, hour) else { continue };
             events.push((at, (repair, railway, building, state, to_state), Amount::Partial(Exact::ZERO, gap_reason(gap).into())));
         }
     }
@@ -153,14 +162,21 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
         let next = ordinals.len() as u32;
         ordinals.entry(building).or_insert(next);
     }
+    let names: HashMap<u32, Dated<String>> = facts.names.iter().map(|(&id, steps)| (id, Dated::new(steps.clone()))).collect();
+    let warnings = Dated::new(facts.warnings.clone());
     let mut built = HistoryBuilder::new(facts.from, facts.to);
     for (hour, place, amount) in events {
         let building = buildings.get(&place).copied().flatten();
         let purpose = if place.0 { Node::new("repair", "Repairs", 1) } else { Node::new("new", "New buildings", 0) };
-        let name = building.and_then(|id| facts.names.get(&id).cloned()).unwrap_or_else(|| "Building name unavailable".into());
+        let name = building
+            .and_then(|id| names.get(&id).and_then(|steps| steps.at(hour)).cloned())
+            .unwrap_or_else(|| "Building name unavailable".into());
         let kind = Node::new(format!("type:{}", building.map_or_else(|| "none".to_owned(), |id| id.to_string())), name, ordinals[&building]);
         let leaf = built.leaf(vec![purpose, kind]);
         built.add(hour, leaf, amount, None);
+    }
+    for hour in names.values().flat_map(Dated::hours).chain(warnings.hours()) {
+        built.change(hour);
     }
     let mut unattributed = facts.unattributed.clone();
     unattributed.sort_unstable();
@@ -176,5 +192,5 @@ pub(super) fn index(facts: &Facts) -> ConstructionHistory {
     for (first, last, reason) in &facts.unrecorded {
         built.unrecorded(*first, *last, reason.clone());
     }
-    ConstructionHistory { from: facts.from, history: built.build(), before_first_read, unattributed, warnings: facts.warnings.clone() }
+    ConstructionHistory { from: facts.from, history: built.build(), names, before_first_read, unattributed, warnings }
 }
