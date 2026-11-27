@@ -96,7 +96,7 @@ test('a lend-lease route stays a status in the lane, the readout and the tooltip
   assert.ok(!tip.items?.some(item => item.label === 'Efficiency'), 'no measured efficiency is claimed');
 });
 
-test('both convoy views follow bounded history and ask for the identical closed days on a pin or audit', async () => {
+test('both convoy views follow today and ask for the same closed days on a pin or audit', async () => {
   const { convoyHealthDeclaration } = await import('./convoyHealthProjection.ts');
   const { DAY_TILE_HOURS } = await import('../../families/heat/dayTiles.ts');
   const branch = { id: '1', firstHour: 5, lastHour: DAY_TILE_HOURS + 60 };
@@ -104,9 +104,14 @@ test('both convoy views follow bounded history and ask for the identical closed 
     const ctx = { track: { source: { id: 'src' }, axisOffset: 0 }, branch, options: { view }, countryTag: 'GER' } as never;
     const plan = convoyHealthDeclaration.sources(ctx, { following: true, staticSpan: null } as never);
     assert.deepEqual(plan.entries.map(entry => entry.name), ['now', 'tile:0', 'tile:1']);
-    const spans = plan.entries.map(({ read }) => {
-      assert.ok(read.shape === 'point' && read.channel === 'panel' && read.followQuery?.panel === 'convoy-health');
-      assert.equal(read.followQuery.listFrom, view === 'trade' && read === plan.entries[0]!.read ? 5 : undefined);
+    const spans = plan.entries.map(({ name, read }) => {
+      assert.ok(read.shape === 'point' && read.channel === 'panel');
+      if (name === 'now') {
+        assert.equal(read.followQuery?.panel, 'convoy-health');
+        assert.equal(read.followQuery.listFrom, view === 'trade' ? 5 : undefined);
+      } else {
+        assert.equal(read.followQuery, null);
+      }
       const exact = (hour: number) => read.buildExactParams!(read.params!, hour as never, 'exact');
       const first = exact(10);
       const later = exact(DAY_TILE_HOURS + 25);

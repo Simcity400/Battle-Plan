@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Canvas2D } from '../../charts/textWidth.ts';
+import { followedProduct, refusedHours, type FollowQuery } from '../../dashboard/regionTime.ts';
 import { computeTimeAxisTicks, ROW_SECTION_HEIGHT } from '../../draw/kit.ts';
 import { displayedHour } from '../boundedView.ts';
+import { compileFollowPlan } from '../broker.ts';
 import type { FamilyTheme, InstalledPicture } from '../contract.ts';
+import type { FamilyPlanContext } from '../plan.ts';
+import { askUnits, unitEntries, unitEvidence, UnitReads } from '../readUnits.ts';
+import { trackGate } from '../sources.ts';
+import { airTimelineDeclaration } from '../../widgets/air-superiority-timeline/airTimelineProjection.ts';
+import { convoyHealthDeclaration } from '../../widgets/convoy-health/convoyHealthProjection.ts';
+import { supremacyTimelineDeclaration } from '../../widgets/naval-supremacy/navalSupremacyProjection.ts';
+import { DAY_TILE_HOURS } from './dayTiles.ts';
 import { marginColour, sequentialRampColour, signedRampColour, splitStripes } from './scale.ts';
 import {
   deriveMatrixAudit,
@@ -29,6 +38,70 @@ import { registerFamilyProjection } from '../registry.ts';
 import { heatMatrixHostAdapter } from './hostAdapter.ts';
 import { heatLanesLane } from './lanesLaneView.ts';
 import { heatMatrixLane } from './matrixLaneView.ts';
+
+test('heat timelines follow the head and read only closed days with reusable range keys', async () => {
+  const firstHour = 5;
+  const lastHour = DAY_TILE_HOURS * 57;
+  const ctx = {
+    track: { source: { id: 'test', revision: '1', metadata: {} }, axisOffset: 0 },
+    branch: { id: '1', firstHour, lastHour },
+    countryTag: 'AAA',
+    options: {},
+    staticSpan: null,
+  } as FamilyPlanContext;
+  const gate = trackGate({ source: ctx.track.source, branch: ctx.branch });
+  const playback = () => ({ branch: ctx.branch, gate, effectiveEndHour: lastHour });
+  for (const declaration of [airTimelineDeclaration, convoyHealthDeclaration, supremacyTimelineDeclaration]) {
+    const plan = declaration.sources(ctx, { following: true, staticSpan: null });
+    const { subscriptions, refused } = compileFollowPlan(plan, query => {
+      const asked = followedProduct(query);
+      const refused = asked && refusedHours(asked.product, asked.params, ctx.branch, true);
+      return refused ? { query: null, refused } : { query: query as FollowQuery | null, refused: null };
+    });
+    assert.equal(refused, null);
+    assert.deepEqual(subscriptions.map(sub => sub.name), ['now'], declaration.kind);
+    const entries = unitEntries(plan, true, subscriptions);
+    const ask = (hour: number) => askUnits(entries, { following: true, trackOffset: 0, hour, playback, content: 0 });
+    const firstDay = ask(firstHour);
+    assert.ok(firstDay.every(unit => unit.key === null), 'nothing is closed on the first day');
+    assert.deepEqual(firstDay[0]?.idle, [-Infinity, 23], 'the first closed day becomes available at midnight');
+
+    const hour = DAY_TILE_HOURS + 24;
+    const initial = ask(hour);
+    assert.deepEqual(initial.filter(unit => unit.key !== null).map(unit => unit.name), ['tile:0', 'tile:1']);
+    const [closed, partial] = initial;
+    const ranges = declaration === convoyHealthDeclaration ? ['from', 'to'] : ['firstHour', 'lastHour'];
+    const bounds = (unit: typeof closed) => ranges.map(key => (unit.spec!.request.params as Record<string, number>)[key]);
+    assert.deepEqual(bounds(closed!), [firstHour, DAY_TILE_HOURS - 1]);
+    assert.deepEqual(bounds(partial!), [DAY_TILE_HOURS, hour - 1]);
+    assert.deepEqual(ask(hour + 23).map(unit => unit.key), initial.map(unit => unit.key));
+    assert.deepEqual(unitEvidence(partial!, { key: partial!.key!, data: {} }, true), { kind: 'held', data: {}, proof: [hour, hour + 23] });
+    assert.deepEqual(unitEvidence(closed!, { key: closed!.key!, data: {} }, true), { kind: 'held', data: {}, proof: [hour, Infinity] });
+    assert.equal(ask(hour + 24)[0]!.key, closed!.key);
+    assert.deepEqual(bounds(ask(hour + 24)[1]!), [DAY_TILE_HOURS, hour + 23]);
+    assert.equal(ask(hour - 1)[1]!.key, null, 'a backward seek before that day cannot use a future tile');
+
+    const calls: (string | number)[][] = [];
+    const reader = new UnitReads(async unit => {
+      calls.push([unit.name, ...bounds(unit)]);
+      return {};
+    }, () => {});
+    try {
+      for (let played = hour; played <= hour + 48; played++) {
+        reader.sync(ask(played), true);
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      assert.deepEqual(calls, [
+        ['tile:0', firstHour, DAY_TILE_HOURS - 1],
+        ['tile:1', DAY_TILE_HOURS, hour - 1],
+        ['tile:1', DAY_TILE_HOURS, hour + 23],
+        ['tile:1', DAY_TILE_HOURS, hour + 47],
+      ], declaration.kind);
+    } finally {
+      reader.dispose();
+    }
+  }
+});
 
 function gridCells(grid: readonly (readonly MatrixCell[])[], width: number) {
   return { present: new Map(grid.flatMap((row, r) => row.map((cell, c) => [r * width + c, cell] as const))), absent: { kind: 'empty' } as MatrixCell };

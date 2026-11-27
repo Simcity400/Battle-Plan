@@ -48,21 +48,29 @@ export function dayTileEntries(ctx: FamilyPlanContext, spec: DayTilesSpec): Sour
   const { branch } = ctx;
   const spanFirst = ctx.staticSpan?.[0] ?? branch.firstHour;
   const origin = dayStartOf(branch.firstHour);
-  const entry = (name: string, source: DaySource, follow: Params, buildExactParams: PointSourceRead['buildExactParams']): SourceEntry => ({
+  const entry = (name: string, source: DaySource, read: Pick<PointSourceRead, 'followQuery' | 'buildExactParams' | 'provenInterval' | 'idleInterval'>): SourceEntry => ({
     name, source: ctx.track.source, branch: branch.id, offset: ctx.track.axisOffset,
     read: {
       shape: 'point', channel: 'panel', product: spec.product, coverage: source.coverage, params: source.params,
-      followQuery: { panel: spec.product, ...follow }, buildExactParams,
+      ...read,
     },
   });
-  const now = entry('now', spec.now, spec.now.params, (base, hour) => spec.span(base, Math.max(spanFirst, dayStartOf(hour)), hour));
+  const now = entry('now', spec.now, {
+    followQuery: { panel: spec.product, ...spec.now.params },
+    buildExactParams: (base, hour) => spec.span(base, Math.max(spanFirst, dayStartOf(hour)), hour),
+  });
   const tiles = dayHistoryNames(dayTileCount(branch)).map((name, k) => {
-    const first = Math.max(branch.firstHour, origin + k * DAY_TILE_HOURS);
+    const first = Math.max(spanFirst, branch.firstHour, origin + k * DAY_TILE_HOURS);
     const last = Math.min(branch.lastHour, origin + (k + 1) * DAY_TILE_HOURS - 1);
-    return entry(name, spec.tile, spec.span(spec.tile.params, first, last), (base, hour) => {
-      const from = Math.max(first, spanFirst);
-      const to = Math.min(last, dayStartOf(hour) - 1);
-      return from <= to ? spec.span(base, from, to) : null;
+    const closes = dayStartOf(last) + 24;
+    return entry(name, spec.tile, {
+      followQuery: null,
+      buildExactParams: (base, hour) => {
+        const to = Math.min(last, dayStartOf(hour) - 1);
+        return first <= to ? spec.span(base, first, to) : null;
+      },
+      provenInterval: (_, hour) => hour >= closes ? [closes, Infinity] : [dayStartOf(hour), dayStartOf(hour) + 23],
+      idleInterval: () => [-Infinity, dayStartOf(first) + 23],
     });
   });
   return [now, ...tiles];
