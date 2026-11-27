@@ -1,11 +1,11 @@
-use dashboard_base::{Source, products::{PanelKind, PanelReader, at_hour::{at_hour, interval_panel}}};
+use dashboard_base::{Source, products::{PanelReader, at_hour::{at_hour, interval_panel}}};
 use dashboard_core::config::LoadContext;
 use dashboard_follow::panel::Panel;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, LazyLock}};
 
 pub(crate) static READERS: LazyLock<BTreeMap<&'static str, PanelReader>> = LazyLock::new(|| {
-    let mut readers = BTreeMap::from([(dashboard_query::series::ranked::PRODUCT, PanelReader { kind: PanelKind::Interval, open: rank_panel })]);
+    let mut readers = BTreeMap::from([(dashboard_query::series::ranked::PRODUCT, PanelReader { open: rank_panel })]);
     for product in crate::products::PRODUCTS.iter() {
         if let Some(reader) = product.panel {
             assert!(readers.insert(product.key, reader).is_none(), "Duplicate panel {}", product.key);
