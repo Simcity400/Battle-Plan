@@ -1521,6 +1521,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .with_cycle(options.day_night.unwrap_or(document.game_options.day_night)),
                 animation_time: options.presentation_time,
                 map_time: options.map_time,
+                transition_time: None,
                 postfx: options.postfx,
                 no_water: options.no_water,
                 no_shadows: options.no_shadows,

@@ -114,6 +114,7 @@ impl Fixture {
             day_night: DayNight::at_hour(self.input.hour),
             animation_time: 0.,
             map_time: 0.,
+            transition_time: None,
             postfx: true,
             no_water: false,
             no_shadows: false,

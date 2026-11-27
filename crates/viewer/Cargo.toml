@@ -120,6 +120,7 @@ viewer-unit-reads = { workspace = true, features = ["test-support"] }
 recorder-derive.workspace = true
 viewer-buildings = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
+viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-unit-models = { workspace = true, features = ["test-support"] }
 viewer-playback = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }

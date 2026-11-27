@@ -50,7 +50,10 @@ pub(super) struct Presentation<'a> {
     pub missile_clock: &'a mut Option<f32>,
     pub map_frame: Option<&'a mut ModelPass>,
     pub ambient: Option<&'a mut crate::mapframe::Presentation>,
-    pub last_animation_time: Option<f32>,
+    pub transition_time: f32,
+    pub transition_delta: f32,
+    pub transition_reset: bool,
+    pub scale_delta: Option<f32>,
     pub province_frame: Option<&'a viewer_gpu::province_schedule::ProvinceFrame>,
     pub pose_tick: bool,
 }
@@ -81,7 +84,10 @@ impl Presentation<'_> {
             missile_clock,
             map_frame,
             ambient,
-            last_animation_time,
+            transition_time,
+            transition_delta,
+            transition_reset,
+            scale_delta,
             province_frame,
             pose_tick,
         } = self;
@@ -111,6 +117,7 @@ impl Presentation<'_> {
             let gates = gates.for_mode(&visibility);
             let history_part = Part::new("history");
             let history_profile = viewer_runtime::profiling::thread_span("history_update");
+            unit_history.set_transition_step(scale_delta, Some(transition_time));
             let models = unit_history.update_models_with_frame(
                 camera,
                 size,
@@ -127,8 +134,8 @@ impl Presentation<'_> {
                 let _part = Part::new("arrows");
                 let _arrows_span = viewer_runtime::profiling::span("step_arrows");
                 arrows.advance(
-                    last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
-                    last_animation_time.is_some_and(|last| animation_time < last),
+                    transition_delta,
+                    transition_reset,
                     camera.height,
                     |province| unit_history.arrows_admitted(province),
                 );
@@ -136,7 +143,7 @@ impl Presentation<'_> {
             if let Some(text) = animated_text {
                 let _part = Part::new("text");
                 let _text_span = viewer_runtime::profiling::span("step_text");
-                text.advance(camera, animation_time, province_frame);
+                text.advance(camera, transition_time, province_frame);
             }
             if let Some(pass) = map_buildings {
                 let _part = Part::new("buildings");
@@ -420,6 +427,8 @@ mod tests {
             let camera =
                 Placement::map([3000.0, 1000.0], 50.0).on(MapSize::TEST, MapDefines::test());
             self.unit_history.advance_schedule(camera, [1024, 768]);
+            let transition_delta = self.last.map_or(0.0, |last| (time - last).max(0.0));
+            let transition_reset = self.last.is_some_and(|last| time < last);
             Presentation {
                 graphics,
                 trains: Some(&mut self.trains),
@@ -436,7 +445,10 @@ mod tests {
                 missile_clock: &mut self.missile_clock,
                 map_frame: None,
                 ambient: None,
-                last_animation_time: self.last,
+                transition_time: time,
+                transition_delta,
+                transition_reset,
+                scale_delta: None,
                 province_frame: None,
                 pose_tick: true,
             }

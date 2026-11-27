@@ -55,6 +55,7 @@ pub struct System {
 
 pub struct Owner {
     wake: Option<Wake>,
+    wake_enabled: bool,
     token: u64,
     system: Arc<System>,
     last: Option<Instant>,
@@ -101,6 +102,7 @@ impl System {
     pub fn owner(self: &Arc<Self>) -> Owner {
         Owner {
             wake: None,
+            wake_enabled: true,
             token: self.next.fetch_add(1, Ordering::Relaxed),
             system: Arc::clone(self),
             last: None,
@@ -139,6 +141,10 @@ impl Owner {
         self.wake = Some(Arc::new(wake));
     }
 
+    pub fn set_wake_enabled(&mut self, enabled: bool) {
+        self.wake_enabled = enabled;
+    }
+
     pub fn owns(&self) -> bool {
         self.system.owner.load(Ordering::Acquire) == self.token
     }
@@ -170,8 +176,12 @@ impl Owner {
             .last
             .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
         self.last = Some(now);
-        self.system
-            .send(Command::Frame(self.token, Arc::clone(source), frame, self.wake.clone()));
+        self.system.send(Command::Frame(
+            self.token,
+            Arc::clone(source),
+            frame,
+            self.wake_enabled.then(|| self.wake.clone()).flatten(),
+        ));
     }
 
     pub fn status(&self) -> Status {
