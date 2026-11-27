@@ -2654,8 +2654,8 @@ fn a_step_restates_a_reading_its_product_proves_only_from_the_step_end() {
     assert!(restated > 0, "an equal value restates itself without its body");
     let (_host, push, ..) = playing_panel(steady(false));
     joined(&push);
-    let (_, records) = completed_batch(&push);
-    assert!(records.iter().all(|r| r.0 != 1), "a value proven across the step stays silent");
+    let spoken: Vec<_> = (0..4).map(|_| completed_batch(&push).1.into_iter().filter(|r| r.0 == 1).collect::<Vec<_>>()).filter(|own| !own.is_empty()).collect();
+    assert!(spoken.len() <= 1 && spoken.iter().flatten().all(|r| r.1 == dated::DATA), "a value proven across the step stays silent after its one resend: {spoken:?}");
 }
 
 #[test]

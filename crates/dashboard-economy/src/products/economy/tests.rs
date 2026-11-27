@@ -888,6 +888,38 @@ mod market {
     }
 
     #[test]
+    fn a_joined_step_keeps_a_requests_reply_proven_only_when_it_saw_every_hour_between() {
+        let steps = |unseen: fn(i32, &mut DecodedFrame)| {
+            let source = open((FIRST..=LAST).map(|hour| {
+                let mut frame = frame(hour);
+                let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
+                terms.retain(|row| row.kind != 0);
+                set::<tables::MarketContractTerms>(&mut frame, terms);
+                if let Ok(purchases) = frame.complete::<tables::PurchaseContracts>() {
+                    let steady = purchases.iter().map(|row| PurchaseContractRow { collected_raw: 5_000, ..row.clone() }).collect();
+                    set::<tables::PurchaseContracts>(&mut frame, steady);
+                }
+                unseen(hour, &mut frame);
+                frame
+            }).collect());
+            let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "requests" })).unwrap();
+            dashboard_base::test_fixtures::proven_by_steps(source.replay_ref(), panel.exact().unwrap(), 110, 116, 3)
+        };
+        let quiet = steps(|_, _| {});
+        assert!(quiet.last().is_some_and(|&(hour, from)| hour == 116 && from <= 113), "a quiet market stays proven across the step 114-116: {quiet:?}");
+        let transient = steps(|hour, frame| if hour == 112 {
+            let mut terms = frame.complete::<tables::MarketContractTerms>().unwrap().to_vec();
+            terms.push(MarketContractTermsRow { country: FRA, id: 0x53, kind: 0, buyer: 77, ..MarketContractTermsRow::default() });
+            set::<tables::MarketContractTerms>(frame, terms);
+        });
+        assert_eq!(transient.last(), Some(&(116, 113)), "a request born and gone at 112 leaves the reply proven only from the end of the step that held it: {transient:?}");
+        let unread = steps(|hour, frame| if hour == 115 {
+            *frame.tables[TableId::MarketContractTerms.index()] = TableView::Unavailable { reason: "terms unreadable".into() };
+        });
+        assert_eq!(unread.last(), Some(&(116, 116)), "terms unreadable at 115 leave equal endpoints proving nothing before 116: {unread:?}");
+    }
+
+    #[test]
     fn hours_where_only_an_agreements_fuel_counters_move_reread_no_row() {
         let source = recording();
         let panel = dashboard_base::products::at_hour::exact_panel::<MarketLendLease>(&source, &load(), &json!({ "panel": MarketLendLease::KEY, "branchId": "1", "countries": [], "only": "agreements" })).unwrap();

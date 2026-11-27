@@ -130,7 +130,8 @@ impl Projection {
     pub(super) fn from_lane(&mut self, read: &Read, sample: bool, view: &mut SharedView, edits: &mut Edits, count: &mut u64, lane: &Lane, step: Option<(&Step, &Changes)>, mode: CaptureMode) -> io::Result<bool> {
         let table = read.table;
         let continues = |step: &Step, change: &Changes| self.at.is_some_and(|at| at.checked_add(1) == Some(step.first())) && !change.reset();
-        let proven = step.is_some_and(|(step, change)| continues(step, change) && (step.first() == step.last() || lane.passing()));
+        let one_hour = step.is_some_and(|(step, _)| step.first() == step.last());
+        let proven = step.is_some_and(|(step, change)| continues(step, change) && change.status_left().is_none() && (one_hour || lane.passing()));
         let (status, sampled) = lane.status();
         let other = match status {
             Status::Complete | Status::Truncated { .. } => None,
@@ -142,13 +143,13 @@ impl Projection {
                 *view = made.into();
                 edits.replaced.insert(table);
             }
-            return Ok(proven && step.is_some_and(|(_, change)| change.status().is_none() && change.status_left().is_none()));
+            return Ok(proven);
         }
         let cells = lane.view();
         if let (TableView::Truncated { missing, .. }, Status::Truncated { missing: still }, Some((step, change))) = (view.held(), status, step)
             && *missing == still && continues(step, change) && !change.read_rows_changed() && change.renumber().is_none()
             && change.inserted().is_empty() && change.deleted().is_empty() && change.columns().iter().all(|written| written.is_empty()) {
-            return Ok(proven && change.passing().is_empty());
+            return Ok(proven && one_hour);
         }
         let (held, change) = match (view.held(), step) {
             (TableView::Complete(held), Some((step, change))) if status == Status::Complete && continues(step, change) => (held, change),
@@ -159,6 +160,7 @@ impl Projection {
             if read.keys.contains(key) { dirty.insert(key, u64::MAX); }
         }
         let renumber = change.renumber();
+        let mut evidenced = true;
         let now = |slot: u32| match renumber {
             Some(old) => old.binary_search(&slot).ok().map(|at| at as u32),
             None => Some(slot),
@@ -168,7 +170,10 @@ impl Projection {
             if (self.fields | self.validity) & mask == 0 { continue; }
             let validity = (self.fields & mask == 0).then(|| lane.cells().column(column.column())).flatten();
             for slot in column.slots().iter().filter_map(|&slot| now(slot)) {
-                if validity.is_some_and(|cells| cells.recorded(slot)) { continue; }
+                if validity.is_some_and(|cells| cells.recorded(slot)) {
+                    evidenced &= one_hour || lane.cells().key(slot).is_none_or(|key| !read.keys.contains(key));
+                    continue;
+                }
                 if let Some(key) = lane.cells().key(slot).filter(|&k| read.keys.contains(k)) {
                     *dirty.entry(key).or_default() |= mask;
                 }
@@ -179,7 +184,7 @@ impl Projection {
                 *view = view.clone().with_sampled_at(sampled);
                 if sample { edits.replaced.insert(table); }
             }
-            return Ok(proven);
+            return Ok(proven && evidenced);
         }
         let mut keyed = Vec::new();
         let mut deleted = Vec::new();
@@ -199,7 +204,7 @@ impl Projection {
         }
         *view = view.clone().with_sampled_at(sampled);
         edits.record(table, dirty);
-        Ok(proven)
+        Ok(proven && evidenced)
     }
 
     #[expect(clippy::too_many_arguments, reason = "one table's cells at an hour and the reply's edits")]
