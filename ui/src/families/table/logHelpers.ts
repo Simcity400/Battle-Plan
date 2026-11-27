@@ -234,13 +234,16 @@ export function logCountryCell(
     }
   }
   const joined = names.join(' · ');
+  const reasons = pending > 0 ? [...missing, NAME_LOADING] : missing;
   const value: Value = !names.length
     ? notApplicable('No country')
-    : !missing.length
-      ? pending === entries.length ? pendingValue(NAME_LOADING) : knownValue(joined)
-      : entries.every(entry => entry.tag === null)
-        ? notRecorded(missing.join('; '))
-        : partialValue(joined, missing.join('; '));
+    : !reasons.length
+      ? knownValue(joined)
+      : pending === entries.length
+        ? pendingValue(NAME_LOADING)
+        : entries.every(entry => entry.tag === null)
+          ? notRecorded(missing.join('; '))
+          : partialValue(joined, reasons.join('; '));
   return { value, flags, ...(roles.length ? { tooltipRows: roles } : {}) };
 }
 

@@ -78,7 +78,7 @@ export function pendingValue(reason: string): Value<never> {
 
 export function assertValue(value: unknown, context = 'family value'): asserts value is Value {
   if (value === null || value === undefined || typeof value !== 'object') {
-    throw new InvalidFamilyValueError(`${context}: expected a 5-state family Value, received ${value === null ? 'null' : typeof value}`);
+    throw new InvalidFamilyValueError(`${context}: expected a family Value, received ${value === null ? 'null' : typeof value}`);
   }
   const candidate = value as Record<string, unknown>;
   const kind = candidate.kind;

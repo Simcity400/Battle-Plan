@@ -26,13 +26,14 @@ function sideParticipants(side: readonly ReturnType<typeof resolveIdentity>[], u
     if (pendingReason !== null && missingReason === null) return pendingValue(pendingReason);
     return notRecorded(missingReason ?? 'Country not recorded');
   }
-  const reason = missingReason
-    ? (unknown ? `${missingReason}; some participants on this side were not recorded` : missingReason)
-    : unknown
-      ? 'Some participants on this side were not recorded'
-      : null;
+  const reasons: string[] = [];
+  if (missingReason) reasons.push(missingReason);
+  if (pendingReason) reasons.push(pendingReason);
+  if (unknown) reasons.push('some participants on this side were not recorded');
   const text = known.join(', ');
-  return reason ? partialValue(text, reason) : knownValue(text);
+  if (!reasons.length) return knownValue(text);
+  const reason = reasons.length === 1 && unknown ? 'Some participants on this side were not recorded' : reasons.join('; ');
+  return partialValue(text, reason);
 }
 
 function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
@@ -41,7 +42,7 @@ function battleSidesValue(sideValues: readonly Value<string>[]): Value<string> {
   const parts = sideValues.map(value => value.kind === 'known' || value.kind === 'partial' ? value.value : value.kind === 'pending' ? LOADING_NAME : 'Country not recorded');
   const reasons: string[] = [];
   for (const value of sideValues) {
-    if (value.kind === 'partial' || value.kind === 'notRecorded') {
+    if (value.kind === 'partial' || value.kind === 'notRecorded' || value.kind === 'pending') {
       if (!reasons.includes(value.reason)) reasons.push(value.reason);
     }
   }

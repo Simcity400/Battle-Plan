@@ -110,10 +110,10 @@ function vesselPairCell(
 
 function sideNames(side: readonly ReturnType<typeof resolveIdentity>[]): Value<string> {
   if (!side.length) return notRecorded('Country not recorded');
-  const missing = side.flatMap(who => (who.value.kind === 'notRecorded' ? [who.value.reason] : []));
-  if (!missing.length && side.every(who => who.value.kind === 'pending')) return side[0]!.value;
+  if (side.every(who => who.value.kind === 'pending')) return side[0]!.value;
+  const reasons = side.flatMap(who => (who.value.kind === 'notRecorded' || who.value.kind === 'pending' ? [who.value.reason] : []));
   const names = side.map(who => who.name).join(', ');
-  return missing.length ? partialValue(names, [...new Set(missing)].join('; ')) : knownValue(names);
+  return reasons.length ? partialValue(names, [...new Set(reasons)].join('; ')) : knownValue(names);
 }
 
 function battleRow(view: BoundedReadView, row: NavalBattleLogRow, boundary: IdentityBoundary, options: Options): TableRow {

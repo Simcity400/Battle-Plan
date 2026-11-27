@@ -26,6 +26,7 @@ import { eventFeedProjection } from '../../widgets/event-feed/eventFeedProjectio
 import { gameScoreColumns, gameScoreProjection } from '../../widgets/game-score/gameScoreProjection.ts';
 import { marketLedgerProjection } from '../../widgets/market-ledger/marketLedgerProjection.ts';
 import { buildRowSourceFromHead, validateGenericTailReply } from './rowSource.ts';
+import { logCountryCell } from './logHelpers.ts';
 import { COLUMNS as OCCUPIED_DEFAULTS, TABLE_BASE as OCCUPIED_BASE } from '../../widgets/occupied-states/definition.ts';
 import { occupiedStatesProjection } from '../../widgets/occupied-states/occupiedProjection.ts';
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
@@ -6520,4 +6521,21 @@ test('pending identity yields a pending cell whose painted, mirror, hover and au
   assert.equal(absent.resolved.value.kind, 'notRecorded');
   assert.match(absent.mirror.cells.find(c => c.column === 'place')!.spoken, /^Not recorded: Place not in recording/);
   assert.equal(absent.tooltip.rows.find(r => r.label === 'Place')?.valueState?.kind, 'missing');
+
+  const mixedView = createBoundedReadView({
+    hour: 10,
+    identity: {
+      resolve(kind, key) {
+        return {
+          kind, key, holder: { status: 'ready', value: key },
+          name: key === 'AAA' ? { status: 'ready', value: 'Valdoria' } : { status: 'pending' },
+          colour: { status: 'absent', reason: 'none' }, flagChoice: { status: 'absent', reason: 'none' },
+          validInterval: [0, Infinity] as const, nextChangeAt: Infinity,
+        };
+      },
+    },
+  });
+  const mixedCell = logCountryCell(mixedView, [{ tag: 'AAA' }, { tag: 'BBB' }], 10);
+  assert.equal(mixedCell.value.kind, 'partial');
+  assert.equal(mixedCell.value.kind === 'partial' ? mixedCell.value.reason : null, 'Name is loading');
 });

@@ -71,6 +71,7 @@ test('rows are built for the divisions the product answered, in its order, with 
   const ctx = table.context({});
   const model = table.projection.project(readView, table.declaration.projectionOptions(ctx));
   assert.equal(model.rows.length, answered.divisions.length, 'one row per answered division, none for the rest of the world');
+  assert.deepEqual(model.rows[0]!.cells.country!.value, { kind: 'pending', reason: 'Name is loading' });
   assert.deepEqual(resolveTableRows(model, ctx.settings).map(row => row.key), ['7', '66', '9'], 'the product order stands; the client does not re-rank');
   assert.ok(model.rows.every(row => row.tooltipExtra === undefined || typeof row.tooltipExtra === 'function'), 'medal tooltips are built when asked');
 });

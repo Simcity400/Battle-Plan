@@ -1,4 +1,4 @@
-# One five-state value contract for every dashboard family
+# One value contract for every dashboard family
 
 Every dashboard family renders values through a single discriminated union with six states: `known`, `zero`, `notRecorded` (carrying a non-empty reason), `notApplicable` (carrying a non-empty reason), `partial` (carrying the measured value and a non-empty reason), and `pending` (carrying a non-empty reason while an identity name is still being resolved; never encoded as `notRecorded`). Bare `null`, `undefined`, `NaN`, non-finite numbers, blank or whitespace-only scalar strings, and empty reasons are rejected by the TypeScript type and by a named runtime error (`InvalidFamilyValueError`) at the boundary where wire answers, live cells, or exact replies enter a family. Unread or unrecorded fields always emit `notRecorded`, never `notApplicable` (`notApplicable` is reserved for values that genuinely do not apply to the row).
 

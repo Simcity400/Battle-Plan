@@ -73,7 +73,7 @@ test('value constructors enforce the five states and reject bare null, undefined
   assert.throws(() => notApplicable('   '), InvalidFamilyValueError);
   assert.throws(() => partialValue(Number.NaN, 'reason'), InvalidFamilyValueError);
   assert.throws(() => partialValue(5, ''), InvalidFamilyValueError);
-  assert.throws(() => assertValue(null, 'test cell'), /InvalidFamilyValueError|expected a 5-state family Value/);
+  assert.throws(() => assertValue(null, 'test cell'), /InvalidFamilyValueError|expected a family Value/);
   assert.throws(() => assertValue(undefined, 'test cell'), InvalidFamilyValueError);
   assert.throws(() => assertValue({ kind: 'known', value: Number.NaN }), InvalidFamilyValueError);
   assert.throws(() => assertValue({ kind: 'bogus' }), InvalidFamilyValueError);
