@@ -193,11 +193,10 @@ const BUILDINGS_UNREAD: &str = "The building construction queue was not read in 
 const RAILWAYS_UNREAD: &str = "The railway construction queue was not read in full, so railway output in those hours is not counted";
 const HOURS_UNRECORDED: &str = "Output in hours that were not recorded is not counted";
 
-pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)], final_state: Option<(i32, u8, bool)>) -> Vec<(i32, i32, SpendingGap)> {
+pub(crate) fn dated_gaps(steps: &[(i32, Option<u8>, bool)]) -> Vec<(i32, i32, SpendingGap)> {
     let mut out: Vec<(i32, i32, SpendingGap)> = Vec::new();
     let mut open: Option<(i32, SpendingGap)> = None;
-    let tail = final_state.map(|(last, reason, output)| (last, Some(reason), output));
-    for &(hour, reason, output) in steps.iter().chain(&tail) {
+    for &(hour, reason, output) in steps {
         let active = reason.and_then(gap_of).filter(|&gap| !(gap == SpendingGap::NotRecorded && !output));
         if let Some((start, prev)) = open && active != Some(prev) {
             out.push((start, hour - 1, prev));
@@ -438,7 +437,7 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         for step in acc.history.read {
             if merged_read.last().is_some_and(|last| last.0 == step.0) { *merged_read.last_mut().unwrap() = step; } else { merged_read.push(step); }
         }
-        let gaps = dated_gaps(&merged_read, None);
+        let gaps = dated_gaps(&merged_read);
         let owner_gap = gaps.iter().find(|gap| gap.2 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
         if acc.line.country.is_none() {
             let first_output = merged_read.iter().find(|&&(_, _, had)| had).map(|&(hour, ..)| hour);

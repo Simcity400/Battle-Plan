@@ -334,6 +334,45 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert!(reply.breakdown.parts.iter().all(|part| part.key != "new"), "new work first seen at 120 must not receive the gap at 105");
     let repair = reply.breakdown.parts.iter().find(|part| part.key == "repair").expect("repair part carries the gap");
     assert_eq!(repair.state, BreakdownState::Partial);
+
+    let signed_frames = (100..=102)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(Vec::new())).into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(vec![ConstructionLineOutputRow {
+                line: 5, since_hour: 100, construction_raw: -25, exact: hour < 102,
+                country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
+            }]))
+            .into();
+            for table in [TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::ConstructionLineOutput] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let signed_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, signed_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let signed_source = Source::from_replay(
+        SourceKey { source_id: "construction-signed-output".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(signed_replay),
+        &cancel,
+    )
+    .unwrap();
+    let signed_reply = ConstructionBreakdown::load(
+        &signed_source,
+        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 102 },
+        &LoadContext { content: None },
+        &cancel,
+    )
+    .unwrap();
+    let signed_new = signed_reply.breakdown.parts.iter().find(|part| part.key == "new").expect("negative output establishes new-building purpose");
+    assert_eq!(signed_new.state, BreakdownState::Partial);
+    assert_eq!(signed_new.children.iter().find(|child| child.key == "type:7").map(|child| child.state), Some(BreakdownState::Partial));
 }
 
 #[test]
