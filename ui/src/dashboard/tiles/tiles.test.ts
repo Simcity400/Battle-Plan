@@ -12,6 +12,7 @@ import type { TileLane, TileViewport } from './view.ts';
 import { watchBoundary } from '../widgetTime.ts';
 import type { PlaybackController } from '../playback';
 import { topTileProof } from '../../families/host/tiledState.ts';
+import { serializeTiledBySource } from '../../families/sceneTiles.ts';
 
 function reply(tags: readonly string[], binHours: number, index: number, lastHour: number, value: (tag: number, hour: number) => number | null): SeriesTileReply {
   const first = index * TILE_BINS * binHours;
@@ -107,6 +108,77 @@ function following(head: number, days = 365): TileViewport {
   return { from: Math.floor(from), to: Math.floor(Math.min(end, head)), end: Math.floor(end), width: 600 };
 }
 
+test('a strip holds the whole chart at its current bin width and projects a seek without asking', async () => {
+  const cache = new TileCache(), source = lane(['GER'], LAST);
+  const view = new TileView(cache, source, () => {});
+  const initial = following(10000);
+  view.setView(initial);
+  await settle();
+  const claim = cache.claim(() => assert.fail('The fixture fits'));
+  const project = await view.holdStrip(0, [], claim, () => assert.fail('The fixture uses the lane client'));
+  const before = source.asked.length;
+  for (const hour of [8761, 24_000, 77_123, LAST]) {
+    const viewport = following(hour);
+    const exact = new TileView(new TileCache(), lane(['GER'], LAST), () => {});
+    exact.setView(initial);
+    await settle();
+    exact.setView(viewport);
+    await settle();
+    assert.deepEqual(serializeTiledBySource({ main: project(viewport, hour).lines }),
+      serializeTiledBySource({ main: exact.current! }), `chart fields at ${hour}`);
+    exact.close();
+  }
+  assert.equal(source.asked.length, before);
+  assert.ok(cache.stripBytes > 0 && cache.bytes <= cache.cap);
+  claim.release();
+  assert.equal(cache.stripBytes, 0);
+  const rolling = cache.claim(() => assert.fail('The rolling chart holds no tiles'));
+  await assert.rejects(view.holdStrip(0, [0, LAST], rolling, () => assert.fail('The fixture uses the lane client'),
+    { first: 0, hours: 8760 }), /rolling chart changes tile width/);
+  assert.equal(source.asked.length, before);
+  assert.equal(cache.stripBytes, 0);
+  rolling.release();
+  view.close();
+});
+
+test('the cache releases a strip claim when a foreground tile needs its budget', () => {
+  const cache = new TileCache(600);
+  const tile = (key: string) => ({ ...tilesOf(reply(['GER'], 6, 0, 0, value), ['GER'], 6, 0, () => key)[0]!, bytes: 300 });
+  let losses = 0;
+  const claim = cache.claim(() => { losses++; });
+  claim.put(tile('strip'));
+  cache.pin(['first', 'second', 'third']);
+  cache.put(tile('first'));
+  cache.put(tile('second'));
+  assert.equal(losses, 1);
+  assert.equal(claim.active, false);
+  assert.equal(cache.stripBytes, 0);
+  assert.equal(cache.bytes, cache.cap);
+  assert.deepEqual(['first', 'second', 'strip'].map(key => cache.has(key)), [true, true, false]);
+  const tooLarge = cache.claim(() => assert.fail('Admission fails before claiming bytes'));
+  assert.throws(() => tooLarge.put(tile('third')), /tile budget/i);
+  assert.equal(cache.bytes, cache.cap);
+});
+
+test('a held chart projects the lookahead tile at the last recorded hour before a trailing gap', async () => {
+  const cache = new TileCache();
+  const source = { ...lane(['GER'], 249), lastHour: 260 };
+  const view = new TileView(cache, source, () => {});
+  view.setView({ from: 0, to: 120, end: 120, width: 600 });
+  await settle();
+  const claim = cache.claim(() => assert.fail('The fixture fits'));
+  const project = await view.holdStrip(0, [0, 249], claim, () => assert.fail('The fixture uses the lane client'));
+  const viewport = { from: 0, to: 249, end: 249, width: 600 };
+  const before = source.asked.length;
+  const held = project(viewport, 249);
+  assert.equal(source.asked.length, before);
+  view.setView(viewport);
+  await settle();
+  assert.deepEqual(serializeTiledBySource({ main: held.lines }), serializeTiledBySource({ main: view.current! }));
+  claim.release();
+  view.close();
+});
+
 test('a tile reply becomes one tile per tag, each owning its arrays, and reads back as its bins', () => {
   const made = reply(['GER', 'ITA'], 12, 3, LAST, value);
   const tiles = tilesOf(made, ['GER', 'ITA'], 12, 3, tag => tag);
@@ -191,6 +263,33 @@ test('a top of tiles takes its countries from the ranked reply, keeps them while
   await settle();
   assert.equal(view.current, shown, 'assembling unchanged tiles keeps the lines');
   assert.equal(renders, drawn, 'and publishes nothing');
+
+  const rankedBefore = ranks.length, groupedBefore = base.asked.length;
+  const claim = cache.claim(() => assert.fail('The ranked fixture fits'));
+  const project = await view.holdStrip(0, [100, 4999, 5000, LAST], claim, () => assert.fail('The fixture uses the lane client'));
+  assert.deepEqual(ranks.slice(rankedBefore).map(rank => rank.hour), [100, 5000]);
+  const grouped = base.asked.slice(groupedBefore).map(ask => ask.index);
+  assert.equal(grouped.length, new Set(grouped).size);
+  const viewport = { from: 0, to: 8759, end: 8759, width: 600 };
+  assert.deepEqual([...project(viewport, 4999).lines.keys()], [winner, other]);
+  assert.deepEqual([...project(viewport, 5000).lines.keys()], [newcomer, winner]);
+  claim.release();
+
+  const rolling = (hour: number) => ({ from: hour - 720, to: hour, end: hour, width: 600 });
+  const rollingView = new TileView(cache, { ...top, lastHour: 5400 }, () => {});
+  rollingView.setView(rolling(4991));
+  rollingView.setHour(4991);
+  await settle();
+  const rollingClaim = cache.claim(() => assert.fail('The rolling fixture fits'));
+  const rollingProject = await rollingView.holdStrip(0, [4991, 5075], rollingClaim, () => assert.fail('The fixture uses the lane client'),
+    { first: 0, hours: 720 });
+  const rollingHeld = rollingProject(rolling(5075), 5075).lines;
+  rollingView.setView(rolling(5075));
+  rollingView.setHour(5075);
+  await settle();
+  assert.deepEqual(serializeTiledBySource({ main: rollingHeld }), serializeTiledBySource({ main: rollingView.current! }));
+  rollingClaim.release();
+  rollingView.close();
 });
 
 test('a failing top-rank read does not re-ask the same hour when setHour runs again, retries on retry(), and asks a new hour', async () => {

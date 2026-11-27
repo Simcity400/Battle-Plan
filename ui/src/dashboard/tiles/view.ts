@@ -3,12 +3,16 @@ import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
 import type { Run } from '../../charts/series';
 import type { HourSpan, MissingSpan, TilePart } from '../../generated/dashboard';
 import { TileCache } from './cache.ts';
+import type { StripTileClaim, StripTileRead } from './cache.ts';
 import { countryKey } from '../countryKey.ts';
 import { tileHead, valueAtHead } from './head.ts';
 import { FIRST_BREAK, HAS_BREAK, LEVEL, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, tileLast, tilesOf } from './tile.ts';
 import type { Tile, TileReply } from './tile.ts';
 
-export interface TileViewport { from: number; to: number; end: number; width: number }
+export interface TileViewport {
+  from: number; to: number; end: number; width: number;
+  rolling?: { first: number; hours: number };
+}
 
 export const AHEAD_BINS = 32;
 
@@ -25,14 +29,14 @@ export interface TileLane {
   within?: ReadonlyMap<string, readonly HourSpan[]>;
   lastHour: number;
   marks?: boolean;
-  ask(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): Promise<TileReply>;
+  ask(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined, read?: StripTileRead): Promise<TileReply>;
   prepared?: boolean;
   promote?(binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): void;
   top?: TileTop;
 }
 
 export interface TileTop {
-  ask(binHours: number, index: number, hour: number): Promise<TileReply>;
+  ask(binHours: number, index: number, hour: number, read?: StripTileRead): Promise<TileReply>;
 }
 
 export interface TileRanked {
@@ -66,6 +70,19 @@ function spansFor(within: TileLane['within'], tag: string, binHours: number, ind
 const fresh = (tile: Tile & { askedFor?: number }, lastHour: number) => tile.immutable
   || (tile.askedFor ?? -Infinity) >= lastHour
   || (tile.filled === null ? tile.firstHour > lastHour : tile.filled >= Math.min(tileLast(tile), lastHour));
+
+let nextRankStrip = 0;
+
+function rankAt(ranks: readonly TileRanked[], hour: number): TileRanked | null {
+  let first = 0, end = ranks.length;
+  while (first < end) {
+    const mid = (first + end) >>> 1;
+    if (ranks[mid]!.until < hour) first = mid + 1;
+    else end = mid;
+  }
+  const rank = ranks[first];
+  return rank && rank.from <= hour ? rank : null;
+}
 
 export class TileView {
   private wanted: Wanted | null = null;
@@ -108,6 +125,73 @@ export class TileView {
   get error(): unknown { return this.failure; }
   get top(): TileRanked | null { return this.ranked; }
   get isTop(): boolean { return !!this.lane.top; }
+  get stripBasis(): number | null { return this.wanted?.binHours ?? null; }
+
+  async holdStrip(firstHour: number, hours: readonly number[], claim: StripTileClaim, read: StripTileRead, rolling?: TileViewport['rolling']) {
+    const basis = this.wanted;
+    if (!basis || this.closed) throw new Error('The chart has no settled tile width');
+    const { binHours, width } = basis;
+    if (rolling && [hours[0], hours.at(-1)].some(hour => hour !== undefined
+      && viewBinHours(Math.max(1, Math.min(rolling.hours, hour - rolling.first) + 1), width, basis) !== binHours)) {
+      throw new Error('A rolling chart changes tile width across the timeline');
+    }
+    const { lane } = this, tags = new Set(lane.tags);
+    const span = TILE_BINS * binHours, first = Math.floor(firstHour / span), last = Math.floor(lane.lastHour / span);
+    const keep = (key: string) => {
+      const tile = this.cache.get(key);
+      return !!tile && fresh(tile, lane.lastHour) && claim.keep(key);
+    };
+    const save = (reply: TileReply, index: number, keys: readonly string[]) => {
+      if (this.closed) throw new Error('The chart tile view changed');
+      for (const tile of tilesOf(reply, keys, binHours, index, tag => this.tileKey(tag, binHours, index))) {
+        if (!keep(tile.key)) claim.put(Object.assign(tile, { askedFor: lane.lastHour }), this.cacheLane);
+      }
+    };
+    const rankKey = `${lane.key}|strip-rank|${++nextRankStrip}`;
+    if (lane.top) {
+      const ranks: TileRanked[] = [];
+      for (const hour of hours) {
+        if (hour <= (ranks.at(-1)?.until ?? -Infinity)) continue;
+        const index = Math.floor(hour / span);
+        const reply = await lane.top.ask(binHours, index, hour, read);
+        const rank = reply.ranking;
+        if (!rank || !(rank.from <= hour && hour <= rank.until)) throw new Error('The chart tile reply names no top for this hour');
+        const ranked = reply.lines.map(line => countryKey(line.country));
+        save(reply, index, ranked);
+        ranked.forEach(tag => tags.add(tag));
+        ranks.push({ ...rank, tags: ranked });
+      }
+      claim.put({ key: rankKey, value: ranks, bytes: new TextEncoder().encode(JSON.stringify(ranks)).byteLength });
+    }
+    for (let index = first; index <= last; index++) {
+      const lacking = [...tags].filter(tag => !keep(this.tileKey(tag, binHours, index)));
+      for (let at = 0; at < lacking.length; at += TILE_GROUP) {
+        const group = lacking.slice(at, at + TILE_GROUP);
+        save(await lane.ask(binHours, index, group, this.withinFor(group, binHours, index), read), index, group);
+      }
+    }
+    return (view: TileViewport, hour: number) => {
+      if (!claim.active) throw new Error('The chart tile claim was released');
+      const desired = this.desired(view, this.wanted);
+      const assembled = this.assembled, ranked = this.ranked;
+      const sameRank = !lane.top || (ranked && ranked.from <= hour && hour <= ranked.until);
+      const wanted = sameRank && assembled && assembled.binHours === desired.binHours && assembled.width === desired.width
+        && assembled.cell === desired.cell && assembled.first <= desired.first && desired.last <= assembled.last ? assembled : desired;
+      if (wanted.binHours !== binHours || wanted.width !== width) throw new Error('The chart tile width changed');
+      const rank = rankAt(claim.value<TileRanked[]>(rankKey) ?? [], hour);
+      const lines = new Map<string, TiledLine>();
+      for (const tag of lane.top ? rank?.tags ?? [] : lane.tags) {
+        const tiles: Tile[] = [];
+        for (let index = wanted.first; index <= wanted.last; index++) {
+          const tile = this.cache.get(this.tileKey(tag, binHours, index));
+          if (!tile) throw new Error('The chart is missing a held tile');
+          tiles.push(tile);
+        }
+        lines.set(tag, line(tag, tileHead(lane.key, tag), tiles, wanted.first * span, (wanted.last + 1) * span - 1, width, lane.marks ? wanted.cell : null));
+      }
+      return { lines, rank };
+    };
+  }
 
   private get tags(): readonly string[] {
     return this.lane.top ? this.ranked?.tags ?? [] : this.lane.tags;
@@ -168,25 +252,30 @@ export class TileView {
     wanted.keys = keys;
   }
 
-  setView(view: TileViewport): void {
-    if (this.closed || view.to < view.from) return;
-    const before = this.wanted;
+  private desired(view: TileViewport, before: Wanted | null): Assembled {
     const binHours = viewBinHours(view.end - view.from + 1, view.width, before ?? undefined), span = TILE_BINS * binHours;
     const cell = cellBins(view.end - view.from + 1, view.width, binHours, before?.binHours === binHours && before.width === view.width ? before.cell : undefined);
     const first = Math.floor(view.from / span);
     const ahead = Math.min(this.lane.lastHour, view.to + AHEAD_BINS * binHours);
     const last = Math.max(first, Math.floor(Math.max(view.to, ahead) / span));
+    return { binHours, first, last, width: view.width, cell };
+  }
+
+  setView(view: TileViewport): void {
+    if (this.closed || view.to < view.from) return;
+    const next = this.desired(view, this.wanted);
+    const { binHours, first, last, width, cell } = next;
     const held = this.wanted;
-    if (held && held.binHours === binHours && held.first === first && held.last === last && held.width === view.width && held.cell === cell) return;
+    if (held && held.binHours === binHours && held.first === first && held.last === last && held.width === width && held.cell === cell) return;
     const keys: string[] = [];
     for (let index = first; index <= last; index++) for (const tag of this.tags) keys.push(this.tileKey(tag, binHours, index));
     this.cache.pin(keys);
     if (held) this.cache.unpin(held.keys);
-    this.wanted = { binHours, first, last, width: view.width, cell, keys };
+    this.wanted = { ...next, keys };
     if (this.lane.top && !this.ranked && !this.rankPending && this.rankHour !== null && this.rankFailedHour !== this.rankHour) this.askTop();
     this.fetch();
     const made = this.assembled;
-    if (made && made.binHours === binHours && made.width === view.width && made.cell === cell && made.first <= first && last <= made.last) return;
+    if (made && made.binHours === binHours && made.width === width && made.cell === cell && made.first <= first && last <= made.last) return;
     this.assemble();
   }
 
@@ -227,7 +316,7 @@ export class TileView {
   private request(binHours: number, index: number, tags: string[]): void {
     const lane = this.lane, lastHour = lane.lastHour;
     const keys = tags.map(tag => this.tileKey(tag, binHours, index));
-    const within = lane.within && Object.fromEntries(tags.map(tag => [tag, spansFor(lane.within, tag, binHours, index)!]));
+    const within = this.withinFor(tags, binHours, index);
     this.asked++;
     const flight = lane.ask(binHours, index, tags, within).then(reply => {
       const tiles = tilesOf(reply, tags, binHours, index, tag => keys[tags.indexOf(tag)]);
@@ -247,6 +336,11 @@ export class TileView {
       for (const key of keys) if (this.cache.inflight.get(key) === flight) { this.cache.inflight.delete(key); this.cache.joins.delete(key); }
       this.cache.releaseLane(this.cacheLane);
     });
+  }
+
+  private withinFor(tags: readonly string[], binHours: number, index: number): Record<string, HourSpan[]> | undefined {
+    const within = this.lane.within;
+    return within && Object.fromEntries(tags.map(tag => [tag, spansFor(within, tag, binHours, index)!]));
   }
 
   private assemble(): void {

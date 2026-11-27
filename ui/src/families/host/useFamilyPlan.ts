@@ -1,8 +1,8 @@
 import { createExactReadView, emptyPagers, NO_PAGED_SNAPSHOT, pagedEntries, pagedSnapshots, pagerWindow, replacePagers, type PagedSnapshot, type PagerSet } from './pagers.ts';
-import { NO_TILED_SERIES, reuseTiledSeries, reuseTileUnrecorded, topTileProof, type HeldTileUnrecorded } from './tiledState.ts';
+import { NO_TILED_SERIES, chartTileLane, reuseTiledSeries, reuseTileUnrecorded, topTileProof, type HeldTileUnrecorded } from './tiledState.ts';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { IconName } from '../../components/Icons';
-import { validateProductReply, type ProductRequest } from '../../dashboard/client.ts';
+import { validateProductReply } from '../../dashboard/client.ts';
 import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import { countryIdentityIndex, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
@@ -15,21 +15,17 @@ import { cumulativeEverMembership, datedIdentityMembership, groupSpanBodyStatus,
 import { resolveWindow, type WidgetBase } from '../../dashboard/model';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
 import type { OptionValue } from '../../dashboard/options';
-import { prepareGate, preparing } from '../../dashboard/prepare.ts';
 import { loadProduct, peekProduct, productKey, useProduct } from '../../dashboard/products';
 import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
 import { useGate, type Holder } from '../../dashboard/regionGate';
 import { axisAt, coverageSpan, lastRecordedHour, SPEC } from '../../dashboard/regionTime';
 import { productRequest } from '../../dashboard/request.ts';
-import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
-import type { TileReply } from '../../dashboard/tiles/tile.ts';
 import { TileView, tileCache, type TiledLine, type TileViewport } from '../../dashboard/tiles/view.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { countRead, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { useRegion, useRegionCoverage, watchBoundary } from '../../dashboard/widgetTime';
 import { StripPageContext, type StripWidget } from '../../dashboard/strip/driver.ts';
-import type { HourSpan } from '../../generated/dashboard';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilyStaticProof } from './adapter.ts';
 import { createExactArtProvider, type ArtResolutions } from '../art/provider.ts';
@@ -48,6 +44,7 @@ import {
 import { identitySnapshots } from './identitySnapshots.ts';
 import { allReady, familyBodyStatus, inputOf, type PlanInput } from './planInputs.ts';
 import { displayedHoverKeys, type DrawnKeys } from './installed.ts';
+import { holdDayTiles } from '../heat/dayTiles.ts';
 import { gatedByCountry, plannedRangeSpan, plannedSignature, planFamilySources, watchPlanValid } from './planSources.ts';
 import type { HolderRun } from '../holders.ts';
 import { overlapsHourRanges } from '../holders.ts';
@@ -201,7 +198,7 @@ export interface UseFamilyPlanResult<TAux, TExtra> {
   readonly onHoverHour: (hour: number | null, keys?: DrawnKeys) => void;
   readonly hovers: Readonly<Record<string, { readonly hour: number; readonly data: unknown }>>;
   readonly exactReadView: ((hour: number, rowWindow: FamilyRowWindow | null, artResolutions?: ArtResolutions) => Promise<BoundedReadView | null>) | undefined;
-  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests'>;
+  readonly stripPlan?: Pick<StripWidget, 'key' | 'fixed' | 'supported' | 'requests' | 'tiles'> & { tilesSettled(): boolean };
   readonly bodyStatus: FamilyBodyStatus;
   readonly bannerFailure: BannerFailureInfo | null;
   readonly nameFailureDetail: string | undefined;
@@ -594,7 +591,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
   }, [plan, lastHour]);
 
   const tileViewsRef = useRef<Map<string, TileView>>(new Map());
+  const tileViewsKeyRef = useRef('');
   const seriesViewportRef = useRef<TileViewport | null>(null);
+  const strips = useContext(StripPageContext);
+  const [stripTileConfig, setStripTileConfig] = useState('');
   const [tiledState, setTiledState] = useState<{
     readonly key: string;
     readonly series: Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
@@ -616,6 +616,7 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     const currentPlan = planForTilesRef.current;
     if (!active || !pixelBinnedKey || !currentPlan) {
       applySeriesViewportRef.current = null;
+      tileViewsKeyRef.current = '';
       for (const view of tileViewsRef.current.values()) view.close();
       tileViewsRef.current.clear();
       return;
@@ -653,75 +654,20 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       });
     };
 
-    const prepared = preparing(runtime.client);
     for (const entry of entries) {
-      const read = entry.read;
-      const keyed = read.keys && read.keys.length > 0 ? read.keys : null;
-      const population = read.coverage.mode === 'population' && read.coverage.form === 'all' && !read.tags.length;
-      if (!keyed && !read.tags.length && !read.top && !population) continue;
-      const byId = keyed ? new Map<string, SeriesKey>(keyed.map(key => [keyId(key), key])) : null;
-      const laneTags = keyed ? keyed.map(keyId) : read.tags;
-      const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
-        productRequest({
-          sourceId: entry.source.id,
-          revision: entry.source.revision,
-          product: 'series-tiles',
-          params: keyed && byId
-            ? {
-                branchId: entry.branch,
-                family: read.family,
-                binHours,
-                index,
-                ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpanRef.current),
-              }
-            : {
-                branchId: entry.branch,
-                family: read.family,
-                binHours,
-                index,
-                countries: tags.map(countryFromKey),
-                ...(within
-                  ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpanRef.current(span.firstHour, span.lastHour) ?? [])] as const) }
-                  : {}),
-              },
-        });
-      const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
-        const request = tileRequest(binHours, index, tags, within);
-        const reply = validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
-        return keyed && byId ? keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], tags.map(id => byId.get(id)!)) : reply;
-      };
-      const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(runtime.client).promote(tileRequest(...asked)) : undefined;
-      const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}${keyed ? '|keyed' : ''}`;
-      const readTop = read.top;
-      const top = readTop || population
-        ? {
-            ask: async (binHours: number, index: number, hour: number) => {
-              const gated = gateRecordedRef.current(hour);
-              if (gated === null) throw new Error('The displayed hour is outside the recording.');
-              const request = productRequest({
-                sourceId: entry.source.id,
-                revision: entry.source.revision,
-                product: 'series-tiles',
-                params: { branchId: entry.branch, family: read.family, binHours, index, ...(readTop ? { ...(readTop.n === 'all' ? {} : { top: readTop.n }), ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}) } : {}), hour: gated },
-              });
-              return validateProductReply(await runtime.client.product<TileReply>(request, new AbortController().signal), request).data;
-            },
-          }
-        : undefined;
-      const tv = new TileView(
-        tileCache(runtime.client),
-        { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote, ...(top ? { top } : {}) },
-        publish,
-      );
-      views.set(entry.name, tv);
+      const lane = chartTileLane(runtime.client, entry, lastHour, (first, last) => gateSpanRef.current(first, last),
+        hour => gateRecordedRef.current(hour));
+      if (lane) views.set(entry.name, new TileView(tileCache(runtime.client), lane, publish));
     }
     tileViewsRef.current = views;
+    tileViewsKeyRef.current = pixelBinnedKey;
     const applyViewport = (vp: TileViewport) => {
       batching = true;
       dirty = false;
       for (const tv of views.values()) tv.setView(vp);
       batching = false;
       if (dirty) publish();
+      if (strips) setStripTileConfig(JSON.stringify([pixelBinnedKey, vp.width, vp.rolling, [...views.values()].map(view => view.stripBasis)]));
     };
     applySeriesViewportRef.current = applyViewport;
     if (seriesViewportRef.current) applyViewport(seriesViewportRef.current);
@@ -729,9 +675,12 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
       disposed = true;
       if (applySeriesViewportRef.current === applyViewport) applySeriesViewportRef.current = null;
       for (const tv of views.values()) tv.close();
-      if (tileViewsRef.current === views) tileViewsRef.current = new Map();
+      if (tileViewsRef.current === views) {
+        tileViewsRef.current = new Map();
+        tileViewsKeyRef.current = '';
+      }
     };
-  }, [runtime.client, active, pixelBinnedKey, lastHour]);
+  }, [runtime.client, active, pixelBinnedKey, lastHour, strips]);
 
   const onSeriesViewport = useCallback((nextViewport: TileViewport) => {
     seriesViewportRef.current = nextViewport;
@@ -1082,15 +1031,32 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
     });
   }, [exactOptions, displayedPlan, pagedSnapshot, identityProvider, broker, identityScope, track?.source]);
 
-  const strips = useContext(StripPageContext);
   const viewport = measuredViewport.current;
   const frozenLog = (entry: SourceEntry) => entry.read.shape === 'paged-rows' && Object.values(pagedSnapshot[entry.name] ?? {}).some(page => page.kind === 'answered');
   const displayedEntries = strips && displayedPlan ? exactEntries(displayedPlan) : [];
   const fixedStrip = !following || (displayedEntries.length > 0 && displayedEntries.every(frozenLog));
+  const hasStripChart = !!strips && !fixedStrip && !!displayedPlan?.entries.some(entry => entry.read.shape === 'pixel-binned');
+  const terminalHour = strips && displayedCtx ? lastRecordedHour(displayedCtx.track) : null;
+  const terminal = terminalHour === null ? null : displayedGate.recorded(terminalHour);
+  const dayTiles = strips && !fixedStrip && exactOptions && terminal !== null
+    ? holdDayTiles(displayedEntries, entry => buildExactRequests(entry, terminal, exactOptions)?.asks[0]?.request, content) : undefined;
   const stripPlan: UseFamilyPlanResult<TAux, TExtra>['stripPlan'] = strips && exactOptions && displayedCtx && displayedPlan ? {
-    key: JSON.stringify([displayedPlan.valid ? [displayedPlan.owner, options] : sig, fixedStrip, pagedSnapshot, content]),
+    key: JSON.stringify([displayedPlan.valid ? [displayedPlan.owner, options] : sig, fixedStrip, pagedSnapshot, content, stripTileConfig]),
     fixed: fixedStrip,
-    supported: ![...displayedPlan.entries, displayedPlan.exactEntry, displayedPlan.staticEntry].some(entry => entry?.read.shape === 'pixel-binned'),
+    supported: true,
+    tilesSettled: () => !hasStripChart || (tileViewsKeyRef.current === pixelBinnedKey && !!seriesViewportRef.current
+      && [...tileViewsRef.current.values()].every(view => view.settled || view.error !== null)),
+    ...((hasStripChart || dayTiles?.size) ? { tiles: async (claim, read) => {
+      if (dayTiles?.size) await dayTiles.prepare(claim, read);
+      if (!hasStripChart) return;
+      const vp = seriesViewportRef.current!;
+      const hours = strips.lattice.hours(16).flatMap(axis => displayedGate.recorded(axis + trackOffset) ?? []);
+      if (!hours.length) return;
+      for (const chart of tileViewsRef.current.values()) {
+        if (chart.error !== null) throw chart.error;
+        await chart.holdStrip(displayedCtx.branch.firstHour, hours, claim, read, vp.rolling);
+      }
+    } } : {}),
     requests: axis => {
       if (fixedStrip) return [];
       const recorded = displayedGate.recorded(axis + trackOffset);
@@ -1101,7 +1067,10 @@ export function useFamilyPlan<TAux = unknown, TExtra = undefined>(
         : displayedPlan;
       return exactEntries(plan).filter(entry => !frozenLog(entry)).flatMap(entry => (buildExactRequests(entry, recorded, {
         ...exactOptions, pagedSnapshot: name => pagedSnapshot[name] ?? null,
-      })?.asks ?? []).map(({ slot, request }) => ({ slot: JSON.stringify([entry.name, slot, request.sourceId, request.revision, request.product]), request })));
+      })?.asks ?? []).flatMap(({ slot, request }) => {
+        const source = dayTiles ? dayTiles.slot(entry, request) : entry.name;
+        return source === null ? [] : [{ slot: JSON.stringify([source, slot, request.sourceId, request.revision, request.product]), request }];
+      }));
     },
   } : undefined;
 

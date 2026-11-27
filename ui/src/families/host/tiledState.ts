@@ -1,5 +1,78 @@
-import type { TiledLine, TileView } from '../../dashboard/tiles/view.ts';
+import { validateProductReply, type DashboardClient, type ProductRequest } from '../../dashboard/client.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { keyId, keyedTileParams, keyedTileReply, type SeriesKey } from '../../dashboard/keyedSeriesData.ts';
+import { prepareGate, preparing } from '../../dashboard/prepare.ts';
+import type { BoundWindow, GatedHour } from '../../dashboard/regionTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import type { StripTileRead } from '../../dashboard/tiles/cache.ts';
+import type { TileReply } from '../../dashboard/tiles/tile.ts';
+import type { HourSpan } from '../../generated/dashboard.ts';
+import type { PixelBinnedSourceRead, SourceEntry } from '../plan.ts';
+import type { TileLane, TiledLine, TileView } from '../../dashboard/tiles/view.ts';
 import { boundedUnrecorded, type UnrecordedLine } from '../boundedView.ts';
+
+export function chartTileLane(
+  client: DashboardClient, entry: SourceEntry & { read: PixelBinnedSourceRead }, lastHour: number,
+  gateSpan: (first: number, last: number) => BoundWindow | null, recorded: (hour: number) => GatedHour | null,
+): TileLane | null {
+  const prepared = preparing(client);
+  const read = entry.read;
+  const keyed = read.keys && read.keys.length > 0 ? read.keys : null;
+  const population = read.coverage.mode === 'population' && read.coverage.form === 'all' && !read.tags.length;
+  if (!keyed && !read.tags.length && !read.top && !population) return null;
+  const byId = keyed ? new Map<string, SeriesKey>(keyed.map(key => [keyId(key), key])) : null;
+  const laneTags = keyed ? keyed.map(keyId) : read.tags;
+  const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
+    productRequest({
+      sourceId: entry.source.id,
+      revision: entry.source.revision,
+      product: 'series-tiles',
+      params: keyed && byId
+        ? {
+            branchId: entry.branch,
+            family: read.family,
+            binHours,
+            index,
+            ...keyedTileParams(tags.map(id => byId.get(id)!), within, gateSpan),
+          }
+        : {
+            branchId: entry.branch,
+            family: read.family,
+            binHours,
+            index,
+            countries: tags.map(countryFromKey),
+            ...(within
+              ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => gateSpan(span.firstHour, span.lastHour) ?? [])] as const) }
+              : {}),
+          },
+    });
+  const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined, send?: StripTileRead) => {
+    const request = tileRequest(binHours, index, tags, within);
+    const reply = send ? (await send<TileReply>(request)).data
+      : validateProductReply(await client.product<TileReply>(request, new AbortController().signal), request).data;
+    return keyed && byId ? keyedTileReply(reply as Parameters<typeof keyedTileReply>[0], tags.map(id => byId.get(id)!)) : reply;
+  };
+  const promote = prepared ? (...asked: Parameters<typeof tileRequest>) => prepareGate(client).promote(tileRequest(...asked)) : undefined;
+  const laneKey = `${entry.source.id}|${entry.source.revision}|${entry.branch}|${JSON.stringify(read.family)}${keyed ? '|keyed' : ''}`;
+  const readTop = read.top;
+  const top = readTop || population
+    ? {
+        ask: async (binHours: number, index: number, hour: number, send?: StripTileRead) => {
+          const gated = recorded(hour);
+          if (gated === null) throw new Error('The displayed hour is outside the recording.');
+          const request = productRequest({
+            sourceId: entry.source.id,
+            revision: entry.source.revision,
+            product: 'series-tiles',
+            params: { branchId: entry.branch, family: read.family, binHours, index, ...(readTop ? { ...(readTop.n === 'all' ? {} : { top: readTop.n }), ...(readTop.least ? { least: true } : {}), ...(readTop.by ? { rankBy: readTop.by } : {}) } : {}), hour: gated },
+          });
+          return send ? (await send<TileReply>(request)).data
+            : validateProductReply(await client.product<TileReply>(request, new AbortController().signal), request).data;
+        },
+      }
+    : undefined;
+  return { key: laneKey, tags: laneTags, within: read.within, lastHour, ask, prepared, promote, ...(top ? { top } : {}) };
+}
 
 export type TiledSeriesMap = Readonly<Record<string, ReadonlyMap<string, TiledLine>>>;
 
