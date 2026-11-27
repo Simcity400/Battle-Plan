@@ -17,6 +17,49 @@ async function screenshot(cdp: Cdp): Promise<string> {
   return (await cdp.send('Page.captureScreenshot', { format: 'png' }) as { data: string }).data;
 }
 
+async function measure(page: NativePage, cdp: Cdp): Promise<Exactness[]> {
+  const shown = await screenshot(cdp);
+  await page.evaluate('window.pixelExact.hideCanvases(true)');
+  const under = await screenshot(cdp);
+  await page.evaluate('window.pixelExact.hideCanvases(false)');
+  return page.evaluate<Exactness[]>(`window.pixelExact.exactness(${JSON.stringify(shown)}, ${JSON.stringify(under)})`);
+}
+
+for (const ratio of RATIOS) test(`at ${ratio}, text anchors and canvas origins stay on device pixels below odd chrome, scrolled and mid-glide`, async t => {
+  await withNativePage('pixel-exact-text', '/ui/src/families/host/pixelExact.dom.fixture.tsx', page => page.stage('text exactness', async () => {
+    const cdp = await cdpFor(page);
+    try {
+      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+      const mounted = await page.evaluate<{ settled: boolean }>('window.pixelExact.mount(true)');
+      assert.ok(mounted.settled);
+      await page.evaluate('window.pixelExact.oddHeader(); window.pixelExact.scrollTable(13.3)');
+      await page.evaluate('window.pixelExact.settle()');
+      const still = (await measure(page, cdp)).filter(row => ['bars', 'table', 'time-chart'].includes(row.id));
+      await page.evaluate('window.pixelExact.move(); window.pixelExact.resize("table", 4, 9, 3.4); window.pixelExact.tallTable(); window.pixelExact.scrollDashboard(37.3)');
+      await page.evaluate('window.pixelExact.settle()');
+      const moved = (await measure(page, cdp)).filter(row => ['bars', 'table', 'time-chart'].includes(row.id));
+      await page.evaluate('window.pixelExact.glide()');
+      const motion = await page.evaluate<Record<string, { result: unknown; now: number; changedAt: number; before: number; hour: number }>>('window.pixelExact.motionFrames()');
+      assert.equal(motion.bars!.result, true, 'bars are gliding');
+      assert.deepEqual(motion.table!.result, { drew: true, next: true }, 'table rows are gliding');
+      for (const id of ['bars', 'table']) {
+        assert.ok(motion[id]!.before < motion[id]!.hour, `${id}: a preceding recorded hour supplies the glide`);
+        assert.equal(motion[id]!.now - motion[id]!.changedAt, 67, `${id}: fixed time inside the glide`);
+      }
+      assert.equal(await page.evaluate('window.pixelExact.playbackLayoutReads()'), 0, 'playing frames read no layout');
+      const moving = (await measure(page, cdp)).filter(row => ['bars', 'table', 'time-chart'].includes(row.id));
+      const rows = [...still.map(row => ({ frame: 'still', ...row })), ...moved.map(row => ({ frame: 'moved/resized', ...row })), ...moving.map(row => ({ frame: 'glide', ...row }))];
+      t.diagnostic(JSON.stringify(rows.map(({ frame, id, origin, textDraws, fractionalText, textError, differing, compared, samples }) => ({ frame, id, origin, textDraws, fractionalText, textError, differing, compared, samples }))));
+      for (const row of rows) {
+        assert.ok(row.textDraws > 0, `${row.frame} ${row.id}: text was measured`);
+        assert.ok(row.origin.every(v => Math.abs(v - Math.round(v)) <= 0.01), `${row.frame} ${row.id}: fractional origin ${row.origin}`);
+        assert.equal(row.fractionalText, 0, `${row.frame} ${row.id}: ${row.fractionalText} text anchors off device pixels by up to ${row.textError}`);
+        assert.equal(row.differing, 0, `${row.frame} ${row.id}: ${row.differing} resampled pixels`);
+      }
+    } finally { cdp.close(); }
+  }, 240_000), [], false, [`--force-device-scale-factor=${ratio}`, '--window-size=1440,1000']);
+});
+
 async function exactOnScreen(page: NativePage, cdp: Cdp, label: string, settle = true): Promise<Exactness[]> {
   if (settle) {
     const settled = await page.evaluate<{ settled: boolean; pending: string[] }>('window.pixelExact.settle()');

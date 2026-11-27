@@ -103,6 +103,7 @@ function mockCanvas(width: number, height: number): { readonly canvas: Offscreen
     textAlign: 'left',
     textBaseline: 'alphabetic',
     setTransform: () => { ops.push('setTransform'); },
+    getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
     clearRect: () => { ops.push('clearRect'); },
     save: () => { ops.push('save'); },
     restore: () => { ops.push('restore'); },

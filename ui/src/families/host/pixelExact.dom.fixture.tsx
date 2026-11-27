@@ -20,6 +20,7 @@ import { PlaybackController } from '../../dashboard/playback.ts';
 import { WidgetFrameContext } from '../../dashboard/widgetFrame.tsx';
 import type { FromLane, ToLane } from '../../draw/laneMessages';
 import { laneDispatch } from '../../draw/laneDispatch.ts';
+import { ExportSurfaceContext } from '../../export/exportMotion.ts';
 import { drawnViews } from '../../draw/views/drawn.ts';
 import type { Breakdown, BreakdownAmount, BreakdownPart, CountryFlowReply, DoctrineMasteryReply, FlowLink, FocusCardReply, IdeaHistoryReply, IdeaLook, PowerSpendingBreakdownReply } from '../../generated/dashboard';
 import { doctrineMasteryProjection } from '../../widgets/doctrine-mastery/doctrineMasteryProjection.ts';
@@ -28,6 +29,7 @@ import { nationalFocusProjection } from '../../widgets/national-focus/nationalFo
 import { ppSpendingProjection } from '../../widgets/political-power-spending-breakdown/ppSpendingProjection.ts';
 import { tradeFlowProjection } from '../../widgets/trade-flows/tradeFlowsProjection.ts';
 import { barsHostAdapter } from '../bars/hostAdapter.ts';
+import { barsLane } from '../bars/laneView.ts';
 import { createBoundedReadView } from '../boundedView.ts';
 import { breakdownHostAdapter } from '../breakdown/hostAdapter.ts';
 import { cardHostAdapter } from '../card/hostAdapter.ts';
@@ -40,9 +42,13 @@ import { meterHostAdapter } from '../meter/hostAdapter.ts';
 import type { FamilyId } from '../plan.ts';
 import { registerFamilyProjection } from '../registry.ts';
 import { tableHostAdapter } from '../table/hostAdapter.ts';
+import { tableLane } from '../table/laneView.ts';
 import { declareTableProjection } from '../table/model.ts';
 import { tableSettingsOf } from '../table/settings.ts';
+import TableChrome from '../table/TableChrome.tsx';
 import { timeChartHostAdapter } from '../time-chart/hostAdapter.ts';
+import { timeChartLane } from '../time-chart/laneView.ts';
+import { createLaneView, type LaneBinding, type LaneFamily } from '../laneRuntime.ts';
 import type { TimeChartModel } from '../time-chart/model.ts';
 import { timelineHostAdapter } from '../timeline/hostAdapter.ts';
 import { knownValue } from '../value.ts';
@@ -70,14 +76,55 @@ const runtime = { client, clock, tracks: [{ id: 't1', source, branch: { id: '1',
 let held: Promise<void> | null = null;
 let release = () => {};
 
+interface TextDraw { readonly text: string; readonly x: number; readonly y: number }
+const textDraws = new WeakMap<OffscreenCanvas, TextDraw[]>();
+const bitmapText = new WeakMap<ImageBitmap, readonly TextDraw[]>();
+const motionFrames = new Map<string, unknown>();
+function measuredFamily<B extends LaneBinding, M, L>(family: LaneFamily<B, M, L>): LaneFamily<B, M, L> {
+  return { ...family, paint(ctx, frame) {
+    textDraws.set(ctx.canvas, []);
+    const result = family.paint(ctx, frame);
+    motionFrames.set(family.family, { hour: frame.hour, before: frame.before?.hour, now: frame.now, changedAt: frame.changedAt, speed: frame.speed, result });
+    return result;
+  } };
+}
+const fillText = OffscreenCanvasRenderingContext2D.prototype.fillText;
+OffscreenCanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+  const t = this.getTransform();
+  let draws = textDraws.get(this.canvas);
+  if (!draws) textDraws.set(this.canvas, draws = []);
+  draws.push({ text, x: t.a * x + t.c * y + t.e, y: t.b * x + t.d * y + t.f });
+  if (maxWidth === undefined) fillText.call(this, text, x, y);
+  else fillText.call(this, text, x, y, maxWidth);
+};
+const clearRect = OffscreenCanvasRenderingContext2D.prototype.clearRect;
+OffscreenCanvasRenderingContext2D.prototype.clearRect = function (x, y, w, h) {
+  if (x === 0 && y === 0) textDraws.set(this.canvas, []);
+  clearRect.call(this, x, y, w, h);
+};
+const drawImage = OffscreenCanvasRenderingContext2D.prototype.drawImage;
+OffscreenCanvasRenderingContext2D.prototype.drawImage = function (source: CanvasImageSource, x: number, y: number, ...rest: number[]) {
+  const draws = source instanceof OffscreenCanvas ? textDraws.get(source) : undefined;
+  if (draws && rest.length === 0) {
+    const t = this.getTransform();
+    const shifted = draws.map(p => ({ text: p.text, x: t.a * (p.x + x) + t.c * (p.y + y) + t.e, y: t.b * (p.x + x) + t.d * (p.y + y) + t.f }));
+    textDraws.set(this.canvas, [...textDraws.get(this.canvas) ?? [], ...shifted]);
+  }
+  Reflect.apply(drawImage, this, [source, x, y, ...rest]);
+};
+
 function createLane(): LaneWorker {
   const worker: LaneWorker = { onmessage: null, postMessage(message: ToLane) { queueMicrotask(() => dispatch(message)); } };
   const dispatch = laneDispatch(
     (message: FromLane) => { queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>)); },
     {
-      views: (kind, wake) => drawnViews(kind, wake)!,
+      views: (kind, wake) => kind === 'bars' ? createLaneView(measuredFamily(barsLane), wake) : kind === 'table' ? createLaneView(measuredFamily(tableLane), wake) : kind === 'time-chart' ? createLaneView(measuredFamily(timeChartLane), wake) : drawnViews(kind, wake)!,
       crop: async sources => {
-        const bitmaps = await Promise.all(sources.map(item => createImageBitmap(item as OffscreenCanvas)));
+        const bitmaps = await Promise.all(sources.map(async item => {
+          const bitmap = await createImageBitmap(item as OffscreenCanvas);
+          bitmapText.set(bitmap, [...textDraws.get(item as OffscreenCanvas) ?? []]);
+          return bitmap;
+        }));
         while (held) await held;
         return bitmaps;
       },
@@ -90,7 +137,7 @@ const host: PipelineHost = { lanes: [createLane(), createLane()], open: list => 
 const pipeline = pipelineFor(clock, client, () => host);
 void ports;
 
-interface Shown { readonly width: number; readonly height: number; readonly bitmap: ImageBitmap }
+interface Shown { readonly width: number; readonly height: number; readonly bitmap: ImageBitmap; readonly text: readonly TextDraw[] }
 const shown = new WeakMap<HTMLCanvasElement, Shown>();
 let installs = 0;
 const transfer = ImageBitmapRenderingContext.prototype.transferFromImageBitmap;
@@ -100,7 +147,8 @@ ImageBitmapRenderingContext.prototype.transferFromImageBitmap = function (this: 
   if (bitmap) {
     const copy = new OffscreenCanvas(bitmap.width, bitmap.height);
     copy.getContext('2d')!.drawImage(bitmap, 0, 0);
-    shown.set(canvas, { width: bitmap.width, height: bitmap.height, bitmap: copy.transferToImageBitmap() });
+    shown.get(canvas)?.bitmap.close();
+    shown.set(canvas, { width: bitmap.width, height: bitmap.height, bitmap: copy.transferToImageBitmap(), text: bitmapText.get(bitmap) ?? [] });
   } else shown.delete(canvas);
   transfer.call(this, bitmap);
 };
@@ -228,7 +276,7 @@ const chartModel: TimeChartModel = {
 };
 const barsHour = H(1941, 9, 15);
 const barsModel = {
-  form: 'ordered', hour: barsHour, scaleMax: 300,
+  form: 'ordered', hour: barsHour, scaleMax: 300, animateOrder: true,
   rows: [['GER', 'German Reich', 293, '#5f6b7a'], ['USA', 'United States', 254, '#3b6fd6'], ['SOV', 'Soviet Union', 219, '#b8453a'], ['ENG', 'United Kingdom', 141, '#c96b5a'], ['JAP', 'Japan', 97, '#d9d0b8'], ['ITA', 'Italy', 64, '#3f8f4f']]
     .map(([key, label, value, color]) => ({ kind: 'data', key, label: knownValue(label as string), color, value: { value: knownValue(value as number), format: 'integer' }, numeric: value })),
 };
@@ -279,12 +327,17 @@ const PLACED: readonly Placed[] = [
   { id: 'timeline', family: 'timeline', adapter: timelineHostAdapter, declaration: fixed('timeline'), hour: timelineHour, panel: ideaTimelineProjection.project(panel(timelineHour, timelineReply), { category: '', iconsOnBars: true, firstHour: H(1936), surface: '#161616' }) },
 ];
 
-const statics = new Map(PLACED.map(item => [item.id, { stamp: {}, proof: null, panels: { main: item.panel }, hour: item.hour } satisfies FamilyStaticSources]));
+const statics = new Map<string, FamilyStaticSources>(PLACED.map(item => [item.id, { stamp: {}, proof: null, panels: { main: item.panel }, hour: item.hour }]));
 const widgetOf = (id: string) => ({ id, kind: id, trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {}, layout: { x: 0, y: 0, w: 4, h: 8 } }) as unknown as WidgetSpec;
 const frame = { token: 1, announce: () => {}, clearAnnouncement: () => {}, setSkeleton: () => {}, reportState: () => {}, setDynamicViewSwitch: () => {} };
 const NO_SUBSCRIPTIONS: never[] = [];
+const OPTIONS = {};
+let layoutReads = 0;
+let playbackLayoutReads = 0;
+const boundingRect = Element.prototype.getBoundingClientRect;
+Element.prototype.getBoundingClientRect = function () { layoutReads++; return boundingRect.call(this); };
 
-interface Look { readonly layout: Layout; readonly width: number; readonly zoom: Readonly<Record<string, number>> }
+interface Look { readonly layout: Layout; readonly width: number; readonly zoom: Readonly<Record<string, number>>; readonly motionAt?: number; readonly advanced?: boolean }
 const START_LAYOUT: Layout = PLACED.map((item, at) => ({ i: item.id, x: (at % 3) * 4, y: Math.floor(at / 3) * 8, w: 4, h: 8 }));
 let setLook: (look: Look) => void = () => {};
 let look: Look = { layout: START_LAYOUT, width: 0, zoom: {} };
@@ -294,7 +347,7 @@ function Dashboard() {
   setLook = next => { look = next; flushSync(() => set(next)); };
   const container = useRef<HTMLDivElement>(null);
   const placement = useGridPlacement(container);
-  return <div className="dash-grid" ref={container} style={{ width: `${state.width}px` }}>
+  return <ExportSurfaceContext.Provider value={{ active: false, ...(state.motionAt !== undefined ? { motion: { nowMs: state.motionAt, speed: 1, easeValues: true, glideDurationMs: 180 } } : {}) }}><div className="dash-grid" ref={container} style={{ width: `${state.width}px` }}>
     <Responsive width={state.width} layouts={{ lg: state.layout }} breakpoints={{ lg: 0 }} cols={{ lg: 12 }} rowHeight={26} margin={[6, 6]} containerPadding={[0, 0]}
       positionStrategy={placement} dragConfig={{ enabled: false }} resizeConfig={{ enabled: false }}>
       {PLACED.map(item => <div key={item.id} className="dash-grid-cell">
@@ -303,8 +356,9 @@ function Dashboard() {
           <div className="dash-widget-content">
             <div className="dash-widget-scaled" style={{ zoom: state.zoom[item.id] ?? 1 }}>
               <FollowedWidgetKey.Provider value={item.id}>
-                <FamilyHost adapter={item.adapter} declaration={item.declaration} view="default" options={{}} label={item.id} subject={item.id} widget={widgetOf(item.id)}
-                  runtime={runtime} active subscriptions={NO_SUBSCRIPTIONS} staticSources={statics.get(item.id)!} offset={0} pin={item.hour} bounds={BOUNDS}
+                <FamilyHost adapter={item.adapter} declaration={item.declaration} view="default" options={OPTIONS} label={item.id} subject={item.id} widget={widgetOf(item.id)}
+                  runtime={runtime} active subscriptions={NO_SUBSCRIPTIONS} staticSources={statics.get(item.id)!} offset={state.motionAt === undefined ? 0 : item.hour - 1000} pin={state.motionAt === undefined ? item.hour : null} bounds={BOUNDS}
+                  {...(item.family === 'table' ? { chrome: TableChrome as React.ComponentType<any> } : {})}
                   {...(item.extent ? { extent: item.extent } : {})} {...(item.settings ? { settings: item.settings } : {})} />
               </FollowedWidgetKey.Provider>
             </div>
@@ -312,7 +366,7 @@ function Dashboard() {
         </article>
       </div>)}
     </Responsive>
-  </div>;
+  </div></ExportSurfaceContext.Provider>;
 }
 
 const frames = (count = 1) => new Promise<void>(resolve => {
@@ -361,6 +415,12 @@ function visibleClip(canvas: HTMLCanvasElement): { readonly clip: DOMRect; reado
     const radius = Math.max(parseFloat(style.borderTopLeftRadius) || 0, parseFloat(style.borderTopRightRadius) || 0, parseFloat(style.borderBottomLeftRadius) || 0, parseFloat(style.borderBottomRightRadius) || 0);
     if (radius > 0) for (const [x, y] of [[box.left, box.top], [box.right - radius, box.top], [box.left, box.bottom - radius], [box.right - radius, box.bottom - radius]] as const) corners.push(new DOMRect(x - 1, y - 1, radius + 2, radius + 2));
   }
+  for (const edge of canvas.closest('.fh-frame')!.querySelectorAll('.tf-edges > i')) {
+    if (getComputedStyle(edge).display !== 'none') {
+      const box = edge.getBoundingClientRect();
+      corners.push(new DOMRect(box.left - 1, box.top - 1, box.width + 2, box.height + 2));
+    }
+  }
   return { clip: new DOMRect(left, top, Math.max(0, right - left), Math.max(0, bottom - top)), corners };
 }
 
@@ -378,6 +438,9 @@ export interface Placement {
   readonly css: readonly [number, number];
   readonly dpr: number;
   readonly origin: readonly [number, number];
+  readonly textDraws: number;
+  readonly fractionalText: number;
+  readonly textError: number;
 }
 
 const specified = (canvas: HTMLCanvasElement, property: 'width' | 'height') => (canvas.attributeStyleMap.get(property) as CSSUnitValue).value;
@@ -386,10 +449,13 @@ async function placements(): Promise<Placement[]> {
   const boxes = await deviceBoxes();
   return canvases().map(canvas => {
     const rect = canvas.getBoundingClientRect();
+    const draws = shown.get(canvas)?.text ?? [];
+    const error = (p: TextDraw) => Math.max(Math.abs(p.x - Math.round(p.x)), Math.abs(p.y - Math.round(p.y)));
     return {
       id: familyOf(canvas), backing: [shown.get(canvas)?.width ?? 0, shown.get(canvas)?.height ?? 0], box: boxes.get(canvas) ?? [0, 0],
       css: [specified(canvas, 'width'), specified(canvas, 'height')], dpr: devicePixelRatio * canvas.currentCSSZoom,
       origin: [rect.left * devicePixelRatio, rect.top * devicePixelRatio],
+      textDraws: draws.length, fractionalText: draws.filter(p => error(p) > 0.01).length, textError: Math.max(0, ...draws.map(error)),
     };
   });
 }
@@ -449,14 +515,18 @@ function hideCanvases(hidden: boolean) {
 let root: ReturnType<typeof createRoot> | null = null;
 
 const api = {
-  async mount(): Promise<{ readonly settled: boolean; readonly pending: readonly string[]; readonly dpr: number }> {
+  async mount(motion = false): Promise<{ readonly settled: boolean; readonly pending: readonly string[]; readonly dpr: number }> {
     applyAppearance(document.documentElement, DEFAULT_APPEARANCE, resolveAppearance(DEFAULT_APPEARANCE, true, false));
     await document.fonts.ready;
     document.documentElement.style.setProperty('--surface', '#16181d');
     document.documentElement.style.setProperty('--panel', '#1b1e24');
     document.body.style.margin = '0';
     document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;flex-direction:column"><div style="flex:0 0 41.7px"></div><div id="dashboard-scroll" style="flex:1;min-height:0;overflow:auto;padding-left:10.3px"><div id="dashboard-root"></div></div></div>';
-    look = { layout: START_LAYOUT, width: Math.floor(scroller().clientWidth - 10.3 - 4) + 0.4, zoom: {} };
+    look = { layout: START_LAYOUT, width: Math.floor(scroller().clientWidth - 10.3 - 4) + 0.4, zoom: {}, ...(motion ? { motionAt: 1000 } : {}) };
+    if (motion) {
+      for (const item of PLACED) statics.set(item.id, { ...statics.get(item.id)!, proof: [item.hour, item.hour + 1], follows: true });
+      clock.stepExport(1000, 1, true);
+    }
     root = createRoot(document.getElementById('dashboard-root')!);
     pipeline.prepare(PLACED.map(item => item.family), []);
     flushSync(() => root!.render(<WidgetFrameContext.Provider value={frame as never}><Dashboard /></WidgetFrameContext.Provider>));
@@ -465,6 +535,64 @@ const api = {
   },
   settle,
   placements,
+  motionFrames: () => Object.fromEntries(motionFrames),
+  text: () => Object.fromEntries(canvases().map(canvas => [familyOf(canvas), shown.get(canvas)?.text])),
+  async costFrames() {
+    const before = layoutReads;
+    await frames(8);
+    return { layoutReads: layoutReads - before };
+  },
+  playbackLayoutReads: () => playbackLayoutReads,
+  async tableCost() {
+    api.release();
+    api.scrollTable(0);
+    const body = document.querySelector<HTMLElement>('[data-widget="table"] .fh-body')!;
+    body.style.height = '1320px'; body.style.flex = 'none';
+    await frames(12);
+    const row = (await placements()).find(item => item.id === 'table')!;
+    return { height: specified(canvases().find(canvas => familyOf(canvas) === 'table')!, 'height'), textDraws: row.textDraws, ...await api.costFrames() };
+  },
+  async smoothing() {
+    const code = `onmessage = ({data: ratio}) => {
+      const out = [true, false].map(alpha => {
+        const canvas = new OffscreenCanvas(Math.round(260 * ratio), Math.round(48 * ratio));
+        const ctx = canvas.getContext('2d', {alpha});
+        ctx.fillStyle = '#202020'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(ratio, ratio); ctx.fillStyle = '#ededed'; ctx.font = '14px Arial';
+        ctx.fillText('Moving text 123', 8, 28);
+        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        return {alpha, pixels, bitmap: canvas.transferToImageBitmap()};
+      });
+      postMessage(out, out.map(item => item.bitmap));
+    };`;
+    const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    try {
+      const results = await new Promise<{ alpha: boolean; pixels: Uint8ClampedArray; bitmap: ImageBitmap }[]>((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data);
+        worker.onerror = reject;
+        worker.postMessage(devicePixelRatio);
+      });
+      let differing = 0, colored = 0;
+      for (let i = 0; i < results[0]!.pixels.length; i += 4) {
+        if ([0, 1, 2].some(c => results[0]!.pixels[i + c] !== results[1]!.pixels[i + c])) differing++;
+        if (results[1]!.pixels[i] !== results[1]!.pixels[i + 1] || results[1]!.pixels[i] !== results[1]!.pixels[i + 2]) colored++;
+      }
+      const holder = document.createElement('div');
+      holder.id = 'smoothing-proof'; holder.style.cssText = 'position:fixed;left:0;top:0;z-index:999;background:#202020;color:#ededed;font:14px Arial';
+      holder.innerHTML = '<div style="height:48px;box-sizing:border-box;padding:12px 8px">Moving text 123</div>';
+      for (const item of results) {
+        const canvas = document.createElement('canvas');
+        canvas.width = item.bitmap.width; canvas.height = item.bitmap.height;
+        canvas.style.cssText = 'display:block;width:260px;height:48px';
+        canvas.dataset.alpha = String(item.alpha);
+        canvas.getContext('bitmaprenderer')!.transferFromImageBitmap(item.bitmap);
+        holder.append(canvas);
+      }
+      document.body.append(holder);
+      return { differing, colored, pixels: results[0]!.pixels.length / 4 };
+    } finally { worker.terminate(); URL.revokeObjectURL(url); }
+  },
   hideCanvases,
   exactness,
   scrollDashboard(top: number) { scroller().scrollTop = top; return scroller().scrollTop; },
@@ -477,6 +605,21 @@ const api = {
     setLook({ ...look, width: look.width + widthChange, layout: look.layout.map(item => (item.i === id ? { ...item, w, h } : item)) });
   },
   zoom(zoom: Readonly<Record<string, number>>) { setLook({ ...look, zoom }); },
+  move() { setLook({ ...look, layout: look.layout.map(item => ({ ...item, x: item.x === 0 ? 8 : item.x === 8 ? 0 : item.x })) }); },
+  oddHeader() { document.querySelectorAll<HTMLElement>('.dash-widget-header').forEach(node => { node.style.height = '39px'; node.style.minHeight = '39px'; }); },
+  tallTable() { document.querySelector('.tf-head-clip')!.classList.add('is-grouped'); },
+  async glide() {
+    statics.set('bars', { stamp: {}, proof: [barsHour + 1, barsHour + 1], hour: barsHour + 1, follows: true, panels: { main: { ...barsModel, hour: barsHour + 1, rows: [...barsModel.rows].reverse() } } });
+    statics.set('table', { stamp: {}, proof: [tableHour + 1, tableHour + 1], hour: tableHour + 1, follows: true, panels: { main: { rows: tableRows.map((row, i) => ({ ...row, factories: i === 0 ? 300 : i === 1 ? 450 : row.factories })) } } });
+    setLook({ ...look, advanced: true });
+    clock.stepExport(1001, 1, false);
+    await frames(8);
+    setLook({ ...look, motionAt: 1067 });
+    await frames(8);
+    playbackLayoutReads = (await api.costFrames()).layoutReads;
+    api.hold();
+    return settle();
+  },
   hold() {
     const undim = document.createElement('style');
     undim.textContent = '[data-held] { opacity: 1 !important; transition: none !important; }';

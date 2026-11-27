@@ -11,11 +11,43 @@ import { AuditSnapshotStore, auditRowsOf, isFamilyAuditing, subscribeFamilyAudit
 import type { FamilySourceSubscription } from '../contract.ts';
 import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 import { FamilyTooltipController } from './tooltips.ts';
+import { watchDevicePixelRatio, windowRatio } from '../../charts/surface.ts';
 
 const subscribeAuditing = (listener: () => void) => subscribeFamilyAuditing(() => { listener(); });
 
 const STATIC_HOLD = {};
 let nextInstanceSeq = 1;
+
+function alignCanvas(canvas: HTMLCanvasElement): () => void {
+  let x = 0, y = 0;
+  const align = () => {
+    const box = canvas.getBoundingClientRect();
+    const ratio = windowRatio();
+    const zoom = canvas.currentCSSZoom || 1;
+    const unit = 64 * ratio * zoom;
+    x = Math.round((x + (Math.round(box.left * ratio) / ratio - box.left) / zoom) * unit) / unit;
+    y = Math.round((y + (Math.round(box.top * ratio) / ratio - box.top) / zoom) * unit) / unit;
+    canvas.style.marginLeft = canvas.style.left = `${x + 1e-4 / unit}px`;
+    canvas.style.marginTop = canvas.style.top = `${y + 1e-4 / unit}px`;
+  };
+  const resize = new ResizeObserver(align);
+  const moved = new MutationObserver(align);
+  for (let parent = canvas.parentElement; parent; parent = parent.parentElement) {
+    resize.observe(parent);
+    moved.observe(parent, { attributes: true, attributeFilter: ['style'] });
+  }
+  document.addEventListener('scroll', align, true);
+  document.addEventListener('transitionend', align, true);
+  const stopRatio = watchDevicePixelRatio(align);
+  align();
+  return () => {
+    resize.disconnect();
+    moved.disconnect();
+    stopRatio();
+    document.removeEventListener('scroll', align, true);
+    document.removeEventListener('transitionend', align, true);
+  };
+}
 
 export function useFamilyInstanceId(): number {
   const idRef = useRef<number | null>(null);
@@ -192,11 +224,13 @@ export function mountFamilyCanvas(
   extent.className = extentClassName;
   extent.append(drawn.canvas);
   bodyNode.append(extent);
+  const stopAlign = alignCanvas(drawn.canvas);
   return {
     canvas: drawn.canvas,
     extent,
     surface: drawn.surface,
     unmount: () => {
+      stopAlign();
       extent.remove();
     },
   };
