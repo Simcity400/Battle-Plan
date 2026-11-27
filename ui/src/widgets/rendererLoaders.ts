@@ -2,7 +2,8 @@ import { registerWidgets } from '../dashboard/definitions.ts';
 import type { FamilyViewRenderer, WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 import { DEFAULT_VIEW, normalizeView, viewKey, type FamilyViewEntry, type NativeWidgetEntry } from '../families/manifest.ts';
-import { FAMILY_VIEWS, FAMILY_VIEW_UI, NATIVE_WIDGETS, OPTION_CHOICES } from './manifest.ts';
+import { FAMILY_VIEWS, FAMILY_VIEW_UI, NATIVE_WIDGETS, OPTION_CHOICES, OPTION_PRESETS, resolveWidgetActiveView } from './manifest.ts';
+import type { WidgetSpec } from '../dashboard/model.ts';
 
 type RendererLoader = () => Promise<{ default: WidgetRenderer }>;
 
@@ -59,10 +60,11 @@ export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetR
     const choices = Object.hasOwn(OPTION_CHOICES, kind) ? OPTION_CHOICES[kind]!() : Promise.resolve(undefined);
     held = Promise.all([entry.load(), choices]).then(([module, kindChoices]) => {
       const meta = widgetMetas.find(meta => meta.kind === kind)!;
-      const useOptionChoices = kindChoices ?? (module.default as WidgetRenderer).useOptionChoices;
-      if (useOptionChoices && !choiceKinds.has(kind)) {
+      const { usePresets, useOptionChoices: rendererChoices } = module.default;
+      const useOptionChoices = kindChoices ?? rendererChoices;
+      if ((useOptionChoices || usePresets) && !choiceKinds.has(kind)) {
         choiceKinds.add(kind);
-        registerWidgets([{ ...meta, useOptionChoices }]);
+        registerWidgets([{ ...meta, useOptionChoices, usePresets }]);
       }
       ready.set(key, module.default);
       return module.default;
@@ -73,15 +75,14 @@ export function loadWidgetRenderer(kind: string, view?: string): Promise<WidgetR
   return held;
 }
 
-export function preloadWidgetRenderers(kinds: Iterable<string>): Promise<void> {
-  const pending: Promise<unknown>[] = [];
-  for (const kind of kinds) {
-    if (!loadedWidgetRenderer(kind)) {
-      pending.push(loadWidgetRenderer(kind).catch(() => undefined));
-    }
+export function preloadPageRenderers(widgets: readonly WidgetSpec[]): void {
+  for (const { kind, options } of widgets) {
+    const view = resolveWidgetActiveView(kind, options);
+    if (!loadedWidgetRenderer(kind, view)) void loadWidgetRenderer(kind, view).catch(() => undefined);
   }
-  return pending.length ? Promise.all(pending).then(() => undefined) : Promise.resolve();
 }
+export const loadWidgetPresets = () => Promise.all(Object.entries(OPTION_PRESETS).map(async ([kind, load]) =>
+  registerWidgets([{ ...widgetMetas.find(meta => meta.kind === kind)!, usePresets: await load() }])));
 
 const activeClocks = new Set<object>();
 const resumeWaiters = new Set<() => void>();
@@ -158,7 +159,7 @@ export function whenPreloadComplete(): Promise<void> {
   return new Promise(resolve => { preloadWaiters!.add(resolve); });
 }
 
-export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => void {
+export function preloadOtherWidgetRenderers(options?: IdlePreloadOptions): () => void {
   const custom = options !== undefined;
   if (!custom && (idlePreload || typeof window === 'undefined')) return () => {};
   if (!custom) idlePreload = true;
@@ -167,6 +168,7 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
     : [...rendererLoaders].map(([key, entry]) => ({ kind: entry.kind, view: entry.view as string | undefined, key })))
     .filter(item => !ready.has(item.key));
   const finish = () => {
+    resumeWaiters.delete(onResume);
     if (custom) return;
     preloadQueue = null;
     if (preloadWaiters) {
@@ -174,7 +176,6 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
       preloadWaiters = null;
     }
   };
-  if (queued.length === 0) { finish(); return () => {}; }
   if (!custom) preloadQueue = queued;
   const chunks = options?.chunks ?? builtChunks();
   const preload = options?.preload ?? preloadModuleUrl;

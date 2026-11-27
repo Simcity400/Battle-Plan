@@ -5,6 +5,13 @@ import { withNativePage } from '../../../tools/native-page.ts';
 type Mounted = { asked: string[]; shownOnPause: number };
 type Played = { commits: number; preparedRenders: number; asked: string[]; hostWhilePlaying: boolean };
 
+test('the first dashboard page settles before preparing the next page', async () => {
+  await withNativePage('first-page-settles', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('first page settles', async () => {
+    const result = await page.evaluate('window.prepareLane.firstPageSettles()');
+    assert.deepEqual(result, { preparingWhileHeld: false, preparedAfterRelease: true });
+  }));
+});
+
 test('two event feeds share one kinds read through page preparation, playback and two seeks', async t => {
   await withNativePage('event-feed-kinds', '/ui/src/dashboard/prepareLane.dom.fixture.tsx', page => page.stage('event feed kinds', async () => {
     const count = await page.evaluate<{ before: number; after: number }>('window.prepareLane.eventFeedKinds()');

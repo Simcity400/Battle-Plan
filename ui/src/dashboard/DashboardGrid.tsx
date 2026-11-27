@@ -30,7 +30,7 @@ import { usePipelineGeneration } from './follow/useFollowed.ts';
 import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
-import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
+import { preloadPageRenderers } from '../widgets/rendererLoaders';
 import { widgetOptionFields } from '../widgets/manifest.ts';
 import { commitZone } from '../shell/commitCount';
 import { engine } from '../engine/frame.ts';
@@ -53,8 +53,7 @@ interface Props {
 function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
   const placement = useGridPlacement(containerRef);
-  const kinds = [...new Set(template.widgets.map(widget => widget.kind))].join(' ');
-  useEffect(() => { preloadWidgetRenderers(kinds.split(' ')); preloadAllWidgetRenderers(); }, [kinds]);
+  useEffect(() => { preloadPageRenderers(template.widgets); }, [template.widgets]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
     const next: GridLayouts = {};

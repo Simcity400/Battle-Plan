@@ -12,6 +12,7 @@ import { availabilityRequest, availabilityState, scopeReason, validateWidgetAvai
 import WidgetPreview from './WidgetPreview';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories';
 import { presetWidget, widgetViewOptions, type PresetWidget } from '../widgets/manifest';
+import { loadWidgetPresets } from '../widgets/rendererLoaders';
 import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
 
 type Add = (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
@@ -143,16 +144,26 @@ function Catalogue({ open, placed, ...shared }: Shared & { open: boolean; placed
   </div>;
 }
 
-export default function WidgetPicker({ disabled, onAdd, onOpen, runtime, placed = [] }: {
-  disabled: boolean; onAdd: Add; onOpen: () => void; runtime: WidgetRuntime;
+export default function WidgetPicker({ disabled, onAdd, onOpen, runtime, openWhenReady = false, placed = [] }: {
+  disabled: boolean; onAdd: Add; onOpen: () => void; runtime: WidgetRuntime; openWhenReady?: boolean;
   placed?: readonly WidgetSpec[];
 }) {
   const id = useId();
   const menu = usePopover();
-  const { trigger, open } = menu;
+  const { trigger, open, popup } = menu;
+  const [presets, setPresets] = useState<true | { error: unknown }>();
+  useEffect(() => { void loadWidgetPresets().then(() => setPresets(true), error => setPresets({ error })); }, []);
+  useEffect(() => {
+    const panel = popup.current;
+    if (presets === true && openWhenReady && panel && !panel.matches(':popover-open')) {
+      panel.showPopover();
+      onOpen();
+    }
+  }, [presets, openWhenReady, onOpen, popup]);
+  if (presets && presets !== true) throw presets.error;
   const track = runtime.tracks.find(item => item.roleId === runtime.defaultRoleId);
   return <>
-    <button ref={trigger} type="button" className="icon-button header-add-widget" aria-label="Add widget" data-tooltip="Add widgets" disabled={disabled}
+    <button ref={trigger} type="button" className="icon-button header-add-widget" aria-label="Add widget" data-tooltip="Add widgets" disabled={disabled || !presets}
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open} onClick={onOpen}><Icon name="plus" /></button>
     <Popover menu={menu} id={id} className="widget-catalogue" aria-label="Add widgets">
       <div className="ui-popover-heading"><strong>Add widgets</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close widget catalogue" popoverTarget={id} popoverTargetAction="hide"><Icon name="close" /></button></div>

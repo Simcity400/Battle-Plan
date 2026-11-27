@@ -29,6 +29,7 @@ export default defineConfig(({ mode }) => {
     root: fileURLToPath(new URL('.', import.meta.url)),
     plugins: [react(), widgetChunksPlugin(), browserBridge(fileURLToPath(new URL('..', import.meta.url)), env.BATTLEPLAN_RECORDINGS_DIR ?? '', env.BATTLEPLAN_GAME_DIR ?? '', env.BATTLEPLAN_USER_DIR ?? '')],
     clearScreen: false,
+    worker: { format: 'es' },
     server: { host: '127.0.0.1', port: 1420, strictPort: true },
     build: { outDir: 'dist', emptyOutDir: true, target: 'es2022', rolldownOptions: { input: {
       main: fileURLToPath(new URL('index.html', import.meta.url)),

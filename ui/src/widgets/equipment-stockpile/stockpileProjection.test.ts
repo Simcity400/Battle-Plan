@@ -7,7 +7,8 @@ import { buildColumnLayouts, measureFixedColumnWidths } from '../../families/tab
 import { deriveRowTooltip } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import { formatValueState } from '../../families/valueFormat.ts';
-import { STOCKPILE_BASE, stockpileColumns, stockpileProjection } from './stockpileProjection.ts';
+import { STOCKPILE_BASE, stockpileColumns } from './stockpileColumns.ts';
+import { stockpileProjection } from './stockpileProjection.ts';
 
 const known = (raw: number): StockFigure => ({ raw: String(Math.round(raw * 100_000)), missing: null });
 const missing = (why: string): StockFigure => ({ raw: null, missing: why });

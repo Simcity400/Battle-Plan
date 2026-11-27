@@ -1,4 +1,3 @@
-import { heatMatrixHostAdapter } from '../../families/heat/hostAdapter.ts';
 import { DEFAULT_VIEW, type FamilyManifestModule, type FamilyViewEntry } from '../../families/manifest.ts';
 import { OPTIONS as CASUALTIES_BETWEEN_OPTIONS } from '../casualties-between/definition.ts';
 
@@ -75,5 +74,4 @@ export const heatMatrixFamilyManifest: FamilyManifestModule = {
   family: 'heat-matrix',
   lane: () => import('../../families/heat/matrixLaneView.ts').then(m => m.heatMatrixLane),
   views: HEAT_MATRIX_VIEWS,
-  hostAdapter: heatMatrixHostAdapter,
 };

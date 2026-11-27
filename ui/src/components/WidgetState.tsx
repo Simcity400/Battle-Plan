@@ -11,6 +11,7 @@ import { formatDateTime, formatHourSpan, gameDate } from '../dashboard/calendar.
 import type { WidgetSkeletonKind } from '../dashboard/definitions';
 import { capitaliseSubject, useWidgetFrame, useWidgetStatePresence } from '../dashboard/widgetFrame.tsx';
 import '../charts/charts.css';
+import { useDiagnosticsFont } from '../shell/appearance/bundledFonts';
 
 const UNKNOWN_REASON_FALLBACK = 'BattlePlan couldn’t tell why. Details has the technical reason.';
 
@@ -30,6 +31,7 @@ export type WidgetStateProps = (
 function DetailsAction({ technical }: { technical: string }) {
   const id = useId();
   const menu = usePopover('end');
+  const fontReady = useDiagnosticsFont(menu.open);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -52,7 +54,7 @@ function DetailsAction({ technical }: { technical: string }) {
             <button type="button" className="icon-button ui-popover-action" aria-label="Close details" onClick={menu.close}><Icon name="close" /></button>
           </div>
         </div>
-        <pre className="widget-state-details-text">{technical}</pre>
+        {fontReady && <pre className="widget-state-details-text">{technical}</pre>}
       </>}
     </Popover>
   </>;

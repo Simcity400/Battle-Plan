@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType } from 'react';
+import { useLayoutEffect, useMemo, type ComponentType } from 'react';
 import { loadable } from '../components/loadable';
 import WidgetState from '../components/WidgetState';
 import DefaultCountryChip from '../dashboard/CountryChip';
@@ -8,9 +8,14 @@ import type { FamilyViewModule } from '../families/manifest';
 import type { WidgetSpec } from '../dashboard/model';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 import { viewSlotProps } from './viewProps.ts';
+import { busy } from '../shell/busy.ts';
 
 type Slot = 'render' | 'countryChip' | 'subjectMenu';
 const nothing = () => null;
+function RendererLoading({ active }: { active: boolean }) {
+  useLayoutEffect(() => active ? busy('waits') : undefined, [active]);
+  return <WidgetState kind="loading" label="Loading widget…" />;
+}
 const declaredRenderers = new WeakMap<object, Map<string, ComponentType<FamilyViewProps>>>();
 
 function rendererForDeclaration(declaration: FamilyWidgetDeclaration, view: string): ComponentType<FamilyViewProps> {
@@ -69,7 +74,7 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
       if (!held) {
         held = loadable<object>(
           async () => pick(view, await loadWidgetRenderer(kind, view)),
-          () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
+          props => slot === 'render' ? <RendererLoading active={'active' in props && props.active === true} /> : null,
           () => { const loaded = loadedWidgetRenderer(kind, view); return loaded && pick(view, loaded); },
         );
         byView.set(view, held);
