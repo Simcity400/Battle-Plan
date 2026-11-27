@@ -256,6 +256,7 @@ fn queue_gaps(query: &Query<'_>, out: &mut Vec<(i32, i32, String)>) -> io::Resul
 struct LineHistory {
     read: Vec<(i32, Option<u8>, bool)>,
     purpose: Vec<(i32, bool)>,
+    buildings: Vec<(i32, Option<u32>)>,
     repair_tick: Option<i32>,
     first_new: Option<i32>,
     first_repair: Option<i32>,
@@ -271,13 +272,14 @@ const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::UNA
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
     let columns = [
-        col::OUTPUT_ALONE, col::COUNTRY, col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
+        col::OUTPUT_ALONE, col::COUNTRY, col::BUILDING_TYPE, col::REMAINING, col::REPAIR_LEVELS, col::BUILT, col::REPAIRED, col::ADDED_NEW, col::ADDED_REPAIR, col::POSSIBLE,
         col::UNACCOUNTED_NEW, col::UNACCOUNTED_REPAIR, col::CONSTRUCTION_RAW, col::REPAIR_RAW, col::OUTPUT_SINCE, col::OBSERVED_SINCE_CREATION, col::OUTPUT_REASON, col::FIRST_REPAIR_TICK,
     ];
     let history = dashboard_query::cost::storage(|| replay_lanes::lanes::history(query.replay.recording(), run, TableId::ConstructionProjects, &columns, Keys::These(ids), first, last))?;
     let at = |column: usize| history.columns.binary_search(&column).map_err(|_| dashboard_core::invalid("A construction project column was not read"));
-    let (alone, owner, reason, since, obs, repair, rem, rep_lvl) = (
-        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?, at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?, at(col::REMAINING)?, at(col::REPAIR_LEVELS)?,
+    let (alone, owner, btype, reason, since, obs, repair, rem, rep_lvl) = (
+        at(col::OUTPUT_ALONE)?, at(col::COUNTRY)?, at(col::BUILDING_TYPE)?, at(col::OUTPUT_REASON)?, at(col::OUTPUT_SINCE)?,
+        at(col::OBSERVED_SINCE_CREATION)?, at(col::FIRST_REPAIR_TICK)?, at(col::REMAINING)?, at(col::REPAIR_LEVELS)?,
     );
     let new_at = NEW_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
     let repair_at = REPAIR_COLS.into_iter().map(at).collect::<io::Result<Vec<_>>>()?;
@@ -290,6 +292,8 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
         let (mut prev_new, mut prev_repair, mut repairs_cleared) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()], false);
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
+            let building = number(cells, btype).and_then(|v| u32::try_from(v).ok());
+            if held.buildings.last().is_none_or(|&(_, prev)| prev != building) { held.buildings.push((step.hour, building)); }
             let had_output = number(cells, since).is_some();
             let reason_val = number(cells, reason).and_then(|value| u8::try_from(value).ok());
             let known_owner = number(cells, alone) == Some(0)
@@ -427,7 +431,7 @@ fn owner_unknown_lines(query: &Query<'_>, run: u32, first: i32, last: i32) -> io
         .collect())
 }
 
-struct SeenLine { line: Line, matched: bool, history: LineHistory, buildings: Vec<(i32, Option<u32>)> }
+struct SeenLine { line: Line, matched: bool, history: LineHistory }
 
 fn min_opt(a: Option<i32>, b: Option<i32>) -> Option<i32> { [a, b].into_iter().flatten().min() }
 
@@ -452,16 +456,16 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         let ids: Vec<u128> = kept.iter().map(|(line, _)| u128::from(line.id)).collect();
         let mut steps = if ids.is_empty() { ReasonSteps::new() } else { reason_steps(query, stretch.run, &ids, stretch.first, stretch.last)? };
         for (line, matched) in kept {
-            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default(), buildings: Vec::new() });
+            let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default() });
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
-            entry.buildings.push((stretch.first, line.building));
             let mut part_last_known = None;
             if let Some(part) = steps.remove(&line.id) {
                 part_last_known = part.last_known_owner;
                 if let (Some(owner), Some(at)) = (line.country, part.first_known_owner) { entry.matched |= is_owner(owner, at); }
                 entry.history.read.extend(part.read);
                 entry.history.purpose.extend(part.purpose);
+                entry.history.buildings.extend(part.buildings);
                 entry.history.repair_tick = min_opt(entry.history.repair_tick, part.repair_tick);
                 entry.history.first_new = min_opt(entry.history.first_new, part.first_new);
                 entry.history.first_repair = min_opt(entry.history.first_repair, part.first_repair);
@@ -486,6 +490,8 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         }
         acc.history.purpose.sort_by_key(|step| step.0);
         acc.history.purpose.dedup_by(|next, prev| next.1 == prev.1);
+        acc.history.buildings.sort_by_key(|step| step.0);
+        acc.history.buildings.dedup_by(|next, prev| next.1 == prev.1);
         let gaps = dated_gaps(&merged_read, None, &acc.history.purpose);
         let owner_gap = gaps.iter().find(|gap| gap.2 == SpendingGap::OwnerUnknown).map(|gap| gap.0);
         if acc.line.country.is_none() {
@@ -500,14 +506,18 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
         let repair_from = min_opt(acc.history.repair_tick, acc.history.first_repair).map(|hour| hour.max(acc.line.first_read));
         let new_from = acc.history.first_new.map(|hour| hour.max(acc.line.first_read));
         let mut before_first_read = acc.history.before_observation.map(|hour| hour.max(acc.line.first_read));
-        acc.buildings.sort_by_key(|&(at, _)| at);
+        let building_at = |hour: i32| acc.history.buildings[..acc.history.buildings.partition_point(|&(at, _)| at <= hour)].last().and_then(|&(_, b)| b);
         let mut by_building: BTreeMap<Option<u32>, Vec<(i32, i32, SpendingGap)>> = BTreeMap::new();
-        for gap in gaps {
-            let building = acc.buildings[..acc.buildings.partition_point(|&(at, _)| at <= gap.0)].last().and_then(|&(_, b)| b);
-            by_building.entry(building).or_default().push(gap);
+        for (start, end, gap) in gaps {
+            let mut cursor = start;
+            for &(at, _) in acc.history.buildings.iter().filter(|&&(at, _)| start < at && at <= end) {
+                by_building.entry(building_at(cursor)).or_default().push((cursor, at - 1, gap));
+                cursor = at;
+            }
+            by_building.entry(building_at(cursor)).or_default().push((cursor, end, gap));
         }
         if by_building.is_empty() {
-            by_building.insert(acc.buildings.last().and_then(|&(_, b)| b), Vec::new());
+            by_building.insert(acc.history.buildings.last().and_then(|&(_, b)| b).or(acc.line.building), Vec::new());
         }
         for (building, gaps) in by_building {
             let bcol = if leaf.1 { TagHolderRow::NONE } else { building.unwrap_or(TagHolderRow::NONE) };
