@@ -99,14 +99,20 @@ export class Pipeline {
   };
 
   storeStrip(id: number, build: number, update: StripUpdate): Promise<StripReceipt> {
-    const lane = this.widgets.get(id)?.lane;
-    if (this.closed || lane === undefined || this.laneErrors[lane]) return Promise.reject(new Error('Dashboard strip lane is unavailable'));
+    const widget = this.widgets.get(id);
+    if (this.closed || !widget || this.laneErrors[widget.lane]) return Promise.reject(new Error('Dashboard strip lane is unavailable'));
+    const { lane } = widget;
+    const sender = this.payloads[lane]!;
+    const encoded = update.kind === 'identities' && typeof update.snapshot === 'object'
+      ? sender.acquire({ identitySnapshot: update.snapshot }, widget.payloads.identity.values().next().value) : undefined;
+    const sent = update.kind === 'identities' && encoded ? { ...update, snapshot: encoded.ids.values().next().value! } : update;
     const receipt = this.nextStripReceipt++;
-    return new Promise((resolve, reject) => {
+    const stored = new Promise<StripReceipt>((resolve, reject) => {
       this.stripReceipts.set(receipt, { lane, resolve, reject });
-      try { this.postLane(lane, { type: 'strip', widget: id, build, receipt, update }, update.kind === 'append' ? [update.bytes.buffer as ArrayBuffer] : []); }
+      try { this.postLane(lane, { type: 'strip', widget: id, build, receipt, update: sent }, update.kind === 'append' ? [update.bytes.buffer as ArrayBuffer] : []); }
       catch (error) { this.stripReceipts.delete(receipt); reject(error); }
     });
+    return encoded ? stored.finally(() => sender.release(encoded.ids)) : stored;
   }
 
   stripSettled(id: number): boolean {

@@ -428,8 +428,9 @@ export function lazyLaneView(family: string, load: LaneFamilyLoad, wake: (widget
         return ready(input.widget)?.paint(input, state, content) ?? WAITING;
       });
     },
-    scrub(scene, statics, state) {
-      return view?.scrub?.(scene, statics, state) ?? { mode: 'waiting' };
+    scrub(scene, statics, state, readers) {
+      if (!view && readers) throw new Error('Dashboard strip projection is not ready');
+      return view?.scrub?.(scene, statics, state, readers) ?? { mode: 'waiting' };
     },
   };
 }
@@ -512,18 +513,24 @@ export function createLaneView<TBinding extends LaneBinding, TModel, TLayout>(
   }
 
   return {
-    scrub(scene, statics, state) {
+    scrub(scene, statics, state, readers) {
       const binding = scene.model;
-      if (!isBinding(binding)) return { mode: 'waiting' };
+      if (!isBinding(binding)) {
+        if (readers) throw new Error('Dashboard strip projection is not bound');
+        return { mode: 'waiting' };
+      }
       const projection = ensureBoundProjection<TModel, unknown>(binding, ignoreProjectionReady);
-      if (projection === 'loading' || projection === 'unknown') return { mode: 'waiting' };
+      if (projection === 'loading' || projection === 'unknown') {
+        if (readers) throw new Error('Dashboard strip projection is not ready');
+        return { mode: 'waiting' };
+      }
       const input = statics(projection.validateTail, binding.window);
       if (input.mode !== 'picture') return input;
       const held = state.get(stateKey) as Held<TBinding, TModel, TLayout> | undefined;
       const options = input.options === undefined ? binding.options : input.options;
       const scrubScene = input.options === undefined ? scene : { ...scene, model: { ...binding, options } };
       const picture = projectScene(scrubScene, { sources: {}, exact: input.statics }, input.statics.hour,
-        held ? readersOf(held) : {}, view => projection.project(view, options));
+        { ...(held ? readersOf(held) : {}), ...(readers ? { identity: readers.identity } : {}) }, view => projection.project(view, options));
       const status = family.status(picture.model);
       if (status === 'waiting') return { mode: 'waiting' };
       if (typeof status === 'object') return { mode: 'refused', reason: status.refused };

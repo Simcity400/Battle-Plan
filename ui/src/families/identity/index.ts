@@ -733,6 +733,22 @@ export class IdentityIndex {
     this.changed(...kinds);
   }
 
+  entityWindow(keys: Iterable<string>, from: number, to: number, kinds: readonly EntityIdentityKey['kind'][]) {
+    const spans = <T extends { firstHour: number; lastHour: number }>(entries: readonly T[]) => {
+      const selected: T[] = [];
+      for (let at = Math.max(0, findRunBeforeOrAt(entries, from, entry => entry.firstHour)); at < entries.length; at++) {
+        const entry = entries[at]!;
+        if (entry.firstHour > to) break;
+        if (entry.lastHour >= from) selected.push(entry);
+      }
+      return selected;
+    };
+    return {
+      entities: Object.fromEntries([...keys].map(id => [id, spans(this.entityRuns.get(id) ?? [])])),
+      entityUnknown: kinds.map(kind => [kind, spans(this.entityUnknown.get(kind) ?? [])] as const),
+    };
+  }
+
   dropEntityRuns(
     keys: Iterable<EntityIdentityKey>,
     from: number,

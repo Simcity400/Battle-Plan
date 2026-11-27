@@ -8,8 +8,11 @@ import type { InstalledViewport } from '../families/plan.ts';
 import { EMPTY_STRIP_RECEIPT, WidgetStrips, type StripUpdate } from '../dashboard/strip/store.ts';
 import { stripCoverageAt, type StripFrame, type StripScenePlan, type StripWork } from '../dashboard/strip/scrub.ts';
 import type { Outside } from '../dashboard/regionTime.ts';
-import type { SceneProjection } from '../families/scene.ts';
+import type { SceneProjection, SceneReaders } from '../families/scene.ts';
 import { exactPart, exactStatics, type ExactPart, type ExactStatics } from '../families/exactScene.ts';
+import { IdentityIndex } from '../families/identity/index.ts';
+import { createSnapshotIdentityProvider } from '../families/identity/provider.ts';
+import { identityKeyString, parseEntityKey, type IdentityAsk, type IdentitySnapshot } from '../families/identity/types.ts';
 import type { RowWindow, TailValidator } from '../families/table/rowSource.ts';
 
 export interface PanelValue { kind: 'panel'; bytes: Uint8Array | null; data: unknown; refused: string | null; stopped?: string }
@@ -75,8 +78,11 @@ export interface LaneView {
   onSpeed?(speed: number, state: Map<string, unknown>): void;
   unmount?(widget: number, state: Map<string, unknown>): void;
   prepare?(): Promise<void>;
-  scrub?(scene: Scene, statics: (validateTail?: TailValidator, window?: RowWindow) => ScrubInput, state: Map<string, unknown>): ScrubScene;
+  scrub?(scene: Scene, statics: (validateTail?: TailValidator, window?: RowWindow) => ScrubInput, state: Map<string, unknown>, readers?: StripReaders): ScrubScene;
 }
+
+type StripReaders = Required<Pick<SceneReaders, 'index' | 'identity'>>;
+type LaneStrip = { build: number; held: WidgetStrips; identities?: { coarse?: StripReaders; fine?: StripReaders; active?: StripReaders; activeFine?: boolean } };
 
 export type ScrubInput = { mode: 'picture'; statics: ExactStatics; options?: unknown } | { mode: 'missing' | 'waiting' } | { mode: 'refused'; reason: string };
 export type ScrubScene = Exclude<ScrubInput, { mode: 'picture' }> | { mode: 'outside'; outside: Outside }
@@ -225,7 +231,8 @@ function cellsOf(data: unknown): { id: number; seedHour?: number; values?: Value
 }
 
 export class Lane<B extends { readonly width: number; close(): void }> {
-  strips?: Map<number, { build: number; held: WidgetStrips }>;
+  strips?: Map<number, LaneStrip>;
+  private stripReaders?: WeakMap<IdentitySnapshot, StripReaders>;
   scrubScenes?: { frame: StripFrame; widgets: Map<number, ScrubScene> };
 
   strip(widget: number, build: number, update: StripUpdate) {
@@ -234,7 +241,62 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (current && current.build > build) throw new Error('Superseded dashboard strip');
     if (update.kind === 'drop' && !update.fine) { this.strips?.delete(widget); return EMPTY_STRIP_RECEIPT; }
     if (!current || current.build !== build) (this.strips ??= new Map()).set(widget, current = { build, held: new WidgetStrips() });
+    if (update.kind === 'identities') {
+      const identities = current.identities ??= {};
+      const stage = update.fine ? 'fine' : 'coarse';
+      if (update.snapshot === undefined) {
+        if (identities[stage]) {
+          identities.active = identities[stage];
+          identities.activeFine = update.fine;
+          delete identities[stage];
+        } else if (!identities.active || identities.activeFine !== update.fine) throw new Error('Dashboard strip identities were not staged');
+      } else {
+        const snapshot = typeof update.snapshot === 'object' ? update.snapshot : (this.store.resolve({
+          revisions: { identitySnapshot: update.snapshot },
+        }) as { identitySnapshot: IdentitySnapshot }).identitySnapshot;
+        const cached = this.stripReaders ??= new WeakMap();
+        let readers = cached.get(snapshot);
+        if (!readers) {
+          const index = IdentityIndex.fromSnapshot(snapshot, identities[stage]?.index ?? identities.active?.index);
+          cached.set(snapshot, readers = { index, identity: createSnapshotIdentityProvider(index) });
+        }
+        identities[stage] = readers;
+      }
+    } else if (update.kind === 'discover') {
+      const target = this.widgets.get(widget), readers = current.identities?.[update.fine ? 'fine' : 'coarse'];
+      if (!target || !readers) throw new Error('Dashboard strip identity scan has no mounted widget or snapshot');
+      const plan = current.held.scene(update.hour, update.fine);
+      const asks = new Map<string, IdentityAsk>();
+      let unresolved = false;
+      const mark = update.measure ? `bp-strip-discover:${this.host.lane}:${widget}:${update.hour}` : null;
+      if (mark) performance.mark(`${mark}:start`);
+      try {
+        const scene = plan && this.scrubPicture(target, current.held, update.hour, plan, undefined, { ...readers, identity: {
+          resolve: (kind, key, hour) => {
+            const parsed = parseEntityKey(kind, key);
+            asks.set(`${identityKeyString(parsed)}@${hour}`, { key: parsed, hour });
+            const result = readers.identity.resolve(kind, key, hour);
+            unresolved ||= [result.name, result.holder, result.tag, result.colour, result.flagChoice]
+              .some(field => field?.status === 'pending' || field?.status === 'failed');
+            return result;
+          },
+        } });
+        if (scene?.mode === 'failed') throw new Error(scene.reason);
+        return { ...EMPTY_STRIP_RECEIPT, identities: [...asks.values()], unresolved };
+      } finally {
+        if (mark) { performance.mark(`${mark}:end`); performance.clearMarks(`${mark}:start`); performance.clearMarks(`${mark}:end`); }
+      }
+    } else if (update.kind === 'drop' && current.identities) {
+      if (current.identities.activeFine) delete current.identities.active;
+      delete current.identities.fine;
+    }
     return current.held.update(update);
+  }
+
+  private scrubPicture(widget: Widget, held: WidgetStrips, hour: number, plan: StripScenePlan, work?: StripWork, readers?: StripReaders): ScrubScene | undefined {
+    if ('outside' in plan) return { mode: 'outside', outside: plan.outside };
+    const scene: Scene = { widget: widget.id, subs: [], pictures: [], model: widget.model, owner: widget.binding.owner };
+    return this.host.views(widget.view).scrub?.(scene, (validate, window) => this.scrubStatics(held, hour, plan, work, validate, window), widget.state, readers);
   }
 
   private scrubStatics(held: WidgetStrips, hour: number, plan: Extract<StripScenePlan, { recorded: number }>,
@@ -264,7 +326,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const widgets = new Map<number, ScrubScene>();
     this.scrubScenes = { frame, widgets };
     const samples: ScrubSample[] = [];
-    for (const [id, { held }] of this.strips ?? []) {
+    for (const [id, { held, identities }] of this.strips ?? []) {
       if (held.page !== page) continue;
       const widget = this.widgets.get(id);
       const coverage = frame.gap && held.track ? stripCoverageAt(held.track, frame.hour) : null;
@@ -275,9 +337,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const mark = work ? `bp-strip:${page}:${frame.frame}:${this.host.lane}:${id}` : null;
       if (mark) performance.mark(`${mark}:start`);
       try {
-        const scene: Scene = { widget: id, subs: [], pictures: [], model: widget.model, owner: widget.binding.owner };
-        const scrub = 'outside' in plan ? { mode: 'outside', outside: plan.outside } as const : this.host.views(widget.view)
-          .scrub?.(scene, (validate, window) => this.scrubStatics(held, frame.hour, plan, work, validate, window), widget.state);
+        const scrub = this.scrubPicture(widget, held, frame.hour, plan, work, identities?.active);
         if (scrub) widgets.set(id, scrub);
         if (work) samples.push({ widget: id, mode: scrub?.mode ?? 'waiting', ...work });
       } catch (error) {

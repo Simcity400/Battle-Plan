@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { encode } from '@msgpack/msgpack';
+import { Lane } from '../../draw/lane.ts';
+import { identityBrokerFor, type StripIdentitySource } from '../../families/identity/broker.ts';
+import { identityKeyString, stateKey, type IdentitySnapshot } from '../../families/identity/types.ts';
 import { busy, busyKinds } from '../../shell/busy.ts';
-import type { StripParams } from '../../generated/dashboard.ts';
+import type { PlaceNameRunsParams, StripParams } from '../../generated/dashboard.ts';
 import { FrameEngine } from '../../engine/frame.ts';
 import { measureWith, type PerfRecorder } from '../../shell/perf.ts';
 import { gatedHour } from '../../test-support/gated.ts';
@@ -44,6 +47,9 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
   const gate = new PrepareGate(() => true, { request: run => { frame = run; return 1; }, cancel: () => { frame = undefined; } });
   const groups: { source: string; hours: number[]; whole: boolean; signal: AbortSignal; busy: boolean }[] = [];
   const tiles: { signal: AbortSignal; busy: boolean }[] = [];
+  const identities: { from: number; signal: AbortSignal; busy: boolean }[] = [];
+  let identityDelay: ((signal: AbortSignal) => Promise<void>) | undefined;
+  let nameOf = (_id: number, from: number) => `Dated state ${from}`;
   let answer = (hour: number): unknown => ({ answer: { hour, value: hour * 3 } });
   let delay: ((hours: number[], signal: AbortSignal) => Promise<void> | void) | undefined;
   let delayTile: ((signal: AbortSignal) => Promise<void>) | undefined;
@@ -52,6 +58,14 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
       tiles.push({ signal, busy: clock.getSnapshot().playing || clock.getScrubPosition() !== null || !settled || busyKinds().requests > 0 });
       await delayTile?.(signal);
       return { ...request, data: 'tile reply' };
+    }
+    if (request.product === 'place-name-runs') {
+      const { from, to, states } = request.params as unknown as PlaceNameRunsParams;
+      identities.push({ from, signal, busy: clock.getSnapshot().playing || !settled || busyKinds().requests > 0 });
+      await identityDelay?.(signal);
+      return { ...request, data: { from, to, unknown: [], states: states.map(id => ({
+        id, runs: [{ firstHour: from, lastHour: to, name: nameOf(id, from), missing: null, presence: 'present' }],
+      })), provinces: [], warnings: [] } };
     }
     assert.equal(request.product, 'strip');
     assert.equal(opened.refusal(request), null);
@@ -72,11 +86,13 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
     }
     assert.fail(`Strip page did not settle (${page.status})`);
   };
-  const mount = (id: string, after: number = 0, supported = true, receipt?: (change: StripUpdate) => Promise<void> | void, fixed = false,
-    scrub?: StripWidget['scrub'], track?: StripWidget['track']) => {
+  const mount = (id: string, after: number = 0, supported = true, receipt?: (change: StripUpdate, build: number) => Promise<void> | void, fixed = false,
+    scrub?: StripWidget['scrub'], track?: StripWidget['track'], identity?: StripIdentitySource,
+    stateAt = (_hour: number) => 7, lookupAt = (hour: number) => hour) => {
     opened.add({ id, revision: 'r', metadata: { branches: [branch] } } as never);
     const held = new WidgetStrips();
-    const widget: StripWidget = { key: id, supported, fixed, scrub, track, settled: () => settled,
+    let scan: IdentitySnapshot | undefined;
+    const widget: StripWidget = { key: id, supported, fixed, scrub, track, identity, settled: () => settled,
       keyframe: hour => {
         if (fixed) return { asks: [] };
         reads++;
@@ -84,22 +100,160 @@ function setup(last: number, budget?: number, gap?: readonly [number, number]) {
           product: 'country-fuel', sourceId: id, revision: 'r', params: { branchId: '1', hour: gatedHour(hour) },
         }) }] };
       },
-      store: async (_build, change) => {
+      store: async (build, change) => {
         const result = held.update(change);
-        await receipt?.(change);
+        await receipt?.(change, build);
+        if (change.kind === 'identities' && change.snapshot !== undefined) scan = change.snapshot as IdentitySnapshot;
+        if (change.kind === 'discover') {
+          const hour = lookupAt(change.hour), key = stateKey(stateAt(change.hour));
+          return { ...result, identities: [{ key, hour }], unresolved:
+            !scan?.entities?.[identityKeyString(key)]?.some(run => run.firstHour <= hour && hour <= run.lastHour) };
+        }
         return result;
       },
     };
     return { held, remove: page.register(id, widget) };
   };
-  return { page, clock, groups, tiles, lattice, gate, frames, mount, until, cache: tileCache(client), reads: () => reads,
+  return { page, clock, groups, tiles, identities, client, lattice, gate, frames, mount, until, cache: tileCache(client), reads: () => reads,
     stop() { clock.setPlaying(false); stop(); },
     settle: (value: boolean) => { settled = value; },
     delay: (value: typeof delay) => { delay = value; },
     delayTile: (value: typeof delayTile) => { delayTile = value; },
+    identityDelay: (value: typeof identityDelay) => { identityDelay = value; },
+    nameOf: (value: typeof nameOf) => { nameOf = value; },
     answer: (value: typeof answer) => { answer = value; },
   };
 }
+
+test('identity windows share strip cancellation and the lane acknowledgment gates readiness', async t => {
+  const h = setup(2000);
+  t.after(h.stop);
+  const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+  let finish: (() => void) | undefined, install: (() => void) | undefined;
+  h.identityDelay(signal => new Promise((resolve, reject) => {
+    finish = () => signal.aborted ? reject(signal.reason) : resolve();
+  }));
+  h.mount('state', 0, true, change => change.kind === 'identities' && change.snapshot === undefined && !change.fine
+    ? new Promise<void>(resolve => { install = resolve; }) : undefined, false, undefined, undefined, { scope, bounds: [0, 2000] });
+  await h.until(() => h.identities.length === 1);
+  h.clock.setPlaying(true);
+  assert.equal(h.identities[0]!.signal.aborted, true);
+  finish!();
+  await h.until(() => h.gate.pending === 1);
+  assert.equal(h.identities.length, 1);
+  assert.equal(h.page.status, 'not ready');
+  h.identityDelay(undefined);
+  h.clock.setPlaying(false);
+  await h.until(() => !!install);
+  assert.equal(h.page.status, 'not ready');
+  install!();
+  await h.until(() => h.page.status === 'ready');
+  assert.deepEqual(h.identities.map(ask => ask.from), [0, 0, 720, 1440]);
+  assert.ok(h.identities.every(ask => !ask.busy));
+});
+
+test('fine identity bytes lower the whole page density and release fine-only keys from shared windows', async t => {
+  const h = setup(191, 16_000);
+  t.after(h.stop);
+  const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+  h.nameOf(id => id === 8 ? 'x'.repeat(20_000) : 'Coarse name');
+  const named = h.mount('state', 0, true, undefined, false, undefined, undefined, { scope, bounds: [0, 191] },
+    hour => hour === 5 ? 8 : 7);
+  const other = h.mount('other');
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.page.density, 8);
+  const keys = h.lattice.hours(8).length;
+  assert.equal(named.held.slots.get('source')!.counts.keys, keys);
+  assert.equal(other.held.slots.get('source')!.counts.keys, keys);
+  assert.equal(identityBrokerFor(h.client).resolve(scope, stateKey(8), 5).kind, 'pending');
+});
+
+test('changing visible rows reuses held groups and requests only the additional dated window', async t => {
+  const h = setup(1919);
+  t.after(h.stop);
+  const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+  let lookup = 5;
+  h.mount('state', 0, true, undefined, false, undefined, undefined, { scope, bounds: [0, 1919] }, undefined, hour => Math.min(hour, lookup));
+  await h.until(() => h.page.status === 'ready');
+  const groupCount = h.groups.length;
+  const first = { first: 0, count: 20 };
+  h.page.rowWindowChanged(first, { ...first });
+  assert.equal(h.page.status, 'ready');
+  lookup = 725;
+  h.page.rowWindowChanged(first, { first: 10, count: 20 });
+  assert.equal(h.page.status, 'not ready');
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.groups.length, groupCount);
+  assert.deepEqual(h.identities.map(ask => ask.from), [0, 720]);
+});
+
+test('coarse identity admission drops fine strips left by a previously ready widget', async t => {
+  const budget = 6000, h = setup(191, budget);
+  t.after(h.stop);
+  const lane = new Lane({
+    lane: 0, lanes: 1, views: () => assert.fail('Unexpected view'), crop: async () => [],
+    present() {}, release() {}, fail: assert.fail, later() {},
+  });
+  const initialScope = { sourceId: 'initial', branchId: '1', revision: 'r', content: 0 };
+  let droppedFine = false, committedCoarse = false;
+  const previous = h.mount('initial', 0, true, (change, build) => {
+    if (change.kind === 'identities' || change.kind === 'drop') lane.strip(1, build, change);
+    if (change.kind === 'drop' && change.fine) droppedFine = true;
+    if (change.kind === 'identities' && !change.fine && !change.snapshot && droppedFine) committedCoarse = true;
+  }, false, undefined, undefined, { scope: initialScope, bounds: [0, 191] });
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.page.density, 16);
+  const more = budget - previous.held.slots.get('source')!.bytes + 128;
+  h.nameOf(id => id === 8 ? 'x'.repeat(more) : 'Earlier campaign');
+  const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+  h.mount('state', 0, true, undefined, false, undefined, undefined, { scope, bounds: [0, 191] }, () => 8);
+  await h.until(() => h.page.status === 'coarse' || h.page.status === 'ready' || h.page.status === 'will not follow');
+  assert.notEqual(h.page.status, 'will not follow');
+  assert.equal(committedCoarse, true, 'the earlier campaign commits its coarse snapshot after the fine drop');
+  assert.equal(previous.held.slots.get('source')!.counts.keys, h.lattice.hours(1).length);
+});
+
+test('changing visible rows releases retired identities when they would put coarse readiness over budget', async t => {
+  const h = setup(191, 16_000);
+  t.after(h.stop);
+  const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+  h.nameOf(id => 'x'.repeat(id === 8 ? 8_000 : id === 9 ? 9_000 : 20));
+  let scrolled = false;
+  h.mount('state', 0, true, undefined, false, undefined, undefined, { scope, bounds: [0, 191] },
+    hour => scrolled ? 9 : hour === 5 ? 8 : 7);
+  await h.until(() => h.page.status === 'ready');
+  assert.equal(h.page.density, 16);
+  const broker = identityBrokerFor(h.client);
+  assert.equal(broker.resolve(scope, stateKey(8), 5).kind, 'known');
+
+  scrolled = true;
+  h.page.rowWindowChanged({ first: 0, count: 20 }, { first: 10, count: 20 });
+  await h.until(() => h.page.status === 'coarse' || h.page.status === 'will not follow');
+  assert.equal(h.page.status, 'coarse');
+  h.clock.scrub(5);
+  assert.equal(broker.resolve(scope, stateKey(9), 5).kind, 'known');
+  assert.equal(broker.resolve(scope, stateKey(8), 5).kind, 'pending');
+});
+
+test('the shipped switch leaves ordinary broker requests and resolved identities identical', async () => {
+  const trace = async (configured: boolean) => {
+    const h = setup(2000);
+    const scope = { sourceId: 'state', branchId: '1', revision: 'r', content: 0 };
+    const key = stateKey(7);
+    const broker = identityBrokerFor(h.client), owner = {};
+    if (configured) assert.equal(configuredStripPage(() => h.mount('state', 0, true, undefined, false, undefined, undefined, { scope })), null);
+    broker.setDemand(owner, scope, { asks: [{ key, hour: 1600 }] }, undefined, [0, 2000]);
+    await h.until(() => broker.resolve(scope, key, 1600).kind === 'known');
+    const result = { asks: h.identities.map(({ from, busy }) => [from, busy]), answer: broker.snapshotOf(scope), groups: h.groups.length };
+    h.stop();
+    return result;
+  };
+  const before = await trace(false), shipped = await trace(true);
+  assert.deepEqual({ ...shipped, answer: { ...shipped.answer, epoch: 0 } }, { ...before, answer: { ...before.answer, epoch: 0 } });
+  assert.deepEqual(shipped.asks, [[1440, false]]);
+  assert.equal(shipped.answer.entities?.['state:7']?.[0]?.name, 'Dated state 1440');
+  assert.equal(shipped.groups, 0);
+});
 
 test('the driver yields to playback, seeks and foreground reads and resumes after its committed anchor', async t => {
   const h = setup(3200);
