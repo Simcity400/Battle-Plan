@@ -1,5 +1,6 @@
 import { createContext } from 'react';
 import type { SharedSurfaceSlot } from '../../draw/laneMessages.ts';
+import { APPEARANCE_EVENT } from '../../shell/appearance/events.ts';
 import type { Pipeline } from './pipeline.ts';
 
 export interface GridRectItem {
@@ -301,6 +302,9 @@ export class SharedSurfaceHost {
     this.layerEl = layer;
 
     scrollEl.addEventListener('scroll', this.onScroll, { passive: true });
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener(APPEARANCE_EVENT, this.onAppearance);
+    }
     if (typeof ResizeObserver !== 'undefined') {
       this.ro = new ResizeObserver(() => this.scheduleSync());
       this.ro.observe(scrollEl);
@@ -313,8 +317,8 @@ export class SharedSurfaceHost {
         if (next !== this.imageBackdrop) {
           this.imageBackdrop = next;
           for (const listener of this.listeners) listener();
-          this.scheduleSync();
         }
+        this.scheduleSync();
       });
       this.mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-backdrop', 'data-theme', 'data-mode'] });
     } else {
@@ -551,10 +555,17 @@ export class SharedSurfaceHost {
     }
   }
 
+  private readonly onAppearance = () => {
+    this.scheduleSync();
+  };
+
   dispose(): void {
     this.disposed = true;
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.scrollEl.removeEventListener('scroll', this.onScroll);
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener(APPEARANCE_EVENT, this.onAppearance);
+    }
     this.ro?.disconnect();
     this.mo?.disconnect();
     this.unsubLaneFailed?.();
