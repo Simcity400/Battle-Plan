@@ -77,7 +77,11 @@ jobs:
           BASE: ${{ steps.tier.outputs.base }}
           EXACT: ${{ steps.tier.outputs.exact }}
           EVERYTHING: ${{ steps.tier.outputs.everything }}
-        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT $EVERYTHING --github-output "$GITHUB_OUTPUT"
+        run: |
+          plan=$(mktemp)
+          python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT $EVERYTHING --github-output "$plan"
+          matrix=$(sed -n 's/^matrix=//p' "$plan" | jq -ce '[.[] | select(.jobs == "rust-clippy")] | select(length == 1)')
+          printf 'matrix=%s\nany=true\n' "$matrix" >> "$GITHUB_OUTPUT"
 
   run:
     needs: changes
@@ -142,7 +146,7 @@ jobs:
           JOBS: ${{ matrix.jobs }}
           SHARD: ${{ matrix.shard }}
           RUST_MIN_STACK: '33554432'
-        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT $EVERYTHING ${SHARD:+--shard "$SHARD"}
+        run: python tools/clippy-census.py
       - if: failure() && matrix.needs_rust
         uses: actions/upload-artifact@v7
         with:

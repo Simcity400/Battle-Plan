@@ -30,6 +30,15 @@ ref_as_ptr = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+unwrap_used = "warn"
+panic_in_result_fn = "warn"
+large_stack_arrays = "warn"
 
 [workspace.dependencies]
 # Begin generated declarations (tools/check-feature-unification.py --fix; do not edit).
