@@ -242,11 +242,12 @@ export function mapAcks(records) {
   return views;
 }
 
-export function presentedAt(mapRecords, drawnAt) {
+export function presentedAt(mapRecords, drawnAt, session) {
+  mapRecords = mapRecords.filter(record => record.session === session);
   if (!Number.isFinite(drawnAt)) return null;
-  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
-  for (const pid of main) {
-    const own = mapRecords.filter(record => record.t === 'map' && record.pid === pid).sort((a, b) => a.at - b.at);
+  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.map));
+  for (const map of main) {
+    const own = mapRecords.filter(record => record.t === 'map' && record.map === map).sort((a, b) => a.at - b.at);
     const index = own.findIndex(record => record.at - record.work_ms <= drawnAt && drawnAt <= record.at);
     const next = index < 0 ? null : own[index + 1];
     if (next && Number.isFinite(next.painted_at)) return next.painted_at;
@@ -254,19 +255,14 @@ export function presentedAt(mapRecords, drawnAt) {
   return null;
 }
 
-export function popoutPresented(mapRecords, after, hour) {
-  const popouts = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'popout').map(record => record.pid));
-  const installed = mapRecords.filter(record => record.t === 'map_upload' && popouts.has(record.pid) && record.ok && record.hour === hour && record.at > after);
-  if (!installed.length) return null;
-  const first = installed.reduce((a, b) => (b.at < a.at ? b : a));
-  const paints = mapRecords.filter(record => record.t === 'map' && record.pid === first.pid && Number.isFinite(record.painted_at) && record.painted_at > first.at);
-  return paints.length ? Math.min(...paints.map(record => record.painted_at)) : null;
-}
-
-export function hoursInstalled(mapRecords, view, from, to) {
-  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
-  return new Set(mapRecords.filter(record => record.t === 'map_upload' && main.has(record.pid) && record.ok && (record.view ?? null) === view
-    && record.at >= from && record.at <= to).map(record => record.hour)).size;
+export function presentedHours(records, mapRecords, { view, from, to, session }) {
+  const drawn = records.filter(record => record.t === 'map_state' && record.session === session && record.view === view
+    && !record.blank && Number.isFinite(record.hour) && Number.isFinite(record.drawn_at)
+    && record.at >= from && record.at <= to);
+  const presented = drawn.map(record => ({ hour: record.hour, at: presentedAt(mapRecords, record.drawn_at, session) }))
+    .filter(record => record.at !== null && record.at <= to);
+  if (!presented.length || !mapFrames(mapRecords, from, to, session).work.n) return null;
+  return new Set(presented.filter(record => record.at >= from).map(record => record.hour)).size;
 }
 
 export const UNPRESENTED = "its frame is not in the viewer's frame log, so when it was presented is unknown";
@@ -278,35 +274,36 @@ export function mapSeek(acks, input, mapRecords) {
     && (from === null || Math.abs(ack.expected - from) >= 1) && Math.abs(ack.hour + (ack.fraction ?? 0) - ack.expected) < 1);
   if (!done) return { ms: null, reason: 'never presented the sought hour within 10 s' };
   if (!Number.isFinite(done.drawn_at)) return { ms: null, reason: 'its acknowledgement carries no drawn time' };
-  const presented = presentedAt(mapRecords, done.drawn_at);
+  const presented = presentedAt(mapRecords, done.drawn_at, done.session);
   return presented === null ? { ms: null, reason: UNPRESENTED } : { ms: presented - input, reason: null };
 }
 
 export const MAP_FRAME_MS = 1000 / 120;
 export const MAP_P99_MS = 7;
 
-export function mapFrames(mapRecords, from, to) {
+export function mapFrames(mapRecords, from, to, session) {
+  mapRecords = mapRecords.filter(record => record.session === session);
   const opens = mapRecords.filter(record => record.t === 'map_open' && record.role === 'main');
-  const main = new Set(opens.map(record => record.pid));
+  const main = new Set(opens.map(record => record.map));
   const next = new Map();
-  for (const pid of main) {
-    const own = mapRecords.filter(record => record.t === 'map' && record.pid === pid).sort((a, b) => a.at - b.at);
+  for (const map of main) {
+    const own = mapRecords.filter(record => record.t === 'map' && record.map === map).sort((a, b) => a.at - b.at);
     own.forEach((record, index) => next.set(record, own[index + 1]));
   }
-  const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms <= to
+  const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.map) && record.at - record.work_ms <= to
     && Math.max(record.at, next.get(record)?.painted_at ?? record.at) >= from);
   const timed = frames.map(frame => {
     const after = next.get(frame);
     return Number.isFinite(after?.painted_at) && Number.isFinite(after.acquire_ms) ? frame.work_ms + (after.painted_at - frame.at) - after.acquire_ms : null;
   });
   const work = timed.filter(Number.isFinite);
-  const untimed = opens.find(record => frames.some(frame => frame.pid === record.pid) && record.gpu_timer === 'unsupported');
+  const untimed = opens.find(record => frames.some(frame => frame.map === record.map) && record.gpu_timer === 'unsupported');
   const measured = new Map(mapRecords.filter(record => record.t === 'map' && Number.isFinite(record.gpu_frame) && Number.isFinite(record.gpu_ms))
-    .map(record => [`${record.pid}:${record.gpu_frame}`, record.gpu_ms]));
+    .map(record => [`${record.map}:${record.gpu_frame}`, record.gpu_ms]));
   const failed = new Map(mapRecords.filter(record => record.t === 'map' && Number.isFinite(record.gpu_frame) && record.gpu_ms == null && record.gpu_error)
-    .map(record => [`${record.pid}:${record.gpu_frame}`, record.gpu_error]));
-  const gpu = frames.map(frame => measured.get(`${frame.pid}:${frame.frame}`)).filter(Number.isFinite);
-  const gpuErrors = [...groupBy(frames.map(frame => failed.get(`${frame.pid}:${frame.frame}`)).filter(Boolean), error => error)];
+    .map(record => [`${record.map}:${record.gpu_frame}`, record.gpu_error]));
+  const gpu = frames.map(frame => measured.get(`${frame.map}:${frame.frame}`)).filter(Number.isFinite);
+  const gpuErrors = [...groupBy(frames.map(frame => failed.get(`${frame.map}:${frame.frame}`)).filter(Boolean), error => error)];
   const q = values => { const sorted = [...values].sort((a, b) => a - b); const rank = p => sorted[Math.min(sorted.length, Math.max(1, Math.ceil(p * sorted.length))) - 1];
     return sorted.length ? { n: sorted.length, p50: rank(0.5), p99: rank(0.99), max: sorted.at(-1) } : { n: 0, p50: null, p99: null, max: null }; };
   const reasons = [];
@@ -331,9 +328,10 @@ export function mapFrames(mapRecords, from, to) {
   return { work: workStats, gpu: gpuStats, dropped, frames: frames.length, fps: frames.length / Math.max(0.001, (to - from) / 1000), pass: reasons.length === 0, reasons };
 }
 
-export function framesLate(mapRecords, posted, drawnAt) {
-  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
-  return mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms >= posted && record.at < drawnAt).length;
+export function framesLate(mapRecords, posted, drawnAt, session) {
+  mapRecords = mapRecords.filter(record => record.session === session);
+  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.map));
+  return mapRecords.filter(record => record.t === 'map' && main.has(record.map) && record.at - record.work_ms >= posted && record.at < drawnAt).length;
 }
 
 export function shownHours(records, since = -Infinity) {
@@ -400,9 +398,10 @@ export function catalogueHour(records, step) {
   return { pass: true, hour: step.hour, at: shown[first].at, drawnAt: shown[first].drawnAt ?? null };
 }
 
-export function handledAt(mapRecords, posted) {
-  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.pid));
-  const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.pid) && record.at - record.work_ms >= posted);
+export function handledAt(mapRecords, posted, session) {
+  mapRecords = mapRecords.filter(record => record.session === session);
+  const main = new Set(mapRecords.filter(record => record.t === 'map_open' && record.role === 'main').map(record => record.map));
+  const frames = mapRecords.filter(record => record.t === 'map' && main.has(record.map) && record.at - record.work_ms >= posted);
   return frames.length ? Math.min(...frames.map(record => record.at)) : null;
 }
 

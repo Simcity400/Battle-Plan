@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
+import { shownHours, catalogueHour, classifyPerfFile, classifyWidgetSnapshot, costSessionConfinement, droppedFrames, failedReplies, firstContent, presentedHours, framesLate, handledAt, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, profileLines, quantiles, sessionConfinement, UNPRESENTED, windowLosses } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -107,8 +107,8 @@ test('a map seek ends at the first acknowledgement presenting the moved position
     { at: 210, hour: 10, fraction: 0, expected: 500, loading: true },
     { at: 260, hour: 500, fraction: 0, expected: 500, loading: false },
   ];
-  const frames = [{ t: 'map_open', pid: 1, role: 'main' }, { t: 'map', pid: 1, at: 258, work_ms: 4, painted_at: null }, { t: 'map', pid: 1, at: 266, work_ms: 4, painted_at: 261 }];
-  const drawn = acks.map(ack => ({ ...ack, drawn_at: ack.at - 3 }));
+  const frames = [{ t: 'map_open', session: 'map', map: 1, pid: 7, role: 'main' }, { t: 'map', session: 'map', map: 1, at: 258, work_ms: 4, painted_at: null }, { t: 'map', session: 'map', map: 1, at: 266, work_ms: 4, painted_at: 261 }];
+  const drawn = acks.map(ack => ({ ...ack, session: 'map', drawn_at: ack.at - 3 }));
   assert.deepEqual(mapSeek(drawn, 200, frames), { ms: 61, reason: null });
   assert.equal(mapSeek(drawn.slice(0, 2), 200, frames).reason, 'never presented the sought hour within 10 s');
   assert.equal(mapSeek(acks, 200, frames).reason, 'its acknowledgement carries no drawn time');
@@ -150,28 +150,28 @@ test('page frame times end with timed playback, before the scripted inputs and i
   assert.equal(measured.main.n, 2);
 });
 
-test('the map is judged at 120 Hz on its main process frames, and a highlight after a whole later frame is late', () => {
+test('the map is judged at 120 Hz on its main map streams, and a highlight after a whole later frame is late', () => {
   const records = [
-    { t: 'map_open', pid: 1, role: 'main' }, { t: 'map_open', pid: 2, role: 'popout' },
-    { t: 'map', pid: 1, frame: 1, at: 110, work_ms: 4, dt: 10.5 }, { t: 'map', pid: 1, frame: 2, at: 121, work_ms: 6.5, dt: 10.5, acquire_ms: 0, painted_at: 110.25 },
-    { t: 'map', pid: 2, frame: 1, at: 115, work_ms: 30, dt: 40 },
-    { t: 'map', pid: 1, frame: 3, at: 140, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 121.25, gpu_frame: 1, gpu_ms: 3 },
-    { t: 'map', pid: 1, frame: 4, at: 151, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 140.25, gpu_frame: 2, gpu_ms: 3.5 },
+    { t: 'map_open', session: 'map', map: 1, pid: 7, role: 'main' }, { t: 'map_open', session: 'map', map: 2, pid: 7, role: 'popout' },
+    { t: 'map', session: 'map', map: 1, frame: 1, at: 110, work_ms: 4, dt: 10.5 }, { t: 'map', session: 'map', map: 1, frame: 2, at: 121, work_ms: 6.5, dt: 10.5, acquire_ms: 0, painted_at: 110.25 },
+    { t: 'map', session: 'map', map: 2, frame: 1, at: 115, work_ms: 30, dt: 40 },
+    { t: 'map', session: 'map', map: 1, frame: 3, at: 140, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 121.25, gpu_frame: 1, gpu_ms: 3 },
+    { t: 'map', session: 'map', map: 1, frame: 4, at: 151, work_ms: 4, dt: 10.5, acquire_ms: 0, painted_at: 140.25, gpu_frame: 2, gpu_ms: 3.5 },
   ];
-  const fine = mapFrames(records, 100, 130);
+  const fine = mapFrames(records, 100, 130, 'map');
   assert.deepEqual([fine.frames, fine.dropped, fine.pass], [2, 0, true]);
   assert.equal(fine.gpu.max, 3.5);
-  const slow = mapFrames([...records.map(r => (r.frame === 3 && r.pid === 1 ? { ...r, painted_at: 125.5 } : r)),
-    { t: 'map', pid: 1, frame: 9, at: 125, work_ms: 9, dt: 10.5, acquire_ms: 0, painted_at: 121.25 }], 100, 130);
+  const slow = mapFrames([...records.map(r => (r.frame === 3 && r.map === 1 ? { ...r, painted_at: 125.5 } : r)),
+    { t: 'map', session: 'map', map: 1, frame: 9, at: 125, work_ms: 9, dt: 10.5, acquire_ms: 0, painted_at: 121.25 }], 100, 130, 'map');
   assert.deepEqual([slow.dropped, slow.pass], [1, false]);
   assert.match(slow.reasons.join('; '), /work max 9.5 ms, over 8.33 ms/);
   assert.match(slow.reasons.join('; '), /1 of 3 frames have no GPU time and no reason/);
-  assert.match(mapFrames(records.map(({ gpu_ms, gpu_frame, ...r }) => r), 100, 130).reasons.join('; '), /2 of 2 frames have no GPU time and no reason/);
-  assert.match(mapFrames(records.map(r => (r.gpu_frame === 1 ? { ...r, gpu_ms: null, gpu_error: 'the query was lost' } : r)), 100, 130).reasons.join('; '), /1 of 2 frames have no GPU time: the query was lost/);
-  const unsupported = records.map(r => (r.t === 'map_open' && r.pid === 1 ? { ...r, gpu_timer: 'unsupported', gpu_timer_reason: 'no timestamp queries' } : r));
-  assert.match(mapFrames(unsupported, 100, 130).reasons.join('; '), /cannot time the GPU on this adapter: no timestamp queries/);
-  assert.equal(framesLate(records, 105, 109), 0);
-  assert.equal(framesLate(records, 105, 120), 1);
+  assert.match(mapFrames(records.map(({ gpu_ms, gpu_frame, ...r }) => r), 100, 130, 'map').reasons.join('; '), /2 of 2 frames have no GPU time and no reason/);
+  assert.match(mapFrames(records.map(r => (r.gpu_frame === 1 ? { ...r, gpu_ms: null, gpu_error: 'the query was lost' } : r)), 100, 130, 'map').reasons.join('; '), /1 of 2 frames have no GPU time: the query was lost/);
+  const unsupported = records.map(r => (r.t === 'map_open' && r.map === 1 ? { ...r, gpu_timer: 'unsupported', gpu_timer_reason: 'no timestamp queries' } : r));
+  assert.match(mapFrames(unsupported, 100, 130, 'map').reasons.join('; '), /cannot time the GPU on this adapter: no timestamp queries/);
+  assert.equal(framesLate(records, 105, 109, 'map'), 0);
+  assert.equal(framesLate(records, 105, 120, 'map'), 1);
 });
 
 test('a widget kind fails by name when a placement never reports the hour it shows', () => {
@@ -219,12 +219,25 @@ test('a reply cut off by the suite closing its session is not a failure, and not
 });
 
 test('a map frame is presented when the paint the next frame record carries ended', () => {
-  const records = [{ t: 'map_open', pid: 1, role: 'main' }, { t: 'map_open', pid: 2, role: 'popout' },
-    { t: 'map', pid: 2, at: 108, work_ms: 8, painted_at: 101 }, { t: 'map', pid: 2, at: 120, work_ms: 2, painted_at: 111 },
-    { t: 'map', pid: 1, at: 110, work_ms: 6, painted_at: 103 }, { t: 'map', pid: 1, at: 118, work_ms: 3, painted_at: 114.5 }];
-  assert.equal(presentedAt(records, 107), 114.5);
-  assert.equal(presentedAt(records, 112), null);
-  assert.equal(presentedAt(records, 116), null);
+  const records = [{ t: 'map_open', session: 'map', map: 1, pid: 7, role: 'main' }, { t: 'map_open', session: 'map', map: 2, pid: 7, role: 'popout' },
+    { t: 'map', session: 'map', map: 2, at: 108, work_ms: 8, painted_at: 101 }, { t: 'map', session: 'map', map: 2, at: 120, work_ms: 2, painted_at: 111 },
+    { t: 'map', session: 'map', map: 1, at: 110, work_ms: 6, painted_at: 103 }, { t: 'map', session: 'map', map: 1, at: 118, work_ms: 3, painted_at: 114.5 }];
+  assert.equal(presentedAt(records, 107, 'map'), 114.5);
+  assert.equal(presentedAt(records, 112, 'map'), null);
+  assert.equal(presentedAt(records, 116, 'map'), null);
+
+  const scoped = [
+    { t: 'map_open', session: 'first', map: 1, pid: 7, role: 'main' },
+    { t: 'map_open', session: 'second', map: 1, pid: 8, role: 'popout' },
+    { t: 'map', session: 'first', map: 1, at: 110, work_ms: 6 },
+    { t: 'map', session: 'second', map: 1, at: 118, work_ms: 3, painted_at: 114.5 },
+  ];
+  assert.equal(presentedAt(scoped, 107, 'first'), null);
+  assert.equal(presentedAt(scoped, 116, 'second'), null);
+  assert.equal(mapFrames(scoped, 100, 130, 'second').frames, 0);
+  assert.equal(handledAt(scoped, 100, 'first'), 110);
+  assert.equal(handledAt(scoped, 100, 'second'), null);
+  assert.equal(framesLate(scoped, 100, 120, 'second'), 0);
 });
 
 test('an added catalogue view must report showing the clock hour', () => {
@@ -236,12 +249,12 @@ test('an added catalogue view must report showing the clock hour', () => {
 
 test('a map frame counts its work through tessellation to the end of its paint, never the wait for a swapchain image', () => {
   const records = [
-    { t: 'map_open', pid: 1, role: 'main' },
-    { t: 'map', pid: 1, frame: 1, at: 110, work_ms: 4, gpu_frame: 1, gpu_ms: 2 },
-    { t: 'map', pid: 1, frame: 2, at: 150, work_ms: 1, paint_ms: 6, acquire_ms: 3, painted_at: 118, gpu_frame: 2, gpu_ms: 2 },
+    { t: 'map_open', session: 'map', map: 1, pid: 7, role: 'main' },
+    { t: 'map', session: 'map', map: 1, frame: 1, at: 110, work_ms: 4, gpu_frame: 1, gpu_ms: 2 },
+    { t: 'map', session: 'map', map: 1, frame: 2, at: 150, work_ms: 1, paint_ms: 6, acquire_ms: 3, painted_at: 118, gpu_frame: 2, gpu_ms: 2 },
   ];
-  assert.equal(mapFrames(records, 100, 120).work.max, 9);
-  assert.match(mapFrames(records.slice(0, 2), 100, 120).reasons[0], /no paint for any frame/);
+  assert.equal(mapFrames(records, 100, 120, 'map').work.max, 9);
+  assert.match(mapFrames(records.slice(0, 2), 100, 120, 'map').reasons[0], /no paint for any frame/);
 });
 
 test('a map reports the hour it shows through its acknowledged frames', () => {
@@ -372,4 +385,28 @@ test('sessionConfinement checks each session Job affinity, hardwareConcurrency, 
   const header = profileLines(run, sweep);
   assert.ok(header[0].includes('pages: Job 4/4, hardwareConcurrency=4'));
   assert.ok(header[0].includes('playback: Job 3/4 (NOT ALL CONFINED), hardwareConcurrency=16, 4 lanes'));
+});
+
+test('map playback counts the acknowledged hours actually presented, never missing readings as zero', () => {
+  const frames = [
+    { t: 'map_open', session: 'map', map: 1, pid: 7, role: 'main' },
+    { t: 'map', session: 'map', map: 1, at: 110, work_ms: 6 },
+    { t: 'map', session: 'map', map: 1, at: 130, work_ms: 6, acquire_ms: 0, painted_at: 115 },
+    { t: 'map', session: 'map', map: 1, at: 150, work_ms: 6, acquire_ms: 0, painted_at: 135 },
+  ];
+  const readings = [
+    { t: 'map_state', session: 'map', view: 'w', at: 112, drawn_at: 107, hour: 3, loading: false },
+    { t: 'map_state', session: 'map', view: 'w', at: 132, drawn_at: 127, hour: 4, loading: true },
+    { t: 'map_state', session: 'map', view: 'w', at: 134, drawn_at: 127, hour: 5, blank: true },
+    { t: 'map_state', session: 'map', view: 'w', at: 136, drawn_at: 127, hour: null, loading: false },
+    { t: 'map_state', session: 'other', view: 'w', at: 132, drawn_at: 127, hour: 6, loading: false },
+  ];
+  const window = { session: 'map', view: 'w', from: 100, to: 140 };
+  assert.equal(presentedHours(readings, frames, window), 2);
+  assert.equal(presentedHours(readings.slice(0, 1), frames, window), 1);
+  assert.equal(presentedHours([{ ...readings[0], at: 125 }], frames, { ...window, from: 120 }), 0);
+  assert.equal(presentedHours(readings.filter(record => record.blank || record.hour === null), frames, window), null);
+  assert.equal(presentedHours([], frames, window), null);
+  assert.equal(presentedHours(readings, [], window), null);
+  assert.equal(presentedHours(readings, frames, { ...window, view: null }), null);
 });

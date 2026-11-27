@@ -358,9 +358,8 @@ await phase('map', async () => {
   await s.step('map', 'pop-out', 'open settings', () => s.click(settings), { done: menu });
   const hour = (await s.timeline()).value;
   const loaded = `__e2e.popoutStates.find(x => x.receivedAt > __e2e.t0Epoch && x.status?.ready && x.status.viewer?.path && x.status.viewer.hour === ${hour} && !x.status.error && !x.error)`;
-  const opened = await s.step('map', 'pop-out', 'open pop-out', () => s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Pop out map', partial: true }),
+  await s.step('map', 'pop-out', 'open pop-out', () => s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Pop out map', partial: true }),
     { done: loaded, timeout: 20_000 });
-  opened.hour = hour;
   if (!await reached('Close pop-out map')) await s.fail('map', 'pop-out', 'opened', 'the pop-out map never opened within 20 s');
   await s.step('map', 'pop-out', 'close pop-out', () => s.click('.map-controls-menu:popover-open .map-menu-action', { text: 'Close pop-out map', partial: true }),
     { done: `__e2e.popoutStates.some(x => x.receivedAt > __e2e.t0Epoch && x.open === false)`, timeout: 10_000 });
