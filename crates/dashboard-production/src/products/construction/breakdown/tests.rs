@@ -218,6 +218,7 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     assert_eq!(gap_assignment(Some(120), Some(100), 122), Some((false, 122)));
     assert_eq!(gap_assignment(Some(60), Some(70), 61), Some((false, 61)));
     assert_eq!(gap_assignment(Some(60), Some(70), 80), Some((true, 80)));
+    assert_eq!(gap_assignment(Some(100), Some(100), 105), None);
 
     let deferred = Facts {
         from: 100,

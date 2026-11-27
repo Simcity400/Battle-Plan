@@ -272,15 +272,20 @@ fn a_line_works_on_its_kinds_leaves_and_lacks_only_output_it_had() {
     assert_eq!(leaf_keys(&line), [(true, false, 300, 12, none)]);
     let linked = Some(P::OUTPUT_LINKED);
     let read = [(90, Some(P::OUTPUT_KNOWN), true), (100, linked, true), (110, linked, true)];
-    assert_eq!(dated_gaps(&read, Some((140, line.output_reason, line.had_output))), [(100, SpendingGap::LinkedOutput)], "a gap is dated at the first read carrying it");
-    assert_eq!(dated_gaps(&read[..1], Some((140, P::OUTPUT_FINAL_MISSING, true))), [(140, SpendingGap::FinalOutputMissing)], "a final output missing is known at the line's end");
-    assert_eq!(dated_gaps(&read[..1], None), Vec::<(i32, SpendingGap)>::new(), "a final reason after the branch leaves the run is not appended");
+    assert_eq!(dated_gaps(&read, Some((140, line.output_reason, line.had_output)), &[]), [(100, SpendingGap::LinkedOutput)], "a gap is dated at the first read carrying it");
+    assert_eq!(dated_gaps(&read[..1], Some((140, P::OUTPUT_FINAL_MISSING, true)), &[]), [(140, SpendingGap::FinalOutputMissing)], "a final output missing is known at the line's end");
+    assert_eq!(dated_gaps(&read[..1], None, &[]), Vec::<(i32, SpendingGap)>::new(), "a final reason after the branch leaves the run is not appended");
     assert_eq!(
-        dated_gaps(&[(105, Some(P::OUTPUT_INEXACT), true), (110, Some(P::OUTPUT_KNOWN), true), (125, Some(P::OUTPUT_INEXACT), true)], None),
+        dated_gaps(&[(105, Some(P::OUTPUT_INEXACT), true), (110, Some(P::OUTPUT_KNOWN), true), (125, Some(P::OUTPUT_INEXACT), true)], None, &[]),
         [(105, SpendingGap::InexactOutput), (125, SpendingGap::InexactOutput)],
         "an exact reading between two gaps preserves both gap episodes"
     );
-    assert_eq!(dated_gaps(&[(90, Some(P::OUTPUT_NOT_RECORDED), false)], Some((140, P::OUTPUT_NOT_RECORDED, false))), Vec::<(i32, SpendingGap)>::new(), "a line the output table never listed lacks nothing");
+    assert_eq!(
+        dated_gaps(&[(105, Some(P::OUTPUT_INEXACT), true)], None, &[(100, true), (120, false)]),
+        [(105, SpendingGap::InexactOutput), (120, SpendingGap::InexactOutput)],
+        "a continuous gap emits a second event when active work purpose switches"
+    );
+    assert_eq!(dated_gaps(&[(90, Some(P::OUTPUT_NOT_RECORDED), false)], Some((140, P::OUTPUT_NOT_RECORDED, false)), &[]), Vec::<(i32, SpendingGap)>::new(), "a line the output table never listed lacks nothing");
     let idle = Line { repair_work: false, ..line };
     assert_eq!(leaf_keys(&idle), [(false, false, 300, 12, none)], "a line with no work yet is a new building");
     let railway = Line { railway: true, to_state: Some(14), ..idle };
