@@ -387,6 +387,59 @@ fn new_work_flag_is_not_backdated_to_earlier_repair_charges() {
     .unwrap();
     assert!(tick_reply.breakdown.parts.iter().all(|part| part.key != "new"), "queued new level must not steal an inexact first-repair-tick gap");
     assert_eq!(tick_reply.breakdown.parts.iter().find(|part| part.key == "repair").map(|part| part.state), Some(BreakdownState::Partial));
+
+    let finish_repair_frames = (118..=123)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            frame.tables[TableId::BuildingConstruction.index()] = TableView::Complete(TableRows::BuildingConstruction(vec![BuildingConstructionRow {
+                id: 3, country: 9001, building_type: 7, target_state: 12, cost: 500_000, created_hour: 95,
+                amount: 1, repair_levels: i32::from(hour < 120), ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::RailwayConstruction.index()] = TableView::Complete(TableRows::RailwayConstruction(Vec::new())).into();
+            frame.tables[TableId::StateBuildings.index()] = TableView::Complete(TableRows::StateBuildings(vec![replay_data::rows::BuildingRow {
+                location: 12, building_type: 7, country: 9001, level: 2, healthy_level: if hour >= 120 { 2 } else { 1 }, active: true, ..Default::default()
+            }]))
+            .into();
+            frame.tables[TableId::ProvinceBuildings.index()] = TableView::Complete(TableRows::ProvinceBuildings(Vec::new())).into();
+            frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(Vec::new())).into();
+            let outputs = if hour >= 121 {
+                vec![ConstructionLineOutputRow {
+                    line: 3, since_hour: 118, exact: false,
+                    country: Recorded::Value(Some(9001)), building_type: Recorded::Value(Some(7)), target_state: Recorded::Value(Some(12)), ..Default::default()
+                }]
+            } else {
+                Vec::new()
+            };
+            frame.tables[TableId::ConstructionLineOutput.index()] = TableView::Complete(TableRows::ConstructionLineOutput(outputs)).into();
+            for table in [
+                TableId::BuildingConstruction, TableId::RailwayConstruction, TableId::StateBuildings, TableId::ProvinceBuildings, TableId::ConstructionLineOutput,
+            ] {
+                frame.metrics.table_ns[table.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let finish_replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, finish_repair_frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let finish_source = Source::from_replay(
+        SourceKey { source_id: "construction-repair-finish-to-new".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(finish_replay),
+        &cancel,
+    )
+    .unwrap();
+    let finish_reply = ConstructionBreakdown::load(
+        &finish_source,
+        &ConstructionBreakdownParams { branch_id: "1".into(), country: Country::Slot(7), hour: 122 },
+        &LoadContext { content: None },
+        &cancel,
+    )
+    .unwrap();
+    assert!(finish_reply.breakdown.parts.iter().all(|part| part.key != "repair"), "gap starting at 121 after repairs finished at 120 belongs to new buildings");
+    assert_eq!(finish_reply.breakdown.parts.iter().find(|part| part.key == "new").map(|part| part.state), Some(BreakdownState::Partial));
 }
 
 #[test]

@@ -266,7 +266,7 @@ struct LineHistory {
 
 type ReasonSteps = HashMap<u64, LineHistory>;
 
-const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::UNACCOUNTED_NEW, col::BUILT, col::POSSIBLE, col::CONSTRUCTION_RAW];
+const NEW_COLS: [usize; 6] = [col::REMAINING, col::ADDED_NEW, col::UNACCOUNTED_NEW, col::POSSIBLE, col::BUILT, col::CONSTRUCTION_RAW];
 const REPAIR_COLS: [usize; 5] = [col::REPAIR_LEVELS, col::ADDED_REPAIR, col::UNACCOUNTED_REPAIR, col::REPAIRED, col::REPAIR_RAW];
 
 fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32) -> io::Result<ReasonSteps> {
@@ -287,7 +287,7 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
     let mut out = ReasonSteps::new();
     for (key, steps) in &history.keys {
         let held = out.entry(*key as u64).or_default();
-        let (mut prev_new, mut prev_repair) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()]);
+        let (mut prev_new, mut prev_repair, mut repairs_cleared) = ([0_i64; NEW_COLS.len()], [0_i64; REPAIR_COLS.len()], false);
         for step in steps {
             let Some(cells) = step.cells.as_deref() else { continue };
             let had_output = number(cells, since).is_some();
@@ -309,12 +309,12 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
             let tick = number(cells, repair).and_then(|value| i32::try_from(value).ok());
             held.repair_tick = held.repair_tick.or(tick);
             let (rep_now, rem_now) = (number(cells, rep_lvl).unwrap_or(0), number(cells, rem).unwrap_or(0));
-            let repair_ended = prev_repair[0] > 0 && rep_now == 0;
+            if rep_now > 0 { repairs_cleared = false; } else if prev_repair[0] > 0 { repairs_cleared = true; }
             let mut new_grew = false;
             for (slot, &column) in new_at.iter().enumerate() {
                 if let Some(value) = number(cells, column) {
                     if value > 0 && held.first_new.is_none() { held.first_new = Some(step.hour); }
-                    if slot >= 3 && value > prev_new[slot] { new_grew = true; }
+                    if slot >= 4 && value > prev_new[slot] { new_grew = true; }
                     prev_new[slot] = value;
                 }
             }
@@ -330,7 +330,8 @@ fn reason_steps(query: &Query<'_>, run: u32, ids: &[u128], first: i32, last: i32
                 Some(true)
             } else if new_grew && !repair_grew {
                 Some(false)
-            } else if rem_now > 0 && !repair_grew && (repair_ended || held.purpose.last().is_none_or(|&(_, r)| !r)) {
+            } else if rem_now > 0 && !repair_grew && (repairs_cleared || held.purpose.last().is_none_or(|&(_, r)| !r)) {
+                repairs_cleared = false;
                 Some(false)
             } else {
                 None
@@ -453,7 +454,6 @@ pub(crate) fn facts(source: &Source, query: &Query<'_>, country: &Country, conte
             let entry = seen.entry(line.id).or_insert_with(|| SeenLine { line: line.clone(), matched, history: LineHistory::default() });
             entry.matched |= matched;
             entry.line.country = entry.line.country.or(line.country);
-            entry.line.building = entry.line.building.or(line.building);
             let mut part_last_known = None;
             if let Some(part) = steps.remove(&line.id) {
                 part_last_known = part.last_known_owner;
