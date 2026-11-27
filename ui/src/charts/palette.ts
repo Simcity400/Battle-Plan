@@ -1,6 +1,7 @@
 import { contrast, isDark, oklchToRgb, parseColor, rgbaColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Oklch, Rgb } from '../shell/appearance/color';
 import { colourDistance, NearestColours } from './paletteDistance.ts';
+import { ContrastGamut } from './paletteGamut.ts';
 
 const CATEGORICAL = {
   dark: ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9', '#e66767', '#008300'],
@@ -100,7 +101,7 @@ const GOLDEN_ANGLE = 137.50776405003785;
 const LIGHTNESS_STEP = 0.7548776662466927;
 const CHROMA_STEP = 0.5698402909980532;
 const GENERATED_CONTRAST = 4.2;
-const MAX_ORDINAL_SLOTS = 2048;
+const ORDINAL_TABLE_SIZE = 2048;
 
 export type AuthoredColour = readonly [number, number, number] | Rgb | string;
 
@@ -123,6 +124,7 @@ interface GeneratedPool {
   readonly rgbs: Rgb[];
   readonly used: Set<string>;
   cursor: number;
+  gamut?: { readonly sourceAvoid: readonly string[]; readonly colors: ContrastGamut };
 }
 
 const BLACK = { r: 0, g: 0, b: 0 };
@@ -299,11 +301,9 @@ function nextUniqueFallback(pool: GeneratedPool, baseColor: Oklch): { hex: strin
 }
 
 function generatedAt(pool: GeneratedPool, index: number): string {
-  const limit = Math.max(1, MAX_ORDINAL_SLOTS - pool.base.length);
-  const bounded = index >= limit ? index % limit : Math.max(0, index);
   const minBaseGap = pool.target > MARK_CONTRAST ? 3 : 0;
   const minNeighbourGap = pool.target > MARK_CONTRAST ? 12 : 0;
-  while (pool.colors.length <= bounded) {
+  while (pool.colors.length <= index) {
     const prev = pool.rgbs[pool.rgbs.length - 1];
     let accepted: { hex: string; rgb: Rgb } | null = null;
     let lastColor: Oklch = { l: pool.darkSurface ? 0.72 : 0.35, c: 0.14, h: 195 };
@@ -328,7 +328,19 @@ function generatedAt(pool: GeneratedPool, index: number): string {
     pool.colors.push(accepted.hex);
     pool.rgbs.push(accepted.rgb);
   }
-  return pool.colors[bounded]!;
+  return pool.colors[index]!;
+}
+
+function ordinalGamut(pool: GeneratedPool, avoid: readonly string[]): ContrastGamut {
+  if (pool.gamut && sameStrings(pool.gamut.sourceAvoid, avoid)) return pool.gamut.colors;
+  if (pool.base.length < ORDINAL_TABLE_SIZE) generatedAt(pool, ORDINAL_TABLE_SIZE - pool.base.length - 1);
+  const constraints = [
+    { background: pool.background, ratio: MARK_CONTRAST },
+    ...pool.extras.map(background => ({ background, ratio: EXTRA_SURFACE_CONTRAST })),
+  ];
+  const colors = new ContrastGamut(constraints, [...pool.used, ...avoid]);
+  pool.gamut = { sourceAvoid: avoid.slice(), colors };
+  return colors;
 }
 
 function channelByte(channel: number): number {
@@ -365,13 +377,18 @@ function colourAtSlot(surface: string, slot: number, options?: ColourOptions): s
 
 export function colour(surface: string, ordinal: number, options?: ColourOptions): string {
   const raw = Number.isFinite(ordinal) ? Math.max(0, Math.floor(ordinal)) : 0;
-  const slot = raw >= MAX_ORDINAL_SLOTS ? raw % MAX_ORDINAL_SLOTS : raw;
+  let slot = raw;
+  if (raw >= ORDINAL_TABLE_SIZE) {
+    const gamut = ordinalGamut(poolFor(surface, options), options?.avoid ?? EMPTY);
+    slot = raw % (ORDINAL_TABLE_SIZE + gamut.size);
+    if (slot >= ORDINAL_TABLE_SIZE) return gamut.at(slot - ORDINAL_TABLE_SIZE);
+  }
   const candidate = colourAtSlot(surface, slot, options);
   if (!options?.avoid?.length) return candidate;
   const avoid = avoidedColours(options.avoid);
   if (!avoid.has(candidate.toLowerCase())) return candidate;
   const pool = poolFor(surface, options);
-  const limit = Math.max(1, MAX_ORDINAL_SLOTS - pool.base.length);
+  const limit = Math.max(1, ORDINAL_TABLE_SIZE - pool.base.length);
   const start = Math.max(0, slot - pool.base.length) % limit;
   for (let tries = 0; tries < limit; tries++) {
     const next = generatedAt(pool, (start + tries) % limit);
