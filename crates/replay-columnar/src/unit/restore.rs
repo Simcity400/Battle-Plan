@@ -293,6 +293,19 @@ impl StringTable {
         self.bytes.get(from as usize..from as usize + length as usize)
     }
 
+    fn packed(self) -> Self {
+        if self.at.is_empty() {
+            return Self::default();
+        }
+        let mut bytes = Vec::with_capacity(self.at.iter().map(|&(_, _, length)| length as usize).sum());
+        let at = self.at.iter().map(|&(id, from, length)| {
+            let start = bytes.len() as u32;
+            bytes.extend_from_slice(&self.bytes[from as usize..from as usize + length as usize]);
+            (id, start, length)
+        }).collect();
+        Self { bytes, at }
+    }
+
     pub(crate) fn without_held_in(mut self, earlier: &StringTable) -> io::Result<Self> {
         let mut conflict = None;
         self.at.retain(|&(id, from, length)| match earlier.get(id) {
@@ -305,7 +318,7 @@ impl StringTable {
         });
         match conflict {
             Some(id) => Err(invalid(format!("A writer's string {id} is held as another text"))),
-            None => Ok(self),
+            None => Ok(self.packed()),
         }
     }
 
@@ -365,15 +378,7 @@ pub(crate) fn read_meta_lazily(bytes: Vec<u8>, length: usize, kinds: &[Kind], ta
         return Err(invalid(format!("A writer's string {} is held as another text", pair[0].0)));
     }
     at.dedup_by_key(|&mut (id, ..)| id);
-    let (Some(first), Some(last)) = (at.iter().map(|&(_, from, _)| from).min(), at.iter().map(|&(_, from, length)| from + length).max()) else {
-        return Ok((meta, StringTable::default()));
-    };
-    if (last - first) as usize * 2 < bytes.len() {
-        let kept = bytes[first as usize..last as usize].to_vec();
-        at.iter_mut().for_each(|entry| entry.1 -= first);
-        return Ok((meta, StringTable { bytes: kept, at }));
-    }
-    Ok((meta, StringTable { bytes, at }))
+    Ok((meta, StringTable { bytes, at }.packed()))
 }
 
 fn read_meta_with(bytes: &[u8], kinds: &[Kind], table: &mut TableState, each: &mut dyn FnMut(u32, &[u8], usize)) -> io::Result<Meta> {

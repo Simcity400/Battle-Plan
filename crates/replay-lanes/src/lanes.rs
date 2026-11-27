@@ -471,10 +471,10 @@ fn resolve_log_reasons(
         if !missing.iter().all(|id| reasons.contains_key(id)) {
             let prior = if *page_idx == 0 { entry.first.as_ref() } else { pages[*page_idx - 1].entry.unit.restore.as_ref() };
             for restore in [prior, entry.restore.as_ref()].into_iter().flatten() {
-                let (_, _, tables) = unit::reader::restore_with_string_tables(source, restore, kinds, &[], false)?;
-                for &id in &missing {
-                    if let Some(bytes) = tables.iter().find_map(|table| table.get(id)) {
-                        reasons.entry(id).or_insert_with(|| String::from_utf8_lossy(bytes).into_owned());
+                let (_, meta) = unit::reader::restore(source, restore, kinds, &[])?;
+                for (id, bytes) in meta.strings {
+                    if missing.contains(&id) {
+                        reasons.entry(id).or_insert_with(|| String::from_utf8_lossy(&bytes).into_owned());
                     }
                 }
                 if missing.iter().all(|id| reasons.contains_key(id)) {
