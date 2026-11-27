@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBoundedReadView } from '../../families/boundedView.ts';
 import type { BarsDataRow } from '../../families/bars/model.ts';
-import type { CasualtyMatrixReply } from '../../generated/dashboard';
+import type { CasualtyMatrixCell, CasualtyMatrixReply } from '../../generated/dashboard';
 import { casualtyMatrixDeclaration, casualtyMatrixProjection, projectCasualtyMatrix, projectCasualtyOpponents } from './casualtiesBetweenProjection.ts';
 import { EVER_UNRECORDED } from '../../dashboard/groups.ts';
 import { NO_MEMBERS } from '../../dashboard/noMembers.ts';
@@ -13,13 +13,26 @@ import { deriveMatrixAudit, deriveMatrixMirror, deriveMatrixTooltip, matrixCellA
 const HOUR = 60_810_000;
 let nextIdentity = 1;
 const country = (tag: string, dealt: string | null, taken: string | null, slot = nextIdentity++, countryId = slot * 10, shownHour: number | null = null) => ({
-  tag, slot, countryId, shownHour, factionId: null, factionName: null, factionNameMissing: null, dealt, taken,
+  key: JSON.stringify([slot, countryId]), tag, slot, countryId, shownHour, factionId: null, factionName: null, factionNameMissing: null, dealt, taken,
   missing: dealt === null || taken === null ? 'A war relation\'s casualties were not recorded at this hour' : null,
 });
 
-const reply: CasualtyMatrixReply = {
+function matrixReply(
+  fixture: Omit<CasualtyMatrixReply, 'order' | 'rows'> & {
+    cells: (Omit<CasualtyMatrixCell, 'key'> & { row: number; column: number })[];
+  },
+): CasualtyMatrixReply {
+  const { countries, cells, ...rest } = fixture;
+  const order = countries.map(({ key }) => key);
+  const rows = order.flatMap((key, at) => {
+    const paired = cells.filter(cell => cell.row === at).map(({ row, column, ...cell }) => ({ key: order[column]!, ...cell }));
+    return paired.length ? [{ key, cells: paired }] : [];
+  });
+  return { ...rest, countries: [...countries].reverse(), order, rows };
+}
+
+const reply: CasualtyMatrixReply = matrixReply({
   countries: [country('GER', null, '100'), country('POL', '100', '900'), country('FRA', '0', '0')],
-  order: [0, 1, 2],
   cells: [
     { row: 0, column: 1, dealt: '900', missing: null, incomplete: null },
     { row: 1, column: 0, dealt: '100', missing: null, incomplete: 'Part of this pair\'s history fell in a recording gap; the figure may be low' },
@@ -33,7 +46,7 @@ const reply: CasualtyMatrixReply = {
   largestSide: '0',
   missing: null,
   warnings: [],
-};
+});
 
 const view = (data: unknown) => createBoundedReadView({ hour: HOUR, panels: new Map([['main', data]]) });
 
@@ -52,15 +65,30 @@ test('casualty matrix: not recorded pairs and totals are hatched, a recorded zer
   assert.ok(model.legend?.entries?.some(entry => entry.hatched));
 });
 
+test('the matrix refuses unknown or duplicate keys before drawing', () => {
+  const row = reply.rows[0]!;
+  const cell = row.cells[0]!;
+  for (const [rows, reason] of [
+    [[{ ...row, key: 'unknown' }], 'unknown row key'],
+    [[row, row], 'duplicate row key'],
+    [[{ ...row, cells: [{ ...cell, key: 'unknown' }] }], 'unknown column key'],
+    [[{ ...row, cells: [cell, cell] }], 'duplicate column key'],
+  ] as const) {
+    const model = projectCasualtyMatrix(view({ ...reply, rows }));
+    assert.equal(model.refused, `Invalid casualty matrix reply: ${reason}`);
+    assert.equal(model.cells.present.size, 0);
+  }
+});
+
 test('one country by opponent: taken on the left, dealt on the right, missing never zero', () => {
   const opponents: CasualtyMatrixReply = {
     ...reply,
-    subject: 0,
+    subject: reply.order[0]!,
     order: [],
-    cells: [],
+    rows: [],
     opponents: [
-      { country: 1, dealt: '900', taken: '100', missing: null, incomplete: null },
-      { country: 2, dealt: null, taken: null, missing: 'A war relation\'s casualties were not recorded at this hour', incomplete: null },
+      { key: reply.order[1]!, dealt: '900', taken: '100', missing: null, incomplete: null },
+      { key: reply.order[2]!, dealt: null, taken: null, missing: 'A war relation\'s casualties were not recorded at this hour', incomplete: null },
     ],
     largestSide: '900',
   };
@@ -74,15 +102,36 @@ test('one country by opponent: taken on the left, dealt on the right, missing ne
   assert.equal(model.summaryText, undefined, 'a total that is not recorded is not shown');
 });
 
+test('country keys must name their own holder and every opponent reply must resolve its subject', () => {
+  const [first, second, ...rest] = reply.countries;
+  const countries = [{ ...first!, key: second!.key }, { ...second!, key: first!.key }, ...rest];
+  const matrix = projectCasualtyMatrix(view({ ...reply, countries }));
+  assert.equal(matrix.refused, 'Invalid casualty matrix reply: unknown or mismatched country key');
+  assert.equal(matrix.cells.present.size, 0);
+
+  const empty = { ...reply, order: [], rows: [], subject: reply.order[0]! };
+  const opponent = { key: reply.order[1]!, dealt: '900', taken: '100', missing: null, incomplete: null };
+  assert.equal(projectCasualtyOpponents(view(empty)).empty, 'No casualties with any opponent yet.');
+  for (const [badReply, reason] of [
+    [{ ...empty, subject: 'unknown' }, 'unknown subject key'],
+    [{ ...empty, subject: null, opponents: [opponent] }, 'unknown subject key'],
+    [{ ...empty, countries, opponents: [opponent] }, 'mismatched country key'],
+  ] as const) {
+    const model = projectCasualtyOpponents(view(badReply));
+    assert.equal(model.empty, `Invalid casualty opponents reply: ${reason}`);
+    assert.equal(model.emptyKind, 'unavailable');
+    assert.deepEqual(model.rows, []);
+  }
+});
+
 test('group selections filter casualty matrix at the displayed hour for both touching and between modes', () => {
-  const groupReply: CasualtyMatrixReply = {
+  const groupReply: CasualtyMatrixReply = matrixReply({
     countries: [
       country('AAA', '300', '100'),
       country('BBB', '100', '200'),
       country('CCC', '900', '100'),
       country('DDD', null, '900'),
     ],
-    order: [0, 1, 2, 3],
     cells: [
       { row: 0, column: 1, dealt: '200', missing: null, incomplete: null },
       { row: 0, column: 2, dealt: '100', missing: null, incomplete: null },
@@ -96,7 +145,7 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     largestSide: '0',
     missing: null,
     warnings: [],
-  };
+  });
   const at = (hour: number) => createBoundedReadView({ hour, panels: new Map([['main', groupReply]]) });
   const membership = { AAA: [[100, 299]] as const, BBB: [[100, 299]] as const, CCC: [[600, 900]] as const };
   const unobserved = [[500, 550]] as const;
@@ -141,9 +190,8 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     pastEverGroups,
     100,
   );
-  const pastReply: CasualtyMatrixReply = {
+  const pastReply: CasualtyMatrixReply = matrixReply({
     countries: [country('AAA', '125', '0'), country('BBB', '0', '125')],
-    order: [0, 1],
     cells: [{ row: 0, column: 1, dealt: '125', missing: null, incomplete: null }],
     most: '125',
     largestDealt: '125',
@@ -152,7 +200,7 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     largestSide: '0',
     missing: null,
     warnings: [],
-  };
+  });
   const pastMember = casualtyMatrixProjection.project(
     createBoundedReadView({ hour: 15, panels: new Map([['main', pastReply]]) }),
     { membership: pastMembership, unobserved: [], membershipMode: 'ever', between: false },
@@ -177,9 +225,8 @@ test('group selections filter casualty matrix at the displayed hour for both tou
   );
   assert.deepEqual(renamedMembership, { AAA: [[0, 9]], BBB: [[10, 100]] });
 
-  const crossReply: CasualtyMatrixReply = {
+  const crossReply: CasualtyMatrixReply = matrixReply({
     countries: [country('AAA', '300', '0'), country('BBB', '50', '200'), country('CCC', '0', '150')],
-    order: [0, 1, 2],
     cells: [
       { row: 0, column: 1, dealt: '200', missing: null, incomplete: null },
       { row: 0, column: 2, dealt: '100', missing: null, incomplete: null },
@@ -192,7 +239,7 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     largestSide: '0',
     missing: null,
     warnings: [],
-  };
+  });
   const crossModel = casualtyMatrixProjection.project(
     createBoundedReadView({ hour: 200, panels: new Map([['main', crossReply]]) }),
     { membership: { AAA: [[100, 299]] as const }, unobserved: [], membershipMode: 'hour', between: false },
@@ -213,13 +260,12 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     ],
     unobserved: { humans: [], factions: [], wars: [], unattributed: [] },
   };
-  const reusedReply: CasualtyMatrixReply = {
+  const reusedReply: CasualtyMatrixReply = matrixReply({
     countries: [
       country('AAA', '100', '0', 1, 10),
       country('AAA', '25', '0', 2, 20),
       country('BBB', '0', '125', 3, 30),
     ],
-    order: [0, 1, 2],
     cells: [
       { row: 0, column: 2, dealt: '100', missing: null, incomplete: null },
       { row: 1, column: 2, dealt: '25', missing: null, incomplete: null },
@@ -231,7 +277,7 @@ test('group selections filter casualty matrix at the displayed hour for both tou
     largestSide: '0',
     missing: null,
     warnings: [],
-  };
+  });
   const hourIds = datedIdentityMembership({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, reusedGroups, 300);
   const everIds = datedIdentityMembership({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, reusedGroups, 300);
   assert.deepEqual(hourIds, { '[2,20]': [[200, 299]] });
@@ -254,7 +300,7 @@ test('group selections filter casualty matrix at the displayed hour for both tou
   assert.equal(matrixCellAt(reusedAll, 1, 2).kind, 'value');
   assert.equal(casualtyMatrixDeclaration.countries.mode === 'multi' && casualtyMatrixDeclaration.countries.datedAtHour, true);
 
-  const missingTable: CasualtyMatrixReply = { ...crossReply, order: [], cells: [], missing: 'Casualty table not recorded' };
+  const missingTable: CasualtyMatrixReply = { ...crossReply, order: [], rows: [], missing: 'Casualty table not recorded' };
   const emptyBeforeJoin = casualtyMatrixProjection.project(
     createBoundedReadView({ hour: 200, panels: new Map([['main', missingTable]]) }),
     { membership: { AAA: [[600, 700]] as const }, unobserved: [], membershipMode: 'hour', between: false },
@@ -291,13 +337,12 @@ test('dated ever-group requests full matrix so a former member survives tag reus
     assert.deepEqual(sourcePlan.entries[0]!.read.coverage, { mode: 'population', form: 'all' });
   }
 
-  const fullReply: CasualtyMatrixReply = {
+  const fullReply: CasualtyMatrixReply = matrixReply({
     countries: [
       country('D04', '100', '0', 1, 10, 99),
       country('D04', '25', '0', 2, 20, null),
       country('BBB', '0', '125', 3, 30, null),
     ],
-    order: [0, 1, 2],
     cells: [
       { row: 0, column: 2, dealt: '100', missing: null, incomplete: null },
       { row: 1, column: 2, dealt: '25', missing: null, incomplete: null },
@@ -309,7 +354,7 @@ test('dated ever-group requests full matrix so a former member survives tag reus
     largestSide: '0',
     missing: null,
     warnings: [],
-  };
+  });
   const askedHours: { readonly tag: string; readonly hour: number | undefined }[] = [];
   const identityProvider = (
     names: (tag: string, atHour: number | undefined) => string,
@@ -352,11 +397,11 @@ test('dated ever-group requests full matrix so a former member survives tag reus
   const oppReply: CasualtyMatrixReply = {
     ...fullReply,
     order: [],
-    cells: [],
-    subject: 2,
+    rows: [],
+    subject: fullReply.order[2]!,
     opponents: [
-      { country: 0, dealt: '0', taken: '100', missing: null, incomplete: null },
-      { country: 1, dealt: '0', taken: '25', missing: null, incomplete: null },
+      { key: fullReply.order[0]!, dealt: '0', taken: '100', missing: null, incomplete: null },
+      { key: fullReply.order[1]!, dealt: '0', taken: '25', missing: null, incomplete: null },
     ],
     largestSide: '100',
   };

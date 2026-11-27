@@ -47,6 +47,7 @@ pub struct CasualtyMatrixParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyMatrixCountry {
+    pub key: String,
     pub tag: String,
     pub slot: u32,
     pub country_id: u32,
@@ -66,9 +67,7 @@ pub struct CasualtyMatrixCountry {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyMatrixCell {
-    #[doc = " Indexes into `countries`: the row dealt the casualties to the column."]
-    pub row: u32,
-    pub column: u32,
+    pub key: String,
     #[doc = " Decimal string; null where not recorded (`missing` says why)."]
     pub dealt: Option<String>,
     pub missing: Option<String>,
@@ -77,9 +76,16 @@ pub struct CasualtyMatrixCell {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+pub struct CasualtyMatrixRow {
+    pub key: String,
+    pub cells: Vec<CasualtyMatrixCell>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyOpponent {
-    pub country: u32,
+    pub key: String,
     #[doc = " Casualties the subject dealt to this opponent."]
     pub dealt: Option<String>,
     #[doc = " Casualties the subject took from this opponent."]
@@ -93,17 +99,17 @@ pub struct CasualtyOpponent {
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyMatrixReply {
     pub countries: Vec<CasualtyMatrixCountry>,
-    #[doc = " Indexes into `countries`, grouped by faction (by faction name, factionless last), then by casualties dealt."]
+    #[doc = " Country keys grouped by faction (by faction name, factionless last), then by casualties dealt."]
     #[doc = " Rows and columns are the same countries in the same order."]
-    pub order: Vec<u32>,
-    #[doc = " Pairs that were at war, by row then column; every other pair dealt none."]
-    pub cells: Vec<CasualtyMatrixCell>,
+    pub order: Vec<String>,
+    #[doc = " Pairs that were at war, keyed by the countries that dealt and took the casualties."]
+    pub rows: Vec<CasualtyMatrixRow>,
     #[doc = " The largest displayed cell, for the colour scale."]
     pub most: String,
     #[doc = " The largest total dealt among the rows, for the total bars."]
     pub largest_dealt: String,
     #[doc = " With a subject: its opponents, most casualties both ways first; ties by tag."]
-    pub subject: Option<u32>,
+    pub subject: Option<String>,
     pub opponents: Vec<CasualtyOpponent>,
     #[doc = " The largest single side among the opponents, for the bar scale."]
     pub largest_side: String,
@@ -188,17 +194,13 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
         *held = add(*held, sum.dealt);
     }
     let volume = |identity: Identity| dealt.get(&identity).copied().flatten().unwrap_or(0) + taken.get(&identity).copied().flatten().unwrap_or(0);
-    let mut countries: Vec<CasualtyMatrixCountry> = Vec::new();
-    let mut index: HashMap<Identity, u32> = HashMap::new();
-    let mut intern = |identity: Identity, countries: &mut Vec<CasualtyMatrixCountry>| -> u32 {
-        if let Some(&at) = index.get(&identity) {
-            return at;
-        }
-        let at = countries.len() as u32;
+    let key = |(slot, id): Identity| format!("[{slot},{id}]");
+    let country = |identity: Identity| {
         let faction = shape.factions.get(&identity);
         let total_dealt = dealt.get(&identity).copied().unwrap_or(Some(0));
         let total_taken = taken.get(&identity).copied().unwrap_or(Some(0));
-        countries.push(CasualtyMatrixCountry {
+        CasualtyMatrixCountry {
+            key: key(identity),
             tag: tag_of(identity).to_owned(),
             slot: identity.0,
             country_id: identity.1,
@@ -209,14 +211,12 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
             dealt: text(total_dealt),
             taken: text(total_taken),
             missing: (total_dealt.is_none() || total_taken.is_none()).then(|| COUNTER_NOT_RECORDED.to_owned()),
-        });
-        index.insert(identity, at);
-        at
+        }
     };
     let mut reply = CasualtyMatrixReply {
         countries: Vec::new(),
         order: Vec::new(),
-        cells: Vec::new(),
+        rows: Vec::new(),
         most: "0".to_owned(),
         largest_dealt: "0".to_owned(),
         subject: None,
@@ -231,15 +231,16 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
         let side = |from: Identity, to: Identity| pairs.get(&(from, to));
         let both = |opponent: Identity| side(subject, opponent).and_then(|sum| sum.dealt).unwrap_or(0) + side(opponent, subject).and_then(|sum| sum.dealt).unwrap_or(0);
         opponents.sort_by(|&a, &b| both(b).cmp(&both(a)).then_with(|| tag_of(a).cmp(tag_of(b))).then(a.cmp(&b)));
-        reply.subject = Some(intern(subject, &mut countries));
+        reply.subject = Some(key(subject));
+        reply.countries.push(country(subject));
         let mut largest = 0i128;
         for opponent in opponents {
             let out = side(subject, opponent).cloned().unwrap_or_default();
             let back = side(opponent, subject).cloned().unwrap_or_default();
             largest = largest.max(out.dealt.unwrap_or(0)).max(back.dealt.unwrap_or(0));
-            let country = intern(opponent, &mut countries);
+            reply.countries.push(country(opponent));
             reply.opponents.push(CasualtyOpponent {
-                country,
+                key: key(opponent),
                 dealt: text(out.dealt),
                 taken: text(back.dealt),
                 missing: (out.dealt.is_none() || back.dealt.is_none()).then(|| COUNTER_NOT_RECORDED.to_owned()),
@@ -247,7 +248,7 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
             });
         }
         reply.largest_side = largest.to_string();
-        reply.countries = countries;
+        reply.countries.sort_unstable_by_key(|country| (country.slot, country.country_id));
         return reply;
     }
 
@@ -275,29 +276,30 @@ pub fn build(pairs: &Pairs, shape: &Shape<'_>) -> CasualtyMatrixReply {
     };
     let score = |identity: Identity| dealt.get(&identity).copied().flatten().unwrap_or(0);
     let mut ordered: Vec<Identity> = shown.into_iter().collect();
+    ordered.sort_unstable();
+    reply.countries = ordered.iter().copied().map(country).collect();
     ordered.sort_by(|&a, &b| group_key(a).cmp(&group_key(b)).then(score(b).cmp(&score(a))).then_with(|| tag_of(a).cmp(tag_of(b))).then(a.cmp(&b)));
-    let position: HashMap<Identity, u32> = ordered.iter().enumerate().map(|(at, &id)| (id, at as u32)).collect();
-    reply.order = ordered.iter().map(|&id| intern(id, &mut countries)).collect();
+    reply.order = ordered.iter().copied().map(key).collect();
     let mut most = 0i128;
     let mut largest = 0i128;
     for &id in &ordered {
         largest = largest.max(score(id));
     }
-    for (&(from, to), sum) in kept {
-        let (Some(&row), Some(&column)) = (position.get(&from), position.get(&to)) else { continue };
-        most = most.max(sum.dealt.unwrap_or(0));
-        reply.cells.push(CasualtyMatrixCell {
-            row,
-            column,
-            dealt: text(sum.dealt),
-            missing: sum.dealt.is_none().then(|| COUNTER_NOT_RECORDED.to_owned()),
-            incomplete: sum.incomplete.then(|| INCOMPLETE.to_owned()),
+    for pairs in kept.chunk_by(|(left, _), (right, _)| left.0 == right.0) {
+        let (&(from, _), _) = pairs[0];
+        let cells = pairs.iter().map(|&(&(_, to), sum)| {
+            most = most.max(sum.dealt.unwrap_or(0));
+            CasualtyMatrixCell {
+                key: key(to),
+                dealt: text(sum.dealt),
+                missing: sum.dealt.is_none().then(|| COUNTER_NOT_RECORDED.to_owned()),
+                incomplete: sum.incomplete.then(|| INCOMPLETE.to_owned()),
+            }
         });
+        reply.rows.push(CasualtyMatrixRow { key: key(from), cells: cells.collect() });
     }
-    reply.cells.sort_by_key(|cell| (cell.row, cell.column));
     reply.most = most.to_string();
     reply.largest_dealt = largest.to_string();
-    reply.countries = countries;
     reply
 }
 
@@ -340,7 +342,7 @@ fn empty(missing: Option<String>, warnings: Vec<String>) -> CasualtyMatrixReply 
     CasualtyMatrixReply {
         countries: Vec::new(),
         order: Vec::new(),
-        cells: Vec::new(),
+        rows: Vec::new(),
         most: "0".to_owned(),
         largest_dealt: "0".to_owned(),
         subject: None,
@@ -414,6 +416,7 @@ impl AtHour for CasualtyMatrix {
             CasualtyMatrixParams::decl(),
             CasualtyMatrixCountry::decl(),
             CasualtyMatrixCell::decl(),
+            CasualtyMatrixRow::decl(),
             CasualtyOpponent::decl(),
             CasualtyMatrixReply::decl(),
         ]
@@ -592,17 +595,26 @@ mod tests {
     #[test]
     fn an_unrecorded_counter_makes_the_pair_and_its_totals_missing_never_zero() {
         let tags = tags_map();
-        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, FRA, None)], known, |_| false);
-        let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: None, factions: &no_factions() });
-        let at = |name: &str| reply.countries.iter().position(|country| country.tag == name).unwrap() as u32;
-        let cell = reply.cells.iter().find(|cell| cell.row == reply.order.iter().position(|&i| i == at("GER")).unwrap() as u32
-            && cell.column == reply.order.iter().position(|&i| i == at("FRA")).unwrap() as u32).unwrap();
-        assert_eq!(cell.dealt, None);
-        assert_eq!(cell.missing.as_deref(), Some(COUNTER_NOT_RECORDED));
-        let germany = &reply.countries[at("GER") as usize];
+        let pairs = fold(&[counter(GER, POL, Some((100, 900))), counter(GER, FRA, None)], known, |id| id == POL);
+        let shape = Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: None, factions: &no_factions() };
+        let reply = build(&pairs, &shape);
+        let before = serde_json::to_value(&reply).unwrap();
+        let chosen = [GER, POL].into_iter().collect();
+        let after = serde_json::to_value(build(&pairs, &Shape { chosen: Some(&chosen), between: true, ..shape })).unwrap();
+        let missing = &before["rows"][0]["cells"][1];
+        assert_eq!(missing["key"], "[4,40]");
+        assert_eq!(missing["dealt"], serde_json::Value::Null);
+        assert_eq!(missing["missing"], COUNTER_NOT_RECORDED);
+        let incomplete = &before["rows"][0]["cells"][0];
+        assert_eq!(incomplete["key"], "[3,30]");
+        assert_eq!(incomplete["incomplete"], INCOMPLETE);
+        assert_eq!(after["rows"][0], serde_json::json!({"key": "[1,10]", "cells": [incomplete]}));
+        assert_eq!(after["countries"].as_array().unwrap().len(), 2);
+        let named = |tag| reply.countries.iter().find(|country| country.tag == tag).unwrap();
+        let germany = named("GER");
         assert_eq!(germany.dealt, None);
         assert!(germany.missing.is_some());
-        assert_eq!(reply.countries[at("POL") as usize].dealt.as_deref(), Some("100"));
+        assert_eq!(named("POL").dealt.as_deref(), Some("100"));
     }
 
     #[test]
@@ -614,7 +626,7 @@ mod tests {
             .map(|(id, fid, name)| (id, FactionAt { id: fid.to_owned(), name: Some(name.to_owned()), name_missing: None }))
             .collect();
         let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: None, between: false, top: None, subject: None, factions: &factions });
-        let order: Vec<&str> = reply.order.iter().map(|&at| reply.countries[at as usize].tag.as_str()).collect();
+        let order: Vec<&str> = reply.order.iter().map(|key| reply.countries.iter().find(|country| &country.key == key).unwrap().tag.as_str()).collect();
         assert_eq!(order, ["POL", "ENG", "FRA", "GER"]);
         assert_eq!(reply.largest_dealt, "1210");
         assert_eq!(reply.most, "900");
@@ -627,7 +639,7 @@ mod tests {
         let chosen: HashSet<Identity> = [GER, POL].into_iter().collect();
         let reply = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: Some(&chosen), between: true, top: None, subject: None, factions: &no_factions() });
         assert_eq!(reply.order.len(), 2);
-        assert_eq!(reply.cells.len(), 2);
+        assert_eq!(reply.rows.iter().map(|row| row.cells.len()).sum::<usize>(), 2);
         let touching = build(&pairs, &Shape { tags: &tags, shown_hours: &no_shown_hours(), chosen: Some(&chosen), between: false, top: None, subject: None, factions: &no_factions() });
         assert_eq!(touching.order.len(), 3);
     }
@@ -640,18 +652,18 @@ mod tests {
         let names: Vec<(&str, Option<&str>, Option<&str>)> = reply
             .opponents
             .iter()
-            .map(|opponent| (reply.countries[opponent.country as usize].tag.as_str(), opponent.dealt.as_deref(), opponent.taken.as_deref()))
+            .map(|opponent| (reply.countries.iter().find(|country| country.key == opponent.key).unwrap().tag.as_str(), opponent.dealt.as_deref(), opponent.taken.as_deref()))
             .collect();
         assert_eq!(names, [("ENG", Some("10"), Some("2000")), ("POL", Some("900"), Some("100")), ("FRA", Some("1"), Some("1"))]);
         assert_eq!(reply.largest_side, "2000");
         assert!(reply.opponents[2].incomplete.is_some());
-        assert!(reply.cells.is_empty());
+        assert!(reply.rows.is_empty());
     }
 
     #[test]
     fn reused_tag_keeps_each_holder_identity_separate_without_sharing_factions_or_totals() {
         const DEAD_POL: Identity = (3, 30);
-        const LIVE_POL: Identity = (5, 50);
+        const LIVE_POL: Identity = (3, 50);
         let tags: HashMap<Identity, String> = [(GER, "GER"), (DEAD_POL, "POL"), (LIVE_POL, "POL")]
             .into_iter()
             .map(|(id, tag)| (id, tag.to_owned()))
@@ -663,6 +675,7 @@ mod tests {
         assert_eq!(reply.countries.len(), 3);
         let live = reply.countries.iter().find(|country| (country.slot, country.country_id) == LIVE_POL).unwrap();
         let dead = reply.countries.iter().find(|country| (country.slot, country.country_id) == DEAD_POL).unwrap();
+        assert_ne!(live.key, dead.key);
         assert_eq!((live.tag.as_str(), live.shown_hour, live.dealt.as_deref(), live.taken.as_deref(), live.faction_id.as_deref()), ("POL", None, Some("25"), Some("40"), Some("1")));
         assert_eq!((dead.tag.as_str(), dead.shown_hour, dead.dealt.as_deref(), dead.taken.as_deref(), dead.faction_id.as_deref()), ("POL", Some(104), Some("100"), Some("900"), None));
         let subject_live = build(&pairs, &Shape { tags: &tags, shown_hours: &shown_hours, chosen: None, between: false, top: None, subject: Some(LIVE_POL), factions: &factions });
