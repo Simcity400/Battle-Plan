@@ -343,6 +343,7 @@ test('an orphan choice opened from the feed has no firing time and labels its ob
   const subject = model.rows[0]!.meta as EventDetailSubject;
   assert.equal(subject.firedHour, null);
   assert.equal(subject.chosenHour, 137);
+  assert.equal(subject.noChoiceReason, 'Chosen option not recorded');
 });
 
 test('witnessed participant roles keep unidentified countries without adding an absent decision target', () => {

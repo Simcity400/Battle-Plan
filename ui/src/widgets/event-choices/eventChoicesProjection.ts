@@ -134,7 +134,7 @@ function buildChoiceRow(
     chosenOrdinal: at.choice?.option ?? null,
     awaiting: open,
     chosenHour: at.choice ? (card.fired ? at.choice.row.hour : at.choice.row.readHour) : null,
-    noChoiceReason: at.choice ? null : (open ? 'No option chosen yet' : notRecordedText),
+    noChoiceReason: at.choice ? (at.choice.option == null ? 'Chosen option not recorded' : null) : (open ? 'No option chosen yet' : notRecordedText),
   };
 
   const timingBreakHour = page.notRecordedHour !== undefined
@@ -163,8 +163,6 @@ function buildChoiceRow(
     cells: {
       date: card.fired ? logDateCell(card.fired.row.hour) : {
         value: notRecorded(`${FIRING_NOT_RECORDED}. Chosen by ${formatDateTime(firstRow.readHour)}`),
-        missingFigure: 'Fired',
-        subtext: `Chosen by ${formatDateTime(firstRow.readHour)}`,
       },
       kind: artwork
         ? {

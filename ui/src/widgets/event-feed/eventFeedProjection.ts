@@ -305,6 +305,8 @@ function buildFeedTableRow(
     const awaiting = !page.choice && (page.status === 'awaiting' || page.live);
     const noChoiceReason = chosenOrdinal !== null
       ? null
+      : chosenHour !== null
+        ? 'Chosen option not recorded'
       : awaiting
         ? 'No option chosen yet'
         : page.status === 'notRecorded'

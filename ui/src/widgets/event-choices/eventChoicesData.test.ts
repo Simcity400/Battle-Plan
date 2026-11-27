@@ -69,7 +69,6 @@ test('an orphan choice keeps firing missing in its row, tooltip, detail, mirror 
   const shown = model.rows[0]!;
   assert.equal(shown.cells.date?.value.kind, 'notRecorded');
   assert.match(shown.cells.date?.value.kind === 'notRecorded' ? shown.cells.date.value.reason : '', /firing was not recorded/i);
-  assert.equal(shown.cells.date?.subtext, `Chosen by ${formatDateTime(observed)}`);
   assert.equal(shown.rowHour, observed);
   const subject = shown.meta as EventDetailSubject;
   assert.equal(subject.firedHour, null);
@@ -87,6 +86,13 @@ test('an orphan choice keeps firing missing in its row, tooltip, detail, mirror 
   const date = audit.find(row => row.key === `${card.id}:date`)!.value!;
   assert.match(date, /notRecorded/);
   assert.ok(date.includes(`Chosen by ${formatDateTime(observed)}`));
+  const unidentified = occurrence([{ ...selectedEdge, option: null }], false);
+  const unidentifiedSource = buildRowSourceFromHead('test:orphan-unidentified-choice', {
+    ...head, rows: [{ ...head.rows[0]!, occurrence: unidentified }],
+  }, undefined, observed)!;
+  const unidentifiedModel = eventChoicesProjection.project(createBoundedReadView({ hour: observed, rows: new Map([['main', unidentifiedSource]]) }),
+    { events: ['country', 'news'], awaiting: false, artwork: false, breaks: [] });
+  assert.equal((unidentifiedModel.rows[0]!.meta as EventDetailSubject).noChoiceReason, 'Chosen option not recorded');
 });
 
 test('event family not recorded is selectable on its own or excluded from the known families', () => {

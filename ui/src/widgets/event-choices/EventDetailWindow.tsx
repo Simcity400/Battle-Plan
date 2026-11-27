@@ -90,7 +90,7 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
               ) : (
                 <span className="evd-missing-inline">Country not recorded</span>
               )}
-              <span className="evd-time">{firedHour !== null ? `Fired ${formatDateTime(firedHour)}` : `Firing date not recorded: ${FIRING_NOT_RECORDED}`}</span>
+              <span className="evd-time">{firedHour !== null ? `Fired ${formatDateTime(firedHour)}` : <span className="evd-missing-inline" title={FIRING_NOT_RECORDED}>Firing date not recorded</span>}</span>
             </div>
 
             <div className="evd-art">
@@ -161,7 +161,7 @@ export default function EventDetailWindow({ subject, detail, anchor, onClose }: 
                 {subject.chosenHour !== null ? <span className="evd-footer-date">{chosenLabel} {dayLabel(subject.chosenHour)}</span> : null}
               </span>
             ) : (
-              <span className="evd-footer-status">{subject.noChoiceReason ?? 'Choice not recorded'}{subject.chosenHour !== null ? ` · ${chosenLabel} ${dayLabel(subject.chosenHour)}` : ''}</span>
+              <span className="evd-footer-status">{subject.noChoiceReason ?? 'Choice not recorded'}{firedHour === null && subject.chosenHour !== null ? ` · ${chosenLabel} ${dayLabel(subject.chosenHour)}` : ''}</span>
             )}
           </footer>
         </div>
